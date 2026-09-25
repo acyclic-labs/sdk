@@ -126,8 +126,6 @@ case "$lane" in
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
-    cargo test -p acyclic-plugin --locked
-    cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings
     head="$(git rev-parse HEAD)"
     allow_webflow=false
     if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then

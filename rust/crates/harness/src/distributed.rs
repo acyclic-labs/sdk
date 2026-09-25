@@ -6,8 +6,9 @@ use crate::{
     scheduler::{
         DurableOwner, EntrypointRef, LeaseFence, OperationSpec, OperationState,
         OrchestrationDecision, Reservation, ResourceSnapshot, Scheduler, SchedulerEvent,
-        reduction_invocation_digest,
+        event_operation as scheduler_event_operation, reduction_invocation_digest,
     },
+    speculation::SwarmLimits,
     wire,
 };
 use acyclic_stream::{
@@ -111,6 +112,7 @@ pub struct DistributedCoordinator<P> {
     scheduler: Scheduler,
     revision: u64,
     intents: BTreeMap<String, ([u8; 32], SchedulerEvent)>,
+    limits: SwarmLimits,
 }
 
 impl<P: StreamProvider> DistributedCoordinator<P> {
@@ -125,6 +127,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             scheduler: Scheduler::new(),
             revision: 0,
             intents: BTreeMap::new(),
+            limits: SwarmLimits::default(),
         };
         let mut from = 0;
         loop {
@@ -152,6 +155,19 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .ok_or_else(|| Error::Storage("coordinator cursor exhausted".into()))?;
         }
         Ok(value)
+    }
+
+    /// Replaces the swarm limits applied to new declarations and pull admission.
+    #[must_use]
+    pub const fn with_limits(mut self, limits: SwarmLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Returns the swarm limits applied to new declarations and pull admission.
+    #[must_use]
+    pub const fn limits(&self) -> SwarmLimits {
+        self.limits
     }
 
     /// Returns the deterministic scheduler projection.
@@ -250,11 +266,31 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "reduce decisions must execute through the reducer registry".into(),
             ));
         }
+        // A speculation node never runs on a worker: its verdict, settlement,
+        // merge-conflict failure, and cancellation are all recorded by the
+        // speculation methods or the scheduler itself. Any generic completion,
+        // whatever its outcome, could strand a committed verdict without a
+        // settlement record.
+        let speculation_step = matches!(
+            &event,
+            SchedulerEvent::AttemptEvaluated { .. }
+                | SchedulerEvent::Judged { .. }
+                | SchedulerEvent::SpeculationSettled { .. }
+        ) || matches!(
+            &event,
+            SchedulerEvent::Completed { operation_id, .. }
+                if self.scheduler.speculation_plan(*operation_id).is_some()
+        );
+        if speculation_step {
+            return Err(Error::Unauthorized(
+                "speculation steps must execute through the speculation methods".into(),
+            ));
+        }
         self.apply_internal(operation_id, idempotency_key, event)
             .await
     }
 
-    async fn apply_internal(
+    pub(crate) async fn apply_internal(
         &mut self,
         operation_id: OperationId,
         idempotency_key: IdempotencyKey,
@@ -275,6 +311,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             } else {
                 Err(Error::Conflict("coordinator retry identity reused".into()))
             };
+        }
+        if let SchedulerEvent::Declared { spec } = &event {
+            self.scheduler.admit_declaration(spec, &self.limits)?;
         }
         let mut projected = self.scheduler.clone();
         projected.apply(event.clone())?;
@@ -367,6 +406,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 },
             )
             .await?;
+            return Ok(None);
+        }
+        if self.scheduler.running()
+            >= usize::try_from(self.limits.max_running).unwrap_or(usize::MAX)
+        {
             return Ok(None);
         }
         let available = self.scheduler.available_for(&worker.id, &worker.available);
@@ -522,23 +566,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.revision = revision;
         self.intents.insert(key, (digest, event));
         Ok(())
-    }
-}
-
-fn scheduler_event_operation(event: &SchedulerEvent) -> OperationId {
-    match event {
-        SchedulerEvent::Declared { spec } => spec.operation_id,
-        SchedulerEvent::WaitingForCapacity { operation_id }
-        | SchedulerEvent::Admitted { operation_id, .. }
-        | SchedulerEvent::PartiallyAdmitted { operation_id, .. }
-        | SchedulerEvent::Rejected { operation_id, .. }
-        | SchedulerEvent::Started { operation_id, .. }
-        | SchedulerEvent::Checkpointed { operation_id, .. }
-        | SchedulerEvent::WaitingForChildren { operation_id, .. }
-        | SchedulerEvent::LeaseReleased { operation_id, .. }
-        | SchedulerEvent::CancellationRequested { operation_id, .. }
-        | SchedulerEvent::Completed { operation_id, .. }
-        | SchedulerEvent::Orchestrated { operation_id, .. } => *operation_id,
     }
 }
 

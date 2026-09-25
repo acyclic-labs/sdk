@@ -1,7 +1,10 @@
 //! Deterministic durable scheduling and structured orchestration semantics.
 
 use crate::{
-    Error, OperationId, Outcome, Result, TaskId, core::Authority, resources::CheckpointRef,
+    Error, OperationId, Outcome, Result, TaskId,
+    core::Authority,
+    resources::{CheckpointRef, GenerationRef},
+    speculation::{AttemptEvaluation, JudgeRequest, SpeculationPlan, SpeculationState, Verdict},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -90,6 +93,13 @@ pub enum Orchestration {
     Reduce {
         /// Versioned reducer entrypoint.
         reducer: EntrypointRef,
+    },
+    /// A judge picks one qualified attempt; its workspace is merged into the target.
+    ///
+    /// The node never runs on a worker: it waits for its attempts from declaration.
+    Speculate {
+        /// Immutable speculation plan.
+        plan: Box<SpeculationPlan>,
     },
 }
 
@@ -280,14 +290,46 @@ pub enum SchedulerEvent {
         /// Digest of the exact ordered reducer invocation for reduce decisions only.
         reduction_digest: Option<[u8; 32]>,
     },
+    /// A succeeded speculation attempt was pinned, summarized, and checked.
+    AttemptEvaluated {
+        /// Speculation node.
+        operation_id: OperationId,
+        /// Attempt slot.
+        slot: String,
+        /// Durable evaluation.
+        evaluation: Box<AttemptEvaluation>,
+    },
+    /// A judge verdict committed and running losers were asked to cancel.
+    Judged {
+        /// Speculation node.
+        operation_id: OperationId,
+        /// Node revision observed while building the judge request.
+        expected_revision: u64,
+        /// Judge decision.
+        verdict: Verdict,
+        /// Digest of the exact judge request the verdict answers.
+        judgment_digest: [u8; 32],
+        /// Nonterminal losers to cancel.
+        cancel: Vec<OperationId>,
+    },
+    /// Losers were discarded and the winner, if any, was merged into the target;
+    /// or a speculation cancelled before its verdict had every attempt discarded.
+    SpeculationSettled {
+        /// Speculation node.
+        operation_id: OperationId,
+        /// Target generation produced by the merge; absent when nothing won.
+        merged: Option<GenerationRef>,
+    },
 }
 
 /// Pure reducer for dependency, capacity, ownership, and cancellation state.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Scheduler {
-    operations: BTreeMap<OperationId, OperationState>,
-    child_slots: BTreeMap<(OperationId, String), OperationId>,
-    completion_order: Vec<OperationId>,
+    pub(crate) operations: BTreeMap<OperationId, OperationState>,
+    pub(crate) child_slots: BTreeMap<(OperationId, String), OperationId>,
+    pub(crate) completion_order: Vec<OperationId>,
+    #[serde(default)]
+    pub(crate) speculations: BTreeMap<OperationId, SpeculationState>,
 }
 
 impl Scheduler {
@@ -298,6 +340,7 @@ impl Scheduler {
             operations: BTreeMap::new(),
             child_slots: BTreeMap::new(),
             completion_order: Vec::new(),
+            speculations: BTreeMap::new(),
         }
     }
 
@@ -328,7 +371,16 @@ impl Scheduler {
         {
             return Err(Error::Conflict("operation dependency cycle".into()));
         }
+        if let Orchestration::Speculate { plan } = &spec.orchestration {
+            plan.validate()?;
+            if !spec.dependencies.is_empty() || !spec.resources.0.is_empty() {
+                return Err(Error::Invalid(
+                    "a speculation node has no dependencies or resources of its own".into(),
+                ));
+            }
+        }
         if let Some(parent) = &spec.parent {
+            self.validate_speculation_child(parent)?;
             if parent.slot.trim().is_empty() {
                 return Err(Error::Invalid(
                     "structured child requires an existing parent and slot".into(),
@@ -426,11 +478,18 @@ impl Scheduler {
                         spec.operation_id,
                     );
                 }
+                let phase = if let Orchestration::Speculate { .. } = spec.orchestration {
+                    self.speculations
+                        .insert(spec.operation_id, SpeculationState::default());
+                    OperationPhase::WaitingForChildren
+                } else {
+                    OperationPhase::WaitingForDependencies
+                };
                 self.operations.insert(
                     spec.operation_id,
                     OperationState {
                         spec,
-                        phase: OperationPhase::WaitingForDependencies,
+                        phase,
                         reservation: None,
                         checkpoint: None,
                         outcome: None,
@@ -786,28 +845,7 @@ impl Scheduler {
                     }
                 }
                 for child_id in &cancel {
-                    let mut terminalized = false;
-                    let child = self.mutable(*child_id)?;
-                    if matches!(
-                        child.phase,
-                        OperationPhase::WaitingForDependencies
-                            | OperationPhase::WaitingForCapacity
-                            | OperationPhase::Admitted
-                    ) {
-                        child.reservation = None;
-                        child.phase = OperationPhase::Terminal;
-                        child.outcome = Some(Outcome::Cancelled);
-                        terminalized = true;
-                    } else if child.phase != OperationPhase::Terminal {
-                        child.cancellation_requested = true;
-                    }
-                    child.revision = child
-                        .revision
-                        .checked_add(1)
-                        .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
-                    if terminalized {
-                        self.completion_order.push(*child_id);
-                    }
+                    self.cancel_child(*child_id)?;
                 }
                 let parent = self.mutable(operation_id)?;
                 parent.phase = match &outcome {
@@ -820,6 +858,9 @@ impl Scheduler {
                     self.completion_order.push(operation_id);
                 }
             }
+            event @ (SchedulerEvent::AttemptEvaluated { .. }
+            | SchedulerEvent::Judged { .. }
+            | SchedulerEvent::SpeculationSettled { .. }) => self.apply_speculation(event)?,
         }
         let operation = self.mutable(primary)?;
         operation.revision = operation
@@ -982,6 +1023,7 @@ impl Scheduler {
                     complete_ordered(parent, &children)
                 }
             }
+            Orchestration::Speculate { plan } => self.speculation_decision(parent, plan),
         }
     }
 
@@ -1039,7 +1081,50 @@ impl Scheduler {
             .collect()
     }
 
-    fn mutable(&mut self, id: OperationId) -> Result<&mut OperationState> {
+    /// Cancels one structured child on behalf of a committed parent decision.
+    ///
+    /// An undecided speculation node never runs on a worker, so nothing would
+    /// acknowledge a cancellation request on it: it is cancelled outright and its
+    /// attempts are cancelled with it. A decided speculation still settles.
+    pub(crate) fn cancel_child(&mut self, child_id: OperationId) -> Result<()> {
+        let mut terminalized = false;
+        let speculating = self.speculation_plan(child_id).is_some();
+        let child = self.mutable(child_id)?;
+        if matches!(
+            child.phase,
+            OperationPhase::WaitingForDependencies
+                | OperationPhase::WaitingForCapacity
+                | OperationPhase::Admitted
+        ) || (speculating && child.phase == OperationPhase::WaitingForChildren)
+        {
+            child.reservation = None;
+            child.phase = OperationPhase::Terminal;
+            child.outcome = Some(Outcome::Cancelled);
+            terminalized = true;
+        } else if child.phase != OperationPhase::Terminal {
+            child.cancellation_requested = true;
+        }
+        child.revision = child
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
+        if terminalized {
+            self.completion_order.push(child_id);
+            if speculating {
+                let attempts = self
+                    .children(child_id)
+                    .filter(|(_, attempt)| attempt.phase != OperationPhase::Terminal)
+                    .map(|(_, attempt)| attempt.spec.operation_id)
+                    .collect::<Vec<_>>();
+                for attempt in attempts {
+                    self.cancel_child(attempt)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn mutable(&mut self, id: OperationId) -> Result<&mut OperationState> {
         self.operations
             .get_mut(&id)
             .ok_or_else(|| Error::NotFound(format!("operation {id}")))
@@ -1098,6 +1183,11 @@ pub enum OrchestrationDecision {
         reducer: EntrypointRef,
         /// Ordered `(slot, value)` inputs.
         values: Vec<(String, Value)>,
+    },
+    /// Consult the pinned speculation judge with this exact request.
+    Judge {
+        /// Complete judge input.
+        request: Box<JudgeRequest>,
     },
 }
 
@@ -1186,7 +1276,7 @@ fn validate_outcome_schema(schema: &Value, outcome: &Outcome<Value>) -> Result<(
     Ok(())
 }
 
-fn event_operation(event: &SchedulerEvent) -> OperationId {
+pub(crate) fn event_operation(event: &SchedulerEvent) -> OperationId {
     match event {
         SchedulerEvent::Declared { spec } => spec.operation_id,
         SchedulerEvent::WaitingForCapacity { operation_id }
@@ -1199,7 +1289,10 @@ fn event_operation(event: &SchedulerEvent) -> OperationId {
         | SchedulerEvent::LeaseReleased { operation_id, .. }
         | SchedulerEvent::CancellationRequested { operation_id, .. }
         | SchedulerEvent::Completed { operation_id, .. }
-        | SchedulerEvent::Orchestrated { operation_id, .. } => *operation_id,
+        | SchedulerEvent::Orchestrated { operation_id, .. }
+        | SchedulerEvent::AttemptEvaluated { operation_id, .. }
+        | SchedulerEvent::Judged { operation_id, .. }
+        | SchedulerEvent::SpeculationSettled { operation_id, .. } => *operation_id,
     }
 }
 

@@ -1,0 +1,1084 @@
+//! Conversions between SDK Machines types and Daytona JSON.
+//!
+//! The SDK contract for a machine cannot be reconstructed from Daytona's own fields, so the
+//! provider stores the serialized [`MachineContract`] in a sandbox label at creation and reads
+//! it back on every observation. Everything here is a pure function over wire structs.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
+
+use acyclic_machines::{
+    Capability, CheckpointId, CheckpointObservation, Endpoint, ExpirationPolicy, IdempotencyKey,
+    MachineContract, MachineId, MachineObservation, MachineState, ProviderError, SuspensionPolicy,
+};
+
+use crate::{
+    DaytonaConfig,
+    api::{CreateSandboxRequest, Sandbox, Snapshot},
+};
+
+/// Label marking sandboxes owned by this provider.
+pub const LABEL_MANAGED: &str = "acyclic.managed";
+/// Label holding the idempotency key of the mutation that created the sandbox.
+pub const LABEL_KEY: &str = "acyclic.key";
+/// Label holding the mutation kind (`create` or `fork`) behind [`LABEL_KEY`].
+pub const LABEL_KIND: &str = "acyclic.kind";
+/// Label holding the child index within a fork.
+pub const LABEL_INDEX: &str = "acyclic.index";
+/// Label holding the number of children the fork requested, so label recovery can tell a
+/// complete fork from a partial one.
+pub const LABEL_COUNT: &str = "acyclic.count";
+/// Label holding the tenant the sandbox was created for.
+pub const LABEL_TENANT: &str = "acyclic.tenant";
+/// Label holding the serialized [`MachineContract`].
+pub const LABEL_CONTRACT: &str = "acyclic.contract";
+/// Value of [`LABEL_KIND`] for `create`.
+pub const KIND_CREATE: &str = "create";
+/// Value of [`LABEL_KIND`] for `fork`.
+pub const KIND_FORK: &str = "fork";
+/// Value of [`LABEL_KIND`] for `fork_machine` (live fork of a running machine).
+pub const KIND_LIVE_FORK: &str = "live-fork";
+/// Label a live-fork child carries, set to `true`, once it is a complete copy (native fork:
+/// as soon as it exists; disk fork: after its workspace is unpacked). Label recovery only
+/// returns a live fork whose every child is ready.
+pub const LABEL_READY: &str = "acyclic.ready";
+/// Label holding the sandbox a live-fork child was actually forked from: the requested machine
+/// or, in a doubling fan-out, an earlier child of the same fork.
+pub const LABEL_FORK_SOURCE: &str = "acyclic.fork_source";
+/// Label holding the source machine of a live-fork child.
+pub const LABEL_PARENT: &str = "acyclic.parent";
+/// Name of the single stable endpoint exposed per machine.
+pub const ENDPOINT_NAME: &str = "toolbox";
+/// Sandbox classes with pause/resume, memory snapshots, and native fork.
+pub const VM_CLASSES: [&str; 2] = ["linux-vm", "windows"];
+/// Container sandbox class: no pause, memory snapshot, or native fork.
+pub const CONTAINER_CLASS: &str = "container";
+
+/// Auto-delete value that disables automatic deletion.
+const AUTO_DELETE_DISABLED: i64 = -1;
+/// Idle-interval value that disables an automatic transition.
+const INTERVAL_DISABLED: u32 = 0;
+
+/// Maps a Daytona sandbox state string to the public lifecycle state.
+///
+/// `snapshotting`, `forking`, and `resizing` are brief excursions of a started sandbox that
+/// return to `started`; they report as running but are not settled (see [`is_settled`]).
+#[must_use]
+pub fn machine_state(daytona: Option<&str>) -> MachineState {
+    match daytona.map(str::to_ascii_lowercase).as_deref() {
+        Some(
+            "creating" | "restoring" | "starting" | "pulling_snapshot" | "pending_build"
+            | "building_snapshot",
+        ) => MachineState::Starting,
+        Some("resuming") => MachineState::Waking,
+        Some("started" | "snapshotting" | "forking" | "resizing") => MachineState::Running,
+        Some("stopping" | "pausing" | "archiving") => MachineState::Suspending,
+        Some("stopped" | "paused" | "archived") => MachineState::Suspended,
+        Some("destroying") => MachineState::Destroying,
+        Some("destroyed") => MachineState::Destroyed,
+        Some("error" | "build_failed") => MachineState::Failed,
+        _ => MachineState::Indeterminate,
+    }
+}
+
+/// Whether a Daytona sandbox state string is a settled state a wait loop can stop on.
+#[must_use]
+pub fn is_settled(daytona: Option<&str>) -> bool {
+    let transient = matches!(
+        daytona.map(str::to_ascii_lowercase).as_deref(),
+        Some("snapshotting" | "forking" | "resizing")
+    );
+    !transient
+        && !matches!(
+            machine_state(daytona),
+            MachineState::Starting
+                | MachineState::Waking
+                | MachineState::Suspending
+                | MachineState::Destroying
+        )
+}
+
+/// Whether a sandbox class supports pause, memory snapshots, and native fork.
+#[must_use]
+pub fn is_vm_class(class: Option<&str>) -> bool {
+    class.is_some_and(|class| VM_CLASSES.iter().any(|vm| vm.eq_ignore_ascii_case(class)))
+}
+
+/// Capabilities this provider declares for sandboxes of `class`, or `None` for a class it
+/// does not admit.
+///
+/// VM classes get memory checkpoints, native memory-and-disk live fork, and pause/resume.
+/// Containers get only disk fork: the provider copies the workspace into fresh sandboxes
+/// booted from the parent's snapshot, and no process state is inherited.
+#[must_use]
+pub fn capabilities_for_class(class: Option<&str>) -> Option<BTreeSet<Capability>> {
+    if is_vm_class(class) {
+        Some(BTreeSet::from([
+            Capability::LiveCheckpoint,
+            Capability::LiveFork,
+            Capability::SuspendResume,
+        ]))
+    } else if class.is_some_and(|class| class.eq_ignore_ascii_case(CONTAINER_CLASS)) {
+        Some(BTreeSet::from([Capability::DiskFork]))
+    } else {
+        None
+    }
+}
+
+/// Parses `YYYY-MM-DDTHH:MM:SS[.fff][Z|+00:00]` into Unix milliseconds.
+///
+/// Returns `None` for anything else, including non-UTC offsets, which Daytona does not emit.
+#[must_use]
+pub fn parse_rfc3339_ms(value: &str) -> Option<u64> {
+    let value = value.trim();
+    let (date, rest) = value.split_once('T')?;
+    let mut parts = date.split('-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: u32 = parts.next()?.parse().ok()?;
+    let day: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let time = rest
+        .strip_suffix('Z')
+        .or_else(|| rest.strip_suffix("+00:00"))
+        .or_else(|| rest.strip_suffix("-00:00"))?;
+    let (clock, fraction) = match time.split_once('.') {
+        Some((clock, fraction)) => (clock, Some(fraction)),
+        None => (time, None),
+    };
+    let mut parts = clock.split(':');
+    let hour: u64 = parts.next()?.parse().ok()?;
+    let minute: u64 = parts.next()?.parse().ok()?;
+    let second: u64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let millis = match fraction {
+        Some(fraction) if !fraction.is_empty() && fraction.chars().all(|c| c.is_ascii_digit()) => {
+            let padded = format!("{fraction:0<3}");
+            padded.get(..3)?.parse::<u64>().ok()?
+        }
+        Some(_) => return None,
+        None => 0,
+    };
+    let days = days_from_civil(year, month, day);
+    let seconds = days
+        .checked_mul(86_400)?
+        .checked_add(i64::try_from(hour * 3_600 + minute * 60 + second).ok()?)?;
+    let seconds = u64::try_from(seconds).ok()?;
+    seconds.checked_mul(1_000)?.checked_add(millis)
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's algorithm).
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_index = i64::from(if month > 2 { month - 3 } else { month + 9 });
+    let day_of_year = (153 * month_index + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+/// Lowercase hex encoding of a byte slice.
+#[must_use]
+pub fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            // Writing to a String cannot fail.
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
+fn whole_minutes(duration: Duration) -> u64 {
+    duration.as_secs().div_ceil(60).max(1)
+}
+
+/// Whole idle minutes before Daytona pauses a VM sandbox; zero disables.
+///
+/// Suspension maps to Daytona *auto-pause*, never auto-stop: a pause keeps VM memory, a stop
+/// discards it, and the public contract promises a suspended machine wakes where it left off.
+#[must_use]
+pub fn autopause_minutes(policy: SuspensionPolicy) -> u32 {
+    match policy {
+        SuspensionPolicy::Manual => INTERVAL_DISABLED,
+        SuspensionPolicy::AfterIdle(idle) => u32::try_from(whole_minutes(idle)).unwrap_or(u32::MAX),
+    }
+}
+
+/// Daytona lifetime fields `(autoDeleteInterval, ttlMinutes)` for an expiration policy.
+///
+/// # Errors
+/// Returns [`ProviderError::Unsupported`] for a fixed-instant expiration, which Daytona's
+/// creation-relative TTL cannot express exactly.
+pub fn lifetime_fields(policy: ExpirationPolicy) -> Result<(i64, Option<u64>), ProviderError> {
+    match policy {
+        ExpirationPolicy::Never => Ok((AUTO_DELETE_DISABLED, None)),
+        ExpirationPolicy::Idle(idle) => {
+            Ok((i64::try_from(whole_minutes(idle)).unwrap_or(i64::MAX), None))
+        }
+        ExpirationPolicy::MaxAge(age) => Ok((AUTO_DELETE_DISABLED, Some(whole_minutes(age)))),
+        ExpirationPolicy::AtUnixMs(_) => Err(ProviderError::Unsupported(
+            "Daytona cannot expire a sandbox at a fixed instant; use MaxAge, Idle, or Never".into(),
+        )),
+    }
+}
+
+/// Reconstructs a suspension policy from Daytona's auto-pause minutes.
+#[must_use]
+pub fn suspension_from_autopause(minutes: Option<i64>) -> Option<SuspensionPolicy> {
+    match minutes {
+        Some(0) => Some(SuspensionPolicy::Manual),
+        Some(value) if value > 0 => Some(SuspensionPolicy::AfterIdle(Duration::from_secs(
+            u64::try_from(value).unwrap_or(u64::MAX).saturating_mul(60),
+        ))),
+        _ => None,
+    }
+}
+
+/// Deterministic sandbox name for the sandbox a create under `key` makes, or for child `index`
+/// of a fork under `key`. Names are organization-unique in Daytona, so a replay collides with
+/// the first attempt instead of duplicating it.
+#[must_use]
+pub fn sandbox_name(key: IdempotencyKey, index: Option<u32>) -> String {
+    match index {
+        None => format!("acyclic-{key}"),
+        Some(index) => format!("acyclic-{key}-{index}"),
+    }
+}
+
+/// Deterministic name of the memory snapshot a checkpoint under `key` takes.
+#[must_use]
+pub fn checkpoint_name(key: IdempotencyKey) -> String {
+    format!("acyclic-ckpt-{key}")
+}
+
+/// Position of one child within a fork of `count` children.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ForkSlot {
+    /// Zero-based child index.
+    pub index: u32,
+    /// Number of children the fork requested.
+    pub count: u32,
+}
+
+/// Builds the labels attached to a sandbox created (`slot` `None`) or forked under `key`.
+#[must_use]
+pub fn labels(
+    key: IdempotencyKey,
+    slot: Option<ForkSlot>,
+    tenant: Option<&str>,
+    contract: &MachineContract,
+) -> BTreeMap<String, String> {
+    let mut labels = BTreeMap::new();
+    labels.insert(LABEL_MANAGED.to_owned(), "true".to_owned());
+    labels.insert(LABEL_KEY.to_owned(), key.to_string());
+    let kind = if slot.is_some() {
+        KIND_FORK
+    } else {
+        KIND_CREATE
+    };
+    labels.insert(LABEL_KIND.to_owned(), kind.to_owned());
+    if let Some(slot) = slot {
+        labels.insert(LABEL_INDEX.to_owned(), slot.index.to_string());
+        labels.insert(LABEL_COUNT.to_owned(), slot.count.to_string());
+    }
+    if let Some(tenant) = tenant {
+        labels.insert(LABEL_TENANT.to_owned(), tenant.to_owned());
+    }
+    if let Ok(encoded) = serde_json::to_string(contract) {
+        labels.insert(LABEL_CONTRACT.to_owned(), encoded);
+    }
+    labels
+}
+
+/// Labels for a native fork child: whatever it inherited from its parent minus the parent's
+/// provider labels, plus `ours`.
+#[must_use]
+pub fn relabel(
+    inherited: &BTreeMap<String, String>,
+    ours: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut labels: BTreeMap<String, String> = inherited
+        .iter()
+        .filter(|(name, _)| !name.starts_with("acyclic."))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    labels.extend(ours);
+    labels
+}
+
+/// The provider-owned (`acyclic.*`) subset of a label map that identifies which request made
+/// a sandbox; the [`LABEL_READY`] progress marker is left out.
+#[must_use]
+pub fn provider_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
+    labels
+        .iter()
+        .filter(|(name, _)| name.starts_with("acyclic.") && name.as_str() != LABEL_READY)
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect()
+}
+
+/// Whether a sandbox is managed by this provider *for `tenant`*: it carries the managed label
+/// and exactly the configured tenant label (none when no tenant is configured). Sandboxes of
+/// other tenants in a shared organization are invisible to this provider.
+#[must_use]
+pub fn owned_by(sandbox: &Sandbox, tenant: Option<&str>) -> bool {
+    sandbox
+        .labels
+        .get(LABEL_MANAGED)
+        .is_some_and(|value| value == "true")
+        && sandbox.labels.get(LABEL_TENANT).map(String::as_str) == tenant
+}
+
+/// Rounds of a doubling fork fan-out of `count` children: each round lists `(child index,
+/// source node)` pairs, where node 0 is the requested machine and node `n + 1` is child `n`.
+/// Every existing node forks once per round, so round `r` (from zero) forks up to `2^r`
+/// children, children are numbered in the order they are forked, and a node never forks twice
+/// in one round.
+#[must_use]
+pub fn fork_rounds(count: u32) -> Vec<Vec<(u32, usize)>> {
+    let mut rounds = Vec::new();
+    let mut produced: u32 = 0;
+    while produced < count {
+        let nodes = produced.saturating_add(1);
+        let batch = nodes.min(count - produced);
+        rounds.push(
+            (0..batch)
+                .map(|source| (produced + source, source as usize))
+                .collect(),
+        );
+        produced += batch;
+    }
+    rounds
+}
+
+/// Whether a failed Daytona fork was refused only because its source is not `started` yet
+/// (typically still `forking`), which a later attempt can succeed at.
+#[must_use]
+pub fn fork_refused_for_state(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("state") && detail.contains("fork")
+}
+
+/// The children of one fork in index order, only when they form the complete fork: every
+/// sandbox is a child of the same fork kind (checkpoint or live fork) and parent recording the
+/// same requested count, their indices are exactly `0..count`, and (for a live fork) every
+/// child is marked [`LABEL_READY`]. `None` for a partial, unfinished, or inconsistent set.
+#[must_use]
+pub fn complete_fork(sandboxes: &[Sandbox]) -> Option<Vec<&Sandbox>> {
+    let parse = |sandbox: &Sandbox, label: &str| {
+        sandbox
+            .labels
+            .get(label)
+            .and_then(|value| value.parse::<u32>().ok())
+    };
+    let first = sandboxes.first()?;
+    let count = parse(first, LABEL_COUNT)?;
+    let kind = first.labels.get(LABEL_KIND)?;
+    if kind != KIND_FORK && kind != KIND_LIVE_FORK {
+        return None;
+    }
+    let parent = first.labels.get(LABEL_PARENT);
+    let mut slots = BTreeMap::new();
+    for sandbox in sandboxes {
+        let unready = kind == KIND_LIVE_FORK
+            && sandbox.labels.get(LABEL_READY).map(String::as_str) != Some("true");
+        if unready
+            || sandbox.labels.get(LABEL_KIND) != Some(kind)
+            || sandbox.labels.get(LABEL_PARENT) != parent
+            || parse(sandbox, LABEL_COUNT) != Some(count)
+        {
+            return None;
+        }
+        let index = parse(sandbox, LABEL_INDEX).filter(|index| *index < count)?;
+        if slots.insert(index, sandbox).is_some() {
+            return None;
+        }
+    }
+    let complete = u32::try_from(slots.len()).ok()? == count;
+    complete.then(|| slots.into_values().collect())
+}
+
+/// Reads the contract stored by [`labels`], if present and well-formed.
+#[must_use]
+pub fn contract_from_labels(labels: &BTreeMap<String, String>) -> Option<MachineContract> {
+    labels
+        .get(LABEL_CONTRACT)
+        .and_then(|encoded| serde_json::from_str(encoded).ok())
+}
+
+/// Label filter selecting every sandbox created or forked under `key` for `tenant`.
+///
+/// Daytona cannot filter on a label's absence, so callers still check [`owned_by`].
+#[must_use]
+pub fn key_filter(key: IdempotencyKey, tenant: Option<&str>) -> BTreeMap<String, String> {
+    let mut filter = managed_filter(tenant);
+    filter.insert(LABEL_KEY.to_owned(), key.to_string());
+    filter
+}
+
+/// Label filter selecting every sandbox this provider manages for `tenant`.
+///
+/// Daytona cannot filter on a label's absence, so callers still check [`owned_by`].
+#[must_use]
+pub fn managed_filter(tenant: Option<&str>) -> BTreeMap<String, String> {
+    let mut filter = BTreeMap::from([(LABEL_MANAGED.to_owned(), "true".to_owned())]);
+    if let Some(tenant) = tenant {
+        filter.insert(LABEL_TENANT.to_owned(), tenant.to_owned());
+    }
+    filter
+}
+
+/// Outbound network policy a sandbox is created with. The SDK request carries only a digest
+/// committing to a separately authorized policy; the host registers the policy each digest
+/// stands for (see [`DaytonaConfig::register_network_policy`]) and this provider refuses a
+/// digest it cannot map to a policy Daytona enforces.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NetworkPolicy {
+    /// No outbound traffic (Daytona `networkBlockAll`).
+    BlockAll,
+    /// Outbound traffic only to these domains (Daytona `domainAllowList`).
+    AllowDomains(Vec<String>),
+}
+
+/// Daytona `(domainAllowList, networkBlockAll)` for the policy committed to by `digest`.
+///
+/// # Errors
+/// Returns [`ProviderError::Unsupported`] when no policy is registered for `digest`, and
+/// [`ProviderError::Invalid`] when the registered policy cannot be expressed exactly (an
+/// empty allow list or a malformed domain).
+pub fn network_fields(
+    config: &DaytonaConfig,
+    digest: &[u8; 32],
+) -> Result<(Option<String>, Option<bool>), ProviderError> {
+    let key = hex(digest);
+    let policy = config.network_policies.get(&key).ok_or_else(|| {
+        ProviderError::Unsupported(format!(
+            "network policy {key} is not registered with this Daytona provider; it cannot enforce an unknown policy"
+        ))
+    })?;
+    match policy {
+        NetworkPolicy::BlockAll => Ok((None, Some(true))),
+        NetworkPolicy::AllowDomains(domains) => {
+            if domains.is_empty() {
+                return Err(ProviderError::Invalid(format!(
+                    "network policy {key} allows no domains; register it as BlockAll"
+                )));
+            }
+            if let Some(bad) = domains.iter().find(|domain| {
+                domain.is_empty()
+                    || !domain
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*'))
+            }) {
+                return Err(ProviderError::Invalid(format!(
+                    "network policy {key} has an unexpressible domain {bad:?}"
+                )));
+            }
+            Ok((Some(domains.join(",")), Some(false)))
+        }
+    }
+}
+
+/// Builds the Daytona create body for a sandbox booted from `snapshot`.
+///
+/// `slot` is `None` for a plain create and the child slot for a checkpoint restore. The
+/// outbound network settings are derived from the contract's network-policy commitment.
+///
+/// # Errors
+/// Returns [`ProviderError::Unsupported`] when the expiration policy or the committed network
+/// policy cannot be expressed, and [`ProviderError::Invalid`] for a malformed registered
+/// network policy.
+pub fn create_request(
+    config: &DaytonaConfig,
+    snapshot: &str,
+    key: IdempotencyKey,
+    slot: Option<ForkSlot>,
+    contract: &MachineContract,
+) -> Result<CreateSandboxRequest, ProviderError> {
+    let (auto_delete_interval, ttl_minutes) = lifetime_fields(contract.expiration)?;
+    let (domain_allow_list, network_block_all) =
+        network_fields(config, &contract.network_policy_digest)?;
+    Ok(CreateSandboxRequest {
+        name: Some(sandbox_name(key, slot.map(|slot| slot.index))),
+        snapshot: snapshot.to_owned(),
+        target: config.region.clone(),
+        env: BTreeMap::new(),
+        labels: labels(key, slot, config.tenant.as_deref(), contract),
+        auto_stop_interval: Some(INTERVAL_DISABLED),
+        // Containers cannot pause; their contracts never declare suspend/resume.
+        auto_pause_interval: contract
+            .capabilities
+            .contains(&Capability::SuspendResume)
+            .then(|| autopause_minutes(contract.suspension)),
+        auto_delete_interval: Some(auto_delete_interval),
+        ttl_minutes,
+        domain_allow_list,
+        network_block_all,
+    })
+}
+
+/// Parses a Daytona sandbox id into a machine identity.
+///
+/// # Errors
+/// Returns [`ProviderError::Rejected`] when Daytona hands back a non-UUID id.
+pub fn machine_id(sandbox_id: &str) -> Result<MachineId, ProviderError> {
+    MachineId::parse(sandbox_id).map_err(|_| {
+        ProviderError::Rejected(format!("Daytona sandbox id is not a UUID: {sandbox_id}"))
+    })
+}
+
+/// Parses a Daytona snapshot id into a checkpoint identity.
+///
+/// # Errors
+/// Returns [`ProviderError::Rejected`] when Daytona hands back a non-UUID id.
+pub fn checkpoint_id(snapshot_id: &str) -> Result<CheckpointId, ProviderError> {
+    CheckpointId::parse(snapshot_id).map_err(|_| {
+        ProviderError::Rejected(format!("Daytona snapshot id is not a UUID: {snapshot_id}"))
+    })
+}
+
+/// The single stable endpoint of a sandbox: its toolbox under the proxy Daytona reports.
+#[must_use]
+pub fn endpoint(sandbox: &Sandbox) -> Option<Endpoint> {
+    let proxy = sandbox.toolbox_proxy_url.as_deref()?.trim_end_matches('/');
+    Some(Endpoint {
+        name: ENDPOINT_NAME.to_owned(),
+        uri: format!("{proxy}/{}", sandbox.id),
+    })
+}
+
+/// Converts a sandbox into a machine observation.
+///
+/// The contract comes from the sandbox label, then `fallback`, in that order. Timestamps that
+/// Daytona omits or that fail to parse fall back to `now_unix_ms`.
+///
+/// # Errors
+/// Returns [`ProviderError::Rejected`] when the sandbox id is not a UUID or no contract is
+/// available from either source.
+pub fn sandbox_to_observation(
+    sandbox: &Sandbox,
+    fallback: Option<&MachineContract>,
+    last_checkpoint: Option<CheckpointId>,
+    now_unix_ms: u64,
+) -> Result<MachineObservation, ProviderError> {
+    let id = machine_id(&sandbox.id)?;
+    let mut contract = contract_from_labels(&sandbox.labels)
+        .or_else(|| fallback.cloned())
+        .ok_or_else(|| {
+            ProviderError::Rejected(format!(
+                "sandbox {} carries no {LABEL_CONTRACT} label",
+                sandbox.id
+            ))
+        })?;
+    if let Some(policy) = suspension_from_autopause(sandbox.auto_pause_interval) {
+        contract.suspension = policy;
+    }
+    let created_at_unix_ms = sandbox
+        .created_at
+        .as_deref()
+        .and_then(parse_rfc3339_ms)
+        .unwrap_or(now_unix_ms);
+    let changed_at_unix_ms = sandbox
+        .updated_at
+        .as_deref()
+        .and_then(parse_rfc3339_ms)
+        .unwrap_or(created_at_unix_ms);
+    Ok(MachineObservation {
+        id,
+        state: machine_state(sandbox.state.as_deref()),
+        contract,
+        endpoints: endpoint(sandbox).into_iter().collect(),
+        last_checkpoint,
+        created_at_unix_ms,
+        changed_at_unix_ms,
+    })
+}
+
+/// Converts a snapshot into a checkpoint observation.
+///
+/// `source` overrides Daytona's own `sourceSandboxId` when known from the registry.
+///
+/// # Errors
+/// Returns [`ProviderError::Rejected`] when the snapshot or source id is not a UUID or the
+/// source is unknown.
+pub fn snapshot_to_checkpoint(
+    snapshot: &Snapshot,
+    source: Option<MachineId>,
+    contract: MachineContract,
+    forkable: bool,
+    now_unix_ms: u64,
+) -> Result<CheckpointObservation, ProviderError> {
+    let id = checkpoint_id(&snapshot.id)?;
+    let source = match (source, snapshot.source_sandbox_id.as_deref()) {
+        (Some(source), _) => source,
+        (None, Some(sandbox_id)) => machine_id(sandbox_id)?,
+        (None, None) => {
+            return Err(ProviderError::Rejected(format!(
+                "snapshot {} has no known source sandbox",
+                snapshot.id
+            )));
+        }
+    };
+    let active = snapshot
+        .state
+        .as_deref()
+        .is_none_or(|state| state.eq_ignore_ascii_case("active"));
+    Ok(CheckpointObservation {
+        id,
+        source,
+        contract,
+        forkable: forkable && active,
+        created_at_unix_ms: snapshot
+            .created_at
+            .as_deref()
+            .and_then(parse_rfc3339_ms)
+            .unwrap_or(now_unix_ms),
+    })
+}
+
+/// Whether a Daytona snapshot state string is settled (`active` or a failure).
+#[must_use]
+pub fn snapshot_settled(state: Option<&str>) -> bool {
+    matches!(
+        state.map(str::to_ascii_lowercase).as_deref(),
+        Some("active" | "error" | "build_failed" | "inactive")
+    )
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic
+)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use acyclic_machines::{Budgets, Capability, CompatibilityPolicy, Image, Performance};
+
+    use super::*;
+
+    fn fixture(name: &str) -> String {
+        std::fs::read_to_string(format!(
+            "{}/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
+    }
+
+    fn key(suffix: u8) -> IdempotencyKey {
+        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}")).unwrap()
+    }
+
+    fn contract() -> MachineContract {
+        MachineContract {
+            image: Image::custom([7; 32]).unwrap(),
+            capabilities: BTreeSet::from([
+                Capability::LiveCheckpoint,
+                Capability::LiveFork,
+                Capability::SuspendResume,
+            ]),
+            compatibility: CompatibilityPolicy::BestEffort,
+            compatibility_revision: [1; 32],
+            performance: Performance::Elastic,
+            suspension: SuspensionPolicy::AfterIdle(Duration::from_secs(15)),
+            expiration: ExpirationPolicy::Never,
+            network_policy_digest: [8; 32],
+            budgets: Budgets::default(),
+        }
+    }
+
+    #[test]
+    fn started_sandbox_round_trips_to_a_running_observation() {
+        let sandbox: Sandbox = serde_json::from_str(&fixture("sandbox_started.json")).unwrap();
+        let observation = sandbox_to_observation(&sandbox, None, None, 0).unwrap();
+        assert_eq!(
+            observation.id.to_string(),
+            "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61"
+        );
+        assert_eq!(observation.state, MachineState::Running);
+        assert_eq!(observation.contract.image, Image::custom([7; 32]).unwrap());
+        assert_eq!(observation.contract.network_policy_digest, [8; 32]);
+        // Daytona rounds the 15 s policy up to one minute; the readback reflects Daytona's truth.
+        assert_eq!(
+            observation.contract.suspension,
+            SuspensionPolicy::AfterIdle(Duration::from_secs(60))
+        );
+        assert_eq!(observation.created_at_unix_ms, 1_789_121_730_250);
+        assert_eq!(observation.changed_at_unix_ms, 1_789_121_762_000);
+        assert_eq!(observation.endpoints.len(), 1);
+        assert_eq!(
+            observation.endpoints[0].uri,
+            "https://proxy.app.daytona.io/toolbox/6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61"
+        );
+        assert_eq!(sandbox.sandbox_class.as_deref(), Some("linux-vm"));
+        assert!(is_vm_class(sandbox.sandbox_class.as_deref()));
+        assert!(!is_vm_class(Some("container")));
+        assert_eq!(
+            capabilities_for_class(Some("linux-vm")),
+            Some(BTreeSet::from([
+                Capability::LiveCheckpoint,
+                Capability::LiveFork,
+                Capability::SuspendResume
+            ]))
+        );
+        assert_eq!(
+            capabilities_for_class(Some("container")),
+            Some(BTreeSet::from([Capability::DiskFork]))
+        );
+        assert_eq!(capabilities_for_class(Some("android")), None);
+        assert_eq!(capabilities_for_class(None), None);
+        // The unmodelled fields survive in `extra` rather than being dropped.
+        assert_eq!(sandbox.extra.get("gpu"), Some(&serde_json::json!(0)));
+        let reencoded: Sandbox =
+            serde_json::from_str(&serde_json::to_string(&sandbox).unwrap()).unwrap();
+        assert_eq!(reencoded, sandbox);
+    }
+
+    #[test]
+    fn paused_sandbox_uses_fallback_contract_and_maps_to_suspended() {
+        let sandbox: Sandbox = serde_json::from_str(&fixture("sandbox_paused.json")).unwrap();
+        assert!(sandbox_to_observation(&sandbox, None, None, 0).is_err());
+        let observation = sandbox_to_observation(&sandbox, Some(&contract()), None, 0).unwrap();
+        assert_eq!(observation.state, MachineState::Suspended);
+        assert_eq!(observation.contract.suspension, SuspensionPolicy::Manual);
+    }
+
+    #[test]
+    fn labels_carry_the_contract_and_come_back_identical() {
+        let slot = ForkSlot { index: 3, count: 4 };
+        let labels = labels(key(1), Some(slot), Some("org-demo"), &contract());
+        assert_eq!(labels[LABEL_KEY], key(1).to_string());
+        assert_eq!(labels[LABEL_KIND], KIND_FORK);
+        assert_eq!(labels[LABEL_INDEX], "3");
+        assert_eq!(labels[LABEL_COUNT], "4");
+        assert_eq!(labels[LABEL_TENANT], "org-demo");
+        assert_eq!(contract_from_labels(&labels).unwrap(), contract());
+    }
+
+    #[test]
+    fn fork_children_drop_the_parent_provider_labels() {
+        let inherited = BTreeMap::from([
+            ("team".to_owned(), "a".to_owned()),
+            (LABEL_KEY.to_owned(), key(1).to_string()),
+            (LABEL_KIND.to_owned(), KIND_CREATE.to_owned()),
+        ]);
+        let child = relabel(
+            &inherited,
+            labels(
+                key(2),
+                Some(ForkSlot { index: 0, count: 1 }),
+                None,
+                &contract(),
+            ),
+        );
+        assert_eq!(child["team"], "a");
+        assert_eq!(child[LABEL_KEY], key(2).to_string());
+        assert_eq!(child[LABEL_KIND], KIND_FORK);
+        assert_eq!(child[LABEL_INDEX], "0");
+    }
+
+    #[test]
+    fn create_request_serializes_to_the_specified_shape() {
+        let mut config = DaytonaConfig::new("k");
+        config.register_network_policy(
+            [8; 32],
+            NetworkPolicy::AllowDomains(vec!["api.anthropic.com".into(), "github.com".into()]),
+        );
+        config.region = Some("us".into());
+        let body =
+            create_request(&config, "acyclic-worker-base", key(1), None, &contract()).unwrap();
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["name"], "acyclic-00000000-0000-0000-0000-000000000001");
+        assert_eq!(json["snapshot"], "acyclic-worker-base");
+        assert!(
+            json.get("class").is_none(),
+            "the class comes from the snapshot"
+        );
+        assert_eq!(json["target"], "us");
+        assert_eq!(json["autoStopInterval"], 0);
+        assert_eq!(json["autoPauseInterval"], 1);
+        assert_eq!(json["autoDeleteInterval"], -1);
+        assert!(json.get("ttlMinutes").is_none());
+        assert_eq!(json["domainAllowList"], "api.anthropic.com,github.com");
+        assert!(
+            json.get("networkAllowList").is_none(),
+            "that field takes CIDRs, not domains"
+        );
+        assert_eq!(
+            json["networkBlockAll"], false,
+            "an allow list is explicit, not the organization default"
+        );
+        assert_eq!(json["labels"][LABEL_KIND], KIND_CREATE);
+        let slot = ForkSlot { index: 4, count: 5 };
+        let restore = create_request(&config, "ckpt", key(2), Some(slot), &contract()).unwrap();
+        assert_eq!(
+            restore.name.as_deref(),
+            Some("acyclic-00000000-0000-0000-0000-000000000002-4")
+        );
+        assert_eq!(restore.labels[LABEL_KIND], KIND_FORK);
+        assert_eq!(restore.labels[LABEL_COUNT], "5");
+        let mut aged = contract();
+        aged.expiration = ExpirationPolicy::MaxAge(Duration::from_secs(90));
+        let body = create_request(&config, "s", key(1), None, &aged).unwrap();
+        assert_eq!(body.ttl_minutes, Some(2));
+        aged.expiration = ExpirationPolicy::AtUnixMs(1);
+        assert!(matches!(
+            create_request(&config, "s", key(1), None, &aged),
+            Err(ProviderError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn network_commitment_decides_the_sandbox_egress() {
+        let mut config = DaytonaConfig::new("k");
+        // An unregistered commitment is refused rather than silently falling back to the
+        // organization default, which may be broader than the committed policy.
+        assert!(matches!(
+            create_request(&config, "s", key(1), None, &contract()),
+            Err(ProviderError::Unsupported(_))
+        ));
+        config.register_network_policy([8; 32], NetworkPolicy::BlockAll);
+        let body = create_request(&config, "s", key(1), None, &contract()).unwrap();
+        assert_eq!(body.network_block_all, Some(true));
+        assert_eq!(body.domain_allow_list, None);
+        let mut other = contract();
+        other.network_policy_digest = [9; 32];
+        assert!(
+            create_request(&config, "s", key(1), None, &other).is_err(),
+            "the registered policy applies only to its own digest"
+        );
+        config.register_network_policy([9; 32], NetworkPolicy::AllowDomains(Vec::new()));
+        assert!(matches!(
+            create_request(&config, "s", key(1), None, &other),
+            Err(ProviderError::Invalid(_))
+        ));
+        config.register_network_policy(
+            [9; 32],
+            NetworkPolicy::AllowDomains(vec!["a.com,b.com".into()]),
+        );
+        assert!(matches!(
+            create_request(&config, "s", key(1), None, &other),
+            Err(ProviderError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn only_a_complete_fork_is_recovered() {
+        let child = |index: u32, count: u32| Sandbox {
+            id: format!("child-{index}"),
+            labels: labels(key(1), Some(ForkSlot { index, count }), None, &contract()),
+            ..Sandbox::default()
+        };
+        let full = [child(2, 3), child(0, 3), child(1, 3)];
+        let ordered = complete_fork(&full).unwrap();
+        let ids: Vec<&str> = ordered.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["child-0", "child-1", "child-2"]);
+        assert!(
+            complete_fork(&[child(0, 3), child(2, 3)]).is_none(),
+            "missing index"
+        );
+        assert!(
+            complete_fork(&[child(0, 2), child(0, 2)]).is_none(),
+            "duplicate index"
+        );
+        assert!(
+            complete_fork(&[child(0, 1), child(1, 2)]).is_none(),
+            "mixed counts"
+        );
+        assert!(complete_fork(&[]).is_none());
+        let mut legacy = child(0, 1);
+        legacy.labels.remove(LABEL_COUNT);
+        assert!(complete_fork(&[legacy]).is_none(), "count unknown");
+    }
+
+    #[test]
+    fn a_live_fork_is_recovered_only_once_every_child_is_ready() {
+        let child = |index: u32, ready: bool| {
+            let mut labels = labels(
+                key(1),
+                Some(ForkSlot { index, count: 2 }),
+                None,
+                &contract(),
+            );
+            labels.insert(LABEL_KIND.to_owned(), KIND_LIVE_FORK.to_owned());
+            labels.insert(LABEL_PARENT.to_owned(), "p".to_owned());
+            if ready {
+                labels.insert(LABEL_READY.to_owned(), "true".to_owned());
+            }
+            Sandbox {
+                id: format!("child-{index}"),
+                labels,
+                ..Sandbox::default()
+            }
+        };
+        assert!(complete_fork(&[child(0, true), child(1, false)]).is_none());
+        assert_eq!(
+            complete_fork(&[child(1, true), child(0, true)])
+                .unwrap()
+                .len(),
+            2
+        );
+        let mut other_parent = child(1, true);
+        other_parent
+            .labels
+            .insert(LABEL_PARENT.to_owned(), "q".to_owned());
+        assert!(complete_fork(&[child(0, true), other_parent]).is_none());
+        assert_eq!(
+            provider_labels(&child(0, true).labels),
+            provider_labels(&child(0, false).labels),
+            "readiness does not change which request a sandbox belongs to"
+        );
+    }
+
+    #[test]
+    fn fork_rounds_double_the_forking_nodes() {
+        assert!(fork_rounds(0).is_empty());
+        assert_eq!(fork_rounds(1), [vec![(0, 0)]]);
+        assert_eq!(
+            fork_rounds(7),
+            [
+                vec![(0, 0)],
+                vec![(1, 0), (2, 1)],
+                vec![(3, 0), (4, 1), (5, 2), (6, 3)],
+            ]
+        );
+        assert_eq!(fork_rounds(15).len(), 4);
+        let sixteen = fork_rounds(16);
+        assert_eq!(sixteen.len(), 5);
+        assert_eq!(sixteen[4], [(15, 0)]);
+        let indices: Vec<u32> = sixteen.iter().flatten().map(|&(index, _)| index).collect();
+        assert_eq!(indices, (0..16).collect::<Vec<_>>());
+        for round in &sixteen {
+            // A source is the parent or a child forked in an earlier round.
+            for &(index, source) in round {
+                assert!(source == 0 || u32::try_from(source).unwrap() - 1 < index);
+            }
+            let mut sources: Vec<usize> = round.iter().map(|&(_, source)| source).collect();
+            sources.dedup();
+            assert_eq!(sources.len(), round.len(), "one fork per node per round");
+        }
+        assert!(fork_refused_for_state(
+            "{\"message\":\"Sandbox must be in started state to fork\"}"
+        ));
+        assert!(!fork_refused_for_state("name is invalid"));
+    }
+
+    #[test]
+    fn ownership_requires_the_configured_tenant() {
+        let mut sandbox = Sandbox::default();
+        assert!(!owned_by(&sandbox, None));
+        sandbox.labels = labels(key(1), None, Some("a"), &contract());
+        assert!(owned_by(&sandbox, Some("a")));
+        assert!(!owned_by(&sandbox, Some("b")));
+        assert!(!owned_by(&sandbox, None));
+        sandbox.labels = labels(key(1), None, None, &contract());
+        assert!(owned_by(&sandbox, None));
+        assert!(!owned_by(&sandbox, Some("a")));
+        assert_eq!(managed_filter(Some("a"))[LABEL_TENANT], "a");
+        assert_eq!(key_filter(key(1), Some("a"))[LABEL_KEY], key(1).to_string());
+    }
+
+    #[test]
+    fn snapshot_fixture_becomes_a_forkable_checkpoint() {
+        let snapshot: Snapshot = serde_json::from_str(&fixture("snapshot_active.json")).unwrap();
+        assert_eq!(snapshot.sandbox_class.as_deref(), Some("linux-vm"));
+        let checkpoint = snapshot_to_checkpoint(&snapshot, None, contract(), true, 0).unwrap();
+        assert_eq!(
+            checkpoint.id.to_string(),
+            "9c8b7a6f-5e4d-4c3b-8a29-18f7e6d5c4b3"
+        );
+        assert_eq!(
+            checkpoint.source.to_string(),
+            "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61"
+        );
+        assert!(checkpoint.forkable);
+        assert_eq!(checkpoint.created_at_unix_ms, 1_789_122_300_000);
+        let destroyed = snapshot_to_checkpoint(&snapshot, None, contract(), false, 0).unwrap();
+        assert!(!destroyed.forkable);
+    }
+
+    #[test]
+    fn list_fixture_filters_and_states_map() {
+        let value: serde_json::Value = serde_json::from_str(&fixture("sandbox_list.json")).unwrap();
+        let items: Vec<Sandbox> = serde_json::from_value(value["items"].clone()).unwrap();
+        let managed = items
+            .iter()
+            .filter(|s| s.labels.get(LABEL_MANAGED).is_some_and(|v| v == "true"))
+            .count();
+        assert_eq!(managed, 3);
+        assert_eq!(
+            machine_state(items[1].state.as_deref()),
+            MachineState::Starting
+        );
+        assert_eq!(
+            machine_state(items[3].state.as_deref()),
+            MachineState::Suspended
+        );
+        assert_eq!(machine_state(Some("whatever")), MachineState::Indeterminate);
+        assert_eq!(machine_state(Some("forking")), MachineState::Running);
+        assert!(!is_settled(Some("creating")));
+        assert!(!is_settled(Some("forking")));
+        assert!(!is_settled(Some("snapshotting")));
+        assert!(is_settled(Some("started")));
+        assert!(is_settled(Some("paused")));
+    }
+
+    #[test]
+    fn policies_map_to_daytona_minutes() {
+        assert_eq!(autopause_minutes(SuspensionPolicy::Manual), 0);
+        assert_eq!(
+            autopause_minutes(SuspensionPolicy::AfterIdle(Duration::from_secs(1))),
+            1
+        );
+        assert_eq!(
+            autopause_minutes(SuspensionPolicy::AfterIdle(Duration::from_secs(121))),
+            3
+        );
+        assert_eq!(
+            lifetime_fields(ExpirationPolicy::Never).unwrap(),
+            (-1, None)
+        );
+        assert_eq!(
+            lifetime_fields(ExpirationPolicy::Idle(Duration::from_secs(3600))).unwrap(),
+            (60, None)
+        );
+        assert_eq!(
+            lifetime_fields(ExpirationPolicy::MaxAge(Duration::from_secs(3600))).unwrap(),
+            (-1, Some(60))
+        );
+        assert!(lifetime_fields(ExpirationPolicy::AtUnixMs(1)).is_err());
+    }
+
+    #[test]
+    fn rfc3339_parsing_matches_known_instants() {
+        assert_eq!(parse_rfc3339_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            parse_rfc3339_ms("2000-03-01T00:00:00Z"),
+            Some(951_868_800_000)
+        );
+        assert_eq!(
+            parse_rfc3339_ms("2026-09-11T10:15:30.250Z"),
+            Some(1_789_121_730_250)
+        );
+        assert_eq!(
+            parse_rfc3339_ms("2026-09-11T10:15:30.2Z"),
+            Some(1_789_121_730_200)
+        );
+        assert_eq!(
+            parse_rfc3339_ms("2026-09-11T10:15:30+00:00"),
+            Some(1_789_121_730_000)
+        );
+        assert_eq!(parse_rfc3339_ms("2026-09-11T10:15:30+02:00"), None);
+        assert_eq!(parse_rfc3339_ms("garbage"), None);
+    }
+}

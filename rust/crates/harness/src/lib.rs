@@ -35,6 +35,7 @@ pub mod model;
 pub mod registry;
 pub mod resources;
 pub mod scheduler;
+pub mod speculation;
 #[cfg(feature = "host")]
 pub mod store;
 #[cfg(feature = "host")]
