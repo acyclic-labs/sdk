@@ -385,8 +385,14 @@ void acyclic_fs_darwin_mount_session_free(struct acyclic_fs_darwin_mount_session
   free(session);
 }
 
+/* Mounts and serves until the mount goes away. `mounted(mounted_arg)` runs
+   once the kernel has accepted the mount; a failure before that returns
+   without it. Nothing is mounted before fuse_loop_mt(), so the early failure
+   paths release the channel without unmounting a destination they never
+   mounted. */
 int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session, int argc, char **argv,
-                          const char *mountpoint, uintptr_t context) {
+                          const char *mountpoint, uintptr_t context,
+                          void (*mounted)(void *arg), void *mounted_arg) {
   if (session == NULL) {
     return 4;
   }
@@ -399,13 +405,14 @@ int acyclic_fs_darwin_mount_run(struct acyclic_fs_darwin_mount_session *session,
       fuse_new(channel, &arguments, &bridge_operations, sizeof(bridge_operations),
                (void *)context);
   if (instance == NULL) {
-    fuse_unmount(mountpoint, channel);
+    fuse_unmount(NULL, channel);
     return 1;
   }
+  fuse_set_mounted_callback(instance, mounted, mounted_arg);
   pthread_mutex_lock(&session->mutex);
   if (session->instance != NULL) {
     pthread_mutex_unlock(&session->mutex);
-    fuse_unmount(mountpoint, channel);
+    fuse_unmount(NULL, channel);
     fuse_destroy(instance);
     return 3;
   }

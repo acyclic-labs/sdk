@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sys/mount.h>
 #include <sys/wait.h>
 
 /* ---- Diagnostics ---- */
@@ -135,6 +136,8 @@ struct fuse {
     void                         *init_result;
     struct fuse_session           session;
     volatile int                  exited;
+    void                        (*mounted)(void *arg);
+    void                         *mounted_arg;
 };
 
 /* ---- Global fuse instance for signal handling ---- */
@@ -382,18 +385,10 @@ static int mount_channel(struct fuse_chan *ch)
 
 void fuse_unmount(const char *mountpoint, struct fuse_chan *ch)
 {
-    if (mountpoint) {
-        /* Attempt to unmount */
-        pid_t pid = fork();
-        if (pid == 0) {
-            execlp("umount", "umount", mountpoint, NULL);
-            _exit(127);
-        }
-        if (pid > 0) {
-            int status;
-            waitpid(pid, &status, 0);
-        }
-    }
+    /* The kernel detaches in the system call itself; spawning umount(8)
+     * would only add a process launch. */
+    if (mountpoint)
+        (void)unmount(mountpoint, 0);
 
     if (ch) {
         if (ch->server)
@@ -492,6 +487,8 @@ int fuse_loop(struct fuse *f)
      * server, so one of the two is always observed). */
     int rc = mount_channel(f->chan);
     if (rc == 0) {
+        if (f->mounted)
+            f->mounted(f->mounted_arg);
         nfs4_server_restart(f->chan->server);
         if (!f->exited) {
             DFUSE_LOG("fuse_loop: running event loop (pid=%d)", getpid());
@@ -567,6 +564,14 @@ void fuse_mark_namespace_changed(struct fuse *f)
 {
     if (f && f->chan)
         nfs4_server_mark_namespace_changed(f->chan->server);
+}
+
+void fuse_set_mounted_callback(struct fuse *f, void (*mounted)(void *arg),
+                               void *arg)
+{
+    if (!f) return;
+    f->mounted = mounted;
+    f->mounted_arg = arg;
 }
 
 /* ---- Utility functions ---- */
