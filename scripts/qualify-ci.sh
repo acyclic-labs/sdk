@@ -122,6 +122,7 @@ case "$lane" in
     "$actionlint_root/actionlint" .github/workflows/*.yml
     node scripts/publish-cargo-crates.mjs check
     node --test scripts/test-publish-cargo-crates.mjs
+    node --test scripts/test-publish-npm-packages.mjs
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
