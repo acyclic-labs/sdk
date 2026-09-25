@@ -27,7 +27,6 @@ env:
   CARGO_PROFILE_TEST_DEBUG: '0'
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: sccache
-  SCCACHE_CACHE_SIZE: 8G
   CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   FORCE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.force) }}
 
@@ -150,6 +149,9 @@ jobs:
       MAKEFLAGS: -j${{ matrix.workers }}
       RAYON_NUM_THREADS: ${{ matrix.workers }}
       RUST_TEST_THREADS: ${{ matrix.workers }}
+      # Windows restores the compiler cache at ~70 MB/s rather than from
+      # co-located storage, so bound it near one run's working set.
+      SCCACHE_CACHE_SIZE: ${{ contains(matrix.runner, 'windows') && '3G' || '8G' }}
     timeout-minutes: 20
     steps:
       # Real-time scanning of every extracted cache file and compiler output is
