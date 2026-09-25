@@ -1569,21 +1569,24 @@ impl FuseSession {
         let parent = source.folded_path(&parent).unwrap_or(parent);
         let items = {
             let state = self.lock_state()?;
-            let parent_inode = state.inode_by_path.get(&parent).copied().ok_or_else(|| {
-                NativeMountError::Driver("FUSE invalidation parent is not cached".to_owned())
-            })?;
             let file_inode = state.inode_by_path.get(child.key()).copied();
-            // The parent's listing changes with the name it contains.
+            // The kernel holds entries only beneath inodes it has not
+            // forgotten, so a parent without one caches nothing under this
+            // name; the node itself may still be reachable through another
+            // name. The parent's listing changes with the name it contains.
+            let parent_inode = state.inode_by_path.get(&parent).copied();
             file_inode
                 .map(KernelCacheItem::Inode)
                 .into_iter()
-                .chain([
-                    KernelCacheItem::Entry {
-                        parent: parent_inode,
-                        name: name.to_vec(),
-                    },
-                    KernelCacheItem::Inode(parent_inode),
-                ])
+                .chain(parent_inode.into_iter().flat_map(|parent_inode| {
+                    [
+                        KernelCacheItem::Entry {
+                            parent: parent_inode,
+                            name: name.to_vec(),
+                        },
+                        KernelCacheItem::Inode(parent_inode),
+                    ]
+                }))
                 .collect::<Vec<_>>()
         };
         drop_kernel_caches(&self.notifier()?, items).map_err(NativeMountError::Driver)
