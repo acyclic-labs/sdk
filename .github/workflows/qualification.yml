@@ -86,6 +86,16 @@ jobs:
             workers: 32
             artifact: packages-linux-arm64
             artifact_path: packages
+          - lane: linux-musl
+            runner: blacksmith-4vcpu-ubuntu-2404
+            workers: 4
+            artifact: ''
+            artifact_path: ''
+          - lane: linux-arm64-musl
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            workers: 4
+            artifact: ''
+            artifact_path: ''
           - lane: windows
             runner: blacksmith-32vcpu-windows-2025
             workers: 32
