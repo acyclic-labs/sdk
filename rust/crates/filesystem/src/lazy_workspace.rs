@@ -1621,6 +1621,31 @@ where
         .map(|receipt| (receipt.value.lookup, receipt.value.source))
     }
 
+    /// The source view lookups currently resolve in.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn source_reference(&self) -> SourceReference {
+        self.source.reference()
+    }
+
+    /// What the source itself names at `path` in the view `source`, read
+    /// afresh and bypassing the overlay.
+    #[cfg(feature = "native-mount")]
+    pub(crate) async fn source_lookup(
+        &self,
+        source: SourceReference,
+        path: &str,
+    ) -> Result<Option<SourceNode>, LazyWorkspaceError> {
+        self.source
+            .lookup(
+                source,
+                &self.namespace_path(path)?,
+                &CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| LazyWorkspaceError::from(failure.error))
+    }
+
     /// Resolves a source entry of a page listed against `state`, reusing the
     /// node the listing observed. The listing already excluded tombstoned and
     /// authored names, so neither the source nor the tombstones are consulted.

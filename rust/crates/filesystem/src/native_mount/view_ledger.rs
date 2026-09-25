@@ -275,12 +275,6 @@ impl ViewLedger {
         self.observers.notify(position);
     }
 
-    /// Whether no change of unenumerated effect, such as a source rebind, was
-    /// recorded after `stamp`.
-    pub(super) fn enumerated_since(&self, stamp: ViewStamp) -> bool {
-        stamp.precedes_none_of(&self.everything)
-    }
-
     /// Whether a lookup of `path` that resolved to `file_id` (or to nothing)
     /// after `stamp` still describes the view: no component of `path` was
     /// rebound, `path`'s own listing and attributes are unchanged, and the
