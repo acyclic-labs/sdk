@@ -17,7 +17,7 @@ crate-type = ["rlib", "cdylib"]
 [features]
 default = ["host"]
 host = ["dep:acyclic-stream", "dep:bytes", "dep:futures", "dep:tokio"]
-wasm = ["dep:serde-wasm-bindgen", "dep:wasm-bindgen"]
+wasm = ["dep:js-sys", "dep:serde-wasm-bindgen", "dep:wasm-bindgen"]
 
 [dependencies]
 acyclic-stream = { version = "=0.1.0", path = "../stream", default-features = false, optional = true }
@@ -25,9 +25,11 @@ blake3.workspace = true
 bytes = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 jsonschema.workspace = true
+js-sys = { workspace = true, optional = true }
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }
 uuid.workspace = true

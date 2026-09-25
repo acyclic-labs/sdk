@@ -34,6 +34,10 @@
     "./native": {
       "types": "./dist/native.d.ts",
       "default": "./dist/native.js"
+    },
+    "./proto": {
+      "types": "./generated/proto/filesystem/v2/filesystem_pb.d.ts",
+      "default": "./generated/proto/filesystem/v2/filesystem_pb.js"
     }
   },
   "scripts": {

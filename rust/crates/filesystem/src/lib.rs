@@ -11,14 +11,13 @@
 #![doc = include_str!("../README.md")]
 
 /// Generated public gRPC schema and client/server bindings.
-#[cfg(not(target_arch = "wasm32"))]
 #[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
 pub mod wire {
     /// Shared operation and capability messages used by Filesystem.
     pub mod harness {
-        /// Version 1 of the shared harness contract.
-        pub mod v1 {
-            include!("generated/acyclic/harness/v1/acyclic.harness.v1.rs");
+        /// Version 2 of the shared harness contract.
+        pub mod v2 {
+            include!("generated/acyclic/harness/v2/acyclic.harness.v2.rs");
         }
     }
 
@@ -131,6 +130,7 @@ pub mod watch;
 mod windows_usn;
 pub mod workspace;
 pub mod workspace_context;
+pub mod workspace_context_wire;
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
@@ -154,9 +154,9 @@ pub use facade::{
     CheckoutCommitOutcome, ContentStager, DetachedFile, DirectoryBindingChange,
     DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities,
     FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError, FsReceipt, FsResult,
-    GenerationDiff, LiveMutationOutcome, MergeConflict, MergePreparation, NamedAttributeWriteMode,
-    PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile,
-    ResolvedFileRangeReadRequest, StagedContent, Volume,
+    GenerationDiff, JoinCommitWitness, LiveMutationOutcome, MergeConflict, MergePreparation,
+    NamedAttributeWriteMode, PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry,
+    ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest, StagedContent, Volume,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{
@@ -344,13 +344,13 @@ pub use windows_usn::{
 };
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, Checkpoint, DrivenJoinError, ForkOptions, Generation,
-    GenerationPin, IdempotencyKey, JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, Transaction,
-    TransactionCommit, TransactionConflict, TransactionConflictRegion, TransactionDependencyUse,
-    TransactionRebase, TransactionSparseSeek, Workspace, WorkspaceDelete, WorkspaceDirectoryEntry,
-    WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind, WorkspaceExtentPlan,
-    WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName, WorkspaceNameError,
-    WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase, WorkspaceRestore, WorkspaceStat,
-    WorkspaceSync,
+    GenerationPin, IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
+    JoinPlan, Transaction, TransactionCommit, TransactionConflict, TransactionConflictRegion,
+    TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, Workspace, WorkspaceDelete,
+    WorkspaceDirectoryEntry, WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind,
+    WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName,
+    WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
+    WorkspaceRestore, WorkspaceStat, WorkspaceSync,
 };
 pub use workspace_context::{
     MemoryWorkspaceContextStore, MemoryWorkspaceContextStoreError, WorkspaceContext,

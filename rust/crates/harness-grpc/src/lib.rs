@@ -16,7 +16,7 @@ use tonic::{Request, Response, Status};
 /// Generated tonic client and server surfaces using the canonical Harness messages.
 #[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
 pub mod transport {
-    include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v1.rs"));
+    include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v2.rs"));
 }
 
 /// Thin tonic service; all admission and replay semantics belong to [`HarnessWireApi`].
@@ -117,6 +117,18 @@ fn status(error: Error) -> Status {
         Error::Unsupported(message) => Status::unimplemented(message),
         Error::Invalid(message) => Status::invalid_argument(message),
         Error::Unauthorized(message) => Status::permission_denied(message),
+        Error::InteractionRejected(reason) => match reason {
+            acyclic_harness::InteractionRejection::Declined
+            | acyclic_harness::InteractionRejection::Denied => {
+                Status::permission_denied(reason.to_string())
+            }
+            acyclic_harness::InteractionRejection::Cancelled => {
+                Status::cancelled(reason.to_string())
+            }
+            acyclic_harness::InteractionRejection::Expired => {
+                Status::deadline_exceeded(reason.to_string())
+            }
+        },
         Error::Storage(message) => Status::unavailable(message),
         Error::Indeterminate(operation) => {
             Status::unavailable(format!("operation outcome is indeterminate: {operation}"))
@@ -276,6 +288,7 @@ mod tests {
             id: "control".into(),
             capabilities: vec!["operation:observe".into(), "operation:cancel".into()],
             issuer: "runtime".into(),
+            agent_id: String::new(),
             parent_proof: Vec::new(),
             proof: vec![1; 32],
         };

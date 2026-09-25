@@ -3,6 +3,7 @@
 
 use acyclic_harness::{
     Error, IdempotencyKey, OperationId, Result,
+    fork::{ForkSeed, ForkSeedVerifier, ResourceRevision},
     resources::{ArtifactRef, CheckpointRef, ProviderRef, SandboxRef},
 };
 use acyclic_machines::{
@@ -10,7 +11,7 @@ use acyclic_machines::{
     ImageQualification, MachineId, MachineObservation, MachinesProvider, MutationOutcome,
     OperationId as MachinesOperationId, OperationObservation, ProviderError,
 };
-use std::{num::NonZeroU32, sync::Arc};
+use std::{future::Future, num::NonZeroU32, pin::Pin, sync::Arc};
 
 /// Concrete adapter over any customer-hosted or managed Machines provider.
 #[derive(Clone)]
@@ -159,6 +160,11 @@ impl MachinesHost {
     fn image(&self, reference: &ArtifactRef) -> Result<Image> {
         reference.validate()?;
         self.validate_provider(reference.as_resource().provider())?;
+        if reference.as_resource().version().is_some() {
+            return Err(Error::Invalid(
+                "Machines image identity cannot carry a version".into(),
+            ));
+        }
         let digest: [u8; 32] =
             reference.as_resource().key().try_into().map_err(|_| {
                 Error::Invalid("machine image artifact key must be 32 bytes".into())
@@ -169,12 +175,22 @@ impl MachinesHost {
     fn machine_id(&self, reference: &SandboxRef) -> Result<MachineId> {
         reference.validate()?;
         self.validate_provider(reference.as_resource().provider())?;
+        if reference.as_resource().version().is_some() {
+            return Err(Error::Invalid(
+                "Machines sandbox identity cannot carry a version".into(),
+            ));
+        }
         parse_uuid(reference.as_resource().key(), MachineId::parse)
     }
 
     fn checkpoint_id(&self, reference: &CheckpointRef) -> Result<CheckpointId> {
         reference.validate()?;
         self.validate_provider(reference.as_resource().provider())?;
+        if reference.as_resource().version().is_some() {
+            return Err(Error::Invalid(
+                "Machines checkpoint identity cannot carry a version".into(),
+            ));
+        }
         parse_uuid(reference.as_resource().key(), CheckpointId::parse)
     }
 
@@ -186,6 +202,40 @@ impl MachinesHost {
             ));
         }
         Ok(())
+    }
+}
+
+/// Admission proof for exact Machines checkpoint revisions selected by a parent fork.
+impl ForkSeedVerifier for MachinesHost {
+    fn provider(&self) -> &ProviderRef {
+        &self.provider_ref
+    }
+
+    fn verify<'a>(
+        &'a self,
+        seed: &'a ForkSeed,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            seed.validate()?;
+            for capture in &seed.resources {
+                let revision = &capture.revision;
+                if revision.provider() != &self.provider_ref {
+                    continue;
+                }
+                let ResourceRevision::Process(checkpoint) = revision else {
+                    return Err(Error::Unsupported(
+                        "Machines fork verifier cannot prove this resource".into(),
+                    ));
+                };
+                let observed = self.inspect_checkpoint(checkpoint).await?;
+                if !observed.forkable {
+                    return Err(Error::Conflict(
+                        "selected Machines checkpoint is not forkable".into(),
+                    ));
+                }
+            }
+            Ok(())
+        })
     }
 }
 
@@ -238,6 +288,13 @@ fn map_error(error: ProviderError, operation: Option<OperationId>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_harness::{
+        AgentId,
+        conversation::{VolumeClass, VolumeOwner, VolumeRef},
+        core::{AggregateKind, Authority},
+        fork::CapturedResource,
+        resources::{GenerationRef, StreamRef},
+    };
     use acyclic_machines::SimulatedMachines;
 
     #[test]
@@ -301,6 +358,137 @@ mod tests {
                 |_| {},
             )
             .await,
+            Err(Error::Invalid(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fork_admission_proves_the_selected_checkpoint_exists() -> Result<()> {
+        let machines = ProviderRef::new("example", "machines", "1")?;
+        let simulator = Arc::new(SimulatedMachines::default());
+        let host = MachinesHost::new(simulator.clone(), machines.clone())?;
+        let artifact = ArtifactRef::new(machines.clone(), [1; 32], None)?;
+        let sandbox = host
+            .create(
+                OperationId::from_bytes([1; 16]),
+                &IdempotencyKey::new("fork-verifier-machine")?,
+                &artifact,
+                [2; 32],
+                |_| {},
+            )
+            .await?;
+        let checkpoint = host
+            .checkpoint(
+                OperationId::from_bytes([2; 16]),
+                &IdempotencyKey::new("fork-verifier-checkpoint")?,
+                &sandbox,
+            )
+            .await?;
+        let parent = Authority {
+            kind: AggregateKind::Conversation,
+            id: "parent".into(),
+        };
+        let child = Authority {
+            kind: AggregateKind::Conversation,
+            id: "child".into(),
+        };
+        let filesystem = ProviderRef::new("example", "filesystem", "2")?;
+        let owner = VolumeOwner::Project("project".into());
+        let history = ResourceRevision::History(StreamRef::new(
+            ProviderRef::new("example", "stream", "2")?,
+            parent.stream_path()?.into_bytes(),
+            Some("0".into()),
+        )?);
+        let project = ResourceRevision::Project {
+            volume: VolumeRef::new(
+                filesystem.clone(),
+                "parent-project",
+                VolumeClass::Project,
+                owner.clone(),
+            )?,
+            generation: GenerationRef::new(filesystem.clone(), [1; 32], Some("1".into()))?,
+        };
+        let child_project = ResourceRevision::Project {
+            volume: VolumeRef::new(
+                filesystem.clone(),
+                "child-project",
+                VolumeClass::Project,
+                owner,
+            )?,
+            generation: GenerationRef::new(filesystem.clone(), [2; 32], Some("1".into()))?,
+        };
+        let process = ResourceRevision::Process(checkpoint);
+        let seed = ForkSeed {
+            operation_id: OperationId::from_bytes([3; 16]),
+            parent,
+            parent_revision: 0,
+            child,
+            child_agent: AgentId::from_bytes([4; 16]),
+            resources: vec![
+                CapturedResource {
+                    source: history.clone(),
+                    revision: history,
+                },
+                CapturedResource {
+                    source: project,
+                    revision: child_project,
+                },
+                CapturedResource {
+                    source: process.clone(),
+                    revision: process,
+                },
+            ],
+            omissions: Vec::new(),
+            child_private_volume: VolumeRef::new(
+                filesystem.clone(),
+                "child-private",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
+            )?,
+            child_private_generation: GenerationRef::new(filesystem, [3; 32], Some("1".into()))?,
+            inherited_context: Vec::new(),
+            shared_grants: Vec::new(),
+            attached_agents: Vec::new(),
+            reference_grants: Vec::new(),
+            attachment_manifests: Vec::new(),
+            inherited_through_sequence: 0,
+            boundary: None,
+        };
+        host.verify(&seed).await?;
+        simulator
+            .destroy_checkpoint(
+                host.checkpoint_id(match &seed.resources[2].revision {
+                    ResourceRevision::Process(reference) => reference,
+                    _ => return Err(Error::Invalid("test checkpoint is missing".into())),
+                })?,
+                MachinesKey::new(),
+            )
+            .await
+            .map_err(|error| map_error(error, None))?;
+        assert!(matches!(host.verify(&seed).await, Err(Error::Conflict(_))));
+        let mut missing = seed;
+        let unavailable =
+            ResourceRevision::Process(CheckpointRef::new(machines.clone(), [9; 16], None)?);
+        missing.resources[2] = CapturedResource {
+            source: unavailable.clone(),
+            revision: unavailable,
+        };
+        assert!(matches!(
+            host.verify(&missing).await,
+            Err(Error::NotFound(_))
+        ));
+        let forged = ResourceRevision::Process(CheckpointRef::new(
+            machines,
+            [9; 16],
+            Some("forged-generation".into()),
+        )?);
+        missing.resources[2] = CapturedResource {
+            source: forged.clone(),
+            revision: forged,
+        };
+        assert!(matches!(
+            host.verify(&missing).await,
             Err(Error::Invalid(_))
         ));
         Ok(())

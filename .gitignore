@@ -5,6 +5,7 @@
 /.tools/
 node_modules/
 /typescript/packages/*/dist/
+/typescript/packages/inference/generated/wasm/
 *.tsbuildinfo
 *.log
 .DS_Store

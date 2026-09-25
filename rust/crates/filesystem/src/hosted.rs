@@ -6,7 +6,7 @@
 
 use crate::model::FilesystemProfile as EmbeddedProfile;
 use crate::wire::filesystem::v2 as wire;
-use crate::wire::harness::v1 as harness;
+use crate::wire::harness::v2 as harness;
 use crate::{
     Digest, Fs, GenerationId, HostedSourceInvalidation, HostedSourceResult, HostedSourceState,
     IdempotencyKey,

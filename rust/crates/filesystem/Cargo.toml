@@ -21,6 +21,7 @@ hex.workspace = true
 notify = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
+prost.workspace = true
 unicode-normalization.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -61,7 +62,6 @@ cap-primitives = "4.0.3"
 cap-fs-ext = "4.0.2"
 cap-std = "4.0.3"
 fs2 = { workspace = true, optional = true }
-prost.workspace = true
 tokio = { workspace = true, optional = true, features = ["rt", "sync"] }
 tonic.workspace = true
 tonic-prost.workspace = true
@@ -84,7 +84,7 @@ windows = { version = "0.62.2", features = [
 
 [features]
 default = ["local", "memory", "native-watch", "native-mount"]
-local = ["distributed", "acyclic-objects/local", "acyclic-stream/local", "dep:fs2"]
+local = ["distributed", "acyclic-objects/local", "acyclic-stream/local", "dep:fs2", "dep:tokio"]
 memory = ["distributed"]
 native-watch = ["dep:notify", "dep:tokio"]
 native-mount = ["native-watch", "dep:fuser"]

@@ -1,0 +1,3 @@
+# Harness Objects adapter
+
+`ObjectContentStore` binds one Objects bucket and one Harness volume to an exact, trusted provider identity and the owner's signed authority. The owning provider supplies its verifier and owner scope; attached readers supply only their narrower signed scope. The binding publishes immutable, version-pinned `FileRef` values for the original owner and resolves exact retained versions with SHA-256, length, media type, and display-name checks. It also validates complete canonical attachment manifests and their members. Objects remains unaware of Harness agents; the binding is the authorization boundary. Do not accept the expected provider identity, verifier, or owner scope from an untrusted reader.

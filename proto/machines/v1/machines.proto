@@ -251,6 +251,31 @@ message RecoveredAdmission {
   }
 }
 
+// Terminal simulator result. Unlike an admission, this contains the checked
+// observations produced after the operation has completed.
+message ForkedMachines {
+  repeated MachineState machines = 1;
+}
+message PolicySet {
+  MachineId machine = 1;
+  SuspensionPolicy policy = 2;
+}
+message MutationOutcome {
+  oneof result {
+    MachineState created = 1;
+    CheckpointState checkpointed = 2;
+    ForkedMachines forked = 3;
+    MachineId suspended = 4;
+    MachineId woken = 5;
+    PolicySet suspension_policy_set = 6;
+    MachineId machine_destroyed = 7;
+    CheckpointId checkpoint_destroyed = 8;
+  }
+}
+message OperationPage {
+  repeated OperationState operations = 1;
+}
+
 enum PressureKind {
   PRESSURE_KIND_UNSPECIFIED = 0;
   PRESSURE_KIND_CUSTOMER_BUDGET = 1;

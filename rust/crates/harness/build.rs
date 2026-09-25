@@ -5,14 +5,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This checked mirror is generated from the repository's canonical schema.
     // Keeping the build input inside the crate makes crates.io archives
     // independently buildable instead of depending on the monorepo layout.
-    let proto = "proto/harness/v1/harness.proto";
+    let proto = "proto/harness/v2/harness.proto";
     let include = "proto";
     println!("cargo:rerun-if-changed={proto}");
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
-    config.boxed(".acyclic.harness.v1.ClientFrame.command");
+    config.boxed(".acyclic.harness.v2.ClientFrame.command");
     config.enum_attribute(
-        ".acyclic.harness.v1.ClientFrame.frame",
+        ".acyclic.harness.v2.ClientFrame.frame",
         "#[allow(clippy::large_enum_variant)]",
     );
     config.file_descriptor_set_path(

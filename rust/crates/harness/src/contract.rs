@@ -4,6 +4,103 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
+/// One sorted-key JSON encoding for durable identities and Rust/WASM output.
+/// Conversion through Value preserves full-width serde integer values while
+/// avoiding struct declaration order as an accidental wire contract.
+pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    let value = serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut bytes = Vec::new();
+    write_canonical_json(&value, &mut bytes, 0)?;
+    Ok(bytes)
+}
+
+/// Digest of the exact canonical JSON bytes used at durable identity boundaries.
+pub(crate) fn canonical_json_digest<T: Serialize>(value: &T) -> Result<[u8; 32]> {
+    Ok(*blake3::hash(&canonical_json_bytes(value)?).as_bytes())
+}
+
+/// One JSON Schema admission rule shared by host task/tool execution and the
+/// WASM facade before untrusted model values reach typed executors.
+pub(crate) fn validate_json_schema_value(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+    label: &str,
+) -> Result<()> {
+    jsonschema::validator_for(schema)
+        .map_err(|error| Error::Invalid(format!("invalid {label} schema: {error}")))?
+        .validate(value)
+        .map_err(|error| Error::Invalid(format!("{label} failed validation: {error}")))
+}
+
+fn write_canonical_json(
+    value: &serde_json::Value,
+    bytes: &mut Vec<u8>,
+    depth: usize,
+) -> Result<()> {
+    if depth > 128 {
+        return Err(Error::Invalid(
+            "canonical JSON nesting exceeds the limit".into(),
+        ));
+    }
+    match value {
+        serde_json::Value::Null => bytes.extend_from_slice(b"null"),
+        serde_json::Value::Bool(true) => bytes.extend_from_slice(b"true"),
+        serde_json::Value::Bool(false) => bytes.extend_from_slice(b"false"),
+        serde_json::Value::Number(number) => bytes.extend_from_slice(number.to_string().as_bytes()),
+        serde_json::Value::String(string) => bytes.extend_from_slice(
+            serde_json::to_string(string)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .as_bytes(),
+        ),
+        serde_json::Value::Array(items) => {
+            bytes.push(b'[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    bytes.push(b',');
+                }
+                write_canonical_json(item, bytes, depth + 1)?;
+            }
+            bytes.push(b']');
+        }
+        serde_json::Value::Object(fields) => {
+            bytes.push(b'{');
+            let mut keys = fields.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    bytes.push(b',');
+                }
+                bytes.extend_from_slice(
+                    serde_json::to_string(key)
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                        .as_bytes(),
+                );
+                bytes.push(b':');
+                write_canonical_json(&fields[key], bytes, depth + 1)?;
+            }
+            bytes.push(b'}');
+        }
+    }
+    Ok(())
+}
+
+/// One cross-target spelling rule for pinned component and command names.
+pub(crate) fn validate_component_label(value: &str, field: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 255
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        || value.contains('/')
+        || value.contains('\\')
+        || value == "."
+        || value == ".."
+    {
+        return Err(Error::Invalid(format!("{field} is invalid")));
+    }
+    Ok(())
+}
+
 macro_rules! uuid_id {
     ($name:ident, $description:literal) => {
         #[doc = $description]
@@ -24,6 +121,12 @@ macro_rules! uuid_id {
             #[must_use]
             pub const fn from_bytes(bytes: [u8; 16]) -> Self {
                 Self(Uuid::from_bytes(bytes))
+            }
+
+            /// Returns canonical identity bytes for signed records.
+            #[must_use]
+            pub const fn into_bytes(self) -> [u8; 16] {
+                *self.0.as_bytes()
             }
 
             /// Parses a canonical UUID.
@@ -245,6 +348,23 @@ pub fn resolve_policy_layers(layers: &[PolicyLayer]) -> Result<Capabilities> {
     ))
 }
 
+/// Terminal non-approval outcomes kept distinct for tool callers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum InteractionRejection {
+    /// A participant explicitly refused the action.
+    #[error("declined")]
+    Declined,
+    /// The requester or responder cancelled it.
+    #[error("cancelled")]
+    Cancelled,
+    /// Its response deadline elapsed.
+    #[error("expired")]
+    Expired,
+    /// Interaction policy denied it.
+    #[error("denied")]
+    Denied,
+}
+
 /// Errors shared by harness surfaces.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Error {
@@ -263,6 +383,9 @@ pub enum Error {
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// A bound approval resolved without permission to execute.
+    #[error("interaction {0}")]
+    InteractionRejected(InteractionRejection),
     /// Durable provider operation failed.
     #[error("storage failure: {0}")]
     Storage(String),
@@ -277,6 +400,19 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_json_sorts_nested_keys_and_preserves_full_width_integers() -> Result<()> {
+        let value = serde_json::json!({
+            "z": { "later": 2, "earlier": 1 },
+            "a": u64::MAX,
+        });
+        assert_eq!(
+            canonical_json_bytes(&value)?,
+            br#"{"a":18446744073709551615,"z":{"earlier":1,"later":2}}"#
+        );
+        Ok(())
+    }
 
     #[test]
     fn policy_grants_intersect_and_any_deny_wins() {

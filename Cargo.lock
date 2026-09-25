@@ -137,6 +137,7 @@ dependencies = [
  "blake3",
  "bytes",
  "futures",
+ "js-sys",
  "jsonschema",
  "prost",
  "prost-build",
@@ -144,6 +145,7 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "tokio",
  "uuid",
@@ -156,10 +158,16 @@ version = "0.1.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-stream",
  "blake3",
  "bytes",
+ "futures",
+ "hex",
  "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -202,12 +210,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-harness-objects"
+version = "0.1.0"
+dependencies = [
+ "acyclic-harness",
+ "acyclic-objects",
+ "bytes",
+ "futures",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "acyclic-inference"
 version = "0.1.0"
 dependencies = [
  "prost",
+ "prost-build",
  "prost-types",
- "protoc-bin-vendored",
  "sha2 0.10.9",
  "thiserror",
  "tokio",
@@ -216,6 +236,14 @@ dependencies = [
  "tonic-prost-build",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "acyclic-inference-wasm"
+version = "0.1.0"
+dependencies = [
+ "acyclic-inference",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -265,6 +293,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-machines-wasm"
+version = "0.1.0"
+dependencies = [
+ "acyclic-machines",
+ "futures",
+ "js-sys",
+ "prost",
+ "sha2 0.10.9",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "acyclic-memory"
 version = "0.1.0"
 dependencies = [
@@ -303,6 +345,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "imbl",
+ "js-sys",
  "libc",
  "prost",
  "prost-types",
@@ -313,6 +356,18 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
+]
+
+[[package]]
+name = "acyclic-objects-wasm"
+version = "0.1.0"
+dependencies = [
+ "acyclic-objects",
+ "bytes",
+ "js-sys",
+ "prost",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -358,6 +413,20 @@ dependencies = [
  "tonic-prost-build",
  "tower",
  "uuid",
+]
+
+[[package]]
+name = "acyclic-stream-wasm"
+version = "0.1.0"
+dependencies = [
+ "acyclic-stream",
+ "bytes",
+ "futures",
+ "js-sys",
+ "prost",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -3442,9 +3511,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
-version = "1.16.1"
+version = "1.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
+checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 
 [[package]]
 name = "socket2"
@@ -3621,18 +3690,18 @@ checksum = "4164c6c316ba9733b0ab021e7f9852c788a4b991b49c25820f1be48e1d41345b"
 
 [[package]]
 name = "thiserror"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4710,18 +4779,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.57"
+version = "0.8.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d35102a9f36d089ccae9e4c6802bc118be4487b80aaffc0ab4e0cf5ce92d2873"
+checksum = "c17e8fafad82b542ff3717217ecdc736231b59e387768c9630123b4ce4d2db44"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.57"
+version = "0.8.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "146c01f5ab44258da43cf276c74a2763db2ff3969c9c652c3f2de07041d0b2bc"
+checksum = "595f56e044df4f46a0c9a626f65c3d99eb8488f7e8a8baa12dd76326d9710bf2"
 dependencies = [
  "proc-macro2",
  "quote",

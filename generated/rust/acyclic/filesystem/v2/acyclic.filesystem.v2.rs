@@ -17,6 +17,49 @@ pub struct GenerationRef {
     #[prost(bytes = "vec", tag = "2")]
     pub generation_id: ::prost::alloc::vec::Vec<u8>,
 }
+/// Durable context control-plane records. Paths are UTF-8 native absolute paths;
+/// file contents and credentials never travel in these records. The repeated
+/// roots are ordered by root_id, and duplicate IDs are invalid.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WorkspaceContextRoot {
+    #[prost(bytes = "vec", tag = "1")]
+    pub root_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub source_path: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub workspace_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub workspace_name: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", optional, tag = "5")]
+    pub parent_workspace_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(string, optional, tag = "6")]
+    pub mount_path: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkspaceContextRoots {
+    #[prost(message, repeated, tag = "1")]
+    pub roots: ::prost::alloc::vec::Vec<WorkspaceContextRoot>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkspaceContextSnapshot {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(uint64, tag = "2")]
+    pub revision: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub context_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", optional, tag = "4")]
+    pub parent_context_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, repeated, tag = "5")]
+    pub roots: ::prost::alloc::vec::Vec<WorkspaceContextRoot>,
+    #[prost(enumeration = "WorkspaceContextState", tag = "6")]
+    pub state: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WorkspaceContextDiscard {
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub context_ids: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OperationOptions {
     #[prost(bytes = "vec", tag = "1")]
@@ -200,12 +243,12 @@ pub struct Workspace {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HandshakeRequest {
     #[prost(message, optional, tag = "1")]
-    pub harness: ::core::option::Option<super::super::harness::v1::HandshakeRequest>,
+    pub harness: ::core::option::Option<super::super::harness::v2::HandshakeRequest>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HandshakeResponse {
     #[prost(message, optional, tag = "1")]
-    pub harness: ::core::option::Option<super::super::harness::v1::HandshakeResponse>,
+    pub harness: ::core::option::Option<super::super::harness::v2::HandshakeResponse>,
     #[prost(message, optional, tag = "2")]
     pub capabilities: ::core::option::Option<Capabilities>,
 }
@@ -962,6 +1005,38 @@ pub struct CancelRequest {
 pub struct CancelResponse {
     #[prost(message, optional, tag = "1")]
     pub operation: ::core::option::Option<ObserveResponse>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum WorkspaceContextState {
+    Unspecified = 0,
+    Active = 1,
+    Frozen = 2,
+    Discarded = 3,
+}
+impl WorkspaceContextState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "WORKSPACE_CONTEXT_STATE_UNSPECIFIED",
+            Self::Active => "WORKSPACE_CONTEXT_STATE_ACTIVE",
+            Self::Frozen => "WORKSPACE_CONTEXT_STATE_FROZEN",
+            Self::Discarded => "WORKSPACE_CONTEXT_STATE_DISCARDED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "WORKSPACE_CONTEXT_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "WORKSPACE_CONTEXT_STATE_ACTIVE" => Some(Self::Active),
+            "WORKSPACE_CONTEXT_STATE_FROZEN" => Some(Self::Frozen),
+            "WORKSPACE_CONTEXT_STATE_DISCARDED" => Some(Self::Discarded),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

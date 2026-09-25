@@ -103,7 +103,7 @@ impl fmt::Display for StreamPath {
 }
 
 /// Opaque content-bound identity of one committed envelope.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CommitId([u8; 32]);
 
 impl CommitId {
@@ -249,6 +249,16 @@ pub struct ReadRequest {
     pub limit: u32,
 }
 
+/// One atomic replay window. A cursor below `trim_point` is irrecoverable;
+/// `tail` is the next sequence and may advance immediately after observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamBounds {
+    /// Earliest sequence still readable through this path.
+    pub trim_point: u64,
+    /// Exclusive end of the currently committed history.
+    pub tail: u64,
+}
+
 /// One immutable direct child.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Child {
@@ -263,6 +273,31 @@ pub struct ChildrenRequest {
     pub parent: Option<StreamPath>,
     /// Nonzero result bound.
     pub limit: u32,
+}
+
+/// Bounded hierarchy traversal. A continuation is valid only while the
+/// provider's hierarchy version remains unchanged; callers restart on drift.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChildrenPageRequest {
+    /// Parent, or `None` for top-level paths.
+    pub parent: Option<StreamPath>,
+    /// Last path from the preceding page; exclusive.
+    pub after: Option<StreamPath>,
+    /// Last hierarchy-changing commit returned by the preceding page.
+    pub hierarchy_version: Option<CommitId>,
+    /// Nonzero result bound.
+    pub limit: u32,
+}
+
+/// One coherent hierarchy page and its continuation boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChildrenPage {
+    /// Changes only when a path is created or permanently deleted.
+    pub hierarchy_version: CommitId,
+    /// Ordered direct children, at most the requested limit.
+    pub children: Vec<Child>,
+    /// Last returned path if another page exists.
+    pub next_after: Option<StreamPath>,
 }
 
 /// Append fact retained in a committed envelope.
@@ -487,6 +522,8 @@ pub trait StreamProvider: Send + Sync + 'static {
     ) -> Result<Option<IdempotencyObservation>, StreamError>;
     /// Current next sequence.
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError>;
+    /// Atomically observes both ends of the retained replay window.
+    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError>;
     /// Atomic append or tail conflict.
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError>;
     /// Atomic immutable-prefix fork.
@@ -510,6 +547,15 @@ pub trait StreamProvider: Send + Sync + 'static {
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError>;
     /// Lists one fixed-snapshot direct-child page.
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError>;
+    /// Traverses arbitrarily large direct-child sets without silently
+    /// duplicating or omitting entries across concurrent hierarchy changes.
+    async fn children_page(
+        &self,
+        request: ChildrenPageRequest,
+    ) -> Result<ChildrenPage, StreamError> {
+        let _ = request;
+        Err(StreamError::Unsupported)
+    }
     /// Executes one all-or-nothing optimistic commit.
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError>;
     /// Executes one coordinated commit only if the provider's trusted clock is
@@ -549,6 +595,11 @@ impl<P: StreamProvider> StreamClient<P> {
         Self { provider }
     }
 
+    /// Observes the exact replay window without guessing from a failed read.
+    pub async fn bounds(&self, path: &str) -> Result<StreamBounds, StreamError> {
+        self.provider.bounds(StreamPath::new(path)?).await
+    }
+
     /// Opens one path handle after local validation.
     pub fn stream(&self, path: impl AsRef<str>) -> Result<Stream<P>, StreamError> {
         Ok(Stream {
@@ -574,6 +625,24 @@ impl<P: StreamProvider> StreamClient<P> {
         self.provider
             .children(ChildrenRequest {
                 parent: parent.map(StreamPath::new).transpose()?,
+                limit,
+            })
+            .await
+    }
+
+    /// Reads one page of direct children with an exact hierarchy version.
+    pub async fn children_page(
+        &self,
+        parent: Option<&str>,
+        after: Option<&str>,
+        hierarchy_version: Option<CommitId>,
+        limit: u32,
+    ) -> Result<ChildrenPage, StreamError> {
+        self.provider
+            .children_page(ChildrenPageRequest {
+                parent: parent.map(StreamPath::new).transpose()?,
+                after: after.map(StreamPath::new).transpose()?,
+                hierarchy_version,
                 limit,
             })
             .await
@@ -651,6 +720,11 @@ impl<P: StreamProvider> Stream<P> {
     /// Current tail.
     pub async fn tail(&self) -> Result<u64, StreamError> {
         self.client.provider.tail(self.path.clone()).await
+    }
+
+    /// Exact retained replay window observed atomically by the provider.
+    pub async fn bounds(&self) -> Result<StreamBounds, StreamError> {
+        self.client.provider.bounds(self.path.clone()).await
     }
 
     /// Unconditionally appends one record.
@@ -783,6 +857,9 @@ pub enum StreamError {
     /// Requested sequence is beyond the current tail.
     #[error("stream sequence out of range")]
     OutOfRange,
+    /// A hierarchy changed between paginated reads; restart from the first page.
+    #[error("stream hierarchy changed during pagination")]
+    HierarchyChanged,
     /// Retry identity was reused with different arguments.
     #[error("idempotency mismatch")]
     IdempotencyMismatch,

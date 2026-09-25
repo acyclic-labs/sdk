@@ -1,25 +1,51 @@
 import { describe, expect, test } from "bun:test";
+import { Buffer } from "node:buffer";
 import { HttpObjectsProvider, MemoryObjectsProvider, ObjectError, Objects, ObjectsTransportError, bytesCodec, idempotencyKey, jsonCodec, type IdempotencyKey } from "../src/index.js";
 
 const key = (value: string) => value as IdempotencyKey;
+const numberJson = jsonCodec(value => {
+  if (typeof value !== "number") throw new TypeError("expected a JSON number");
+  return value;
+});
+const answerJson = jsonCodec(value => {
+  if (value === null || typeof value !== "object" || !("answer" in value) || typeof value.answer !== "number") {
+    throw new TypeError("expected an answer object");
+  }
+  return { answer: value.answer };
+});
 
 describe("objects", () => {
+  test("retains independent bytes when native Buffers are stored and returned", async () => {
+    const provider = new MemoryObjectsProvider();
+    const bucket = await provider.createBucket("bytes");
+    const target = { kind: "bucket" as const, bucket };
+    const metadata = { contentType: "", contentEncoding: "", cacheControl: "", contentDisposition: "",
+      contentLanguage: "", expiresUnixSeconds: undefined, user: new Map<string, string>() };
+    const input = Buffer.from([1, 2, 3]);
+    await provider.put(bucket, "record", input, metadata);
+    input[0] = 9;
+    const read = await provider.get(target, "record");
+    expect(read.body).toEqual(Uint8Array.from([1, 2, 3]));
+    read.body[0] = 8;
+    expect((await provider.get(target, "record", undefined, { start: 1, endExclusive: 3 })).body)
+      .toEqual(Uint8Array.from([2, 3]));
+  });
   test("opens the local provider without exposing provider setup", async () => {
     const bucket = await Objects.memory().createBucket("memory");
-    await bucket.put("answer", 42, jsonCodec<number>());
-    expect((await bucket.get("answer", jsonCodec<number>())).value).toBe(42);
+    await bucket.put("answer", 42, numberJson);
+    expect((await bucket.get("answer", numberJson)).value).toBe(42);
   });
 
   test("keeps values typed across versions, snapshots, ranges, and forks", async () => {
     const objects = new Objects(new MemoryObjectsProvider());
     const bucket = await objects.createBucket("artifacts", { idempotencyKey: key("create") });
-    const first = await bucket.put("result.json", { answer: 42 }, jsonCodec<{ answer: number }>(), { idempotencyKey: key("put") });
-    expect((await bucket.get("result.json", jsonCodec<{ answer: number }>())).value.answer).toBe(42);
+    const first = await bucket.put("result.json", { answer: 42 }, answerJson, { idempotencyKey: key("put") });
+    expect((await bucket.get("result.json", answerJson)).value.answer).toBe(42);
     const snapshot = await bucket.snapshot({ idempotencyKey: key("snapshot") });
-    await bucket.put("result.json", { answer: 43 }, jsonCodec<{ answer: number }>(), { condition: { kind: "ifVersion", versionId: first.versionId } });
-    expect((await snapshot.get("result.json", jsonCodec<{ answer: number }>())).value.answer).toBe(42);
+    await bucket.put("result.json", { answer: 43 }, answerJson, { condition: { kind: "ifVersion", versionId: first.versionId } });
+    expect((await snapshot.get("result.json", answerJson)).value.answer).toBe(42);
     const fork = await snapshot.fork("experiment");
-    expect((await fork.get("result.json", jsonCodec<{ answer: number }>())).value.answer).toBe(42);
+    expect((await fork.get("result.json", answerJson)).value.answer).toBe(42);
   });
 
   test("publishes multipart data only at completion", async () => {
@@ -31,8 +57,10 @@ describe("objects", () => {
     const upload = await bucket.createMultipart("parts", { metadata: { contentType: "text/plain", user: userMetadata }, idempotencyKey: createKey });
     userMetadata.set("owner", "mutated");
     await expect(bucket.createMultipart("parts", { metadata: { contentType: "application/json" }, idempotencyKey: createKey })).rejects.toMatchObject({ code: "idempotency_mismatch" });
-    const first = await upload.uploadPart(1, new TextEncoder().encode("type"), { idempotencyKey: idempotencyKey("part-one") });
-    expect(await upload.uploadPart(1, new TextEncoder().encode("type"), { idempotencyKey: idempotencyKey("part-one") })).toEqual(first);
+    const firstBody = new Uint8Array(5 * 1024 * 1024);
+    firstBody.set(new TextEncoder().encode("type"));
+    const first = await upload.uploadPart(1, firstBody, { idempotencyKey: idempotencyKey("part-one") });
+    expect(await upload.uploadPart(1, firstBody, { idempotencyKey: idempotencyKey("part-one") })).toEqual(first);
     const parts = [first, await upload.uploadPart(2, new TextEncoder().encode("safe"))];
     expect(await upload.listParts()).toEqual(parts);
     await expect(upload.complete([])).rejects.toMatchObject({ code: "invalid_part" });
@@ -40,7 +68,10 @@ describe("objects", () => {
     await expect(upload.complete([...parts].reverse())).rejects.toMatchObject({ code: "invalid_part" });
     const completed = await upload.complete(parts, { idempotencyKey: idempotencyKey("complete-upload") });
     expect(completed.metadata.user.get("owner")).toBe("creation");
-    expect(new TextDecoder().decode((await provider.get(bucket.target, "parts")).body)).toBe("typesafe");
+    const combined = (await provider.get(bucket.target, "parts")).body;
+    expect(combined.byteLength).toBe(firstBody.byteLength + 4);
+    expect(new TextDecoder().decode(combined.subarray(0, 4))).toBe("type");
+    expect(new TextDecoder().decode(combined.subarray(-4))).toBe("safe");
   });
 
   test("binds multipart operations to the complete retained upload identity", async () => {
@@ -53,7 +84,7 @@ describe("objects", () => {
     await expect(provider.listParts(forged)).rejects.toMatchObject({ code: "not_found" });
     await expect(provider.uploadPart(forged, 1, new Uint8Array([1]))).rejects.toMatchObject({ code: "not_found" });
     await expect(provider.completeMultipart(forged, [{ partNumber: 1, etag: '"AQ=="' as never, size: 1 }])).rejects.toMatchObject({ code: "not_found" });
-    await expect(provider.abortMultipart(forged)).rejects.toMatchObject({ code: "not_found" });
+    expect(await provider.abortMultipart(forged)).toBeFalse();
     expect(await second.abort()).toBeTrue();
   });
 
@@ -70,6 +101,7 @@ describe("objects", () => {
     let reads = 0;
     const accessor = Object.defineProperty({ answer: 42 }, "toJSON", { get: () => reads++ === 0 ? undefined : () => "substituted" });
     expect(() => codec.encode(accessor as never)).toThrow("must not define toJSON");
+    expect(() => answerJson.decode(new TextEncoder().encode('{"answer":"wrong"}'))).toThrow("expected an answer object");
   });
 
   test("keeps listings stable and conditions, delete markers, ranges, and replay explicit", async () => {
@@ -139,12 +171,12 @@ describe("objects", () => {
     await source.put("retained", new Uint8Array([1]), bytesCodec);
     const snapshot = await source.snapshot();
     const operation = key("destroy-snapshot");
-    await expect(provider.destroySnapshot({
+    expect(await provider.destroySnapshot({
       snapshotId: snapshot.reference.snapshotId,
       sourceBucketId: foreign.reference.bucketId,
-    }, operation)).rejects.toMatchObject({ code: "not_found" });
+    }, operation)).toBeFalse();
     expect(await snapshot.head("retained")).toMatchObject({ size: 1n });
-    expect(await snapshot.destroy({ idempotencyKey: operation })).toBeTrue();
+    expect(await snapshot.destroy({ idempotencyKey: key("destroy-valid-snapshot") })).toBeTrue();
   });
 
   test("binds snapshot listing continuations to the complete snapshot identity", async () => {
@@ -163,7 +195,7 @@ describe("objects", () => {
         sourceBucketId: foreign.reference.bucketId,
       },
     };
-    await expect(provider.list(forged, "", undefined, false, 1, first.continuation)).rejects.toMatchObject({ code: "not_found" });
+    await expect(provider.list(forged, "", undefined, false, 1, first.continuation)).rejects.toMatchObject({ code: "invalid_continuation" });
   });
 
   test("requires multipart uploads to finish or abort before bucket deletion", async () => {
@@ -177,6 +209,11 @@ describe("objects", () => {
   test("constructs the hosted client from explicit or process environment", () => {
     expect(Objects.fromEnv({ endpoint: "https://objects.example", token: "token" }).provider).toBeInstanceOf(HttpObjectsProvider);
     expect(() => Objects.fromEnv({ endpoint: "https://objects.example", token: "" })).toThrow("token is required");
+  });
+
+  test("does not expose server error bodies in transport errors", async () => {
+    const provider = new HttpObjectsProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response("reflected-secret", { status: 403 }) });
+    await expect(provider.deleteBucket({ bucketId: "id" as never, name: "x" })).rejects.toMatchObject({ message: "HTTP 403", status: 403 });
   });
 
   test("cancels oversized streaming transport responses at the configured bound", async () => {

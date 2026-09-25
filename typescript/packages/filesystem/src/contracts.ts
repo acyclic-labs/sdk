@@ -1215,30 +1215,32 @@ export interface WasmBindings {
   decodePublicationJson(valueJson: string): string;
 }
 
-export interface WasmRawWorkspaceContextRegistry {
-  registerRootJson(contextId: Uint8Array, rootsJson: string): Promise<string>;
-  registerChildJson(
+export interface RawWorkspaceContextRegistry {
+  registerRoot(contextId: Uint8Array, rootsWire: Uint8Array): Promise<Uint8Array>;
+  registerChild(
     contextId: Uint8Array,
     parentContextId: Uint8Array,
-    rootsJson: string,
-  ): Promise<string>;
-  adoptRootJson(contextId: Uint8Array, rootJson: string): Promise<string>;
-  removeRootJson(contextId: Uint8Array, rootId: Uint8Array): Promise<string>;
-  resolveJson(contextId: Uint8Array): Promise<string>;
-  setActiveJson(contextId: Uint8Array, active: boolean): Promise<string>;
-  setWorkspaceJson(
+    rootsWire: Uint8Array,
+  ): Promise<Uint8Array>;
+  adoptRoot(contextId: Uint8Array, rootWire: Uint8Array): Promise<Uint8Array>;
+  removeRoot(contextId: Uint8Array, rootId: Uint8Array): Promise<Uint8Array>;
+  resolve(contextId: Uint8Array): Promise<Uint8Array>;
+  setActive(contextId: Uint8Array, active: boolean): Promise<Uint8Array>;
+  setWorkspace(
     contextId: Uint8Array,
     rootId: Uint8Array,
     workspaceId: Uint8Array,
     workspaceName: string,
     parentWorkspaceId?: Uint8Array,
-  ): Promise<string>;
-  discardSubtreeJson(
+  ): Promise<Uint8Array>;
+  discardSubtree(
     parentContextId: Uint8Array,
     childContextId: Uint8Array,
     maximum: number,
-  ): Promise<string>;
+  ): Promise<Uint8Array>;
 }
+
+export type WasmRawWorkspaceContextRegistry = RawWorkspaceContextRegistry;
 
 export interface WasmRawFs {
   readonly capabilities: EngineCapabilities;
@@ -1277,7 +1279,7 @@ export interface WasmRawFs {
   close(): void;
 }
 
-export interface WasmRawWorkspace {
+export interface RawWorkspace<Commit, ChangeSet, JoinPlan, Self> {
   readonly name: string;
   readonly id: Uint8Array;
   head(): Promise<Uint8Array>;
@@ -1291,11 +1293,11 @@ export interface WasmRawWorkspace {
   listDirectory(path: string, after: WorkspaceName | undefined, maximumEntries: number): Promise<WorkspaceDirectoryPage>;
   readSymbolicLink(path: string): Promise<Uint8Array>;
   planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan>;
-  write(path: string, bytes: Uint8Array): Promise<unknown>;
-  remove(path: string): Promise<unknown>;
-  fork(destination: string, idempotencyKey?: Uint8Array): Promise<WasmRawWorkspace>;
-  forkAt(destination: string, generation: WasmRawGeneration): Promise<WasmRawWorkspace>;
-  beginTransaction(idempotencyKey?: Uint8Array): Promise<WasmRawTransaction>;
+  write(path: string, bytes: Uint8Array): Promise<Commit>;
+  remove(path: string): Promise<Commit>;
+  fork(destination: string, idempotencyKey?: Uint8Array): Promise<Self>;
+  forkAt(destination: string, generation: WasmRawGeneration): Promise<Self>;
+  beginTransaction(idempotencyKey?: Uint8Array): Promise<RawWorkspaceTransaction<Commit>>;
   liveRebase(
     idempotencyKey: Uint8Array | undefined,
     maximumGenerations: number,
@@ -1306,16 +1308,20 @@ export interface WasmRawWorkspace {
     from: WasmRawGeneration,
     to: WasmRawGeneration,
     maximumChanges: number,
-  ): Promise<WasmRawChangeSet>;
-  joinInto(target: WasmRawWorkspace, options: JoinOptions): Promise<WasmRawJoinPlan>;
+  ): Promise<ChangeSet>;
+  joinInto(target: Self, options: JoinOptions): Promise<JoinPlan>;
 }
 
-export interface WasmRawChangeSet {
+export interface WasmRawWorkspace extends RawWorkspace<unknown, WasmRawChangeSet, WasmRawJoinPlan, WasmRawWorkspace> {}
+
+export interface RawGenerationChangeSet<Diff> {
   readonly from: WasmRawGeneration;
   readonly to: WasmRawGeneration;
-  changes(): WasmRawGenerationDiff;
-  compose(next: WasmRawChangeSet, maximumChanges: number): Promise<WasmRawChangeSet>;
+  changes(): Diff;
+  compose(next: RawGenerationChangeSet<Diff>, maximumChanges: number): Promise<RawGenerationChangeSet<Diff>>;
 }
+
+export type WasmRawChangeSet = RawGenerationChangeSet<WasmRawGenerationDiff>;
 
 export interface WasmRawJoinPlan {
   readonly targetHead: Uint8Array;
@@ -1349,7 +1355,7 @@ export interface WasmRawGeneration {
   pin(identity: string): Promise<WasmRawGeneration>;
 }
 
-export interface WasmRawTransaction {
+export interface RawWorkspaceTransaction<Commit = unknown> {
   createDirAll(path: string): Promise<void>;
   createDirectory(path: string): Promise<void>;
   createSymbolicLink(path: string, target: Uint8Array): Promise<void>;
@@ -1364,8 +1370,10 @@ export interface WasmRawTransaction {
   preallocate(path: string, offset: bigint, length: bigint, keepSize: boolean): Promise<void>;
   cloneRange(source: string, sourceOffset: bigint, destination: string, destinationOffset: bigint, length: bigint): Promise<void>;
   rebase(maximumConflicts: number): Promise<TransactionRebaseResult>;
-  commit(): Promise<unknown>;
+  commit(): Promise<Commit>;
 }
+
+export type WasmRawTransaction = RawWorkspaceTransaction;
 
 export interface WasmRawSpeculation {
   observe(observation: ResidencyObservation): { readonly status: string; readonly rejection?: string };
@@ -1667,30 +1675,7 @@ export interface NativeBindings {
   };
 }
 
-export interface NativeRawWorkspaceContextRegistry {
-  registerRootJson(contextId: Uint8Array, rootsJson: string): Promise<string>;
-  registerChildJson(
-    contextId: Uint8Array,
-    parentContextId: Uint8Array,
-    rootsJson: string,
-  ): Promise<string>;
-  adoptRootJson(contextId: Uint8Array, rootJson: string): Promise<string>;
-  removeRootJson(contextId: Uint8Array, rootId: Uint8Array): Promise<string>;
-  resolveJson(contextId: Uint8Array): Promise<string>;
-  setActiveJson(contextId: Uint8Array, active: boolean): Promise<string>;
-  setWorkspaceJson(
-    contextId: Uint8Array,
-    rootId: Uint8Array,
-    workspaceId: Uint8Array,
-    workspaceName: string,
-    parentWorkspaceId?: Uint8Array,
-  ): Promise<string>;
-  discardSubtreeJson(
-    parentContextId: Uint8Array,
-    childContextId: Uint8Array,
-    maximum: number,
-  ): Promise<string>;
-}
+export type NativeRawWorkspaceContextRegistry = RawWorkspaceContextRegistry;
 
 export interface NativeRawWorkspaceLineageRecord {
   readonly version: number;
@@ -2168,12 +2153,7 @@ export interface NativeRawGenerationDiff {
   readonly workJson: string;
 }
 
-export interface NativeRawMergeConflict {
-  readonly kind: string;
-  readonly fileId: Uint8Array | undefined;
-  readonly directoryId: Uint8Array | undefined;
-  readonly name: NativePathComponent | undefined;
-}
+export type NativeRawMergeConflict = WasmRawMergeConflict;
 
 export interface NativeRawMergePreparation {
   readonly status: string;
@@ -2250,53 +2230,18 @@ export interface NativeRawWorkspaceCommit {
   readonly generationId: Uint8Array | undefined;
 }
 
-export interface NativeRawWorkspace {
-  readonly name: string;
-  readonly id: Uint8Array;
-  head(): Promise<Uint8Array>;
-  sync(): Promise<NativeRawGeneration>;
-  checkpoint(label: string): Promise<NativeRawGeneration>;
-  pin(identity: string): Promise<NativeRawGeneration>;
-  delete(idempotencyKey?: Uint8Array): Promise<string>;
+export interface NativeRawWorkspace extends RawWorkspace<NativeRawWorkspaceCommit, NativeRawChangeSet, NativeRawJoinPlan, NativeRawWorkspace> {
   sourceState(): Promise<NativeRawSourceResult>;
   reconcileSource(): Promise<NativeRawSourceResult>;
   rescanSource(): Promise<NativeRawSourceResult>;
   seal(): Promise<NativeRawGeneration>;
-  read(path: string, maximumBytes: bigint): Promise<Uint8Array>;
-  readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
-  stat(path: string): Promise<WorkspaceStat>;
-  listDirectory(path: string, after: WorkspaceName | undefined, maximumEntries: number): Promise<WorkspaceDirectoryPage>;
-  readSymbolicLink(path: string): Promise<Uint8Array>;
-  planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan>;
-  write(path: string, bytes: Uint8Array): Promise<NativeRawWorkspaceCommit>;
-  remove(path: string): Promise<NativeRawWorkspaceCommit>;
-  fork(destination: string, idempotencyKey?: Uint8Array): Promise<NativeRawWorkspace>;
-  forkAt(destination: string, generation: NativeRawGeneration): Promise<NativeRawWorkspace>;
-  beginTransaction(idempotencyKey?: Uint8Array): Promise<NativeRawWorkspaceTransaction>;
-  liveRebase(
-    idempotencyKey: Uint8Array | undefined,
-    maximumGenerations: number,
-    maximumChanges: number,
-    maximumConflicts: number,
-  ): Promise<NativeRawJoinResult>;
-  diff(
-    from: NativeRawGeneration,
-    to: NativeRawGeneration,
-    maximumChanges: number,
-  ): Promise<NativeRawChangeSet>;
-  joinInto(target: NativeRawWorkspace, options: JoinOptions): Promise<NativeRawJoinPlan>;
   mount(
     destination: string,
     options: NativeWorkspaceMountOptions,
   ): Promise<NativeRawWorkspaceMount>;
 }
 
-export interface NativeRawChangeSet {
-  readonly from: NativeRawGeneration;
-  readonly to: NativeRawGeneration;
-  changes(): NativeRawGenerationDiff;
-  compose(next: NativeRawChangeSet, maximumChanges: number): Promise<NativeRawChangeSet>;
-}
+export type NativeRawChangeSet = RawGenerationChangeSet<NativeRawGenerationDiff>;
 
 export interface NativeRawJoinPlan {
   readonly targetHead: Uint8Array;
@@ -2309,12 +2254,7 @@ export interface NativeRawJoinPlan {
   ): Promise<NativeRawJoinResult>;
 }
 
-export interface NativeRawJoinResult {
-  readonly status: string;
-  readonly generationId: Uint8Array | undefined;
-  readonly conflicts: readonly NativeRawMergeConflict[];
-  readonly truncated: boolean;
-}
+export type NativeRawJoinResult = WasmRawJoinResult;
 
 export interface NativeRawSourceResult {
   readonly status: string;
@@ -2322,17 +2262,7 @@ export interface NativeRawSourceResult {
   readonly generationId: Uint8Array | undefined;
 }
 
-export interface NativeRawGeneration {
-  readonly id: Uint8Array;
-  readonly workspaceId: Uint8Array;
-  read(path: string, maximumBytes: bigint): Promise<Uint8Array>;
-  readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
-  stat(path: string): Promise<WorkspaceStat>;
-  listDirectory(path: string, after: WorkspaceName | undefined, maximumEntries: number): Promise<WorkspaceDirectoryPage>;
-  readSymbolicLink(path: string): Promise<Uint8Array>;
-  planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan>;
-  pin(identity: string): Promise<NativeRawGeneration>;
-}
+export type NativeRawGeneration = WasmRawGeneration;
 
 export interface NativeRawWorkspaceMount {
   readonly path: string;
@@ -2340,23 +2270,7 @@ export interface NativeRawWorkspaceMount {
   unmount(): Promise<boolean>;
 }
 
-export interface NativeRawWorkspaceTransaction {
-  createDirAll(path: string): Promise<void>;
-  createDirectory(path: string): Promise<void>;
-  createSymbolicLink(path: string, target: Uint8Array): Promise<void>;
-  write(path: string, bytes: Uint8Array): Promise<void>;
-  remove(path: string): Promise<void>;
-  copy(source: string, destination: string): Promise<void>;
-  rename(source: string, destination: string): Promise<void>;
-  hardLink(source: string, destination: string): Promise<void>;
-  writeRange(path: string, offset: bigint, bytes: Uint8Array): Promise<void>;
-  resize(path: string, logicalBytes: bigint): Promise<void>;
-  zeroRange(path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<void>;
-  preallocate(path: string, offset: bigint, length: bigint, keepSize: boolean): Promise<void>;
-  cloneRange(source: string, sourceOffset: bigint, destination: string, destinationOffset: bigint, length: bigint): Promise<void>;
-  rebase(maximumConflicts: number): Promise<TransactionRebaseResult>;
-  commit(): Promise<NativeRawWorkspaceCommit>;
-}
+export type NativeRawWorkspaceTransaction = RawWorkspaceTransaction<NativeRawWorkspaceCommit>;
 
 export interface NativeRawSpeculation {
   observe(observation: ResidencyObservation): Promise<{ readonly status: string; readonly rejection?: string }>;

@@ -7,8 +7,11 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 #[cfg(feature = "local")]
 use std::collections::BTreeSet;
@@ -28,6 +31,33 @@ const SYSTEM_METADATA_BYTES: usize = 2 * 1_024;
 const MAX_LISTING_VIEWS: usize = 1_024;
 const MAX_CONCURRENT_BATCH_READS: usize = 16;
 static PROVIDER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(not(target_arch = "wasm32"))]
+type ListingDeadline = Instant;
+#[cfg(target_arch = "wasm32")]
+type ListingDeadline = f64;
+
+fn listing_deadline() -> ListingDeadline {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Instant::now() + Duration::from_secs(limits::LISTING_VIEW_SECONDS)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() + Duration::from_secs(limits::LISTING_VIEW_SECONDS).as_millis() as f64
+    }
+}
+
+fn listing_expired(deadline: ListingDeadline) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Instant::now() >= deadline
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() >= deadline
+    }
+}
 
 async fn indexed<F: Future>(index: usize, future: F) -> (usize, F::Output) {
     (index, future.await)
@@ -581,7 +611,7 @@ enum ListingItem {
 struct ListingView {
     binding: ListingBinding,
     objects: OrdMap<String, Vec<wire::ObjectVersion>>,
-    expires_at: Instant,
+    expires_at: ListingDeadline,
     prefetched: Option<PrefetchedListingItem>,
 }
 
@@ -755,6 +785,12 @@ pub struct MemoryObjects {
 }
 
 impl MemoryObjects {
+    /// Resolve an object descriptor without reading or buffering its body.
+    pub async fn head(&self, request: GetRequest) -> Result<wire::ObjectVersion, ObjectsError> {
+        let state = self.state.lock().await;
+        Ok(Self::resolve_version(&state, &request)?.descriptor.clone())
+    }
+
     #[cfg(feature = "local")]
     pub(crate) async fn local_body_references(&self) -> BTreeSet<LocalBodyReference> {
         let state = self.state.lock().await;
@@ -1191,7 +1227,10 @@ impl MemoryObjects {
         }
     }
 
-    fn resolve_get(state: &State, request: &GetRequest) -> Result<ResolvedGet, ObjectsError> {
+    fn resolve_version<'a>(
+        state: &'a State,
+        request: &GetRequest,
+    ) -> Result<&'a Version, ObjectsError> {
         Self::validate_key(&request.object_key)?;
         let bucket = Self::target_ref(state, &request.target)?;
         let version = Self::visible(bucket, &request.object_key, request.version_id.as_deref())?;
@@ -1206,6 +1245,11 @@ impl MemoryObjects {
         {
             return Err(ObjectsError::PreconditionFailed);
         }
+        Ok(version)
+    }
+
+    fn resolve_get(state: &State, request: &GetRequest) -> Result<ResolvedGet, ObjectsError> {
+        let version = Self::resolve_version(state, request)?;
         let descriptor = version.descriptor.clone();
         let body = version.body.clone().ok_or(ObjectsError::NotFound)?;
         let (start, end) = match request.range {
@@ -1928,8 +1972,9 @@ impl ObjectsProvider for MemoryObjects {
         }
         let mut state = self.state.lock().await;
         if continuation.is_none() {
-            let now = Instant::now();
-            state.listings.retain(|_, view| now < view.expires_at);
+            state
+                .listings
+                .retain(|_, view| !listing_expired(view.expires_at));
         }
         let binding = ListingBinding {
             target: target.clone(),
@@ -1949,7 +1994,7 @@ impl ObjectsProvider for MemoryObjects {
                 ListingView {
                     binding: binding.clone(),
                     objects,
-                    expires_at: Instant::now() + Duration::from_secs(limits::LISTING_VIEW_SECONDS),
+                    expires_at: listing_deadline(),
                     prefetched: None,
                 },
             );
@@ -1965,7 +2010,7 @@ impl ObjectsProvider for MemoryObjects {
         if state
             .listings
             .get(&view_id)
-            .is_some_and(|view| Instant::now() >= view.expires_at)
+            .is_some_and(|view| listing_expired(view.expires_at))
         {
             state.listings.remove(&view_id);
             return Err(ObjectsError::Invalid("invalid continuation"));
@@ -2256,11 +2301,16 @@ impl ObjectsProvider for MemoryObjects {
             },
             MutationOutcome::Version,
             |state| {
+                let matches = state.multiparts.get(&upload_id).is_some_and(|upload| {
+                    upload.bucket == bucket && upload.object_key == object_key
+                });
+                if !matches {
+                    return Err(ObjectsError::NotFound);
+                }
                 let upload = state
                     .multiparts
                     .remove(&upload_id)
-                    .filter(|upload| upload.bucket == bucket && upload.object_key == object_key)
-                    .ok_or(ObjectsError::NotFound)?;
+                    .ok_or(ObjectsError::Unavailable)?;
                 let exact = upload.parts.values().map(|(part, _)| part).eq(parts.iter());
                 let sizes_valid = parts.iter().enumerate().all(|(index, part)| {
                     index + 1 == parts.len() || part.size >= limits::MIN_MULTIPART_PART_BYTES
@@ -2433,6 +2483,23 @@ mod tests {
                 .map(|value| &value.body[..]),
             Some(b"abc".as_slice())
         );
+    }
+
+    #[tokio::test]
+    async fn head_resolves_metadata_without_body_capacity() {
+        let (store, bucket) = MemoryObjects::with_default_bucket();
+        let version = put(&store, &bucket, "large", b"body", None).await;
+        let request = GetRequest {
+            target: ReadTarget::Bucket(bucket),
+            object_key: "large".into(),
+            version_id: None,
+            range: None,
+            if_match: None,
+            if_none_match: None,
+            maximum_bytes: 0,
+        };
+        assert_eq!(store.head(request.clone()).await, Ok(version));
+        assert_eq!(store.get(request).await, Err(ObjectsError::Capacity));
     }
 
     #[tokio::test]

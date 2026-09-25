@@ -5,7 +5,7 @@ use crate::kernel::{
     NameEncoding, TreeEntry,
 };
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
-use crate::wire::{filesystem::v2 as wire, harness::v1 as harness};
+use crate::wire::{filesystem::v2 as wire, harness::v2 as harness};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest,
     DurableCommit, ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory,
@@ -2001,11 +2001,12 @@ fn commit_message<A, O>(value: TransactionCommit<A, O>) -> wire::MutationRespons
 fn join_message<A, O>(value: JoinOutcome<A, O>) -> wire::JoinResponse {
     match value {
         JoinOutcome::Applied(generation) => {
-            join_response(wire::JoinStatus::Applied, Some(&generation))
+            join_response(wire::JoinStatus::Applied, Some(generation.generation()))
         }
-        JoinOutcome::AlreadyApplied(generation) => {
-            join_response(wire::JoinStatus::AlreadyApplied, Some(&generation))
-        }
+        JoinOutcome::AlreadyApplied(generation) => join_response(
+            wire::JoinStatus::AlreadyApplied,
+            Some(generation.generation()),
+        ),
         JoinOutcome::NoChanges(generation) => {
             join_response(wire::JoinStatus::NoChanges, Some(&generation))
         }

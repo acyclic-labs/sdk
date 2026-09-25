@@ -883,9 +883,10 @@ where
         }
         let outcome = outcome?;
         match outcome {
-            JoinOutcome::Applied(generation)
-            | JoinOutcome::AlreadyApplied(generation)
-            | JoinOutcome::NoChanges(generation) => Ok(generation.id()),
+            JoinOutcome::Applied(generation) | JoinOutcome::AlreadyApplied(generation) => {
+                Ok(generation.generation().id())
+            }
+            JoinOutcome::NoChanges(generation) => Ok(generation.id()),
             _ => Err(WorkspaceMultiRootPublisherError::Candidate(
                 "conflict projection did not produce a generation".to_owned(),
             )),
@@ -1134,11 +1135,12 @@ where
             )
             .await?
         {
-            JoinOutcome::Applied(generation) | JoinOutcome::NoChanges(generation) => {
-                MultiRootPublishRoot::Published(generation.id())
+            JoinOutcome::Applied(generation) => {
+                MultiRootPublishRoot::Published(generation.generation().id())
             }
+            JoinOutcome::NoChanges(generation) => MultiRootPublishRoot::Published(generation.id()),
             JoinOutcome::AlreadyApplied(generation) => {
-                MultiRootPublishRoot::AlreadyPublished(generation.id())
+                MultiRootPublishRoot::AlreadyPublished(generation.generation().id())
             }
             JoinOutcome::StaleTarget(_)
             | JoinOutcome::Fenced

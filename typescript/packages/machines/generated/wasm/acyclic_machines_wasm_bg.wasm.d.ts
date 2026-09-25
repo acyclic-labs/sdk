@@ -1,0 +1,36 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_simulatedmachinesbinding_free: (a: number, b: number) => void;
+export const normalizeIdentityBytes: (a: number, b: number) => [number, number, number, number];
+export const simulatedmachinesbinding_cancel: (a: number, b: number, c: number) => any;
+export const simulatedmachinesbinding_checkpoint: (a: number, b: number, c: number, d: number, e: number) => any;
+export const simulatedmachinesbinding_create: (a: number, b: number, c: number) => any;
+export const simulatedmachinesbinding_destroy_checkpoint: (a: number, b: number, c: number, d: number, e: number) => any;
+export const simulatedmachinesbinding_destroy_machine: (a: number, b: number, c: number, d: number, e: number) => any;
+export const simulatedmachinesbinding_events: (a: number, b: number, c: number, d: number, e: bigint, f: number) => any;
+export const simulatedmachinesbinding_fork: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+export const simulatedmachinesbinding_inspect_checkpoint: (a: number, b: number, c: number) => any;
+export const simulatedmachinesbinding_inspect_machine: (a: number, b: number, c: number) => any;
+export const simulatedmachinesbinding_inspect_operation: (a: number, b: number, c: number) => any;
+export const simulatedmachinesbinding_list_machines: (a: number, b: number, c: number, d: number) => any;
+export const simulatedmachinesbinding_new: () => number;
+export const simulatedmachinesbinding_qualify_image: (a: number, b: number, c: number) => any;
+export const simulatedmachinesbinding_recover: (a: number, b: number, c: number) => any;
+export const simulatedmachinesbinding_recover_operation: (a: number, b: number, c: number) => any;
+export const simulatedmachinesbinding_set_suspension_policy: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+export const simulatedmachinesbinding_suspend: (a: number, b: number, c: number, d: number, e: number) => any;
+export const simulatedmachinesbinding_usage: (a: number, b: number, c: number, d: bigint, e: bigint) => any;
+export const simulatedmachinesbinding_wake: (a: number, b: number, c: number, d: number, e: number) => any;
+export const simulatedmachinesbinding_watch_operation: (a: number, b: number, c: number) => any;
+export const wasm_bindgen__convert__closures_____invoke__hb8d912187548315f: (a: number, b: number, c: any) => [number, number];
+export const wasm_bindgen__convert__closures_____invoke__h047b78ef43e1ae53: (a: number, b: number, c: any, d: any) => void;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_destroy_closure: (a: number, b: number) => void;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_start: () => void;

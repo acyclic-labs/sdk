@@ -15,6 +15,6 @@ console.log(await machines.qualifyImage(image));
 console.log(machines.assurance); // "process-local-simulation"
 ```
 
-Use `HttpMachinesProvider` for an authenticated HTTPS service. Qualify an immutable image before creating a machine, retain idempotency keys for recovery, and inspect operations whose outcome is indeterminate. The simulator is for contract tests: it does **not** execute an OS, isolate workloads, provide durability, or offer service availability. A hosted provider must document its own guarantees.
+Use `HttpMachinesProvider` for an authenticated HTTPS service. Qualify an immutable image before creating a machine, retain idempotency keys for recovery, and inspect operations whose outcome is indeterminate. The simulator runs the canonical Rust state machine through WebAssembly. Its request and result boundary uses generated Machines protobuf; TypeScript projects those messages into the ergonomic public API and validates identities and observations. String identity aliases are normalized by Rust. The simulator is for contract tests: it does **not** execute an OS, isolate workloads, provide durability, or offer service availability. A hosted provider must document its own guarantees.
 
 [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/machines/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/machines)

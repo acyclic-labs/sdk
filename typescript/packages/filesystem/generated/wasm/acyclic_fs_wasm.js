@@ -1481,6 +1481,70 @@ export class BrowserGeneration {
 if (Symbol.dispose) BrowserGeneration.prototype[Symbol.dispose] = BrowserGeneration.prototype.free;
 
 /**
+ * Browser-safe Git-shaped compatibility history over the canonical Rust state machine.
+ */
+export class BrowserGitCompatRepository {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        BrowserGitCompatRepositoryFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_browsergitcompatrepository_free(ptr, 0);
+    }
+    /**
+     * Parses and executes a Git-shaped argv command using the Rust source of truth.
+     * @param {string[]} argv
+     * @param {Uint8Array} workspace_generation
+     * @param {string} default_author
+     * @param {bigint} now_seconds
+     * @returns {Promise<string>}
+     */
+    executeArgvJson(argv, workspace_generation, default_author, now_seconds) {
+        const ptr0 = passArrayJsValueToWasm0(argv, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(workspace_generation, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(default_author, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.browsergitcompatrepository_executeArgvJson(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, now_seconds);
+        return ret;
+    }
+    /**
+     * Executes one typed command encoded with the public serde contract.
+     * @param {string} command_json
+     * @param {Uint8Array} workspace_generation
+     * @returns {Promise<string>}
+     */
+    executeJson(command_json, workspace_generation) {
+        const ptr0 = passStringToWasm0(command_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(workspace_generation, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browsergitcompatrepository_executeJson(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    /**
+     * Creates process-local compatibility state for one SDK workspace.
+     * @param {Uint8Array} workspace_id
+     */
+    constructor(workspace_id) {
+        const ptr0 = passArray8ToWasm0(workspace_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browsergitcompatrepository_new(ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0] >>> 0;
+        BrowserGitCompatRepositoryFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) BrowserGitCompatRepository.prototype[Symbol.dispose] = BrowserGitCompatRepository.prototype.free;
+
+/**
  * One immutable, side-effect-free workspace join plan.
  */
 export class BrowserJoinPlan {
@@ -2409,6 +2473,413 @@ export class BrowserWorkspace {
 if (Symbol.dispose) BrowserWorkspace.prototype[Symbol.dispose] = BrowserWorkspace.prototype.free;
 
 /**
+ * Browser-safe recursive multi-root context registry.
+ */
+export class BrowserWorkspaceContextRegistry {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        BrowserWorkspaceContextRegistryFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_browserworkspacecontextregistry_free(ptr, 0);
+    }
+    /**
+     * Adopts one parent-authorized root without enumerating its contents.
+     * @param {Uint8Array} context_id
+     * @param {Uint8Array} root_wire
+     * @returns {Promise<Uint8Array>}
+     */
+    adoptRoot(context_id, root_wire) {
+        const ptr0 = passArray8ToWasm0(context_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(root_wire, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browserworkspacecontextregistry_adoptRoot(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    /**
+     * Recursively tombstones a direct-child subtree.
+     * @param {Uint8Array} parent_context_id
+     * @param {Uint8Array} child_context_id
+     * @param {number} maximum
+     * @returns {Promise<Uint8Array>}
+     */
+    discardSubtree(parent_context_id, child_context_id, maximum) {
+        const ptr0 = passArray8ToWasm0(parent_context_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(child_context_id, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browserworkspacecontextregistry_discardSubtree(this.__wbg_ptr, ptr0, len0, ptr1, len1, maximum);
+        return ret;
+    }
+    /**
+     * Creates an in-process registry. Host persistence can be injected by
+     * the JavaScript embedding when it is available.
+     */
+    constructor() {
+        const ret = wasm.browserworkspacecontextregistry_new();
+        this.__wbg_ptr = ret >>> 0;
+        BrowserWorkspaceContextRegistryFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Registers an exact direct child from the shared serde contract.
+     * @param {Uint8Array} context_id
+     * @param {Uint8Array} parent_context_id
+     * @param {Uint8Array} roots_wire
+     * @returns {Promise<Uint8Array>}
+     */
+    registerChild(context_id, parent_context_id, roots_wire) {
+        const ptr0 = passArray8ToWasm0(context_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(parent_context_id, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray8ToWasm0(roots_wire, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.browserworkspacecontextregistry_registerChild(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        return ret;
+    }
+    /**
+     * Registers one root context from the shared serde contract.
+     * @param {Uint8Array} context_id
+     * @param {Uint8Array} roots_wire
+     * @returns {Promise<Uint8Array>}
+     */
+    registerRoot(context_id, roots_wire) {
+        const ptr0 = passArray8ToWasm0(context_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(roots_wire, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browserworkspacecontextregistry_registerRoot(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    /**
+     * Releases one root after callers have settled its filesystem changes.
+     * @param {Uint8Array} context_id
+     * @param {Uint8Array} root_id
+     * @returns {Promise<Uint8Array>}
+     */
+    removeRoot(context_id, root_id) {
+        const ptr0 = passArray8ToWasm0(context_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(root_id, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browserworkspacecontextregistry_removeRoot(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    /**
+     * Resolves one context as stable JSON.
+     * @param {Uint8Array} context_id
+     * @returns {Promise<Uint8Array>}
+     */
+    resolve(context_id) {
+        const ptr0 = passArray8ToWasm0(context_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserworkspacecontextregistry_resolve(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * Freezes or resumes one durable context.
+     * @param {Uint8Array} context_id
+     * @param {boolean} active
+     * @returns {Promise<Uint8Array>}
+     */
+    setActive(context_id, active) {
+        const ptr0 = passArray8ToWasm0(context_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserworkspacecontextregistry_setActive(this.__wbg_ptr, ptr0, len0, active);
+        return ret;
+    }
+    /**
+     * Advances one root binding after a compatibility branch switch.
+     * @param {Uint8Array} context_id
+     * @param {Uint8Array} root_id
+     * @param {Uint8Array} workspace_id
+     * @param {string} workspace_name
+     * @param {Uint8Array | null} [parent_workspace_id]
+     * @returns {Promise<Uint8Array>}
+     */
+    setWorkspace(context_id, root_id, workspace_id, workspace_name, parent_workspace_id) {
+        const ptr0 = passArray8ToWasm0(context_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(root_id, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray8ToWasm0(workspace_id, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(workspace_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        var ptr4 = isLikeNone(parent_workspace_id) ? 0 : passArray8ToWasm0(parent_workspace_id, wasm.__wbindgen_malloc);
+        var len4 = WASM_VECTOR_LEN;
+        const ret = wasm.browserworkspacecontextregistry_setWorkspace(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
+        return ret;
+    }
+}
+if (Symbol.dispose) BrowserWorkspaceContextRegistry.prototype[Symbol.dispose] = BrowserWorkspaceContextRegistry.prototype.free;
+
+/**
+ * Decodes a versioned merge-candidate envelope to its canonical payload.
+ * @param {string} value_json
+ * @returns {string}
+ */
+export function decodeMergeCandidateJson(value_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.decodeMergeCandidateJson(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Decodes a versioned merge-plan envelope to its canonical payload.
+ * @param {string} value_json
+ * @returns {string}
+ */
+export function decodeMergePlanJson(value_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.decodeMergePlanJson(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Decodes a multi-root candidate envelope to its canonical payload.
+ * @param {string} value_json
+ * @returns {string}
+ */
+export function decodeMultiRootCandidateJson(value_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.decodeMultiRootCandidateJson(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Decodes a versioned multi-root plan envelope to its canonical payload.
+ * @param {string} value_json
+ * @returns {string}
+ */
+export function decodeMultiRootPlanJson(value_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.decodeMultiRootPlanJson(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Decodes a versioned publication envelope to its canonical payload.
+ * @param {string} value_json
+ * @returns {string}
+ */
+export function decodePublicationJson(value_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.decodePublicationJson(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Encodes a merge-candidate payload in the versioned compatibility envelope.
+ * @param {string} value_json
+ * @returns {string}
+ */
+export function encodeMergeCandidateJson(value_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.encodeMergeCandidateJson(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Encodes a merge-plan payload in the versioned compatibility envelope.
+ * @param {string} value_json
+ * @returns {string}
+ */
+export function encodeMergePlanJson(value_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.encodeMergePlanJson(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Encodes a multi-root candidate payload in the compatibility envelope.
+ * @param {string} value_json
+ * @returns {string}
+ */
+export function encodeMultiRootCandidateJson(value_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.encodeMultiRootCandidateJson(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Encodes a multi-root plan payload in the versioned compatibility envelope.
+ * @param {string} value_json
+ * @returns {string}
+ */
+export function encodeMultiRootPlanJson(value_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.encodeMultiRootPlanJson(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Encodes a publication payload in the versioned compatibility envelope.
+ * @param {string} value_json
+ * @returns {string}
+ */
+export function encodePublicationJson(value_json) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.encodePublicationJson(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * Opens transactional browser storage with explicit `IndexedDB` or OPFS immutable objects.
  *
  * # Errors
@@ -2653,7 +3124,7 @@ function __wbg_get_imports() {
             const ret = arg0.getFile();
             return ret;
         },
-        __wbg_getRandomValues_da0bc38849d33d2c: function() { return handleError(function (arg0, arg1) {
+        __wbg_getRandomValues_696b3d8d7a0bb3f9: function() { return handleError(function (arg0, arg1) {
             globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
         }, arguments); },
         __wbg_get_4848e350b40afc16: function(arg0, arg1) {
@@ -2899,7 +3370,7 @@ function __wbg_get_imports() {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return wasm_bindgen__convert__closures_____invoke__h2a4eb6287a5d90bc(a, state0.b, arg0, arg1);
+                        return wasm_bindgen__convert__closures_____invoke__h084ada5e0839d1da(a, state0.b, arg0, arg1);
                     } finally {
                         state0.a = a;
                     }
@@ -2922,7 +3393,7 @@ function __wbg_get_imports() {
             const ret = arg0.next();
             return ret;
         }, arguments); },
-        __wbg_now_03a4a79284fc30a9: function() { return handleError(function () {
+        __wbg_now_5b0efd3371c42a23: function() { return handleError(function () {
             const ret = Date.now();
             return ret;
         }, arguments); },
@@ -2983,6 +3454,9 @@ function __wbg_get_imports() {
         },
         __wbg_set_create_4b5cddb7e7c14744: function(arg0, arg1) {
             arg0.create = arg1 !== 0;
+        },
+        __wbg_set_name_ab9c98596fd7310a: function(arg0, arg1, arg2) {
+            arg0.name = getStringFromWasm0(arg1, arg2);
         },
         __wbg_set_onabort_6b6df7a41aa97c23: function(arg0, arg1) {
             arg0.onabort = arg1;
@@ -3075,23 +3549,23 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 735, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hbda0b83ef83cb943);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 830, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 716, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h700ae9e05bdefaac);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 807, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hcde0fc9492c2469e);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 2, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h185cdad2072ccc5c);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 3, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hf5e4aa787d932a81);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 715, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__ha10a2157f63fc2da);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 808, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h8c4440071a39f37a);
             return ret;
         },
         __wbindgen_cast_0000000000000005: function(arg0) {
@@ -3142,30 +3616,30 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__ha10a2157f63fc2da(arg0, arg1) {
-    wasm.wasm_bindgen__convert__closures_____invoke__ha10a2157f63fc2da(arg0, arg1);
+function wasm_bindgen__convert__closures_____invoke__h8c4440071a39f37a(arg0, arg1) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h8c4440071a39f37a(arg0, arg1);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h700ae9e05bdefaac(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h700ae9e05bdefaac(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__hcde0fc9492c2469e(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__hcde0fc9492c2469e(arg0, arg1, arg2);
 }
 
-function wasm_bindgen__convert__closures_____invoke__hbda0b83ef83cb943(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__hbda0b83ef83cb943(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__h185cdad2072ccc5c(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h185cdad2072ccc5c(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__hf5e4aa787d932a81(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__hf5e4aa787d932a81(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__h2a4eb6287a5d90bc(arg0, arg1, arg2, arg3) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h2a4eb6287a5d90bc(arg0, arg1, arg2, arg3);
+function wasm_bindgen__convert__closures_____invoke__h084ada5e0839d1da(arg0, arg1, arg2, arg3) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h084ada5e0839d1da(arg0, arg1, arg2, arg3);
 }
 
 
@@ -3185,6 +3659,9 @@ const BrowserFsFinalization = (typeof FinalizationRegistry === 'undefined')
 const BrowserGenerationFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browsergeneration_free(ptr >>> 0, 1));
+const BrowserGitCompatRepositoryFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_browsergitcompatrepository_free(ptr >>> 0, 1));
 const BrowserJoinPlanFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserjoinplan_free(ptr >>> 0, 1));
@@ -3206,6 +3683,9 @@ const BrowserVolumeFinalization = (typeof FinalizationRegistry === 'undefined')
 const BrowserWorkspaceFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserworkspace_free(ptr >>> 0, 1));
+const BrowserWorkspaceContextRegistryFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_browserworkspacecontextregistry_free(ptr >>> 0, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
@@ -3359,6 +3839,16 @@ function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
     WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayJsValueToWasm0(array, malloc) {
+    const ptr = malloc(array.length * 4, 4) >>> 0;
+    for (let i = 0; i < array.length; i++) {
+        const add = addToExternrefTable0(array[i]);
+        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
+    }
+    WASM_VECTOR_LEN = array.length;
     return ptr;
 }
 

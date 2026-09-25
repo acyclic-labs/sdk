@@ -89,10 +89,10 @@ export interface ObjectsProvider {
 export interface MultipartUpload { readonly uploadId: UploadId; readonly bucket: BucketRef; readonly objectKey: string; readonly metadata: ObjectMetadata }
 export interface UploadedPart { readonly partNumber: number; readonly etag: ETag; readonly size: number }
 export interface MultipartProvider {
-  createMultipart(bucket: BucketRef, objectKey: string, metadata: ObjectMetadata, idempotencyKey?: IdempotencyKey): Promise<MultipartUpload>;
+  createMultipart(bucket: BucketRef, objectKey: string, metadata: ObjectMetadata, condition?: Condition, idempotencyKey?: IdempotencyKey): Promise<MultipartUpload>;
   uploadPart(upload: MultipartUpload, partNumber: number, body: Uint8Array, idempotencyKey?: IdempotencyKey): Promise<UploadedPart>;
   listParts(upload: MultipartUpload): Promise<readonly UploadedPart[]>;
-  completeMultipart(upload: MultipartUpload, parts: readonly UploadedPart[], condition?: Condition, idempotencyKey?: IdempotencyKey): Promise<ObjectVersion>;
+  completeMultipart(upload: MultipartUpload, parts: readonly UploadedPart[], idempotencyKey?: IdempotencyKey): Promise<ObjectVersion>;
   abortMultipart(upload: MultipartUpload, idempotencyKey?: IdempotencyKey): Promise<boolean>;
 }
 

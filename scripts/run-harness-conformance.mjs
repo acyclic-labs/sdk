@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { compatibilityArtifacts } from "./generated-bindings.mjs";
 
 if (process.argv.length !== 5) {
   throw new Error("usage: run-harness-conformance.mjs ARTIFACT_DIR REPORT.json RECEIPT.json");
@@ -45,7 +46,7 @@ if (
 ) {
   throw new Error("package test transcript digests do not match the executed cases");
 }
-const suiteBytes = readFileSync("conformance/vectors/core.json");
+const suiteBytes = readFileSync(compatibilityArtifacts.harness.conformanceDigest);
 const suite = JSON.parse(suiteBytes.toString("utf8"));
 
 const artifacts = readdirSync(artifactDirectory)

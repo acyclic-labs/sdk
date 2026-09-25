@@ -1,7 +1,8 @@
 //! Deterministic durable scheduling and structured orchestration semantics.
 
 use crate::{
-    Error, OperationId, Outcome, Result, TaskId, core::Authority, resources::CheckpointRef,
+    Error, OperationId, Outcome, Result, TaskId, conversation::FileRef, core::Authority,
+    resources::CheckpointRef,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -108,12 +109,12 @@ pub struct OperationSpec {
     pub dependencies: BTreeSet<OperationId>,
     /// Logical capacity requirements.
     pub resources: ResourceRequest,
-    /// Provider-neutral placement constraints.
-    pub placement: Value,
+    /// Small provider-neutral placement labels, not process or file content.
+    pub placement: BTreeMap<String, String>,
     /// Orchestration behavior.
     pub orchestration: Orchestration,
-    /// Schema-defined initial state.
-    pub state: Value,
+    /// Immutable, provider-owned initial state bytes.
+    pub state: FileRef,
 }
 
 /// Durable lifecycle phase.
@@ -177,7 +178,7 @@ pub struct OperationState {
     /// Latest durable resumable checkpoint.
     pub checkpoint: Option<CheckpointRef>,
     /// Terminal result when known.
-    pub outcome: Option<Outcome<Value>>,
+    pub outcome: Option<Outcome<FileRef>>,
     /// Whether cancellation was requested but not yet observed.
     pub cancellation_requested: bool,
     /// Per-operation fencing revision advanced by every committed mutation.
@@ -261,7 +262,7 @@ pub enum SchedulerEvent {
         /// Observed operation.
         operation_id: OperationId,
         /// Terminal or uncertain outcome.
-        outcome: Outcome<Value>,
+        outcome: Outcome<FileRef>,
         /// Required for worker-owned completion; absent for reconciliation/cancellation.
         fence: Option<LeaseFence>,
     },
@@ -272,12 +273,12 @@ pub enum SchedulerEvent {
         /// Parent revision observed while computing the decision.
         expected_revision: u64,
         /// Parent terminal outcome.
-        outcome: Outcome<Value>,
+        outcome: Outcome<FileRef>,
         /// Nonterminal losers to cancel.
         cancel: Vec<OperationId>,
         /// Exact reducer contract for reduce decisions only.
         reducer: Option<EntrypointRef>,
-        /// Digest of the exact ordered reducer invocation for reduce decisions only.
+        /// Digest of exact ordered inputs for materialized joins, quorums, or reduction.
         reduction_digest: Option<[u8; 32]>,
     },
 }
@@ -312,6 +313,20 @@ impl Scheduler {
         if spec.entrypoint.name.trim().is_empty() || spec.entrypoint.version.trim().is_empty() {
             return Err(Error::Invalid(
                 "durable entrypoint name and version are required".into(),
+            ));
+        }
+        spec.state.validate()?;
+        if spec.placement.len() > 32
+            || spec.placement.iter().any(|(key, value)| {
+                key.is_empty()
+                    || key.len() > 255
+                    || value.len() > 255
+                    || key.chars().any(char::is_control)
+                    || value.chars().any(char::is_control)
+            })
+        {
+            return Err(Error::Invalid(
+                "placement labels exceed scheduler limits".into(),
             ));
         }
         jsonschema::validator_for(&spec.entrypoint.result_schema).map_err(|error| {
@@ -356,9 +371,20 @@ impl Scheduler {
         })
     }
 
-    /// Returns dependency-ready operations whose requests fit the supplied capacity.
+    /// Returns unplaced dependency-ready operations whose requests fit capacity.
+    /// Use `ready_for` when the worker advertises placement labels.
     #[must_use]
     pub fn ready(&self, capacity: &ResourceSnapshot) -> Vec<OperationId> {
+        self.ready_for(capacity, &BTreeMap::new())
+    }
+
+    /// Returns ready operations whose required placement labels match a worker.
+    #[must_use]
+    pub fn ready_for(
+        &self,
+        capacity: &ResourceSnapshot,
+        labels: &BTreeMap<String, String>,
+    ) -> Vec<OperationId> {
         self.operations
             .values()
             .filter(|operation| {
@@ -367,6 +393,11 @@ impl Scheduler {
                     OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
                 ) && self.dependencies_succeeded(operation)
                     && !operation.cancellation_requested
+                    && operation
+                        .spec
+                        .placement
+                        .iter()
+                        .all(|(key, value)| labels.get(key) == Some(value))
                     && remaining_resources(operation).fits(capacity)
             })
             .map(|operation| operation.spec.operation_id)
@@ -694,6 +725,9 @@ impl Scheduler {
                 outcome,
                 fence,
             } => {
+                if let Outcome::Succeeded(reference) = &outcome {
+                    reference.validate()?;
+                }
                 let operation = self.mutable(operation_id)?;
                 if operation.phase == OperationPhase::Terminal {
                     if operation.outcome.as_ref() == Some(&outcome) {
@@ -752,6 +786,9 @@ impl Scheduler {
                 reducer,
                 reduction_digest,
             } => {
+                if let Outcome::Succeeded(reference) = &outcome {
+                    reference.validate()?;
+                }
                 let parent = self
                     .operations
                     .get(&operation_id)
@@ -770,6 +807,15 @@ impl Scheduler {
                         && planned_cancel == cancel
                         && reducer.is_none()
                         && reduction_digest.is_none() => {}
+                    OrchestrationDecision::Assemble {
+                        assembly,
+                        values,
+                        cancel: planned_cancel,
+                    } if matches!(outcome, Outcome::Succeeded(_))
+                        && planned_cancel == cancel
+                        && reducer.is_none()
+                        && reduction_digest
+                            == Some(assembly_invocation_digest(assembly, &values)?) => {}
                     OrchestrationDecision::Reduce {
                         reducer: planned,
                         values,
@@ -777,8 +823,7 @@ impl Scheduler {
                         && reducer.as_ref() == Some(&planned)
                         && !matches!(outcome, Outcome::Indeterminate { .. })
                         && reduction_digest
-                            == Some(reduction_invocation_digest(&planned, &values)?)
-                        && validate_outcome_schema(&planned.result_schema, &outcome).is_ok() => {}
+                            == Some(reduction_invocation_digest(&planned, &values)?) => {}
                     _ => {
                         return Err(Error::Conflict(
                             "orchestration decision no longer matches".into(),
@@ -861,6 +906,11 @@ impl Scheduler {
         let Some(parent_state) = self.operations.get(&parent) else {
             return OrchestrationDecision::Wait;
         };
+        if parent_state.phase != OperationPhase::WaitingForChildren
+            || parent_state.cancellation_requested
+        {
+            return OrchestrationDecision::Wait;
+        }
         let children = self.children(parent).collect::<Vec<_>>();
         if children.is_empty() {
             return OrchestrationDecision::Wait;
@@ -926,10 +976,14 @@ impl Scheduler {
                     })
                     .collect::<Vec<_>>();
                 if successes.len() >= *required as usize {
-                    return OrchestrationDecision::Complete {
-                        outcome: Outcome::Succeeded(Value::Array(
-                            successes.into_iter().take(*required as usize).collect(),
-                        )),
+                    return OrchestrationDecision::Assemble {
+                        assembly: AssemblyKind::Quorum,
+                        values: successes
+                            .into_iter()
+                            .take(*required as usize)
+                            .enumerate()
+                            .map(|(index, value)| (index.to_string(), value))
+                            .collect(),
                         cancel: children
                             .iter()
                             .filter_map(|(_, child)| {
@@ -1088,8 +1142,17 @@ pub enum OrchestrationDecision {
     /// Parent may commit this outcome and request loser cancellation.
     Complete {
         /// Derived parent outcome.
-        outcome: Outcome<Value>,
+        outcome: Outcome<FileRef>,
         /// Nonterminal children to cancel.
+        cancel: Vec<OperationId>,
+    },
+    /// Materialize an ordered aggregate before publishing its result reference.
+    Assemble {
+        /// Join preserves child slots; quorum emits values in completion order.
+        assembly: AssemblyKind,
+        /// Exact ordered child success references.
+        values: Vec<(String, FileRef)>,
+        /// Nonterminal quorum losers to cancel.
         cancel: Vec<OperationId>,
     },
     /// Invoke the pinned reducer with values in stable child-slot order.
@@ -1097,8 +1160,18 @@ pub enum OrchestrationDecision {
         /// Versioned reducer implementation.
         reducer: EntrypointRef,
         /// Ordered `(slot, value)` inputs.
-        values: Vec<(String, Value)>,
+        values: Vec<(String, FileRef)>,
     },
+}
+
+/// Deterministic aggregate encoding selected by an orchestration plan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssemblyKind {
+    /// Ordered child-slot objects with `slot` and resolved JSON `value`.
+    Join,
+    /// Ordered successful JSON values selected by completion order.
+    Quorum,
 }
 
 fn complete_ordered(
@@ -1109,7 +1182,7 @@ fn complete_ordered(
     for (slot, child) in children {
         match &child.outcome {
             Some(Outcome::Succeeded(value)) => {
-                values.push(serde_json::json!({"slot": slot, "value": value}));
+                values.push(((*slot).to_owned(), value.clone()));
             }
             Some(Outcome::Failed { message }) => {
                 return OrchestrationDecision::Complete {
@@ -1136,8 +1209,9 @@ fn complete_ordered(
             None => return OrchestrationDecision::Wait,
         }
     }
-    OrchestrationDecision::Complete {
-        outcome: Outcome::Succeeded(Value::Array(values)),
+    OrchestrationDecision::Assemble {
+        assembly: AssemblyKind::Join,
+        values,
         cancel: Vec::new(),
     }
 }
@@ -1167,23 +1241,17 @@ fn require_fence(operation: &OperationState, fence: &LeaseFence) -> Result<()> {
 /// Canonical identity of one exact versioned reducer invocation.
 pub fn reduction_invocation_digest(
     reducer: &EntrypointRef,
-    values: &[(String, Value)],
+    values: &[(String, FileRef)],
 ) -> Result<[u8; 32]> {
-    let bytes = serde_json::to_vec(&(reducer, values))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(*blake3::hash(&bytes).as_bytes())
+    crate::contract::canonical_json_digest(&(reducer, values))
 }
 
-fn validate_outcome_schema(schema: &Value, outcome: &Outcome<Value>) -> Result<()> {
-    if let Outcome::Succeeded(value) = outcome {
-        jsonschema::validator_for(schema)
-            .map_err(|error| Error::Invalid(format!("invalid reducer result schema: {error}")))?
-            .validate(value)
-            .map_err(|error| {
-                Error::Invalid(format!("reducer result failed validation: {error}"))
-            })?;
-    }
-    Ok(())
+/// Stable identity for the exact aggregate inputs and encoding rule.
+pub fn assembly_invocation_digest(
+    kind: AssemblyKind,
+    values: &[(String, FileRef)],
+) -> Result<[u8; 32]> {
+    crate::contract::canonical_json_digest(&(kind, values))
 }
 
 fn event_operation(event: &SchedulerEvent) -> OperationId {
@@ -1203,45 +1271,44 @@ fn event_operation(event: &SchedulerEvent) -> OperationId {
     }
 }
 
-/// One durable typed inbox item with a gapless per-task sequence.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct InboxItem<T> {
+/// One ref-only durable inbox item with a gapless per-task sequence.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InboxItem {
     /// Owning task.
     pub task_id: TaskId,
     /// Gapless one-based sequence.
     pub sequence: u64,
     /// Sender-defined idempotency identity.
     pub message_id: String,
-    /// Schema-typed payload.
-    pub payload: T,
+    /// Immutable payload bytes staged before Stream publication.
+    pub payload: FileRef,
 }
 
 /// In-memory projection of a durable task inbox; items themselves belong in Stream.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TaskInbox<T> {
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskInbox {
     task_id: TaskId,
-    items: Vec<InboxItem<T>>,
-    messages: BTreeSet<String>,
+    items: Vec<InboxItem>,
 }
 
-impl<T: Clone + PartialEq> TaskInbox<T> {
+impl TaskInbox {
     /// Creates the inbox projection for one durable task.
     #[must_use]
     pub const fn new(task_id: TaskId) -> Self {
         Self {
             task_id,
             items: Vec::new(),
-            messages: BTreeSet::new(),
         }
     }
 
     /// Applies one committed item, deduplicating exact message identities.
-    pub fn apply(&mut self, item: InboxItem<T>) -> Result<()> {
+    pub fn apply(&mut self, item: InboxItem) -> Result<()> {
         if item.task_id != self.task_id || item.message_id.trim().is_empty() {
             return Err(Error::Invalid(
                 "inbox item has the wrong task or an empty message identity".into(),
             ));
         }
+        item.payload.validate()?;
         if let Some(existing) = self
             .items
             .iter()
@@ -1259,14 +1326,13 @@ impl<T: Clone + PartialEq> TaskInbox<T> {
                 "expected inbox sequence {expected}"
             )));
         }
-        self.messages.insert(item.message_id.clone());
         self.items.push(item);
         Ok(())
     }
 
     /// Reads a bounded page after a sequence.
     #[must_use]
-    pub fn after(&self, sequence: u64, limit: usize) -> Vec<InboxItem<T>> {
+    pub fn after(&self, sequence: u64, limit: usize) -> Vec<InboxItem> {
         self.items
             .iter()
             .skip(usize::try_from(sequence).unwrap_or(usize::MAX))
@@ -1279,15 +1345,44 @@ impl<T: Clone + PartialEq> TaskInbox<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::AggregateKind;
-    use serde_json::json;
+    use crate::{
+        conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
+        core::AggregateKind,
+        resources::ProviderRef,
+    };
 
     fn id(value: u8) -> OperationId {
         OperationId::from_bytes([value; 16])
     }
 
-    fn spec(operation_id: OperationId, orchestration: Orchestration) -> OperationSpec {
-        OperationSpec {
+    fn state_ref() -> Result<FileRef> {
+        let volume = VolumeRef::new(
+            ProviderRef::new("test", "filesystem", "2")?,
+            "project",
+            VolumeClass::Project,
+            VolumeOwner::Project("project".into()),
+        )?;
+        FileRef::new(
+            volume,
+            "state/initial.json",
+            "generation-1",
+            FileDescriptor::from_bytes(b"null", "application/json")?,
+            "initial.json",
+        )
+    }
+
+    fn result_ref(bytes: &[u8]) -> Result<FileRef> {
+        FileRef::new(
+            state_ref()?.volume().clone(),
+            "results/value.json",
+            "generation-2",
+            FileDescriptor::from_bytes(bytes, "application/json")?,
+            "value.json",
+        )
+    }
+
+    fn spec(operation_id: OperationId, orchestration: Orchestration) -> Result<OperationSpec> {
+        Ok(OperationSpec {
             operation_id,
             parent: None,
             owner: DurableOwner::Detached {
@@ -1304,16 +1399,33 @@ mod tests {
             },
             dependencies: BTreeSet::new(),
             resources: ResourceRequest::default(),
-            placement: Value::Null,
+            placement: BTreeMap::new(),
             orchestration,
-            state: Value::Null,
-        }
+            state: state_ref()?,
+        })
+    }
+
+    #[test]
+    fn declarations_store_state_references_and_bound_placement_metadata() -> Result<()> {
+        let scheduler = Scheduler::new();
+        let event = scheduler.declare(spec(id(1), Orchestration::Leaf)?)?;
+        let encoded =
+            serde_json::to_value(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(encoded["spec"]["state"]["path"], "state/initial.json");
+        assert_eq!(encoded["spec"]["state"]["descriptor"]["byte_length"], 4);
+        let mut oversized = spec(id(2), Orchestration::Leaf)?;
+        oversized.placement.insert("region".into(), "x".repeat(256));
+        assert!(matches!(
+            scheduler.declare(oversized),
+            Err(Error::Invalid(_))
+        ));
+        Ok(())
     }
 
     #[test]
     fn waiting_parent_releases_execution_capacity() -> Result<()> {
         let mut scheduler = Scheduler::new();
-        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join))?)?;
+        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join)?)?)?;
         scheduler.apply(SchedulerEvent::Admitted {
             operation_id: id(1),
             reservation: Reservation {
@@ -1347,7 +1459,7 @@ mod tests {
     #[test]
     fn race_uses_first_observed_success_and_cancels_losers() -> Result<()> {
         let mut scheduler = Scheduler::new();
-        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Race))?)?;
+        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Race)?)?)?;
         scheduler.apply(SchedulerEvent::Admitted {
             operation_id: id(1),
             reservation: Reservation {
@@ -1369,7 +1481,7 @@ mod tests {
             fence: parent_fence,
         })?;
         for (child_id, slot) in [(id(2), "a"), (id(3), "b")] {
-            let mut child = spec(child_id, Orchestration::Leaf);
+            let mut child = spec(child_id, Orchestration::Leaf)?;
             child.parent = Some(ParentLink {
                 operation_id: id(1),
                 slot: slot.into(),
@@ -1393,7 +1505,7 @@ mod tests {
         }
         scheduler.apply(SchedulerEvent::Completed {
             operation_id: id(3),
-            outcome: Outcome::Succeeded(json!("winner")),
+            outcome: Outcome::Succeeded(result_ref(b"\"winner\"")?),
             fence: Some(LeaseFence {
                 reservation_id: "lease-b".into(),
                 placement: "worker".into(),
@@ -1402,7 +1514,7 @@ mod tests {
         assert_eq!(
             scheduler.orchestration(id(1)),
             OrchestrationDecision::Complete {
-                outcome: Outcome::Succeeded(json!("winner")),
+                outcome: Outcome::Succeeded(result_ref(b"\"winner\"")?),
                 cancel: vec![id(2)],
             }
         );
@@ -1413,7 +1525,7 @@ mod tests {
         scheduler.apply(SchedulerEvent::Orchestrated {
             operation_id: id(1),
             expected_revision,
-            outcome: Outcome::Succeeded(json!("winner")),
+            outcome: Outcome::Succeeded(result_ref(b"\"winner\"")?),
             cancel: vec![id(2)],
             reducer: None,
             reduction_digest: None,
@@ -1443,7 +1555,7 @@ mod tests {
             task_id,
             sequence: 1,
             message_id: "message-1".into(),
-            payload: json!({"value": 1}),
+            payload: state_ref()?,
         };
         let mut inbox = TaskInbox::new(task_id);
         inbox.apply(item.clone())?;
@@ -1455,12 +1567,12 @@ mod tests {
     #[test]
     fn terminal_parent_rejects_late_children() -> Result<()> {
         let mut scheduler = Scheduler::new();
-        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join))?)?;
+        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join)?)?)?;
         scheduler.apply(SchedulerEvent::CancellationRequested {
             operation_id: id(1),
             recursive: false,
         })?;
-        let mut child = spec(id(2), Orchestration::Leaf);
+        let mut child = spec(id(2), Orchestration::Leaf)?;
         child.parent = Some(ParentLink {
             operation_id: id(1),
             slot: "late".into(),
@@ -1472,14 +1584,14 @@ mod tests {
     #[test]
     fn recursive_cancellation_stops_at_owner_boundaries() -> Result<()> {
         let mut scheduler = Scheduler::new();
-        let mut parent = spec(id(20), Orchestration::Join);
+        let mut parent = spec(id(20), Orchestration::Join)?;
         let authority = parent.owner.authority().clone();
         parent.owner = DurableOwner::Attached {
             authority: authority.clone(),
         };
         scheduler.apply(scheduler.declare(parent)?)?;
 
-        let mut owned_child = spec(id(21), Orchestration::Leaf);
+        let mut owned_child = spec(id(21), Orchestration::Leaf)?;
         owned_child.owner = DurableOwner::Detached {
             authority: authority.clone(),
         };
@@ -1489,7 +1601,7 @@ mod tests {
         });
         scheduler.apply(scheduler.declare(owned_child)?)?;
 
-        let mut owned_grandchild = spec(id(23), Orchestration::Leaf);
+        let mut owned_grandchild = spec(id(23), Orchestration::Leaf)?;
         owned_grandchild.owner = DurableOwner::Attached { authority };
         owned_grandchild.parent = Some(ParentLink {
             operation_id: id(21),
@@ -1497,7 +1609,7 @@ mod tests {
         });
         scheduler.apply(scheduler.declare(owned_grandchild)?)?;
 
-        let mut foreign_child = spec(id(22), Orchestration::Leaf);
+        let mut foreign_child = spec(id(22), Orchestration::Leaf)?;
         foreign_child.parent = Some(ParentLink {
             operation_id: id(20),
             slot: "foreign".into(),
@@ -1531,7 +1643,7 @@ mod tests {
     #[test]
     fn releasing_a_cancelled_running_lease_terminalizes_it() -> Result<()> {
         let mut scheduler = Scheduler::new();
-        scheduler.apply(scheduler.declare(spec(id(9), Orchestration::Leaf))?)?;
+        scheduler.apply(scheduler.declare(spec(id(9), Orchestration::Leaf)?)?)?;
         let reservation = Reservation {
             id: "cancelled-lease".into(),
             placement: "worker".into(),
@@ -1566,7 +1678,7 @@ mod tests {
     #[test]
     fn cancellation_closes_a_waiting_parent_before_orchestration() -> Result<()> {
         let mut scheduler = Scheduler::new();
-        scheduler.apply(scheduler.declare(spec(id(10), Orchestration::Join))?)?;
+        scheduler.apply(scheduler.declare(spec(id(10), Orchestration::Join)?)?)?;
         let reservation = Reservation {
             id: "parent".into(),
             placement: "worker".into(),
@@ -1604,7 +1716,7 @@ mod tests {
                 .apply(SchedulerEvent::Orchestrated {
                     operation_id: id(10),
                     expected_revision,
-                    outcome: Outcome::Succeeded(Value::Null),
+                    outcome: Outcome::Succeeded(state_ref()?),
                     cancel: Vec::new(),
                     reducer: None,
                     reduction_digest: None,
@@ -1628,7 +1740,7 @@ mod tests {
             Orchestration::Reduce {
                 reducer: reducer.clone(),
             },
-        ))?)?;
+        )?)?)?;
         let parent_reservation = Reservation {
             id: "reduce-parent".into(),
             placement: "worker".into(),
@@ -1647,7 +1759,7 @@ mod tests {
             operation_id: id(11),
             fence: parent_fence,
         })?;
-        let mut child = spec(id(12), Orchestration::Leaf);
+        let mut child = spec(id(12), Orchestration::Leaf)?;
         child.parent = Some(ParentLink {
             operation_id: id(11),
             slot: "value".into(),
@@ -1669,7 +1781,7 @@ mod tests {
         })?;
         scheduler.apply(SchedulerEvent::Completed {
             operation_id: id(12),
-            outcome: Outcome::Succeeded(serde_json::json!(2)),
+            outcome: Outcome::Succeeded(result_ref(b"2")?),
             fence: Some(child_fence),
         })?;
         let OrchestrationDecision::Reduce { values, .. } = scheduler.orchestration(id(11)) else {
@@ -1684,7 +1796,7 @@ mod tests {
                 .apply(SchedulerEvent::Orchestrated {
                     operation_id: id(11),
                     expected_revision,
-                    outcome: Outcome::Succeeded(serde_json::json!(2)),
+                    outcome: Outcome::Succeeded(result_ref(b"2")?),
                     cancel: Vec::new(),
                     reducer: Some(reducer.clone()),
                     reduction_digest: Some([0; 32]),
@@ -1694,7 +1806,7 @@ mod tests {
         scheduler.apply(SchedulerEvent::Orchestrated {
             operation_id: id(11),
             expected_revision,
-            outcome: Outcome::Succeeded(serde_json::json!(2)),
+            outcome: Outcome::Succeeded(result_ref(b"2")?),
             cancel: Vec::new(),
             reducer: Some(reducer.clone()),
             reduction_digest: Some(reduction_invocation_digest(&reducer, &values)?),
@@ -1705,7 +1817,7 @@ mod tests {
     #[test]
     fn failed_dependencies_are_explicitly_rejectable() -> Result<()> {
         let mut scheduler = Scheduler::new();
-        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Leaf))?)?;
+        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Leaf)?)?)?;
         scheduler.apply(SchedulerEvent::Admitted {
             operation_id: id(1),
             reservation: Reservation {
@@ -1731,7 +1843,7 @@ mod tests {
                 placement: "worker".into(),
             }),
         })?;
-        let mut dependent = spec(id(2), Orchestration::Leaf);
+        let mut dependent = spec(id(2), Orchestration::Leaf)?;
         dependent.dependencies.insert(id(1));
         scheduler.apply(scheduler.declare(dependent)?)?;
         assert_eq!(scheduler.blocked_by_dependencies(), vec![id(2)]);
@@ -1753,7 +1865,7 @@ mod tests {
     #[test]
     fn partial_admission_advances_one_lease_and_only_requires_the_remainder() -> Result<()> {
         let mut scheduler = Scheduler::new();
-        let mut operation = spec(id(5), Orchestration::Leaf);
+        let mut operation = spec(id(5), Orchestration::Leaf)?;
         operation.resources = ResourceRequest(BTreeMap::from([("cpu".into(), 4)]));
         scheduler.apply(scheduler.declare(operation)?)?;
         scheduler.apply(SchedulerEvent::PartiallyAdmitted {

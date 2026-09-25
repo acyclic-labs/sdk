@@ -1,16 +1,41 @@
 //! Explicit versioned resumable state machines for durable authoring.
 
-use crate::{Error, Result};
 #[cfg(feature = "host")]
-use crate::{IdempotencyKey, OperationId};
+use crate::IdempotencyKey;
+use crate::{Error, OperationId, Result, conversation::FileRef};
 #[cfg(feature = "host")]
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+/// Replay-safe command emitted by a machine. The operation ID is stable and
+/// all variable arguments live in an immutable owner-resolved file version.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowCommand {
+    /// Stable identity used for external dispatch and reconciliation.
+    pub operation_id: OperationId,
+    /// Namespaced executor or effect kind pinned by the consuming registry.
+    pub kind: String,
+    /// Ref-only command arguments, never an inline body or bearer scope.
+    pub payload: FileRef,
+}
+
+impl WorkflowCommand {
+    /// Rejects malformed public command contracts before checkpoint commit.
+    pub fn validate(&self) -> Result<()> {
+        crate::contract::validate_component_label(&self.kind, "workflow command kind")?;
+        self.payload.validate()
+    }
+}
 
 /// Stable identity of a resumable state-machine implementation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineIdentity {
     /// Namespaced machine name.
     pub name: String,
@@ -22,7 +47,7 @@ pub struct MachineIdentity {
 
 /// Explicit state-machine suspension or completion.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineStatus {
     /// Await another durable input.
     Suspended,
@@ -40,17 +65,19 @@ pub enum MachineStatus {
 
 /// Result of one deterministic state-machine step.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineTransition {
     /// Complete next serializable state.
     pub state: Value,
     /// Ordered durable commands/effects emitted by this step.
-    pub commands: Vec<Value>,
+    pub commands: Vec<WorkflowCommand>,
     /// Suspension or completion state.
     pub status: MachineStatus,
 }
 
 /// Portable durable checkpoint for a pinned implementation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineCheckpoint {
     /// Pinned implementation identity.
     pub machine: MachineIdentity,
@@ -83,9 +110,11 @@ impl MachineRegistry {
     /// Registers one exact implementation.
     pub fn register(&mut self, machine: Arc<dyn ResumableMachine>) -> Result<()> {
         let identity = machine.identity();
-        if identity.name.trim().is_empty() || identity.version.trim().is_empty() {
+        crate::contract::validate_component_label(&identity.name, "machine name")?;
+        crate::contract::validate_component_label(&identity.version, "machine version")?;
+        if identity.digest == [0; 32] {
             return Err(Error::Invalid(
-                "machine name and version are required".into(),
+                "machine needs an implementation digest".into(),
             ));
         }
         jsonschema::validator_for(machine.state_schema())
@@ -95,11 +124,12 @@ impl MachineRegistry {
             identity.version.clone(),
             identity.digest,
         );
-        if self.0.insert(key, machine).is_some() {
+        if self.0.contains_key(&key) {
             return Err(Error::Conflict(
                 "machine identity is already registered".into(),
             ));
         }
+        self.0.insert(key, machine);
         Ok(())
     }
 
@@ -125,6 +155,7 @@ impl MachineRegistry {
         validate_state(machine.state_schema(), &checkpoint.state)?;
         let transition = machine.transition(&checkpoint.state, input)?;
         validate_state(machine.state_schema(), &transition.state)?;
+        validate_commands(&transition.commands)?;
         let next = MachineCheckpoint {
             machine: checkpoint.machine.clone(),
             revision: checkpoint
@@ -148,6 +179,7 @@ impl MachineRegistry {
 /// One atomic durable state-machine transition and its complete command outbox.
 #[cfg(feature = "host")]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkflowRecord {
     /// Stable operation that supplied this input.
     pub operation_id: OperationId,
@@ -163,6 +195,58 @@ pub struct WorkflowRecord {
     pub transition: MachineTransition,
     /// Complete next checkpoint committed with the commands.
     pub next: MachineCheckpoint,
+}
+
+#[cfg(feature = "host")]
+impl WorkflowRecord {
+    /// Checks all provider-independent transition invariants before storage or replay.
+    pub fn validate(&self) -> Result<()> {
+        IdempotencyKey::new(self.idempotency_key.0.clone())?;
+        if self.input_digest != input_digest(&self.input)?
+            || self.prior.machine != self.next.machine
+            || self.next.revision
+                != self
+                    .prior
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("workflow revision exhausted".into()))?
+            || self.next.state != self.transition.state
+        {
+            return Err(Error::Conflict(
+                "workflow transition envelope is inconsistent".into(),
+            ));
+        }
+        validate_commands(&self.transition.commands)?;
+        if self
+            .transition
+            .commands
+            .iter()
+            .any(|command| command.operation_id == self.operation_id)
+        {
+            return Err(Error::Conflict(
+                "workflow command reuses its transition identity".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_commands(commands: &[WorkflowCommand]) -> Result<()> {
+    if commands.len() > 1_024 {
+        return Err(Error::Invalid(
+            "workflow command count exceeds its bound".into(),
+        ));
+    }
+    let mut identities = BTreeSet::new();
+    for command in commands {
+        command.validate()?;
+        if !identities.insert(command.operation_id) {
+            return Err(Error::Conflict(
+                "workflow command identity is duplicated".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Outcome of an atomic workflow journal commit.
@@ -197,6 +281,7 @@ pub struct DurableWorkflowHost {
     checkpoint: MachineCheckpoint,
     journal: Arc<dyn WorkflowJournal>,
     intents: BTreeMap<OperationId, (IdempotencyKey, WorkflowRecord)>,
+    reserved_operations: BTreeSet<OperationId>,
 }
 
 #[cfg(feature = "host")]
@@ -210,8 +295,20 @@ impl DurableWorkflowHost {
         registry.validate_checkpoint(&initial)?;
         let mut checkpoint = initial;
         let mut intents = BTreeMap::new();
+        let mut reserved_operations = BTreeSet::new();
         for record in journal.replay().await? {
-            IdempotencyKey::new(record.idempotency_key.0.clone())?;
+            record.validate()?;
+            if !reserved_operations.insert(record.operation_id)
+                || record
+                    .transition
+                    .commands
+                    .iter()
+                    .any(|command| !reserved_operations.insert(command.operation_id))
+            {
+                return Err(Error::Conflict(
+                    "workflow history reuses a command or transition identity".into(),
+                ));
+            }
             if intents
                 .insert(
                     record.operation_id,
@@ -223,7 +320,7 @@ impl DurableWorkflowHost {
                     "workflow history repeats an operation identity".into(),
                 ));
             }
-            if record.prior != checkpoint || record.input_digest != input_digest(&record.input)? {
+            if record.prior != checkpoint {
                 return Err(Error::Conflict("workflow history is not contiguous".into()));
             }
             let (next, transition) = registry.step(&checkpoint, &record.input)?;
@@ -239,6 +336,7 @@ impl DurableWorkflowHost {
             checkpoint,
             journal,
             intents,
+            reserved_operations,
         })
     }
 
@@ -265,6 +363,11 @@ impl DurableWorkflowHost {
                 ))
             };
         }
+        if self.reserved_operations.contains(&operation_id) {
+            return Err(Error::Conflict(
+                "workflow step reuses a command identity".into(),
+            ));
+        }
         let (next, transition) = self.registry.step(&self.checkpoint, &input)?;
         let record = WorkflowRecord {
             operation_id,
@@ -275,6 +378,17 @@ impl DurableWorkflowHost {
             transition: transition.clone(),
             next: next.clone(),
         };
+        record.validate()?;
+        if record
+            .transition
+            .commands
+            .iter()
+            .any(|command| self.reserved_operations.contains(&command.operation_id))
+        {
+            return Err(Error::Conflict(
+                "workflow command identity was already committed".into(),
+            ));
+        }
         let observed = self
             .journal
             .commit(
@@ -292,6 +406,10 @@ impl DurableWorkflowHost {
             ));
         }
         self.checkpoint = next;
+        self.reserved_operations.insert(operation_id);
+        for command in &record.transition.commands {
+            self.reserved_operations.insert(command.operation_id);
+        }
         self.intents.insert(operation_id, (idempotency_key, record));
         Ok(transition)
     }
@@ -299,8 +417,7 @@ impl DurableWorkflowHost {
 
 #[cfg(feature = "host")]
 fn input_digest(input: &Value) -> Result<[u8; 32]> {
-    let bytes = serde_json::to_vec(input).map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(*blake3::hash(&bytes).as_bytes())
+    crate::contract::canonical_json_digest(input)
 }
 
 fn validate_state(schema: &Value, state: &Value) -> Result<()> {
@@ -320,6 +437,7 @@ mod tests {
     struct Counter {
         identity: MachineIdentity,
         schema: Value,
+        command_payload: FileRef,
     }
 
     impl ResumableMachine for Counter {
@@ -336,7 +454,11 @@ mod tests {
             let next = state.as_u64().unwrap_or(0) + input.as_u64().unwrap_or(0);
             Ok(MachineTransition {
                 state: json!(next),
-                commands: vec![json!({"publish": next})],
+                commands: vec![WorkflowCommand {
+                    operation_id: OperationId::from_bytes([9; 16]),
+                    kind: "counter.publish".into(),
+                    payload: self.command_payload.clone(),
+                }],
                 status: MachineStatus::Suspended,
             })
         }
@@ -385,6 +507,24 @@ mod tests {
 
     #[tokio::test]
     async fn checkpoint_and_commands_commit_as_one_replayable_record() -> Result<()> {
+        use crate::{
+            AgentId,
+            conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
+            resources::ProviderRef,
+        };
+        let volume = VolumeRef::new(
+            ProviderRef::new("workflow-test", "filesystem", "2")?,
+            "private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
+        )?;
+        let command_payload = FileRef::new(
+            volume,
+            "commands/count.json",
+            "immutable-version",
+            FileDescriptor::from_bytes(b"2", "application/json")?,
+            "count.json",
+        )?;
         let identity = MachineIdentity {
             name: "example.counter".into(),
             version: "1".into(),
@@ -394,6 +534,7 @@ mod tests {
         registry.register(Arc::new(Counter {
             identity: identity.clone(),
             schema: json!({"type": "integer", "minimum": 0}),
+            command_payload: command_payload.clone(),
         }))?;
         let journal = Arc::new(MemoryJournal::default());
         let initial = MachineCheckpoint {
@@ -410,7 +551,25 @@ mod tests {
                 json!(2),
             )
             .await?;
-        assert_eq!(transition.commands, vec![json!({"publish": 2})]);
+        assert_eq!(
+            transition.commands,
+            vec![WorkflowCommand {
+                operation_id: OperationId::from_bytes([9; 16]),
+                kind: "counter.publish".into(),
+                payload: command_payload,
+            }]
+        );
+        let mut unsafe_command = serde_json::to_value(&transition.commands[0])
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        unsafe_command["body"] = json!("inline attachment bytes");
+        assert!(serde_json::from_value::<WorkflowCommand>(unsafe_command).is_err());
+        assert!(
+            validate_commands(&[
+                transition.commands[0].clone(),
+                transition.commands[0].clone(),
+            ])
+            .is_err()
+        );
         assert_eq!(host.checkpoint().revision, 1);
         let replayed = host
             .step(

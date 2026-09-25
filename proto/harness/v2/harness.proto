@@ -1,0 +1,581 @@
+syntax = "proto3";
+package acyclic.harness.v2;
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/harness/v2;harnessv2";
+
+// Release-candidate v2 contract types. Compatibility is bound to ProtocolIdentity.
+message OperationIdentity {
+  string operation_id = 1;
+  string idempotency_key = 2;
+}
+message ProtocolIdentity {
+  string version = 1;
+  string descriptor_digest = 2;
+}
+message Capability {
+  string name = 1;
+  string version = 2;
+}
+message CapabilitySet {
+  repeated Capability capabilities = 1;
+}
+message HandshakeRequest {
+  ProtocolIdentity protocol = 1;
+  CapabilitySet required = 2;
+}
+message HandshakeResponse {
+  ProtocolIdentity protocol = 1;
+  CapabilitySet supported = 2;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_NOT_FOUND = 1;
+  ERROR_CODE_CONFLICT = 2;
+  ERROR_CODE_UNSUPPORTED = 3;
+  ERROR_CODE_INVALID = 4;
+  ERROR_CODE_UNAUTHORIZED = 5;
+  ERROR_CODE_STORAGE = 6;
+  ERROR_CODE_INDETERMINATE = 7;
+  ERROR_CODE_INTERACTION_DECLINED = 8;
+  ERROR_CODE_INTERACTION_CANCELLED = 9;
+  ERROR_CODE_INTERACTION_EXPIRED = 10;
+  ERROR_CODE_INTERACTION_DENIED = 11;
+}
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+  string operation_id = 3;
+}
+
+enum AdmissionState {
+  ADMISSION_STATE_UNSPECIFIED = 0;
+  ADMISSION_STATE_ACCEPTED = 1;
+  ADMISSION_STATE_REJECTED = 2;
+  ADMISSION_STATE_INDETERMINATE = 3;
+}
+message Admission {
+  OperationIdentity operation = 1;
+  AdmissionState state = 2;
+  Error error = 3;
+}
+
+enum CompletionState {
+  COMPLETION_STATE_UNSPECIFIED = 0;
+  COMPLETION_STATE_RUNNING = 1;
+  COMPLETION_STATE_SUCCEEDED = 2;
+  COMPLETION_STATE_FAILED = 3;
+  COMPLETION_STATE_CANCELLED = 4;
+  COMPLETION_STATE_INDETERMINATE = 5;
+}
+message OperationStatus {
+  OperationIdentity operation = 1;
+  CompletionState state = 2;
+  Error error = 3;
+  ProtocolIdentity protocol = 4;
+  Authority owner = 5;
+  bool cancellation_requested = 6;
+  uint64 revision = 7;
+}
+message ObserveRequest {
+  string operation_id = 1;
+  ProtocolIdentity protocol = 2;
+  Authority owner = 3;
+  Scope scope = 4;
+}
+message CancelRequest {
+  string operation_id = 1;
+  ProtocolIdentity protocol = 2;
+  Authority owner = 3;
+  Scope scope = 4;
+  bool recursive = 5;
+  string idempotency_key = 6;
+}
+message CancelResponse {
+  OperationStatus status = 1;
+  OperationIdentity operation = 2;
+}
+message Cursor {
+  bytes opaque = 1;
+}
+
+// Kind of independently ordered durable aggregate.
+enum AggregateKind {
+  AGGREGATE_KIND_UNSPECIFIED = 0;
+  AGGREGATE_KIND_AGENT = 1;
+  AGGREGATE_KIND_CONVERSATION = 2;
+  AGGREGATE_KIND_SESSION = 3;
+  AGGREGATE_KIND_TURN = 4;
+  AGGREGATE_KIND_TASK = 5;
+}
+
+// Stable identity of one aggregate history.
+message Authority {
+  AggregateKind kind = 1;
+  string id = 2;
+}
+
+// Exact causal predecessor in another aggregate.
+message EventReference {
+  Authority authority = 1;
+  uint64 revision = 2;
+}
+
+// Bearer grant present only in command admission, never in durable events.
+message Scope {
+  string id = 1;
+  repeated string capabilities = 2;
+  string issuer = 3;
+  bytes parent_proof = 4;
+  bytes proof = 5;
+  // Host-attested acting agent; absent scopes cannot write agent-private files.
+  string agent_id = 6;
+}
+
+// Non-bearer metadata for a committed event. The event attestation is bound
+// to the complete event and cannot be reused as a command authorization.
+message RecordedScope {
+  string id = 1;
+  repeated string capabilities = 2;
+  string issuer = 3;
+  string agent_id = 4;
+}
+
+// Transport-neutral command whose canonical payload is interpreted by Rust.
+message CommandEnvelope {
+  ProtocolIdentity protocol = 1;
+  Authority authority = 2;
+  OperationIdentity operation = 3;
+  uint64 expected_revision = 4;
+  Scope scope = 5;
+  EventReference causal_parent = 6;
+  string action_type = 7;
+  bytes canonical_action_json = 8;
+  bytes intent_digest = 9;
+}
+
+// Canonical durable event carried identically by every transport.
+message EventEnvelope {
+  ProtocolIdentity protocol = 1;
+  Authority authority = 2;
+  uint64 revision = 3;
+  string operation_id = 4;
+  bytes intent_digest = 5;
+  RecordedScope scope = 6;
+  EventReference causal_parent = 7;
+  string event_type = 8;
+  bytes canonical_payload_json = 9;
+  bytes attestation = 10;
+}
+
+enum ApplyState {
+  APPLY_STATE_UNSPECIFIED = 0;
+  APPLY_STATE_APPLIED = 1;
+  APPLY_STATE_REPLAYED = 2;
+}
+
+message ApplyResponse {
+  ApplyState state = 1;
+  EventEnvelope event = 2;
+}
+
+// Versioned restoration accelerator. Events remain authoritative.
+message SnapshotEnvelope {
+  ProtocolIdentity protocol = 1;
+  Authority authority = 2;
+  uint64 revision = 3;
+  uint32 format_version = 4;
+  bytes canonical_state_json = 5;
+  bytes state_digest = 6;
+}
+
+// Transport-independent resumable subscription cursor.
+message ReplayCursor {
+  Authority authority = 1;
+  string generation = 2;
+  uint64 revision = 3;
+}
+
+message ResumeRequest {
+  ProtocolIdentity protocol = 1;
+  repeated ReplayCursor cursors = 2;
+}
+
+// One fully validated contiguous authoritative delivery.
+message Delivery {
+  Authority authority = 1;
+  string generation = 2;
+  uint64 from_revision = 3;
+  uint64 through_revision = 4;
+  repeated EventEnvelope events = 5;
+  bool live = 6;
+}
+
+message Acknowledge {
+  Authority authority = 1;
+  string generation = 2;
+  uint64 through_revision = 3;
+}
+
+// Framing used unchanged by embedded, HTTP/SSE, WebSocket, JSONL/stdio and gRPC adapters.
+message ClientFrame {
+  oneof frame {
+    ResumeRequest resume = 1;
+    CommandEnvelope command = 2;
+    Acknowledge acknowledge = 3;
+    HandshakeRequest handshake = 4;
+    ObserveRequest observe = 5;
+    CancelRequest cancel = 6;
+  }
+}
+
+message ServerFrame {
+  oneof frame {
+    Delivery delivery = 1;
+    Admission admission = 2;
+    Error error = 3;
+    HandshakeResponse handshake = 4;
+    OperationStatus status = 5;
+    CancelResponse cancellation = 6;
+  }
+}
+
+// Canonical record stored in the single logical distributed coordinator Stream.
+message SchedulerEventEnvelope {
+  ProtocolIdentity protocol = 1;
+  uint64 revision = 2;
+  string operation_id = 3;
+  string idempotency_key = 4;
+  bytes canonical_event_json = 5;
+  bytes event_digest = 6;
+}
+
+service HarnessService {
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  rpc Submit(CommandEnvelope) returns (Admission);
+  rpc Replay(ResumeRequest) returns (stream Delivery);
+  rpc Observe(ObserveRequest) returns (OperationStatus);
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+}
+
+// Canonical ref-only conversation values. File bodies are never protocol events.
+message ProviderRef {
+  string namespace = 1;
+  string family = 2;
+  string version = 3;
+}
+
+enum VolumeClass {
+  VOLUME_CLASS_UNSPECIFIED = 0;
+  VOLUME_CLASS_PROJECT = 1;
+  VOLUME_CLASS_AGENT_PRIVATE = 2;
+  VOLUME_CLASS_SESSION_SHARED = 3;
+}
+
+message VolumeOwner {
+  oneof owner {
+    string project = 1;
+    string agent_id = 2;
+    string session = 3;
+  }
+}
+
+message VolumeRef {
+  ProviderRef provider = 1;
+  string id = 2;
+  VolumeClass volume_class = 3;
+  VolumeOwner owner = 4;
+}
+
+message FileDescriptor {
+  bytes sha256 = 1;
+  uint64 byte_length = 2;
+  string media_type = 3;
+}
+
+message FileRef {
+  VolumeRef volume = 1;
+  string normalized_path = 2;
+  string immutable_version = 3;
+  FileDescriptor descriptor = 4;
+  string display_name = 5;
+}
+
+message TaskOutcome {
+  oneof result {
+    FileRef succeeded = 1;
+    string failed_message = 2;
+    string indeterminate_operation_id = 3;
+    bool cancelled = 4;
+  }
+}
+
+enum ExtensionForkPolicy {
+  EXTENSION_FORK_POLICY_UNSPECIFIED = 0;
+  EXTENSION_FORK_POLICY_INHERIT = 1;
+  EXTENSION_FORK_POLICY_RESET = 2;
+  EXTENSION_FORK_POLICY_REJECT = 3;
+}
+
+message ExtensionRecord {
+  string name = 1;
+  uint32 version = 2;
+  bytes schema_digest = 3;
+  bytes implementation_digest = 4;
+  ExtensionForkPolicy fork_policy = 5;
+  FileRef content = 6;
+}
+
+message ModelContextSelection {
+  uint64 conversation_revision = 1;
+  repeated string message_ids = 2;
+}
+
+enum InteractionKind {
+  INTERACTION_KIND_UNSPECIFIED = 0;
+  INTERACTION_KIND_QUESTION = 1;
+  INTERACTION_KIND_CHOICE = 2;
+  INTERACTION_KIND_FORM = 3;
+  INTERACTION_KIND_APPROVAL = 4;
+}
+
+message ApprovalBinding {
+  string operation_id = 1;
+  bytes action_digest = 2;
+}
+
+message InteractionTicket {
+  string id = 1;
+  InteractionKind kind = 2;
+  FileRef request = 3;
+  optional uint64 deadline_unix_ms = 4;
+  ApprovalBinding approval = 5;
+}
+
+message InteractionOutcomeMarker {}
+
+message InteractionOutcome {
+  oneof kind {
+    FileRef answered = 1;
+    InteractionOutcomeMarker approved = 2;
+    InteractionOutcomeMarker declined = 3;
+    InteractionOutcomeMarker cancelled = 4;
+    InteractionOutcomeMarker expired = 5;
+    InteractionOutcomeMarker denied = 6;
+    string indeterminate_operation_id = 7;
+  }
+}
+
+message InteractionResolution {
+  string id = 1;
+  uint64 expected_version = 2;
+  InteractionOutcome outcome = 3;
+  FileRef detail = 4;
+}
+
+message Attachment {
+  FileRef file = 1;
+  optional string label = 2;
+}
+
+message AttachmentItems {
+  repeated Attachment items = 1;
+}
+
+message AttachmentManifest {
+  FileRef manifest = 1;
+  uint32 item_count = 2;
+}
+
+message ReferencedAttachments {
+  oneof source {
+    AttachmentItems inline_items = 1;
+    AttachmentManifest manifest = 2;
+  }
+}
+
+enum ConversationKind {
+  CONVERSATION_KIND_UNSPECIFIED = 0;
+  CONVERSATION_KIND_USER = 1;
+  CONVERSATION_KIND_ASSISTANT = 2;
+  CONVERSATION_KIND_SYSTEM = 3;
+  CONVERSATION_KIND_TOOL_CALL = 4;
+  CONVERSATION_KIND_TOOL_RESULT = 5;
+  CONVERSATION_KIND_INTERACTION = 6;
+  CONVERSATION_KIND_PERMISSION = 7;
+  CONVERSATION_KIND_FORK = 8;
+  CONVERSATION_KIND_MERGE = 9;
+}
+
+message ConversationMessage {
+  string id = 1;
+  uint64 sequence = 2;
+  ConversationKind kind = 3;
+  FileRef content = 4;
+  ReferencedAttachments attachments = 5;
+  optional string reply_to = 6;
+  optional string tool_call_id = 7;
+  map<string, FileRef> extensions = 8;
+}
+
+enum ResourceKind {
+  RESOURCE_KIND_UNSPECIFIED = 0;
+  RESOURCE_KIND_WORKSPACE = 1;
+  RESOURCE_KIND_GENERATION = 2;
+  RESOURCE_KIND_ARTIFACT = 3;
+  RESOURCE_KIND_SANDBOX = 4;
+  RESOURCE_KIND_CHECKPOINT = 5;
+  RESOURCE_KIND_STREAM = 6;
+  RESOURCE_KIND_CONTEXT = 7;
+  RESOURCE_KIND_RUN = 8;
+}
+
+message ResourceRef {
+  ProviderRef provider = 1;
+  bytes key = 2;
+  optional string version = 3;
+  ResourceKind kind = 4;
+}
+
+// Narrows a provider-owned resource to an immutable Filesystem generation.
+message GenerationRef {
+  ResourceRef resource = 1;
+}
+
+message ProjectRevision {
+  VolumeRef volume = 1;
+  GenerationRef generation = 2;
+}
+
+message ExtensionRevision {
+  string name = 1;
+  uint32 version = 2;
+  ResourceRef reference = 3;
+  bytes implementation_digest = 4;
+}
+
+message ResourceRevision {
+  oneof kind {
+    ResourceRef history = 1;
+    ProjectRevision project = 2;
+    ResourceRef context = 3;
+    ResourceRef process = 4;
+    ResourceRef artifact = 5;
+    VolumeRef shared_volume = 6;
+    ExtensionRevision extension = 7;
+  }
+}
+
+message CapturedResource {
+  ResourceRevision source = 1;
+  ResourceRevision revision = 2;
+}
+
+message ForkOmission {
+  ResourceRevision selection = 1;
+  oneof outcome {
+    string unsupported_reason = 2;
+    string in_flight_operation_id = 3;
+    string indeterminate_operation_id = 4;
+  }
+}
+
+message AttestedBoundary {
+  ProviderRef provider = 1;
+  bytes evidence = 2;
+}
+
+enum SharedVolumeOperation {
+  SHARED_VOLUME_OPERATION_UNSPECIFIED = 0;
+  SHARED_VOLUME_OPERATION_READ = 1;
+  SHARED_VOLUME_OPERATION_WRITE = 2;
+}
+
+message SharedGrant {
+  VolumeRef volume = 1;
+  string child_agent_id = 2;
+  repeated SharedVolumeOperation operations = 3;
+}
+
+message ReferenceGrant {
+  FileRef file = 1;
+  string reader_agent_id = 2;
+  FileRef attachment_manifest = 3;
+}
+
+message ForkSelection {
+  bool required = 1;
+  ResourceRevision revision = 2;
+}
+
+message ForkRequest {
+  OperationIdentity operation = 1;
+  Authority parent = 2;
+  uint64 parent_revision = 3;
+  Authority child = 4;
+  string child_agent_id = 5;
+  repeated ForkSelection selections = 6;
+  AttestedBoundary boundary = 7;
+  repeated string attached_agent_ids = 8;
+}
+
+message Capture {
+  oneof outcome {
+    CapturedResource captured = 1;
+    string unsupported_reason = 2;
+    string in_flight_operation_id = 3;
+    string indeterminate_operation_id = 4;
+  }
+}
+
+message ForkReport {
+  ForkRequest request = 1;
+  repeated Capture captures = 2;
+  VolumeRef child_private_volume = 3;
+  repeated FileRef inherited_context = 4;
+  repeated SharedGrant shared_grants = 5;
+  repeated ReferenceGrant reference_grants = 6;
+  repeated FileRef attachment_manifests = 7;
+  uint64 inherited_through_sequence = 8;
+  GenerationRef child_private_generation = 9;
+}
+
+message ForkSeed {
+  OperationIdentity operation = 1;
+  Authority parent = 2;
+  uint64 parent_revision = 3;
+  Authority child = 4;
+  string child_agent_id = 5;
+  repeated CapturedResource resources = 6;
+  repeated ForkOmission omissions = 7;
+  VolumeRef child_private_volume = 8;
+  repeated FileRef inherited_context = 9;
+  AttestedBoundary boundary = 10;
+  repeated SharedGrant shared_grants = 11;
+  repeated string attached_agent_ids = 12;
+  repeated ReferenceGrant reference_grants = 13;
+  repeated FileRef attachment_manifests = 14;
+  uint64 inherited_through_sequence = 15;
+  GenerationRef child_private_generation = 16;
+}
+
+// One parent-authorized Filesystem join. The notice is admitted atomically
+// with the receipt; no private volume, model context, or child history merges.
+message ProviderJoinProof {
+  ProviderRef provider = 1;
+  string format = 2;
+  bytes canonical_json_statement = 3; // bounded metadata, no file bodies
+}
+
+message ProjectMergeReceipt {
+  OperationIdentity operation = 1;
+  Authority child = 2;
+  VolumeRef source_project = 3;
+  GenerationRef source_generation = 4;
+  VolumeRef target_project = 5;
+  GenerationRef expected_target_generation = 6;
+  GenerationRef result_generation = 7;
+  bytes filesystem_operation_id = 8; // exactly 16 bytes
+  ProviderJoinProof provider_proof = 9;
+  ConversationMessage notice = 10;
+}

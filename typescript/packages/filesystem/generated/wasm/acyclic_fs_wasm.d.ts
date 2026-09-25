@@ -700,6 +700,26 @@ export class BrowserGeneration {
 }
 
 /**
+ * Browser-safe Git-shaped compatibility history over the canonical Rust state machine.
+ */
+export class BrowserGitCompatRepository {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Parses and executes a Git-shaped argv command using the Rust source of truth.
+     */
+    executeArgvJson(argv: string[], workspace_generation: Uint8Array, default_author: string, now_seconds: bigint): Promise<string>;
+    /**
+     * Executes one typed command encoded with the public serde contract.
+     */
+    executeJson(command_json: string, workspace_generation: Uint8Array): Promise<string>;
+    /**
+     * Creates process-local compatibility state for one SDK workspace.
+     */
+    constructor(workspace_id: Uint8Array);
+}
+
+/**
  * One immutable, side-effect-free workspace join plan.
  */
 export class BrowserJoinPlan {
@@ -1038,6 +1058,101 @@ export class BrowserWorkspace {
 }
 
 /**
+ * Browser-safe recursive multi-root context registry.
+ */
+export class BrowserWorkspaceContextRegistry {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Adopts one parent-authorized root without enumerating its contents.
+     */
+    adoptRoot(context_id: Uint8Array, root_wire: Uint8Array): Promise<Uint8Array>;
+    /**
+     * Recursively tombstones a direct-child subtree.
+     */
+    discardSubtree(parent_context_id: Uint8Array, child_context_id: Uint8Array, maximum: number): Promise<Uint8Array>;
+    /**
+     * Creates an in-process registry. Host persistence can be injected by
+     * the JavaScript embedding when it is available.
+     */
+    constructor();
+    /**
+     * Registers an exact direct child from the shared serde contract.
+     */
+    registerChild(context_id: Uint8Array, parent_context_id: Uint8Array, roots_wire: Uint8Array): Promise<Uint8Array>;
+    /**
+     * Registers one root context from the shared serde contract.
+     */
+    registerRoot(context_id: Uint8Array, roots_wire: Uint8Array): Promise<Uint8Array>;
+    /**
+     * Releases one root after callers have settled its filesystem changes.
+     */
+    removeRoot(context_id: Uint8Array, root_id: Uint8Array): Promise<Uint8Array>;
+    /**
+     * Resolves one context as stable JSON.
+     */
+    resolve(context_id: Uint8Array): Promise<Uint8Array>;
+    /**
+     * Freezes or resumes one durable context.
+     */
+    setActive(context_id: Uint8Array, active: boolean): Promise<Uint8Array>;
+    /**
+     * Advances one root binding after a compatibility branch switch.
+     */
+    setWorkspace(context_id: Uint8Array, root_id: Uint8Array, workspace_id: Uint8Array, workspace_name: string, parent_workspace_id?: Uint8Array | null): Promise<Uint8Array>;
+}
+
+/**
+ * Decodes a versioned merge-candidate envelope to its canonical payload.
+ */
+export function decodeMergeCandidateJson(value_json: string): string;
+
+/**
+ * Decodes a versioned merge-plan envelope to its canonical payload.
+ */
+export function decodeMergePlanJson(value_json: string): string;
+
+/**
+ * Decodes a multi-root candidate envelope to its canonical payload.
+ */
+export function decodeMultiRootCandidateJson(value_json: string): string;
+
+/**
+ * Decodes a versioned multi-root plan envelope to its canonical payload.
+ */
+export function decodeMultiRootPlanJson(value_json: string): string;
+
+/**
+ * Decodes a versioned publication envelope to its canonical payload.
+ */
+export function decodePublicationJson(value_json: string): string;
+
+/**
+ * Encodes a merge-candidate payload in the versioned compatibility envelope.
+ */
+export function encodeMergeCandidateJson(value_json: string): string;
+
+/**
+ * Encodes a merge-plan payload in the versioned compatibility envelope.
+ */
+export function encodeMergePlanJson(value_json: string): string;
+
+/**
+ * Encodes a multi-root candidate payload in the compatibility envelope.
+ */
+export function encodeMultiRootCandidateJson(value_json: string): string;
+
+/**
+ * Encodes a multi-root plan payload in the versioned compatibility envelope.
+ */
+export function encodeMultiRootPlanJson(value_json: string): string;
+
+/**
+ * Encodes a publication payload in the versioned compatibility envelope.
+ */
+export function encodePublicationJson(value_json: string): string;
+
+/**
  * Opens transactional browser storage with explicit `IndexedDB` or OPFS immutable objects.
  *
  * # Errors
@@ -1063,6 +1178,7 @@ export interface InitOutput {
     readonly __wbg_browsercheckout_free: (a: number, b: number) => void;
     readonly __wbg_browserfs_free: (a: number, b: number) => void;
     readonly __wbg_browsergeneration_free: (a: number, b: number) => void;
+    readonly __wbg_browsergitcompatrepository_free: (a: number, b: number) => void;
     readonly __wbg_browserjoinplan_free: (a: number, b: number) => void;
     readonly __wbg_browserresolvedfile_free: (a: number, b: number) => void;
     readonly __wbg_browserresolvedfiles_free: (a: number, b: number) => void;
@@ -1070,6 +1186,7 @@ export interface InitOutput {
     readonly __wbg_browsertransaction_free: (a: number, b: number) => void;
     readonly __wbg_browservolume_free: (a: number, b: number) => void;
     readonly __wbg_browserworkspace_free: (a: number, b: number) => void;
+    readonly __wbg_browserworkspacecontextregistry_free: (a: number, b: number) => void;
     readonly browserchangeset_changes: (a: number) => [number, number, number];
     readonly browserchangeset_compose: (a: number, b: number, c: number) => any;
     readonly browserchangeset_from: (a: number) => number;
@@ -1154,6 +1271,9 @@ export interface InitOutput {
     readonly browsergeneration_readSymbolicLink: (a: number, b: number, c: number) => any;
     readonly browsergeneration_stat: (a: number, b: number, c: number) => any;
     readonly browsergeneration_workspaceId: (a: number) => [number, number];
+    readonly browsergitcompatrepository_executeArgvJson: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: bigint) => any;
+    readonly browsergitcompatrepository_executeJson: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browsergitcompatrepository_new: (a: number, b: number) => [number, number, number];
     readonly browserjoinplan_apply: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserjoinplan_commonAncestor: (a: number) => [number, number];
     readonly browserjoinplan_targetHead: (a: number) => [number, number];
@@ -1214,13 +1334,32 @@ export interface InitOutput {
     readonly browserworkspace_stat: (a: number, b: number, c: number) => any;
     readonly browserworkspace_sync: (a: number) => any;
     readonly browserworkspace_write: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browserworkspacecontextregistry_adoptRoot: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browserworkspacecontextregistry_discardSubtree: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
+    readonly browserworkspacecontextregistry_new: () => number;
+    readonly browserworkspacecontextregistry_registerChild: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly browserworkspacecontextregistry_registerRoot: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browserworkspacecontextregistry_removeRoot: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browserworkspacecontextregistry_resolve: (a: number, b: number, c: number) => any;
+    readonly browserworkspacecontextregistry_setActive: (a: number, b: number, c: number, d: number) => any;
+    readonly browserworkspacecontextregistry_setWorkspace: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => any;
+    readonly decodeMergeCandidateJson: (a: number, b: number) => [number, number, number, number];
+    readonly decodeMergePlanJson: (a: number, b: number) => [number, number, number, number];
+    readonly decodeMultiRootCandidateJson: (a: number, b: number) => [number, number, number, number];
+    readonly decodeMultiRootPlanJson: (a: number, b: number) => [number, number, number, number];
+    readonly decodePublicationJson: (a: number, b: number) => [number, number, number, number];
+    readonly encodeMergeCandidateJson: (a: number, b: number) => [number, number, number, number];
+    readonly encodeMergePlanJson: (a: number, b: number) => [number, number, number, number];
+    readonly encodeMultiRootCandidateJson: (a: number, b: number) => [number, number, number, number];
+    readonly encodeMultiRootPlanJson: (a: number, b: number) => [number, number, number, number];
+    readonly encodePublicationJson: (a: number, b: number) => [number, number, number, number];
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__hbda0b83ef83cb943: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h185cdad2072ccc5c: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h2a4eb6287a5d90bc: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h700ae9e05bdefaac: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__ha10a2157f63fc2da: (a: number, b: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__hf5e4aa787d932a81: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h084ada5e0839d1da: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hcde0fc9492c2469e: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h8c4440071a39f37a: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

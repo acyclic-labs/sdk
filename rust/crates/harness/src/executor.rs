@@ -3,24 +3,66 @@
 use crate::{
     Error, InteractionId, OperationId, Result,
     context::{ContextInput, ContextPipeline},
-    interaction::{Interaction, InteractionResponse},
-    model::{Model, ModelAttempt, ModelEvent, ModelMessage, ModelProvider, ModelRequest},
+    conversation::{Attachment, FileRef, Limits, VolumeClass},
+    interaction::{Interaction, InteractionOutcome},
+    model::{
+        Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
+        ModelProvider, ModelRequest, ModelRole,
+    },
+    projection::SelectedModelContext,
+    registry::ComponentIdentity,
+    runtime::{
+        RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval, validate_policy_identity,
+    },
     tool::{ToolInvocation, ToolRegistry, ToolResult, validate_value},
 };
 use futures::{StreamExt as _, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 /// Durable input to any custom executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TurnInput {
     /// Stable durable turn execution identity.
     pub operation_id: OperationId,
-    /// Application-defined input.
-    pub input: Value,
+    /// Typed provider-neutral input; canonical conversation storage still uses file refs.
+    pub input: ModelContent,
+    /// Exact, separately recorded canonical history selection for this turn.
+    /// When present its last user message is the current `input`; the stock
+    /// context pipeline does not synthesize a duplicate user message.
+    #[serde(default)]
+    pub selected_context: Option<SelectedModelContext>,
     /// Maximum model/tool steps permitted for this turn.
     pub max_steps: u32,
+}
+
+impl TurnInput {
+    /// Constructs a turn from an exact, already recorded conversation
+    /// selection. The final selected user message is the turn input, so no
+    /// text is copied from a conversation event into a durable request.
+    pub fn from_selected_context(
+        operation_id: OperationId,
+        selected_context: SelectedModelContext,
+        max_steps: u32,
+    ) -> Result<Self> {
+        let input = selected_context
+            .messages
+            .last()
+            .filter(|message| message.role == ModelRole::User)
+            .map(|message| message.content.clone())
+            .ok_or_else(|| {
+                Error::Invalid("selected context must end with a user message".into())
+            })?;
+        input.validate_user_input()?;
+        selected_context.validate_for_input(&input)?;
+        Ok(Self {
+            operation_id,
+            input,
+            selected_context: Some(selected_context),
+            max_steps,
+        })
+    }
 }
 
 /// Gapless replay record returned by a durable execution journal.
@@ -39,6 +81,10 @@ pub struct ExecutionRecord {
 /// Canonical executor observation suitable for a durable journal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "journal observations preserve direct typed ref fields"
+)]
 pub enum ExecutionEvent {
     /// Binds an operation identity to one immutable request and composition.
     Started {
@@ -51,34 +97,70 @@ pub enum ExecutionEvent {
         step: u32,
         /// Digest of the exact model request.
         request_digest: [u8; 32],
-        /// Complete model-visible request retained for audit and exact recovery.
-        request: ModelRequest,
     },
     /// One model stream item was observed.
     Model {
         /// Zero-based executor step.
         step: u32,
-        /// Observed model event.
-        event: ModelEvent,
+        /// Pinned, private JSON file containing one observed model event.
+        event: FileRef,
     },
     /// Tool dispatch is about to begin.
     ToolStarted {
         /// Zero-based executor step.
         step: u32,
-        /// Admitted invocation.
-        invocation: ToolInvocation,
+        /// Stable provider/model-owned call identity.
+        call_id: String,
+        /// Pinned, private JSON file containing the admitted invocation.
+        invocation: FileRef,
     },
     /// Tool execution and projection completed.
     ToolCompleted {
         /// Zero-based executor step.
         step: u32,
-        /// Completed invocation.
-        invocation: ToolInvocation,
-        /// Validated executor result.
-        result: ToolResult,
-        /// Model-visible projection.
-        projection: Value,
+        /// Stable provider/model-owned call identity.
+        call_id: String,
+        /// Pinned private JSON file containing the validated result.
+        result: FileRef,
+        /// Pinned private JSON file containing the model-visible projection.
+        projection: FileRef,
     },
+    /// A terminal tool failure recorded without exception bodies or secrets.
+    ToolFailed {
+        /// Zero-based executor step.
+        step: u32,
+        /// Stable call identity.
+        call_id: String,
+        /// Bounded classification; raw provider errors never enter the journal.
+        reason: ToolFailureKind,
+    },
+}
+
+/// Stable, non-secret terminal tool failure classes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolFailureKind {
+    /// Executor rejected the already admitted call.
+    ExecutorRejected,
+    /// Executor result did not satisfy its pinned output contract.
+    InvalidOutput,
+    /// A model-visible result could not be projected safely.
+    ProjectionRejected,
+    /// A result artifact could not be published under the pinned limits.
+    PublicationRejected,
+}
+
+impl ToolFailureKind {
+    /// Credential-free, stable diagnostic for a recorded tool failure.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::ExecutorRejected => "tool executor rejected the admitted call",
+            Self::InvalidOutput => "tool output violated its pinned schema",
+            Self::ProjectionRejected => "tool result projection was rejected",
+            Self::PublicationRejected => "tool result artifact could not be published",
+        }
+    }
 }
 
 /// Durable host services available to an executor; policy remains executor-owned.
@@ -98,6 +180,60 @@ pub trait ExecutionJournal: Send + Sync {
         event: ExecutionEvent,
     ) -> BoxFuture<'a, Result<()>>;
 
+    /// Atomically appends a dispatch or terminal observation at an exact
+    /// journal tail. A claimant may execute or publish only when this returns
+    /// true; false means another host advanced the journal. Providers unable
+    /// to offer a linearizable compare-and-append must fail closed.
+    fn append_if_tail<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _expected_tail: u64,
+        _claim_id: String,
+        _event: ExecutionEvent,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "atomic execution journal append is unavailable".into(),
+            ))
+        })
+    }
+
+    /// Stages immutable private bytes before any referring observation is appended.
+    /// Retries with the same key and different bytes must fail closed.
+    fn stage<'a>(
+        &'a self,
+        operation_id: OperationId,
+        idempotency_key: String,
+        bytes: Vec<u8>,
+        media_type: &'static str,
+    ) -> BoxFuture<'a, Result<FileRef>>;
+
+    /// Reads an exact version under the journal owner's grant and verifies its descriptor.
+    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>>;
+
+    /// Verifies a user-supplied file under its owner-mediated grant before turn admission.
+    fn verify_input_file<'a>(&'a self, _reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "turn input file verification is unavailable".into(),
+            ))
+        })
+    }
+
+    /// Confirms the selected model context is the exact projection of the
+    /// owning conversation's previously committed selection for this turn.
+    fn verify_selected_context<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _selected: &'a SelectedModelContext,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "canonical model context verification is unavailable".into(),
+            ))
+        })
+    }
+
     /// Opens one typed durable interaction exactly once.
     fn open_interaction<'a>(
         &'a self,
@@ -105,11 +241,11 @@ pub trait ExecutionJournal: Send + Sync {
         interaction: Interaction,
     ) -> BoxFuture<'a, Result<()>>;
 
-    /// Reads a validated durable response without blocking the semantic core.
-    fn interaction_response<'a>(
+    /// Reads the canonical durable outcome without treating refusal as an answer.
+    fn interaction_outcome<'a>(
         &'a self,
         id: InteractionId,
-    ) -> BoxFuture<'a, Result<Option<InteractionResponse>>>;
+    ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>>;
 }
 
 /// Terminal result produced by an executor.
@@ -117,6 +253,9 @@ pub trait ExecutionJournal: Send + Sync {
 pub struct TurnOutput {
     /// User-visible assistant text.
     pub text: String,
+    /// Ordered, already staged assistant attachments or published artifacts.
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
     /// Provider-owned final metadata.
     pub metadata: Value,
     /// Number of completed model steps.
@@ -140,6 +279,10 @@ pub struct StockExecutor {
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
     tools: ToolRegistry,
+    limits: Limits,
+    tool_scope: RuntimeScope,
+    policy: Option<Arc<dyn ToolPolicy>>,
+    policy_identity: Option<ComponentIdentity>,
 }
 
 impl StockExecutor {
@@ -156,19 +299,46 @@ impl StockExecutor {
             provider,
             context,
             tools,
+            limits: Limits::default(),
+            tool_scope: RuntimeScope::default(),
+            policy: None,
+            policy_identity: None,
         }
     }
 
+    /// Applies the composition's checked bounds to the stock loop.
+    #[must_use]
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Enforces the same explicit tool grants and policy in the stock model loop.
+    pub fn with_tool_authority(
+        mut self,
+        scope: RuntimeScope,
+        policy: Option<Arc<dyn ToolPolicy>>,
+    ) -> Result<Self> {
+        if let Some(policy) = &policy {
+            validate_policy_identity(&policy.identity())?;
+        }
+        self.policy_identity = policy.as_ref().map(|policy| policy.identity());
+        self.tool_scope = scope;
+        self.policy = policy;
+        Ok(self)
+    }
+
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
-        let canonical = serde_json::to_vec(&json!({
-            "executor": "acyclic.stock.v1",
+        crate::contract::canonical_json_digest(&json!({
+            "executor": "acyclic.stock.v2",
             "input": input,
             "model": self.model,
             "context": self.context.contracts(),
-            "tools": self.tools.definitions(),
+            "tools": self.tools.definitions()?,
+            "limits": self.limits,
+            "tool_scope": (self.tool_scope.grants(), self.tool_scope.limits()),
+            "policy": self.policy_identity.as_ref(),
         }))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        Ok(*blake3::hash(&canonical).as_bytes())
     }
 
     /// Replays the durable journal for one turn, verifying it is gapless and bound to the
@@ -177,7 +347,7 @@ impl StockExecutor {
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
-    ) -> Result<Vec<ExecutionRecord>> {
+    ) -> Result<()> {
         let records = journal.replay(input.operation_id).await?;
         for (index, record) in records.iter().enumerate() {
             if record.operation_id != input.operation_id || record.sequence != index as u64 + 1 {
@@ -206,7 +376,7 @@ impl StockExecutor {
                     .await?;
             }
         }
-        Ok(records)
+        Ok(())
     }
 
     /// Resolves one model step's events, replaying an already completed or started attempt
@@ -223,31 +393,45 @@ impl StockExecutor {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        records: &[ExecutionRecord],
         prior_messages: &[ModelMessage],
     ) -> Result<Vec<ModelEvent>> {
+        let records = journal.replay(input.operation_id).await?;
         let context = self
             .context
             .run(&ContextInput {
                 input: input.input.clone(),
+                selected_context: input.selected_context.clone(),
                 step,
                 prior_messages: prior_messages.to_vec(),
             })
             .await?;
-        let replayed_model = records
-            .iter()
-            .filter_map(|record| match &record.event {
-                ExecutionEvent::Model {
-                    step: event_step,
-                    event,
-                } if *event_step == step => Some(event.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        let mut replayed_model = Vec::new();
+        let mut admission = ModelEventAdmission::default();
+        for record in &records {
+            if let ExecutionEvent::Model {
+                step: event_step,
+                event,
+            } = &record.event
+                && *event_step == step
+            {
+                let event = load_json::<ModelEvent>(journal, event).await?;
+                admission.observe(&event, self.limits)?;
+                replayed_model.push(event);
+            }
+        }
         let request = ModelRequest {
             model: self.model.clone(),
             messages: context.messages,
-            tools: self.tools.definitions(),
+            tools: self
+                .tools
+                .definitions()?
+                .into_iter()
+                .filter(|tool| {
+                    self.tool_scope
+                        .grants()
+                        .contains(&format!("tool:call:{}", tool.name))
+                })
+                .collect(),
             max_output_tokens: None,
         };
         let request_digest = model_request_digest(&request)?;
@@ -255,20 +439,20 @@ impl StockExecutor {
             ExecutionEvent::ModelStarted {
                 step: event_step,
                 request_digest,
-                request,
-            } if *event_step == step => Some((*request_digest, request)),
+            } if *event_step == step => Some(*request_digest),
             _ => None,
         });
-        if started.is_some_and(|(existing_digest, existing_request)| {
-            existing_digest != request_digest || existing_request != &request
-        }) {
+        if started.is_none() && !replayed_model.is_empty() {
+            return Err(Error::Storage(
+                "model observations exist without an admitted attempt".into(),
+            ));
+        }
+        if started.is_some_and(|existing_digest| existing_digest != request_digest) {
             return Err(Error::Conflict(
                 "model attempt identity is bound to another request".into(),
             ));
         }
-        let replay_completed = replayed_model
-            .iter()
-            .any(|event| matches!(event, ModelEvent::Completed { .. }));
+        let replay_completed = admission.completed;
         let model_events = if replay_completed {
             replayed_model
         } else if started.is_some() {
@@ -286,13 +470,16 @@ impl StockExecutor {
             };
             let mut observed = replayed_model;
             for event in continuation.drain(..) {
+                admission.observe(&event, self.limits)?;
+                let key = format!("model:{step}:{}", observed.len());
+                let reference = stage_json(journal, input.operation_id, &key, &event).await?;
                 journal
                     .append(
                         input.operation_id,
-                        format!("model:{step}:{}", observed.len()),
+                        key,
                         ExecutionEvent::Model {
                             step,
-                            event: event.clone(),
+                            event: reference,
                         },
                     )
                     .await?;
@@ -300,28 +487,53 @@ impl StockExecutor {
             }
             observed
         } else {
-            journal
-                .append(
+            let current = journal.replay(input.operation_id).await?;
+            if let Some(existing) = current.iter().find_map(|record| match &record.event {
+                ExecutionEvent::ModelStarted {
+                    step: event_step,
+                    request_digest,
+                } if *event_step == step => Some(*request_digest),
+                _ => None,
+            }) {
+                if existing != request_digest {
+                    return Err(Error::Conflict(
+                        "model attempt identity is bound to another request".into(),
+                    ));
+                }
+                return Err(Error::Indeterminate(input.operation_id));
+            }
+            let claimed = journal
+                .append_if_tail(
                     input.operation_id,
-                    format!("model:{step}:started"),
+                    current.len() as u64,
+                    format!("model:{step}:claim:{}", OperationId::new()),
                     ExecutionEvent::ModelStarted {
                         step,
                         request_digest,
-                        request: request.clone(),
                     },
                 )
-                .await?;
+                .await;
+            match claimed {
+                Ok(true) => {}
+                Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                    return Err(Error::Indeterminate(input.operation_id));
+                }
+                Err(error) => return Err(error),
+            }
             let mut stream = self.provider.generate(request);
             let mut observed = Vec::new();
             while let Some(event) = stream.next().await {
                 let event = event?;
+                admission.observe(&event, self.limits)?;
+                let key = format!("model:{step}:{}", observed.len());
+                let reference = stage_json(journal, input.operation_id, &key, &event).await?;
                 journal
                     .append(
                         input.operation_id,
-                        format!("model:{step}:{}", observed.len()),
+                        key,
                         ExecutionEvent::Model {
                             step,
-                            event: event.clone(),
+                            event: reference,
                         },
                     )
                     .await?;
@@ -329,8 +541,45 @@ impl StockExecutor {
             }
             observed
         };
-        validate_model_events(&model_events)?;
         Ok(model_events)
+    }
+
+    async fn record_tool_failure(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        call_id: &str,
+        reason: ToolFailureKind,
+    ) -> Result<()> {
+        let current = journal.replay(operation_id).await?;
+        if current.iter().any(|record| {
+            matches!(&record.event,
+            ExecutionEvent::ToolCompleted { step: event_step, call_id: existing, .. }
+                | ExecutionEvent::ToolFailed { step: event_step, call_id: existing, .. }
+                if *event_step == step && existing == call_id)
+        }) {
+            return Err(Error::Indeterminate(operation_id));
+        }
+        match journal
+            .append_if_tail(
+                operation_id,
+                current.len() as u64,
+                format!("tool:{step}:{call_id}:failed:{}", OperationId::new()),
+                ExecutionEvent::ToolFailed {
+                    step,
+                    call_id: call_id.into(),
+                    reason,
+                },
+            )
+            .await
+        {
+            Ok(true) => Ok(()),
+            Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                Err(Error::Indeterminate(operation_id))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Resolves one tool invocation against the durable journal, replaying an already
@@ -347,10 +596,11 @@ impl StockExecutor {
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
         step: u32,
-        records: &[ExecutionRecord],
         invocation: ToolInvocation,
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<()> {
+        let records = journal.replay(operation_id).await?;
+        invocation.validate()?;
         let tool = self
             .tools
             .get(&invocation.name)
@@ -360,89 +610,317 @@ impl StockExecutor {
             &invocation.arguments,
             "tool input",
         )?;
+        if let Some(reason) = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ToolFailed {
+                step: event_step,
+                call_id,
+                reason,
+            } if *event_step == step && call_id == &invocation.call_id => Some(*reason),
+            _ => None,
+        }) {
+            return Err(Error::Invalid(reason.message().into()));
+        }
         let completed_tool = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolCompleted {
                 step: event_step,
-                invocation: existing,
+                call_id,
                 result,
                 projection,
-            } if *event_step == step && existing.call_id == invocation.call_id => {
+            } if *event_step == step && call_id == &invocation.call_id => {
                 Some((result.clone(), projection.clone()))
             }
             _ => None,
         });
         let (result, projection) = if let Some(completed) = completed_tool {
-            completed
+            (
+                load_json::<ToolResult>(journal, &completed.0).await?,
+                load_json::<Value>(journal, &completed.1).await?,
+            )
         } else {
+            {
+                let scope = &self.tool_scope;
+                let capability = format!("tool:call:{}", tool.definition.name);
+                if !scope.grants().contains(&capability) {
+                    return Err(Error::Unauthorized(format!("scope lacks {capability}")));
+                }
+                if let Some(policy) = &self.policy {
+                    if self.policy_identity.as_ref() != Some(&policy.identity()) {
+                        return Err(Error::Conflict("stock policy changed after binding".into()));
+                    }
+                    let decision = policy.evaluate(&invocation, scope).await?;
+                    if self.policy_identity.as_ref() != Some(&policy.identity()) {
+                        return Err(Error::Conflict(
+                            "stock policy changed during evaluation".into(),
+                        ));
+                    }
+                    match decision {
+                        ToolPolicyDecision::Allow => {}
+                        ToolPolicyDecision::Deny { reason } => {
+                            return Err(Error::Unauthorized(reason));
+                        }
+                        ToolPolicyDecision::RequireApproval { prompt } => {
+                            if !scope.grants().contains("interaction:route") {
+                                return Err(Error::Unauthorized(
+                                    "stock tool approval requires interaction:route".into(),
+                                ));
+                            }
+                            let digest = crate::contract::canonical_json_digest(&(
+                                &operation_id,
+                                step,
+                                &tool.definition,
+                                &invocation,
+                            ))?;
+                            let mut identity = [0_u8; 16];
+                            identity.copy_from_slice(
+                                &blake3::hash(
+                                    &[
+                                        b"harness:stock-tool-approval:v2".as_slice(),
+                                        operation_id.into_bytes().as_slice(),
+                                        &step.to_be_bytes(),
+                                        invocation.call_id.as_bytes(),
+                                    ]
+                                    .concat(),
+                                )
+                                .as_bytes()[..16],
+                            );
+                            let approval = InteractionId::from_bytes(identity);
+                            journal
+                                .open_interaction(
+                                    approval,
+                                    Interaction::approval(prompt, operation_id, digest)?,
+                                )
+                                .await?;
+                            check_tool_approval(
+                                journal
+                                    .interaction_outcome(approval)
+                                    .await?
+                                    .unwrap_or(InteractionOutcome::Indeterminate { operation_id }),
+                            )?;
+                        }
+                    }
+                }
+            }
             let started = records.iter().find_map(|record| match &record.event {
                 ExecutionEvent::ToolStarted {
                     step: event_step,
+                    call_id,
                     invocation: existing,
-                } if *event_step == step && existing.call_id == invocation.call_id => {
-                    Some(existing)
-                }
+                } if *event_step == step && call_id == &invocation.call_id => Some(existing),
                 _ => None,
             });
-            if let Some(existing) = started {
-                if existing != &invocation {
+            let claimed = if let Some(existing) = started {
+                if load_json::<ToolInvocation>(journal, existing).await? != invocation {
                     return Err(Error::Conflict(
                         "tool call identity is bound to another invocation".into(),
                     ));
                 }
-                let Some(result) = tool.executor.reconcile(invocation.clone()).await? else {
+                false
+            } else {
+                let invocation_ref = stage_json(
+                    journal,
+                    operation_id,
+                    &format!("tool:{step}:{}:invocation", invocation.call_id),
+                    &invocation,
+                )
+                .await?;
+                let current = journal.replay(operation_id).await?;
+                if current.iter().any(|record| {
+                    matches!(&record.event,
+                    ExecutionEvent::ToolStarted { step: event_step, call_id, .. }
+                        if *event_step == step && call_id == &invocation.call_id)
+                }) {
                     return Err(Error::Indeterminate(operation_id));
-                };
-                validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
-                let projection = tool.projection.project(&invocation, &result)?;
-                journal
-                    .append(
+                }
+                match journal
+                    .append_if_tail(
                         operation_id,
-                        format!("tool:{step}:{}:completed", invocation.call_id),
-                        ExecutionEvent::ToolCompleted {
+                        current.len() as u64,
+                        format!(
+                            "tool:{step}:{}:claim:{}",
+                            invocation.call_id,
+                            OperationId::new()
+                        ),
+                        ExecutionEvent::ToolStarted {
                             step,
-                            invocation: invocation.clone(),
-                            result: result.clone(),
-                            projection: projection.clone(),
+                            call_id: invocation.call_id.clone(),
+                            invocation: invocation_ref,
                         },
                     )
-                    .await?;
-                prior_messages.push(ModelMessage {
-                    role: "tool".into(),
-                    content: json!({"call_id": invocation.call_id, "name": invocation.name, "result": projection}),
-                });
-                return Ok(());
-            }
-            journal
-                .append(
+                    .await
+                {
+                    Ok(true) => true,
+                    Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                        return Err(Error::Indeterminate(operation_id));
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
+            let result = if claimed {
+                match tool.executor.execute(invocation.clone()).await {
+                    Ok(result) => result,
+                    Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                        return Err(Error::Indeterminate(operation_id));
+                    }
+                    Err(_) => {
+                        self.record_tool_failure(
+                            journal,
+                            operation_id,
+                            step,
+                            &invocation.call_id,
+                            ToolFailureKind::ExecutorRejected,
+                        )
+                        .await?;
+                        return Err(Error::Invalid(
+                            ToolFailureKind::ExecutorRejected.message().into(),
+                        ));
+                    }
+                }
+            } else {
+                match tool.executor.reconcile(invocation.clone()).await {
+                    Ok(Some(result)) => result,
+                    Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                        return Err(Error::Indeterminate(operation_id));
+                    }
+                    Err(_) => {
+                        self.record_tool_failure(
+                            journal,
+                            operation_id,
+                            step,
+                            &invocation.call_id,
+                            ToolFailureKind::ExecutorRejected,
+                        )
+                        .await?;
+                        return Err(Error::Invalid(
+                            ToolFailureKind::ExecutorRejected.message().into(),
+                        ));
+                    }
+                }
+            };
+            if validate_value(&tool.definition.output_schema, &result.value, "tool output").is_err()
+            {
+                self.record_tool_failure(
+                    journal,
                     operation_id,
-                    format!("tool:{step}:{}:started", invocation.call_id),
-                    ExecutionEvent::ToolStarted {
-                        step,
-                        invocation: invocation.clone(),
-                    },
+                    step,
+                    &invocation.call_id,
+                    ToolFailureKind::InvalidOutput,
                 )
                 .await?;
-            let result = tool.executor.execute(invocation.clone()).await?;
-            validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
-            let projection = tool.projection.project(&invocation, &result)?;
-            journal
-                .append(
+                return Err(Error::Invalid(
+                    ToolFailureKind::InvalidOutput.message().into(),
+                ));
+            }
+            let projection = match tool.projection.project(&invocation, &result) {
+                Ok(projection) => projection,
+                Err(_) => {
+                    self.record_tool_failure(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::ProjectionRejected,
+                    )
+                    .await?;
+                    return Err(Error::Invalid(
+                        ToolFailureKind::ProjectionRejected.message().into(),
+                    ));
+                }
+            };
+            let result_ref = stage_json(
+                journal,
+                operation_id,
+                &format!("tool:{step}:{}:result", invocation.call_id),
+                &result,
+            )
+            .await;
+            let result_ref = match result_ref {
+                Ok(reference) => reference,
+                Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                    return Err(Error::Indeterminate(operation_id));
+                }
+                Err(_) => {
+                    self.record_tool_failure(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::PublicationRejected,
+                    )
+                    .await?;
+                    return Err(Error::Invalid(
+                        ToolFailureKind::PublicationRejected.message().into(),
+                    ));
+                }
+            };
+            let projection_ref = stage_json(
+                journal,
+                operation_id,
+                &format!("tool:{step}:{}:projection", invocation.call_id),
+                &projection,
+            )
+            .await;
+            let projection_ref = match projection_ref {
+                Ok(reference) => reference,
+                Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                    return Err(Error::Indeterminate(operation_id));
+                }
+                Err(_) => {
+                    self.record_tool_failure(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::PublicationRejected,
+                    )
+                    .await?;
+                    return Err(Error::Invalid(
+                        ToolFailureKind::PublicationRejected.message().into(),
+                    ));
+                }
+            };
+            let current = journal.replay(operation_id).await?;
+            if current.iter().any(|record| {
+                matches!(&record.event,
+                ExecutionEvent::ToolCompleted { step: event_step, call_id, .. }
+                    | ExecutionEvent::ToolFailed { step: event_step, call_id, .. }
+                    if *event_step == step && call_id == &invocation.call_id)
+            }) {
+                return Err(Error::Indeterminate(operation_id));
+            }
+            match journal
+                .append_if_tail(
                     operation_id,
-                    format!("tool:{step}:{}:completed", invocation.call_id),
+                    current.len() as u64,
+                    format!(
+                        "tool:{step}:{}:completed:{}",
+                        invocation.call_id,
+                        OperationId::new()
+                    ),
                     ExecutionEvent::ToolCompleted {
                         step,
-                        invocation: invocation.clone(),
-                        result: result.clone(),
-                        projection: projection.clone(),
+                        call_id: invocation.call_id.clone(),
+                        result: result_ref,
+                        projection: projection_ref,
                     },
                 )
-                .await?;
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                    return Err(Error::Indeterminate(operation_id));
+                }
+                Err(error) => return Err(error),
+            }
             (result, projection)
         };
         validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
         prior_messages.push(ModelMessage {
-            role: "tool".into(),
-            content: json!({"call_id": invocation.call_id, "name": invocation.name, "result": projection}),
+            role: ModelRole::Tool,
+            content: ModelContent::Part(ModelContentPart::ToolResult {
+                call_id: invocation.call_id.clone(),
+                name: invocation.name.clone(),
+                value: projection,
+            }),
         });
         Ok(())
     }
@@ -455,21 +933,57 @@ impl Executor for StockExecutor {
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>> {
         Box::pin(async move {
-            if input.max_steps == 0 {
-                return Err(Error::Invalid("max_steps must be positive".into()));
+            self.limits.validate()?;
+            if input.max_steps == 0 || input.max_steps as usize > self.limits.model_steps {
+                return Err(Error::Invalid(
+                    "max_steps exceeds configured model step bound".into(),
+                ));
             }
-            let records = self.ensure_started(journal, &input).await?;
+            input.input.validate_user_input()?;
+            input.input.validate_limits(self.limits)?;
+            if let Some(selected) = &input.selected_context {
+                selected.validate_for_input(&input.input)?;
+                if selected.messages.len() > self.limits.context_messages {
+                    return Err(Error::Invalid(
+                        "selected context exceeds configured message limit".into(),
+                    ));
+                }
+                journal
+                    .verify_selected_context(input.operation_id, selected)
+                    .await?;
+                for message in &selected.messages {
+                    message.content.validate_limits(self.limits)?;
+                    for reference in message.content.file_refs() {
+                        journal.verify_input_file(reference).await?;
+                    }
+                }
+            }
+            for reference in input.input.file_refs() {
+                journal.verify_input_file(reference).await?;
+            }
+            self.ensure_started(journal, &input).await?;
             let mut prior_messages = Vec::new();
             let mut text = String::new();
             for step in 0..input.max_steps {
                 let mut calls = Vec::new();
                 let mut completed = None;
                 let model_events = self
-                    .run_model_step(journal, &input, step, &records, &prior_messages)
+                    .run_model_step(journal, &input, step, &prior_messages)
                     .await?;
                 for event in model_events {
                     match event {
-                        ModelEvent::Content { delta } => text.push_str(&delta),
+                        ModelEvent::Content { delta } => {
+                            if text
+                                .len()
+                                .checked_add(delta.len())
+                                .is_none_or(|size| size as u64 > self.limits.file_bytes)
+                            {
+                                return Err(Error::Invalid(
+                                    "assistant output exceeds file limit".into(),
+                                ));
+                            }
+                            text.push_str(&delta);
+                        }
                         ModelEvent::ToolCall {
                             call_id,
                             name,
@@ -491,20 +1005,24 @@ impl Executor for StockExecutor {
                 if calls.is_empty() {
                     return Ok(TurnOutput {
                         text,
+                        attachments: Vec::new(),
                         metadata,
                         steps: step + 1,
                     });
                 }
-                prior_messages.push(ModelMessage {
-                    role: "assistant".into(),
-                    content: json!({"tool_calls": &calls}),
-                });
                 for invocation in calls {
+                    prior_messages.push(ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: ModelContent::Part(ModelContentPart::ToolCall {
+                            call_id: invocation.call_id.clone(),
+                            name: invocation.name.clone(),
+                            arguments: invocation.arguments.clone(),
+                        }),
+                    });
                     self.resolve_tool_call(
                         journal,
                         input.operation_id,
                         step,
-                        &records,
                         invocation,
                         &mut prior_messages,
                     )
@@ -517,49 +1035,103 @@ impl Executor for StockExecutor {
 }
 
 fn model_request_digest(request: &ModelRequest) -> Result<[u8; 32]> {
-    let canonical =
-        serde_json::to_vec(request).map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(*blake3::hash(&canonical).as_bytes())
+    crate::contract::canonical_json_digest(request)
 }
 
-fn validate_model_events(events: &[ModelEvent]) -> Result<()> {
-    let mut calls = std::collections::BTreeSet::new();
-    let mut completed = false;
-    for (index, event) in events.iter().enumerate() {
-        if completed {
+pub(crate) async fn stage_json<T: Serialize>(
+    journal: &dyn ExecutionJournal,
+    operation_id: OperationId,
+    key: &str,
+    value: &T,
+) -> Result<FileRef> {
+    let bytes = crate::contract::canonical_json_bytes(value)?;
+    let reference = journal
+        .stage(operation_id, key.into(), bytes.clone(), "application/json")
+        .await?;
+    if reference.volume().class() != VolumeClass::AgentPrivate
+        || reference.descriptor().media_type() != "application/json"
+    {
+        return Err(Error::Storage(
+            "execution journal returned a non-private JSON reference".into(),
+        ));
+    }
+    reference.descriptor().verify(&bytes)?;
+    Ok(reference)
+}
+
+pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
+    journal: &dyn ExecutionJournal,
+    reference: &FileRef,
+) -> Result<T> {
+    if reference.volume().class() != VolumeClass::AgentPrivate
+        || reference.descriptor().media_type() != "application/json"
+    {
+        return Err(Error::Storage(
+            "execution journal references non-private JSON content".into(),
+        ));
+    }
+    let bytes = journal.load(reference).await?;
+    reference.descriptor().verify(&bytes)?;
+    let parsed: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| Error::Storage(format!("execution journal JSON is invalid: {error}")))?;
+    if crate::contract::canonical_json_bytes(&parsed)
+        .map_err(|error| Error::Storage(error.to_string()))?
+        != bytes
+    {
+        return Err(Error::Storage(
+            "execution journal JSON is not canonical".into(),
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))
+}
+
+#[derive(Default)]
+struct ModelEventAdmission {
+    count: usize,
+    calls: BTreeSet<String>,
+    completed: bool,
+}
+
+impl ModelEventAdmission {
+    fn observe(&mut self, event: &ModelEvent, limits: Limits) -> Result<()> {
+        if self.count >= limits.model_events_per_step {
+            return Err(Error::Invalid("model event limit exceeded".into()));
+        }
+        if self.completed {
             return Err(Error::Invalid(
                 "model emitted an event after completion".into(),
             ));
         }
         match event {
             ModelEvent::ToolCall { call_id, name, .. } => {
-                if call_id.trim().is_empty()
-                    || name.trim().is_empty()
-                    || !calls.insert(call_id.as_str())
+                ToolInvocation::validate_identity(call_id, name)?;
+                if self.calls.len() >= limits.tool_calls_per_step
+                    || !self.calls.insert(call_id.clone())
                 {
                     return Err(Error::Invalid(
-                        "model tool calls require unique non-empty identities and names".into(),
+                        "model tool call limit exceeded or identity repeated".into(),
                     ));
                 }
             }
-            ModelEvent::Completed { .. } => {
-                completed = true;
-                if index + 1 != events.len() {
-                    return Err(Error::Invalid(
-                        "model completion must be the final event".into(),
-                    ));
-                }
-            }
+            ModelEvent::Completed { .. } => self.completed = true,
             ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
         }
+        self.count += 1;
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        AgentId, Capabilities,
+        conversation::{FileDescriptor, VolumeOwner, VolumeRef},
+        resources::ProviderRef,
+    };
     use futures::{FutureExt as _, stream};
+    use std::collections::HashMap;
     use std::sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -683,7 +1255,27 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Journal(Mutex<Vec<ExecutionRecord>>);
+    struct Journal(
+        Mutex<Vec<ExecutionRecord>>,
+        Mutex<HashMap<String, (FileRef, Vec<u8>)>>,
+    );
+
+    #[tokio::test]
+    async fn execution_journal_rejects_noncanonical_json_before_replay() -> Result<()> {
+        let journal = Journal::default();
+        let operation = OperationId::new();
+        let reference = journal
+            .stage(
+                operation,
+                "noncanonical".into(),
+                br#"{ "b":2,"a":1 }"#.to_vec(),
+                "application/json",
+            )
+            .await?;
+        assert!(matches!(load_json::<Value>(&journal, &reference).await,
+            Err(Error::Storage(message)) if message.contains("not canonical")));
+        Ok(())
+    }
 
     impl ExecutionJournal for Journal {
         fn replay<'a>(
@@ -741,6 +1333,88 @@ mod tests {
             .boxed()
         }
 
+        fn append_if_tail<'a>(
+            &'a self,
+            operation_id: OperationId,
+            expected_tail: u64,
+            idempotency_key: String,
+            event: ExecutionEvent,
+        ) -> BoxFuture<'a, Result<bool>> {
+            async move {
+                let mut records = self
+                    .0
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+                let tail = records
+                    .iter()
+                    .filter(|record| record.operation_id == operation_id)
+                    .count() as u64;
+                if tail != expected_tail {
+                    return Ok(false);
+                }
+                records.push(ExecutionRecord {
+                    operation_id,
+                    sequence: tail + 1,
+                    idempotency_key,
+                    event,
+                });
+                Ok(true)
+            }
+            .boxed()
+        }
+
+        fn stage<'a>(
+            &'a self,
+            operation_id: OperationId,
+            idempotency_key: String,
+            bytes: Vec<u8>,
+            media_type: &'static str,
+        ) -> BoxFuture<'a, Result<FileRef>> {
+            async move {
+                let key = format!("{operation_id}:{idempotency_key}");
+                let mut stored = self
+                    .1
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+                if let Some((reference, existing)) = stored.get(&key) {
+                    return if existing == &bytes {
+                        Ok(reference.clone())
+                    } else {
+                        Err(Error::Conflict("journal staging identity reused".into()))
+                    };
+                }
+                let volume = VolumeRef::new(
+                    ProviderRef::new("test", "filesystem", "2")?,
+                    "journal",
+                    VolumeClass::AgentPrivate,
+                    VolumeOwner::Agent(AgentId::from_bytes([0; 16])),
+                )?;
+                let reference = FileRef::new(
+                    volume,
+                    format!("journal/{}.json", blake3::hash(key.as_bytes()).to_hex()),
+                    blake3::hash(&bytes).to_hex().to_string(),
+                    FileDescriptor::from_bytes(&bytes, media_type)?,
+                    "event.json",
+                )?;
+                stored.insert(key, (reference.clone(), bytes));
+                Ok(reference)
+            }
+            .boxed()
+        }
+
+        fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            async move {
+                self.1
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .values()
+                    .find(|(stored, _)| stored == reference)
+                    .map(|(_, bytes)| bytes.clone())
+                    .ok_or_else(|| Error::NotFound("journal content is missing".into()))
+            }
+            .boxed()
+        }
+
         fn open_interaction<'a>(
             &'a self,
             _: InteractionId,
@@ -749,12 +1423,70 @@ mod tests {
             async { Err(Error::Unsupported("interactions".into())) }.boxed()
         }
 
-        fn interaction_response<'a>(
+        fn interaction_outcome<'a>(
             &'a self,
             _: InteractionId,
-        ) -> BoxFuture<'a, Result<Option<InteractionResponse>>> {
+        ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
             async { Ok(None) }.boxed()
         }
+    }
+
+    #[tokio::test]
+    async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
+        let model = Arc::new(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type": "object"}),
+                output_schema: json!({"type": "object"}),
+            },
+            executor: Arc::new(FakeTool(AtomicUsize::new(0))),
+            projection: Arc::new(Projection),
+        })?;
+        let base = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([14; 16]),
+            input: ModelContent::Text("bounded".into()),
+            selected_context: None,
+            max_steps: 2,
+        };
+        let mut narrow = Limits::default();
+        narrow.model_steps = 1;
+        assert!(matches!(
+            base.clone()
+                .with_limits(narrow)
+                .execute(input.clone(), &journal)
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+        let _ = base.execute(input.clone(), &journal).await?;
+        let mut changed = Limits::default();
+        changed.model_steps = 3;
+        assert!(matches!(
+            base.with_limits(changed).execute(input, &journal).await,
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
     }
 
     #[tokio::test]
@@ -781,11 +1513,19 @@ mod tests {
             model.clone(),
             ContextPipeline::default(),
             tools,
-        );
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
         let journal = Journal::default();
         let input = TurnInput {
             operation_id: OperationId::from_bytes([1; 16]),
-            input: json!("hello"),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
             max_steps: 4,
         };
         let first = executor.execute(input.clone(), &journal).await?;
@@ -793,6 +1533,25 @@ mod tests {
         assert_eq!(first, replayed);
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+        let durable = serde_json::to_string(
+            &*journal
+                .0
+                .lock()
+                .map_err(|_| Error::Storage("journal lock poisoned".into()))?,
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(
+            !durable.contains("hello")
+                && !durable.contains("done")
+                && !durable.contains("partial-")
+        );
+        assert!(
+            !journal
+                .1
+                .lock()
+                .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                .is_empty()
+        );
         let requests = model
             .requests
             .lock()
@@ -803,8 +1562,110 @@ mod tests {
                 .iter()
                 .map(|message| message.role.as_str())
                 .collect::<Vec<_>>()),
-            Some(vec!["assistant", "tool"])
+            Some(vec!["user", "assistant", "tool"])
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> {
+        let model = Arc::new(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+            },
+            executor: tool_executor.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([77; 16]),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
+            max_steps: 4,
+        };
+        let (left, right) = tokio::join!(
+            executor.execute(input.clone(), &journal),
+            executor.execute(input.clone(), &journal)
+        );
+        assert!(
+            left.is_ok()
+                || right.is_ok()
+                || matches!(left, Err(Error::Indeterminate(_)))
+                    && matches!(right, Err(Error::Indeterminate(_)))
+        );
+        let _ = executor.execute(input, &journal).await?;
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() -> Result<()> {
+        let model = Arc::new(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"string"}),
+            },
+            executor: tool_executor.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model,
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([78; 16]),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
+            max_steps: 4,
+        };
+        assert!(matches!(executor.execute(input.clone(), &journal).await,
+            Err(Error::Invalid(message)) if message.contains("pinned schema")));
+        assert!(matches!(executor.execute(input, &journal).await,
+            Err(Error::Invalid(message)) if message.contains("pinned schema")));
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
@@ -826,7 +1687,8 @@ mod tests {
             .execute(
                 TurnInput {
                     operation_id,
-                    input: json!("first"),
+                    input: ModelContent::Text("first".into()),
+                    selected_context: None,
                     max_steps: 1,
                 },
                 &journal,
@@ -837,7 +1699,8 @@ mod tests {
                 .execute(
                     TurnInput {
                         operation_id,
-                        input: json!("changed"),
+                        input: ModelContent::Text("changed".into()),
+                        selected_context: None,
                         max_steps: 1,
                     },
                     &journal,
@@ -863,7 +1726,8 @@ mod tests {
         let journal = Journal::default();
         let input = TurnInput {
             operation_id: OperationId::from_bytes([10; 16]),
-            input: json!("hello"),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
             max_steps: 1,
         };
 

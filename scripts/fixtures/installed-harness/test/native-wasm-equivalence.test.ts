@@ -1,65 +1,52 @@
 import { expect, test } from "bun:test";
-import { create, toBinary } from "@bufbuild/protobuf";
 import { readFileSync } from "node:fs";
-import { Harness, type Event, type OperationId } from "@acyclic-labs/harness";
-import { AggregateKind, EventEnvelopeSchema } from "@acyclic-labs/harness/proto";
+import { Harness } from "@acyclic-labs/harness";
 
-const fixture = JSON.parse(readFileSync(new URL("../native-wasm-event-v1.json", import.meta.url), "utf8")) as {
+const fixture = JSON.parse(readFileSync(new URL("../native-wasm-event-v2.json", import.meta.url), "utf8")) as {
   event_wire_hex: string;
 };
 
 test("WASM event bytes match the native cross-language fixture", async () => {
+  const authority = { kind: "conversation", id: "conversation-1" } as const;
   const harness = await Harness.create({
-    authority: { kind: "conversation", id: "conversation-1" },
+    authority,
     issuerId: "test",
     issuerKey: new Uint8Array(32).fill(7),
-    schemas: [{
-      name: "example.message",
-      version: 1,
-      schema: {
-        type: "object",
-        required: ["text"],
-        properties: { text: { type: "string" } },
-      },
-    }],
   });
-  const scope = harness.issueScope("root", ["event:append"]);
+  const scope = harness.issueScope("root", ["conversation:bind", "conversation:append"]);
+  const agent = harness.identity("agent", "04040404-0404-0404-0404-040404040404");
+  const content = harness.validateFileRef({
+    volume: { provider: { namespace: "fixture", family: "filesystem", version: "2" },
+      id: "scratch", class: "agent_private", owner: { kind: "agent", id: agent } },
+    path: "messages/input.txt", version: "pinned-generation",
+    descriptor: harness.fileDescriptor(new TextEncoder().encode("fixture text"), "text/plain"),
+    display_name: "input.txt",
+  });
+  harness.apply({
+    authority,
+    operation_id: harness.identity("operation", "01010101-0101-0101-0101-010101010101"),
+    idempotency_key: "bind-1", expected_revision: 0n, scope, causal_parent: null,
+    action: { kind: "bind_conversation", agent },
+  });
   const command = {
-    authority: { kind: "conversation" as const, id: "conversation-1" },
-    operation_id: "01010101-0101-0101-0101-010101010101" as OperationId,
-    idempotency_key: "append-1",
-    expected_revision: 0n,
+    authority,
+    operation_id: harness.identity("operation", "02020202-0202-0202-0202-020202020202"),
+    idempotency_key: "append-2",
+    expected_revision: 1n,
     scope,
     causal_parent: null,
     action: {
-      kind: "append_custom" as const,
-      schema: "example.message",
-      version: 1,
-      value: { text: "hello" },
+      kind: "append_conversation_message" as const,
+      message: { id: harness.conversationMessageId("03030303-0303-0303-0303-030303030303"), sequence: 1,
+        kind: "user", content, attachments: { kind: "inline", items: [] },
+        reply_to: null, tool_call_id: null, extensions: {} },
     },
   };
   const first = harness.apply(command);
   const replayed = harness.apply(command);
   expect(first.result).toBe("applied");
   expect(replayed.result).toBe("replayed");
-  const encode = (event: Event) => toBinary(EventEnvelopeSchema, create(EventEnvelopeSchema, {
-    protocol: harness.protocolIdentity(),
-    authority: { kind: AggregateKind.CONVERSATION, id: event.authority.id },
-    revision: event.revision,
-    operationId: event.operationId,
-    intentDigest: event.intentDigest,
-    scope: {
-      id: event.scope.id,
-      capabilities: [...event.scope.capabilities],
-      issuer: event.scope.issuer,
-      parentProof: new Uint8Array(event.scope.parent_proof ?? []),
-      proof: new Uint8Array(event.scope.proof),
-    },
-    eventType: "custom",
-    canonicalPayloadJson: new TextEncoder().encode(JSON.stringify(event.payload)),
-  }));
-  const firstBytes = encode(first.event);
-  expect(firstBytes).toEqual(encode(replayed.event));
-  expect([...firstBytes].map(byte => byte.toString(16).padStart(2, "0")).join("")).toBe(fixture.event_wire_hex);
+  expect(first.eventWire).toEqual(replayed.eventWire);
+  expect(Buffer.from(first.eventWire).toString("hex")).toBe(fixture.event_wire_hex);
   harness.free();
 });

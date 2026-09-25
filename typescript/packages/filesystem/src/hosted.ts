@@ -224,8 +224,8 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
   requireName(reference.name);
   const result: HostedFsWorkspace = {
     name: reference.name,
-    id: reference.workspaceId.slice(),
-    async head() { return (await currentGeneration(client, reference)).generationId.slice(); },
+    id: Uint8Array.from(reference.workspaceId),
+    async head() { return Uint8Array.from((await currentGeneration(client, reference)).generationId); },
     async sync() { return generation(client, await currentGeneration(client, reference)); },
     async checkpoint(label) {
       requireName(label);
@@ -413,7 +413,7 @@ function sourceResult(
       throw new HostedFsError("invalid_response", "source generation belongs to another workspace");
     }
   }
-  return { status, reason, generationId: selected?.generationId.slice() };
+  return { status, reason, generationId: copyOptionalBytes(selected?.generationId) };
 }
 
 async function s3Access(
@@ -462,8 +462,8 @@ function generation(client: HostedClient, reference: WireGenerationRef): FsGener
   const owner = required(reference.workspace, "generation workspace");
   requireBytes(reference.generationId, 32, "generation identity");
   const result: FsGeneration = {
-    id: reference.generationId.slice(),
-    workspaceId: owner.workspaceId.slice(),
+    id: Uint8Array.from(reference.generationId),
+    workspaceId: Uint8Array.from(owner.workspaceId),
     read: (path, maximumBytes) => read(client, reference, path, undefined, maximumBytes),
     readRange: (path, offset, length) => read(client, reference, path, { offset, length }, length),
     stat: (path) => stat(client, reference, path),
@@ -526,7 +526,7 @@ async function read(
     maximumBytes,
     ...(range === undefined ? {} : { range }),
   }));
-  return response.contents.slice();
+  return Uint8Array.from(response.contents);
 }
 
 async function stat(client: HostedClient, selected: WireGenerationRef, path: string): Promise<WorkspaceStat> {
@@ -576,7 +576,7 @@ async function readLink(client: HostedClient, selected: WireGenerationRef, path:
     path,
     maximumBytes: BigInt(client.maximumResponseBytes),
   }));
-  return response.contents.slice();
+  return Uint8Array.from(response.contents);
 }
 
 async function extents(
@@ -671,7 +671,7 @@ function transaction(
       }));
       if (response.conflicts.length === 0) {
         base = required(response.base, "rebased transaction base");
-        return { status: "rebased", generationId: base.generationId.slice(), conflicts: [], truncated: false };
+        return { status: "rebased", generationId: Uint8Array.from(base.generationId), conflicts: [], truncated: false };
       }
       return {
         status: "conflicted",
@@ -740,7 +740,7 @@ function joinPlan(client: HostedClient, plan: WireJoinPlan): FsJoinPlan {
     async apply(ifTarget, idempotencyKey) {
       requireBytes(ifTarget, 32, "target generation");
       if (!equalBytes(ifTarget, target.generationId)) {
-        return { status: "stale-target", generationId: target.generationId.slice(), conflicts: [], truncated: false };
+        return { status: "stale-target", generationId: Uint8Array.from(target.generationId), conflicts: [], truncated: false };
       }
       const response = await call(client.rpc.applyJoin({ plan, operation: operation(idempotencyKey) }));
       return joinResult(response.status, response.generation, response.conflicts, response.truncated);
@@ -776,7 +776,7 @@ function fileSnapshot(value: WireFileRecordSnapshot): FileRecordSnapshot {
     payloadKind: value.payloadKind,
     logicalBytes: optionalU64(value.logicalBytes),
     payloadObject: value.payloadObject.length === 0 ? undefined : exactBytes(value.payloadObject, 33, "payload object"),
-    inlineBytes: value.payloadKind === "inline-regular" ? value.inlineBytes.slice() : undefined,
+    inlineBytes: value.payloadKind === "inline-regular" ? Uint8Array.from(value.inlineBytes) : undefined,
     deviceMajor: optionalU32(value.deviceMajor),
     deviceMinor: optionalU32(value.deviceMinor),
   };
@@ -800,12 +800,12 @@ function transactionConflict(value: WireConflict): TransactionConflict {
   let name: WorkspaceName | undefined;
   let maximumEntries: number | undefined;
   switch (value.region.case) {
-    case "fileRecord": region = "file-record"; fileId = value.region.value.fileId.slice(); break;
-    case "metadata": region = "metadata"; fileId = value.region.value.fileId.slice(); break;
-    case "fileLength": region = "file-length"; fileId = value.region.value.fileId.slice(); break;
+    case "fileRecord": region = "file-record"; fileId = Uint8Array.from(value.region.value.fileId); break;
+    case "metadata": region = "metadata"; fileId = Uint8Array.from(value.region.value.fileId); break;
+    case "fileLength": region = "file-length"; fileId = Uint8Array.from(value.region.value.fileId); break;
     case "contentRange": {
       region = "content-range";
-      fileId = value.region.value.fileId.slice();
+      fileId = Uint8Array.from(value.region.value.fileId);
       const range = required(value.region.value.range, "conflict range");
       offset = range.offset;
       length = range.length;
@@ -813,18 +813,18 @@ function transactionConflict(value: WireConflict): TransactionConflict {
     }
     case "sparseSeek":
       region = "sparse-seek";
-      fileId = value.region.value.fileId.slice();
+      fileId = Uint8Array.from(value.region.value.fileId);
       offset = value.region.value.offset;
       sparseTarget = value.region.value.target === SparseTarget.DATA ? "data" : "hole";
       break;
     case "directoryName":
       region = "directory-name";
-      directoryId = value.region.value.directoryId.slice();
+      directoryId = Uint8Array.from(value.region.value.directoryId);
       name = logicalName(required(value.region.value.name, "conflict name"));
       break;
     case "directoryRange":
       region = "directory-range";
-      directoryId = value.region.value.directoryId.slice();
+      directoryId = Uint8Array.from(value.region.value.directoryId);
       name = value.region.value.after === undefined ? undefined : logicalName(value.region.value.after);
       maximumEntries = value.region.value.maximumEntries;
       break;
@@ -833,8 +833,8 @@ function transactionConflict(value: WireConflict): TransactionConflict {
   return {
     region, fileId, directoryId, offset, length, sparseTarget, name, maximumEntries,
     usage: conflictUse(value.use),
-    expected: value.expectedDigest.length === 0 ? undefined : value.expectedDigest.slice(),
-    actual: value.actualDigest.length === 0 ? undefined : value.actualDigest.slice(),
+    expected: value.expectedDigest.length === 0 ? undefined : Uint8Array.from(value.expectedDigest),
+    actual: value.actualDigest.length === 0 ? undefined : Uint8Array.from(value.actualDigest),
   };
 }
 
@@ -850,11 +850,11 @@ function mergeConflict(value: WireConflict): MergeConflict {
       directoryId: exactBytes(value.region.value.directoryId, 16, "directory identity"),
       name: logicalName(required(value.region.value.after, "conflict range cursor")),
     };
-    case "fileRecord": return { kind: "file", fileId: value.region.value.fileId.slice() };
-    case "metadata": return { kind: "file", fileId: value.region.value.fileId.slice() };
-    case "fileLength": return { kind: "file", fileId: value.region.value.fileId.slice() };
-    case "contentRange": return { kind: "file", fileId: value.region.value.fileId.slice() };
-    case "sparseSeek": return { kind: "file", fileId: value.region.value.fileId.slice() };
+    case "fileRecord": return { kind: "file", fileId: Uint8Array.from(value.region.value.fileId) };
+    case "metadata": return { kind: "file", fileId: Uint8Array.from(value.region.value.fileId) };
+    case "fileLength": return { kind: "file", fileId: Uint8Array.from(value.region.value.fileId) };
+    case "contentRange": return { kind: "file", fileId: Uint8Array.from(value.region.value.fileId) };
+    case "sparseSeek": return { kind: "file", fileId: Uint8Array.from(value.region.value.fileId) };
     default: throw new HostedFsError("invalid_response", "merge conflict region is absent");
   }
 }
@@ -869,7 +869,7 @@ function commit(status: MutationStatus, generationRef: WireGenerationRef | undef
   };
   const translated = statuses[status];
   if (translated === undefined) throw new HostedFsError("invalid_response", "invalid mutation status");
-  return { status: translated, generationId: generationRef?.generationId.slice() };
+  return { status: translated, generationId: copyOptionalBytes(generationRef?.generationId) };
 }
 
 function workspaceRebase(
@@ -891,7 +891,7 @@ function workspaceRebase(
   if (translated === undefined) throw new HostedFsError("invalid_response", "invalid rebase status");
   return {
     status: translated,
-    generationId: generationRef?.generationId.slice(),
+    generationId: copyOptionalBytes(generationRef?.generationId),
     conflicts: conflicts.map(mergeConflict),
     truncated,
   };
@@ -916,7 +916,7 @@ function joinResult(
   if (translated === undefined) throw new HostedFsError("invalid_response", "invalid join status");
   return {
     status: translated,
-    generationId: generationRef?.generationId.slice(),
+    generationId: copyOptionalBytes(generationRef?.generationId),
     conflicts: conflicts.map(mergeConflict),
     truncated,
   };
@@ -949,7 +949,7 @@ function logicalName(value: WireLogicalName): WorkspaceName {
     : value.encoding === NameEncoding.POSIX_BYTES ? "posix-bytes"
       : value.encoding === NameEncoding.WINDOWS_UTF16LE ? "windows-utf16le" : undefined;
   if (encoding === undefined) throw new HostedFsError("invalid_response", "invalid name encoding");
-  return { encoding, bytes: value.bytes.slice() };
+  return { encoding, bytes: Uint8Array.from(value.bytes) };
 }
 
 function wireName(value: WorkspaceName): { readonly encoding: NameEncoding; readonly bytes: Uint8Array } {
@@ -1008,7 +1008,7 @@ function workCounters(value: WireWorkCounters): WorkCounters {
 }
 
 function operation(idempotencyKey?: Uint8Array) {
-  const identity = idempotencyKey?.slice() ?? randomIdentity();
+  const identity = idempotencyKey === undefined ? randomIdentity() : Uint8Array.from(idempotencyKey);
   requireBytes(identity, 16, "idempotency key");
   return create(OperationOptionsSchema, { idempotencyKey: identity });
 }
@@ -1114,7 +1114,10 @@ function requireBytes(value: Uint8Array, length: number, name: string): void {
 }
 function exactBytes(value: Uint8Array, length: number, name: string): Uint8Array {
   requireBytes(value, length, name);
-  return value.slice();
+  return Uint8Array.from(value);
+}
+function copyOptionalBytes(value: Uint8Array | undefined): Uint8Array | undefined {
+  return value === undefined ? undefined : Uint8Array.from(value);
 }
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;

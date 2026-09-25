@@ -26,7 +26,7 @@ import {
   CapabilitySetSchema,
   HandshakeResponseSchema as HarnessHandshakeResponseSchema,
   ProtocolIdentitySchema,
-} from "../generated/proto/harness/v1/harness_pb.js";
+} from "../generated/proto/harness/v2/harness_pb.js";
 
 const descriptorDigest = "371d83258cb3ff55f97e01011ded1b0222e586df09c229c4f42dfb9a37952d4e";
 

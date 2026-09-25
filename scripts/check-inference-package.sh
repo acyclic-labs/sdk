@@ -50,17 +50,32 @@ cd "$npm_stage"
 bun pm pack --ignore-scripts --filename "$bun_archive" --quiet
 mkdir "$work/consumer"
 cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","dependencies":{"@acyclic-labs/inference":"file:$bun_archive_url"}}
+{"private":true,"type":"module","dependencies":{"@acyclic-labs/inference":"file:$bun_archive_url","@bufbuild/protobuf":"2.14.1"}}
 EOF
 cat >"$work/consumer/smoke.mjs" <<'EOF'
 import { InferenceClient, ListModelsResponseSchema } from "@acyclic-labs/inference";
 import { RunViewSchema } from "@acyclic-labs/inference/proto";
+import { create } from "@bufbuild/protobuf";
 if (ListModelsResponseSchema.typeName !== "inference.customer.v1.ListModelsResponse" ||
     RunViewSchema.typeName !== "inference.customer.v1.RunView") throw new Error("inference schemas missing");
+let substitute = false;
 const client = new InferenceClient({
   async listModels() { return { $typeName: "inference.customer.v1.ListModelsResponse", models: [] }; },
+  async inspectRun(request) { return create(RunViewSchema, {
+    runId: substitute ? new Uint8Array(16).fill(9) : request.runId,
+    input: new Uint8Array(32).fill(2), model: "model",
+  }); },
 });
 if ((await client.listModels()).models.length !== 0) throw new Error("inference client did not execute");
+const runId = new Uint8Array(16).fill(1);
+if ((await client.inspectRun(runId)).model !== "model") throw new Error("packed inference WASM validator did not execute");
+substitute = true;
+try {
+  await client.inspectRun(runId);
+  throw new Error("packed inference WASM validator accepted a substituted Run");
+} catch (error) {
+  if (!String(error).includes("identity differs")) throw error;
+}
 EOF
 cd "$work/consumer"
 bun install --ignore-scripts

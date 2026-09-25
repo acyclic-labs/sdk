@@ -4,9 +4,9 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 
 use crate::{
-    AppendOutcome, AppendRequest, ChildrenRequest, CommitCondition, CommitConflict, CommitMutation,
-    CommitOutcome, CommitRequest, ForkRequest, IdempotencyKey, IdempotencyOutcome, ReadRequest,
-    StreamError, StreamPath, StreamProvider,
+    AppendOutcome, AppendRequest, ChildrenPageRequest, ChildrenRequest, CommitCondition,
+    CommitConflict, CommitMutation, CommitOutcome, CommitRequest, ForkRequest, IdempotencyKey,
+    IdempotencyOutcome, ReadRequest, StreamError, StreamPath, StreamProvider,
 };
 
 /// Canonical language-neutral Stream conformance inventory.
@@ -137,6 +137,56 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     child_paths.sort();
     if child_paths != vec![path("conformance/child")?, path("conformance/source")?] {
         return Err("direct child listing changed its fixed snapshot".into());
+    }
+    let first_page = provider
+        .children_page(ChildrenPageRequest {
+            parent: Some(path("conformance")?),
+            after: None,
+            hierarchy_version: None,
+            limit: 1,
+        })
+        .await
+        .map_err(|err| error(&err))?;
+    if first_page.children.len() != 1
+        || first_page.next_after.as_ref() != Some(&first_page.children[0].path)
+    {
+        return Err("first hierarchy page did not expose a continuation".into());
+    }
+    let final_page = provider
+        .children_page(ChildrenPageRequest {
+            parent: Some(path("conformance")?),
+            after: first_page.next_after.clone(),
+            hierarchy_version: Some(first_page.hierarchy_version),
+            limit: 1,
+        })
+        .await
+        .map_err(|err| error(&err))?;
+    if final_page.children.len() != 1
+        || final_page.next_after.is_some()
+        || final_page.children[0].path == first_page.children[0].path
+    {
+        return Err("hierarchy pagination duplicated or omitted a child".into());
+    }
+    provider
+        .append(AppendRequest {
+            path: path("conformance/paging-new")?,
+            records: vec![Bytes::from_static(b"created")],
+            if_tail: Some(0),
+            idempotency_key: None,
+        })
+        .await
+        .map_err(|err| error(&err))?;
+    if provider
+        .children_page(ChildrenPageRequest {
+            parent: Some(path("conformance")?),
+            after: first_page.next_after,
+            hierarchy_version: Some(first_page.hierarchy_version),
+            limit: 1,
+        })
+        .await
+        != Err(StreamError::HierarchyChanged)
+    {
+        return Err("stale hierarchy continuation was accepted".into());
     }
     let mut follow = provider
         .follow(child.clone(), 1)

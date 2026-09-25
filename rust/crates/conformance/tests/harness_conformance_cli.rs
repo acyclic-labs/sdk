@@ -16,6 +16,7 @@ use std::{
 
 #[derive(Deserialize)]
 struct Suite {
+    version: u32,
     cases: Vec<SuiteCase>,
 }
 
@@ -30,7 +31,7 @@ fn report() -> Result<RunnerReport, Box<dyn std::error::Error>> {
     Ok(RunnerReport {
         protocol: RUNNER_PROTOCOL.into(),
         family: "harness".into(),
-        suite_version: 1,
+        suite_version: suite.version,
         suite_digest: harness_suite_digest(),
         subject: Subject {
             name: "acyclic-harness".into(),

@@ -17,13 +17,22 @@ local = ["acyclic-fs/local"]
 
 [dependencies]
 acyclic-fs = { version = "=0.1.0", path = "../filesystem", default-features = false }
-acyclic-harness = { version = "0.1.0", path = "../harness", default-features = false }
+acyclic-harness = { version = "0.1.0", path = "../harness", default-features = false, features = ["host"] }
+acyclic-stream = { version = "=0.1.0", path = "../stream", default-features = false }
 blake3.workspace = true
 bytes.workspace = true
+hex.workspace = true
+futures.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
+acyclic-harness = { version = "0.1.0", path = "../harness", features = ["host"] }
+acyclic-stream = { version = "=0.1.0", path = "../stream" }
 tokio.workspace = true
+uuid.workspace = true
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

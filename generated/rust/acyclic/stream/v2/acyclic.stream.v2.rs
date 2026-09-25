@@ -60,6 +60,8 @@ pub struct TailRequest {
 pub struct TailResponse {
     #[prost(uint64, tag = "1")]
     pub tail: u64,
+    #[prost(uint64, optional, tag = "2")]
+    pub trim_point: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ForkRequest {
@@ -154,6 +156,26 @@ pub struct Child {
 pub struct ChildrenResponse {
     #[prost(message, optional, tag = "1")]
     pub child: ::core::option::Option<Child>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ChildrenPageRequest {
+    #[prost(string, optional, tag = "1")]
+    pub parent: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "2")]
+    pub after: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bytes = "vec", optional, tag = "3")]
+    pub hierarchy_version: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(uint32, tag = "4")]
+    pub limit: u32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChildrenPageResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub hierarchy_version: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "2")]
+    pub children: ::prost::alloc::vec::Vec<Child>,
+    #[prost(string, optional, tag = "3")]
+    pub next_after: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TailCondition {

@@ -124,7 +124,7 @@ impl WorkspaceId {
         self.0
     }
 
-    pub(crate) const fn volume_id(self) -> VolumeId {
+    pub const fn volume_id(self) -> VolumeId {
         VolumeId::from_bytes(self.0)
     }
 }
@@ -231,6 +231,63 @@ impl<A, O> Workspace<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
+    /// Exclusively fences this workspace's mutable head while a cross-provider
+    /// publication decides whether to expose a pinned generation. Exact
+    /// retries with the same operation return the same durable reservation.
+    pub async fn reserve_publication(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<crate::PublicationReservation, WorkspaceError> {
+        let cancellation = crate::CancellationToken::new();
+        let head = self
+            .authority()
+            .head(
+                self.authority_id(),
+                crate::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))?
+            .value;
+        match self
+            .authority()
+            .reserve_publication(
+                self.authority_id(),
+                head,
+                operation_id,
+                crate::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))?
+            .value
+        {
+            crate::ReservationOutcome::Reserved(reservation)
+            | crate::ReservationOutcome::AlreadyReserved(reservation) => Ok(reservation),
+            crate::ReservationOutcome::Conflict { .. } => Err(WorkspaceError::StaleGeneration),
+        }
+    }
+
+    /// Releases only this workspace's exact durable publication reservation.
+    /// An ambiguous release response can be retried with the same proof.
+    pub async fn release_publication(
+        &self,
+        reservation: crate::PublicationReservation,
+    ) -> Result<(), WorkspaceError> {
+        if reservation.authority_id != self.authority_id() {
+            return Err(WorkspaceError::IncompatibleWorkspace);
+        }
+        self.authority()
+            .release_publication(
+                reservation,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))?;
+        Ok(())
+    }
+
     /// Resolves the exact generation published by one prior workspace operation.
     ///
     /// This is the recovery boundary for adapters that persisted an
@@ -249,6 +306,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     id,
                 })
             })
+    }
+
+    /// Proves an immutable result was committed by this workspace's exact
+    /// join operation, not by an unrelated mutation with a plausible parent.
+    pub async fn verify_join_commit(
+        &self,
+        witness: &crate::JoinCommitWitness,
+    ) -> Result<bool, WorkspaceError> {
+        self.volume
+            .fs
+            .verify_workspace_join_commit(&self.volume, witness)
+            .await
     }
 
     /// Opens an authenticated checkout using the requested generation and mode.
@@ -1088,6 +1157,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             }
             crate::facade::WorkspaceJoinOutcome::AlreadyApplied(id) => {
                 WorkspaceRebase::AlreadyRebased(generation(id))
+            }
+            crate::facade::WorkspaceJoinOutcome::Joined(_, _)
+            | crate::facade::WorkspaceJoinOutcome::AlreadyJoined(_, _) => {
+                return Err(WorkspaceError::IncompatibleWorkspace);
             }
             crate::facade::WorkspaceJoinOutcome::NoChanges(id) => {
                 WorkspaceRebase::Current(generation(id))
@@ -3302,7 +3375,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
 }
 
 /// How a successful join records immutable ancestry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum JoinHistory {
     /// Preserve source and target as two parents.
     Merge,
@@ -3486,6 +3560,36 @@ impl<A, O> JoinPlan<A, O> {
     pub const fn source(&self) -> &Workspace<A, O> {
         &self.source
     }
+
+    /// Captures exact provider-owned inputs for later verification of this
+    /// durable application, even after the mutable target head advances.
+    pub fn commit_witness(
+        &self,
+        application: &JoinApplication<A, O>,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<crate::JoinCommitWitness, WorkspaceError> {
+        if application.generation.workspace.id() != self.target.id()
+            || application.generation.id() == self.target_head.id()
+        {
+            return Err(WorkspaceError::IncompatibleWorkspace);
+        }
+        Ok(crate::JoinCommitWitness {
+            source_workspace: self.source.id().volume_id(),
+            source_generation: self.source_head.id,
+            target_workspace: self.target.id().volume_id(),
+            expected_target: self.target_head.id,
+            base_workspace: self.base.volume_id,
+            base_generation: self.base.id,
+            history: self.history,
+            maximum_generations: self.maximum_generations,
+            maximum_changes: self.maximum_changes,
+            maximum_conflicts: self.maximum_conflicts,
+            resolutions_digest: application.resolutions_digest,
+            expected_head: self.target_authority_head,
+            operation_id: idempotency_key.operation_id(),
+            result_generation: application.generation.id,
+        })
+    }
 }
 
 /// Atomic join application preconditions.
@@ -3500,9 +3604,9 @@ pub struct ApplyOptions {
 /// Terminal semantic join outcome.
 pub enum JoinOutcome<A, O> {
     /// A new target generation became durable.
-    Applied(Generation<A, O>),
+    Applied(JoinApplication<A, O>),
     /// The same exact application was already durable.
-    AlreadyApplied(Generation<A, O>),
+    AlreadyApplied(JoinApplication<A, O>),
     /// Source changes were already represented by the target.
     NoChanges(Generation<A, O>),
     /// Target changed after planning; no join was published.
@@ -3518,6 +3622,42 @@ pub enum JoinOutcome<A, O> {
     Fenced,
     /// Retry identity was previously bound to another join input.
     IdempotencyConflict,
+}
+
+/// One durable join result together with its exact conflict-resolution input.
+/// The digest is generated inside Filesystem's publication path, so receipt
+/// producers cannot accidentally attest a different set of resolutions.
+pub struct JoinApplication<A, O> {
+    generation: Generation<A, O>,
+    resolutions_digest: crate::Digest,
+}
+
+impl<A, O> JoinApplication<A, O> {
+    /// Immutable generation made durable by this join.
+    #[must_use]
+    pub const fn generation(&self) -> &Generation<A, O> {
+        &self.generation
+    }
+
+    /// Consumes the proof wrapper when only the resulting generation is needed.
+    #[must_use]
+    pub fn into_generation(self) -> Generation<A, O> {
+        self.generation
+    }
+
+    /// Domain-separated digest of the exact applied conflict resolutions.
+    #[must_use]
+    pub const fn resolutions_digest(&self) -> crate::Digest {
+        self.resolutions_digest
+    }
+}
+
+impl<A, O> std::ops::Deref for JoinApplication<A, O> {
+    type Target = Generation<A, O>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.generation
+    }
 }
 
 pub(crate) enum WorkspaceRestoreOutcome {
@@ -4073,11 +4213,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             id,
         };
         Ok(match outcome {
-            crate::facade::WorkspaceJoinOutcome::Applied(id) => {
-                JoinOutcome::Applied(generation(id))
+            crate::facade::WorkspaceJoinOutcome::Joined(id, resolutions_digest) => {
+                JoinOutcome::Applied(JoinApplication {
+                    generation: generation(id),
+                    resolutions_digest,
+                })
             }
-            crate::facade::WorkspaceJoinOutcome::AlreadyApplied(id) => {
-                JoinOutcome::AlreadyApplied(generation(id))
+            crate::facade::WorkspaceJoinOutcome::AlreadyJoined(id, resolutions_digest) => {
+                JoinOutcome::AlreadyApplied(JoinApplication {
+                    generation: generation(id),
+                    resolutions_digest,
+                })
+            }
+            crate::facade::WorkspaceJoinOutcome::Applied(_)
+            | crate::facade::WorkspaceJoinOutcome::AlreadyApplied(_) => {
+                return Err(WorkspaceError::IncompatibleWorkspace);
             }
             crate::facade::WorkspaceJoinOutcome::NoChanges(id) => {
                 JoinOutcome::NoChanges(generation(id))
@@ -4353,6 +4503,19 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
+    /// Computes the exact normalized second-parent identity that a merge of
+    /// this source generation into `target` must retain. This is read-only.
+    pub async fn normalized_join_parent_for(
+        &self,
+        target: &Generation<A, O>,
+    ) -> Result<GenerationId, WorkspaceError> {
+        self.workspace
+            .volume
+            .fs
+            .workspace_normalized_join_parent(self, target)
+            .await
+    }
+
     /// Opens one cheap immutable reader pinned to this exact generation.
     ///
     /// The generation root is authenticated once while the reader is opened;

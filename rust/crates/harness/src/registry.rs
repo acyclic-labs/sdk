@@ -1,5 +1,6 @@
 //! Version-pinned runtime registrations with drain-before-replacement lifecycle.
 
+pub(crate) use crate::contract::validate_component_label;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,7 +12,7 @@ use std::{
 /// Immutable component implementation identity.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ComponentIdentity {
-    /// Stable namespaced logical name.
+    /// Stable local or namespaced logical name.
     pub name: String,
     /// Semantic implementation version.
     pub version: String,
@@ -28,6 +29,7 @@ struct Entry<T> {
 struct RegistryState<T> {
     current: BTreeMap<String, ComponentIdentity>,
     versions: BTreeMap<ComponentIdentity, Entry<T>>,
+    version_digests: BTreeMap<(String, String), [u8; 32]>,
 }
 
 /// Explicit registry that pins active work and drains replaced versions.
@@ -38,6 +40,7 @@ impl<T> Default for PinnedRegistry<T> {
         Self(Arc::new(Mutex::new(RegistryState {
             current: BTreeMap::new(),
             versions: BTreeMap::new(),
+            version_digests: BTreeMap::new(),
         })))
     }
 }
@@ -51,11 +54,8 @@ impl<T> Clone for PinnedRegistry<T> {
 impl<T> PinnedRegistry<T> {
     /// Installs a version for new work and begins draining the previous version.
     pub fn install(&self, identity: ComponentIdentity, value: T) -> Result<()> {
-        if identity.name.trim().is_empty() || identity.version.trim().is_empty() {
-            return Err(Error::Invalid(
-                "component name and version are required".into(),
-            ));
-        }
+        validate_component_label(&identity.name, "component name")?;
+        validate_component_label(&identity.version, "component version")?;
         let mut state = self
             .0
             .lock()
@@ -65,6 +65,17 @@ impl<T> PinnedRegistry<T> {
                 "component version is already installed".into(),
             ));
         }
+        let version_key = (identity.name.clone(), identity.version.clone());
+        if state
+            .version_digests
+            .get(&version_key)
+            .is_some_and(|digest| digest != &identity.digest)
+        {
+            return Err(Error::Conflict(
+                "component version is pinned to another digest".into(),
+            ));
+        }
+        state.version_digests.insert(version_key, identity.digest);
         if let Some(previous) = state
             .current
             .insert(identity.name.clone(), identity.clone())
@@ -184,6 +195,17 @@ mod tests {
         drop(pinned);
         assert!(!registry.contains(&first)?);
         assert!(registry.contains(&second)?);
+        assert!(matches!(
+            registry.install(
+                ComponentIdentity {
+                    name: "example.model".into(),
+                    version: "1".into(),
+                    digest: [3; 32],
+                },
+                "different"
+            ),
+            Err(Error::Conflict(_))
+        ));
         Ok(())
     }
 }

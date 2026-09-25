@@ -457,7 +457,6 @@ fn prepare_publication(
     })
 }
 
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) fn contextual_publication_fingerprint(
     request: PublishGenerationRequest,
     operation_context: Digest,

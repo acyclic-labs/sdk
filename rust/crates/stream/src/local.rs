@@ -19,11 +19,11 @@ use tokio::sync::{RwLock, mpsc, watch};
 
 use crate::wire_codec::{condition_from_wire, mutation_from_wire, optional_key, required_key};
 use crate::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitOutcome, CommitRequest,
-    CommittedEnvelope, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, MAX_COMMAND_BYTES, MAX_ITEMS, MemoryLimits, MemoryStream, ReadRequest,
-    RecordStream, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, TrimReceipt,
-    UnixMillisClock,
+    AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
+    CommitOutcome, CommitRequest, CommittedEnvelope, DeleteReceipt, ForkReceipt, ForkRequest,
+    IdempotencyKey, IdempotencyObservation, MAX_COMMAND_BYTES, MAX_ITEMS, MemoryLimits,
+    MemoryStream, ReadRequest, RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider,
+    SystemUnixMillisClock, TrimReceipt, UnixMillisClock,
 };
 
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
@@ -341,6 +341,13 @@ impl StreamProvider for LocalStream {
         self.inner.provider.tail(path).await
     }
 
+    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.read().await;
+        self.check_available()?;
+        self.inner.provider.bounds(path).await
+    }
+
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.check_available()?;
         let _visibility = self.inner.visibility.write().await;
@@ -465,6 +472,16 @@ impl StreamProvider for LocalStream {
         let _visibility = self.inner.visibility.read().await;
         self.check_available()?;
         self.inner.provider.children(request).await
+    }
+
+    async fn children_page(
+        &self,
+        request: ChildrenPageRequest,
+    ) -> Result<ChildrenPage, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.read().await;
+        self.check_available()?;
+        self.inner.provider.children_page(request).await
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {

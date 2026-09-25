@@ -1,12 +1,12 @@
 import { HttpStreamProvider } from "./http.js";
 import { MemoryStreamProvider } from "./memory.js";
 import type {
-  AccessToken, AppendOptions, AppendResult, CommitId, CommittedEnvelope, CommitOptions,
+  AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions,
   CommitRequest, CommitResult, CreateTokenRequest, DeleteReceipt, FollowOptions, ForkOptions,
   IdempotencyKey, IdempotencyObservation, ReadOptions, Record, Sequence, StreamEnvironment,
-  StreamProvider, TrimReceipt,
+  StreamBounds, StreamProvider, TrimReceipt,
 } from "./types.js";
-import { StreamError } from "./types.js";
+import { StreamError, compareStreamPaths } from "./types.js";
 
 export interface Codec<Value> {
   encode(value: Value): Uint8Array;
@@ -17,19 +17,21 @@ export type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [name:
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 export const bytesCodec: Codec<Uint8Array> = Object.freeze({
-  encode: (value: Uint8Array) => value.slice(),
-  decode: (value: Uint8Array) => value.slice(),
+  encode: (value: Uint8Array) => Uint8Array.from(value),
+  decode: (value: Uint8Array) => Uint8Array.from(value),
 });
-export function jsonCodec<Value extends JsonValue>(): Codec<Value> {
+export function jsonCodec(): Codec<JsonValue>;
+export function jsonCodec<Value extends JsonValue>(parse: (value: JsonValue) => Value): Codec<Value>;
+export function jsonCodec<Value extends JsonValue>(parse?: (value: JsonValue) => Value): Codec<JsonValue | Value> {
   return Object.freeze({
-    encode(value: Value) {
+    encode(value: JsonValue | Value) {
       assertJson(value);
       return encoder.encode(JSON.stringify(value));
     },
     decode(value: Uint8Array) {
       const decoded: unknown = JSON.parse(decoder.decode(value));
       assertJson(decoded);
-      return decoded as Value;
+      return parse === undefined ? decoded : parse(decoded);
     },
   });
 }
@@ -40,18 +42,71 @@ export class StreamClient {
   /** Creates a deterministic process-local client for tests and examples. */
   static memory(): StreamClient { return new StreamClient(new MemoryStreamProvider()); }
   constructor(readonly provider: StreamProvider) {
-    this.tokens = { create: request => {
+    this.tokens = { create: async request => {
       if (provider.createToken === undefined) throw new StreamError("unsupported", "provider does not support token creation");
       return provider.createToken(request);
     } };
   }
-  json<Value extends JsonValue>(path: string): Stream<Value> { return new Stream(this.provider, path, jsonCodec<Value>()); }
+  json(path: string): Stream<JsonValue>;
+  json<Value extends JsonValue>(path: string, parse: (value: JsonValue) => Value): Stream<Value>;
+  json(path: string, parse?: (value: JsonValue) => JsonValue): Stream<JsonValue> {
+    return new Stream(this.provider, path, parse === undefined ? jsonCodec() : jsonCodec(parse));
+  }
   bytes(path: string): Stream<Uint8Array> { return new Stream(this.provider, path, bytesCodec); }
   inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> { return this.provider.inspectIdempotency(key); }
   children(parent: string | undefined, options: { readonly limit: number } | number): AsyncIterable<{ readonly path: string }> {
     const limit = typeof options === "number" ? options : options.limit;
     positiveInteger(limit, "limit");
+    if (limit > 1_024) throw new RangeError("child page limit exceeds 1024");
     return this.provider.children(parent, limit);
+  }
+  async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
+    if (request.parent !== undefined) pathValue(request.parent);
+    if (request.after !== undefined) {
+      pathValue(request.after);
+      if (request.hierarchyVersion === undefined || directParent(request.after) !== (request.parent ?? "")) {
+        throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
+      }
+    }
+    if (request.hierarchyVersion !== undefined && request.hierarchyVersion.byteLength !== 32) {
+      throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
+    }
+    positiveInteger(request.limit, "limit");
+    if (request.limit > 1_024) throw new RangeError("child page limit exceeds 1024");
+    const page = await this.provider.childrenPage(request);
+    if (page.hierarchyVersion.byteLength !== 32) throw new StreamError("invalid_page", "provider returned an invalid hierarchy version");
+    const expectedVersion = request.hierarchyVersion;
+    if (expectedVersion !== undefined &&
+        page.hierarchyVersion.some((byte, index) => byte !== expectedVersion[index])) {
+      throw new StreamError("hierarchy_changed", "provider changed hierarchy version during pagination");
+    }
+    if (page.children.length > request.limit || (page.nextAfter !== undefined && page.nextAfter !== page.children.at(-1)?.path)) {
+      throw new StreamError("invalid_page", "provider returned an invalid child continuation");
+    }
+    let previous = request.after;
+    for (const child of page.children) {
+      pathValue(child.path);
+      if (directParent(child.path) !== (request.parent ?? "") ||
+          (previous !== undefined && compareStreamPaths(previous, child.path) >= 0)) {
+        throw new StreamError("invalid_page", "provider returned non-direct or unordered children");
+      }
+      previous = child.path;
+    }
+    if (page.nextAfter !== undefined && page.children.length === 0) {
+      throw new StreamError("invalid_page", "provider returned an empty continuation page");
+    }
+    return page;
+  }
+  /** Traverses all direct children, failing rather than silently skipping a concurrent hierarchy change. */
+  async *childrenAll(parent?: string, limit = 1_024): AsyncIterable<{ readonly path: string }> {
+    let request: ChildrenPageRequest = { ...(parent === undefined ? {} : { parent }), limit };
+    for (;;) {
+      const page = await this.childrenPage(request);
+      for (const child of page.children) yield child;
+      if (page.nextAfter === undefined) return;
+      request = { ...(parent === undefined ? {} : { parent }), limit,
+        after: page.nextAfter, hierarchyVersion: page.hierarchyVersion };
+    }
   }
   commit(request: CommitRequest, options: CommitOptions): Promise<CommitResult> {
     const conditions = request.conditions.map(condition => {
@@ -97,6 +152,7 @@ export class Stream<Value = Uint8Array> {
   }
   encode(value: Value): Uint8Array { return this.codec.encode(value); }
   tail(): Promise<Sequence> { return this.provider.tail(this.path); }
+  bounds(): Promise<StreamBounds> { return this.provider.bounds(this.path); }
   append(value: Value, options?: AppendOptions): Promise<AppendResult> { return this.appendBatch([value], options); }
   appendBatch(values: readonly Value[], options?: AppendOptions): Promise<AppendResult> {
     if (values.length === 0) throw new RangeError("appendBatch requires at least one value");
@@ -104,6 +160,7 @@ export class Stream<Value = Uint8Array> {
     return this.provider.append(this.path, values.map(value => this.codec.encode(value)), options);
   }
   async fork(destination: string, options?: ForkOptions): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {
+    pathValue(destination);
     if (options?.atTail !== undefined) sequence(options.atTail);
     const value = await this.provider.fork(this.path, destination, options);
     return { stream: new Stream(this.provider, destination, this.codec), tail: value.tail, forkedAt: value.forkedAt, commitId: value.commitId };
@@ -113,6 +170,7 @@ export class Stream<Value = Uint8Array> {
   async *read(options: ReadOptions): AsyncIterable<Record<Value>> {
     sequence(options.from);
     positiveInteger(options.limit, "limit");
+    if (options.limit > 1_024) throw new RangeError("read limit exceeds 1024");
     for await (const item of this.provider.read(this.path, options)) yield { ...item, value: this.codec.decode(item.value) };
   }
   async *follow(options: FollowOptions): AsyncIterable<Record<Value>> {
@@ -125,10 +183,16 @@ function sameProvider(provider: StreamProvider, stream: Stream<unknown>): void {
   if (stream.provider !== provider) throw new StreamError("provider_mismatch", "coordinated commit streams must use one provider");
 }
 export function pathValue(value: string): void {
-  if (!value || value.startsWith("/") || value.endsWith("/") || value.includes("//") || value.split("/").some(part => part === "." || part === "..")) {
+  const segments = value.split("/");
+  if (!value || value.length > 65_535 || segments.length > 1_024 || segments.some(part =>
+    !part || part === "." || part === ".." || [...part].some(character => {
+      const code = character.charCodeAt(0);
+      return code <= 32 || code >= 127 || character === "\\";
+    }))) {
     throw new StreamError("invalid_path", "path must contain canonical non-empty segments");
   }
 }
+function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
 export function sequence(value: bigint): bigint {
   if (typeof value !== "bigint" || value < 0n || value > 0xffff_ffff_ffff_ffffn) throw new RangeError("sequence must be an unsigned 64-bit integer");
   return value;
