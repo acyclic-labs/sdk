@@ -9,6 +9,7 @@ use super::types::{FileKind, digest_object};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::FileId;
+use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError, object_digest};
 use std::fmt;
@@ -713,18 +714,21 @@ pub async fn lookup_file_records_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<FileRecordBatchLookup, FileRecordReadFailure> {
-    persistent_batch::lookup_async::<S, FileTableFormat>(
-        store,
-        root,
-        file_ids,
-        maximum_queries,
-        limits,
-        budget,
-        cancellation,
-    )
+    in_heap(move || async move {
+        persistent_batch::lookup_async::<S, FileTableFormat>(
+            store,
+            root,
+            file_ids,
+            maximum_queries,
+            limits,
+            budget,
+            cancellation,
+        )
+        .await
+        .map(to_record_batch)
+        .map_err(map_batch_failure)
+    })
     .await
-    .map(to_record_batch)
-    .map_err(map_batch_failure)
 }
 
 fn to_record_batch(receipt: persistent_batch::Receipt<FileRecord>) -> FileRecordBatchLookup {
@@ -794,20 +798,23 @@ pub async fn lookup_file_record_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<FileRecordLookup, FileRecordReadFailure> {
-    persistent_point::lookup_async::<S, FileTableFormat>(
-        store,
-        root,
-        &file_id,
-        limits,
-        budget,
-        cancellation,
-    )
-    .await
-    .map(|receipt| FileRecordLookup {
-        record: receipt.value,
-        work: receipt.work,
+    in_heap(move || async move {
+        persistent_point::lookup_async::<S, FileTableFormat>(
+            store,
+            root,
+            &file_id,
+            limits,
+            budget,
+            cancellation,
+        )
+        .await
+        .map(|receipt| FileRecordLookup {
+            record: receipt.value,
+            work: receipt.work,
+        })
+        .map_err(map_batch_failure)
     })
-    .map_err(map_batch_failure)
+    .await
 }
 
 /// Sparse file-record lookup failure retaining exact spent work.

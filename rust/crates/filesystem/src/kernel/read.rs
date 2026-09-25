@@ -6,6 +6,7 @@ use super::tree_mutation::TreeFormat;
 use super::{CanonicalDecodeError, DecodeLimits, LogicalName, TreeEntry};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectStoreError};
 use thiserror::Error;
@@ -65,18 +66,21 @@ pub async fn lookup_tree_entries_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<TreeBatchLookup, TreeReadFailure> {
-    persistent_batch::lookup_async::<S, TreeFormat>(
-        store,
-        root,
-        names,
-        maximum_queries,
-        limits,
-        budget,
-        cancellation,
-    )
+    in_heap(move || async move {
+        persistent_batch::lookup_async::<S, TreeFormat>(
+            store,
+            root,
+            names,
+            maximum_queries,
+            limits,
+            budget,
+            cancellation,
+        )
+        .await
+        .map(to_batch)
+        .map_err(map_batch_failure)
+    })
     .await
-    .map(to_batch)
-    .map_err(map_batch_failure)
 }
 
 fn to_batch(receipt: persistent_batch::Receipt<TreeEntry>) -> TreeBatchLookup {

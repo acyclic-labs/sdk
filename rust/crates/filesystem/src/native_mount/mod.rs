@@ -2866,12 +2866,6 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
     -> Result<(), Box<dyn std::error::Error>> {
-        Box::pin(explicit_materialization_and_capture_round_trip_sparse_checkout_inner()).await
-    }
-
-    #[allow(clippy::too_many_lines)]
-    async fn explicit_materialization_and_capture_round_trip_sparse_checkout_inner()
-    -> Result<(), Box<dyn std::error::Error>> {
         let limits = VolumeLimits::default();
         let config = VolumeConfig {
             profile: FilesystemProfile::Portable,
@@ -2945,7 +2939,7 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let destination = temporary.path().join("view");
         std::fs::create_dir(&destination)?;
-        let materialized = Box::pin(materialize_checkout(
+        let materialized = materialize_checkout(
             &mut checkout,
             &MaterializeOptions {
                 destination: destination.clone(),
@@ -2955,7 +2949,7 @@ mod tests {
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
+        )
         .await
         .map_err(|error| std::io::Error::other(format!("sparse materialization: {error}")))?;
         assert_eq!(materialized.value.files, 1);
@@ -3780,7 +3774,7 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let destination = temporary.path().join("special-view");
         std::fs::create_dir(&destination)?;
-        let materialized = Box::pin(materialize_checkout(
+        let materialized = materialize_checkout(
             &mut source_checkout,
             &MaterializeOptions {
                 destination: destination.clone(),
@@ -3790,7 +3784,7 @@ mod tests {
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
+        )
         .await?;
         assert_eq!(materialized.value.special_files, 2);
         assert!(

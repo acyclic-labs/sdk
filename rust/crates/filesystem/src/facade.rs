@@ -6,6 +6,7 @@ use crate::foundation::{
     Digest, DurableCommit, Epoch, FileId, GenerationId, Head, OperationId, ProposedCommit,
     Sequence, VolumeId,
 };
+use crate::heap_future::in_heap;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use crate::kernel::decode_retention_created;
 use crate::kernel::{
@@ -4823,48 +4824,53 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<(ObjectId, Head, WorkCounters), OperationFailure<FsError>> {
-        let authority_id = volume_authority_id(self.id);
-        let head = self
-            .fs
-            .inner
-            .authority
-            .head(authority_id, budget, cancellation)
-            .await
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-        let mut work = head.work;
-        if head.value.sequence == Sequence::GENESIS {
-            return Err(OperationFailure::new(FsError::EmptyAuthority, work));
-        }
-        let after = Sequence::new(head.value.sequence.get().saturating_sub(1));
-        let records = self
-            .fs
-            .inner
-            .authority
-            .replay(
-                authority_id,
-                after,
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                },
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = add(work, records.work)?;
-        let latest = records
-            .value
-            .first()
-            .ok_or_else(|| OperationFailure::new(FsError::InvalidAuthorityHistory, work))?;
-        if let Ok(deleted) = decode_workspace_deleted(&latest.payload, MAXIMUM_VOLUME_EVENT_BYTES) {
-            if deleted != self.id {
-                return Err(OperationFailure::new(FsError::VolumeMismatch, work));
+        in_heap(move || async move {
+            let authority_id = volume_authority_id(self.id);
+            let head = self
+                .fs
+                .inner
+                .authority
+                .head(authority_id, budget, cancellation)
+                .await
+                .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+            let mut work = head.work;
+            if head.value.sequence == Sequence::GENESIS {
+                return Err(OperationFailure::new(FsError::EmptyAuthority, work));
             }
-            return Err(OperationFailure::new(FsError::WorkspaceDeleted, work));
-        }
-        let generation_root = generation_from_record(latest, self.id, work)?;
-        Ok((generation_root, head.value, work))
+            let after = Sequence::new(head.value.sequence.get().saturating_sub(1));
+            let records = self
+                .fs
+                .inner
+                .authority
+                .replay(
+                    authority_id,
+                    after,
+                    ReplayLimit {
+                        records: 1,
+                        payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+                    },
+                    remaining(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+            work = add(work, records.work)?;
+            let latest = records
+                .value
+                .first()
+                .ok_or_else(|| OperationFailure::new(FsError::InvalidAuthorityHistory, work))?;
+            if let Ok(deleted) =
+                decode_workspace_deleted(&latest.payload, MAXIMUM_VOLUME_EVENT_BYTES)
+            {
+                if deleted != self.id {
+                    return Err(OperationFailure::new(FsError::VolumeMismatch, work));
+                }
+                return Err(OperationFailure::new(FsError::WorkspaceDeleted, work));
+            }
+            let generation_root = generation_from_record(latest, self.id, work)?;
+            Ok((generation_root, head.value, work))
+        })
+        .await
     }
 }
 
@@ -6323,35 +6329,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if self.mode.consistency != ConsistencyMode::Live {
-            return Ok(FsReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
-        }
-        let rebase = self
-            .rebase_head(
-                self.volume.config.limits.maximum_checkout_dependencies,
-                budget,
-                cancellation,
-            )
-            .await?;
-        match rebase.value {
-            RebaseDecision::Safe { .. } => Ok(FsReceipt {
-                value: (),
-                work: rebase.work,
-            }),
-            RebaseDecision::Conflicted {
-                conflicts,
-                truncated,
-            } => Err(OperationFailure::new(
-                FsError::LiveConflict {
+        in_heap(move || async move {
+            if self.mode.consistency != ConsistencyMode::Live {
+                return Ok(FsReceipt {
+                    value: (),
+                    work: WorkCounters::default(),
+                });
+            }
+            let rebase = self
+                .rebase_head(
+                    self.volume.config.limits.maximum_checkout_dependencies,
+                    budget,
+                    cancellation,
+                )
+                .await?;
+            match rebase.value {
+                RebaseDecision::Safe { .. } => Ok(FsReceipt {
+                    value: (),
+                    work: rebase.work,
+                }),
+                RebaseDecision::Conflicted {
                     conflicts,
                     truncated,
-                },
-                rebase.work,
-            )),
-        }
+                } => Err(OperationFailure::new(
+                    FsError::LiveConflict {
+                        conflicts,
+                        truncated,
+                    },
+                    rebase.work,
+                )),
+            }
+        })
+        .await
     }
 
     async fn capture_mutation_dependencies(
@@ -6360,80 +6369,88 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Vec<Dependency>> {
-        let mut work = WorkCounters::default();
-        let mut dependencies = Vec::new();
-        let mut exact_regions = Vec::new();
-        exact_regions
-            .try_reserve_exact(operations.len().saturating_mul(4))
-            .map_err(|_| OperationFailure::before_work(FsError::PendingMutationAllocationFailed))?;
-        for operation in operations {
-            let Some([first_path, second_path]) = operation.paths() else {
-                let records = self
-                    .identity_base_records(operation, remaining(work, budget)?, cancellation)
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                work = add(work, records.work)?;
-                let (first_record, second_record) = records.value;
-                for known_region in exact_mutation_regions(operation, first_record, second_record)
-                    .into_iter()
-                    .flatten()
-                {
-                    exact_regions.push(known_region);
-                }
-                continue;
-            };
-            let first = crate::kernel::observe_path_edges_async(
-                &self.volume.fs.inner.objects,
-                &self.base_root,
-                first_path,
-                self.volume.config,
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, FsError::Path))?;
-            work = add(work, first.lookup.work)?;
-            dependencies.extend(first.dependencies);
-            let second_record = if second_path == first_path {
-                first.lookup.record
-            } else {
-                let second = crate::kernel::observe_path_edges_async(
+        in_heap(move || async move {
+            let mut work = WorkCounters::default();
+            let mut dependencies = Vec::new();
+            let mut exact_regions = Vec::new();
+            exact_regions
+                .try_reserve_exact(operations.len().saturating_mul(4))
+                .map_err(|_| {
+                    OperationFailure::before_work(FsError::PendingMutationAllocationFailed)
+                })?;
+            for operation in operations {
+                let Some([first_path, second_path]) = operation.paths() else {
+                    let records = self
+                        .identity_base_records(operation, remaining(work, budget)?, cancellation)
+                        .await
+                        .map_err(|failure| {
+                            failure.map_with_prior_work(work, std::convert::identity)
+                        })?;
+                    work = add(work, records.work)?;
+                    let (first_record, second_record) = records.value;
+                    for known_region in
+                        exact_mutation_regions(operation, first_record, second_record)
+                            .into_iter()
+                            .flatten()
+                    {
+                        exact_regions.push(known_region);
+                    }
+                    continue;
+                };
+                let first = crate::kernel::observe_path_edges_async(
                     &self.volume.fs.inner.objects,
                     &self.base_root,
-                    second_path,
+                    first_path,
                     self.volume.config,
                     remaining(work, budget)?,
                     cancellation,
                 )
                 .await
                 .map_err(|failure| failure.map_with_prior_work(work, FsError::Path))?;
-                work = add(work, second.lookup.work)?;
-                dependencies.extend(second.dependencies);
-                second.lookup.record
-            };
-            for known_region in
-                exact_mutation_regions(operation, first.lookup.record, second_record)
-                    .into_iter()
-                    .flatten()
-            {
-                exact_regions.push(known_region);
+                work = add(work, first.lookup.work)?;
+                dependencies.extend(first.dependencies);
+                let second_record = if second_path == first_path {
+                    first.lookup.record
+                } else {
+                    let second = crate::kernel::observe_path_edges_async(
+                        &self.volume.fs.inner.objects,
+                        &self.base_root,
+                        second_path,
+                        self.volume.config,
+                        remaining(work, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, FsError::Path))?;
+                    work = add(work, second.lookup.work)?;
+                    dependencies.extend(second.dependencies);
+                    second.lookup.record
+                };
+                for known_region in
+                    exact_mutation_regions(operation, first.lookup.record, second_record)
+                        .into_iter()
+                        .flatten()
+                {
+                    exact_regions.push(known_region);
+                }
             }
-        }
-        let captured = capture_known_dependencies_async(
-            &self.volume.fs.inner.objects,
-            self.volume.config,
-            exact_regions,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, captured.work)?;
-        dependencies.extend(captured.value);
-        Ok(FsReceipt {
-            value: dependencies,
-            work,
+            let captured = capture_known_dependencies_async(
+                &self.volume.fs.inner.objects,
+                self.volume.config,
+                exact_regions,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add(work, captured.work)?;
+            dependencies.extend(captured.value);
+            Ok(FsReceipt {
+                value: dependencies,
+                work,
+            })
         })
+        .await
     }
 
     async fn identity_base_records(
@@ -6507,16 +6524,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if self.mode.access != AccessMode::ReadWrite
-            || !matches!(
-                self.mode.mutations,
-                MutationMode::PrivateOverlay | MutationMode::DirectLive
-            )
-        {
-            return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
-        }
-        self.mutate_candidate(operations, budget, cancellation)
-            .await
+        in_heap(move || async move {
+            if self.mode.access != AccessMode::ReadWrite
+                || !matches!(
+                    self.mode.mutations,
+                    MutationMode::PrivateOverlay | MutationMode::DirectLive
+                )
+            {
+                return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
+            }
+            self.mutate_candidate(operations, budget, cancellation)
+                .await
+        })
+        .await
     }
 
     /// Applies and durably publishes one direct-live mutation operation.
@@ -6768,13 +6788,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 FsError::ExcessiveMutationCapacity,
             ));
         }
-        // Keep the public mutation future within the Windows default thread
-        // stack. Each planning and mutation phase is boxed once per
-        // transaction rather than growing one deeply nested future.
-        let admitted =
-            Box::pin(self.admit_mutation_names(&mut operations, budget, cancellation)).await?;
-        let captured =
-            Box::pin(self.capture_mutation_dependencies(&operations, budget, cancellation)).await?;
+        let admitted = self
+            .admit_mutation_names(&mut operations, budget, cancellation)
+            .await?;
+        let captured = self
+            .capture_mutation_dependencies(&operations, budget, cancellation)
+            .await?;
         let dependency_work = add(admitted.work, captured.work)?;
         // Validate against the proof now and apply only after the mutation
         // lands; `&mut self` keeps the proof unchanged in between.
@@ -6787,14 +6806,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .map_err(|error| OperationFailure::new(error.into(), dependency_work))?;
         let prior_file_table = self.root.file_table;
-        let (receipt, _) = Box::pin(apply_generation_mutations_retaining_async(
+        let (receipt, _) = apply_generation_mutations_retaining_async(
             &self.volume.fs.inner.objects,
             &self.root,
             operations,
             self.volume.config,
             remaining(dependency_work, budget)?,
             cancellation,
-        ))
+        )
         .await
         .map_err(|failure| failure.map_with_prior_work(dependency_work, FsError::Mutation))?;
         let work = add(dependency_work, receipt.work)?;
@@ -6821,179 +6840,89 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if self.volume.config.case_sensitivity != CaseSensitivity::ProfileFolded
-            && self.volume.config.unicode != UnicodePolicy::RequireNfc
-        {
-            return Ok(FsReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
-        }
+        in_heap(move || async move {
+            if self.volume.config.case_sensitivity != CaseSensitivity::ProfileFolded
+                && self.volume.config.unicode != UnicodePolicy::RequireNfc
+            {
+                return Ok(FsReceipt {
+                    value: (),
+                    work: WorkCounters::default(),
+                });
+            }
 
-        let mut work = WorkCounters::default();
-        let mut pending: Vec<(NamespacePath, FileId)> = Vec::new();
-        let mut removed: Vec<(NamespacePath, FileId)> = Vec::new();
-        pending
-            .try_reserve_exact(operations.len())
-            .map_err(|_| OperationFailure::before_work(FsError::PendingMutationAllocationFailed))?;
-        removed
-            .try_reserve_exact(operations.len())
-            .map_err(|_| OperationFailure::before_work(FsError::PendingMutationAllocationFailed))?;
-        for operation in operations.iter_mut() {
-            cancellation
-                .check()
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
-            let canonicalized = Box::pin(self.canonicalize_existing_mutation(
-                operation,
-                &pending,
-                remaining(work, budget)?,
-                cancellation,
-            ))
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = add(work, canonicalized.work)?;
-            let parent_canonicalized = Box::pin(self.canonicalize_new_mutation_parents(
-                operation,
-                &pending,
-                remaining(work, budget)?,
-                cancellation,
-            ))
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = add(work, parent_canonicalized.work)?;
-            match operation {
-                Mutation::Create { path, record } | Mutation::Restore { path, record } => {
-                    let allowed = removed_binding_id(path, &removed);
-                    let allowed_ids: &[FileId] = match allowed {
-                        Some(ref file_id) => std::slice::from_ref(file_id),
-                        None => &[],
-                    };
-                    let parent_pending = pending_parent_exists(
-                        path,
+            let mut work = WorkCounters::default();
+            let mut pending: Vec<(NamespacePath, FileId)> = Vec::new();
+            let mut removed: Vec<(NamespacePath, FileId)> = Vec::new();
+            pending.try_reserve_exact(operations.len()).map_err(|_| {
+                OperationFailure::before_work(FsError::PendingMutationAllocationFailed)
+            })?;
+            removed.try_reserve_exact(operations.len()).map_err(|_| {
+                OperationFailure::before_work(FsError::PendingMutationAllocationFailed)
+            })?;
+            for operation in operations.iter_mut() {
+                cancellation
+                    .check()
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
+                let canonicalized = self
+                    .canonicalize_existing_mutation(
+                        operation,
                         &pending,
-                        self.volume.config.case_sensitivity,
-                        self.volume.config.limits,
-                    );
-                    let admission = Box::pin(self.admit_new_name(
-                        path,
                         remaining(work, budget)?,
                         cancellation,
-                        allowed_ids,
-                        parent_pending,
-                    ))
+                    )
                     .await
                     .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                    work = add(work, admission.work)?;
-                    if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
-                        && pending_name_collision(path, &pending, allowed_ids)
-                    {
-                        return Err(OperationFailure::new(FsError::NameCollision, work));
-                    }
-                    pending.push((path.clone(), record.file_id));
-                }
-                Mutation::Link {
-                    source,
-                    destination,
-                } => {
-                    let source_id = self
-                        .pending_or_existing_file_id(
-                            source,
+                work = add(work, canonicalized.work)?;
+                let parent_canonicalized = self
+                    .canonicalize_new_mutation_parents(
+                        operation,
+                        &pending,
+                        remaining(work, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                work = add(work, parent_canonicalized.work)?;
+                match operation {
+                    Mutation::Create { path, record } | Mutation::Restore { path, record } => {
+                        let allowed = removed_binding_id(path, &removed);
+                        let allowed_ids: &[FileId] = match allowed {
+                            Some(ref file_id) => std::slice::from_ref(file_id),
+                            None => &[],
+                        };
+                        let parent_pending = pending_parent_exists(
+                            path,
                             &pending,
-                            remaining(work, budget)?,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(|failure| {
-                            failure.map_with_prior_work(work, std::convert::identity)
-                        })?;
-                    work = add(work, source_id.work)?;
-                    let allowed = removed_binding_id(destination, &removed);
-                    let allowed_ids: &[FileId] = match allowed {
-                        Some(ref file_id) => std::slice::from_ref(file_id),
-                        None => &[],
-                    };
-                    let parent_pending = pending_parent_exists(
-                        destination,
-                        &pending,
-                        self.volume.config.case_sensitivity,
-                        self.volume.config.limits,
-                    );
-                    let admission = Box::pin(self.admit_new_name(
-                        destination,
-                        remaining(work, budget)?,
-                        cancellation,
-                        allowed_ids,
-                        parent_pending,
-                    ))
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                    work = add(work, admission.work)?;
-                    if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
-                        && pending_name_collision(destination, &pending, allowed_ids)
-                    {
-                        return Err(OperationFailure::new(FsError::NameCollision, work));
-                    }
-                    pending.push((destination.clone(), source_id.value));
-                }
-                Mutation::Rename {
-                    source,
-                    destination,
-                    replace,
-                } => {
-                    let source_id = self
-                        .pending_or_existing_file_id(
-                            source,
-                            &pending,
-                            remaining(work, budget)?,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(|failure| {
-                            failure.map_with_prior_work(work, std::convert::identity)
-                        })?;
-                    work = add(work, source_id.work)?;
-                    let mut allowed_ids = Vec::with_capacity(2);
-                    allowed_ids.push(source_id.value);
-                    if let Some(file_id) = removed_binding_id(destination, &removed)
-                        && file_id != source_id.value
-                    {
-                        allowed_ids.push(file_id);
-                    }
-                    let parent_pending = pending_parent_exists(
-                        destination,
-                        &pending,
-                        self.volume.config.case_sensitivity,
-                        self.volume.config.limits,
-                    );
-                    let admission = Box::pin(self.admit_new_name(
-                        destination,
-                        remaining(work, budget)?,
-                        cancellation,
-                        &allowed_ids,
-                        parent_pending,
-                    ))
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                    work = add(work, admission.work)?;
-                    if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
-                        && pending_name_collision(destination, &pending, &allowed_ids)
-                    {
-                        return Err(OperationFailure::new(FsError::NameCollision, work));
-                    }
-                    pending.retain(|(path, _)| path != source);
-                    if *replace {
-                        pending.retain(|(path, _)| path != destination);
-                    }
-                    removed.push((source.clone(), source_id.value));
-                    pending.push((destination.clone(), source_id.value));
-                }
-                Mutation::Remove { path, .. } => {
-                    if pending_binding_id(path, &pending, self.volume.config.case_sensitivity)
-                        .is_none()
-                    {
-                        let removed_id = self
-                            .pending_or_existing_file_id(
+                            self.volume.config.case_sensitivity,
+                            self.volume.config.limits,
+                        );
+                        let admission = self
+                            .admit_new_name(
                                 path,
+                                remaining(work, budget)?,
+                                cancellation,
+                                allowed_ids,
+                                parent_pending,
+                            )
+                            .await
+                            .map_err(|failure| {
+                                failure.map_with_prior_work(work, std::convert::identity)
+                            })?;
+                        work = add(work, admission.work)?;
+                        if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
+                            && pending_name_collision(path, &pending, allowed_ids)
+                        {
+                            return Err(OperationFailure::new(FsError::NameCollision, work));
+                        }
+                        pending.push((path.clone(), record.file_id));
+                    }
+                    Mutation::Link {
+                        source,
+                        destination,
+                    } => {
+                        let source_id = self
+                            .pending_or_existing_file_id(
+                                source,
                                 &pending,
                                 remaining(work, budget)?,
                                 cancellation,
@@ -7002,23 +6931,127 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             .map_err(|failure| {
                                 failure.map_with_prior_work(work, std::convert::identity)
                             })?;
-                        work = add(work, removed_id.work)?;
-                        removed.push((path.clone(), removed_id.value));
+                        work = add(work, source_id.work)?;
+                        let allowed = removed_binding_id(destination, &removed);
+                        let allowed_ids: &[FileId] = match allowed {
+                            Some(ref file_id) => std::slice::from_ref(file_id),
+                            None => &[],
+                        };
+                        let parent_pending = pending_parent_exists(
+                            destination,
+                            &pending,
+                            self.volume.config.case_sensitivity,
+                            self.volume.config.limits,
+                        );
+                        let admission = self
+                            .admit_new_name(
+                                destination,
+                                remaining(work, budget)?,
+                                cancellation,
+                                allowed_ids,
+                                parent_pending,
+                            )
+                            .await
+                            .map_err(|failure| {
+                                failure.map_with_prior_work(work, std::convert::identity)
+                            })?;
+                        work = add(work, admission.work)?;
+                        if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
+                            && pending_name_collision(destination, &pending, allowed_ids)
+                        {
+                            return Err(OperationFailure::new(FsError::NameCollision, work));
+                        }
+                        pending.push((destination.clone(), source_id.value));
                     }
-                    pending.retain(|(pending_path, _)| pending_path != path);
+                    Mutation::Rename {
+                        source,
+                        destination,
+                        replace,
+                    } => {
+                        let source_id = self
+                            .pending_or_existing_file_id(
+                                source,
+                                &pending,
+                                remaining(work, budget)?,
+                                cancellation,
+                            )
+                            .await
+                            .map_err(|failure| {
+                                failure.map_with_prior_work(work, std::convert::identity)
+                            })?;
+                        work = add(work, source_id.work)?;
+                        let mut allowed_ids = Vec::with_capacity(2);
+                        allowed_ids.push(source_id.value);
+                        if let Some(file_id) = removed_binding_id(destination, &removed)
+                            && file_id != source_id.value
+                        {
+                            allowed_ids.push(file_id);
+                        }
+                        let parent_pending = pending_parent_exists(
+                            destination,
+                            &pending,
+                            self.volume.config.case_sensitivity,
+                            self.volume.config.limits,
+                        );
+                        let admission = self
+                            .admit_new_name(
+                                destination,
+                                remaining(work, budget)?,
+                                cancellation,
+                                &allowed_ids,
+                                parent_pending,
+                            )
+                            .await
+                            .map_err(|failure| {
+                                failure.map_with_prior_work(work, std::convert::identity)
+                            })?;
+                        work = add(work, admission.work)?;
+                        if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
+                            && pending_name_collision(destination, &pending, &allowed_ids)
+                        {
+                            return Err(OperationFailure::new(FsError::NameCollision, work));
+                        }
+                        pending.retain(|(path, _)| path != source);
+                        if *replace {
+                            pending.retain(|(path, _)| path != destination);
+                        }
+                        removed.push((source.clone(), source_id.value));
+                        pending.push((destination.clone(), source_id.value));
+                    }
+                    Mutation::Remove { path, .. } => {
+                        if pending_binding_id(path, &pending, self.volume.config.case_sensitivity)
+                            .is_none()
+                        {
+                            let removed_id = self
+                                .pending_or_existing_file_id(
+                                    path,
+                                    &pending,
+                                    remaining(work, budget)?,
+                                    cancellation,
+                                )
+                                .await
+                                .map_err(|failure| {
+                                    failure.map_with_prior_work(work, std::convert::identity)
+                                })?;
+                            work = add(work, removed_id.work)?;
+                            removed.push((path.clone(), removed_id.value));
+                        }
+                        pending.retain(|(pending_path, _)| pending_path != path);
+                    }
+                    Mutation::SetMetadata { .. }
+                    | Mutation::Write { .. }
+                    | Mutation::ValidateRegular { .. }
+                    | Mutation::Resize { .. }
+                    | Mutation::ZeroRange { .. }
+                    | Mutation::Preallocate { .. }
+                    | Mutation::CloneRange { .. }
+                    | Mutation::File { .. }
+                    | Mutation::CloneFileRange { .. } => {}
                 }
-                Mutation::SetMetadata { .. }
-                | Mutation::Write { .. }
-                | Mutation::ValidateRegular { .. }
-                | Mutation::Resize { .. }
-                | Mutation::ZeroRange { .. }
-                | Mutation::Preallocate { .. }
-                | Mutation::CloneRange { .. }
-                | Mutation::File { .. }
-                | Mutation::CloneFileRange { .. } => {}
             }
-        }
-        Ok(FsReceipt { value: (), work })
+            Ok(FsReceipt { value: (), work })
+        })
+        .await
     }
 
     async fn canonicalize_new_mutation_parents(
@@ -7028,50 +7061,53 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if self.volume.config.case_sensitivity != CaseSensitivity::ProfileFolded {
-            return Ok(FsReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
-        }
-        let (Mutation::Create { path, .. }
-        | Mutation::Link {
-            destination: path, ..
-        }
-        | Mutation::Rename {
-            destination: path, ..
-        }) = operation
-        else {
-            return Ok(FsReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
-        };
-        let Some((parent, name)) = path.split_last() else {
-            return Ok(FsReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
-        };
-        if parent.is_empty() {
-            return Ok(FsReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
-        }
-        let resolved = self
-            .canonicalize_path_components(parent, pending, budget, cancellation)
-            .await?;
-        let work = resolved.work;
-        let Some(resolved_parent) = resolved.value else {
-            return Ok(FsReceipt { value: (), work });
-        };
-        let mut components = resolved_parent.components().to_vec();
-        components.push(name.clone());
-        *path = NamespacePath::new(components, self.volume.config.limits).map_err(|error| {
-            OperationFailure::new(FsError::Path(PathLookupError::NamespacePath(error)), work)
-        })?;
-        Ok(FsReceipt { value: (), work })
+        in_heap(move || async move {
+            if self.volume.config.case_sensitivity != CaseSensitivity::ProfileFolded {
+                return Ok(FsReceipt {
+                    value: (),
+                    work: WorkCounters::default(),
+                });
+            }
+            let (Mutation::Create { path, .. }
+            | Mutation::Link {
+                destination: path, ..
+            }
+            | Mutation::Rename {
+                destination: path, ..
+            }) = operation
+            else {
+                return Ok(FsReceipt {
+                    value: (),
+                    work: WorkCounters::default(),
+                });
+            };
+            let Some((parent, name)) = path.split_last() else {
+                return Ok(FsReceipt {
+                    value: (),
+                    work: WorkCounters::default(),
+                });
+            };
+            if parent.is_empty() {
+                return Ok(FsReceipt {
+                    value: (),
+                    work: WorkCounters::default(),
+                });
+            }
+            let resolved = self
+                .canonicalize_path_components(parent, pending, budget, cancellation)
+                .await?;
+            let work = resolved.work;
+            let Some(resolved_parent) = resolved.value else {
+                return Ok(FsReceipt { value: (), work });
+            };
+            let mut components = resolved_parent.components().to_vec();
+            components.push(name.clone());
+            *path = NamespacePath::new(components, self.volume.config.limits).map_err(|error| {
+                OperationFailure::new(FsError::Path(PathLookupError::NamespacePath(error)), work)
+            })?;
+            Ok(FsReceipt { value: (), work })
+        })
+        .await
     }
 
     async fn canonicalize_existing_mutation(
@@ -7081,30 +7117,59 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if self.volume.config.case_sensitivity != CaseSensitivity::ProfileFolded {
-            return Ok(FsReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
-        }
-        let mut work = WorkCounters::default();
-        let paths = match operation {
-            Mutation::Remove { path, .. }
-            | Mutation::SetMetadata { path, .. }
-            | Mutation::Write { path, .. }
-            | Mutation::ValidateRegular { path }
-            | Mutation::Resize { path, .. }
-            | Mutation::ZeroRange { path, .. }
-            | Mutation::Preallocate { path, .. } => {
-                let resolved = self
-                    .canonical_existing_path(path, pending, remaining(work, budget)?, cancellation)
-                    .await?;
-                *path = resolved.value;
-                work = add(work, resolved.work)?;
-                return Ok(FsReceipt { value: (), work });
+        in_heap(move || async move {
+            if self.volume.config.case_sensitivity != CaseSensitivity::ProfileFolded {
+                return Ok(FsReceipt {
+                    value: (),
+                    work: WorkCounters::default(),
+                });
             }
-            Mutation::Rename { source, .. } | Mutation::Link { source, .. } => {
-                let resolved = self
+            let mut work = WorkCounters::default();
+            let paths = match operation {
+                Mutation::Remove { path, .. }
+                | Mutation::SetMetadata { path, .. }
+                | Mutation::Write { path, .. }
+                | Mutation::ValidateRegular { path }
+                | Mutation::Resize { path, .. }
+                | Mutation::ZeroRange { path, .. }
+                | Mutation::Preallocate { path, .. } => {
+                    let resolved = self
+                        .canonical_existing_path(
+                            path,
+                            pending,
+                            remaining(work, budget)?,
+                            cancellation,
+                        )
+                        .await?;
+                    *path = resolved.value;
+                    work = add(work, resolved.work)?;
+                    return Ok(FsReceipt { value: (), work });
+                }
+                Mutation::Rename { source, .. } | Mutation::Link { source, .. } => {
+                    let resolved = self
+                        .canonical_existing_path(
+                            source,
+                            pending,
+                            remaining(work, budget)?,
+                            cancellation,
+                        )
+                        .await?;
+                    *source = resolved.value;
+                    work = add(work, resolved.work)?;
+                    return Ok(FsReceipt { value: (), work });
+                }
+                Mutation::CloneRange {
+                    source,
+                    destination,
+                    ..
+                } => Some((source, destination)),
+                Mutation::Create { .. }
+                | Mutation::Restore { .. }
+                | Mutation::File { .. }
+                | Mutation::CloneFileRange { .. } => None,
+            };
+            if let Some((source, destination)) = paths {
+                let resolved_source = self
                     .canonical_existing_path(
                         source,
                         pending,
@@ -7112,38 +7177,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         cancellation,
                     )
                     .await?;
-                *source = resolved.value;
-                work = add(work, resolved.work)?;
-                return Ok(FsReceipt { value: (), work });
+                *source = resolved_source.value;
+                work = add(work, resolved_source.work)?;
+                let resolved_destination = self
+                    .canonical_existing_path(
+                        destination,
+                        pending,
+                        remaining(work, budget)?,
+                        cancellation,
+                    )
+                    .await?;
+                *destination = resolved_destination.value;
+                work = add(work, resolved_destination.work)?;
             }
-            Mutation::CloneRange {
-                source,
-                destination,
-                ..
-            } => Some((source, destination)),
-            Mutation::Create { .. }
-            | Mutation::Restore { .. }
-            | Mutation::File { .. }
-            | Mutation::CloneFileRange { .. } => None,
-        };
-        if let Some((source, destination)) = paths {
-            let resolved_source = self
-                .canonical_existing_path(source, pending, remaining(work, budget)?, cancellation)
-                .await?;
-            *source = resolved_source.value;
-            work = add(work, resolved_source.work)?;
-            let resolved_destination = self
-                .canonical_existing_path(
-                    destination,
-                    pending,
-                    remaining(work, budget)?,
-                    cancellation,
-                )
-                .await?;
-            *destination = resolved_destination.value;
-            work = add(work, resolved_destination.work)?;
-        }
-        Ok(FsReceipt { value: (), work })
+            Ok(FsReceipt { value: (), work })
+        })
+        .await
     }
 
     async fn canonical_existing_path(
@@ -7206,76 +7255,85 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Option<NamespacePath>> {
-        let mut work = WorkCounters::default();
-        let mut canonical_components = Vec::new();
-        for requested_component in requested_components {
-            let candidate = NamespacePath::new(
-                canonical_components
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(requested_component.clone()))
-                    .collect(),
-                self.volume.config.limits,
-            )
-            .map_err(|error| {
-                OperationFailure::new(FsError::Path(PathLookupError::NamespacePath(error)), work)
-            })?;
-            if let Some((pending_path, _)) =
-                pending_binding_path(&candidate, pending, self.volume.config.case_sensitivity)
-            {
-                canonical_components.push(
-                    pending_path
-                        .components()
-                        .last()
+        in_heap(move || async move {
+            let mut work = WorkCounters::default();
+            let mut canonical_components = Vec::new();
+            for requested_component in requested_components {
+                let candidate = NamespacePath::new(
+                    canonical_components
+                        .iter()
                         .cloned()
-                        .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?,
-                );
-                continue;
-            }
-            let probe = self
-                .lookup_no_follow_at_current(
-                    &candidate,
-                    remaining(work, budget)?,
-                    cancellation,
-                    false,
+                        .chain(std::iter::once(requested_component.clone()))
+                        .collect(),
+                    self.volume.config.limits,
                 )
-                .await?;
-            work = add(work, probe.work)?;
-            if probe.value.record.is_some() {
-                canonical_components.push(requested_component.clone());
-                continue;
+                .map_err(|error| {
+                    OperationFailure::new(
+                        FsError::Path(PathLookupError::NamespacePath(error)),
+                        work,
+                    )
+                })?;
+                if let Some((pending_path, _)) =
+                    pending_binding_path(&candidate, pending, self.volume.config.case_sensitivity)
+                {
+                    canonical_components.push(
+                        pending_path
+                            .components()
+                            .last()
+                            .cloned()
+                            .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?,
+                    );
+                    continue;
+                }
+                let probe = self
+                    .lookup_no_follow_at_current(
+                        &candidate,
+                        remaining(work, budget)?,
+                        cancellation,
+                        false,
+                    )
+                    .await?;
+                work = add(work, probe.work)?;
+                if probe.value.record.is_some() {
+                    canonical_components.push(requested_component.clone());
+                    continue;
+                }
+                let parent =
+                    NamespacePath::new(canonical_components.clone(), self.volume.config.limits)
+                        .map_err(|error| {
+                            OperationFailure::new(
+                                FsError::Path(PathLookupError::NamespacePath(error)),
+                                work,
+                            )
+                        })?;
+                let siblings = self
+                    .find_case_folded_sibling(
+                        parent.components(),
+                        requested_component,
+                        remaining(work, budget)?,
+                        cancellation,
+                        &[],
+                    )
+                    .await?;
+                work = add(work, siblings.work)?;
+                let Some(exact_name) = siblings.value else {
+                    return Ok(FsReceipt { value: None, work });
+                };
+                canonical_components.push(exact_name);
             }
-            let parent =
-                NamespacePath::new(canonical_components.clone(), self.volume.config.limits)
-                    .map_err(|error| {
-                        OperationFailure::new(
-                            FsError::Path(PathLookupError::NamespacePath(error)),
-                            work,
-                        )
-                    })?;
-            let siblings = self
-                .find_case_folded_sibling(
-                    parent.components(),
-                    requested_component,
-                    remaining(work, budget)?,
-                    cancellation,
-                    &[],
-                )
-                .await?;
-            work = add(work, siblings.work)?;
-            let Some(exact_name) = siblings.value else {
-                return Ok(FsReceipt { value: None, work });
-            };
-            canonical_components.push(exact_name);
-        }
-        let canonical = NamespacePath::new(canonical_components, self.volume.config.limits)
-            .map_err(|error| {
-                OperationFailure::new(FsError::Path(PathLookupError::NamespacePath(error)), work)
-            })?;
-        Ok(FsReceipt {
-            value: Some(canonical),
-            work,
+            let canonical = NamespacePath::new(canonical_components, self.volume.config.limits)
+                .map_err(|error| {
+                    OperationFailure::new(
+                        FsError::Path(PathLookupError::NamespacePath(error)),
+                        work,
+                    )
+                })?;
+            Ok(FsReceipt {
+                value: Some(canonical),
+                work,
+            })
         })
+        .await
     }
 
     async fn pending_or_existing_file_id(
@@ -7322,63 +7380,71 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<AuthoredTransactionResult> {
-        let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
-            .unwrap_or(usize::MAX);
-        let operation_count = authored
-            .iter()
-            .try_fold(0_usize, |count, mutation| {
-                count.checked_add(authored_mutation_operation_count(mutation))
-            })
-            .ok_or_else(|| OperationFailure::before_work(FsError::TooManyPendingMutations))?;
-        if authored.len() > maximum || authored.capacity() > maximum || operation_count > maximum {
-            return Err(OperationFailure::before_work(
-                FsError::TooManyPendingMutations,
-            ));
-        }
-        let mut work = WorkCounters::default();
-        let mut operations = Vec::new();
-        let mut created_file_ids = Vec::new();
-        // Metadata objects are immutable. Reuse durable admissions throughout
-        // this authored transaction, including across paths and file kinds.
-        let mut staged_metadata = AuthoredMetadataCache::new();
-        operations
-            .try_reserve_exact(operation_count)
-            .map_err(|_| OperationFailure::before_work(FsError::PendingMutationAllocationFailed))?;
-        created_file_ids
-            .try_reserve_exact(authored.len())
-            .map_err(|_| OperationFailure::before_work(FsError::PendingMutationAllocationFailed))?;
+        in_heap(move || async move {
+            let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
+                .unwrap_or(usize::MAX);
+            let operation_count = authored
+                .iter()
+                .try_fold(0_usize, |count, mutation| {
+                    count.checked_add(authored_mutation_operation_count(mutation))
+                })
+                .ok_or_else(|| OperationFailure::before_work(FsError::TooManyPendingMutations))?;
+            if authored.len() > maximum
+                || authored.capacity() > maximum
+                || operation_count > maximum
+            {
+                return Err(OperationFailure::before_work(
+                    FsError::TooManyPendingMutations,
+                ));
+            }
+            let mut work = WorkCounters::default();
+            let mut operations = Vec::new();
+            let mut created_file_ids = Vec::new();
+            // Metadata objects are immutable. Reuse durable admissions throughout
+            // this authored transaction, including across paths and file kinds.
+            let mut staged_metadata = AuthoredMetadataCache::new();
+            operations.try_reserve_exact(operation_count).map_err(|_| {
+                OperationFailure::before_work(FsError::PendingMutationAllocationFailed)
+            })?;
+            created_file_ids
+                .try_reserve_exact(authored.len())
+                .map_err(|_| {
+                    OperationFailure::before_work(FsError::PendingMutationAllocationFailed)
+                })?;
 
-        for authored_mutation in authored {
-            cancellation
-                .check()
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
-            let created = self
-                .compile_authored_mutation(
-                    authored_mutation,
-                    &mut operations,
-                    &mut work,
-                    &mut staged_metadata,
-                    budget,
-                    cancellation,
-                )
-                .await?;
-            created_file_ids.push(created);
-        }
-        if operations.is_empty() {
-            return Ok(FsReceipt {
+            for authored_mutation in authored {
+                cancellation
+                    .check()
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
+                let created = self
+                    .compile_authored_mutation(
+                        authored_mutation,
+                        &mut operations,
+                        &mut work,
+                        &mut staged_metadata,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                created_file_ids.push(created);
+            }
+            if operations.is_empty() {
+                return Ok(FsReceipt {
+                    value: AuthoredTransactionResult { created_file_ids },
+                    work,
+                });
+            }
+            let mutation = self
+                .mutate(operations, remaining(work, budget)?, cancellation)
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add(work, mutation.work)?;
+            Ok(FsReceipt {
                 value: AuthoredTransactionResult { created_file_ids },
                 work,
-            });
-        }
-        let mutation = self
-            .mutate(operations, remaining(work, budget)?, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, mutation.work)?;
-        Ok(FsReceipt {
-            value: AuthoredTransactionResult { created_file_ids },
-            work,
+            })
         })
+        .await
     }
 
     /// Applies a large ordered capture without exposing an intermediate candidate.
@@ -7525,100 +7591,146 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<Option<FileId>, OperationFailure<FsError>> {
-        match authored {
-            AuthoredMutation::Reidentify { path, file_id } => {
-                let current = crate::kernel::lookup_path_async(
-                    &self.volume.fs.inner.objects,
-                    &self.root,
-                    &path,
-                    self.volume.config,
-                    remaining(*work, budget)?,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(*work, FsError::Path))?;
-                *work = add(*work, current.work)?;
-                let current = current
-                    .record
-                    .ok_or_else(|| OperationFailure::new(FsError::NotFound, *work))?;
-                if current.kind == FileKind::Directory {
-                    return Err(OperationFailure::new(FsError::InvalidSpecialKind, *work));
-                }
-                if current.file_id == file_id {
-                    return Ok(None);
-                }
-                let existing = self
-                    .lookup_file_record_by_id(file_id, remaining(*work, budget)?, cancellation)
-                    .await
-                    .map_err(|failure| {
-                        failure.map_with_prior_work(*work, std::convert::identity)
-                    })?;
-                *work = add(*work, existing.work)?;
-                if existing.value.is_some_and(|existing| {
-                    existing.kind != current.kind
-                        || existing.metadata != current.metadata
-                        || existing.payload != current.payload
-                }) {
-                    return Err(OperationFailure::new(FsError::FileIdentityCollision, *work));
-                }
-                operations.push(Mutation::Restore {
-                    path,
-                    record: FileRecord {
-                        file_id,
-                        link_count: 1,
-                        ..current
-                    },
-                });
-                Ok(None)
-            }
-            AuthoredMutation::CreateFile {
-                path,
-                bytes,
-                metadata,
-            } => {
-                if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-                    > self.volume.config.limits.maximum_read_bytes
-                {
-                    return Err(OperationFailure::new(
-                        FsError::FileRead(FileRangeReadError::InvalidRange),
-                        *work,
-                    ));
-                }
-                let metadata = self
-                    .stage_authored_metadata(
-                        metadata,
-                        staged_metadata,
+        in_heap(move || async move {
+            match authored {
+                AuthoredMutation::Reidentify { path, file_id } => {
+                    let current = crate::kernel::lookup_path_async(
+                        &self.volume.fs.inner.objects,
+                        &self.root,
+                        &path,
+                        self.volume.config,
                         remaining(*work, budget)?,
                         cancellation,
                     )
                     .await
-                    .map_err(|failure| {
-                        failure.map_with_prior_work(*work, std::convert::identity)
-                    })?;
-                *work = add(*work, metadata.work)?;
-                let file_id = self.authored_file_id(FileKind::Regular, &path);
-                if bytes.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
-                    operations.push(Mutation::Create {
-                        path,
-                        record: FileRecord {
-                            file_id,
-                            kind: FileKind::Regular,
-                            link_count: 1,
-                            metadata: metadata.value,
-                            payload: FilePayload::InlineRegular(
-                                InlineFileData::new(&bytes)
-                                    .map_err(|error| OperationFailure::new(error.into(), *work))?,
-                            ),
-                        },
-                    });
-                } else {
-                    let blob = self
-                        .stage_blob(bytes, remaining(*work, budget)?, cancellation)
+                    .map_err(|failure| failure.map_with_prior_work(*work, FsError::Path))?;
+                    *work = add(*work, current.work)?;
+                    let current = current
+                        .record
+                        .ok_or_else(|| OperationFailure::new(FsError::NotFound, *work))?;
+                    if current.kind == FileKind::Directory {
+                        return Err(OperationFailure::new(FsError::InvalidSpecialKind, *work));
+                    }
+                    if current.file_id == file_id {
+                        return Ok(None);
+                    }
+                    let existing = self
+                        .lookup_file_record_by_id(file_id, remaining(*work, budget)?, cancellation)
                         .await
                         .map_err(|failure| {
                             failure.map_with_prior_work(*work, std::convert::identity)
                         })?;
-                    *work = add(*work, blob.work)?;
+                    *work = add(*work, existing.work)?;
+                    if existing.value.is_some_and(|existing| {
+                        existing.kind != current.kind
+                            || existing.metadata != current.metadata
+                            || existing.payload != current.payload
+                    }) {
+                        return Err(OperationFailure::new(FsError::FileIdentityCollision, *work));
+                    }
+                    operations.push(Mutation::Restore {
+                        path,
+                        record: FileRecord {
+                            file_id,
+                            link_count: 1,
+                            ..current
+                        },
+                    });
+                    Ok(None)
+                }
+                AuthoredMutation::CreateFile {
+                    path,
+                    bytes,
+                    metadata,
+                } => {
+                    if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                        > self.volume.config.limits.maximum_read_bytes
+                    {
+                        return Err(OperationFailure::new(
+                            FsError::FileRead(FileRangeReadError::InvalidRange),
+                            *work,
+                        ));
+                    }
+                    let metadata = self
+                        .stage_authored_metadata(
+                            metadata,
+                            staged_metadata,
+                            remaining(*work, budget)?,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(|failure| {
+                            failure.map_with_prior_work(*work, std::convert::identity)
+                        })?;
+                    *work = add(*work, metadata.work)?;
+                    let file_id = self.authored_file_id(FileKind::Regular, &path);
+                    if bytes.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
+                        operations.push(Mutation::Create {
+                            path,
+                            record: FileRecord {
+                                file_id,
+                                kind: FileKind::Regular,
+                                link_count: 1,
+                                metadata: metadata.value,
+                                payload: FilePayload::InlineRegular(
+                                    InlineFileData::new(&bytes).map_err(|error| {
+                                        OperationFailure::new(error.into(), *work)
+                                    })?,
+                                ),
+                            },
+                        });
+                    } else {
+                        let blob = self
+                            .stage_blob(bytes, remaining(*work, budget)?, cancellation)
+                            .await
+                            .map_err(|failure| {
+                                failure.map_with_prior_work(*work, std::convert::identity)
+                            })?;
+                        *work = add(*work, blob.work)?;
+                        operations.push(Mutation::Create {
+                            path: path.clone(),
+                            record: FileRecord {
+                                file_id,
+                                kind: FileKind::Regular,
+                                link_count: 1,
+                                metadata: metadata.value,
+                                payload: FilePayload::InlineRegular(
+                                    InlineFileData::new(&[]).map_err(|error| {
+                                        OperationFailure::new(error.into(), *work)
+                                    })?,
+                                ),
+                            },
+                        });
+                        operations.push(Mutation::Write {
+                            path,
+                            offset: 0,
+                            length: blob.value.logical_bytes,
+                            content: blob.value.root,
+                            content_offset: 0,
+                        });
+                    }
+                    Ok(Some(file_id))
+                }
+                AuthoredMutation::CreateFileFromContent {
+                    path,
+                    content,
+                    metadata,
+                    file_id,
+                } => {
+                    let metadata = self
+                        .stage_authored_metadata(
+                            metadata,
+                            staged_metadata,
+                            remaining(*work, budget)?,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(|failure| {
+                            failure.map_with_prior_work(*work, std::convert::identity)
+                        })?;
+                    *work = add(*work, metadata.work)?;
+                    let file_id =
+                        file_id.unwrap_or_else(|| self.authored_file_id(FileKind::Regular, &path));
                     operations.push(Mutation::Create {
                         path: path.clone(),
                         record: FileRecord {
@@ -7632,338 +7744,297 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             ),
                         },
                     });
-                    operations.push(Mutation::Write {
-                        path,
-                        offset: 0,
-                        length: blob.value.logical_bytes,
-                        content: blob.value.root,
-                        content_offset: 0,
-                    });
+                    if content.logical_bytes != 0 {
+                        operations.push(Mutation::Write {
+                            path,
+                            offset: 0,
+                            length: content.logical_bytes,
+                            content: content.root,
+                            content_offset: 0,
+                        });
+                    }
+                    Ok(Some(file_id))
                 }
-                Ok(Some(file_id))
-            }
-            AuthoredMutation::CreateFileFromContent {
-                path,
-                content,
-                metadata,
-                file_id,
-            } => {
-                let metadata = self
-                    .stage_authored_metadata(
+                AuthoredMutation::CreateDirectory { path, metadata } => {
+                    let tree = self
+                        .stage_empty_tree(remaining(*work, budget)?, cancellation)
+                        .await
+                        .map_err(|failure| {
+                            failure.map_with_prior_work(*work, std::convert::identity)
+                        })?;
+                    *work = add(*work, tree.work)?;
+                    self.compile_record(
+                        operations,
+                        path,
+                        FileKind::Directory,
+                        FilePayload::Directory {
+                            entries: tree.value,
+                        },
                         metadata,
+                        work,
                         staged_metadata,
-                        remaining(*work, budget)?,
+                        budget,
                         cancellation,
                     )
                     .await
-                    .map_err(|failure| {
-                        failure.map_with_prior_work(*work, std::convert::identity)
-                    })?;
-                *work = add(*work, metadata.work)?;
-                let file_id =
-                    file_id.unwrap_or_else(|| self.authored_file_id(FileKind::Regular, &path));
-                operations.push(Mutation::Create {
-                    path: path.clone(),
-                    record: FileRecord {
-                        file_id,
-                        kind: FileKind::Regular,
-                        link_count: 1,
-                        metadata: metadata.value,
-                        payload: FilePayload::InlineRegular(
-                            InlineFileData::new(&[])
-                                .map_err(|error| OperationFailure::new(error.into(), *work))?,
-                        ),
-                    },
-                });
-                if content.logical_bytes != 0 {
-                    operations.push(Mutation::Write {
-                        path,
-                        offset: 0,
-                        length: content.logical_bytes,
-                        content: content.root,
-                        content_offset: 0,
-                    });
+                    .map(Some)
                 }
-                Ok(Some(file_id))
-            }
-            AuthoredMutation::CreateDirectory { path, metadata } => {
-                let tree = self
-                    .stage_empty_tree(remaining(*work, budget)?, cancellation)
-                    .await
-                    .map_err(|failure| {
-                        failure.map_with_prior_work(*work, std::convert::identity)
-                    })?;
-                *work = add(*work, tree.work)?;
-                self.compile_record(
-                    operations,
+                AuthoredMutation::CreateSymbolicLink {
                     path,
-                    FileKind::Directory,
-                    FilePayload::Directory {
-                        entries: tree.value,
-                    },
+                    target,
                     metadata,
-                    work,
-                    staged_metadata,
-                    budget,
-                    cancellation,
-                )
-                .await
-                .map(Some)
-            }
-            AuthoredMutation::CreateSymbolicLink {
-                path,
-                target,
-                metadata,
-            } => {
-                let blob = self
-                    .stage_blob(target, remaining(*work, budget)?, cancellation)
-                    .await
-                    .map_err(|failure| {
-                        failure.map_with_prior_work(*work, std::convert::identity)
-                    })?;
-                *work = add(*work, blob.work)?;
-                self.compile_record(
-                    operations,
-                    path,
-                    FileKind::SymbolicLink,
-                    FilePayload::SymbolicLink {
-                        target_bytes: blob.value.logical_bytes,
-                        target: blob.value.root,
-                    },
-                    metadata,
-                    work,
-                    staged_metadata,
-                    budget,
-                    cancellation,
-                )
-                .await
-                .map(Some)
-            }
-            AuthoredMutation::CreateEmptySpecial {
-                path,
-                kind,
-                metadata,
-            } => {
-                if !matches!(
-                    kind,
-                    FileKind::Fifo | FileKind::Socket | FileKind::MountBoundary
-                ) {
-                    return Err(OperationFailure::new(FsError::InvalidSpecialKind, *work));
-                }
-                self.validate_profile_kind(kind, *work)?;
-                self.compile_record(
-                    operations,
-                    path,
-                    kind,
-                    FilePayload::Empty,
-                    metadata,
-                    work,
-                    staged_metadata,
-                    budget,
-                    cancellation,
-                )
-                .await
-                .map(Some)
-            }
-            AuthoredMutation::CreateDevice {
-                path,
-                kind,
-                major,
-                minor,
-                metadata,
-            } => {
-                if !matches!(kind, FileKind::CharacterDevice | FileKind::BlockDevice) {
-                    return Err(OperationFailure::new(FsError::InvalidSpecialKind, *work));
-                }
-                self.validate_profile_kind(kind, *work)?;
-                self.compile_record(
-                    operations,
-                    path,
-                    kind,
-                    FilePayload::Device { major, minor },
-                    metadata,
-                    work,
-                    staged_metadata,
-                    budget,
-                    cancellation,
-                )
-                .await
-                .map(Some)
-            }
-            AuthoredMutation::CreateReparsePoint {
-                path,
-                payload,
-                metadata,
-            } => {
-                self.validate_profile_kind(FileKind::ReparsePoint, *work)?;
-                let blob = self
-                    .stage_blob(payload, remaining(*work, budget)?, cancellation)
-                    .await
-                    .map_err(|failure| {
-                        failure.map_with_prior_work(*work, std::convert::identity)
-                    })?;
-                *work = add(*work, blob.work)?;
-                self.compile_record(
-                    operations,
-                    path,
-                    FileKind::ReparsePoint,
-                    FilePayload::ReparsePoint {
-                        payload_bytes: blob.value.logical_bytes,
-                        payload: blob.value.root,
-                    },
-                    metadata,
-                    work,
-                    staged_metadata,
-                    budget,
-                    cancellation,
-                )
-                .await
-                .map(Some)
-            }
-            AuthoredMutation::Remove {
-                path,
-                expected_file_id,
-            } => {
-                operations.push(Mutation::Remove {
-                    path,
-                    expected_file_id: expected_file_id
-                        .map_or(MetadataField::Unavailable, MetadataField::Value),
-                });
-                Ok(None)
-            }
-            AuthoredMutation::Rename {
-                source,
-                destination,
-                replace,
-            } => {
-                operations.push(Mutation::Rename {
-                    source,
-                    destination,
-                    replace,
-                });
-                Ok(None)
-            }
-            AuthoredMutation::HardLink {
-                source,
-                destination,
-            } => {
-                operations.push(Mutation::Link {
-                    source,
-                    destination,
-                });
-                Ok(None)
-            }
-            AuthoredMutation::Write {
-                path,
-                offset,
-                bytes,
-            } => {
-                if bytes.is_empty() {
-                    operations.push(Mutation::ValidateRegular { path });
-                } else {
+                } => {
                     let blob = self
-                        .stage_blob(bytes, remaining(*work, budget)?, cancellation)
+                        .stage_blob(target, remaining(*work, budget)?, cancellation)
                         .await
                         .map_err(|failure| {
                             failure.map_with_prior_work(*work, std::convert::identity)
                         })?;
                     *work = add(*work, blob.work)?;
-                    operations.push(Mutation::Write {
+                    self.compile_record(
+                        operations,
                         path,
-                        offset,
-                        length: blob.value.logical_bytes,
-                        content: blob.value.root,
-                        content_offset: 0,
-                    });
-                }
-                Ok(None)
-            }
-            AuthoredMutation::WriteFromContent {
-                path,
-                offset,
-                content,
-            } => {
-                if content.logical_bytes == 0 {
-                    operations.push(Mutation::ValidateRegular { path });
-                } else {
-                    operations.push(Mutation::Write {
-                        path,
-                        offset,
-                        length: content.logical_bytes,
-                        content: content.root,
-                        content_offset: 0,
-                    });
-                }
-                Ok(None)
-            }
-            AuthoredMutation::SetMetadata { path, metadata } => {
-                let metadata = self
-                    .stage_authored_metadata(
+                        FileKind::SymbolicLink,
+                        FilePayload::SymbolicLink {
+                            target_bytes: blob.value.logical_bytes,
+                            target: blob.value.root,
+                        },
                         metadata,
+                        work,
                         staged_metadata,
-                        remaining(*work, budget)?,
+                        budget,
                         cancellation,
                     )
                     .await
-                    .map_err(|failure| {
-                        failure.map_with_prior_work(*work, std::convert::identity)
-                    })?;
-                *work = add(*work, metadata.work)?;
-                operations.push(Mutation::SetMetadata {
+                    .map(Some)
+                }
+                AuthoredMutation::CreateEmptySpecial {
                     path,
-                    metadata: metadata.value,
-                });
-                Ok(None)
-            }
-            AuthoredMutation::Resize {
-                path,
-                logical_bytes,
-            } => {
-                operations.push(Mutation::Resize {
+                    kind,
+                    metadata,
+                } => {
+                    if !matches!(
+                        kind,
+                        FileKind::Fifo | FileKind::Socket | FileKind::MountBoundary
+                    ) {
+                        return Err(OperationFailure::new(FsError::InvalidSpecialKind, *work));
+                    }
+                    self.validate_profile_kind(kind, *work)?;
+                    self.compile_record(
+                        operations,
+                        path,
+                        kind,
+                        FilePayload::Empty,
+                        metadata,
+                        work,
+                        staged_metadata,
+                        budget,
+                        cancellation,
+                    )
+                    .await
+                    .map(Some)
+                }
+                AuthoredMutation::CreateDevice {
+                    path,
+                    kind,
+                    major,
+                    minor,
+                    metadata,
+                } => {
+                    if !matches!(kind, FileKind::CharacterDevice | FileKind::BlockDevice) {
+                        return Err(OperationFailure::new(FsError::InvalidSpecialKind, *work));
+                    }
+                    self.validate_profile_kind(kind, *work)?;
+                    self.compile_record(
+                        operations,
+                        path,
+                        kind,
+                        FilePayload::Device { major, minor },
+                        metadata,
+                        work,
+                        staged_metadata,
+                        budget,
+                        cancellation,
+                    )
+                    .await
+                    .map(Some)
+                }
+                AuthoredMutation::CreateReparsePoint {
+                    path,
+                    payload,
+                    metadata,
+                } => {
+                    self.validate_profile_kind(FileKind::ReparsePoint, *work)?;
+                    let blob = self
+                        .stage_blob(payload, remaining(*work, budget)?, cancellation)
+                        .await
+                        .map_err(|failure| {
+                            failure.map_with_prior_work(*work, std::convert::identity)
+                        })?;
+                    *work = add(*work, blob.work)?;
+                    self.compile_record(
+                        operations,
+                        path,
+                        FileKind::ReparsePoint,
+                        FilePayload::ReparsePoint {
+                            payload_bytes: blob.value.logical_bytes,
+                            payload: blob.value.root,
+                        },
+                        metadata,
+                        work,
+                        staged_metadata,
+                        budget,
+                        cancellation,
+                    )
+                    .await
+                    .map(Some)
+                }
+                AuthoredMutation::Remove {
+                    path,
+                    expected_file_id,
+                } => {
+                    operations.push(Mutation::Remove {
+                        path,
+                        expected_file_id: expected_file_id
+                            .map_or(MetadataField::Unavailable, MetadataField::Value),
+                    });
+                    Ok(None)
+                }
+                AuthoredMutation::Rename {
+                    source,
+                    destination,
+                    replace,
+                } => {
+                    operations.push(Mutation::Rename {
+                        source,
+                        destination,
+                        replace,
+                    });
+                    Ok(None)
+                }
+                AuthoredMutation::HardLink {
+                    source,
+                    destination,
+                } => {
+                    operations.push(Mutation::Link {
+                        source,
+                        destination,
+                    });
+                    Ok(None)
+                }
+                AuthoredMutation::Write {
+                    path,
+                    offset,
+                    bytes,
+                } => {
+                    if bytes.is_empty() {
+                        operations.push(Mutation::ValidateRegular { path });
+                    } else {
+                        let blob = self
+                            .stage_blob(bytes, remaining(*work, budget)?, cancellation)
+                            .await
+                            .map_err(|failure| {
+                                failure.map_with_prior_work(*work, std::convert::identity)
+                            })?;
+                        *work = add(*work, blob.work)?;
+                        operations.push(Mutation::Write {
+                            path,
+                            offset,
+                            length: blob.value.logical_bytes,
+                            content: blob.value.root,
+                            content_offset: 0,
+                        });
+                    }
+                    Ok(None)
+                }
+                AuthoredMutation::WriteFromContent {
+                    path,
+                    offset,
+                    content,
+                } => {
+                    if content.logical_bytes == 0 {
+                        operations.push(Mutation::ValidateRegular { path });
+                    } else {
+                        operations.push(Mutation::Write {
+                            path,
+                            offset,
+                            length: content.logical_bytes,
+                            content: content.root,
+                            content_offset: 0,
+                        });
+                    }
+                    Ok(None)
+                }
+                AuthoredMutation::SetMetadata { path, metadata } => {
+                    let metadata = self
+                        .stage_authored_metadata(
+                            metadata,
+                            staged_metadata,
+                            remaining(*work, budget)?,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(|failure| {
+                            failure.map_with_prior_work(*work, std::convert::identity)
+                        })?;
+                    *work = add(*work, metadata.work)?;
+                    operations.push(Mutation::SetMetadata {
+                        path,
+                        metadata: metadata.value,
+                    });
+                    Ok(None)
+                }
+                AuthoredMutation::Resize {
                     path,
                     logical_bytes,
-                });
-                Ok(None)
-            }
-            AuthoredMutation::ZeroRange {
-                path,
-                range,
-                allocated,
-                extend,
-            } => {
-                operations.push(Mutation::ZeroRange {
+                } => {
+                    operations.push(Mutation::Resize {
+                        path,
+                        logical_bytes,
+                    });
+                    Ok(None)
+                }
+                AuthoredMutation::ZeroRange {
                     path,
-                    offset: range.offset,
-                    length: range.length,
+                    range,
                     allocated,
                     extend,
-                });
-                Ok(None)
-            }
-            AuthoredMutation::Preallocate {
-                path,
-                range,
-                keep_size,
-            } => {
-                operations.push(Mutation::Preallocate {
+                } => {
+                    operations.push(Mutation::ZeroRange {
+                        path,
+                        offset: range.offset,
+                        length: range.length,
+                        allocated,
+                        extend,
+                    });
+                    Ok(None)
+                }
+                AuthoredMutation::Preallocate {
                     path,
-                    offset: range.offset,
-                    length: range.length,
+                    range,
                     keep_size,
-                });
-                Ok(None)
+                } => {
+                    operations.push(Mutation::Preallocate {
+                        path,
+                        offset: range.offset,
+                        length: range.length,
+                        keep_size,
+                    });
+                    Ok(None)
+                }
+                AuthoredMutation::CloneRange(request) => {
+                    operations.push(Mutation::CloneRange {
+                        source: request.source,
+                        source_offset: request.source_offset,
+                        destination: request.destination,
+                        destination_offset: request.destination_offset,
+                        length: request.length,
+                    });
+                    Ok(None)
+                }
             }
-            AuthoredMutation::CloneRange(request) => {
-                operations.push(Mutation::CloneRange {
-                    source: request.source,
-                    source_offset: request.source_offset,
-                    destination: request.destination,
-                    destination_offset: request.destination_offset,
-                    length: request.length,
-                });
-                Ok(None)
-            }
-        }
+        })
+        .await
     }
 
     fn validate_profile_kind(
@@ -7991,28 +8062,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<FileId, OperationFailure<FsError>> {
-        let staged = self
-            .stage_authored_metadata(
-                metadata,
-                staged_metadata,
-                remaining(*work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(*work, std::convert::identity))?;
-        *work = add(*work, staged.work)?;
-        let file_id = self.authored_file_id(kind, &path);
-        operations.push(Mutation::Create {
-            path,
-            record: FileRecord {
-                file_id,
-                kind,
-                link_count: 1,
-                metadata: staged.value,
-                payload,
-            },
-        });
-        Ok(file_id)
+        in_heap(move || async move {
+            let staged = self
+                .stage_authored_metadata(
+                    metadata,
+                    staged_metadata,
+                    remaining(*work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(*work, std::convert::identity))?;
+            *work = add(*work, staged.work)?;
+            let file_id = self.authored_file_id(kind, &path);
+            operations.push(Mutation::Create {
+                path,
+                record: FileRecord {
+                    file_id,
+                    kind,
+                    link_count: 1,
+                    metadata: staged.value,
+                    payload,
+                },
+            });
+            Ok(file_id)
+        })
+        .await
     }
 
     pub(crate) fn bind_authored_operation(&mut self, operation_id: OperationId) {
@@ -8071,18 +8145,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<ObjectId> {
-        cancellation
-            .check()
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        if let Some(value) = staged.get(metadata) {
-            return Ok(FsReceipt {
-                value,
-                work: WorkCounters::default(),
-            });
-        }
-        let receipt = self.stage_metadata(metadata, budget, cancellation).await?;
-        staged.remember(metadata, receipt.value);
-        Ok(receipt)
+        in_heap(move || async move {
+            cancellation
+                .check()
+                .map_err(|error| OperationFailure::before_work(error.into()))?;
+            if let Some(value) = staged.get(metadata) {
+                return Ok(FsReceipt {
+                    value,
+                    work: WorkCounters::default(),
+                });
+            }
+            let receipt = self.stage_metadata(metadata, budget, cancellation).await?;
+            staged.remember(metadata, receipt.value);
+            Ok(receipt)
+        })
+        .await
     }
 
     async fn stage_empty_tree(
@@ -8090,23 +8167,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<ObjectId> {
-        let encoded = encode_tree_page(
-            &TreePage::Leaf(Vec::new()),
-            self.volume.config.limits.maximum_directory_page_entries,
-        )
-        .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let (value, work) = self
-            .volume
-            .fs
-            .put_encoded(
-                ObjectKind::TreePage,
-                encoded,
-                WorkCounters::default(),
-                budget,
-                cancellation,
+        in_heap(move || async move {
+            let encoded = encode_tree_page(
+                &TreePage::Leaf(Vec::new()),
+                self.volume.config.limits.maximum_directory_page_entries,
             )
-            .await?;
-        Ok(FsReceipt { value, work })
+            .map_err(|error| OperationFailure::before_work(error.into()))?;
+            let (value, work) = self
+                .volume
+                .fs
+                .put_encoded(
+                    ObjectKind::TreePage,
+                    encoded,
+                    WorkCounters::default(),
+                    budget,
+                    cancellation,
+                )
+                .await?;
+            Ok(FsReceipt { value, work })
+        })
+        .await
     }
 
     async fn stage_empty_attributes(
@@ -8148,37 +8228,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         allowed_file_ids: &[FileId],
         parent_pending: bool,
     ) -> FsResult<()> {
-        let mut work = WorkCounters::default();
-        let Some((parent_components, name)) = path.split_last() else {
-            return Ok(FsReceipt { value: (), work });
-        };
-        if self.volume.config.unicode == UnicodePolicy::RequireNfc
-            && name.encoding() == NameEncoding::Utf8
-        {
-            let is_nfc =
-                std::str::from_utf8(name.as_bytes()).is_ok_and(unicode_normalization::is_nfc);
-            if !is_nfc {
-                return Err(OperationFailure::new(FsError::NonNormalizedName, work));
+        in_heap(move || async move {
+            let mut work = WorkCounters::default();
+            let Some((parent_components, name)) = path.split_last() else {
+                return Ok(FsReceipt { value: (), work });
+            };
+            if self.volume.config.unicode == UnicodePolicy::RequireNfc
+                && name.encoding() == NameEncoding::Utf8
+            {
+                let is_nfc =
+                    std::str::from_utf8(name.as_bytes()).is_ok_and(unicode_normalization::is_nfc);
+                if !is_nfc {
+                    return Err(OperationFailure::new(FsError::NonNormalizedName, work));
+                }
             }
-        }
-        if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded && !parent_pending
-        {
-            let found = self
-                .find_case_folded_sibling(
-                    parent_components,
-                    name,
-                    remaining(work, budget)?,
-                    cancellation,
-                    allowed_file_ids,
-                )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-            work = add(work, found.work)?;
-            if found.value.is_some() {
-                return Err(OperationFailure::new(FsError::NameCollision, work));
+            if self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
+                && !parent_pending
+            {
+                let found = self
+                    .find_case_folded_sibling(
+                        parent_components,
+                        name,
+                        remaining(work, budget)?,
+                        cancellation,
+                        allowed_file_ids,
+                    )
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+                work = add(work, found.work)?;
+                if found.value.is_some() {
+                    return Err(OperationFailure::new(FsError::NameCollision, work));
+                }
             }
-        }
-        Ok(FsReceipt { value: (), work })
+            Ok(FsReceipt { value: (), work })
+        })
+        .await
     }
 
     /// Scans `parent`'s entries for one whose name is not byte-identical to
@@ -8207,19 +8291,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let folded_target = target.case_fold_key();
         let mut after: Option<LogicalName> = None;
         loop {
-            // Boxed: `list_directory` resolves its own path through
+            // `list_directory` resolves its own path through
             // `lookup_no_follow_observed`, which calls back into this
-            // function on an exact-match miss, so the future is otherwise
-            // unboundedly self-referential at compile time.
-            let page = Box::pin(self.list_directory(
-                &parent,
-                after.as_ref(),
-                CASE_FOLD_COLLISION_SCAN_PAGE,
-                remaining(work, budget)?,
-                cancellation,
-            ))
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            // function on an exact-match miss; the futures that cycle builds
+            // in the heap are what give it a finite type.
+            let page = self
+                .list_directory(
+                    &parent,
+                    after.as_ref(),
+                    CASE_FOLD_COLLISION_SCAN_PAGE,
+                    remaining(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
             work = add(work, page.work)?;
             for entry in &page.value.entries {
                 if entry.name != *target
@@ -8739,27 +8824,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<FileRecord> {
-        let lookup = self
-            .lookup_file_record_by_id(file_id, budget, cancellation)
-            .await?;
-        let mut work = lookup.work;
-        let record = lookup
-            .value
-            .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
-        if self.tracks_observations() {
-            work = self
-                .observe_identity_region(
-                    DependencyRegion::FileRecord(file_id),
-                    work,
-                    budget,
-                    cancellation,
-                )
+        in_heap(move || async move {
+            let lookup = self
+                .lookup_file_record_by_id(file_id, budget, cancellation)
                 .await?;
-        }
-        Ok(FsReceipt {
-            value: record,
-            work,
+            let mut work = lookup.work;
+            let record = lookup
+                .value
+                .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
+            if self.tracks_observations() {
+                work = self
+                    .observe_identity_region(
+                        DependencyRegion::FileRecord(file_id),
+                        work,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+            }
+            Ok(FsReceipt {
+                value: record,
+                work,
+            })
         })
+        .await
     }
 
     /// Reads one exact logical range by stable file identity.
@@ -8814,81 +8902,90 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<FileRangeRead> {
-        let requested_range = range;
-        if range.length > self.volume.config.limits.maximum_read_bytes {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let lookup = self
-            .lookup_file_record_by_id(file_id, budget, cancellation)
-            .await?;
-        let mut work = lookup.work;
-        let record = lookup
-            .value
-            .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
-        if clip_to_eof {
-            if record.kind != FileKind::Regular {
-                return Err(OperationFailure::new(
-                    FsError::FileRead(FileRangeReadError::NotRegular),
-                    work,
-                ));
+        in_heap(move || async move {
+            let requested_range = range;
+            if range.length > self.volume.config.limits.maximum_read_bytes {
+                return Err(OperationFailure::before_work(FsError::FileRead(
+                    FileRangeReadError::InvalidRange,
+                )));
             }
-            let logical_bytes = match record.payload {
-                FilePayload::InlineRegular(data) => {
-                    u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX)
-                }
-                FilePayload::Regular { logical_bytes, .. } => logical_bytes,
-                _ => {
+            let lookup = self
+                .lookup_file_record_by_id(file_id, budget, cancellation)
+                .await?;
+            let mut work = lookup.work;
+            let record = lookup
+                .value
+                .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
+            if clip_to_eof {
+                if record.kind != FileKind::Regular {
                     return Err(OperationFailure::new(
                         FsError::FileRead(FileRangeReadError::NotRegular),
                         work,
                     ));
                 }
-            };
-            range.length = range.length.min(logical_bytes.saturating_sub(range.offset));
-            if range.length == 0 {
-                if self.tracks_observations() && requested_range.length != 0 {
-                    work = self
-                        .observe_base_regular_range(
-                            file_id,
-                            requested_range,
+                let logical_bytes = match record.payload {
+                    FilePayload::InlineRegular(data) => {
+                        u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX)
+                    }
+                    FilePayload::Regular { logical_bytes, .. } => logical_bytes,
+                    _ => {
+                        return Err(OperationFailure::new(
+                            FsError::FileRead(FileRangeReadError::NotRegular),
                             work,
-                            budget,
-                            cancellation,
-                        )
-                        .await?;
-                }
-                return Ok(FsReceipt {
-                    value: FileRangeRead {
-                        bytes: Bytes::new(),
+                        ));
+                    }
+                };
+                range.length = range.length.min(logical_bytes.saturating_sub(range.offset));
+                if range.length == 0 {
+                    if self.tracks_observations() && requested_range.length != 0 {
+                        work = self
+                            .observe_base_regular_range(
+                                file_id,
+                                requested_range,
+                                work,
+                                budget,
+                                cancellation,
+                            )
+                            .await?;
+                    }
+                    return Ok(FsReceipt {
+                        value: FileRangeRead {
+                            bytes: Bytes::new(),
+                            work,
+                        },
                         work,
-                    },
-                    work,
-                });
+                    });
+                }
             }
-        }
-        let mut read = read_file_range_async(
-            &self.volume.fs.inner.objects,
-            FileRangeRequest {
-                record,
-                range,
-                maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
-                limits: decode_limits(self.volume.config),
-                budget: remaining(work, budget)?,
-            },
-            cancellation,
-        )
+            let mut read = read_file_range_async(
+                &self.volume.fs.inner.objects,
+                FileRangeRequest {
+                    record,
+                    range,
+                    maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
+                    limits: decode_limits(self.volume.config),
+                    budget: remaining(work, budget)?,
+                },
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
+            work = add(work, read.work)?;
+            if self.tracks_observations() && requested_range.length != 0 {
+                work = self
+                    .observe_base_regular_range(
+                        file_id,
+                        requested_range,
+                        work,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+            }
+            read.work = work;
+            Ok(FsReceipt { value: read, work })
+        })
         .await
-        .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
-        work = add(work, read.work)?;
-        if self.tracks_observations() && requested_range.length != 0 {
-            work = self
-                .observe_base_regular_range(file_id, requested_range, work, budget, cancellation)
-                .await?;
-        }
-        read.work = work;
-        Ok(FsReceipt { value: read, work })
     }
 
     /// Plans one bounded sparse range by stable file identity without reading
@@ -9618,49 +9715,52 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<(Vec<Mutation>, GroupedOutcome)> {
-        match change {
-            GroupedChange::CreateFile { path, metadata } => {
-                let mut operations = Vec::new();
-                let mut work = WorkCounters::default();
-                let created = self
-                    .compile_authored_mutation(
-                        AuthoredMutation::CreateFile {
-                            path,
-                            bytes: Bytes::new(),
-                            metadata,
-                        },
-                        &mut operations,
-                        &mut work,
-                        staged_metadata,
-                        budget,
-                        cancellation,
-                    )
-                    .await?;
-                let file_id = created.ok_or_else(|| {
-                    OperationFailure::new(
-                        FsError::Mutation(GenerationMutationError::InconsistentState),
+        in_heap(move || async move {
+            match change {
+                GroupedChange::CreateFile { path, metadata } => {
+                    let mut operations = Vec::new();
+                    let mut work = WorkCounters::default();
+                    let created = self
+                        .compile_authored_mutation(
+                            AuthoredMutation::CreateFile {
+                                path,
+                                bytes: Bytes::new(),
+                                metadata,
+                            },
+                            &mut operations,
+                            &mut work,
+                            staged_metadata,
+                            budget,
+                            cancellation,
+                        )
+                        .await?;
+                    let file_id = created.ok_or_else(|| {
+                        OperationFailure::new(
+                            FsError::Mutation(GenerationMutationError::InconsistentState),
+                            work,
+                        )
+                    })?;
+                    Ok(FsReceipt {
+                        value: (operations, GroupedOutcome::Created(file_id)),
                         work,
-                    )
-                })?;
-                Ok(FsReceipt {
-                    value: (operations, GroupedOutcome::Created(file_id)),
-                    work,
-                })
+                    })
+                }
+                GroupedChange::Content {
+                    file_id,
+                    change,
+                    times,
+                } => {
+                    let compiled = self
+                        .compile_content(file_id, change, times, budget, cancellation)
+                        .await?;
+                    Ok(FsReceipt {
+                        value: (compiled.value, GroupedOutcome::Changed),
+                        work: compiled.work,
+                    })
+                }
             }
-            GroupedChange::Content {
-                file_id,
-                change,
-                times,
-            } => {
-                let compiled = self
-                    .compile_content(file_id, change, times, budget, cancellation)
-                    .await?;
-                Ok(FsReceipt {
-                    value: (compiled.value, GroupedOutcome::Changed),
-                    work: compiled.work,
-                })
-            }
-        }
+        })
+        .await
     }
 
     /// Replaces one range of an attached regular file by stable identity.
@@ -10170,17 +10270,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<crate::kernel::BlobBuild> {
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            > self.volume.config.limits.maximum_read_bytes
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX).max(1);
-        let mut source = std::io::Cursor::new(bytes);
-        self.stage_blob_source(&mut source, maximum_blob_bytes, budget, cancellation)
-            .await
+        in_heap(move || async move {
+            if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                > self.volume.config.limits.maximum_read_bytes
+            {
+                return Err(OperationFailure::before_work(FsError::FileRead(
+                    FileRangeReadError::InvalidRange,
+                )));
+            }
+            let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX).max(1);
+            let mut source = std::io::Cursor::new(bytes);
+            self.stage_blob_source(&mut source, maximum_blob_bytes, budget, cancellation)
+                .await
+        })
+        .await
     }
 
     async fn stage_blob_source<R: AsyncBlobSource>(
@@ -10242,13 +10345,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<CheckoutCommitOutcome> {
-        if self.mode.access != AccessMode::ReadWrite
-            || self.mode.mutations != MutationMode::PrivateOverlay
-        {
-            return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
-        }
-        self.publish_pending_with_permit(operation_id, None, permit, budget, cancellation)
-            .await
+        in_heap(move || async move {
+            if self.mode.access != AccessMode::ReadWrite
+                || self.mode.mutations != MutationMode::PrivateOverlay
+            {
+                return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
+            }
+            self.publish_pending_with_permit(operation_id, None, permit, budget, cancellation)
+                .await
+        })
+        .await
     }
 
     /// Anchors a separately journaled lazy overlay to an exact checkout
@@ -10481,55 +10587,58 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Option<CheckoutCommitOutcome>> {
-        cancellation
-            .check()
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let resolved = self
-            .volume
-            .fs
-            .inner
-            .authority
-            .find_operation(
-                volume_authority_id(self.volume.id),
-                operation_id,
-                budget,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                OperationFailure::new(FsError::Authority(failure.error), *failure.work)
+        in_heap(move || async move {
+            cancellation
+                .check()
+                .map_err(|error| OperationFailure::before_work(error.into()))?;
+            let resolved = self
+                .volume
+                .fs
+                .inner
+                .authority
+                .find_operation(
+                    volume_authority_id(self.volume.id),
+                    operation_id,
+                    budget,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| {
+                    OperationFailure::new(FsError::Authority(failure.error), *failure.work)
+                })?;
+            let Some(commit) = resolved.value else {
+                return Ok(FsReceipt {
+                    value: None,
+                    work: resolved.work,
+                });
+            };
+            let previous_sequence = commit.sequence.get().checked_sub(1).ok_or_else(|| {
+                OperationFailure::new(FsError::InvalidAuthorityHistory, resolved.work)
             })?;
-        let Some(commit) = resolved.value else {
-            return Ok(FsReceipt {
-                value: None,
-                work: resolved.work,
-            });
-        };
-        let previous_sequence = commit.sequence.get().checked_sub(1).ok_or_else(|| {
-            OperationFailure::new(FsError::InvalidAuthorityHistory, resolved.work)
-        })?;
-        let expected = Head {
-            epoch: commit.epoch,
-            sequence: Sequence::new(previous_sequence),
-            digest: commit.previous_digest,
-        };
-        let retried = self
-            .publish_pending_against(
-                operation_id,
-                None,
-                permit,
-                expected,
-                remaining(resolved.work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                failure.map_with_prior_work(resolved.work, std::convert::identity)
-            })?;
-        Ok(FsReceipt {
-            value: Some(retried.value),
-            work: add(resolved.work, retried.work)?,
+            let expected = Head {
+                epoch: commit.epoch,
+                sequence: Sequence::new(previous_sequence),
+                digest: commit.previous_digest,
+            };
+            let retried = self
+                .publish_pending_against(
+                    operation_id,
+                    None,
+                    permit,
+                    expected,
+                    remaining(resolved.work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| {
+                    failure.map_with_prior_work(resolved.work, std::convert::identity)
+                })?;
+            Ok(FsReceipt {
+                value: Some(retried.value),
+                work: add(resolved.work, retried.work)?,
+            })
         })
+        .await
     }
 
     async fn resolve_clean_commit(
@@ -10626,43 +10735,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Option<PathMetadataLookup>> {
-        let lookup = self
-            .lookup_no_follow_observed(path, budget, cancellation, false)
-            .await?;
-        let mut work = lookup.work;
-        let Some(record) = lookup.value.record else {
-            return Ok(FsReceipt { value: None, work });
-        };
-        let metadata = self
-            .volume
-            .fs
-            .inner
-            .objects
-            .read(
-                record.metadata,
-                self.volume.config.limits.maximum_object_bytes,
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
-        work = add(work, metadata.work)?;
-        let metadata = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        if self.tracks_observations() {
-            work = self
-                .observe_base_metadata_ids(
-                    std::slice::from_ref(&record.file_id),
-                    work,
-                    budget,
+        in_heap(move || async move {
+            let lookup = self
+                .lookup_no_follow_observed(path, budget, cancellation, false)
+                .await?;
+            let mut work = lookup.work;
+            let Some(record) = lookup.value.record else {
+                return Ok(FsReceipt { value: None, work });
+            };
+            let metadata = self
+                .volume
+                .fs
+                .inner
+                .objects
+                .read(
+                    record.metadata,
+                    self.volume.config.limits.maximum_object_bytes,
+                    remaining(work, budget)?,
                     cancellation,
                 )
-                .await?;
-        }
-        Ok(FsReceipt {
-            value: Some(PathMetadataLookup { record, metadata }),
-            work,
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
+            work = add(work, metadata.work)?;
+            let metadata = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            if self.tracks_observations() {
+                work = self
+                    .observe_base_metadata_ids(
+                        std::slice::from_ref(&record.file_id),
+                        work,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+            }
+            Ok(FsReceipt {
+                value: Some(PathMetadataLookup { record, metadata }),
+                work,
+            })
         })
+        .await
     }
 
     async fn lookup_no_follow_observed(
@@ -10672,40 +10784,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
         capture_terminal: bool,
     ) -> FsResult<PathLookup> {
-        let synchronized = self.synchronize_live(budget, cancellation).await?;
-        let prior = synchronized.work;
-        let mut lookup = Box::pin(self.lookup_no_follow_at_current(
-            path,
-            remaining(prior, budget)?,
-            cancellation,
-            capture_terminal,
-        ))
-        .await
-        .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
-        let mut total = add(prior, lookup.work)?;
-        if lookup.value.record.is_none()
-            && self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
-        {
-            // Boxed: this folded lookup path (and everything it transitively
-            // calls, including a retried lookup) is a cold path that would
-            // otherwise inline into every caller's future, including ones
-            // that never touch a `ProfileFolded` volume.
-            let folded = Box::pin(self.resolve_profile_folded_path(
-                path,
-                remaining(total, budget)?,
-                cancellation,
-                capture_terminal,
-            ))
-            .await
-            .map_err(|failure| failure.map_with_prior_work(total, std::convert::identity))?;
-            total = add(total, folded.work)?;
-            if let Some(resolved) = folded.value {
-                lookup.value = resolved;
+        in_heap(move || async move {
+            let synchronized = self.synchronize_live(budget, cancellation).await?;
+            let prior = synchronized.work;
+            let mut lookup = self
+                .lookup_no_follow_at_current(
+                    path,
+                    remaining(prior, budget)?,
+                    cancellation,
+                    capture_terminal,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
+            let mut total = add(prior, lookup.work)?;
+            if lookup.value.record.is_none()
+                && self.volume.config.case_sensitivity == CaseSensitivity::ProfileFolded
+            {
+                let folded = self
+                    .resolve_profile_folded_path(
+                        path,
+                        remaining(total, budget)?,
+                        cancellation,
+                        capture_terminal,
+                    )
+                    .await
+                    .map_err(|failure| {
+                        failure.map_with_prior_work(total, std::convert::identity)
+                    })?;
+                total = add(total, folded.work)?;
+                if let Some(resolved) = folded.value {
+                    lookup.value = resolved;
+                }
             }
-        }
-        lookup.work = total;
-        lookup.value.work = total;
-        Ok(lookup)
+            lookup.work = total;
+            lookup.value.work = total;
+            Ok(lookup)
+        })
+        .await
     }
 
     /// Retries an exact-match lookup miss under `CaseSensitivity::ProfileFolded`
@@ -10720,36 +10835,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
         capture_terminal: bool,
     ) -> FsResult<Option<PathLookup>> {
-        let mut work = WorkCounters::default();
-        if path.is_root() {
-            return Ok(FsReceipt { value: None, work });
-        }
-        let resolved = Box::pin(self.canonicalize_path_components(
-            path.components(),
-            &[],
-            budget,
-            cancellation,
-        ))
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, resolved.work)?;
-        let Some(corrected) = resolved.value else {
-            return Ok(FsReceipt { value: None, work });
-        };
-        let retried = self
-            .lookup_no_follow_at_current(
-                &corrected,
-                remaining(work, budget)?,
-                cancellation,
-                capture_terminal,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, retried.work)?;
-        Ok(FsReceipt {
-            value: Some(retried.value),
-            work,
+        in_heap(move || async move {
+            let mut work = WorkCounters::default();
+            if path.is_root() {
+                return Ok(FsReceipt { value: None, work });
+            }
+            let resolved = self
+                .canonicalize_path_components(path.components(), &[], budget, cancellation)
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add(work, resolved.work)?;
+            let Some(corrected) = resolved.value else {
+                return Ok(FsReceipt { value: None, work });
+            };
+            let retried = self
+                .lookup_no_follow_at_current(
+                    &corrected,
+                    remaining(work, budget)?,
+                    cancellation,
+                    capture_terminal,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add(work, retried.work)?;
+            Ok(FsReceipt {
+                value: Some(retried.value),
+                work,
+            })
         })
+        .await
     }
 
     async fn lookup_no_follow_at_current(
@@ -10759,87 +10873,90 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
         capture_terminal: bool,
     ) -> FsResult<PathLookup> {
-        let lookup = if self.tracks_observations() {
-            let candidate = if self.has_pending_mutations() {
-                Some(
-                    crate::kernel::lookup_path_async(
-                        &self.volume.fs.inner.objects,
-                        &self.root,
+        in_heap(move || async move {
+            let lookup = if self.tracks_observations() {
+                let candidate = if self.has_pending_mutations() {
+                    Some(
+                        crate::kernel::lookup_path_async(
+                            &self.volume.fs.inner.objects,
+                            &self.root,
+                            path,
+                            self.volume.config,
+                            budget,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(|failure| {
+                            OperationFailure::new(failure.error.into(), *failure.work)
+                        })?,
+                    )
+                } else {
+                    None
+                };
+                let base = self.base_root.file_table;
+                if let Some(candidate) = candidate
+                    && self
+                        .dependencies
+                        .proof()
+                        .observes_path(base, path, capture_terminal)
+                {
+                    return Ok(FsReceipt {
+                        work: candidate.work,
+                        value: candidate,
+                    });
+                }
+                let prior = candidate
+                    .as_ref()
+                    .map_or(WorkCounters::default(), |value| value.work);
+                let observed = self
+                    .observe_base_for_candidate(
                         path,
-                        self.volume.config,
+                        prior,
+                        candidate.is_some(),
+                        capture_terminal,
                         budget,
                         cancellation,
                     )
-                    .await
-                    .map_err(|failure| {
-                        OperationFailure::new(failure.error.into(), *failure.work)
-                    })?,
+                    .await?;
+                let combined = observed.work;
+                self.dependencies
+                    .proof()
+                    .observe_paths(
+                        base,
+                        [path],
+                        capture_terminal,
+                        observed.value.dependencies,
+                        self.volume.config.limits.maximum_checkout_dependencies,
+                    )
+                    .map_err(|error| OperationFailure::new(error.into(), combined))?;
+                candidate.map_or(
+                    PathLookup {
+                        work: combined,
+                        ..observed.value.lookup
+                    },
+                    |value| PathLookup {
+                        work: combined,
+                        ..value
+                    },
                 )
             } else {
-                None
-            };
-            let base = self.base_root.file_table;
-            if let Some(candidate) = candidate
-                && self
-                    .dependencies
-                    .proof()
-                    .observes_path(base, path, capture_terminal)
-            {
-                return Ok(FsReceipt {
-                    work: candidate.work,
-                    value: candidate,
-                });
-            }
-            let prior = candidate
-                .as_ref()
-                .map_or(WorkCounters::default(), |value| value.work);
-            let observed = self
-                .observe_base_for_candidate(
+                crate::kernel::lookup_path_async(
+                    &self.volume.fs.inner.objects,
+                    &self.root,
                     path,
-                    prior,
-                    candidate.is_some(),
-                    capture_terminal,
+                    self.volume.config,
                     budget,
                     cancellation,
                 )
-                .await?;
-            let combined = observed.work;
-            self.dependencies
-                .proof()
-                .observe_paths(
-                    base,
-                    [path],
-                    capture_terminal,
-                    observed.value.dependencies,
-                    self.volume.config.limits.maximum_checkout_dependencies,
-                )
-                .map_err(|error| OperationFailure::new(error.into(), combined))?;
-            candidate.map_or(
-                PathLookup {
-                    work: combined,
-                    ..observed.value.lookup
-                },
-                |value| PathLookup {
-                    work: combined,
-                    ..value
-                },
-            )
-        } else {
-            crate::kernel::lookup_path_async(
-                &self.volume.fs.inner.objects,
-                &self.root,
-                path,
-                self.volume.config,
-                budget,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?
-        };
-        Ok(FsReceipt {
-            work: lookup.work,
-            value: lookup,
+                .await
+                .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?
+            };
+            Ok(FsReceipt {
+                work: lookup.work,
+                value: lookup,
+            })
         })
+        .await
     }
 
     async fn observe_base_for_candidate(
@@ -10851,53 +10968,56 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<crate::kernel::ObservedPathLookup> {
-        let observed = if capture_terminal {
-            crate::kernel::observe_path_async(
-                &self.volume.fs.inner.objects,
-                &self.base_root,
-                path,
-                self.volume.config,
-                remaining(prior, budget)?,
-                cancellation,
-            )
-            .await
-        } else {
-            crate::kernel::observe_path_edges_async(
-                &self.volume.fs.inner.objects,
-                &self.base_root,
-                path,
-                self.volume.config,
-                remaining(prior, budget)?,
-                cancellation,
-            )
-            .await
-        };
-        let (observed, observation_prior) = match observed {
-            Ok(observed) => (observed, prior),
-            Err(failure)
-                if has_candidate && matches!(failure.error, PathLookupError::NotDirectory) =>
-            {
-                // The candidate can replace a base file with a directory.
-                // The positive base edge to that file is the full dependency.
-                let consumed = add(prior, *failure.work)?;
-                let observed = crate::kernel::observe_path_edges_async(
+        in_heap(move || async move {
+            let observed = if capture_terminal {
+                crate::kernel::observe_path_async(
                     &self.volume.fs.inner.objects,
                     &self.base_root,
                     path,
                     self.volume.config,
-                    remaining(consumed, budget)?,
+                    remaining(prior, budget)?,
                     cancellation,
                 )
                 .await
-                .map_err(|failure| failure.map_with_prior_work(consumed, FsError::Path))?;
-                (observed, consumed)
-            }
-            Err(failure) => return Err(failure.map_with_prior_work(prior, FsError::Path)),
-        };
-        Ok(FsReceipt {
-            work: add(observation_prior, observed.lookup.work)?,
-            value: observed,
+            } else {
+                crate::kernel::observe_path_edges_async(
+                    &self.volume.fs.inner.objects,
+                    &self.base_root,
+                    path,
+                    self.volume.config,
+                    remaining(prior, budget)?,
+                    cancellation,
+                )
+                .await
+            };
+            let (observed, observation_prior) = match observed {
+                Ok(observed) => (observed, prior),
+                Err(failure)
+                    if has_candidate && matches!(failure.error, PathLookupError::NotDirectory) =>
+                {
+                    // The candidate can replace a base file with a directory.
+                    // The positive base edge to that file is the full dependency.
+                    let consumed = add(prior, *failure.work)?;
+                    let observed = crate::kernel::observe_path_edges_async(
+                        &self.volume.fs.inner.objects,
+                        &self.base_root,
+                        path,
+                        self.volume.config,
+                        remaining(consumed, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(consumed, FsError::Path))?;
+                    (observed, consumed)
+                }
+                Err(failure) => return Err(failure.map_with_prior_work(prior, FsError::Path)),
+            };
+            Ok(FsReceipt {
+                work: add(observation_prior, observed.lookup.work)?,
+                value: observed,
+            })
         })
+        .await
     }
 
     /// Resolves a bounded path batch while sharing directory and file-table frontiers.
@@ -11047,79 +11167,82 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<DirectoryPage> {
-        let lookup = self
-            .lookup_no_follow_observed(path, budget, cancellation, false)
-            .await?;
-        let mut work = lookup.work;
-        let record = lookup
-            .value
-            .record
-            .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
-        let FilePayload::Directory { entries } = record.payload else {
-            return Err(OperationFailure::new(FsError::NotDirectory, work));
-        };
-        if record.kind != FileKind::Directory {
-            return Err(OperationFailure::new(FsError::NotDirectory, work));
-        }
-        let mut page = if let Some(at) = after.filter(|_| inclusive) {
-            list_tree_entries_at_or_after_async(
-                &self.volume.fs.inner.objects,
-                entries,
-                at,
-                maximum_entries,
-                decode_limits(self.volume.config),
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-        } else {
-            list_tree_entries_async(
-                &self.volume.fs.inner.objects,
-                entries,
-                after,
-                maximum_entries,
-                decode_limits(self.volume.config),
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-        }
-        .map_err(|failure| failure.map_with_prior_work(work, FsError::Directory))?;
-        work = add(work, page.work)?;
-        if self.tracks_observations() {
-            let region = DependencyRegion::DirectoryRange {
-                directory_id: record.file_id,
-                after: after.cloned(),
-                maximum_entries,
+        in_heap(move || async move {
+            let lookup = self
+                .lookup_no_follow_observed(path, budget, cancellation, false)
+                .await?;
+            let mut work = lookup.work;
+            let record = lookup
+                .value
+                .record
+                .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
+            let FilePayload::Directory { entries } = record.payload else {
+                return Err(OperationFailure::new(FsError::NotDirectory, work));
             };
-            let probe = AuthenticatedGenerationProbe::new(
-                &self.volume.fs.inner.objects,
-                probe_limits(self.volume.config),
-            )
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-            let state = probe
-                .probe_async(
-                    GenerationId::new(self.base_generation_root.digest),
-                    &region,
+            if record.kind != FileKind::Directory {
+                return Err(OperationFailure::new(FsError::NotDirectory, work));
+            }
+            let mut page = if let Some(at) = after.filter(|_| inclusive) {
+                list_tree_entries_at_or_after_async(
+                    &self.volume.fs.inner.objects,
+                    entries,
+                    at,
+                    maximum_entries,
+                    decode_limits(self.volume.config),
                     remaining(work, budget)?,
                     cancellation,
                 )
                 .await
-                .map_err(|failure| failure.map_with_prior_work(work, FsError::Probe))?;
-            work = add(work, state.work)?;
-            self.dependencies
-                .proof()
-                .extend_observations(
-                    vec![Dependency {
-                        region,
-                        expected: state.value,
-                    }],
-                    self.volume.config.limits.maximum_checkout_dependencies,
+            } else {
+                list_tree_entries_async(
+                    &self.volume.fs.inner.objects,
+                    entries,
+                    after,
+                    maximum_entries,
+                    decode_limits(self.volume.config),
+                    remaining(work, budget)?,
+                    cancellation,
+                )
+                .await
+            }
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::Directory))?;
+            work = add(work, page.work)?;
+            if self.tracks_observations() {
+                let region = DependencyRegion::DirectoryRange {
+                    directory_id: record.file_id,
+                    after: after.cloned(),
+                    maximum_entries,
+                };
+                let probe = AuthenticatedGenerationProbe::new(
+                    &self.volume.fs.inner.objects,
+                    probe_limits(self.volume.config),
                 )
                 .map_err(|error| OperationFailure::new(error.into(), work))?;
-        }
-        page.work = work;
-        Ok(FsReceipt { value: page, work })
+                let state = probe
+                    .probe_async(
+                        GenerationId::new(self.base_generation_root.digest),
+                        &region,
+                        remaining(work, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| failure.map_with_prior_work(work, FsError::Probe))?;
+                work = add(work, state.work)?;
+                self.dependencies
+                    .proof()
+                    .extend_observations(
+                        vec![Dependency {
+                            region,
+                            expected: state.value,
+                        }],
+                        self.volume.config.limits.maximum_checkout_dependencies,
+                    )
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
+            }
+            page.work = work;
+            Ok(FsReceipt { value: page, work })
+        })
+        .await
     }
 
     /// Returns one directory page with all child records fetched in one shared
@@ -11183,72 +11306,79 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<DirectoryRecordPage> {
-        let listing = self
-            .list_directory_with_bound(
-                path,
-                after,
-                inclusive,
+        in_heap(move || async move {
+            let listing = self
+                .list_directory_with_bound(
+                    path,
+                    after,
+                    inclusive,
+                    maximum_entries,
+                    budget,
+                    cancellation,
+                )
+                .await?;
+            let mut work = listing.work;
+            let page = listing.value;
+            if page.entries.is_empty() {
+                return Ok(FsReceipt {
+                    value: DirectoryRecordPage {
+                        entries: Vec::new(),
+                        has_more: page.has_more,
+                    },
+                    work,
+                });
+            }
+            let retained = u64::try_from(page.entries.len())
+                .unwrap_or(u64::MAX)
+                .saturating_mul(u64::try_from(size_of::<FileId>()).unwrap_or(u64::MAX));
+            work = add(
+                work,
+                WorkCounters {
+                    allocation_operations: 1,
+                    peak_allocation_bytes: retained,
+                    ..WorkCounters::default()
+                },
+            )?;
+            work.verify(budget)
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            let mut file_ids = Vec::new();
+            file_ids
+                .try_reserve_exact(page.entries.len())
+                .map_err(|_| {
+                    OperationFailure::new(FsError::PendingMutationAllocationFailed, work)
+                })?;
+            file_ids.extend(page.entries.iter().map(|entry| entry.file_id));
+            let records = lookup_file_records_async(
+                &self.volume.fs.inner.objects,
+                self.root.file_table,
+                &file_ids,
                 maximum_entries,
-                budget,
+                decode_limits(self.volume.config),
+                remaining(work, budget)?,
                 cancellation,
             )
-            .await?;
-        let mut work = listing.work;
-        let page = listing.value;
-        if page.entries.is_empty() {
-            return Ok(FsReceipt {
-                value: DirectoryRecordPage {
-                    entries: Vec::new(),
-                    has_more: page.has_more,
-                },
-                work,
-            });
-        }
-        let retained = u64::try_from(page.entries.len())
-            .unwrap_or(u64::MAX)
-            .saturating_mul(u64::try_from(size_of::<FileId>()).unwrap_or(u64::MAX));
-        work = add(
-            work,
-            WorkCounters {
-                allocation_operations: 1,
-                peak_allocation_bytes: retained,
-                ..WorkCounters::default()
-            },
-        )?;
-        work.verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let mut file_ids = Vec::new();
-        file_ids
-            .try_reserve_exact(page.entries.len())
-            .map_err(|_| OperationFailure::new(FsError::PendingMutationAllocationFailed, work))?;
-        file_ids.extend(page.entries.iter().map(|entry| entry.file_id));
-        let records = lookup_file_records_async(
-            &self.volume.fs.inner.objects,
-            self.root.file_table,
-            &file_ids,
-            maximum_entries,
-            decode_limits(self.volume.config),
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRecord))?;
-        work = add(work, records.work)?;
-        drop(file_ids);
-        let mut named_records = Vec::new();
-        named_records
-            .try_reserve_exact(page.entries.len())
-            .map_err(|_| OperationFailure::new(FsError::PendingMutationAllocationFailed, work))?;
-        for (binding, record) in page.entries.into_iter().zip(records.records) {
-            let record = record
-                .ok_or_else(|| OperationFailure::new(FsError::InvalidDirectoryRecord, work))?;
-            if record.file_id != binding.file_id || record.kind != binding.kind {
-                return Err(OperationFailure::new(FsError::InvalidDirectoryRecord, work));
-            }
-            named_records.push((binding.name, record));
-        }
-        self.attach_directory_metadata(named_records, page.has_more, work, budget, cancellation)
             .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRecord))?;
+            work = add(work, records.work)?;
+            drop(file_ids);
+            let mut named_records = Vec::new();
+            named_records
+                .try_reserve_exact(page.entries.len())
+                .map_err(|_| {
+                    OperationFailure::new(FsError::PendingMutationAllocationFailed, work)
+                })?;
+            for (binding, record) in page.entries.into_iter().zip(records.records) {
+                let record = record
+                    .ok_or_else(|| OperationFailure::new(FsError::InvalidDirectoryRecord, work))?;
+                if record.file_id != binding.file_id || record.kind != binding.kind {
+                    return Err(OperationFailure::new(FsError::InvalidDirectoryRecord, work));
+                }
+                named_records.push((binding.name, record));
+            }
+            self.attach_directory_metadata(named_records, page.has_more, work, budget, cancellation)
+                .await
+        })
+        .await
     }
 
     async fn attach_directory_metadata(
@@ -11850,22 +11980,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Option<FileRecord>> {
-        let lookup = lookup_file_record_async(
-            &self.volume.fs.inner.objects,
-            self.root.file_table,
-            file_id,
-            decode_limits(self.volume.config),
-            budget,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            OperationFailure::new(FsError::FileRecord(failure.error), *failure.work)
-        })?;
-        Ok(FsReceipt {
-            value: lookup.record,
-            work: lookup.work,
+        in_heap(move || async move {
+            let lookup = lookup_file_record_async(
+                &self.volume.fs.inner.objects,
+                self.root.file_table,
+                file_id,
+                decode_limits(self.volume.config),
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| {
+                OperationFailure::new(FsError::FileRecord(failure.error), *failure.work)
+            })?;
+            Ok(FsReceipt {
+                value: lookup.record,
+                work: lookup.work,
+            })
         })
+        .await
     }
 
     async fn observe_identity_region(
@@ -11886,25 +12019,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, OperationFailure<FsError>> {
-        let captured = capture_dependencies_async(
-            &self.volume.fs.inner.objects,
-            &self.base_generation_root,
-            self.volume.config,
-            regions,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, captured.work)?;
-        self.dependencies
-            .proof()
-            .extend_observations(
-                captured.value,
-                self.volume.config.limits.maximum_checkout_dependencies,
+        in_heap(move || async move {
+            let captured = capture_dependencies_async(
+                &self.volume.fs.inner.objects,
+                &self.base_generation_root,
+                self.volume.config,
+                regions,
+                remaining(work, budget)?,
+                cancellation,
             )
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        Ok(work)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add(work, captured.work)?;
+            self.dependencies
+                .proof()
+                .extend_observations(
+                    captured.value,
+                    self.volume.config.limits.maximum_checkout_dependencies,
+                )
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            Ok(work)
+        })
+        .await
     }
 
     async fn observe_base_regular_range(
@@ -11915,23 +12051,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, OperationFailure<FsError>> {
-        let lookup = lookup_file_record_async(
-            &self.volume.fs.inner.objects,
-            self.base_root.file_table,
-            file_id,
-            decode_limits(self.volume.config),
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRecord))?;
-        work = add(work, lookup.work)?;
-        let regions = regular_range_regions(lookup.record, range.offset, range.length)
-            .into_iter()
-            .flatten()
-            .collect();
-        self.observe_identity_regions(regions, work, budget, cancellation)
+        in_heap(move || async move {
+            let lookup = lookup_file_record_async(
+                &self.volume.fs.inner.objects,
+                self.base_root.file_table,
+                file_id,
+                decode_limits(self.volume.config),
+                remaining(work, budget)?,
+                cancellation,
+            )
             .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRecord))?;
+            work = add(work, lookup.work)?;
+            let regions = regular_range_regions(lookup.record, range.offset, range.length)
+                .into_iter()
+                .flatten()
+                .collect();
+            self.observe_identity_regions(regions, work, budget, cancellation)
+                .await
+        })
+        .await
     }
 
     async fn observe_base_metadata_ids(
@@ -11941,53 +12080,58 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, OperationFailure<FsError>> {
-        let file_ids = {
-            let proof = self.dependencies.proof();
-            file_ids
-                .iter()
-                .copied()
-                .filter(|file_id| !proof.observes(&DependencyRegion::Metadata(*file_id)))
-                .collect::<Vec<_>>()
-        };
-        if file_ids.is_empty() {
-            return Ok(work);
-        }
-        let maximum = u32::try_from(file_ids.len()).unwrap_or(u32::MAX);
-        let records = lookup_file_records_async(
-            &self.volume.fs.inner.objects,
-            self.base_root.file_table,
-            &file_ids,
-            maximum,
-            decode_limits(self.volume.config),
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRecord))?;
-        work = add(work, records.work)?;
-        let mut dependencies = Vec::new();
-        dependencies
-            .try_reserve_exact(file_ids.len())
-            .map_err(|_| OperationFailure::new(FsError::PendingMutationAllocationFailed, work))?;
-        dependencies.extend(
-            file_ids
-                .iter()
-                .zip(records.records)
-                .map(|(file_id, record)| Dependency {
-                    region: DependencyRegion::Metadata(*file_id),
-                    expected: record.map_or(DependencyState::Absent, |record| {
-                        DependencyState::Present(record.metadata.digest)
-                    }),
-                }),
-        );
-        self.dependencies
-            .proof()
-            .extend_observations(
-                dependencies,
-                self.volume.config.limits.maximum_checkout_dependencies,
+        in_heap(move || async move {
+            let file_ids = {
+                let proof = self.dependencies.proof();
+                file_ids
+                    .iter()
+                    .copied()
+                    .filter(|file_id| !proof.observes(&DependencyRegion::Metadata(*file_id)))
+                    .collect::<Vec<_>>()
+            };
+            if file_ids.is_empty() {
+                return Ok(work);
+            }
+            let maximum = u32::try_from(file_ids.len()).unwrap_or(u32::MAX);
+            let records = lookup_file_records_async(
+                &self.volume.fs.inner.objects,
+                self.base_root.file_table,
+                &file_ids,
+                maximum,
+                decode_limits(self.volume.config),
+                remaining(work, budget)?,
+                cancellation,
             )
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        Ok(work)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRecord))?;
+            work = add(work, records.work)?;
+            let mut dependencies = Vec::new();
+            dependencies
+                .try_reserve_exact(file_ids.len())
+                .map_err(|_| {
+                    OperationFailure::new(FsError::PendingMutationAllocationFailed, work)
+                })?;
+            dependencies.extend(
+                file_ids
+                    .iter()
+                    .zip(records.records)
+                    .map(|(file_id, record)| Dependency {
+                        region: DependencyRegion::Metadata(*file_id),
+                        expected: record.map_or(DependencyState::Absent, |record| {
+                            DependencyState::Present(record.metadata.digest)
+                        }),
+                    }),
+            );
+            self.dependencies
+                .proof()
+                .extend_observations(
+                    dependencies,
+                    self.volume.config.limits.maximum_checkout_dependencies,
+                )
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            Ok(work)
+        })
+        .await
     }
 }
 
@@ -12002,40 +12146,43 @@ async fn stage_content_for_volume<
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> FsResult<StagedContent> {
-    if maximum_source_bytes == 0
-        || maximum_source_bytes > volume.config.limits.maximum_generation_bytes
-    {
-        return Err(OperationFailure::before_work(FsError::FileRead(
-            FileRangeReadError::InvalidRange,
-        )));
-    }
-    let chunk_bytes = u32::try_from(volume.config.limits.maximum_object_bytes.min(1024 * 1024))
-        .unwrap_or(u32::MAX)
-        .max(1);
-    let page_bytes = u32::try_from(volume.config.limits.maximum_object_bytes)
-        .unwrap_or(u32::MAX)
-        .max(1);
-    let blob = build_blob_async(
-        &volume.fs.inner.objects,
-        source,
-        BlobBuildOptions {
-            chunk_bytes,
-            page_items: volume.config.limits.maximum_directory_page_entries,
-            page_bytes,
-            maximum_blob_bytes: maximum_source_bytes,
-        },
-        budget,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-    Ok(FsReceipt {
-        value: StagedContent {
-            root: blob.root,
-            logical_bytes: blob.logical_bytes,
-        },
-        work: blob.work,
+    in_heap(move || async move {
+        if maximum_source_bytes == 0
+            || maximum_source_bytes > volume.config.limits.maximum_generation_bytes
+        {
+            return Err(OperationFailure::before_work(FsError::FileRead(
+                FileRangeReadError::InvalidRange,
+            )));
+        }
+        let chunk_bytes = u32::try_from(volume.config.limits.maximum_object_bytes.min(1024 * 1024))
+            .unwrap_or(u32::MAX)
+            .max(1);
+        let page_bytes = u32::try_from(volume.config.limits.maximum_object_bytes)
+            .unwrap_or(u32::MAX)
+            .max(1);
+        let blob = build_blob_async(
+            &volume.fs.inner.objects,
+            source,
+            BlobBuildOptions {
+                chunk_bytes,
+                page_items: volume.config.limits.maximum_directory_page_entries,
+                page_bytes,
+                maximum_blob_bytes: maximum_source_bytes,
+            },
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        Ok(FsReceipt {
+            value: StagedContent {
+                root: blob.root,
+                logical_bytes: blob.logical_bytes,
+            },
+            work: blob.work,
+        })
     })
+    .await
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
@@ -12522,31 +12669,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<crate::kernel::BlobBuild> {
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            > self.volume.config.limits.maximum_read_bytes
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX).max(1);
-        let mut source = std::io::Cursor::new(bytes);
-        let staged = stage_content_for_volume(
-            &self.volume,
-            &mut source,
-            maximum_blob_bytes,
-            budget,
-            cancellation,
-        )
-        .await?;
-        Ok(FsReceipt {
-            work: staged.work,
-            value: crate::kernel::BlobBuild {
-                root: staged.value.root,
-                logical_bytes: staged.value.logical_bytes,
+        in_heap(move || async move {
+            if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                > self.volume.config.limits.maximum_read_bytes
+            {
+                return Err(OperationFailure::before_work(FsError::FileRead(
+                    FileRangeReadError::InvalidRange,
+                )));
+            }
+            let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX).max(1);
+            let mut source = std::io::Cursor::new(bytes);
+            let staged = stage_content_for_volume(
+                &self.volume,
+                &mut source,
+                maximum_blob_bytes,
+                budget,
+                cancellation,
+            )
+            .await?;
+            Ok(FsReceipt {
                 work: staged.work,
-            },
+                value: crate::kernel::BlobBuild {
+                    root: staged.value.root,
+                    logical_bytes: staged.value.logical_bytes,
+                    work: staged.work,
+                },
+            })
         })
+        .await
     }
 
     /// Reads one bounded sparse range without requiring a namespace binding.
@@ -12895,18 +13045,21 @@ async fn capture_dependencies_async<O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> FsResult<Vec<Dependency>> {
-    let probe = AuthenticatedGenerationProbe::new(objects, probe_limits(config))
-        .map_err(|error| OperationFailure::before_work(error.into()))?;
-    probe
-        .capture_many_async(
-            GenerationId::new(generation_root.digest),
-            regions,
-            config.limits.maximum_checkout_dependencies,
-            budget,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), FsError::Probe))
+    in_heap(move || async move {
+        let probe = AuthenticatedGenerationProbe::new(objects, probe_limits(config))
+            .map_err(|error| OperationFailure::before_work(error.into()))?;
+        probe
+            .capture_many_async(
+                GenerationId::new(generation_root.digest),
+                regions,
+                config.limits.maximum_checkout_dependencies,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), FsError::Probe))
+    })
+    .await
 }
 
 async fn capture_known_dependencies_async<O: AsyncObjectStore>(

@@ -12,6 +12,7 @@ use super::{
 };
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::model::VolumeConfig;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
@@ -166,53 +167,56 @@ pub(crate) async fn apply_regular_mutation_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<RegularMutationReceipt, RegularMutationFailure> {
-    cancellation
-        .check()
-        .map_err(|_| OperationFailure::before_work(cancelled()))?;
-    validate_mutation(mutation)?;
-    if !config.sparse_files {
-        let current = regular_logical_bytes(payload)?;
-        let requires_sparse = match mutation {
-            RegularMutation::Write { offset, .. } => offset > current,
-            RegularMutation::Resize { logical_bytes } => logical_bytes > current,
-            RegularMutation::ZeroRange { .. } | RegularMutation::Preallocate { .. } => true,
-        };
-        if requires_sparse {
-            return Err(OperationFailure::before_work(
-                RegularMutationError::SparseSemanticsDisabled,
-            ));
+    in_heap(move || async move {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(cancelled()))?;
+        validate_mutation(mutation)?;
+        if !config.sparse_files {
+            let current = regular_logical_bytes(payload)?;
+            let requires_sparse = match mutation {
+                RegularMutation::Write { offset, .. } => offset > current,
+                RegularMutation::Resize { logical_bytes } => logical_bytes > current,
+                RegularMutation::ZeroRange { .. } | RegularMutation::Preallocate { .. } => true,
+            };
+            if requires_sparse {
+                return Err(OperationFailure::before_work(
+                    RegularMutationError::SparseSemanticsDisabled,
+                ));
+            }
         }
-    }
-    if let FilePayload::InlineRegular(data) = payload {
-        if let Some(receipt) =
-            try_inline(store, data, mutation, config, budget, cancellation).await?
-        {
-            return Ok(receipt);
+        if let FilePayload::InlineRegular(data) = payload {
+            if let Some(receipt) =
+                try_inline(store, data, mutation, config, budget, cancellation).await?
+            {
+                return Ok(receipt);
+            }
+            let promoted = promote_inline(store, data, config, budget, cancellation).await?;
+            return apply_sparse(
+                store,
+                FilePayload::Regular {
+                    logical_bytes: promoted.logical_bytes,
+                    extents: promoted.extents,
+                },
+                mutation,
+                config,
+                budget,
+                promoted.work,
+                cancellation,
+            )
+            .await;
         }
-        let promoted = promote_inline(store, data, config, budget, cancellation).await?;
-        return apply_sparse(
+        apply_sparse(
             store,
-            FilePayload::Regular {
-                logical_bytes: promoted.logical_bytes,
-                extents: promoted.extents,
-            },
+            payload,
             mutation,
             config,
             budget,
-            promoted.work,
+            WorkCounters::default(),
             cancellation,
         )
-        .await;
-    }
-    apply_sparse(
-        store,
-        payload,
-        mutation,
-        config,
-        budget,
-        WorkCounters::default(),
-        cancellation,
-    )
+        .await
+    })
     .await
 }
 
@@ -440,6 +444,7 @@ async fn try_inline<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<Option<RegularMutationReceipt>, RegularMutationFailure> {
+    in_heap(move || async move {
     match mutation {
         RegularMutation::Resize { logical_bytes } => {
             let current = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
@@ -600,6 +605,8 @@ async fn try_inline<S: AsyncObjectStore>(
             }))
         }
     }
+})
+        .await
 }
 
 async fn promote_inline<S: AsyncObjectStore>(
@@ -609,76 +616,80 @@ async fn promote_inline<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<PromotedRegularReceipt, RegularMutationFailure> {
-    let logical_bytes = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
-    let mut allocations = AllocationLedger::default();
-    let (extents, mut work, extent_bytes) = if logical_bytes == 0 {
-        (Vec::new(), WorkCounters::default(), 0)
-    } else {
-        let mut source = Cursor::new(data.as_bytes());
-        let blob = build_blob_async(
+    in_heap(move || async move {
+        let logical_bytes = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
+        let mut allocations = AllocationLedger::default();
+        let (extents, mut work, extent_bytes) = if logical_bytes == 0 {
+            (Vec::new(), WorkCounters::default(), 0)
+        } else {
+            let mut source = Cursor::new(data.as_bytes());
+            let blob = build_blob_async(
+                store,
+                &mut source,
+                BlobBuildOptions {
+                    chunk_bytes: u32::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u32::MAX),
+                    page_items: config.limits.maximum_directory_page_entries,
+                    page_bytes: u32::try_from(config.limits.maximum_object_bytes)
+                        .unwrap_or(u32::MAX),
+                    maximum_blob_bytes: logical_bytes,
+                },
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+            let mut work = blob.work;
+            let extent_bytes = allocations
+                .claim_elements::<Extent>(1, &mut work, budget)
+                .map_err(|error| allocation_error(error, work))?;
+            let mut extents = Vec::new();
+            if extents.try_reserve_exact(1).is_err() {
+                allocations
+                    .release(extent_bytes)
+                    .map_err(|error| allocation_error(error, work))?;
+                return Err(OperationFailure::new(
+                    RegularMutationError::AllocationFailed,
+                    work,
+                ));
+            }
+            extents.push(Extent {
+                offset: 0,
+                length: logical_bytes,
+                kind: ExtentKind::Content {
+                    object: blob.root,
+                    object_offset: 0,
+                },
+            });
+            (extents, work, extent_bytes)
+        };
+        let page = ExtentPage::Leaf(extents);
+        let mut page_budget = remaining(work, budget)?;
+        page_budget.peak_allocation_bytes = page_budget
+            .peak_allocation_bytes
+            .checked_sub(allocations.live_bytes())
+            .ok_or_else(|| OperationFailure::new(RegularMutationError::RangeOverflow, work))?;
+        let written = put_extent_page_async(
             store,
-            &mut source,
-            BlobBuildOptions {
-                chunk_bytes: u32::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u32::MAX),
-                page_items: config.limits.maximum_directory_page_entries,
-                page_bytes: u32::try_from(config.limits.maximum_object_bytes).unwrap_or(u32::MAX),
-                maximum_blob_bytes: logical_bytes,
-            },
-            budget,
+            &page,
+            decode_limits(config),
+            page_budget,
             cancellation,
         )
         .await
-        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-        let mut work = blob.work;
-        let extent_bytes = allocations
-            .claim_elements::<Extent>(1, &mut work, budget)
+        .map_err(|failure| {
+            simultaneous_failure(work, *failure.work, allocations.live_bytes(), failure.error)
+        })?;
+        work = simultaneous(work, written.work, allocations.live_bytes(), budget)?;
+        allocations
+            .release(extent_bytes)
             .map_err(|error| allocation_error(error, work))?;
-        let mut extents = Vec::new();
-        if extents.try_reserve_exact(1).is_err() {
-            allocations
-                .release(extent_bytes)
-                .map_err(|error| allocation_error(error, work))?;
-            return Err(OperationFailure::new(
-                RegularMutationError::AllocationFailed,
-                work,
-            ));
-        }
-        extents.push(Extent {
-            offset: 0,
-            length: logical_bytes,
-            kind: ExtentKind::Content {
-                object: blob.root,
-                object_offset: 0,
-            },
-        });
-        (extents, work, extent_bytes)
-    };
-    let page = ExtentPage::Leaf(extents);
-    let mut page_budget = remaining(work, budget)?;
-    page_budget.peak_allocation_bytes = page_budget
-        .peak_allocation_bytes
-        .checked_sub(allocations.live_bytes())
-        .ok_or_else(|| OperationFailure::new(RegularMutationError::RangeOverflow, work))?;
-    let written = put_extent_page_async(
-        store,
-        &page,
-        decode_limits(config),
-        page_budget,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| {
-        simultaneous_failure(work, *failure.work, allocations.live_bytes(), failure.error)
-    })?;
-    work = simultaneous(work, written.work, allocations.live_bytes(), budget)?;
-    allocations
-        .release(extent_bytes)
-        .map_err(|error| allocation_error(error, work))?;
-    Ok(PromotedRegularReceipt {
-        logical_bytes,
-        extents: written.object,
-        work,
+        Ok(PromotedRegularReceipt {
+            logical_bytes,
+            extents: written.object,
+            work,
+        })
     })
+    .await
 }
 
 #[allow(clippy::too_many_lines)]
@@ -691,163 +702,166 @@ async fn apply_sparse<S: AsyncObjectStore>(
     prior: WorkCounters,
     cancellation: &CancellationToken,
 ) -> Result<RegularMutationReceipt, RegularMutationFailure> {
-    let FilePayload::Regular {
-        logical_bytes,
-        extents,
-    } = payload
-    else {
-        return Err(OperationFailure::new(
-            RegularMutationError::NotRegular,
-            prior,
-        ));
-    };
-    let mut prior = prior;
-    let mut demotion_known_impossible = false;
-    if let RegularMutation::ZeroRange {
-        offset,
-        extend: false,
-        ..
-    } = mutation
-        && offset >= logical_bytes
-    {
-        return Ok(RegularMutationReceipt {
-            payload,
-            work: prior,
-        });
-    }
-    if let RegularMutation::Resize {
-        logical_bytes: target,
-    } = mutation
-        && target <= u64::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u64::MAX)
-        && target <= logical_bytes
-    {
-        let attempt = try_demote_sparse_async(
-            store,
-            extents,
+    in_heap(move || async move {
+        let FilePayload::Regular {
             logical_bytes,
-            target,
-            config,
-            remaining(prior, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
-        prior = add(prior, attempt.work)?;
-        if let Some(data) = attempt.data {
+            extents,
+        } = payload
+        else {
+            return Err(OperationFailure::new(
+                RegularMutationError::NotRegular,
+                prior,
+            ));
+        };
+        let mut prior = prior;
+        let mut demotion_known_impossible = false;
+        if let RegularMutation::ZeroRange {
+            offset,
+            extend: false,
+            ..
+        } = mutation
+            && offset >= logical_bytes
+        {
             return Ok(RegularMutationReceipt {
-                payload: FilePayload::InlineRegular(data),
+                payload,
                 work: prior,
             });
         }
-        demotion_known_impossible = true;
-    }
-    let extent_mutation = match mutation {
-        RegularMutation::Write {
-            offset,
-            length,
-            content,
-            content_offset,
-        } => ExtentMutation::Replace {
-            offset,
-            length,
-            kind: ExtentKind::Content {
-                object: content,
-                object_offset: content_offset,
-            },
-            extend: true,
-        },
-        RegularMutation::Resize { logical_bytes } => ExtentMutation::Resize { logical_bytes },
-        RegularMutation::ZeroRange {
-            offset,
-            mut length,
-            allocated,
-            extend,
-        } => {
-            if !extend {
-                length = length.min(logical_bytes - offset);
+        if let RegularMutation::Resize {
+            logical_bytes: target,
+        } = mutation
+            && target <= u64::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u64::MAX)
+            && target <= logical_bytes
+        {
+            let attempt = try_demote_sparse_async(
+                store,
+                extents,
+                logical_bytes,
+                target,
+                config,
+                remaining(prior, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
+            prior = add(prior, attempt.work)?;
+            if let Some(data) = attempt.data {
+                return Ok(RegularMutationReceipt {
+                    payload: FilePayload::InlineRegular(data),
+                    work: prior,
+                });
             }
-            ExtentMutation::Replace {
+            demotion_known_impossible = true;
+        }
+        let extent_mutation = match mutation {
+            RegularMutation::Write {
                 offset,
                 length,
-                kind: if allocated {
-                    ExtentKind::AllocatedZero
-                } else {
-                    ExtentKind::Hole
+                content,
+                content_offset,
+            } => ExtentMutation::Replace {
+                offset,
+                length,
+                kind: ExtentKind::Content {
+                    object: content,
+                    object_offset: content_offset,
                 },
+                extend: true,
+            },
+            RegularMutation::Resize { logical_bytes } => ExtentMutation::Resize { logical_bytes },
+            RegularMutation::ZeroRange {
+                offset,
+                mut length,
+                allocated,
                 extend,
+            } => {
+                if !extend {
+                    length = length.min(logical_bytes - offset);
+                }
+                ExtentMutation::Replace {
+                    offset,
+                    length,
+                    kind: if allocated {
+                        ExtentKind::AllocatedZero
+                    } else {
+                        ExtentKind::Hole
+                    },
+                    extend,
+                }
             }
-        }
-        RegularMutation::Preallocate {
-            offset,
-            length,
-            keep_size,
-        } => {
-            return apply_sparse_preallocation(
-                store,
-                logical_bytes,
-                extents,
+            RegularMutation::Preallocate {
                 offset,
                 length,
                 keep_size,
-                config,
-                budget,
-                prior,
-                cancellation,
-            )
-            .await;
-        }
-    };
-    let receipt = apply_extent_mutations_async(
-        store,
-        extents,
-        logical_bytes,
-        &[extent_mutation],
-        ExtentMutationOptions {
-            maximum_mutations: 1,
-            limits: decode_limits(config),
-            budget: remaining(prior, budget)?,
-        },
-        cancellation,
-    )
-    .await
-    .map_err(|failure| failure.map_with_prior_work(prior, Into::into))?;
-    let work = add(prior, receipt.work)?;
-    if !demotion_known_impossible
-        && receipt.logical_bytes <= u64::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u64::MAX)
-    {
-        let attempt = try_demote_sparse_async(
+            } => {
+                return apply_sparse_preallocation(
+                    store,
+                    logical_bytes,
+                    extents,
+                    offset,
+                    length,
+                    keep_size,
+                    config,
+                    budget,
+                    prior,
+                    cancellation,
+                )
+                .await;
+            }
+        };
+        let receipt = apply_extent_mutations_async(
             store,
-            receipt.root,
-            receipt.logical_bytes,
-            receipt.logical_bytes,
-            config,
-            remaining(work, budget)?,
+            extents,
+            logical_bytes,
+            &[extent_mutation],
+            ExtentMutationOptions {
+                maximum_mutations: 1,
+                limits: decode_limits(config),
+                budget: remaining(prior, budget)?,
+            },
             cancellation,
         )
         .await
-        .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        let work = add(work, attempt.work)?;
-        if let Some(data) = attempt.data {
+        .map_err(|failure| failure.map_with_prior_work(prior, Into::into))?;
+        let work = add(prior, receipt.work)?;
+        if !demotion_known_impossible
+            && receipt.logical_bytes <= u64::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u64::MAX)
+        {
+            let attempt = try_demote_sparse_async(
+                store,
+                receipt.root,
+                receipt.logical_bytes,
+                receipt.logical_bytes,
+                config,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            let work = add(work, attempt.work)?;
+            if let Some(data) = attempt.data {
+                return Ok(RegularMutationReceipt {
+                    payload: FilePayload::InlineRegular(data),
+                    work,
+                });
+            }
             return Ok(RegularMutationReceipt {
-                payload: FilePayload::InlineRegular(data),
+                payload: FilePayload::Regular {
+                    logical_bytes: receipt.logical_bytes,
+                    extents: receipt.root,
+                },
                 work,
             });
         }
-        return Ok(RegularMutationReceipt {
+        Ok(RegularMutationReceipt {
             payload: FilePayload::Regular {
                 logical_bytes: receipt.logical_bytes,
                 extents: receipt.root,
             },
             work,
-        });
-    }
-    Ok(RegularMutationReceipt {
-        payload: FilePayload::Regular {
-            logical_bytes: receipt.logical_bytes,
-            extents: receipt.root,
-        },
-        work,
+        })
     })
+    .await
 }
 
 struct InlineDemotionAttempt {
@@ -874,70 +888,73 @@ async fn apply_sparse_preallocation<S: AsyncObjectStore>(
     prior: WorkCounters,
     cancellation: &CancellationToken,
 ) -> Result<RegularMutationReceipt, RegularMutationFailure> {
-    let end = offset
-        .checked_add(length)
-        .ok_or_else(|| OperationFailure::new(RegularMutationError::RangeOverflow, prior))?;
-    if keep_size && end > logical_bytes {
-        return Err(OperationFailure::new(
-            RegularMutationError::KeepSizeBeyondEofUnsupported,
+    in_heap(move || async move {
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| OperationFailure::new(RegularMutationError::RangeOverflow, prior))?;
+        if keep_size && end > logical_bytes {
+            return Err(OperationFailure::new(
+                RegularMutationError::KeepSizeBeyondEofUnsupported,
+                prior,
+            ));
+        }
+        let plan = plan_sparse_preallocation(
+            store,
+            extents,
+            logical_bytes,
+            offset,
+            end,
+            config,
+            budget,
             prior,
-        ));
-    }
-    let plan = plan_sparse_preallocation(
-        store,
-        extents,
-        logical_bytes,
-        offset,
-        end,
-        config,
-        budget,
-        prior,
-        cancellation,
-    )
-    .await?;
-    if plan.mutations.is_empty() {
-        return Ok(RegularMutationReceipt {
-            payload: FilePayload::Regular {
-                logical_bytes,
-                extents,
-            },
-            work: plan.work,
-        });
-    }
-    let mut nested_budget = remaining(plan.work, budget)?;
-    nested_budget.peak_allocation_bytes = nested_budget
-        .peak_allocation_bytes
-        .checked_sub(plan.mutation_bytes)
-        .ok_or_else(|| OperationFailure::new(RegularMutationError::RangeOverflow, plan.work))?;
-    let receipt = apply_extent_mutations_async(
-        store,
-        extents,
-        logical_bytes,
-        &plan.mutations,
-        ExtentMutationOptions {
-            maximum_mutations: config.limits.maximum_mutations_per_batch,
-            limits: decode_limits(config),
-            budget: nested_budget,
-        },
-        cancellation,
-    )
-    .await
-    .map_err(|failure| {
-        simultaneous_failure(
-            plan.work,
-            *failure.work,
-            plan.mutation_bytes,
-            failure.error.into(),
+            cancellation,
         )
-    })?;
-    let work = simultaneous(plan.work, receipt.work, plan.mutation_bytes, budget)?;
-    Ok(RegularMutationReceipt {
-        payload: FilePayload::Regular {
-            logical_bytes: receipt.logical_bytes,
-            extents: receipt.root,
-        },
-        work,
+        .await?;
+        if plan.mutations.is_empty() {
+            return Ok(RegularMutationReceipt {
+                payload: FilePayload::Regular {
+                    logical_bytes,
+                    extents,
+                },
+                work: plan.work,
+            });
+        }
+        let mut nested_budget = remaining(plan.work, budget)?;
+        nested_budget.peak_allocation_bytes = nested_budget
+            .peak_allocation_bytes
+            .checked_sub(plan.mutation_bytes)
+            .ok_or_else(|| OperationFailure::new(RegularMutationError::RangeOverflow, plan.work))?;
+        let receipt = apply_extent_mutations_async(
+            store,
+            extents,
+            logical_bytes,
+            &plan.mutations,
+            ExtentMutationOptions {
+                maximum_mutations: config.limits.maximum_mutations_per_batch,
+                limits: decode_limits(config),
+                budget: nested_budget,
+            },
+            cancellation,
+        )
+        .await
+        .map_err(|failure| {
+            simultaneous_failure(
+                plan.work,
+                *failure.work,
+                plan.mutation_bytes,
+                failure.error.into(),
+            )
+        })?;
+        let work = simultaneous(plan.work, receipt.work, plan.mutation_bytes, budget)?;
+        Ok(RegularMutationReceipt {
+            payload: FilePayload::Regular {
+                logical_bytes: receipt.logical_bytes,
+                extents: receipt.root,
+            },
+            work,
+        })
     })
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1088,93 +1105,96 @@ async fn try_demote_sparse_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<InlineDemotionAttempt, RegularMutationFailure> {
-    if target_size == 0 {
-        return Ok(InlineDemotionAttempt {
-            data: Some(
-                InlineFileData::new(&[])
-                    .map_err(|error| OperationFailure::before_work(error.into()))?,
-            ),
-            work: WorkCounters::default(),
-        });
-    }
-    let plan = plan_extent_range_async(
-        store,
-        ExtentRangeRequest {
-            root,
-            file_size,
-            range: ByteRange {
-                offset: 0,
-                length: target_size,
-            },
-            maximum_spans: config.limits.maximum_mutations_per_batch,
-            limits: decode_limits(config),
-            budget,
-        },
-        cancellation,
-    )
-    .await
-    .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-    let retained = plan.retained_allocation_bytes;
-    let mut work = plan.work;
-    if plan
-        .spans
-        .iter()
-        .any(|span| !matches!(span.kind, ExtentKind::Content { .. }))
-    {
-        return Ok(InlineDemotionAttempt { data: None, work });
-    }
-    let target = usize::try_from(target_size)
-        .map_err(|_| OperationFailure::new(RegularMutationError::RangeOverflow, work))?;
-    let mut data =
-        InlineFileData::new(&[]).map_err(|error| OperationFailure::new(error.into(), work))?;
-    for span in &plan.spans {
-        let ExtentKind::Content {
-            object,
-            object_offset,
-        } = span.kind
-        else {
-            return Ok(InlineDemotionAttempt { data: None, work });
-        };
-        let mut nested_budget = remaining(work, budget)?;
-        nested_budget.peak_allocation_bytes = nested_budget
-            .peak_allocation_bytes
-            .checked_sub(retained)
-            .ok_or_else(|| OperationFailure::new(RegularMutationError::RangeOverflow, work))?;
-        let read = read_blob_range_async(
+    in_heap(move || async move {
+        if target_size == 0 {
+            return Ok(InlineDemotionAttempt {
+                data: Some(
+                    InlineFileData::new(&[])
+                        .map_err(|error| OperationFailure::before_work(error.into()))?,
+                ),
+                work: WorkCounters::default(),
+            });
+        }
+        let plan = plan_extent_range_async(
             store,
-            object,
-            ByteRange {
-                offset: object_offset,
-                length: span.length,
+            ExtentRangeRequest {
+                root,
+                file_size,
+                range: ByteRange {
+                    offset: 0,
+                    length: target_size,
+                },
+                maximum_spans: config.limits.maximum_mutations_per_batch,
+                limits: decode_limits(config),
+                budget,
             },
-            decode_limits(config),
-            nested_budget,
             cancellation,
         )
         .await
-        .map_err(|failure| {
-            simultaneous_failure(work, *failure.work, retained, failure.error.into())
-        })?;
-        work = simultaneous(work, read.work, retained, budget)?;
-        let start = usize::try_from(span.offset)
+        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        let retained = plan.retained_allocation_bytes;
+        let mut work = plan.work;
+        if plan
+            .spans
+            .iter()
+            .any(|span| !matches!(span.kind, ExtentKind::Content { .. }))
+        {
+            return Ok(InlineDemotionAttempt { data: None, work });
+        }
+        let target = usize::try_from(target_size)
             .map_err(|_| OperationFailure::new(RegularMutationError::RangeOverflow, work))?;
-        data = data
-            .replace_range(start, &read.bytes, target)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        work = add(
+        let mut data =
+            InlineFileData::new(&[]).map_err(|error| OperationFailure::new(error.into(), work))?;
+        for span in &plan.spans {
+            let ExtentKind::Content {
+                object,
+                object_offset,
+            } = span.kind
+            else {
+                return Ok(InlineDemotionAttempt { data: None, work });
+            };
+            let mut nested_budget = remaining(work, budget)?;
+            nested_budget.peak_allocation_bytes = nested_budget
+                .peak_allocation_bytes
+                .checked_sub(retained)
+                .ok_or_else(|| OperationFailure::new(RegularMutationError::RangeOverflow, work))?;
+            let read = read_blob_range_async(
+                store,
+                object,
+                ByteRange {
+                    offset: object_offset,
+                    length: span.length,
+                },
+                decode_limits(config),
+                nested_budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| {
+                simultaneous_failure(work, *failure.work, retained, failure.error.into())
+            })?;
+            work = simultaneous(work, read.work, retained, budget)?;
+            let start = usize::try_from(span.offset)
+                .map_err(|_| OperationFailure::new(RegularMutationError::RangeOverflow, work))?;
+            data = data
+                .replace_range(start, &read.bytes, target)
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            work = add(
+                work,
+                WorkCounters {
+                    bytes_copied: span.length,
+                    ..WorkCounters::default()
+                },
+            )?;
+            work.verify(budget)
+                .map_err(|error| OperationFailure::new(error.into(), work))?;
+        }
+        Ok(InlineDemotionAttempt {
+            data: Some(data),
             work,
-            WorkCounters {
-                bytes_copied: span.length,
-                ..WorkCounters::default()
-            },
-        )?;
-        work.verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-    }
-    Ok(InlineDemotionAttempt {
-        data: Some(data),
-        work,
+        })
     })
+    .await
 }
 
 struct ExtentPageWrite {
