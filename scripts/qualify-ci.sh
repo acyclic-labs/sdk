@@ -130,6 +130,11 @@ case "$lane" in
     else
       base="${head}^"
       range="$base..$head"
+      # Scheduled and dispatched runs of main check its latest squash merge,
+      # which GitHub signs with the same pinned web-flow key as main pushes.
+      if [[ "${GITHUB_REF:-}" == "refs/heads/main" ]]; then
+        allow_webflow=true
+      fi
     fi
     webflow_home=""
     while read -r commit; do
