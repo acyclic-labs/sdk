@@ -308,23 +308,18 @@ jobs:
           include-hidden-files: false
           retention-days: 90
 
-  # Records qualified lanes, forwards reused artifacts, and requires every
-  # lane; its name is the required status check.
-  gate:
-    name: SDK Qualification
+  # Records qualified lanes and forwards reused artifacts. It is not the
+  # required check, but release workflows only accept fully successful runs.
+  record:
+    name: record
     needs: [plan, qualification]
-    if: always()
+    if: always() && needs.plan.result == 'success'
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
       contents: read
       actions: read
     steps:
-      - name: Require a successful plan
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-        run: test "$PLAN_RESULT" = success
-
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -449,11 +444,20 @@ jobs:
           path: .qualification/policy.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['policy'] }}
 
+  gate:
+    name: SDK Qualification
+    if: always()
+    needs: [plan, qualification]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 2
+    steps:
       - name: Require every qualification lane
         env:
+          PLAN_RESULT: ${{ needs.plan.result }}
           MATRIX: ${{ needs.plan.outputs.matrix }}
           RESULT: ${{ needs.qualification.result }}
         run: |
+          test "$PLAN_RESULT" = success
           if test "$MATRIX" = '[]'; then
             test "$RESULT" = skipped
           else

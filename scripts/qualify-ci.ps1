@@ -83,6 +83,14 @@ $clippy = Start-Background clippy @"
 cargo clippy -p acyclic-plugin --all-targets --all-features --locked --target-dir '$CargoTargetDir-clippy' -- -D warnings
 "@
 
+# The test build links dozens of test executables; LLVM's linker links them far
+# faster than link.exe. Release and binding builds above keep the default
+# linker so their outputs match publication builds.
+$lldLink = Join-Path $clangDirectory 'lld-link.exe'
+if (Test-Path -LiteralPath $lldLink) {
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $lldLink
+}
+
 # The workflow enables the Client-ProjFS optional feature before this lane, so
 # the complete all-feature workspace, including ProjFS-backed acyclic-fs, runs
 # from one build instead of separate portable, no-default, and link-only builds.

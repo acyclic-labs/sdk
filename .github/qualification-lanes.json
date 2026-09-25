@@ -9,8 +9,8 @@
   },
   {
     "lane": "linux",
-    "runner": "blacksmith-32vcpu-ubuntu-2404",
-    "workers": 32,
+    "runner": "blacksmith-16vcpu-ubuntu-2404",
+    "workers": 16,
     "artifact": "packages-linux",
     "artifact_path": "packages",
     "inputs": "repository"
@@ -25,8 +25,8 @@
   },
   {
     "lane": "linux-arm64",
-    "runner": "blacksmith-32vcpu-ubuntu-2404-arm",
-    "workers": 32,
+    "runner": "blacksmith-16vcpu-ubuntu-2404-arm",
+    "workers": 16,
     "artifact": "packages-linux-arm64",
     "artifact_path": "packages",
     "inputs": "rust"
@@ -49,8 +49,8 @@
   },
   {
     "lane": "windows",
-    "runner": "blacksmith-32vcpu-windows-2025",
-    "workers": 32,
+    "runner": "blacksmith-16vcpu-windows-2025",
+    "workers": 16,
     "artifact": "",
     "artifact_path": "",
     "inputs": "product"
