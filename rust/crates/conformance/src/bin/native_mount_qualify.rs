@@ -1454,7 +1454,7 @@ fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), F
                 String::from_utf8_lossy(&read.stderr),
                 String::from_utf8_lossy(&listed.stdout),
                 sidecar_bytes.as_ref().map(Vec::len),
-                sidecar_bytes.as_ref().map(|bytes| &bytes[..bytes.len().min(16)])
+                sidecar_bytes.as_ref().map(|bytes| bytes.iter().take(16).collect::<Vec<_>>())
             )
             .into());
         }
