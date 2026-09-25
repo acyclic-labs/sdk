@@ -209,7 +209,10 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_REF_NAME" =~ ^acyclic-v([0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?)$ ]]
           version=${BASH_REMATCH[1]}
-          tag_oid=$(git rev-parse "$GITHUB_REF")
+          # checkout v4 may replace the local annotated tag with its peeled commit.
+          git fetch --no-tags --force origin \
+            "$GITHUB_REF:refs/release-tags/$GITHUB_REF_NAME"
+          tag_oid=$(git rev-parse "refs/release-tags/$GITHUB_REF_NAME")
           test "$(git cat-file -t "$tag_oid")" = tag
           source_sha=$(git rev-parse "$tag_oid^{commit}")
           test "$(git rev-parse HEAD)" = "$source_sha"
