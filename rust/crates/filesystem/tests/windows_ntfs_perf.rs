@@ -36,8 +36,13 @@ fn percentile(samples: &mut [u128], numerator: usize, denominator: usize) -> u12
         .unwrap_or(0)
 }
 
+/// An NTFS directory index records no link count, and a listed node must be
+/// exactly what a lookup reports, so the Windows source exposes no link
+/// count on either path. Hard links are identified exactly by the file
+/// identity every name of one file shares.
 #[tokio::test]
-async fn ntfs_demand_reports_actual_link_count() -> Result<(), Box<dyn std::error::Error>> {
+async fn ntfs_demand_identifies_hard_links_by_file_identity()
+-> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("single"), b"single")?;
     std::fs::write(source.path().join("linked"), b"linked")?;
@@ -48,7 +53,8 @@ async fn ntfs_demand_reports_actual_link_count() -> Result<(), Box<dyn std::erro
         VolumeLimits::default(),
     )
     .await?;
-    for (name, expected) in [("single", 1), ("linked", 2), ("alias", 2)] {
+    let mut identities = Vec::new();
+    for name in ["single", "linked", "alias"] {
         let path = host_path_to_namespace(
             std::path::Path::new(name),
             FilesystemProfile::Windows,
@@ -59,8 +65,14 @@ async fn ntfs_demand_reports_actual_link_count() -> Result<(), Box<dyn std::erro
             .await?
             .value
             .ok_or("source node was absent")?;
-        assert_eq!(node.link_count, Some(expected), "{name}");
+        assert_eq!(node.link_count, None, "{name}");
+        identities.push(node.file_identity);
     }
+    let [single, linked, alias] = identities.as_slice() else {
+        return Err("three lookups were expected".into());
+    };
+    assert_eq!(linked, alias);
+    assert_ne!(single, linked);
     Ok(())
 }
 
