@@ -79,16 +79,19 @@ $napi = Start-Background napi `
 $arm64 = Start-Background aarch64 @"
 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked --target-dir '$CargoTargetDir-aarch64'
 "@
+$clippy = Start-Background clippy @"
+cargo clippy -p acyclic-plugin --all-targets --all-features --locked --target-dir '$CargoTargetDir-clippy' -- -D warnings
+"@
 
 # The workflow enables the Client-ProjFS optional feature before this lane, so
 # the complete all-feature workspace, including ProjFS-backed acyclic-fs, runs
 # from one build instead of separate portable, no-default, and link-only builds.
 cargo test --workspace --all-features --locked
-cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings
 bun run check
 bun test --parallel=4 typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition
 
+Complete-Background $clippy
 Complete-Background $napi
 Complete-Background $arm64
 Complete-Background $release

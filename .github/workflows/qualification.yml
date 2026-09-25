@@ -162,6 +162,15 @@ jobs:
           fetch-tags: false
           persist-credentials: false
 
+      # Windows restores caches and unpacks crates slowly, so the toolchain
+      # install and crate unpacking run detached while the caches below restore.
+      - name: Start Windows Rust setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
+          .\scripts\windows-rust-setup.ps1 -Phase start
+
       - name: Configure lane-local compiler cache
         shell: bash
         run: echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
@@ -180,14 +189,10 @@ jobs:
           restore-keys: |
             sdk-deps-v8-${{ runner.os }}-${{ runner.arch }}-
 
-      # Windows restores caches and unpacks crates slowly, so the toolchain
-      # install and crate unpacking run detached while the caches below restore.
-      - name: Start Windows Rust setup
+      - name: Unpack Windows crates
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
-          .\scripts\windows-rust-setup.ps1 -Phase start
+        run: .\scripts\windows-rust-setup.ps1 -Phase dependencies
 
       - name: Install exact Rust toolchain
         if: runner.os != 'Windows'
@@ -205,16 +210,17 @@ jobs:
           path: ${{ runner.temp }}/tools
           key: sdk-tools-v6-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}
 
-      # Exact cache hits are reliable where prefix fallbacks are not, so compiler
-      # output is keyed by the dependency graph alone: every run with the same
-      # lockfile restores the same warm dependency objects, and workspace crates
-      # recompile from source either way. Lane-local caches restore and save
-      # once instead of contending on sccache object writes.
+      # Exact cache hits are reliable where prefix fallbacks are not, and saving
+      # a fresh multi-gigabyte cache per commit evicts everything else. Compiler
+      # output is therefore keyed by what shapes compiler invocations (toolchain,
+      # lockfile, manifests, lane scripts), not by workspace sources, which
+      # recompile either way. Lane-local caches restore and save once instead
+      # of contending on sccache object writes.
       - name: Restore lane build cache
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ runner.temp }}/sccache
-          key: sdk-build-v4-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          key: sdk-build-v4-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml', '.github/workflows/qualification.yml', 'scripts/qualify-ci.sh', 'scripts/qualify-ci.ps1', 'scripts/build-product.mjs') }}
           restore-keys: |
             sdk-build-v4-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-
 
@@ -302,16 +308,23 @@ jobs:
           include-hidden-files: false
           retention-days: 90
 
-  record:
-    name: record
+  # Records qualified lanes, forwards reused artifacts, and requires every
+  # lane; its name is the required status check.
+  gate:
+    name: SDK Qualification
     needs: [plan, qualification]
-    if: always() && needs.plan.result == 'success'
+    if: always()
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
       contents: read
       actions: read
     steps:
+      - name: Require a successful plan
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+        run: test "$PLAN_RESULT" = success
+
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -436,22 +449,11 @@ jobs:
           path: .qualification/policy.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['policy'] }}
 
-  gate:
-    name: SDK Qualification
-    if: always()
-    needs: [plan, qualification, record]
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 2
-    steps:
       - name: Require every qualification lane
         env:
-          PLAN_RESULT: ${{ needs.plan.result }}
           MATRIX: ${{ needs.plan.outputs.matrix }}
           RESULT: ${{ needs.qualification.result }}
-          RECORD_RESULT: ${{ needs.record.result }}
         run: |
-          test "$PLAN_RESULT" = success
-          test "$RECORD_RESULT" = success
           if test "$MATRIX" = '[]'; then
             test "$RESULT" = skipped
           else

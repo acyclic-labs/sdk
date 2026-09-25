@@ -25,14 +25,15 @@ runs:
         key: rust-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
         restore-keys: |
           rust-deps-v2-${{ runner.os }}-${{ runner.arch }}-
-    # Exact hits are reliable where prefix fallbacks are not: key compiler
-    # output by the dependency graph so every run with this lockfile restores
-    # warm dependency objects; workspace crates recompile from source anyway.
+    # Exact hits are reliable where prefix fallbacks are not, and a fresh cache
+    # per commit evicts everything else: key compiler output by what shapes
+    # compiler invocations so runs share warm dependency objects; workspace
+    # crates recompile from source anyway.
     - name: Restore compiler output
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ${{ runner.temp }}/sccache
-        key: rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+        key: rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}
         restore-keys: |
           rust-objects-v2-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-
     - name: Enable compiler cache
