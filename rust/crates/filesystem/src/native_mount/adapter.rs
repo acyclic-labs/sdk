@@ -565,8 +565,7 @@ impl<A, O> SharedCheckout<A, O> {
         self.state.read().await.candidate()
     }
 
-    /// Advances with every change to the checkout; optimistic transactions
-    /// install only over the revision they began from.
+    /// Advances with every recorded change to the checkout's view.
     pub(super) fn revision(&self) -> u64 {
         self.revision.load(Ordering::Acquire)
     }
@@ -837,10 +836,6 @@ impl<A, O> SharedCheckoutState<A, O> {
         }
     }
 
-    pub(super) fn revision(&self) -> u64 {
-        self.revision.load(Ordering::Acquire)
-    }
-
     /// The node a mutation is about to change through `path`, read without
     /// recording an observation.
     async fn node_at(
@@ -887,34 +882,35 @@ impl<A, O> SharedCheckoutState<A, O> {
         Ok(CheckoutCandidate {
             base: self.private_candidate(),
             checkout: self.private_candidate(),
-            revision: self.revision(),
         })
     }
 
-    /// Whether a transaction began from this exact checkout, so that its
-    /// candidate may still be installed.
+    /// Whether a transaction's candidate may still be installed: nothing
+    /// but observations has changed this checkout since the transaction
+    /// began, so installing undoes no other change, publication included.
     pub(super) fn admits(&self, candidate: &CheckoutCandidate<A, O>) -> bool {
-        candidate.revision == self.revision()
+        self.checkout
+            .admits_candidate(&candidate.base, &candidate.checkout)
     }
 
     /// Installs a transaction's candidate with its recorded effect, only
-    /// over the exact checkout it began from. Returns whether it installed;
-    /// a later change leaves the checkout untouched for the caller to retry.
+    /// when [`Self::admits`] it. Returns whether it installed; any other
+    /// change since leaves the checkout untouched for the caller to retry.
     pub(super) fn install_candidate(
         &mut self,
         candidate: CheckoutCandidate<A, O>,
         installed: &Installed,
     ) -> bool {
-        if !self.admits(&candidate) {
+        if !self
+            .checkout
+            .adopt_candidate(&candidate.base, candidate.checkout)
+        {
             return false;
         }
-        self.checkout = candidate.checkout;
         self.record(&ViewChange::Installed(installed));
         true
     }
 
-    /// Records one change to the checkout's view. The exclusive guard keeps
-    /// every lookup from overlapping the change it records.
     /// Applies queued changes as one group, records exactly what each
     /// successful one changed, publishes once when the policy publishes
     /// every mutation, and answers every caller.
@@ -989,6 +985,8 @@ impl<A, O> SharedCheckoutState<A, O> {
         }
     }
 
+    /// Records one change to the checkout's view. The exclusive guard keeps
+    /// every lookup from overlapping the change it records.
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
         self.ledger.record(change);
         self.revision.fetch_add(1, Ordering::AcqRel);
@@ -1002,7 +1000,6 @@ impl<A, O> SharedCheckoutState<A, O> {
 pub(super) struct CheckoutCandidate<A, O> {
     base: Checkout<A, O>,
     pub(super) checkout: Checkout<A, O>,
-    revision: u64,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutCandidate<A, O> {
@@ -3713,6 +3710,32 @@ mod tests {
         crate::facade::MemoryAuthorityBackend,
         crate::facade::MemoryObjectBackend,
     >;
+
+    /// Publication changes the checkout without changing its view. A
+    /// candidate begun before it must not install over it: that would
+    /// restore the published-over head, and every later publication would
+    /// then conflict with it.
+    #[test]
+    fn a_candidate_never_installs_over_a_publication() -> Result<(), Box<dyn std::error::Error>> {
+        let (source, _) =
+            shared_sources_with_publication(FilesystemProfile::Portable, MountPublication::Manual)?;
+        source.create_file(&native_test_path("first"), FileMetadata::default())?;
+        let candidate = source.runtime.block_on(|| source.checkout.candidate())?;
+        source.sync()?;
+        let installed = source.runtime.block_on(|| async {
+            Ok::<_, MountSourceError>(
+                source
+                    .checkout
+                    .lock()
+                    .await
+                    .install_candidate(candidate, &Installed::default()),
+            )
+        })?;
+        assert!(!installed, "a candidate installed over a publication");
+        source.create_file(&native_test_path("second"), FileMetadata::default())?;
+        source.sync()?;
+        Ok(())
+    }
 
     #[test]
     fn cancelled_lifecycle_capture_cannot_commit_late() -> Result<(), Box<dyn std::error::Error>> {

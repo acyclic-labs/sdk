@@ -808,7 +808,7 @@ pub struct ResolvedDirectoryPage<A, O> {
     pub has_more: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct LastCommit {
     operation_id: OperationId,
     generation_id: GenerationId,
@@ -4757,6 +4757,68 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
 }
 
 impl<A, O> Checkout<A, O> {
+    /// Replaces this checkout with `candidate`, a private candidate begun
+    /// from `base`, when this checkout is still the state `base` copied
+    /// apart from observations its readers have added since; the candidate
+    /// then carries those observations too. Returns whether it replaced.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn adopt_candidate(&mut self, base: &Self, candidate: Self) -> bool {
+        let Some(dependencies) = self.candidate_proof(base, &candidate) else {
+            return false;
+        };
+        // The candidate's memory of absorbed walks stays true: its proof
+        // only gains the readers' observations.
+        candidate.dependencies.proof().dependencies = dependencies;
+        *self = candidate;
+        true
+    }
+
+    /// Whether [`Self::adopt_candidate`] would adopt `candidate`.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn admits_candidate(&self, base: &Self, candidate: &Self) -> bool {
+        self.candidate_proof(base, candidate).is_some()
+    }
+
+    /// The proof `candidate` would carry over this checkout: its own merged
+    /// with every observation this checkout's readers added since `base`.
+    /// None when anything else changed since `base`, publication included,
+    /// since installing the candidate would undo that change. Every field is
+    /// compared, so none can change unnoticed.
+    #[cfg(feature = "native-mount")]
+    fn candidate_proof(&self, base: &Self, candidate: &Self) -> Option<CheckoutDependencies> {
+        let Self {
+            volume: _,
+            base_generation_root,
+            generation_root,
+            base_file_table,
+            base_root,
+            root,
+            authority_head,
+            authored_operation_id,
+            live_operation_id,
+            last_commit,
+            prepared_merge_parent,
+            dependencies,
+            mode,
+        } = self;
+        let unchanged = *base_generation_root == base.base_generation_root
+            && *generation_root == base.generation_root
+            && *base_file_table == base.base_file_table
+            && *base_root == base.base_root
+            && *root == base.root
+            && *authority_head == base.authority_head
+            && *authored_operation_id == base.authored_operation_id
+            && *live_operation_id == base.live_operation_id
+            && *last_commit == base.last_commit
+            && *prepared_merge_parent == base.prepared_merge_parent
+            && *mode == base.mode;
+        if !unchanged {
+            return None;
+        }
+        let live = dependencies.proof().dependencies.clone();
+        candidate.dependencies.proof().merged(&live)
+    }
+
     /// Owning volume identity.
     #[must_use]
     pub const fn volume_id(&self) -> VolumeId {

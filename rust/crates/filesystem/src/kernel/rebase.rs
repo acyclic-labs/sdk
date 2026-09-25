@@ -113,6 +113,17 @@ pub enum DependencyUse {
     ObservationAndMutation,
 }
 
+impl DependencyUse {
+    /// The use of a region used both ways.
+    fn with(self, other: Self) -> Self {
+        if self == other {
+            self
+        } else {
+            Self::ObservationAndMutation
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CapturedState {
     expected: DependencyState,
@@ -249,18 +260,33 @@ impl CheckoutDependencies {
         let captured = Arc::make_mut(&mut self.captured);
         for (region, expected) in staged {
             match captured.get_mut(&region) {
-                Some(existing) => {
-                    if existing.usage != usage
-                        && existing.usage != DependencyUse::ObservationAndMutation
-                    {
-                        existing.usage = DependencyUse::ObservationAndMutation;
-                    }
-                }
+                Some(existing) => existing.usage = existing.usage.with(usage),
                 None => {
                     captured.insert(region, CapturedState { expected, usage });
                 }
             }
         }
+    }
+
+    /// The proof of both this proof's and `other`'s operations over the same
+    /// base generation, or `None` when they captured one region in
+    /// different states.
+    pub(crate) fn merged(&self, other: &Self) -> Option<Self> {
+        if Arc::ptr_eq(&self.captured, &other.captured) {
+            return Some(self.clone());
+        }
+        let mut merged = self.clone();
+        let captured = Arc::make_mut(&mut merged.captured);
+        for (region, state) in other.captured.iter() {
+            match captured.get_mut(region) {
+                Some(existing) if existing.expected != state.expected => return None,
+                Some(existing) => existing.usage = existing.usage.with(state.usage),
+                None => {
+                    captured.insert(region.clone(), *state);
+                }
+            }
+        }
+        Some(merged)
     }
 
     fn extend(
