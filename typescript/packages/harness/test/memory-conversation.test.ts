@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { ExecutionScope, GroupPolicies, Harness, MemoryConversation, NativeContracts, TaskDefinition, composeContentBindings,
+import { ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, composeContentBindings,
   defineTool, descriptorFor, type AgentId, type FileRef, type OperationId } from "../src/index.js";
 
 const wasm = readFileSync(fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)));
@@ -214,6 +214,59 @@ test("concurrent retries serialize before model dispatch", async () => {
   expect(calls).toBe(1);
   expect(outputs[0]).toEqual(outputs[1]);
   expect(host.conversation().messages).toHaveLength(2);
+  host.free();
+});
+
+test("a completed model run resumes publication without dispatching twice", async () => {
+  const host = await MemoryConversation.create({ agent, wasm });
+  let dispatches = 0;
+  const model = {
+    async *generate() {
+      dispatches++;
+      yield { kind: "content" as const, delta: "answer" };
+      yield { kind: "completed" as const, metadata: { oversized: "x".repeat(256) } };
+    },
+    async reconcile() { return undefined; },
+  };
+  const narrow = Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 128 }).model(model).build();
+  const wider = Harness.builder(contracts).limits({ file_bytes: 1_024, render_bytes: 1_024 }).model(model).build();
+  const operation = "08080808-0808-0808-0808-080808080808" as OperationId;
+  const content = await host.stage("turns/eight/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
+  await expect(host.runConversation(narrow, operation, content)).rejects.toThrow("exceeds harness limits");
+  expect(host.conversation().messages.map(message => message.kind)).toEqual(["user"]);
+  const resumed = await host.runConversation(wider, operation, content);
+  expect(resumed.text).toBe("answer");
+  expect(dispatches).toBe(1);
+  expect(host.conversation().messages.map(message => message.kind)).toEqual(["user", "assistant"]);
+  host.free();
+});
+
+test("an unknown model attempt needs explicit owner abandonment before another turn", async () => {
+  const host = await MemoryConversation.create({ agent, wasm });
+  let dispatches = 0;
+  const runtime = Harness.builder(contracts).model({
+    async *generate() {
+      dispatches++;
+      if (dispatches === 1) throw new Error("remote acknowledgement lost");
+      yield { kind: "content" as const, delta: "next answer" };
+      yield { kind: "completed" as const, metadata: {} };
+    },
+    async reconcile() { return undefined; },
+  }).build();
+  const operation = "09090909-0909-0909-0909-090909090909" as OperationId;
+  const content = await host.stage("turns/nine/user.txt", new TextEncoder().encode("first"), "text/plain", "user.txt");
+  await expect(host.runConversation(runtime, operation, content)).rejects.toBeInstanceOf(IndeterminateModelTurnError);
+  await expect(host.runConversation(runtime, operation, content)).rejects.toThrow("indeterminate");
+  await expect(host.runPrompt(runtime, "second")).rejects.toThrow("unresolved");
+  expect(dispatches).toBe(1);
+  await host.abandonIndeterminateTurn(operation);
+  await host.abandonIndeterminateTurn(operation);
+  await expect(host.runConversation(runtime, operation, content)).rejects.toThrow("explicitly abandoned");
+  expect((await host.runPrompt(runtime, "second")).text).toBe("next answer");
+  expect(dispatches).toBe(2);
+  expect(host.conversation().messages.map(message => message.kind)).toEqual([
+    "user", "system", "user", "assistant",
+  ]);
   host.free();
 });
 

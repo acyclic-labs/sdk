@@ -4,11 +4,20 @@ import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationState,
   FileRef, Limits, ReferencedAttachments, VolumeRef,
 } from "./conversation.js";
+import { DEFAULT_LIMITS } from "./conversation.js";
 import { selectModelContext } from "./projection.js";
 import type { AgentHarness, ContentBindings, RunOutput } from "./runtime.js";
 
 const encoder = new TextEncoder();
 const manifestType = "application/vnd.acyclic.harness.attachments+json";
+
+/** Dispatch may have reached the model; regenerating this operation is unsafe. */
+export class IndeterminateModelTurnError extends Error {
+  constructor(readonly operationId: OperationId, cause?: unknown) {
+    super("model dispatch outcome is indeterminate; reconcile durably or explicitly abandon the local turn", { cause });
+    this.name = "IndeterminateModelTurnError";
+  }
+}
 
 export interface MemoryConversationOptions {
   readonly agent: AgentId;
@@ -193,6 +202,41 @@ export class MemoryConversation {
     return run;
   }
 
+  /** Explicit owner decision to close an unknown local attempt without re-dispatch. */
+  abandonIndeterminateTurn(operationId: OperationId): Promise<void> {
+    const run = this.#turns.then(() => this.#abandonIndeterminateTurn(operationId));
+    this.#turns = run.then(() => {}, () => {});
+    return run;
+  }
+
+  async #abandonIndeterminateTurn(operationId: OperationId): Promise<void> {
+    const userId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "user"));
+    const noticeId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "indeterminate-notice"));
+    const state = this.conversation();
+    const existing = state.messages.find(message => message.id === noticeId);
+    if (existing !== undefined) return;
+    if (!state.messages.some(message => message.id === userId && message.kind === "user")
+      || state.messages.some(message => message.kind === "assistant" && message.reply_to === userId)
+      || this.#outputs.has(operationId)
+      || !this.#events().some(event => event.operation_id === operationId
+        && event.payload.kind === "model_context_selected")) {
+      throw new TypeError("only an unresolved dispatched local turn can be abandoned");
+    }
+    const content = await this.stage(`turns/${operationId}/indeterminate.txt`, encoder.encode(
+      "The preceding model attempt has an unknown outcome and was explicitly abandoned by its owner. Do not infer an assistant answer."),
+    "text/plain", "indeterminate.txt");
+    const outcome = await this.stage(`turns/${operationId}/indeterminate.json`, this.#core.canonicalJsonBytes({
+      state: "indeterminate", operation_id: operationId,
+    }), "application/json", "indeterminate.json");
+    this.#core.validateFileUnderLimits(content, DEFAULT_LIMITS);
+    this.#core.validateFileUnderLimits(outcome, DEFAULT_LIMITS);
+    this.#append(this.#core.deriveOperationId(operationId, "indeterminate-event"), "indeterminate", {
+      id: noticeId, sequence: BigInt(state.messages.length + 1), kind: "system", content,
+      attachments: { kind: "inline", items: [] }, reply_to: userId, tool_call_id: null,
+      extensions: { "acyclic.turn.outcome": outcome },
+    }, DEFAULT_LIMITS);
+  }
+
   async #runConversation(
     runtime: AgentHarness, operationId: OperationId, content: FileRef,
     attachments: readonly Attachment[],
@@ -206,8 +250,14 @@ export class MemoryConversation {
     let state = this.conversation();
     const unresolved = [...state.messages].reverse().find(message => message.kind === "user");
     if (unresolved !== undefined && unresolved.id !== userId
-      && !state.messages.some(message => message.kind === "assistant" && message.reply_to === unresolved.id)) {
+      && !state.messages.some(message => (message.kind === "assistant"
+        || (message.kind === "system" && Object.hasOwn(message.extensions, "acyclic.turn.outcome")))
+        && message.reply_to === unresolved.id)) {
       throw new TypeError("previous conversation turn is unresolved; retry that operation first");
+    }
+    if (state.messages.some(message => message.kind === "system" && message.reply_to === userId
+      && Object.hasOwn(message.extensions, "acyclic.turn.outcome"))) {
+      throw new TypeError("conversation turn was explicitly abandoned after an indeterminate model outcome");
     }
     const existing = state.messages.find(message => message.id === userId);
     if (existing === undefined) {
@@ -220,7 +270,10 @@ export class MemoryConversation {
       throw new TypeError("turn identity is bound to another user message");
     }
     const completed = this.#outputs.get(operationId);
-    if (completed !== undefined) return structuredClone(completed);
+    const assistantId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "assistant"));
+    if (completed !== undefined && state.messages.some(message => message.id === assistantId)) {
+      return structuredClone(completed);
+    }
     state = this.conversation();
     let selection: { readonly conversation_revision: bigint; readonly message_ids: readonly ConversationMessageId[] } | undefined;
     for (const event of this.#events()) {
@@ -239,38 +292,43 @@ export class MemoryConversation {
       selection = { conversation_revision: BigInt(state.messages.length),
         message_ids: suffix.filter(message => message.kind !== "tool_result"
           || (message.reply_to !== null && included.has(message.reply_to))).map(message => message.id) };
-      this.#apply(operationId, "context", { kind: "select_model_context", selection });
     }
     if (selection.message_ids.at(-1) !== userId) throw new TypeError("operation is bound to another context selection");
-    if (!newSelection) {
-      throw new TypeError("previous model dispatch outcome is indeterminate; local volatile execution cannot safely retry");
+    if (!newSelection && completed === undefined) {
+      throw new IndeterminateModelTurnError(operationId);
     }
-    const selectedLength = Number(selection.conversation_revision);
-    if (!Number.isSafeInteger(selectedLength) || selectedLength < 0
-      || selectedLength > state.messages.length) {
-      throw new TypeError("local conversation selection has an unavailable historical prefix");
+    let stableOutput = completed;
+    if (stableOutput === undefined) {
+      const selectedLength = Number(selection.conversation_revision);
+      if (!Number.isSafeInteger(selectedLength) || selectedLength < 0
+        || selectedLength > state.messages.length) {
+        throw new TypeError("local conversation selection has an unavailable historical prefix");
+      }
+      const historical = { agent: state.agent, revision: selection.conversation_revision,
+        messages: state.messages.slice(0, selectedLength) };
+      const selected = await selectModelContext(historical, {
+        conversationRevision: selection.conversation_revision, messageIds: selection.message_ids,
+      }, { resolveFile: file => this.read(file), maxMessages: limits.context_messages,
+        maxAttachments: limits.attachments, maxManifestBytes: limits.file_bytes,
+        maxRenderBytes: limits.render_bytes,
+        decodeManifest: (manifest, bytes, count) => this.#core.decodeAttachmentManifest(manifest, bytes, count),
+        validateMessage: message => this.#core.validateConversationMessage(message, limits) });
+      if (newSelection) this.#apply(operationId, "context", { kind: "select_model_context", selection });
+      let output: RunOutput;
+      try { output = await runtime.runSelectedContext(selected); }
+      catch (error) { throw new IndeterminateModelTurnError(operationId, error); }
+      if (typeof output.text !== "string") throw new TypeError("assistant output text is invalid");
+      stableOutput = structuredClone(output);
+      this.#outputs.set(operationId, stableOutput);
     }
-    const historical = { agent: state.agent, revision: selection.conversation_revision,
-      messages: state.messages.slice(0, selectedLength) };
-    const selected = await selectModelContext(historical, {
-      conversationRevision: selection.conversation_revision, messageIds: selection.message_ids,
-    }, { resolveFile: file => this.read(file), maxMessages: limits.context_messages,
-      maxAttachments: limits.attachments, maxManifestBytes: limits.file_bytes,
-      maxRenderBytes: limits.render_bytes,
-      decodeManifest: (manifest, bytes, count) => this.#core.decodeAttachmentManifest(manifest, bytes, count),
-      validateMessage: message => this.#core.validateConversationMessage(message, limits) });
-    const output = await runtime.runSelectedContext(selected);
-    if (typeof output.text !== "string") throw new TypeError("assistant output text is invalid");
-    const stableOutput = structuredClone(output);
-    const assistantId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "assistant"));
-    const assistant = await this.stage(`turns/${operationId}/assistant.txt`, encoder.encode(output.text), "text/plain", "assistant.txt");
+    const assistant = await this.stage(`turns/${operationId}/assistant.txt`, encoder.encode(stableOutput.text), "text/plain", "assistant.txt");
     this.#core.validateFileUnderLimits(assistant, limits);
-    const assistantAttachments = await this.#attachments(operationId, "assistant", output.attachments ?? [], limits);
-    const finalMetadata = [...output.receipts].reverse().find(receipt => receipt.kind === "model-completed");
+    const assistantAttachments = await this.#attachments(operationId, "assistant", stableOutput.attachments ?? [], limits);
+    const finalMetadata = [...stableOutput.receipts].reverse().find(receipt => receipt.kind === "model-completed");
     const metadata = await this.stage(`turns/${operationId}/metadata.json`,
       this.#core.canonicalJsonBytes(finalMetadata?.metadata ?? {}), "application/json", "metadata.json");
     this.#core.validateFileUnderLimits(metadata, limits);
-    await this.#publishToolHistory(operationId, userId, output, limits);
+    await this.#publishToolHistory(operationId, userId, stableOutput, limits);
     state = this.conversation();
     const priorAssistant = state.messages.find(message => message.id === assistantId);
     const message: ConversationMessage = { id: assistantId, sequence: BigInt(state.messages.length + 1),
@@ -282,7 +340,6 @@ export class MemoryConversation {
       || !this.#sameAttachments(priorAssistant.attachments, message.attachments)) {
       throw new TypeError("turn identity is bound to another assistant message");
     }
-    this.#outputs.set(operationId, stableOutput);
     return structuredClone(stableOutput);
   }
 

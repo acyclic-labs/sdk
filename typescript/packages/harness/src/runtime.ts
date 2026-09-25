@@ -261,6 +261,8 @@ export interface HostBatchReplay {
   readonly taskName: string;
   readonly revision: string;
   readonly implementationDigest: string;
+  /** Rust-canonical digest pinned when the batch was first admitted. */
+  readonly inputDigest: Uint8Array;
   readonly entries: readonly GroupEntry<unknown>[];
 }
 /** Durable host operations. Implementations own persistence, admission, and replay semantics. */
@@ -269,7 +271,7 @@ export interface HarnessRuntimeHost {
   policyIdentity(): PolicyIdentity | null;
   /** Admission, descendant ownership, state checkpoints, wait/effect boundaries, and replay are owned by the host. */
   admitResumable?<Input, Output>(operationId: string, definition: TaskDefinition<Input, Output>, input: Input, harness: AgentHarness, parentTaskId?: RuntimeTaskId): Promise<Admission<unknown>>;
-  reconcileBatch?(groupId: GroupId, batchId: BatchId, harness: AgentHarness): Promise<HostBatchReplay>;
+  reconcileBatch?(groupId: GroupId, batchId: BatchId, inputDigest: Uint8Array, harness: AgentHarness): Promise<HostBatchReplay>;
   attach(id: RuntimeTaskId, harness: AgentHarness): Promise<HostTaskAttachment>;
   reconcileEffect(taskId: RuntimeTaskId, effectId: EffectId): Promise<EffectStatus>;
   send(message: TaskMessage): Promise<{ readonly accepted: boolean; readonly messageId: MessageId }>;
@@ -459,6 +461,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
   readonly #authorizeTask: TaskAuthorizer | undefined;
   readonly #entries: GroupEntry<Output>[] = [];
   readonly #entryKeys = new Map<string, { readonly index: number; readonly registration: string }>();
+  readonly #batchDigests = new Map<BatchId, string>();
   #closed = false;
   constructor(harness: AgentHarness, readonly policy: GroupPolicy, readonly id: GroupId = identity<GroupId>("group"), readonly parentTaskId?: RuntimeTaskId, authorizeTask?: TaskAuthorizer) {
     this.#harness = harness;
@@ -476,6 +479,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
       return batch.inputs.map((_input, index) => ({ key: { batchId: batch.id, index }, admission: { kind: "rejected", reason: { code: "unsupported", message } } }));
     }
     const registration = registrationKey(definition);
+    if (definition.implementation.kind === "resumable") await this.#bindBatchInputs(batch);
     const entries = await Promise.all(batch.inputs.map(async (input, index): Promise<GroupEntry<Output>> => {
       const key = { batchId: batch.id, index };
       const existing = this.#entryKeys.get(`${batch.id}:${index}`);
@@ -507,6 +511,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     this.#authorizeTask?.(definition);
     this.#harness.task(definition);
     const registration = registrationKey(definition);
+    const inputDigest = await this.#bindBatchInputs(batch);
     const local = this.#entries.filter(entry => entry.key.batchId === batch.id);
     if (local.length) {
       if (local.some(entry => this.#entryKeys.get(`${batch.id}:${entry.key.index}`)?.registration !== registration)) {
@@ -517,8 +522,12 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     }
     if (!this.#harness.host?.reconcileBatch) throw new Error("durable batch reconciliation requires a host binding");
     this.#harness.assertPolicyIdentity();
-    const recovered = await this.#harness.host.reconcileBatch(this.id, batch.id, this.#harness);
+    const recovered = await this.#harness.host.reconcileBatch(this.id, batch.id, inputDigest, this.#harness);
     this.#harness.assertPolicyIdentity();
+    if (inputDigest.length !== recovered.inputDigest.length
+      || inputDigest.some((byte, index) => byte !== recovered.inputDigest[index])) {
+      throw new Error("host batch input digest differs from the requested batch");
+    }
     if (definition.name !== recovered.taskName || definition.revision !== recovered.revision
       || definition.options.implementationDigest !== recovered.implementationDigest
       || definition.implementation.kind !== "resumable") throw new Error("host returned an unregistered batch task implementation");
@@ -553,6 +562,14 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
       else { this.#entryKeys.set(identity, { index: this.#entries.length, registration }); this.#entries.push(entry); }
     }
     return entries;
+  }
+  async #bindBatchInputs<Input>(batch: Batch<Input>): Promise<Uint8Array> {
+    const digest = (await NativeContracts.create()).digestCanonicalJson(batch.inputs);
+    const hex = Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+    const pinned = this.#batchDigests.get(batch.id);
+    if (pinned !== undefined && pinned !== hex) throw new Error("batch identity belongs to another input list");
+    this.#batchDigests.set(batch.id, hex);
+    return digest;
   }
   async *asCompleted(): AsyncIterable<GroupEntry<Output>> {
     for (const entry of this.#entries) if (entry.admission.kind !== "accepted") yield entry;

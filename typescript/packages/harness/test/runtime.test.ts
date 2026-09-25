@@ -445,7 +445,7 @@ describe("typed agent runtime", () => {
     const host: HarnessRuntimeHost = {
       policyIdentity: () => null,
       async admitResumable(operationId) { ids.push(operationId); return { kind: "indeterminate", operationId }; },
-      async reconcileBatch(groupId, batchId) { return { taskName: "batch-work", revision: "2", implementationDigest: durableDigest, entries: [0, 1].map(index => ({ key: { batchId, index }, admission: { kind: "indeterminate" as const, operationId: `${groupId}:batch-work@2#${durableDigest}:${batchId}:${index}` } })) }; },
+      async reconcileBatch(groupId, batchId, inputDigest) { return { taskName: "batch-work", revision: "2", implementationDigest: durableDigest, inputDigest, entries: [0, 1].map(index => ({ key: { batchId, index }, admission: { kind: "indeterminate" as const, operationId: `${groupId}:batch-work@2#${durableDigest}:${batchId}:${index}` } })) }; },
       async attach(id) { return { task: new Task(id, async () => undefined), operationId: "operation:batch", taskName: "batch-work", revision: "2", implementationDigest: durableDigest }; },
       async reconcileEffect() { return { state: "indeterminate" } as const; },
       async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
@@ -473,9 +473,11 @@ describe("typed agent runtime", () => {
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
     const batch = new Batch("batch:replay" as BatchId, [1, 2]);
     let entries: { key: { batchId: BatchId; index: number }; admission: { kind: "indeterminate"; operationId: string } }[] = [];
+    let wrongDigest = false;
     const host: HarnessRuntimeHost = {
       policyIdentity: () => null,
-      async reconcileBatch() { return { taskName: "replay", revision: "1", implementationDigest: durableDigest, entries }; },
+      async reconcileBatch(_groupId, _batchId, inputDigest) { return { taskName: "replay", revision: "1", implementationDigest: durableDigest,
+        inputDigest: wrongDigest ? new Uint8Array(inputDigest.length) : inputDigest, entries }; },
       async attach() { throw new Error("unused"); },
       async reconcileEffect() { return { state: "indeterminate" }; },
       async send(message) { return { accepted: true, messageId: message.id }; },
@@ -487,12 +489,21 @@ describe("typed agent runtime", () => {
       ({ key: { batchId: batch.id, index }, admission: { kind: "indeterminate" as const, operationId } });
     entries = [entry(0)];
     await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("incomplete batch");
+    entries = [entry(0), entry(1), entry(2)];
+    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("incomplete batch");
     entries = [entry(0), entry(2)];
+    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("invalid batch entry identity");
+    entries = [entry(0), entry(0)];
     await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("invalid batch entry identity");
     entries = [entry(0), entry(1, "wrong-operation")];
     await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("unrelated batch admission");
     entries = [entry(1), entry(0)];
+    wrongDigest = true;
+    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("input digest differs");
+    wrongDigest = false;
     expect((await group.reconcileBatch(definition, batch)).map(value => value.key.index)).toEqual([0, 1]);
+    await expect(group.reconcileBatch(definition, new Batch(batch.id, [1, 3])))
+      .rejects.toThrow("another input list");
     expect((await group.join()).entries).toHaveLength(2);
   });
 
@@ -509,9 +520,10 @@ describe("typed agent runtime", () => {
         return { task: new Task(id, async () => 1), operationId: "drift-op", taskName: "drift-replay",
           revision: "1", implementationDigest: durableDigest };
       },
-      async reconcileBatch(groupId, batchId) {
+      async reconcileBatch(groupId, batchId, inputDigest) {
         currentIdentity = approvalPolicyIdentity;
         return { taskName: "drift-replay", revision: "1", implementationDigest: durableDigest,
+          inputDigest,
           entries: [{ key: { batchId, index: 0 }, admission: { kind: "indeterminate" as const,
             operationId: `${groupId}:drift-replay@1#${durableDigest}:${batchId}:0` } }] };
       },
