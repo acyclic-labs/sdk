@@ -1841,6 +1841,7 @@ struct ControlPlane {
     pending_mounts: BTreeMap<[u8; 16], LocalMount>,
     /// The last save was left unflushed; see [`Survives::ServiceCrash`].
     unflushed: bool,
+    slots: StateSlots,
     #[cfg(test)]
     owns_local_root: bool,
     #[cfg(test)]
@@ -1905,7 +1906,7 @@ impl ControlPlane {
         shared_roots: SharedRootRegistry,
     ) -> Result<Self, String> {
         fs::create_dir_all(&data).map_err(display)?;
-        let state = load_state(&data)?;
+        let (state, slots) = load_state(&data)?;
         let mut control = Self {
             data,
             config_root,
@@ -1919,6 +1920,7 @@ impl ControlPlane {
             mounts: BTreeMap::new(),
             pending_mounts: BTreeMap::new(),
             unflushed: false,
+            slots,
             #[cfg(test)]
             owns_local_root: false,
             #[cfg(test)]
@@ -5505,7 +5507,8 @@ impl ControlPlane {
     }
 
     fn persist(&mut self) -> Result<(), String> {
-        save_state(&self.data, &self.state, Survives::PowerLoss)?;
+        self.slots
+            .save(&self.data, &self.state, Survives::PowerLoss)?;
         // A flushed save is a whole snapshot, so it covers any unflushed one.
         self.unflushed = false;
         Ok(())
@@ -5514,7 +5517,8 @@ impl ControlPlane {
     /// Saves the last transition of a request without flushing it; see
     /// [`Survives::ServiceCrash`].
     fn persist_unflushed(&mut self) -> Result<(), String> {
-        save_state(&self.data, &self.state, Survives::ServiceCrash)?;
+        self.slots
+            .save(&self.data, &self.state, Survives::ServiceCrash)?;
         self.unflushed = true;
         Ok(())
     }
@@ -5537,7 +5541,14 @@ impl ControlPlane {
         Ok(())
     }
 
-    async fn shutdown(mut self) -> Result<(), String> {
+    #[cfg(test)]
+    async fn shutdown(self) -> Result<(), String> {
+        self.close().await.map(drop)
+    }
+
+    /// Shuts the session down and hands back what it knows of its state
+    /// slots, for a terminal save.
+    async fn close(mut self) -> Result<StateSlots, String> {
         self.make_durable().await?;
         #[cfg(test)]
         let root_released = if self.owns_local_root {
@@ -5635,6 +5646,7 @@ impl ControlPlane {
             first_error.map_or(Ok(()), Err)
         }
         .await;
+        let slots = self.slots;
         // The shared service owns the physical root-release boundary. A standalone test control
         // owns its root directly, so it waits here after dropping every provider handle.
         drop(self);
@@ -5650,7 +5662,7 @@ impl ControlPlane {
                 "standalone control retained filesystem handles after shutdown".to_owned()
             })?;
         }
-        result
+        result.map(|()| slots)
     }
 }
 
@@ -6515,86 +6527,152 @@ fn read_state_slot(path: &Path) -> Result<StateSlot, String> {
     })
 }
 
-/// Reads every slot as `[newest flushed save, slot the next flushed save
-/// overwrites, unflushed save]`.
-fn ordered_state_slots(data: &Path) -> Result<[(&'static str, StateSlot); 3], String> {
-    let [first, second, unflushed] =
-        ADAPTER_STATE_SLOTS.map(|name| read_state_slot(&data.join(name)).map(|slot| (name, slot)));
-    let (first, second, unflushed) = (first?, second?, unflushed?);
-    Ok(if second.1.generation() > first.1.generation() {
-        [second, first, unflushed]
-    } else {
-        [first, second, unflushed]
-    })
+/// What the owning process knows of a session's state slots. It is read once,
+/// when the session loads, and kept in step with every save, so a save writes
+/// its target slot and reads nothing.
+#[derive(Clone, Copy, Debug)]
+struct StateSlots {
+    /// The generation of each flushed slot's durable save; `None` when the
+    /// slot is missing or torn, or its last write did not complete durably.
+    /// Such a slot is never the newest flushed save, so it stays the target
+    /// until a flushed save completes in it.
+    flushed: [Option<u64>; 2],
+    /// Whether each flushed slot's directory entry is durable.
+    durable_entry: [bool; 2],
+    /// The highest generation read or ever written, whether or not the write
+    /// completed, so every save is newer than anything any slot can hold.
+    last_generation: u64,
 }
 
-fn load_state(data: &Path) -> Result<AdapterState, String> {
-    let [(_, flushed), (_, other), (unflushed_name, unflushed)] = ordered_state_slots(data)?;
+impl StateSlots {
+    /// Reads every slot as `[flushed, flushed, unflushed]`.
+    fn read(data: &Path) -> Result<(Self, [StateSlot; 3]), String> {
+        let [first, second, unflushed] =
+            ADAPTER_STATE_SLOTS.map(|name| read_state_slot(&data.join(name)));
+        let slots = [first?, second?, unflushed?];
+        let known = Self {
+            flushed: [slots[0].generation(), slots[1].generation()],
+            durable_entry: [
+                !matches!(slots[0], StateSlot::Missing),
+                !matches!(slots[1], StateSlot::Missing),
+            ],
+            last_generation: slots
+                .iter()
+                .filter_map(StateSlot::generation)
+                .max()
+                .unwrap_or(0),
+        };
+        Ok((known, slots))
+    }
+
+    /// The flushed slot holding the newest flushed save.
+    fn newest_flushed(&self) -> usize {
+        usize::from(self.flushed[1] > self.flushed[0])
+    }
+
+    fn save(
+        &mut self,
+        data: &Path,
+        state: &AdapterState,
+        survives: Survives,
+    ) -> Result<(), String> {
+        validate_state_version(state)?;
+        validate_state_bounds(state)?;
+        let mut serialized = BoundedJsonBuffer::new();
+        serde_json::to_writer(&mut serialized, state)
+            .ok()
+            .filter(|()| serialized.bytes.len() as u64 <= MAXIMUM_ADAPTER_STATE_BYTES)
+            .ok_or_else(|| {
+                format!("adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound")
+            })?;
+        let generation = self
+            .last_generation
+            .checked_add(1)
+            .ok_or("adapter state generation is exhausted")?;
+        self.last_generation = generation;
+        let target = match survives {
+            Survives::ServiceCrash => 2,
+            Survives::PowerLoss => {
+                let target = 1 - self.newest_flushed();
+                if let Some(flushed) = self.flushed.get_mut(target) {
+                    *flushed = None;
+                }
+                target
+            }
+        };
+        let name = ADAPTER_STATE_SLOTS
+            .get(target)
+            .ok_or("adapter state slot is out of range")?;
+        let mut bytes = Vec::with_capacity(ADAPTER_STATE_HEADER_BYTES + serialized.bytes.len());
+        bytes.extend_from_slice(&ADAPTER_STATE_MAGIC);
+        bytes.extend_from_slice(&generation.to_le_bytes());
+        bytes.extend_from_slice(&state_digest(generation, &serialized.bytes));
+        bytes.extend_from_slice(&serialized.bytes);
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(data.join(name))
+            .map_err(display)?;
+        file.write_all(&bytes).map_err(display)?;
+        file.set_len(bytes.len() as u64).map_err(display)?;
+        if let (Some(flushed), Some(durable_entry)) = (
+            self.flushed.get_mut(target),
+            self.durable_entry.get_mut(target),
+        ) {
+            sync_file(&file, Durability::Full).map_err(display)?;
+            if !*durable_entry {
+                sync_parent(data, Durability::Full).map_err(display)?;
+                *durable_entry = true;
+            }
+            *flushed = Some(generation);
+        }
+        Ok(())
+    }
+}
+
+fn load_state(data: &Path) -> Result<(AdapterState, StateSlots), String> {
+    let (slots, [first, second, unflushed]) = StateSlots::read(data)?;
+    let (flushed, other) = if slots.newest_flushed() == 1 {
+        (second, first)
+    } else {
+        (first, second)
+    };
     let newest = if unflushed.generation() > flushed.generation() {
         // A process that exited before flushing its last save leaves it only
         // in memory; nothing may act on it before it is durable.
-        flush_state_slot(data, unflushed_name)?;
+        flush_state_slot(data, ADAPTER_STATE_SLOTS[2])?;
         unflushed
     } else {
         flushed
     };
-    match (newest, other) {
+    let state = match (newest, other) {
         (StateSlot::Saved { payload, .. }, _) => {
             let state = serde_json::from_slice(&payload).map_err(display)?;
             validate_state_version(&state)?;
             validate_state_bounds(&state)?;
-            Ok(state)
+            state
         }
         // No flushed save was ever made, and no unflushed one survives.
-        (StateSlot::Missing, StateSlot::Missing) => Ok(AdapterState {
+        (StateSlot::Missing, StateSlot::Missing) => AdapterState {
             version: ADAPTER_STATE_VERSION,
             ..AdapterState::default()
-        }),
-        _ => Err("adapter state holds no completed save".to_owned()),
-    }
+        },
+        _ => return Err("adapter state holds no completed save".to_owned()),
+    };
+    Ok((state, slots))
 }
 
+/// Loads a session directory's state without keeping its slots.
+#[cfg(test)]
+fn load_saved_state(data: &Path) -> Result<AdapterState, String> {
+    load_state(data).map(|(state, _)| state)
+}
+
+/// Saves into a session directory that no loaded session owns.
+#[cfg(test)]
 fn save_state(data: &Path, state: &AdapterState, survives: Survives) -> Result<(), String> {
-    validate_state_version(state)?;
-    validate_state_bounds(state)?;
-    let mut serialized = BoundedJsonBuffer::new();
-    serde_json::to_writer(&mut serialized, state)
-        .ok()
-        .filter(|()| serialized.bytes.len() as u64 <= MAXIMUM_ADAPTER_STATE_BYTES)
-        .ok_or_else(|| {
-            format!("adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound")
-        })?;
-    let [(_, flushed), older, unflushed] = ordered_state_slots(data)?;
-    let generation = flushed
-        .generation()
-        .max(older.1.generation())
-        .max(unflushed.1.generation())
-        .map_or(Some(1), |generation| generation.checked_add(1))
-        .ok_or("adapter state generation is exhausted")?;
-    let (target_name, target) = match survives {
-        Survives::ServiceCrash => unflushed,
-        Survives::PowerLoss => older,
-    };
-    let mut bytes = Vec::with_capacity(ADAPTER_STATE_HEADER_BYTES + serialized.bytes.len());
-    bytes.extend_from_slice(&ADAPTER_STATE_MAGIC);
-    bytes.extend_from_slice(&generation.to_le_bytes());
-    bytes.extend_from_slice(&state_digest(generation, &serialized.bytes));
-    bytes.extend_from_slice(&serialized.bytes);
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(data.join(target_name))
-        .map_err(display)?;
-    file.write_all(&bytes).map_err(display)?;
-    file.set_len(bytes.len() as u64).map_err(display)?;
-    if survives == Survives::PowerLoss {
-        sync_file(&file, Durability::Full).map_err(display)?;
-        if matches!(target, StateSlot::Missing) {
-            sync_parent(data, Durability::Full).map_err(display)?;
-        }
-    }
-    Ok(())
+    StateSlots::read(data)?.0.save(data, state, survives)
 }
 
 /// Makes an unflushed save durable.
@@ -7776,7 +7854,7 @@ impl ServiceResources {
         let mut sessions = BTreeMap::new();
         let mut retained_sources = BTreeMap::<PathBuf, ([u8; 16], [u8; 16])>::new();
         for entry in entries {
-            let state = load_state(&entry)?;
+            let (state, _) = load_state(&entry)?;
             if !state.active {
                 continue;
             }
@@ -8012,30 +8090,33 @@ impl ServiceControl {
             .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())?;
         let mut terminal_state = control.state.clone();
         let directory = control.data.clone();
-        if let Err(shutdown_error) = control.shutdown().await {
-            let recovered = ControlPlane::open_with(
-                directory,
-                self.data.clone(),
-                self.fs.clone(),
-                self.store.clone(),
-                self.shared_roots.clone(),
-            )
-            .await;
-            return match recovered {
-                Ok(control) => {
-                    self.sessions.insert(session_id.to_owned(), control);
-                    Err(format!(
-                        "Acyclic session shutdown failed and was restored: {shutdown_error}"
-                    ))
-                }
-                Err(recovery_error) => Err(format!(
-                    "Acyclic session shutdown failed: {shutdown_error}; live recovery failed: {recovery_error}"
-                )),
-            };
-        }
+        let mut slots = match control.close().await {
+            Ok(slots) => slots,
+            Err(shutdown_error) => {
+                let recovered = ControlPlane::open_with(
+                    directory,
+                    self.data.clone(),
+                    self.fs.clone(),
+                    self.store.clone(),
+                    self.shared_roots.clone(),
+                )
+                .await;
+                return match recovered {
+                    Ok(control) => {
+                        self.sessions.insert(session_id.to_owned(), control);
+                        Err(format!(
+                            "Acyclic session shutdown failed and was restored: {shutdown_error}"
+                        ))
+                    }
+                    Err(recovery_error) => Err(format!(
+                        "Acyclic session shutdown failed: {shutdown_error}; live recovery failed: {recovery_error}"
+                    )),
+                };
+            }
+        };
         if deactivate {
             terminal_state.active = false;
-            save_state(&directory, &terminal_state, Survives::PowerLoss)?;
+            slots.save(&directory, &terminal_state, Survives::PowerLoss)?;
         }
         Ok(())
     }
@@ -8622,11 +8703,11 @@ impl SessionHandle {
                             Ok(current) => {
                                 let mut terminal_state = current.state.clone();
                                 let directory = current.data.clone();
-                                match current.shutdown().await {
-                                    Ok(()) => {
+                                match current.close().await {
+                                    Ok(mut slots) => {
                                         if deactivate {
                                             terminal_state.active = false;
-                                            save_state(
+                                            slots.save(
                                                 &directory,
                                                 &terminal_state,
                                                 Survives::PowerLoss,
@@ -13805,7 +13886,7 @@ mod tests {
             .expect("drain completes")
             .expect("drain task")
             .expect("service shutdown");
-        let state = load_state(
+        let state = load_saved_state(
             &data
                 .join("sessions")
                 .join(blake3::hash(b"session").to_hex().as_str()),
@@ -13956,7 +14037,7 @@ mod tests {
             .await
             .expect("late duplicate close");
 
-        let state = load_state(
+        let state = load_saved_state(
             &service
                 .data
                 .join("sessions")
@@ -14585,14 +14666,14 @@ mod tests {
         let newer = service.session_directory("newer");
         service.shutdown().await.expect("shutdown");
 
-        let mut conflicting = load_state(&older).expect("older state");
+        let mut conflicting = load_saved_state(&older).expect("older state");
         conflicting.active = true;
         for binding in conflicting.roots.values_mut() {
             binding.source_identity = [9; 16];
         }
         save_state(&older, &conflicting, Survives::PowerLoss).expect("conflicting state");
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let mut current = load_state(&newer).expect("newer state");
+        let mut current = load_saved_state(&newer).expect("newer state");
         current.active = true;
         save_state(&newer, &current, Survives::PowerLoss).expect("refresh newer state");
 
@@ -15818,13 +15899,13 @@ mod tests {
             assert!(error.contains("a-broken"));
             assert!(service.sessions.is_empty());
             assert!(
-                load_state(&broken_directory)
+                load_saved_state(&broken_directory)
                     .expect("failed session remains recoverable")
                     .active,
                 "failed teardown must not publish an inactive session"
             );
             assert!(
-                !load_state(&healthy_directory)
+                !load_saved_state(&healthy_directory)
                     .expect("healthy session state")
                     .active,
                 "a later session must be durably inactive despite an earlier failure"
@@ -17219,7 +17300,7 @@ mod tests {
             .shutdown()
             .await
             .expect("shutdown flushes the last transition");
-        let reopened = load_state(&data).expect("durable state");
+        let reopened = load_saved_state(&data).expect("durable state");
         assert!(reopened.root_turns.contains("second"));
     }
 
@@ -19580,7 +19661,7 @@ mod tests {
             root_session_id: name.to_owned(),
             ..AdapterState::default()
         };
-        let loaded = || load_state(data).map(|state| state.root_session_id);
+        let loaded = || load_saved_state(data).map(|state| state.root_session_id);
         assert_eq!(loaded(), Ok(String::new()));
         for name in ["first", "second", "third", "fourth"] {
             save_state(data, &named(name), Survives::PowerLoss).expect("adapter state save");
@@ -19625,7 +19706,7 @@ mod tests {
             root_session_id: name.to_owned(),
             ..AdapterState::default()
         };
-        let loaded = || load_state(data).map(|state| state.root_session_id);
+        let loaded = || load_saved_state(data).map(|state| state.root_session_id);
         let flushed_slots = || {
             ADAPTER_STATE_SLOTS[..2]
                 .iter()
@@ -19662,6 +19743,61 @@ mod tests {
         let intact = fs::read(&unflushed).expect("unflushed slot");
         fs::write(&unflushed, &intact[..intact.len() - 1]).expect("tear unflushed save");
         assert_eq!(loaded().as_deref(), Ok("sixth"));
+    }
+
+    #[test]
+    fn a_session_saves_from_what_it_knows_of_its_slots() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path();
+        let named = |name: &str| AdapterState {
+            version: ADAPTER_STATE_VERSION,
+            root_session_id: name.to_owned(),
+            ..AdapterState::default()
+        };
+        let loaded = || load_saved_state(data).map(|state| state.root_session_id);
+        let on_disk = || StateSlots::read(data).expect("slots").0;
+        let (_, mut slots) = load_state(data).expect("fresh state");
+        for (index, name) in ["a", "b", "c", "d", "e", "f", "g", "h"]
+            .into_iter()
+            .enumerate()
+        {
+            let survives = if index % 3 == 1 {
+                Survives::ServiceCrash
+            } else {
+                Survives::PowerLoss
+            };
+            slots
+                .save(data, &named(name), survives)
+                .expect("adapter state save");
+            assert_eq!(loaded().as_deref(), Ok(name));
+            let read = on_disk();
+            assert_eq!(read.flushed, slots.flushed);
+            assert_eq!(read.durable_entry, slots.durable_entry);
+            assert_eq!(read.last_generation, slots.last_generation);
+        }
+
+        // A write that fails stays the target of the next flushed save, so the
+        // newest flushed save is never overwritten, and it consumes its
+        // generation.
+        let newest = data.join(ADAPTER_STATE_SLOTS[slots.newest_flushed()]);
+        let target = data.join(ADAPTER_STATE_SLOTS[1 - slots.newest_flushed()]);
+        let durable = fs::read(&newest).expect("newest flushed save");
+        fs::remove_file(&target).expect("remove target slot");
+        fs::create_dir(&target).expect("block target slot");
+        let before = slots.last_generation;
+        assert!(
+            slots
+                .save(data, &named("failed"), Survives::PowerLoss)
+                .is_err()
+        );
+        assert_eq!(slots.last_generation, before + 1);
+        fs::remove_dir(&target).expect("unblock target slot");
+        slots
+            .save(data, &named("retried"), Survives::PowerLoss)
+            .expect("retried save");
+        assert_eq!(fs::read(&newest).expect("newest flushed save"), durable);
+        assert_eq!(loaded().as_deref(), Ok("retried"));
+        assert_eq!(on_disk().last_generation, before + 2);
     }
 
     #[test]
