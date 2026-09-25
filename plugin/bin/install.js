@@ -314,6 +314,25 @@ function removeCommandPlaceholder(helper) {
   if (process.platform === "win32") durableRemove(join(__dirname, "acyclic"), helper);
 }
 
+// A newly written executable is scanned on its first run (Windows Defender,
+// macOS Gatekeeper), which costs up to a second. Running the installed
+// executable once here pays that before a host's first hook does. Every
+// install ends here, whether it wrote new bytes, recovered an interrupted
+// install or found the executable already in place, so an upgrade or a moved
+// package is warmed the same way. The warm-up is only an optimisation: its
+// failure never fails the install.
+function warmUp(installed) {
+  const test = process.env.NODE_ENV === "test";
+  const executable = (test && process.env.ACYCLIC_INSTALL_TEST_WARM_UP_EXECUTABLE) || installed;
+  const result = spawnSync(executable, ["--version"], {
+    stdio: "ignore", timeout: 30_000, windowsHide: true,
+  });
+  if (test && process.env.ACYCLIC_INSTALL_TEST_WARM_UP_LOG) {
+    const outcome = result.error ? `error ${result.error.code}` : `status ${result.status}`;
+    writeFileSync(process.env.ACYCLIC_INSTALL_TEST_WARM_UP_LOG, `${executable} ${outcome}\n`, { flag: "a" });
+  }
+}
+
 function ensureInstalled() {
   const release = acquireInstallLock(__dirname);
   try {
@@ -321,6 +340,7 @@ function ensureInstalled() {
     removeCommandPlaceholder(installed);
     const packageVersion = readJson(join(__dirname, "..", "package.json")).version;
     installCertification(packageVersion, installed);
+    warmUp(installed);
     return installed;
   } finally {
     release();
