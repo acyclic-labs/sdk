@@ -1,0 +1,30 @@
+[package]
+name = "acyclic-machines-daytona"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Not released until the provider passes the live conformance suite on Linux VMs.
+publish = false
+description = "Machines provider over Daytona Linux VM sandboxes"
+readme = "README.md"
+keywords = ["machines", "daytona", "sandbox"]
+categories = ["api-bindings"]
+
+[dependencies]
+acyclic-machines = { version = "=0.1.2", path = "../machines" }
+async-trait.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+acyclic-conformance = { path = "../conformance" }
+
+[lints]
+workspace = true
