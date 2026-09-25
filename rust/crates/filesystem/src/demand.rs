@@ -1361,7 +1361,7 @@ pub mod native {
                 return Ok(None);
             }
             let changes = Arc::new(NativeChanges {
-                inner: Arc::clone(&self.inner),
+                inner: Arc::downgrade(&self.inner),
                 sink,
             });
             let watch = Arc::new(crate::source_watch::NativeSourceWatch::start(
@@ -1589,18 +1589,19 @@ pub mod native {
 
     /// Turns host reports into source changes: each path into its name in
     /// the source's namespace and, where the host still names a node there,
-    /// that node.
+    /// that node. It refers to the source weakly, as the sink does to its
+    /// view: nothing a host keeps after the watch stops may hold the source.
     struct NativeChanges {
-        inner: Arc<NativeDemandInner>,
+        inner: std::sync::Weak<NativeDemandInner>,
         sink: Arc<dyn SourceChangeSink>,
     }
 
-    impl NativeChanges {
+    impl NativeDemandInner {
         /// The longest prefix of `relative` the source can name, and whether
         /// that is all of it: a name it cannot represent was never read
         /// through it, but its directory changed with it.
         fn name(&self, relative: &Path) -> (NamespacePath, bool) {
-            let limits = self.inner.limits;
+            let limits = self.limits;
             let mut components = Vec::new();
             for component in relative.components() {
                 let std::path::Component::Normal(name) = component else {
@@ -1608,7 +1609,7 @@ pub mod native {
                 };
                 let Ok((encoding, bytes)) = crate::native_name::host_name_bytes(
                     name,
-                    self.inner.profile,
+                    self.profile,
                     limits.maximum_component_bytes,
                 ) else {
                     break;
@@ -1636,20 +1637,23 @@ pub mod native {
     impl crate::source_watch::HostChangeSink for NativeChanges {
         fn host_changed(&self, changes: &[crate::source_watch::HostChange]) {
             use crate::source_watch::HostChange;
+            // A source already dropped has no view left to tell.
+            let Some(inner) = self.inner.upgrade() else {
+                return;
+            };
             let mut reported = Vec::with_capacity(changes.len() * 2);
             for change in changes {
                 match change {
                     HostChange::Everything => reported.push(SourceChange::Everything),
                     #[cfg(windows)]
                     HostChange::File(index) => reported.push(SourceChange::Node(
-                        windows_file_identity(self.inner.root.identity().device, *index),
+                        windows_file_identity(inner.root.identity().device, *index),
                     )),
                     HostChange::Rebound(relative) | HostChange::Altered(relative) => {
-                        let (name, exact) = self.name(relative);
+                        let (name, exact) = inner.name(relative);
                         // The name identifies its node only while it still
                         // binds it; NTFS reports the node itself as well.
-                        let node = self
-                            .inner
+                        let node = inner
                             .root
                             .stat(relative)
                             .ok()

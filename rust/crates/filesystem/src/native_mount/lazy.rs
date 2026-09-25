@@ -351,9 +351,14 @@ type DirtyDetachedRecord = (FileId, FileRecord, FileMetadata, u64);
 /// per batch: each rebound name rebinds with everything reached through it,
 /// each entry altered in place changes its own attributes and the listing
 /// that shows them, and each node changes under all its names.
+///
+/// It refers to the view weakly: a host may release its notification
+/// machinery after the view is dropped (`FSEvents` frees a stream's context
+/// when it is done with it, not when the stream is released), and nothing
+/// that outlives the view may keep its workspace or stores open.
 struct SourceChangeRecorder<A, O, D, S> {
-    lazy: Arc<LazyWorkspace<A, O, D, S>>,
-    authored: Arc<CheckoutMountSource<A, O>>,
+    lazy: Weak<LazyWorkspace<A, O, D, S>>,
+    authored: Weak<CheckoutMountSource<A, O>>,
 }
 
 impl<A, O, D, S> SourceChangeSink for SourceChangeRecorder<A, O, D, S>
@@ -364,6 +369,10 @@ where
     S: LazyWorkspaceStore,
 {
     fn source_changed(&self, changes: &[SourceChange]) {
+        // A view already dropped has nothing left to invalidate.
+        let (Some(lazy), Some(authored)) = (self.lazy.upgrade(), self.authored.upgrade()) else {
+            return;
+        };
         let mut effect = ViewEffect::default();
         for change in changes {
             match change {
@@ -375,13 +384,12 @@ where
                     effect.listings.push(path.clone());
                 }
                 SourceChange::Node(identity) => {
-                    effect.nodes.push(self.lazy.source_file_id_of(identity));
+                    effect.nodes.push(lazy.source_file_id_of(identity));
                 }
                 SourceChange::Everything => effect.everything = true,
             }
         }
-        self.authored
-            .record_projection_change(&ViewChange::Effect(&effect));
+        authored.record_projection_change(&ViewChange::Effect(&effect));
     }
 }
 
@@ -437,8 +445,8 @@ where
         // A source the host cannot watch, or refuses to, is read afresh.
         let source_watch = lazy
             .watch_source(Arc::new(SourceChangeRecorder {
-                lazy: Arc::clone(&lazy),
-                authored: Arc::clone(&authored),
+                lazy: Arc::downgrade(&lazy),
+                authored: Arc::downgrade(&authored),
             }))
             .ok()
             .flatten();
@@ -4331,8 +4339,8 @@ mod tests {
         let stamp = view.view_stamp().ok_or("a watched view carries stamps")?;
         let read = demand.lookups();
         SourceChangeRecorder {
-            lazy: Arc::clone(&view.lazy),
-            authored: Arc::clone(&view.authored),
+            lazy: Arc::downgrade(&view.lazy),
+            authored: Arc::downgrade(&view.authored),
         }
         .source_changed(&[SourceChange::Everything]);
         assert!(!view.unchanged_since(&a, None, stamp));
@@ -4645,6 +4653,64 @@ mod tests {
         let facts = handle.lookup()?;
         assert_eq!(facts.node.file_id, opened);
         assert_eq!(facts.node.logical_bytes, 5);
+        Ok(())
+    }
+
+    /// Dropping a watched view releases everything it holds before the drop
+    /// returns, however its source's notifications are delivered, so the
+    /// stores it wrote can be opened again at once.
+    #[test]
+    fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use crate::model::{CheckoutMode, GenerationSelector};
+        use crate::native_mount::{MountPublication, SharedCheckout};
+        use crate::{Fs, LocalCoreStateStore};
+
+        let source = tempfile::tempdir()?;
+        std::fs::write(source.path().join("a"), b"a")?;
+        let state = tempfile::tempdir()?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let fs = Fs::memory();
+        for round in 0..200 {
+            let store = LocalCoreStateStore::open_owned(state.path().join("core"))
+                .map_err(|error| format!("round {round}: {error}"))?;
+            let view = runtime.block_on(async {
+                let lazy = Arc::new(
+                    LazyWorkspace::attach(
+                        &fs,
+                        &format!("released-{round}"),
+                        Arc::new(native_source(source.path()).await?),
+                        store,
+                    )
+                    .await?,
+                );
+                let checkout = lazy
+                    .workspace()
+                    .engine_checkout(
+                        GenerationSelector::Head,
+                        CheckoutMode::tracking_transaction(),
+                    )
+                    .await?;
+                let config = checkout.volume_config();
+                let authored = Arc::new(CheckoutMountSource::new(
+                    Arc::new(SharedCheckout::with_publication(
+                        checkout,
+                        MountPublication::Manual,
+                    )),
+                    config,
+                )?);
+                Ok::<_, Box<dyn std::error::Error>>(LazyMountSource::new(
+                    lazy,
+                    authored,
+                    "/".to_owned(),
+                )?)
+            })?;
+            assert!(view.view_stamp().is_some(), "a local source is watched");
+            assert!(view.lookup(&mounted(&["a"]))?.is_some());
+            // A report in delivery while the view drops.
+            std::fs::write(source.path().join("a"), format!("round {round}"))?;
+            drop(view);
+        }
         Ok(())
     }
 
