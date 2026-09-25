@@ -3,9 +3,7 @@
 
 use cap_fs_ext::DirExt as _;
 use cap_std::fs::{Dir, Metadata, OpenOptions, Permissions, ReadDir};
-#[cfg(unix)]
-use std::ffi::OsStr;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::path::Path;
@@ -768,9 +766,14 @@ impl HostRoot {
 
     /// Copies one pinned regular source into a new file using `ReFS` block
     /// cloning when available, then owned-buffer overlapped I/O otherwise.
-    /// The caller must keep the source immutable and reserve the destination
-    /// name for this copy; this byte primitive does not capture SDK lineage or
-    /// preserve multi-file hard-link topology.
+    /// The caller must keep the source immutable; the copy fails rather than
+    /// replace an existing destination. This byte primitive does not capture
+    /// SDK lineage or preserve multi-file hard-link topology.
+    ///
+    /// The destination name only ever holds the complete copy: bytes are
+    /// written under a private staging name beside it and renamed into place
+    /// once complete, so a failed or cancelled copy leaves the destination
+    /// exactly as absent as it was.
     #[cfg(windows)]
     pub async fn copy_file_from(
         &self,
@@ -782,29 +785,47 @@ impl HostRoot {
             directory: source_root.directory.try_clone()?,
             identity: source_root.identity,
         };
-        let destination_root = HostRoot {
-            directory: self.directory.try_clone()?,
+        let (parent, name) = open_windows_parent(&self.directory, destination)?;
+        let name = name.to_os_string();
+        let staging_root = HostRoot {
+            directory: parent,
             identity: self.identity,
         };
+        let staged = staging_name();
         let source = source.to_path_buf();
-        let destination = destination.to_path_buf();
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        // The detached owner drains admitted kernel I/O before removing a
-        // partial output even when its awaiting caller is cancelled.
+        // The detached owner drains admitted kernel I/O before discarding the
+        // staged bytes even when its awaiting caller is cancelled.
         tokio::spawn(async move {
             let mut created = false;
-            let result = copy_windows_file_worker(
+            let mut result = copy_windows_file_worker(
                 &source_root,
                 &source,
-                &destination_root,
-                &destination,
+                &staging_root,
+                &staged,
                 &sender,
                 &mut created,
             )
             .await;
-            if created && (result.is_err() || sender.is_closed()) {
-                let root = destination_root.directory.try_clone();
-                let path = destination.clone();
+            if result.is_ok() {
+                result = if sender.is_closed() {
+                    Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"))
+                } else {
+                    let parent = staging_root.directory.try_clone();
+                    let staged = staged.clone();
+                    match parent {
+                        Ok(parent) => acyclic_native_runtime::run_blocking_io(move || {
+                            publish_windows_file(&parent, &staged, &name)
+                        })
+                        .await
+                        .and_then(|published| published),
+                        Err(error) => Err(error),
+                    }
+                };
+            }
+            if created && result.is_err() {
+                let root = staging_root.directory.try_clone();
+                let path = staged.clone();
                 if let Ok(root) = root {
                     let _ =
                         acyclic_native_runtime::run_blocking_io(move || root.remove_file(&path))
@@ -1464,6 +1485,14 @@ fn open_windows_metadata_file(
     if path.as_os_str().is_empty() {
         return root.open_with(Path::new("."), options);
     }
+    let (parent, name) = open_windows_parent(root, path)?;
+    parent.open_with(Path::new(name), options)
+}
+
+/// Opens the directory holding `path`'s leaf without following any
+/// intermediate link, and returns it with that leaf name.
+#[cfg(windows)]
+fn open_windows_parent<'a>(root: &Dir, path: &'a Path) -> io::Result<(Dir, &'a OsStr)> {
     let mut parent = root.try_clone()?;
     let mut components = path.components().peekable();
     while let Some(component) = components.next() {
@@ -1474,13 +1503,84 @@ fn open_windows_metadata_file(
             ));
         };
         if components.peek().is_none() {
-            return parent.open_with(Path::new(name), options);
+            return Ok((parent, name));
         }
         parent = parent.open_dir_nofollow(name)?;
     }
     Err(io::Error::new(
         io::ErrorKind::InvalidInput,
         "metadata path has no leaf",
+    ))
+}
+
+/// Gives a completed file its final name within one directory, failing
+/// rather than replacing an existing entry. The name changes atomically, so
+/// no reader of `name` can observe the file before it is complete, and the
+/// target is named relative to the held directory, never re-resolved by path.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn publish_windows_file(parent: &Dir, staged: &Path, name: &OsStr) -> io::Result<()> {
+    use cap_std::fs::OpenOptionsExt as _;
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    use windows::Wdk::Storage::FileSystem::{
+        FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
+    };
+    use windows::Win32::Foundation::{HANDLE, RtlNtStatusToDosError};
+    use windows::Win32::Storage::FileSystem::{DELETE, FILE_FLAG_OPEN_REPARSE_POINT};
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let mut options = OpenOptions::new();
+    options
+        .access_mode(DELETE.0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0);
+    let staged = parent.open_with(staged, &options)?;
+    let name = name.encode_wide().collect::<Vec<_>>();
+    let overflow = || io::Error::other("rename information overflow");
+    let name_bytes = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(overflow)?;
+    let name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
+    let total = name_offset
+        .checked_add(name_bytes)
+        .ok_or_else(overflow)?
+        .max(size_of::<FILE_RENAME_INFORMATION>());
+    // u64 storage satisfies FILE_RENAME_INFORMATION's alignment.
+    let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
+    let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: `storage` spans `total` bytes, aligned for the structure, with
+    // `name_bytes` after the name offset; nothing else aliases it.
+    unsafe {
+        (*information).Anonymous.ReplaceIfExists = false;
+        (*information).RootDirectory = HANDLE(parent.as_handle().as_raw_handle());
+        (*information).FileNameLength = u32::try_from(name_bytes).map_err(|_| overflow())?;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            information.cast::<u8>().add(name_offset).cast::<u16>(),
+            name.len(),
+        );
+    }
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: both handles, the status block, and the initialized information
+    // buffer outlive this synchronous call; the length is exactly the buffer's.
+    let status = unsafe {
+        NtSetInformationFile(
+            HANDLE(staged.as_handle().as_raw_handle()),
+            &raw mut status_block,
+            information.cast(),
+            u32::try_from(total).map_err(|_| overflow())?,
+            FileRenameInformation,
+        )
+    };
+    if status.is_ok() {
+        return Ok(());
+    }
+    // SAFETY: a pure status-code translation.
+    let code = unsafe { RtlNtStatusToDosError(status) };
+    Err(io::Error::from_raw_os_error(
+        i32::try_from(code).map_err(|_| io::Error::other("unmapped rename status"))?,
     ))
 }
 
@@ -1521,6 +1621,15 @@ fn create_windows_copy_target(root: &Dir, path: &Path, overlapped: bool) -> io::
     }
     open_windows_metadata_file(root, path, &options).map(cap_std::fs::File::into_std)
 }
+
+/// One private name no other writer uses, for bytes not yet published.
+#[cfg(windows)]
+fn staging_name() -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4().simple()))
+}
+
+#[cfg(windows)]
+const STAGING_PREFIX: &str = ".acyclic-copy-";
 
 #[cfg(windows)]
 async fn copy_windows_file_worker(
@@ -2731,29 +2840,65 @@ mod windows_clone_tests {
                 .await
         });
         let copy_path = destination_path.join("copy");
-        for _ in 0..200 {
-            if copy_path.exists() || task.is_finished() {
-                break;
+        let staged = || -> std::io::Result<bool> {
+            for entry in std::fs::read_dir(&destination_path)? {
+                if entry?
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(super::STAGING_PREFIX)
+                {
+                    return Ok(true);
+                }
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            Ok(false)
+        };
+        // Every observation of the destination name, before and after the
+        // cancellation, finds it absent or complete.
+        let absent_or_complete = || match std::fs::metadata(&copy_path) {
+            Ok(metadata) => assert_eq!(metadata.len(), length, "partial destination"),
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+        };
+        while !staged()? && !task.is_finished() {
+            absent_or_complete();
+            tokio::task::yield_now().await;
         }
         task.abort();
         let _ = task.await;
-        for _ in 0..400 {
-            if !copy_path.exists() {
-                return Ok(());
-            }
-            match std::fs::metadata(&copy_path) {
-                Ok(metadata) if metadata.len() == length => return Ok(()),
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(error),
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        // The detached owner always finishes: it publishes the complete copy
+        // or removes the staged bytes, and then no staged name remains.
+        while staged()? {
+            absent_or_complete();
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        Err(std::io::Error::other(
-            "cancelled copy retained a partial output",
-        ))
+        absent_or_complete();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn copy_never_replaces_an_existing_destination() -> std::io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::write(temporary.path().join("source"), b"new")?;
+        std::fs::write(temporary.path().join("existing"), b"old")?;
+        let root = HostRoot::open(temporary.path())?;
+        let copied = root
+            .copy_file_from(&root, Path::new("source"), Path::new("existing"))
+            .await;
+        assert_eq!(
+            copied.map_err(|error| error.kind()),
+            Err(std::io::ErrorKind::AlreadyExists),
+            "an existing destination is never replaced"
+        );
+        assert_eq!(std::fs::read(temporary.path().join("existing"))?, b"old");
+        let mut names = std::fs::read_dir(temporary.path())?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        names.sort();
+        assert_eq!(
+            names,
+            ["existing", "source"],
+            "a staged copy was left behind"
+        );
+        Ok(())
     }
 
     #[test]
