@@ -33,8 +33,8 @@ persistent mount hosts.
 - `linux-fuse`: Linux x86-64, Rust 1.94, a readable/writable `/dev/fuse`, and
   `fusermount3`. The runner service account must be permitted to create FUSE
   mounts. Labels: `self-hosted,native-mount,linux-x64,fuse`.
-- `macos-nfs`: Apple silicon macOS, Rust 1.94, `/sbin/mount_nfs`, `/sbin/umount`,
-  and permission for the service account to mount the in-process loopback NFS
+- `macos-nfs`: Apple silicon macOS, Rust 1.94, `/sbin/mount_nfs`, and
+  permission for the service account to mount the in-process loopback NFS
   export. Labels: `self-hosted,native-mount,macos-arm64,loopback-nfs`.
 - `windows-projfs`: Windows x86-64, Rust 1.94, Developer Mode or an equivalent
   symbolic-link privilege, and the `Client-ProjFS` optional feature enabled.
