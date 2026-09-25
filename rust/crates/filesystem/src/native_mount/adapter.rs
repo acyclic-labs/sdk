@@ -171,6 +171,8 @@ impl CallbackRuntime {
         let future = Box::pin(async { create().await });
         let poll = || {
             let _runtime = self.handle.enter();
+            // This thread serves exactly this callback until it completes.
+            let _inline = acyclic_native_runtime::InlineBlocking::enter();
             ParkedCallback::poll_to_completion(future)
         };
         match tokio::runtime::Handle::try_current() {

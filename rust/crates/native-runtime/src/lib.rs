@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -687,8 +687,43 @@ pub struct BlockingIoTask<T> {
     terminated: bool,
 }
 
-/// Schedules one owned host operation on the bounded native worker pool.
-/// Creating the future is lazy; polling it admits the operation.
+thread_local! {
+    static INLINE_BLOCKING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Marks the current thread, while the guard lives, as one whose blocking
+/// stalls only the operation it is running, such as a native filesystem
+/// callback thread polling its own request. Host operations started from it
+/// run on it directly instead of hopping to a worker thread and back.
+pub struct InlineBlocking {
+    previous: bool,
+}
+
+impl InlineBlocking {
+    /// Admits inline host operations on this thread until the guard drops.
+    #[must_use]
+    pub fn enter() -> Self {
+        Self {
+            previous: INLINE_BLOCKING.replace(true),
+        }
+    }
+}
+
+impl Drop for InlineBlocking {
+    fn drop(&mut self) {
+        INLINE_BLOCKING.set(self.previous);
+    }
+}
+
+/// Whether host operations started on this thread may block it directly.
+#[must_use]
+pub fn inline_blocking_allowed() -> bool {
+    INLINE_BLOCKING.get()
+}
+
+/// Schedules one owned host operation on the bounded native worker pool, or
+/// runs it in place on a thread that admits inline blocking. Creating the
+/// future is lazy; polling it admits the operation.
 #[must_use]
 pub fn run_blocking_io<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
@@ -1266,6 +1301,13 @@ impl<T> Future for BlockingIoTask<T> {
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         assert!(!this.terminated, "host I/O task polled after completion");
+        if inline_blocking_allowed()
+            && let Some(job) = this.pending.take()
+        {
+            // The job records its result before returning; there is no
+            // observer to wake yet.
+            let _ = job.run();
+        }
         let workers = match blocking_workers() {
             Ok(workers) => workers,
             Err(error) => {
@@ -1477,26 +1519,28 @@ fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
 
 fn native_workers() -> io::Result<&'static NativeWorkers> {
     static WORKERS: OnceLock<io::Result<NativeWorkers>> = OnceLock::new();
-    let parallelism = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    workers(&WORKERS, "acyclic-native-io", parallelism.min(4))
+    workers(&WORKERS, "acyclic-native-io", |parallelism| {
+        parallelism.min(4)
+    })
 }
 
 fn blocking_workers() -> io::Result<&'static NativeWorkers> {
     static WORKERS: OnceLock<io::Result<NativeWorkers>> = OnceLock::new();
-    let parallelism = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    workers(
-        &WORKERS,
-        "acyclic-host-io",
-        parallelism.saturating_mul(2).clamp(2, 16),
-    )
+    workers(&WORKERS, "acyclic-host-io", |parallelism| {
+        parallelism.saturating_mul(2).clamp(2, 16)
+    })
 }
 
+/// The pool in `slot`, started on first use with `worker_count` of the
+/// host's parallelism. Parallelism is queried once: it reads cgroup files.
 fn workers(
     slot: &'static OnceLock<io::Result<NativeWorkers>>,
     name: &str,
-    worker_count: usize,
+    worker_count: impl FnOnce(usize) -> usize,
 ) -> io::Result<&'static NativeWorkers> {
     slot.get_or_init(|| {
+        let worker_count =
+            worker_count(std::thread::available_parallelism().map_or(1, std::num::NonZero::get));
         let (sender, receiver) = mpsc::sync_channel::<NativeJob>(worker_count * 4);
         let receiver = Arc::new(Mutex::new(receiver));
         let admission = Arc::new(Mutex::new(AdmissionState::new()));
