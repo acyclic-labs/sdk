@@ -396,6 +396,70 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         })
     }
 
+    /// Selects the head generation and reports whether its file table holds
+    /// a record for `file_id`: one keyed read, where finding the names bound
+    /// to that identity is a namespace traversal. No name binds an identity
+    /// without a record.
+    pub(crate) async fn head_with_file_record_measured(
+        &self,
+        file_id: FileId,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<(Generation<A, O>, bool)>, WorkspaceError> {
+        let reader = self.head_reader_measured(budget, cancellation).await?;
+        let records = reader
+            .value
+            .file_records_by_id(
+                &[file_id],
+                reader
+                    .work
+                    .remaining(budget)
+                    .map_err(WorkspaceError::engine)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| WorkspaceError::from(failure.error))?;
+        let work = reader
+            .work
+            .checked_add(records.work)
+            .map_err(WorkspaceError::engine)?;
+        Ok(crate::OperationReceipt {
+            value: (
+                Generation {
+                    workspace: self.clone(),
+                    id: reader.value.generation_id(),
+                },
+                records.value.first().is_some_and(Option::is_some),
+            ),
+            work,
+        })
+    }
+
+    /// Opens one immutable reader pinned to the head generation, which can
+    /// answer many identity questions, such as every hard-link alias check
+    /// of a directory page, against one head.
+    pub(crate) async fn head_reader_measured(
+        &self,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::PinnedReader<A, O>>, WorkspaceError> {
+        let checkout = self
+            .engine_checkout_measured(
+                GenerationSelector::Head,
+                CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
+            )
+            .await?;
+        Ok(crate::OperationReceipt {
+            value: checkout
+                .value
+                .pinned_reader()
+                .map_err(WorkspaceError::engine)?,
+            work: checkout.work,
+        })
+    }
+
     /// Reopens and authenticates one exact immutable generation belonging to
     /// this workspace. This is the stateless transport/restart counterpart to
     /// retaining a live [`Generation`] handle.
@@ -1733,6 +1797,7 @@ pub struct Transaction<A, O> {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     /// Reuses the workspace transaction compiler against a private checkout
     /// candidate without publishing a second workspace head.
+    #[cfg(feature = "native-mount")]
     pub(crate) fn for_checkout_candidate(
         workspace: &Workspace<A, O>,
         checkout: Checkout<A, O>,
@@ -1745,6 +1810,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         }
     }
 
+    #[cfg(feature = "native-mount")]
     pub(crate) fn into_checkout_candidate(self) -> Checkout<A, O> {
         self.checkout
     }

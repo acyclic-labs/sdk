@@ -1,5 +1,4 @@
-#![deny(unsafe_code)]
-#![doc = include_str!("../README.md")]
+//! HTTP, SSE, and WebSocket server adapter.
 
 use acyclic_harness::{
     Error,

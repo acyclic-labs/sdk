@@ -171,6 +171,24 @@ pub struct ForkCheckpointRequest {
     #[prost(enumeration = "Performance", tag = "5")]
     pub performance: i32,
 }
+/// Forks a running machine, without an intermediate checkpoint, into `count` fresh
+/// children. Admission requires CAPABILITY_LIVE_FORK or CAPABILITY_DISK_FORK in the source
+/// machine's contract; a provider or machine without either rejects with UNIMPLEMENTED so
+/// callers fall back to Checkpoint + Fork or a restart. The admitted ForkFidelity states
+/// what the children inherited. Children inherit the source's exact MachineContract and
+/// receive fresh MachineIds and endpoints; open network connections are never carried over.
+/// See the acyclic-machines crate documentation for the complete semantics.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ForkMachineRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub idempotency_key: ::core::option::Option<IdempotencyKey>,
+    #[prost(message, optional, tag = "3")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(uint32, tag = "4")]
+    pub count: u32,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetSuspensionPolicyRequest {
     #[prost(message, optional, tag = "1")]
@@ -310,6 +328,19 @@ pub struct ForkAdmission {
     #[prost(message, optional, tag = "4")]
     pub contract: ::core::option::Option<MachineContract>,
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ForkMachineAdmission {
+    #[prost(message, optional, tag = "1")]
+    pub source: ::core::option::Option<MachineId>,
+    #[prost(message, repeated, tag = "2")]
+    pub children: ::prost::alloc::vec::Vec<MachineId>,
+    #[prost(message, optional, tag = "3")]
+    pub operation: ::core::option::Option<OperationId>,
+    #[prost(message, optional, tag = "4")]
+    pub contract: ::core::option::Option<MachineContract>,
+    #[prost(enumeration = "ForkFidelity", tag = "5")]
+    pub fidelity: i32,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PolicyAdmission {
     #[prost(message, optional, tag = "1")]
@@ -332,7 +363,7 @@ pub struct MutationAdmission {
 pub struct RecoveredAdmission {
     #[prost(message, optional, tag = "1")]
     pub operation: ::core::option::Option<OperationId>,
-    #[prost(oneof = "recovered_admission::Result", tags = "2, 3, 4, 5, 6, 7, 8, 9")]
+    #[prost(oneof = "recovered_admission::Result", tags = "2, 3, 4, 5, 6, 7, 8, 9, 10")]
     pub result: ::core::option::Option<recovered_admission::Result>,
 }
 /// Nested message and enum types in `RecoveredAdmission`.
@@ -355,6 +386,8 @@ pub mod recovered_admission {
         SetSuspensionPolicy(super::PolicyAdmission),
         #[prost(message, tag = "9")]
         DestroyCheckpoint(super::MutationAdmission),
+        #[prost(message, tag = "10")]
+        ForkMachine(super::ForkMachineAdmission),
     }
 }
 /// Terminal simulator result. Unlike an admission, this contains the checked
@@ -363,6 +396,15 @@ pub mod recovered_admission {
 pub struct ForkedMachines {
     #[prost(message, repeated, tag = "1")]
     pub machines: ::prost::alloc::vec::Vec<MachineState>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ForkedLiveMachines {
+    #[prost(message, optional, tag = "1")]
+    pub source: ::core::option::Option<MachineId>,
+    #[prost(enumeration = "ForkFidelity", tag = "2")]
+    pub fidelity: i32,
+    #[prost(message, repeated, tag = "3")]
+    pub children: ::prost::alloc::vec::Vec<MachineState>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PolicySet {
@@ -373,7 +415,7 @@ pub struct PolicySet {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MutationOutcome {
-    #[prost(oneof = "mutation_outcome::Result", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+    #[prost(oneof = "mutation_outcome::Result", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
     pub result: ::core::option::Option<mutation_outcome::Result>,
 }
 /// Nested message and enum types in `MutationOutcome`.
@@ -396,6 +438,8 @@ pub mod mutation_outcome {
         MachineDestroyed(super::MachineId),
         #[prost(message, tag = "8")]
         CheckpointDestroyed(super::CheckpointId),
+        #[prost(message, tag = "9")]
+        MachineForked(super::ForkedLiveMachines),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -463,11 +507,6 @@ pub struct UsageReceipt {
     pub private_resident_byte_seconds: u64,
     #[prost(uint64, tag = "7")]
     pub durable_private_bytes: u64,
-    /// Wire tombstone retained for v1 binary compatibility. Servers MUST emit zero;
-    /// public clients do not expose or consume it.
-    #[deprecated]
-    #[prost(uint64, tag = "8")]
-    pub lineage_shared_bytes: u64,
     #[prost(bytes = "vec", tag = "11")]
     pub lineage_receipt_sha256: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "9")]
@@ -517,6 +556,11 @@ pub enum Capability {
     LiveFork = 4,
     SuspendResume = 5,
     LiveMovement = 6,
+    /// ForkMachine copies a running machine's persistent disk, but not its memory or processes,
+    /// into fresh children. Which paths are persistent is provider-defined: a provider whose
+    /// machines boot from an immutable image may copy only its declared data directory. CAPABILITY_LIVE_FORK is the memory-and-disk form and takes precedence
+    /// when both are declared.
+    DiskFork = 7,
 }
 impl Capability {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -532,6 +576,7 @@ impl Capability {
             Self::LiveFork => "CAPABILITY_LIVE_FORK",
             Self::SuspendResume => "CAPABILITY_SUSPEND_RESUME",
             Self::LiveMovement => "CAPABILITY_LIVE_MOVEMENT",
+            Self::DiskFork => "CAPABILITY_DISK_FORK",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -544,6 +589,7 @@ impl Capability {
             "CAPABILITY_LIVE_FORK" => Some(Self::LiveFork),
             "CAPABILITY_SUSPEND_RESUME" => Some(Self::SuspendResume),
             "CAPABILITY_LIVE_MOVEMENT" => Some(Self::LiveMovement),
+            "CAPABILITY_DISK_FORK" => Some(Self::DiskFork),
             _ => None,
         }
     }
@@ -725,6 +771,38 @@ impl MachineStatus {
             "MACHINE_STATUS_DESTROYED" => Some(Self::Destroyed),
             "MACHINE_STATUS_FAILED" => Some(Self::Failed),
             "MACHINE_STATUS_INDETERMINATE" => Some(Self::Indeterminate),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ForkFidelity {
+    Unspecified = 0,
+    /// Children resume from the source's memory, processes, and disk at the fork instant.
+    MemoryAndDisk = 1,
+    /// Children boot fresh over a copy of the source's persistent disk (provider-defined; see
+    /// CAPABILITY_DISK_FORK) taken at one consistent instant; no process state is inherited.
+    DiskOnly = 2,
+}
+impl ForkFidelity {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "FORK_FIDELITY_UNSPECIFIED",
+            Self::MemoryAndDisk => "FORK_FIDELITY_MEMORY_AND_DISK",
+            Self::DiskOnly => "FORK_FIDELITY_DISK_ONLY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "FORK_FIDELITY_UNSPECIFIED" => Some(Self::Unspecified),
+            "FORK_FIDELITY_MEMORY_AND_DISK" => Some(Self::MemoryAndDisk),
+            "FORK_FIDELITY_DISK_ONLY" => Some(Self::DiskOnly),
             _ => None,
         }
     }

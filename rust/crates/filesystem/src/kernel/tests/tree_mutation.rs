@@ -431,8 +431,9 @@ fn structural_batch_rebuilds_wide_leaf_in_linear_work() -> Result<(), Box<dyn st
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
     )?;
+    // Merge, balanced page sizing, and page cutting each visit an item once.
     assert!(
-        receipt.work.items_examined <= 4 * 1_024,
+        receipt.work.items_examined <= 5 * 1_024,
         "linear structural plan examined {} items",
         receipt.work.items_examined
     );
@@ -699,4 +700,58 @@ fn persistent_error_translation_is_total() {
         map_error(PersistentError::Work(WorkError::Overflow)),
         TreeMutationError::Work(WorkError::Overflow)
     ));
+}
+
+#[test]
+fn point_inserts_rewrite_bounded_pages_however_large_the_directory()
+-> Result<(), Box<dyn std::error::Error>> {
+    const ENTRIES: u32 = 3_000;
+    let store = MemoryObjectStore::default();
+    let mut root = put(&store, &TreePage::Leaf(Vec::new()), 1_024)?;
+    let mut largest_late_rewrite = 0;
+    for step in 0..ENTRIES {
+        // A fixed permutation spreads inserts across every leaf.
+        let ordinal = step * 7_919 % ENTRIES;
+        let receipt = apply_tree_mutations(
+            &store,
+            root,
+            vec![TreeMutation::Insert(TreeEntry {
+                name: name(&format!("entry-{ordinal:06}"))?,
+                file_id: FileId::from_bytes([u8::try_from(ordinal % 251)?; 16]),
+                kind: FileKind::Regular,
+            })],
+            1,
+            DecodeLimits::default(),
+            WorkBudget::UNBOUNDED,
+        )?;
+        root = receipt.root;
+        if step >= ENTRIES / 2 {
+            largest_late_rewrite = largest_late_rewrite.max(receipt.work.bytes_encoded);
+        }
+    }
+    // Only the touched leaf and its ancestors are re-encoded, each near the
+    // soft target, however many entries the directory already holds.
+    let page_bound = u64::try_from(crate::kernel::persistent_btree::TARGET_PAGE_BYTES + 512)?;
+    assert!(
+        largest_late_rewrite <= 3 * page_bound,
+        "one insert re-encoded {largest_late_rewrite} bytes"
+    );
+    let listing = crate::kernel::list_tree_entries(
+        &store,
+        root,
+        None,
+        ENTRIES,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+    )?;
+    let names = listing
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_bytes().to_vec())
+        .collect::<Vec<_>>();
+    let expected = (0..ENTRIES)
+        .map(|ordinal| format!("entry-{ordinal:06}").into_bytes())
+        .collect::<Vec<_>>();
+    assert_eq!(names, expected);
+    Ok(())
 }

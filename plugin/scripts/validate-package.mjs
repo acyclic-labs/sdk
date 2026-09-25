@@ -43,9 +43,13 @@ if (targetSchema.version !== 1 || !targetSchema.targets || Array.isArray(targetS
   fail("unsupported Acyclic target schema");
 }
 const SUPPORTED_TARGETS = new Set(Object.keys(targetSchema.targets));
+const packageManifest = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
 const changelog = join(plugin, "CHANGELOG.md");
-if (!existsSync(changelog) || !statSync(changelog).isFile()
-  || readFileSync(changelog, "utf8").split(/\r?\n/, 1)[0].trim() !== "# Changelog") {
+const changelogText = existsSync(changelog) && statSync(changelog).isFile()
+  ? readFileSync(changelog, "utf8")
+  : "";
+if (changelogText.split(/\r?\n/, 1)[0].trim() !== `# ${packageManifest.name} changelog`
+  || !changelogText.split(/\r?\n/).some(line => line.startsWith(`## ${packageManifest.version} `))) {
   fail(`missing or invalid package changelog: ${changelog}`);
 }
 for (const path of [
@@ -60,6 +64,22 @@ if (existsSync(join(plugin, ".mcp.json"))) {
   fail("shell-capable plugin package must not expose the commandless MCP bridge");
 }
 
+// The `acyclic` command must link to an interpreter-less placeholder that the
+// installer replaces with the native executable; an interpreter line would make
+// Windows package managers wrap the command in that interpreter.
+const packageJson = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
+if (JSON.stringify(packageJson.bin) !== JSON.stringify({ acyclic: "bin/acyclic" })) {
+  fail("the acyclic command must link to bin/acyclic");
+}
+const placeholder = join(plugin, "bin", "acyclic");
+if (!existsSync(placeholder) || !statSync(placeholder).isFile() || statSync(placeholder).size > 4096
+  || readFileSync(placeholder, "utf8").startsWith("#!")) {
+  fail(`invalid acyclic command placeholder: ${placeholder}`);
+}
+for (const installed of ["acyclic.exe", "installed-binary.json", "install-transaction.json"]) {
+  if (existsSync(join(plugin, "bin", installed))) fail(`package contains installed state: bin/${installed}`);
+}
+
 const manifest = JSON.parse(readFileSync(join(plugin, "bin", "platform-binaries.json"), "utf8"));
 if (manifest.version !== 1 || !manifest.targets || typeof manifest.targets !== "object" || Array.isArray(manifest.targets)) {
   fail("unsupported platform binary manifest");
@@ -71,7 +91,7 @@ if (args.require_universal && (targets.size !== SUPPORTED_TARGETS.size || [...SU
   fail(`universal target mismatch; missing=${JSON.stringify(missing)}, extra=${JSON.stringify(extra)}`);
 }
 if (args.require_universal) {
-  const version = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8")).version;
+  const version = packageManifest.version;
   const receipts = [
     ["linux-x64-gnu", "linux", "x86_64", "linux-fuse"],
     ["darwin-arm64", "macos", "aarch64", "macos-nfs"],
@@ -110,6 +130,10 @@ for (const [target, entry] of Object.entries(manifest.targets)) {
   if (entry.path !== expectedPath) fail(`invalid binary path for ${target}`);
   const binary = join(plugin, "bin", target, expectedName);
   if (!existsSync(binary)) fail(`missing binary for ${target}`);
+  if (process.platform !== "win32" && !target.startsWith("win32-")
+    && (statSync(binary).mode & 0o111) !== 0o111) {
+    fail(`binary is not executable for ${target}`);
+  }
   const actual = sha256File(binary);
   if (actual !== entry.sha256) fail(`binary checksum mismatch for ${target}`);
   const verified = spawnSync(process.execPath, [join(plugin, "bin", "verify.js"), target], {

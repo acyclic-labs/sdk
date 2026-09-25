@@ -2197,17 +2197,8 @@ fn charge_items(
     count: u64,
     budget: WorkBudget,
 ) -> Result<(), GenerationMutationFailure> {
-    let prospective = work
-        .checked_add(WorkCounters {
-            items_examined: count,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| failed(error.into(), *work))?;
-    prospective
-        .verify(budget)
-        .map_err(|error| failed(error.into(), *work))?;
-    *work = prospective;
-    Ok(())
+    work.charge_items(count, &budget)
+        .map_err(|error| failed(error.into(), *work))
 }
 
 fn allocation_failure(error: AllocationError, work: WorkCounters) -> GenerationMutationFailure {

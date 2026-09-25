@@ -30,7 +30,7 @@ fn digest(bytes: &[u8], name: &str) -> Result<[u8; 32], ProviderError> {
     Ok(digest)
 }
 
-fn capability(value: i32) -> Result<Capability, ProviderError> {
+pub(crate) fn capability(value: i32) -> Result<Capability, ProviderError> {
     match wire::Capability::try_from(value).map_err(|_| invalid("unknown capability"))? {
         wire::Capability::ElasticCpu => Ok(Capability::ElasticCpu),
         wire::Capability::ElasticMemory => Ok(Capability::ElasticMemory),
@@ -38,6 +38,7 @@ fn capability(value: i32) -> Result<Capability, ProviderError> {
         wire::Capability::LiveFork => Ok(Capability::LiveFork),
         wire::Capability::SuspendResume => Ok(Capability::SuspendResume),
         wire::Capability::LiveMovement => Ok(Capability::LiveMovement),
+        wire::Capability::DiskFork => Ok(Capability::DiskFork),
         wire::Capability::Unspecified => Err(invalid("unspecified capability")),
     }
 }

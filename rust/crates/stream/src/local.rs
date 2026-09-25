@@ -605,8 +605,12 @@ impl Journal {
             }
         })?;
         let length = file.metadata()?.len();
-        if length == 0 {
+        // Every command appends a frame after the header, so a journal shorter
+        // than its header never acknowledged one: a crash tore its creation,
+        // and it is created again.
+        if length < u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)? {
             let header = encode_header(limits)?;
+            file.set_len(0)?;
             file.write_all(&header)?;
             sync_file(&file, limits.durability)?;
             sync_directory(root, limits.durability)?;
@@ -1121,6 +1125,23 @@ mod tests {
             Err(LocalStreamError::Io(error))
                 if error.kind() == std::io::ErrorKind::Unsupported
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_journal_torn_before_its_header_completed_is_created_again()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        std::fs::write(
+            directory.path().join("stream.journal"),
+            HEADER_MAGIC.get(..3).ok_or("header magic")?,
+        )?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        conformance::verify(&provider)
+            .await
+            .map_err(std::io::Error::other)?;
+        drop(provider);
+        LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         Ok(())
     }
 

@@ -444,18 +444,22 @@ async function runTargetedCase(
   };
 }
 
+// Waits for actor messages with no deadline of its own: how long a window
+// takes to start depends on the machine, not on the SDK. The page publishes
+// what it is waiting for, so the driver's single deadline can report it.
 function messageQueue(channel) {
   const buffered = [];
   const waiters = [];
   let failure;
+  const publishWaiting = () => {
+    result.dataset.waiting = waiters.map((waiter) => waiter.label).join(", ");
+  };
   channel.addEventListener("message", (event) => {
     const message = event.data;
     if (message.event === "failed") {
       failure = new Error(`${message.actor}: ${message.error}`);
-      for (const waiter of waiters.splice(0)) {
-        clearTimeout(waiter.timeout);
-        waiter.reject(failure);
-      }
+      for (const waiter of waiters.splice(0)) waiter.reject(failure);
+      publishWaiting();
       return;
     }
     const index = waiters.findIndex((waiter) => waiter.predicate(message));
@@ -464,7 +468,7 @@ function messageQueue(channel) {
       return;
     }
     const [waiter] = waiters.splice(index, 1);
-    clearTimeout(waiter.timeout);
+    publishWaiting();
     waiter.resolve(message);
   });
   return (predicate, label) => {
@@ -472,13 +476,8 @@ function messageQueue(channel) {
     const index = buffered.findIndex(predicate);
     if (index !== -1) return Promise.resolve(buffered.splice(index, 1)[0]);
     return new Promise((resolve, reject) => {
-      const waiter = { predicate, resolve, reject, timeout: undefined };
-      waiter.timeout = setTimeout(() => {
-        const position = waiters.indexOf(waiter);
-        if (position !== -1) waiters.splice(position, 1);
-        reject(new Error(`timed out waiting for ${label}`));
-      }, 30_000);
-      waiters.push(waiter);
+      waiters.push({ predicate, label, resolve, reject });
+      publishWaiting();
     });
   };
 }

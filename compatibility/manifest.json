@@ -1,42 +1,42 @@
 {
   "$schema": "schemas/compatibility.schema.json",
   "status": "candidate",
-  "umbrellaVersion": "0.1.0",
+  "umbrellaVersion": "0.1.5",
   "families": {
     "harness": {
-      "version": "0.1.0",
+      "version": "0.1.5",
       "schemaDigest": "sha256:6fbfbf0752e853e90dc988dde57d05eec7c241daf1dc25381a5ba664db3175cc",
       "conformanceDigest": "sha256:41ae1fcfd68c9144f84e724e3f611181476db3d6bf1edec87e4aeb5d15d6e3e6"
     },
     "filesystem": {
-      "version": "0.1.0",
-      "crateVersion": "0.1.0",
+      "version": "0.1.5",
+      "crateVersion": "0.1.5",
       "schemaDigest": "sha256:a94a88f8d8edd76e854a1bb27daceb7600f8db28bad14339345b4728b60c3256",
       "descriptorDigest": "sha256:6c4ca70eba934684a29da8291a85ce87f67ae9ef2b49e3458ce1fb62a3d87154",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
-      "version": "0.1.0",
-      "crateVersion": "0.1.0",
+      "version": "0.1.5",
+      "crateVersion": "0.1.5",
       "schemaDigest": "sha256:243979f77ef4ac15ed36e11040b49591f9fd43f8000d05aab63f686ec665bde2",
       "descriptorDigest": "sha256:9893097207c2fbab73558a38272f3d71ca59e2340a8e32fd9fcf8eb73c10edae",
       "conformanceDigest": "sha256:a5f3b11cedd1df8b01ca9fdd9b1351475f2f2cd2bcf7ff46c332978f65336aae"
     },
     "objects": {
-      "version": "0.1.0",
-      "crateVersion": "0.1.0",
+      "version": "0.1.5",
+      "crateVersion": "0.1.5",
       "schemaDigest": "sha256:06627627b50fac3f780c2e36e1bb79f6f22eedc4112c805a3ac8009279067b95",
       "descriptorDigest": "sha256:a8f752994e10dda894fd3f41ce2aa720d92d86acf05e83bfc5c763491253ff7c",
       "conformanceDigest": "sha256:a473cb36590f3d05d7c749f2e35c13e9783c2cbc8ef0bb569b91b2e88dbaad7b"
     },
     "machines": {
-      "version": "0.1.0",
-      "schemaDigest": "sha256:dc783f8a634c146ee25a64d6191e894701ac4dcb0fd9919ec8690512b255ed15",
-      "descriptorDigest": "sha256:599d7299fe62702fb9eae048947eed02f0d4bd3a771315030a70247232dd0636",
-      "conformanceDigest": "sha256:b32915837f981a26c4b6573f00feac9409f9392015c209d12ecbdce24e328dd0"
+      "version": "0.1.5",
+      "schemaDigest": "sha256:1620d70c638584b29e76bcdf7e50aa3585b456d2f31a9a38f58c0eea4e1ab287",
+      "descriptorDigest": "sha256:59492735a5aaec6598c21fe91a0873772d7f3f1c36e9fedfb384d4d8abff154c",
+      "conformanceDigest": "sha256:78ce0d6b9c5226aad67d96de4a4a4f9c9723a144ce58c5dcad63590b88d5d682"
     },
     "inference": {
-      "version": "0.1.0",
+      "version": "0.1.5",
       "schemaDigest": "sha256:4d1f859232ffa9c70a78bc212f427a16c53970f14537f74b542df5cfd5354b52",
       "descriptorDigest": "sha256:bd862944229790a069913347540c7ca994aef60d5551912c785ccb928ac77d85",
       "conformanceDigest": "sha256:9eb850dd6cbd5fa53745a00fe19800fc3a2773ed4fa5f70c5d7be84a33b9948c"

@@ -10,6 +10,7 @@ export const simulatedmachinesbinding_destroy_checkpoint: (a: number, b: number,
 export const simulatedmachinesbinding_destroy_machine: (a: number, b: number, c: number, d: number, e: number) => any;
 export const simulatedmachinesbinding_events: (a: number, b: number, c: number, d: number, e: bigint, f: number) => any;
 export const simulatedmachinesbinding_fork: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+export const simulatedmachinesbinding_fork_machine: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
 export const simulatedmachinesbinding_inspect_checkpoint: (a: number, b: number, c: number) => any;
 export const simulatedmachinesbinding_inspect_machine: (a: number, b: number, c: number) => any;
 export const simulatedmachinesbinding_inspect_operation: (a: number, b: number, c: number) => any;
@@ -23,6 +24,7 @@ export const simulatedmachinesbinding_suspend: (a: number, b: number, c: number,
 export const simulatedmachinesbinding_usage: (a: number, b: number, c: number, d: bigint, e: bigint) => any;
 export const simulatedmachinesbinding_wake: (a: number, b: number, c: number, d: number, e: number) => any;
 export const simulatedmachinesbinding_watch_operation: (a: number, b: number, c: number) => any;
+export const simulatedmachinesbinding_with_capabilities: (a: number, b: number) => [number, number, number];
 export const wasm_bindgen__convert__closures_____invoke__hb8d912187548315f: (a: number, b: number, c: any) => [number, number];
 export const wasm_bindgen__convert__closures_____invoke__h047b78ef43e1ae53: (a: number, b: number, c: any, d: any) => void;
 export const __wbindgen_exn_store: (a: number) => void;

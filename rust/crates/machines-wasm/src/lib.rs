@@ -13,7 +13,7 @@ mod browser {
     };
     use futures::StreamExt as _;
     use sha2::{Digest as _, Sha256};
-    use std::num::NonZeroU32;
+    use std::{collections::BTreeSet, num::NonZeroU32};
     use uuid::Uuid;
     use wasm_bindgen::prelude::*;
 
@@ -86,6 +86,17 @@ mod browser {
             Self {
                 inner: SimulatedMachines::default(),
             }
+        }
+
+        pub fn with_capabilities(values: Vec<i32>) -> Result<Self, JsValue> {
+            let capabilities = values
+                .into_iter()
+                .map(admission::capability)
+                .collect::<Result<BTreeSet<_>, _>>()
+                .map_err(provider)?;
+            Ok(Self {
+                inner: SimulatedMachines::with_capabilities(capabilities),
+            })
         }
 
         pub async fn qualify_image(&self, image: Vec<u8>) -> Result<Vec<u8>, JsValue> {
@@ -161,6 +172,22 @@ mod browser {
                         admission::performance(performance).map_err(provider)?,
                         key(&idempotency_key)?,
                     )
+                    .await
+                    .map_err(provider)?,
+            )
+            .map_err(provider)
+        }
+        pub async fn fork_machine(
+            &self,
+            id: String,
+            count: u32,
+            idempotency_key: String,
+        ) -> Result<Vec<u8>, JsValue> {
+            let count =
+                NonZeroU32::new(count).ok_or_else(|| error("fork count must be positive"))?;
+            projection::mutation(
+                self.inner
+                    .fork_machine(machine(&id)?, count, key(&idempotency_key)?)
                     .await
                     .map_err(provider)?,
             )

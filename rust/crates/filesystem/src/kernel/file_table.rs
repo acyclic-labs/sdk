@@ -3,16 +3,14 @@
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use super::codec::{DecodedPageKind, DecodedPageShape};
 use super::file_table_mutation::FileTableFormat;
-use super::frontier;
 use super::persistent_batch;
+use super::persistent_point;
 use super::types::{FileKind, digest_object};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::FileId;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
-use crate::storage::{ObjectId, ObjectKind, ObjectRead, ObjectReceipt, object_digest};
-use crate::storage::{ObjectStore, ObjectStoreError};
-use std::collections::HashSet;
+use crate::storage::{ObjectId, ObjectKind, ObjectStoreError, object_digest};
 use std::fmt;
 use thiserror::Error;
 
@@ -758,25 +756,31 @@ fn map_batch_error(error: persistent_batch::Error) -> FileRecordReadError {
     }
 }
 
-/// Looks up one stable file identity through an authenticated file-table frontier.
+/// Looks up one stable file identity through the authenticated file table.
 ///
 /// # Errors
 ///
 /// Fails on wrong object classes, routing forgery, cycles, excessive height,
 /// malformed canonical pages, backend failure, or work-budget exhaustion.
-pub fn lookup_file_record<S: ObjectStore>(
+pub fn lookup_file_record<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
     file_id: FileId,
     limits: DecodeLimits,
     budget: WorkBudget,
 ) -> Result<FileRecordLookup, FileRecordReadFailure> {
-    let mut machine = FileLookupMachine::new(root, file_id, limits, budget)?;
-    frontier::drive_sync(store, &mut machine)
+    crate::async_storage::poll_immediate(lookup_file_record_async(
+        store,
+        root,
+        file_id,
+        limits,
+        budget,
+        &CancellationToken::new(),
+    ))
 }
 
-/// Asynchronously looks up one file record through the same semantic machine
-/// as [`lookup_file_record`].
+/// Asynchronously looks up one file record, sharing every page another
+/// reader of `store` already decoded.
 ///
 /// # Errors
 ///
@@ -790,203 +794,24 @@ pub async fn lookup_file_record_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<FileRecordLookup, FileRecordReadFailure> {
-    let mut machine = FileLookupMachine::new(root, file_id, limits, budget)?;
-    frontier::drive_async(store, &mut machine, cancellation).await
-}
-
-struct FileLookupMachine {
-    file_id: FileId,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    page: ObjectId,
-    lower: Option<FileId>,
-    upper: Option<FileId>,
-    visited: HashSet<ObjectId>,
-    work: WorkCounters,
-}
-
-impl FileLookupMachine {
-    fn new(
-        root: ObjectId,
-        file_id: FileId,
-        limits: DecodeLimits,
-        budget: WorkBudget,
-    ) -> Result<Self, FileRecordReadFailure> {
-        if root.kind != ObjectKind::FileTablePage {
-            return Err(file_read_failed(
-                FileRecordReadError::WrongRootKind,
-                WorkCounters::default(),
-            ));
-        }
-        if !limits.page_limits_valid(1) {
-            return Err(file_read_failed(
-                FileRecordReadError::InvalidHeightLimit,
-                WorkCounters::default(),
-            ));
-        }
-        Ok(Self {
-            file_id,
-            limits,
-            budget,
-            page: root,
-            lower: None,
-            upper: None,
-            visited: HashSet::new(),
-            work: WorkCounters::default(),
-        })
-    }
-
-    fn prepare_read(&mut self) -> Result<frontier::ReadRequest, FileRecordReadFailure> {
-        if self.visited.len() >= usize::from(self.limits.maximum_page_height) {
-            return Err(file_read_failed(
-                FileRecordReadError::HeightExceeded,
-                self.work,
-            ));
-        }
-        if !self.visited.insert(self.page) {
-            return Err(file_read_failed(FileRecordReadError::Cycle, self.work));
-        }
-        let prospective = self
-            .work
-            .checked_add(WorkCounters {
-                page_reads: 1,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| file_read_failed(error.into(), self.work))?;
-        let remaining = prospective
-            .remaining(self.budget)
-            .map_err(|error| file_read_failed(error.into(), self.work))?;
-        Ok(frontier::ReadRequest {
-            page: self.page,
-            maximum_bytes: self.limits.maximum_page_object_bytes(),
-            remaining,
-            prospective,
-        })
-    }
-
-    fn accept(
-        &mut self,
-        prospective: WorkCounters,
-        receipt: &ObjectReceipt<ObjectRead>,
-    ) -> Result<Option<FileRecordLookup>, FileRecordReadFailure> {
-        self.work = prospective
-            .checked_add(receipt.work)
-            .map_err(|error| file_read_failed(error.into(), prospective))?;
-        self.work
-            .verify(self.budget)
-            .map_err(|error| file_read_failed(error.into(), self.work))?;
-        match decode_file_table_page(&receipt.value, self.limits)
-            .map_err(|error| file_read_failed(error.into(), self.work))?
-        {
-            FileTablePage::Leaf(records) => {
-                validate_record_bounds(&records, self.lower, self.upper)
-                    .map_err(|error| file_read_failed(error, self.work))?;
-                let record = records
-                    .binary_search_by_key(&self.file_id, |record| record.file_id)
-                    .ok()
-                    .and_then(|index| records.get(index).copied());
-                Ok(Some(FileRecordLookup {
-                    record,
-                    work: self.work,
-                }))
-            }
-            FileTablePage::Internal(children) => {
-                validate_child_bounds(&children, self.lower, self.upper)
-                    .map_err(|error| file_read_failed(error, self.work))?;
-                let partition =
-                    children.partition_point(|child| child.first_file_id <= self.file_id);
-                let selected = partition.saturating_sub(1);
-                let child = children.get(selected).copied().ok_or_else(|| {
-                    file_read_failed(FileRecordReadError::InvalidRouting, self.work)
-                })?;
-                self.lower = Some(child.first_file_id);
-                self.upper = children
-                    .get(selected + 1)
-                    .map(|next| next.first_file_id)
-                    .or(self.upper);
-                self.page = child.page;
-                Ok(None)
-            }
-        }
-    }
-}
-
-impl frontier::Machine for FileLookupMachine {
-    type Output = FileRecordLookup;
-    type Failure = FileRecordReadFailure;
-
-    fn complete(&mut self) -> Result<Option<Self::Output>, Self::Failure> {
-        Ok(None)
-    }
-
-    fn prepare_read(&mut self) -> Result<frontier::ReadRequest, Self::Failure> {
-        FileLookupMachine::prepare_read(self)
-    }
-
-    fn accept(
-        &mut self,
-        prospective: WorkCounters,
-        receipt: &ObjectReceipt<ObjectRead>,
-    ) -> Result<Option<Self::Output>, Self::Failure> {
-        FileLookupMachine::accept(self, prospective, receipt)
-    }
-
-    fn storage_failure(
-        &self,
-        prospective: WorkCounters,
-        failure: crate::storage::ObjectFailure,
-    ) -> Self::Failure {
-        match prospective.checked_add(*failure.work) {
-            Ok(spent) => file_read_failed(failure.error.into(), spent),
-            Err(error) => file_read_failed(error.into(), prospective),
-        }
-    }
-
-    fn cancelled(&self) -> Self::Failure {
-        file_read_failed(FileRecordReadError::Cancelled, self.work)
-    }
-}
-
-fn validate_record_bounds(
-    records: &[FileRecord],
-    lower: Option<FileId>,
-    upper: Option<FileId>,
-) -> Result<(), FileRecordReadError> {
-    if lower.is_some() && records.first().map(|record| record.file_id) != lower {
-        return Err(FileRecordReadError::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && records.last().is_some_and(|record| record.file_id >= upper)
-    {
-        return Err(FileRecordReadError::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
-fn validate_child_bounds(
-    children: &[FileTableChild],
-    lower: Option<FileId>,
-    upper: Option<FileId>,
-) -> Result<(), FileRecordReadError> {
-    if lower.is_some() && children.first().map(|child| child.first_file_id) != lower {
-        return Err(FileRecordReadError::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && children
-            .last()
-            .is_some_and(|child| child.first_file_id >= upper)
-    {
-        return Err(FileRecordReadError::ChildBoundsMismatch);
-    }
-    Ok(())
+    persistent_point::lookup_async::<S, FileTableFormat>(
+        store,
+        root,
+        &file_id,
+        limits,
+        budget,
+        cancellation,
+    )
+    .await
+    .map(|receipt| FileRecordLookup {
+        record: receipt.value,
+        work: receipt.work,
+    })
+    .map_err(map_batch_failure)
 }
 
 /// Sparse file-record lookup failure retaining exact spent work.
 pub type FileRecordReadFailure = OperationFailure<FileRecordReadError>;
-
-fn file_read_failed(error: FileRecordReadError, work: WorkCounters) -> FileRecordReadFailure {
-    OperationFailure::new(error, work)
-}
 
 /// Authenticated file-table frontier failures.
 #[derive(Debug, Error)]

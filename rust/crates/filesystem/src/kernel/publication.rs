@@ -309,10 +309,12 @@ async fn publish_generation_async_inner<
     let prepared = prepare_publication(proof, request, operation_context, budget)?;
     let mut work = prepared.work;
     // The authority CAS is the only point at which immutable bodies become
-    // reachable after a crash. Drain any private staged bodies first; a failed
-    // drain leaves no published generation and can be retried idempotently.
+    // reachable after a crash. Drain the private staged part of exactly the
+    // proven closure first; a failed drain leaves no published generation
+    // and can be retried idempotently.
     let drained = objects
         .flush_before_publish(
+            crate::PublicationScope::Closure(&prepared.proof.objects),
             work.remaining(budget)
                 .map_err(|error| OperationFailure::new(error.into(), work))?,
             cancellation,

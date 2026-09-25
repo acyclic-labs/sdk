@@ -49,6 +49,7 @@ const capabilities: Record<Capability, wire.Capability> = {
   "elastic-cpu": wire.Capability.ELASTIC_CPU, "elastic-memory": wire.Capability.ELASTIC_MEMORY,
   "live-checkpoint": wire.Capability.LIVE_CHECKPOINT, "live-fork": wire.Capability.LIVE_FORK,
   "suspend-resume": wire.Capability.SUSPEND_RESUME, "live-movement": wire.Capability.LIVE_MOVEMENT,
+  "disk-fork": wire.Capability.DISK_FORK,
 };
 function compatibility(value: CompatibilityPolicy): wire.CompatibilityPolicy {
   return create(wire.CompatibilityPolicySchema, value.kind === "best-effort"
@@ -77,11 +78,20 @@ async function canonical<Id extends MachineId | CheckpointId | OperationId>(valu
 }
 
 /** Deterministic bounded simulator backed by the canonical Rust provider. */
+export interface SimulatedMachinesOptions {
+  readonly capabilities?: readonly Capability[];
+}
 export class SimulatedMachines implements MachinesProvider {
   readonly assurance = "process-local-simulation" as const;
   #binding: Promise<Binding> | undefined;
+  readonly #capabilities: readonly Capability[] | undefined;
+  constructor(options: SimulatedMachinesOptions = {}) {
+    this.#capabilities = options.capabilities === undefined ? undefined : [...options.capabilities];
+  }
   #ready(): Promise<Binding> {
-    this.#binding ??= loadWasm().then(module => new module.SimulatedMachinesBinding())
+    this.#binding ??= loadWasm().then(module => this.#capabilities === undefined
+      ? new module.SimulatedMachinesBinding()
+      : module.SimulatedMachinesBinding.with_capabilities(Int32Array.from(this.#capabilities.map(value => capabilities[value]))))
       .catch((error: unknown) => { this.#binding = undefined; throw error; });
     return this.#binding;
   }
@@ -117,6 +127,10 @@ export class SimulatedMachines implements MachinesProvider {
   async fork(id: CheckpointId, count: number, grant: Performance, key: IdempotencyKey): Promise<MutationOutcome> {
     return wireResults.mutation(await (await this.#ready()).fork(id, uint32(count), performance(grant), key),
       { kind: "forked", checkpointId: await canonical(id), count, performance: grant });
+  }
+  async forkMachine(id: MachineId, count: number, key: IdempotencyKey): Promise<MutationOutcome> {
+    return wireResults.mutation(await (await this.#ready()).fork_machine(id, uint32(count), key),
+      { kind: "machine-forked", machineId: await canonical(id), count });
   }
   async suspend(id: MachineId, key: IdempotencyKey): Promise<MutationOutcome> {
     return wireResults.mutation(await (await this.#ready()).suspend(id, key), { kind: "suspended", machineId: await canonical(id) });

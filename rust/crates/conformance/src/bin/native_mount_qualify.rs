@@ -1,5 +1,6 @@
 //! Real-kernel native-mount qualification with a machine-readable receipt.
 
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
@@ -63,6 +64,7 @@ struct Report {
 struct ReceiptCase {
     name: String,
     status: String,
+    reason: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -197,23 +199,26 @@ fn verify_receipt(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         option(args, "--require-kind").ok_or("--verify-receipt requires --require-kind")?;
     let release_version =
         option(args, "--release-version").ok_or("--verify-receipt requires --release-version")?;
+    let expected_arch =
+        option(args, "--release-arch").ok_or("--verify-receipt requires --release-arch")?;
     let (expected_os, provider_process_io_observable) = match required_kind.as_str() {
         "linux-fuse" => ("linux", true),
         "macos-nfs" => ("macos", true),
         "windows-projfs" => ("windows", false),
         _ => return Err(format!("unsupported receipt backend: {required_kind}").into()),
     };
-    let expected_arch = std::env::consts::ARCH;
     let report: ReceiptReport = serde_json::from_slice(&fs::read(receipt_path)?)?;
     let digest = file_blake3(&executable)?;
+    if report.arch != expected_arch {
+        return Err(format!(
+            "native mount receipt architecture {} does not match release target {expected_arch}",
+            report.arch
+        )
+        .into());
+    }
     if report.schema != "acyclic-native-mount-qualification-v2"
         || report.os != expected_os
-        || report.arch != expected_arch
-        || !report
-            .coverage
-            .iter()
-            .map(String::as_str)
-            .eq(COVERAGE.iter().copied())
+        || !receipt_coverage_is_complete(&report.coverage)
         || report.required_kind.as_deref() != Some(required_kind.as_str())
         || report.release_version.as_deref() != Some(release_version.as_str())
         || report.executable_blake3.as_deref() != Some(digest.as_str())
@@ -224,20 +229,33 @@ fn verify_receipt(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         || report.capability.provider_process_io_observable != provider_process_io_observable
         || report.capability.session_isolation != "SharedProcess"
         || report.capability.unavailable_reason.is_some()
-        || report.cases.len() != 3
-        || !report
-            .cases
-            .iter()
-            .zip([
-                "real-mount-mutation-matrix",
-                "crash-detach-recovery",
-                "checkout-and-git-untouched",
-            ])
-            .all(|(case, name)| case.name == name && case.status == "passed")
+        || !receipt_cases_are_complete(&report.cases)
     {
         return Err("native mount receipt does not match the release artifact".into());
     }
     Ok(())
+}
+
+fn receipt_coverage_is_complete(coverage: &[String]) -> bool {
+    let observed = coverage.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    observed.len() == coverage.len() && COVERAGE.iter().all(|required| observed.contains(required))
+}
+
+fn receipt_cases_are_complete(cases: &[ReceiptCase]) -> bool {
+    const REQUIRED: &[&str] = &[
+        "real-mount-mutation-matrix",
+        "crash-detach-recovery",
+        "checkout-and-git-untouched",
+    ];
+    let observed = cases
+        .iter()
+        .map(|case| case.name.as_str())
+        .collect::<BTreeSet<_>>();
+    observed.len() == cases.len()
+        && REQUIRED.iter().all(|required| observed.contains(required))
+        && cases
+            .iter()
+            .all(|case| case.status == "passed" && case.reason.is_null())
 }
 
 fn required_path(
@@ -1309,10 +1327,10 @@ fn parallel_io_child(mount: &Path, index: usize, count: usize) -> Result<(), Fai
         .map_err(|error| format!("parallel client {index} publish own file: {error}"))?;
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let entries = fs::read_dir(&directory)
-            .map_err(|error| format!("parallel client {index} open directory: {error}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("parallel client {index} list directory: {error}"))?;
+        let entries = retry_nfs_directory_listing(deadline, || {
+            fs::read_dir(&directory).and_then(Iterator::collect::<Result<Vec<_>, _>>)
+        })
+        .map_err(|error| format!("parallel client {index} list directory: {error}"))?;
         if entries.len() == count {
             break;
         }
@@ -1340,6 +1358,31 @@ fn parallel_io_child(mount: &Path, index: usize, count: usize) -> Result<(), Fai
         }
     }
     Ok(())
+}
+
+fn retry_nfs_directory_listing<T>(
+    deadline: Instant,
+    mut list: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    loop {
+        match list() {
+            Ok(entries) => return Ok(entries),
+            Err(error) if retryable_nfs_directory_error(&error) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn retryable_nfs_directory_error(error: &std::io::Error) -> bool {
+    const MACOS_EIO: i32 = 5;
+    error.kind() == std::io::ErrorKind::StaleNetworkFileHandle
+        // macOS NFS also reports a concurrently invalidated directory page as EIO.
+        || (cfg!(target_os = "macos") && error.raw_os_error() == Some(MACOS_EIO))
 }
 
 fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), Failure> {
@@ -1411,7 +1454,7 @@ fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> Result<(), F
                 String::from_utf8_lossy(&read.stderr),
                 String::from_utf8_lossy(&listed.stdout),
                 sidecar_bytes.as_ref().map(Vec::len),
-                sidecar_bytes.as_ref().map(|bytes| &bytes[..bytes.len().min(16)])
+                sidecar_bytes.as_ref().map(|bytes| bytes.iter().take(16).collect::<Vec<_>>())
             )
             .into());
         }
@@ -1857,4 +1900,175 @@ fn collect_paths(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::{COVERAGE, Failure, file_blake3, verify_receipt};
+    use serde_json::Value;
+    use std::ffi::OsString;
+
+    fn receipt_array<'a>(
+        document: &'a mut Value,
+        name: &str,
+    ) -> Result<&'a mut Vec<Value>, Failure> {
+        document
+            .get_mut(name)
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| format!("missing {name} array").into())
+    }
+
+    #[test]
+    fn verifies_the_release_target_architecture_not_the_verifier_host() -> Result<(), Failure> {
+        let directory = tempfile::tempdir()?;
+        let executable = directory.path().join("acyclic");
+        let receipt = directory.path().join("macos-nfs.json");
+        std::fs::write(&executable, b"release executable")?;
+        let digest = file_blake3(&executable)?;
+        let mut document = serde_json::json!({
+            "schema": "acyclic-native-mount-qualification-v2",
+            "os": "macos",
+            "arch": "aarch64",
+            "coverage": COVERAGE,
+            "capability": {
+                "kind": "macos-nfs",
+                "available": true,
+                "writable": true,
+                "provider_process_io_observable": true,
+                "session_isolation": "SharedProcess",
+                "unavailable_reason": null
+            },
+            "required_kind": "macos-nfs",
+            "release_version": "0.1.5",
+            "executable_blake3": digest,
+            "passed": true,
+            "cases": [
+                {"name": "real-mount-mutation-matrix", "status": "passed", "reason": null},
+                {"name": "crash-detach-recovery", "status": "passed", "reason": null},
+                {"name": "checkout-and-git-untouched", "status": "passed", "reason": null}
+            ]
+        });
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+        let mut args = vec![
+            OsString::from("--verify-receipt"),
+            receipt.clone().into_os_string(),
+            OsString::from("--release-executable"),
+            executable.into_os_string(),
+            OsString::from("--require-kind"),
+            OsString::from("macos-nfs"),
+            OsString::from("--release-version"),
+            OsString::from("0.1.5"),
+            OsString::from("--release-arch"),
+            OsString::from("aarch64"),
+        ];
+        verify_receipt(&args)?;
+        receipt_array(&mut document, "coverage")?.reverse();
+        receipt_array(&mut document, "coverage")?.push(serde_json::json!("future-coverage"));
+        receipt_array(&mut document, "cases")?.reverse();
+        receipt_array(&mut document, "cases")?
+            .push(serde_json::json!({"name":"future-case","status":"passed","reason":null}));
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+        verify_receipt(&args)?;
+        let valid_extension = document.clone();
+        receipt_array(&mut document, "coverage")?.push(serde_json::json!("future-coverage"));
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+        assert!(verify_receipt(&args).is_err());
+        document = valid_extension;
+        let duplicate_case = receipt_array(&mut document, "cases")?
+            .last()
+            .cloned()
+            .ok_or("missing future case")?;
+        receipt_array(&mut document, "cases")?.push(duplicate_case);
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+        assert!(verify_receipt(&args).is_err());
+        receipt_array(&mut document, "cases")?.pop();
+        *receipt_array(&mut document, "cases")?
+            .last_mut()
+            .and_then(|case| case.get_mut("status"))
+            .ok_or("future case status")? = serde_json::json!("failed");
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+        assert!(verify_receipt(&args).is_err());
+        *receipt_array(&mut document, "cases")?
+            .last_mut()
+            .and_then(|case| case.get_mut("status"))
+            .ok_or("future case status")? = serde_json::json!("passed");
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+        *args.last_mut().ok_or("missing release architecture")? = OsString::from("x86_64");
+        let error = match verify_receipt(&args) {
+            Ok(()) => return Err("mismatched release architecture was accepted".into()),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("does not match release target x86_64")
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod parallel_io_tests {
+    use super::{retry_nfs_directory_listing, retryable_nfs_directory_error};
+    use std::io::{Error, ErrorKind};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn retries_only_transient_nfs_directory_errors() {
+        assert!(retryable_nfs_directory_error(&Error::from(
+            ErrorKind::StaleNetworkFileHandle
+        )));
+        assert!(!retryable_nfs_directory_error(&Error::from(
+            ErrorKind::PermissionDenied
+        )));
+        assert_eq!(
+            retryable_nfs_directory_error(&Error::from_raw_os_error(5)),
+            cfg!(target_os = "macos")
+        );
+        #[cfg(target_os = "macos")]
+        assert!(retryable_nfs_directory_error(&Error::from_raw_os_error(70)));
+        #[cfg(target_os = "linux")]
+        assert!(retryable_nfs_directory_error(&Error::from_raw_os_error(
+            116
+        )));
+    }
+
+    #[test]
+    fn retries_a_transient_listing_then_uses_the_complete_result() {
+        let mut attempts = 0;
+        let entries = retry_nfs_directory_listing(Instant::now() + Duration::from_secs(1), || {
+            attempts += 1;
+            if attempts == 1 {
+                Err(Error::from(ErrorKind::StaleNetworkFileHandle))
+            } else {
+                Ok(vec!["peer-0", "peer-1"])
+            }
+        });
+        assert_eq!(attempts, 2);
+        assert_eq!(entries.ok(), Some(vec!["peer-0", "peer-1"]));
+    }
+
+    #[test]
+    fn stops_retrying_after_the_deadline() {
+        let mut attempts = 0;
+        let result =
+            retry_nfs_directory_listing::<()>(Instant::now() + Duration::from_millis(1), || {
+                attempts += 1;
+                Err(Error::from(ErrorKind::StaleNetworkFileHandle))
+            });
+        assert_eq!(attempts, 1);
+        assert!(matches!(result, Err(error) if error.kind() == ErrorKind::StaleNetworkFileHandle));
+    }
+
+    #[test]
+    fn fails_immediately_on_an_unrelated_error() {
+        let mut attempts = 0;
+        let result =
+            retry_nfs_directory_listing::<()>(Instant::now() + Duration::from_secs(1), || {
+                attempts += 1;
+                Err(Error::from(ErrorKind::PermissionDenied))
+            });
+        assert_eq!(attempts, 1);
+        assert!(matches!(result, Err(error) if error.kind() == ErrorKind::PermissionDenied));
+    }
 }

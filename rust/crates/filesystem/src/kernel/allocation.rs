@@ -64,6 +64,7 @@ impl LogicalVecCapacity {
 }
 
 impl AllocationLedger {
+    #[inline]
     pub(crate) fn claim_elements<T>(
         &mut self,
         count: usize,
@@ -78,6 +79,7 @@ impl AllocationLedger {
         Ok(bytes)
     }
 
+    #[inline]
     pub(crate) fn claim_bytes(
         &mut self,
         bytes: u64,
@@ -89,14 +91,8 @@ impl AllocationLedger {
             .live_bytes
             .checked_add(bytes)
             .ok_or(AllocationError::Overflow)?;
-        let mut prospective = work.checked_add(WorkCounters {
-            allocation_operations: operations,
-            ..WorkCounters::default()
-        })?;
-        prospective.peak_allocation_bytes = prospective.peak_allocation_bytes.max(next_live);
-        prospective.verify(budget)?;
+        work.charge_allocation(operations, next_live, &budget)?;
         self.live_bytes = next_live;
-        *work = prospective;
         Ok(())
     }
 
@@ -280,13 +276,7 @@ impl VisitedObjectSet {
         budget: WorkBudget,
         count: u64,
     ) -> Result<(), AllocationError> {
-        let prospective = work.checked_add(WorkCounters {
-            items_examined: count,
-            ..WorkCounters::default()
-        })?;
-        prospective.verify(budget)?;
-        *work = prospective;
-        Ok(())
+        Ok(work.charge_items(count, &budget)?)
     }
 
     fn charge_copied(work: &mut WorkCounters, budget: WorkBudget) -> Result<(), AllocationError> {

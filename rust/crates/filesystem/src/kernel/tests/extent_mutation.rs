@@ -4,6 +4,7 @@ use crate::foundation::Digest;
 use crate::kernel::extent_page_id;
 use crate::memory::MemoryObjectStore;
 use crate::storage::ObjectStore;
+use crate::storage::object_digest;
 
 fn put(
     store: &MemoryObjectStore,

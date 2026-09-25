@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HttpMachinesProvider, Machines, MachinesTransportError, SimulatedMachines, customImage, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
+import { HttpMachinesProvider, Machines, MachinesTransportError, SimulatedMachines, customImage, forkFidelity, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
 import { decodeUsageReceipt, wireResults } from "../src/wire-results.ts";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { ImageKind, ImageQualificationSchema, MachineIdSchema, MutationOutcomeSchema, UsageReceiptSchema } from "../generated/proto/machines/v1/machines_pb.js";
@@ -16,6 +16,34 @@ const request = (idempotencyKey: string): CreateMachine => ({
 });
 
 describe("Machines simulation", () => {
+  test("live forks preserve fidelity, idempotency, and source lifetime", async () => {
+    expect(forkFidelity(["live-fork", "disk-fork"])).toBe("memory-and-disk");
+    expect(forkFidelity(["disk-fork"])).toBe("disk-only");
+    expect(forkFidelity(["live-checkpoint"])).toBeNull();
+    const provider = new SimulatedMachines();
+    const created = await provider.create(request("live-source"));
+    if (created.kind !== "created") throw new Error("wrong create outcome");
+    const forked = await provider.forkMachine(created.machine.id, 2, idempotencyKey("live-fork"));
+    if (forked.kind !== "machine-forked") throw new Error("wrong fork outcome");
+    expect(forked.source).toBe(created.machine.id);
+    expect(forked.fidelity).toBe("memory-and-disk");
+    expect(forked.children).toHaveLength(2);
+    expect(new Set(forked.children.map(child => child.id)).size).toBe(2);
+    expect(await provider.forkMachine(created.machine.id, 2, idempotencyKey("live-fork"))).toEqual(forked);
+    await expect(provider.forkMachine(created.machine.id, 3, idempotencyKey("live-fork"))).rejects.toThrow();
+    await expect(provider.destroyMachine(created.machine.id, idempotencyKey("destroy-too-early"))).rejects.toThrow();
+    for (const child of forked.children) await provider.destroyMachine(child.id, idempotencyKey(`destroy-${child.id}`));
+    await provider.destroyMachine(created.machine.id, idempotencyKey("destroy-after-children"));
+    const disk = new SimulatedMachines({ capabilities: ["disk-fork", "suspend-resume"] });
+    const diskSource = await disk.create(request("disk-source"));
+    if (diskSource.kind !== "created") throw new Error("wrong create outcome");
+    const diskFork = await disk.forkMachine(diskSource.machine.id, 1, idempotencyKey("disk-fork"));
+    expect(diskFork.kind === "machine-forked" && diskFork.fidelity).toBe("disk-only");
+    const unsupported = new SimulatedMachines({ capabilities: ["live-checkpoint"] });
+    const plain = await unsupported.create(request("plain-source"));
+    if (plain.kind !== "created") throw new Error("wrong create outcome");
+    await expect(unsupported.forkMachine(plain.machine.id, 1, idempotencyKey("unsupported"))).rejects.toThrow();
+  });
   test("exposes checked high-level qualification, attachment, recovery, and bounded listing", async () => {
     const provider = new SimulatedMachines();
     const machines = new Machines(provider);

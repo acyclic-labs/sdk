@@ -43,7 +43,6 @@ struct MergeCandidatePayload {
 struct MultiRootEntry {
     root_id: WorkspaceRootId,
     source_workspace_id: WorkspaceId,
-    #[serde(default)]
     merge_workspace_id: Option<WorkspaceId>,
     source_generation: GenerationId,
     target_workspace_id: WorkspaceId,
@@ -112,14 +111,10 @@ struct MultiRootPublicationPayload {
     candidate: MultiRootCandidatePayload,
     phase: MultiRootPublicationPhase,
     published_roots: Vec<WorkspaceRootId>,
-    #[serde(default)]
     published_generations: Vec<RootGenerationEntry>,
     fences: Vec<RootFenceEntry>,
-    #[serde(default)]
     conflicts: Vec<RootConflictEntry>,
-    #[serde(default)]
     projected_roots: Vec<RootGenerationEntry>,
-    #[serde(default)]
     declared_conflicts: Vec<RootConflictKeysEntry>,
     paused_root: Option<WorkspaceRootId>,
 }

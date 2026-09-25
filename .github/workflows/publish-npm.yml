@@ -38,7 +38,10 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_REF_NAME" =~ ^npm-v([0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?)$ ]]
           version=${BASH_REMATCH[1]}
-          tag_oid=$(git rev-parse "$GITHUB_REF")
+          # checkout may replace an annotated tag with its peeled commit.
+          git fetch --no-tags --force origin \
+            "$GITHUB_REF:refs/release-tags/$GITHUB_REF_NAME"
+          tag_oid=$(git rev-parse "refs/release-tags/$GITHUB_REF_NAME")
           test "$(git cat-file -t "$tag_oid")" = tag
           source_sha=$(git rev-parse "$tag_oid^{commit}")
           test "$(git rev-parse HEAD)" = "$source_sha"
@@ -91,6 +94,18 @@ jobs:
           cp scripts/plugin-qualification.mjs "$stage/scripts/"
           cp scripts/typescript-qualification.mjs "$stage/scripts/"
           cp release/npm-packages.json "$stage/release/"
+          node - "$stage" <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const stage = process.argv[2];
+          for (const item of JSON.parse(fs.readFileSync('release/npm-packages.json', 'utf8'))) {
+            if (item.source !== 'typescript') continue;
+            const relative = path.join('typescript', 'packages', item.directory, 'package.json');
+            const target = path.join(stage, relative);
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.copyFileSync(relative, target);
+          }
+          NODE
           mkdir -p "$stage/plugin"
           cp plugin/package.json "$stage/plugin/"
 
@@ -133,7 +148,8 @@ jobs:
     environment: npmjs
     # npm trusted publishing currently requires a GitHub-hosted runner.
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Eight sequential packages may each take up to five minutes to appear in npm.
+    timeout-minutes: 50
     permissions:
       actions: read
       contents: read

@@ -609,7 +609,7 @@ impl NativeTreeMaterializationBackend {
         })
     }
 
-    #[cfg(any(feature = "native-mount", test))]
+    #[cfg(any(all(feature = "local", feature = "native-mount"), test))]
     fn plan_paths(
         &self,
         operation_id: OperationId,
@@ -651,7 +651,11 @@ impl NativeTreeMaterializationBackend {
     }
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
 fn validate_native_operation_location(
     root: &Path,
     operation_directory: &Path,
@@ -668,7 +672,11 @@ fn validate_native_operation_location(
     Ok(())
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
 fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, std::io::Error> {
     let mut cursor = path;
     loop {
@@ -682,7 +690,11 @@ fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, std::io::Error> {
     }
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
 fn prospective_canonical_path(path: &Path) -> Result<PathBuf, std::io::Error> {
     let existing = nearest_existing_ancestor(path)?;
     let mut canonical = existing.canonicalize()?;
@@ -1401,7 +1413,11 @@ fn apply_native_metadata(
     Ok(())
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
 fn encode_native_metadata(
     metadata: &crate::WorkspaceMetadata,
 ) -> Result<Vec<u8>, NativeTreeMaterializationError> {

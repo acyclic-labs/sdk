@@ -61,6 +61,7 @@ fn capability(value: Capability) -> i32 {
         Capability::LiveFork => wire::Capability::LiveFork,
         Capability::SuspendResume => wire::Capability::SuspendResume,
         Capability::LiveMovement => wire::Capability::LiveMovement,
+        Capability::DiskFork => wire::Capability::DiskFork,
     }) as i32
 }
 
@@ -267,6 +268,21 @@ pub fn mutation(value: MutationOutcome) -> Result<Vec<u8>, ProviderError> {
         MutationOutcome::Forked(values) => Outcome::Forked(wire::ForkedMachines {
             machines: values.iter().map(machine_state).collect::<Result<_, _>>()?,
         }),
+        MutationOutcome::MachineForked {
+            source,
+            fidelity,
+            children,
+        } => Outcome::MachineForked(wire::ForkedLiveMachines {
+            source: Some(machine_id(source)),
+            fidelity: match fidelity {
+                domain::ForkFidelity::MemoryAndDisk => wire::ForkFidelity::MemoryAndDisk as i32,
+                domain::ForkFidelity::DiskOnly => wire::ForkFidelity::DiskOnly as i32,
+            },
+            children: children
+                .iter()
+                .map(machine_state)
+                .collect::<Result<_, _>>()?,
+        }),
         MutationOutcome::Suspended(value) => Outcome::Suspended(machine_id(value)),
         MutationOutcome::Woken(value) => Outcome::Woken(machine_id(value)),
         MutationOutcome::SuspensionPolicySet(id, policy) => {
@@ -307,7 +323,6 @@ pub fn usage(value: UsageReceipt) -> Vec<u8> {
         dedicated_cpu_ns: value.dedicated_cpu_ns,
         private_resident_byte_seconds: value.private_resident_byte_seconds,
         durable_private_bytes: value.durable_private_bytes,
-        lineage_shared_bytes: 0,
         lineage_receipt_sha256: value.lineage_receipt_sha256.to_vec(),
         egress_bytes: value.egress_bytes,
         receipt: value.receipt,

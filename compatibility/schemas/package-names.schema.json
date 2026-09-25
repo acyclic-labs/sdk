@@ -10,7 +10,7 @@
       "additionalProperties": {
         "type": "object",
         "required": ["registry", "umbrella", "implemented"],
-        "properties": { "registry": { "type": "string" }, "umbrella": { "type": "string" }, "implemented": { "type": "boolean" } },
+        "properties": { "registry": { "type": "string" }, "umbrella": { "type": ["string", "null"] }, "implemented": { "type": "boolean" } },
         "additionalProperties": false
       }
     }

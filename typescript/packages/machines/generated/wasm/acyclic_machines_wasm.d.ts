@@ -11,6 +11,7 @@ export class SimulatedMachinesBinding {
     destroy_machine(id: string, idempotency_key: string): Promise<Uint8Array>;
     events(id: string, after_sequence: bigint | null | undefined, limit: number): Promise<Uint8Array>;
     fork(id: string, count: number, performance: number, idempotency_key: string): Promise<Uint8Array>;
+    fork_machine(id: string, count: number, idempotency_key: string): Promise<Uint8Array>;
     inspect_checkpoint(id: string): Promise<Uint8Array>;
     inspect_machine(id: string): Promise<Uint8Array>;
     inspect_operation(id: string): Promise<Uint8Array>;
@@ -24,6 +25,7 @@ export class SimulatedMachinesBinding {
     usage(id: string, start_unix_ms: bigint, end_unix_ms: bigint): Promise<Uint8Array>;
     wake(id: string, idempotency_key: string): Promise<Uint8Array>;
     watch_operation(id: string): Promise<Uint8Array>;
+    static with_capabilities(values: Int32Array): SimulatedMachinesBinding;
 }
 
 export function normalizeIdentityBytes(value: string): Uint8Array;
@@ -41,6 +43,7 @@ export interface InitOutput {
     readonly simulatedmachinesbinding_destroy_machine: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly simulatedmachinesbinding_events: (a: number, b: number, c: number, d: number, e: bigint, f: number) => any;
     readonly simulatedmachinesbinding_fork: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly simulatedmachinesbinding_fork_machine: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly simulatedmachinesbinding_inspect_checkpoint: (a: number, b: number, c: number) => any;
     readonly simulatedmachinesbinding_inspect_machine: (a: number, b: number, c: number) => any;
     readonly simulatedmachinesbinding_inspect_operation: (a: number, b: number, c: number) => any;
@@ -54,6 +57,7 @@ export interface InitOutput {
     readonly simulatedmachinesbinding_usage: (a: number, b: number, c: number, d: bigint, e: bigint) => any;
     readonly simulatedmachinesbinding_wake: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly simulatedmachinesbinding_watch_operation: (a: number, b: number, c: number) => any;
+    readonly simulatedmachinesbinding_with_capabilities: (a: number, b: number) => [number, number, number];
     readonly wasm_bindgen__convert__closures_____invoke__hb8d912187548315f: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h047b78ef43e1ae53: (a: number, b: number, c: any, d: any) => void;
     readonly __wbindgen_exn_store: (a: number) => void;

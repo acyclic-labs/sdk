@@ -186,6 +186,14 @@
 #define ACCESS4_EXECUTE         0x00000020
 
 /* Open share access */
+/*
+ * OPEN rflags (RFC 7530 s16.16.5): POSIX byte-range locks, and never
+ * OPEN4_RESULT_CONFIRM (0x2): this server keeps no open-owner sequence to
+ * confirm, so no open costs an OPEN_CONFIRM round trip.
+ */
+#define OPEN4_RESULT_LOCKTYPE_POSIX 0x00000004
+#define OPEN4_RESULT_FLAGS         OPEN4_RESULT_LOCKTYPE_POSIX
+
 #define OPEN4_SHARE_ACCESS_READ    0x00000001
 #define OPEN4_SHARE_ACCESS_WRITE   0x00000002
 #define OPEN4_SHARE_ACCESS_BOTH    0x00000003
@@ -283,10 +291,23 @@ int nfs4_dispatch_compound(const darwinfuse_config_t *config,
                            xdr_buf_t *request,
                            xdr_buf_t *reply);
 
+/*
+ * Flush and release every open's FUSE handle and forget the opens: the
+ * server is shutting down, so no client can close them any more.
+ */
+void nfs4_release_open_files(const darwinfuse_config_t *config,
+                             nfs4_conn_state_t *conn);
+
 /* Callback-level regression hook used by the macOS Rust test suite. */
 int nfs4_test_exclusive_replay_identity(void);
 int nfs4_test_namedattr_exclusive_replay_identity(void);
 int nfs4_test_readdir_cookie_verifier(void);
 int nfs4_test_sync_acknowledgement(void);
+int nfs4_test_read_reply(void);
+int nfs4_test_durable_writes(void);
+int nfs4_test_change_attribute(void);
+int nfs4_test_access_rights(void);
+int nfs4_test_verify_attributes(void);
+int nfs4_test_release_open_files(void);
 
 #endif /* DARWINFUSE_NFS4_OPS_H */

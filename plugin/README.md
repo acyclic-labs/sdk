@@ -17,10 +17,10 @@ npm install -g @acyclic-labs/plugin
 acyclic install codex
 ```
 
-Rust users can install the executable directly from a source checkout:
+Rust users can install the standalone executable from crates.io:
 
 ```sh
-cargo install --locked --path plugin
+cargo install --locked acyclic-plugin
 acyclic --help
 ```
 
@@ -30,9 +30,11 @@ Codex plugin, marketplace assets, and native qualification receipts for tagged
 release binaries. A source-built Cargo binary remains uncertified until that
 exact executable completes the native-mount qualification.
 
-Native hooks invoke the installed Acyclic binary directly; the npm launcher is
-only for shell CLI entry. Acyclic does not add an MCP server or a second command
-implementation to shell-capable hosts. Codex plugins do not inject
+Native hooks and the npm-installed `acyclic` command both run the installed
+Acyclic binary directly: installation verifies it against the release checksum
+once, and no interpreter starts on each run. Install scripts must be enabled.
+Acyclic does not add an MCP server or a second command implementation to
+shell-capable hosts. Codex plugins do not inject
 arbitrary executables into `PATH`, so install the npm package globally when
 humans or agent shell commands need the `acyclic` executable.
 
@@ -83,7 +85,4 @@ resolved path with `acyclic git add <path>`, and run
 exact pre-merge workspace. Non-text conflicts are reported with typed paths and
 kinds rather than being flattened into text and must likewise be declared.
 
-The current release uses the fresh `state-v5` per-user namespace. It neither
-migrates nor deletes prior plugin state. Remove an older `state-v*` directory
-manually only after confirming that no older Acyclic installation still needs
-it.
+The plugin keeps its durable state in the per-user `state-v5` namespace.

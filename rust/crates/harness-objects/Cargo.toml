@@ -11,8 +11,8 @@ readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness-objects"
 
 [dependencies]
-acyclic-harness = { version = "0.1.0", path = "../harness", default-features = false, features = ["host"] }
-acyclic-objects = { version = "=0.1.0", path = "../objects", default-features = false }
+acyclic-harness = { version = "0.1.5", path = "../harness", default-features = false, features = ["host"] }
+acyclic-objects = { version = "=0.1.5", path = "../objects", default-features = false }
 bytes.workspace = true
 futures.workspace = true
 

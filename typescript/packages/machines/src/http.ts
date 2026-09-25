@@ -15,6 +15,7 @@ export class HttpMachinesProvider implements MachinesProvider {
   checkpoint(machineId: MachineId, idempotencyKey: IdempotencyKey) { return this.#call("machines/checkpoint", { machineId, idempotencyKey }, value => checkedMutation(mutation(value), { kind: "checkpointed", source: machineId })); }
   inspectCheckpoint(checkpointId: CheckpointId) { return this.#call("checkpoints/inspect", { checkpointId }, value => checkpointFor(value, checkpointId)); }
   fork(checkpointId: CheckpointId, count: number, performance: Performance, idempotencyKey: IdempotencyKey) { return this.#call("checkpoints/fork", { checkpointId, count, performance, idempotencyKey }, value => checkedMutation(mutation(value), { kind: "forked", checkpointId, count, performance })); }
+  forkMachine(machineId: MachineId, count: number, idempotencyKey: IdempotencyKey) { return this.#call("machines/fork", { machineId, count, idempotencyKey }, value => checkedMutation(mutation(value), { kind: "machine-forked", machineId, count })); }
   suspend(machineId: MachineId, idempotencyKey: IdempotencyKey) { return this.#call("machines/suspend", { machineId, idempotencyKey }, value => checkedMutation(mutation(value), { kind: "suspended", machineId })); }
   wake(machineId: MachineId, idempotencyKey: IdempotencyKey) { return this.#call("machines/wake", { machineId, idempotencyKey }, value => checkedMutation(mutation(value), { kind: "woken", machineId })); }
   setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, idempotencyKey: IdempotencyKey) { return this.#call("machines/suspension-policy", { machineId, policy, idempotencyKey }, value => checkedMutation(mutation(value), { kind: "suspension-policy-set", machineId, policy })); }
@@ -54,7 +55,7 @@ function bytes(value: Uint8Array): string { let binary = ""; for (const byte of 
 function fromBytes(value: string): Uint8Array { return Uint8Array.from(atob(value), character => character.charCodeAt(0)); }
 type Decoder<Value> = (value: unknown) => Value;
 const states = ["starting", "running", "suspending", "suspended", "waking", "destroying", "destroyed", "failed", "indeterminate"] as const;
-const capabilities = ["elastic-cpu", "elastic-memory", "live-checkpoint", "live-fork", "suspend-resume", "live-movement"] as const;
+const capabilities = ["elastic-cpu", "elastic-memory", "live-checkpoint", "live-fork", "suspend-resume", "live-movement", "disk-fork"] as const;
 function record(value: unknown): Record<string, unknown> { if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("expected object"); return value as Record<string, unknown>; }
 function text(value: unknown, name: string): string { if (typeof value !== "string" || !value) throw new TypeError(`${name} must be a non-empty string`); return value; }
 function integer(value: unknown, name: string): number { if (!Number.isSafeInteger(value)) throw new TypeError(`${name} must be a safe integer`); return value as number; }
@@ -76,11 +77,28 @@ function machineFor(value: unknown, expected: MachineId): MachineObservation { c
 function checkpoint(value: unknown): CheckpointObservation { const item = record(value); return { id: text(item.id, "checkpoint.id") as CheckpointId, source: text(item.source, "checkpoint.source") as MachineId, contract: contract(item.contract), forkable: bool(item.forkable, "forkable"), createdAtUnixMs: positiveInteger(item.createdAtUnixMs, "createdAtUnixMs") }; }
 function checkpointFor(value: unknown, expected: CheckpointId): CheckpointObservation { const parsed = checkpoint(value); if (parsed.id !== expected) throw new TypeError("checkpoint identity was substituted"); return parsed; }
 function qualification(value: unknown, expected: Image): ImageQualification { const item = record(value); const parsedImage = image(item.image); if (!sameImage(parsedImage, expected)) throw new TypeError("qualified image was substituted"); return { image: parsedImage, capabilities: unique(array(item.capabilities, value => member(value, capabilities, "capability")), "capabilities"), compatibilityRevisionHex: digestHex(item.compatibilityRevisionHex, "compatibilityRevisionHex") }; }
-function mutation(value: unknown): MutationOutcome { const item = record(value); switch (item.kind) { case "created": return { kind: item.kind, machine: machine(item.machine) }; case "checkpointed": return { kind: item.kind, checkpoint: checkpoint(item.checkpoint) }; case "forked": return { kind: item.kind, machines: array(item.machines, machine) }; case "suspended": case "woken": case "machine-destroyed": return { kind: item.kind, machineId: text(item.machineId, "machineId") as MachineId }; case "suspension-policy-set": return { kind: item.kind, machineId: text(item.machineId, "machineId") as MachineId, policy: suspension(item.policy) }; case "checkpoint-destroyed": return { kind: item.kind, checkpointId: text(item.checkpointId, "checkpointId") as CheckpointId }; default: throw new TypeError("mutation kind is invalid"); } }
+function mutation(value: unknown): MutationOutcome {
+  const item = record(value);
+  switch (item.kind) {
+    case "created": return { kind: item.kind, machine: machine(item.machine) };
+    case "checkpointed": return { kind: item.kind, checkpoint: checkpoint(item.checkpoint) };
+    case "forked": return { kind: item.kind, machines: array(item.machines, machine) };
+    case "machine-forked": {
+      const children = array(item.children, machine);
+      if (children.length === 0 || new Set(children.map(child => child.id)).size !== children.length) throw new TypeError("fork children are empty or duplicated");
+      return { kind: item.kind, source: text(item.source, "source") as MachineId, fidelity: member(item.fidelity, ["memory-and-disk", "disk-only"] as const, "fidelity"), children };
+    }
+    case "suspended": case "woken": case "machine-destroyed": return { kind: item.kind, machineId: text(item.machineId, "machineId") as MachineId };
+    case "suspension-policy-set": return { kind: item.kind, machineId: text(item.machineId, "machineId") as MachineId, policy: suspension(item.policy) };
+    case "checkpoint-destroyed": return { kind: item.kind, checkpointId: text(item.checkpointId, "checkpointId") as CheckpointId };
+    default: throw new TypeError("mutation kind is invalid");
+  }
+}
 type MutationExpectation =
   | { readonly kind: "created" }
   | { readonly kind: "checkpointed"; readonly source: MachineId }
   | { readonly kind: "forked"; readonly checkpointId: CheckpointId; readonly count: number; readonly performance: Performance }
+  | { readonly kind: "machine-forked"; readonly machineId: MachineId; readonly count: number }
   | { readonly kind: "suspended" | "woken" | "machine-destroyed"; readonly machineId: MachineId }
   | { readonly kind: "suspension-policy-set"; readonly machineId: MachineId; readonly policy: SuspensionPolicy }
   | { readonly kind: "checkpoint-destroyed"; readonly checkpointId: CheckpointId };
@@ -98,6 +116,11 @@ function checkedMutation(outcome: MutationOutcome, expected: MutationExpectation
       if (outcome.kind === "forked" && outcome.machines.length === expected.count && outcome.machines.every(machine =>
         machine.lastCheckpoint === expected.checkpointId && machine.contract.image.kind === "checkpoint" &&
         machine.contract.image.checkpointId === expected.checkpointId && machine.contract.performance === expected.performance)) return outcome;
+      break;
+    case "machine-forked":
+      if (outcome.kind === "machine-forked" && outcome.source === expected.machineId && outcome.children.length === expected.count &&
+          outcome.children.every(child => child.id !== expected.machineId &&
+            (child.contract.capabilities.includes("live-fork") ? "memory-and-disk" : child.contract.capabilities.includes("disk-fork") ? "disk-only" : null) === outcome.fidelity)) return outcome;
       break;
     case "suspended": case "woken": case "machine-destroyed":
       if ((outcome.kind === "suspended" || outcome.kind === "woken" || outcome.kind === "machine-destroyed") && outcome.machineId === expected.machineId) return outcome;

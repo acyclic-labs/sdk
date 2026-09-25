@@ -185,16 +185,17 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         Ok((tail, decode_publication_gate(&record.value)?))
     }
 
-    async fn ensure_publication_gate(
+    /// Verifies that an existing authority carries its publication gate, which
+    /// every authority is created with.
+    async fn verify_publication_gate(
         &self,
         authority_id: AuthorityId,
-        snapshot: AuthoritySnapshot,
         mut work: WorkCounters,
         budget: WorkBudget,
     ) -> Result<WorkCounters, OperationFailure<AuthorityStoreError>> {
         let path = publication_gate_path(authority_id).map_err(OperationFailure::before_work)?;
         work = work
-            .checked_add(authority_read_work(1))
+            .checked_add(authority_read_work(2))
             .map_err(|error| OperationFailure::new(error.into(), work))?;
         admit_authority(work, budget)?;
         let tail = match self.provider.tail(path.clone()).await {
@@ -204,86 +205,18 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 return Err(OperationFailure::new(map_stream_error(error), work));
             }
         };
-        if tail != 0 {
-            work = work
-                .checked_add(authority_read_work(1))
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
-            admit_authority(work, budget)?;
-            let record = read_one(self.provider.as_ref(), path, tail - 1)
-                .await
-                .map_err(|error| OperationFailure::new(error, work))?;
-            decode_publication_gate(&record.value)
-                .map_err(|error| OperationFailure::new(error, work))?;
-            return Ok(work);
-        }
-        let records =
-            records_path(authority_id).map_err(|error| OperationFailure::new(error, work))?;
-        let epochs =
-            epochs_path(authority_id).map_err(|error| OperationFailure::new(error, work))?;
-        let mut migration_identity = Vec::with_capacity(32);
-        migration_identity.extend_from_slice(&authority_id.into_bytes());
-        migration_identity.extend_from_slice(&snapshot.record_tail.to_le_bytes());
-        migration_identity.extend_from_slice(&snapshot.epoch_tail.to_le_bytes());
-        let request = acyclic_stream::CommitRequest {
-            conditions: vec![
-                acyclic_stream::CommitCondition::Tail {
-                    path: records,
-                    expected: snapshot.record_tail,
-                },
-                acyclic_stream::CommitCondition::Tail {
-                    path: epochs,
-                    expected: snapshot.epoch_tail,
-                },
-                acyclic_stream::CommitCondition::Absent { path: path.clone() },
-            ],
-            mutations: vec![acyclic_stream::CommitMutation::Append {
-                path: path.clone(),
-                records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
-            }],
-            idempotency_key: stream_key(b"publication-gate", &migration_identity)
-                .map_err(|error| OperationFailure::new(error, work))?,
-        };
-        let mutation_work = work
-            .checked_add(authority_write_work(
-                1,
-                u64::try_from(PUBLICATION_GATE_FREE.len()).unwrap_or(u64::MAX),
-            ))
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let completed_work = mutation_work
-            .checked_add(authority_read_work(2))
-            .map_err(|error| OperationFailure::new(error.into(), mutation_work))?;
-        admit_authority(completed_work, budget)?;
-        match self.provider.commit(request).await {
-            Ok(
-                acyclic_stream::CommitOutcome::Committed(_)
-                | acyclic_stream::CommitOutcome::Conflict(_),
-            ) => {}
-            Err(error) => {
-                return Err(OperationFailure::new(
-                    map_stream_error(error),
-                    mutation_work,
-                ));
-            }
-        }
-        let tail = self
-            .provider
-            .tail(path.clone())
-            .await
-            .map_err(|error| OperationFailure::new(map_stream_error(error), completed_work))?;
         if tail == 0 {
             return Err(OperationFailure::new(
-                AuthorityStoreError::Rejected(
-                    "authority publication gate migration conflicted".to_owned(),
-                ),
-                completed_work,
+                AuthorityStoreError::Corrupt("authority has no publication gate".to_owned()),
+                work,
             ));
         }
         let record = read_one(self.provider.as_ref(), path, tail - 1)
             .await
-            .map_err(|error| OperationFailure::new(error, completed_work))?;
+            .map_err(|error| OperationFailure::new(error, work))?;
         decode_publication_gate(&record.value)
-            .map_err(|error| OperationFailure::new(error, completed_work))?;
-        Ok(completed_work)
+            .map_err(|error| OperationFailure::new(error, work))?;
+        Ok(work)
     }
 
     async fn operation(
@@ -431,12 +364,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             .map_err(OperationFailure::before_work)?
         {
             let work = self
-                .ensure_publication_gate(
-                    destination_authority,
-                    snapshot,
-                    authority_read_work(8),
-                    budget,
-                )
+                .verify_publication_gate(destination_authority, authority_read_work(8), budget)
                 .await?;
             return authority_success(
                 CreateAuthorityOutcome::Existing(snapshot.head),
@@ -485,7 +413,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                         )
                     })?;
                 work = self
-                    .ensure_publication_gate(destination_authority, snapshot, work, budget)
+                    .verify_publication_gate(destination_authority, work, budget)
                     .await?;
                 authority_success(
                     CreateAuthorityOutcome::Existing(snapshot.head),
@@ -510,7 +438,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         match self.snapshot(authority_id).await {
             Ok(snapshot) => {
                 let work = self
-                    .ensure_publication_gate(authority_id, snapshot, authority_read_work(2), budget)
+                    .verify_publication_gate(authority_id, authority_read_work(2), budget)
                     .await?;
                 return authority_success(
                     CreateAuthorityOutcome::Existing(snapshot.head),
@@ -2206,7 +2134,7 @@ mod tests {
     use crate::storage::ObjectKind;
 
     #[tokio::test]
-    async fn existing_authority_without_publication_gate_is_upgraded() {
+    async fn authority_without_publication_gate_fails_closed() {
         let stream = Arc::new(acyclic_stream::MemoryStream::default());
         let authority_id = AuthorityId::from_bytes([0x31; 16]);
         let root = authority_path(authority_id).expect("root path");
@@ -2238,32 +2166,27 @@ mod tests {
                         records: vec![encode_epoch(EPOCH_DOMAIN, Epoch::GENESIS)],
                     },
                 ],
-                idempotency_key: stream_key(b"legacy-authority", &authority_id.into_bytes())
-                    .expect("legacy idempotency key"),
+                idempotency_key: stream_key(b"gateless-authority", &authority_id.into_bytes())
+                    .expect("idempotency key"),
             },
         )
         .await
-        .expect("seed legacy authority");
+        .expect("seed gateless authority");
 
         let authority = StreamAuthorityStore::new(Arc::clone(&stream));
-        let cancellation = CancellationToken::new();
-        let denied = authority
+        let refused = authority
             .create_authority(
                 authority_id,
                 Epoch::GENESIS,
-                WorkBudget {
-                    authority_records_read: 3,
-                    backend_read_operations: 3,
-                    ..WorkBudget::UNBOUNDED
-                },
-                &cancellation,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
             .await
-            .expect_err("write budget must reject migration before mutation");
+            .expect_err("an authority without its publication gate is refused");
         assert!(
-            matches!(denied.error, AuthorityStoreError::Work(_)),
-            "unexpected migration denial: {:?}",
-            denied.error
+            matches!(refused.error, AuthorityStoreError::Corrupt(_)),
+            "unexpected refusal: {:?}",
+            refused.error
         );
         assert!(matches!(
             acyclic_stream::StreamProvider::tail(
@@ -2273,66 +2196,6 @@ mod tests {
             .await,
             Err(acyclic_stream::StreamError::NotFound)
         ));
-
-        let opened = authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .expect("upgrade legacy authority");
-        let CreateAuthorityOutcome::Existing(head) = opened.value else {
-            panic!("legacy authority must reopen as existing");
-        };
-        assert_eq!(opened.work.authority_records_appended, 1);
-
-        let committed = authority
-            .compare_and_append_guarded(
-                crate::GuardedAppend {
-                    authority_id,
-                    epoch: head.epoch,
-                    expected: head,
-                    commit: ProposedCommit {
-                        operation_id: OperationId::from_bytes([0x32; 16]),
-                        fingerprint: Digest::from_bytes([0x33; 32]),
-                        payload: Bytes::from_static(b"legacy authority write"),
-                    },
-                    permit: PublicationPermit::Unrestricted,
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .expect("append after upgrade")
-            .value;
-        let FsAppendOutcome::Committed(committed) = committed else {
-            panic!("unexpected append outcome: {committed:?}");
-        };
-        let committed_head = Head {
-            epoch: committed.epoch,
-            sequence: committed.sequence,
-            digest: committed.digest,
-        };
-        let reservation = authority
-            .reserve_publication(
-                authority_id,
-                committed_head,
-                OperationId::from_bytes([0x34; 16]),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .expect("reserve upgraded authority")
-            .value;
-        let ReservationOutcome::Reserved(reservation) = reservation else {
-            panic!("unexpected reservation outcome: {reservation:?}");
-        };
-        authority
-            .release_publication(reservation, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .expect("release upgraded authority");
     }
 
     #[tokio::test]

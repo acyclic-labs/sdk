@@ -70,6 +70,20 @@ const streamVersion = compatibility.families.stream.version;
 const streamCrateVersion = compatibility.families.stream.crateVersion ?? streamVersion;
 const harnessPackage = await load("typescript/packages/harness/package.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
+for (const item of await load("release/npm-packages.json")) {
+  const directory = item.source === "plugin"
+    ? "plugin"
+    : `typescript/packages/${item.directory}`;
+  const manifest = await load(`${directory}/package.json`);
+  if (manifest.name !== item.name || manifest.version !== sdkPackage.version || manifest.private !== false) {
+    throw new Error(`public npm package identity mismatch: ${item.name}`);
+  }
+  const readme = await readFile(new URL(`${directory}/README.md`, root), "utf8");
+  const changelog = await readFile(new URL(`${directory}/CHANGELOG.md`, root), "utf8");
+  if (!readme.startsWith("# ") || !changelog.includes(`## ${manifest.version}`)) {
+    throw new Error(`public npm package documentation mismatch: ${item.name}`);
+  }
+}
 const lock = Bun.JSONC.parse(await readFile(new URL("bun.lock", root), "utf8"));
 for (const [path, locked] of Object.entries(lock.workspaces)) {
   const manifest = await load(path ? `${path}/package.json` : "package.json");
@@ -108,8 +122,7 @@ for (const path of [
   "rust/crates/filesystem/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
   "rust/crates/harness/Cargo.toml",
-  "rust/crates/memory/Cargo.toml",
-  "rust/crates/sdk/Cargo.toml",
+  "rust/crates/harness-filesystem/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
@@ -130,8 +143,6 @@ if (
 for (const path of [
   "rust/crates/conformance/Cargo.toml",
   "rust/crates/harness-machines/Cargo.toml",
-  "rust/crates/memory/Cargo.toml",
-  "rust/crates/sdk/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-machines = \{ version = "([^"]+)"/)?.[1];
@@ -146,10 +157,6 @@ if ((await load("typescript/packages/inference/package.json")).version !== infer
 const rustInferenceManifest = await readFile(new URL("rust/crates/inference/Cargo.toml", root), "utf8");
 if (rustInferenceManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1] !== inferenceVersion) {
   throw new Error("Rust inference package version mismatch");
-}
-const rustSdkManifest = await readFile(new URL("rust/crates/sdk/Cargo.toml", root), "utf8");
-if (rustSdkManifest.match(/acyclic-inference = \{ version = "([^"]+)"/)?.[1] !== `=${inferenceVersion}`) {
-  throw new Error("Rust SDK inference dependency version mismatch");
 }
 if ((await load("typescript/packages/sdk/package.json")).dependencies["@acyclic-labs/inference"] !== inferenceVersion) {
   throw new Error("TypeScript SDK inference dependency version mismatch");
@@ -175,8 +182,6 @@ for (const path of [
   "rust/crates/conformance/Cargo.toml",
   "rust/crates/filesystem/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
-  "rust/crates/memory/Cargo.toml",
-  "rust/crates/sdk/Cargo.toml",
   "rust/crates/harness-objects/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");

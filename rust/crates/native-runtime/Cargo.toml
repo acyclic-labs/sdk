@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-native-runtime"
-version = "0.1.0"
+version = "0.1.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -17,7 +17,7 @@ bytes.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 compio-buf = { version = "=0.8.3", features = ["bytes"] }
-compio-driver = { version = "=0.11.1", default-features = false, features = ["io-uring"] }
+compio-driver = { version = "=0.11.4", default-features = false, features = ["io-uring"] }
 libc = "0.2.175"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
@@ -26,11 +26,12 @@ rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 compio-buf = { version = "=0.8.3", features = ["bytes"] }
-compio-driver = { version = "=0.11.1", default-features = false }
+compio-driver = { version = "=0.11.4", default-features = false }
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Storage_FileSystem",
+  "Win32_System_Console",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_IO",
   "Win32_System_JobObjects",

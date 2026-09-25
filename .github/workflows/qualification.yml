@@ -4,6 +4,16 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    # Weekly full qualification catches drift outside the repository (runner
+    # images, registries, browsers) that lane fingerprints cannot observe.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Execute every lane even when its inputs already qualified
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -17,52 +27,126 @@ env:
   CARGO_PROFILE_TEST_DEBUG: '0'
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: sccache
-  SCCACHE_CACHE_SIZE: 8G
   CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  CI_TARGET_BRANCH: ${{ github.event.pull_request.base.ref || '' }}
+  FORCE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.force) }}
 
 jobs:
+  plan:
+    name: plan
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      keys: ${{ steps.fingerprints.outputs.keys }}
+      matrix: ${{ steps.select.outputs.matrix }}
+      reused: ${{ steps.select.outputs.reused }}
+      trusted: ${{ steps.select.outputs.trusted }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Restore preflight tools
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}/tools
+          key: sdk-preflight-tools-v1-gitleaks-8.30.1-${{ runner.os }}-${{ runner.arch }}
+
+      # Signatures and secrets depend on the pushed commit range, not the tree,
+      # so they run on every event and fail before any lane is scheduled.
+      - name: Verify commit signatures and secrets
+        shell: bash
+        env:
+          SDK_TEMP_DIR: ${{ runner.temp }}/sdk
+          SDK_ARTIFACT_DIR: ${{ runner.temp }}/artifacts
+          TOOLS_DIR: ${{ runner.temp }}/tools/preflight-${{ runner.arch }}
+        run: bash scripts/qualify-ci.sh preflight
+
+      - name: Fingerprint lane inputs
+        id: fingerprints
+        run: node scripts/plan-qualification.mjs fingerprints
+
+      # A marker records the run that qualified a lane's exact inputs.
+      - name: Find gate marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/gate.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['gate'] }}
+      - name: Find linux marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux'] }}
+      - name: Find web marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/web.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['web'] }}
+      - name: Find linux-arm64 marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux-arm64.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-arm64'] }}
+      - name: Find linux-musl marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux-musl.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-musl'] }}
+      - name: Find linux-arm64-musl marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux-arm64-musl.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-arm64-musl'] }}
+      - name: Find windows marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/windows.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['windows'] }}
+      - name: Find macos marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/macos.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['macos'] }}
+      - name: Find policy marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/policy.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['policy'] }}
+
+      - name: Select lanes to execute
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/plan-qualification.mjs select
+
+      # The early Windows job reads this step's conclusion through the API.
+      - name: Windows lane required
+        if: steps.select.outputs.windows == 'true'
+        run: echo 'windows executes in its early-start job'
+
   qualification:
     name: ${{ matrix.lane }}
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - lane: gate
-            runner: blacksmith-4vcpu-ubuntu-2404
-            workers: 4
-            artifact: coverage
-            artifact_path: coverage
-          - lane: linux
-            runner: blacksmith-32vcpu-ubuntu-2404
-            workers: 32
-            artifact: packages-linux
-            artifact_path: packages
-          - lane: policy
-            runner: blacksmith-4vcpu-ubuntu-2404
-            workers: 4
-            artifact: ''
-            artifact_path: ''
-          - lane: web
-            runner: blacksmith-4vcpu-ubuntu-2404
-            workers: 4
-            artifact: ''
-            artifact_path: ''
-          - lane: linux-arm64
-            runner: blacksmith-32vcpu-ubuntu-2404-arm
-            workers: 32
-            artifact: packages-linux-arm64
-            artifact_path: packages
-          - lane: windows
-            runner: blacksmith-32vcpu-windows-2025
-            workers: 32
-            artifact: ''
-            artifact_path: ''
-          - lane: macos
-            runner: blacksmith-12vcpu-macos-15
-            workers: 12
-            artifact: packages-macos
-            artifact_path: packages
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_BUILD_JOBS: ${{ matrix.workers }}
@@ -70,125 +154,238 @@ jobs:
       MAKEFLAGS: -j${{ matrix.workers }}
       RAYON_NUM_THREADS: ${{ matrix.workers }}
       RUST_TEST_THREADS: ${{ matrix.workers }}
+      # Windows restores the compiler cache at ~70 MB/s rather than from
+      # co-located storage, so bound it near one run's working set.
+      SCCACHE_CACHE_SIZE: ${{ contains(matrix.runner, 'windows') && '3G' || '8G' }}
     timeout-minutes: 20
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
 
-      - name: Configure lane-local compiler cache
-        shell: bash
-        run: echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
-
-      - name: Restore shared dependencies
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ${{ runner.temp }}/bun-install-cache
-          key: sdk-deps-v7-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '**/Cargo.lock', 'bun.lock', 'scripts/ensure-bun.sh', 'scripts/ensure-bun.ps1') }}
-          restore-keys: |
-            sdk-deps-v7-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Restore lane tools
-        id: lane-tools
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: |
-            ${{ runner.temp }}/tools
-            ${{ runner.temp }}/llvm
-          key: sdk-tools-v4-llvm20.1.8-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/qualify-ci.sh', 'scripts/qualify-ci.ps1') }}
-
-      - name: Install exact Rust toolchain
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-        with:
-          toolchain: 1.94.0
-          components: ${{ matrix.lane == 'policy' && 'clippy,rustfmt' || '' }}
-
-      # Blacksmith transparently serves actions/cache from co-located storage. Keep
-      # compiler objects lane-local so seven matrix jobs restore/save once instead
-      # of contending on hundreds of sccache GHA object writes.
-      - name: Restore lane build cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: |
-            ${{ runner.temp }}/sccache
-          key: sdk-build-v3-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml', 'rustfmt.toml', 'deny.toml') }}-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'Cargo.lock', 'rust/**', 'plugin/**', 'generated/rust/**', 'proto/**', 'compatibility/**', 'scripts/qualify-ci.sh', 'scripts/qualify-ci.ps1', '.github/workflows/qualification.yml') }}
-          restore-keys: |
-            sdk-build-v3-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml', 'rustfmt.toml', 'deny.toml') }}-
-
-      # Windows is the measured critical path: sccache avoids code generation,
-      # but Cargo still spends minutes relinking the same tests and binaries.
-      # Keep target artifacts separate so their restore cost and value remain
-      # independently measurable and Linux/macOS archives stay small.
-      - name: Restore Windows target cache
-        if: matrix.lane == 'windows'
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: ${{ runner.temp }}/target
-          key: sdk-target-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml') }}-${{ hashFiles('rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'Cargo.lock', 'rust/**', 'plugin/**', 'generated/rust/**', 'proto/**', 'compatibility/**', 'scripts/qualify-ci.ps1', '.github/workflows/qualification.yml') }}
-          restore-keys: |
-            sdk-target-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clippy.toml') }}-
-
-      - name: Enable compiler cache
-        uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
-
-      - name: Install Windows ARM64 compiler
-        if: runner.os == 'Windows'
-        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
-        with:
-          version: 20.1.8
-          directory: ${{ runner.temp }}/llvm
-          cached: ${{ steps.lane-tools.outputs.cache-hit }}
-          env: false
-
       - name: Run qualification lane
-        if: runner.os != 'Windows'
-        shell: bash
-        env:
-          SDK_TEMP_DIR: ${{ runner.temp }}/sdk
-          SDK_ARTIFACT_DIR: ${{ runner.temp }}/artifacts
-          CARGO_TARGET_DIR: ${{ runner.temp }}/target
-          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-install-cache
-          TOOLS_DIR: ${{ runner.temp }}/tools/${{ matrix.lane }}-${{ runner.arch }}
-        run: bash scripts/qualify-ci.sh "${{ matrix.lane }}"
+        uses: ./.github/actions/qualification-lane
+        with:
+          lane: ${{ matrix.lane }}
+          artifact: ${{ matrix.artifact }}
+          artifact_path: ${{ matrix.artifact_path }}
 
-      - name: Run Windows qualification lane
-        if: runner.os == 'Windows'
+  # Windows is the longest lane and its runners take a minute or more to
+  # provision, so on pull requests it is requested at workflow start rather
+  # than after the plan, then waits for the plan's decision before any work.
+  # Its runner must match the windows entry in .github/qualification-lanes.json.
+  windows:
+    name: windows
+    if: github.event_name == 'pull_request'
+    runs-on: blacksmith-16vcpu-windows-2025
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CARGO_BUILD_JOBS: 16
+      CMAKE_BUILD_PARALLEL_LEVEL: 16
+      MAKEFLAGS: -j16
+      RAYON_NUM_THREADS: 16
+      RUST_TEST_THREADS: 16
+      SCCACHE_CACHE_SIZE: 3G
+    timeout-minutes: 25
+    steps:
+      - name: Await the qualification plan
+        id: plan
         shell: pwsh
         env:
-          SDK_TEMP_DIR: ${{ runner.temp }}/sdk
-          SDK_ARTIFACT_DIR: ${{ runner.temp }}/artifacts
-          CARGO_TARGET_DIR: ${{ runner.temp }}/target
-          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-install-cache
-          TOOLS_DIR: ${{ runner.temp }}/tools/${{ matrix.lane }}-${{ runner.arch }}
-          LLVM_PATH: ${{ runner.temp }}/llvm
-        run: .\scripts\qualify-ci.ps1 -Lane windows
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/attempts/$env:GITHUB_RUN_ATTEMPT/jobs?per_page=100"
+          $deadline = (Get-Date).AddMinutes(15)
+          while ((Get-Date) -lt $deadline) {
+            $plan = (Invoke-RestMethod -Uri $uri -Headers $headers).jobs | Where-Object name -eq 'plan'
+            if ($plan -and $plan.status -eq 'completed') {
+              if ($plan.conclusion -ne 'success') { throw "plan concluded $($plan.conclusion)" }
+              $step = $plan.steps | Where-Object name -eq 'Windows lane required'
+              $run = [bool]$step -and $step.conclusion -eq 'success'
+              "run=$($run.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+              Write-Host "windows lane required: $run"
+              exit 0
+            }
+            Start-Sleep -Seconds 2
+          }
+          throw 'timed out waiting for the qualification plan'
 
-      - name: Retain qualified outputs
-        if: matrix.artifact != '' && success()
+      - name: Check out exact source
+        if: steps.plan.outputs.run == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Run qualification lane
+        if: steps.plan.outputs.run == 'true'
+        uses: ./.github/actions/qualification-lane
+        with:
+          lane: windows
+
+  # Records qualified lanes and forwards reused artifacts. It is not the
+  # required check, but release workflows only accept fully successful runs.
+  record:
+    name: record
+    needs: [plan, qualification, windows]
+    if: always() && needs.plan.result == 'success'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Reused lanes publish the artifact their qualifying run retained, so
+      # every successful run carries the complete artifact set under its own id.
+      - name: Fetch reused lane outputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSED: ${{ needs.plan.outputs.reused }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pids=()
+          while IFS=$'\t' read -r run artifact; do
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$artifact" \
+              --dir "forward/${artifact%-*-*}" &
+            pids+=("$!")
+          done < <(jq -r 'to_entries[] | select(.value.artifact != "") | [.value.run_id, .value.artifact] | @tsv' <<<"$REUSED")
+          for pid in "${pids[@]}"; do wait "$pid"; done
+
+      - name: Forward coverage
+        if: hashFiles('forward/coverage/**') != ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: ${{ matrix.artifact }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/artifacts/${{ matrix.artifact_path }}
+          name: coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: forward/coverage
           compression-level: 0
           if-no-files-found: error
-          include-hidden-files: false
           retention-days: 90
+      - name: Forward packages-linux
+        if: hashFiles('forward/packages-linux/**') != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: packages-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: forward/packages-linux
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+      - name: Forward packages-linux-arm64
+        if: hashFiles('forward/packages-linux-arm64/**') != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: packages-linux-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: forward/packages-linux-arm64
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+      - name: Forward packages-macos
+        if: hashFiles('forward/packages-macos/**') != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: packages-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: forward/packages-macos
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Record qualified lanes
+        id: record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSED: ${{ needs.plan.outputs.reused }}
+          TRUSTED: ${{ needs.plan.outputs.trusted }}
+        run: node scripts/plan-qualification.mjs record
+
+      - name: Record gate
+        if: contains(fromJSON(steps.record.outputs.recorded), 'gate')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/gate.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['gate'] }}
+      - name: Record linux
+        if: contains(fromJSON(steps.record.outputs.recorded), 'linux')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['linux'] }}
+      - name: Record web
+        if: contains(fromJSON(steps.record.outputs.recorded), 'web')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/web.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['web'] }}
+      - name: Record linux-arm64
+        if: contains(fromJSON(steps.record.outputs.recorded), 'linux-arm64')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux-arm64.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['linux-arm64'] }}
+      - name: Record linux-musl
+        if: contains(fromJSON(steps.record.outputs.recorded), 'linux-musl')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux-musl.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['linux-musl'] }}
+      - name: Record linux-arm64-musl
+        if: contains(fromJSON(steps.record.outputs.recorded), 'linux-arm64-musl')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/linux-arm64-musl.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['linux-arm64-musl'] }}
+      - name: Record windows
+        if: contains(fromJSON(steps.record.outputs.recorded), 'windows')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/windows.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['windows'] }}
+      - name: Record macos
+        if: contains(fromJSON(steps.record.outputs.recorded), 'macos')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/macos.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['macos'] }}
+      - name: Record policy
+        if: contains(fromJSON(steps.record.outputs.recorded), 'policy')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/policy.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['policy'] }}
 
   gate:
     name: SDK Qualification
     if: always()
-    needs: qualification
+    needs: [plan, qualification, windows]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
     steps:
       - name: Require every qualification lane
         env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
           RESULT: ${{ needs.qualification.result }}
-        run: test "$RESULT" = success
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+        run: |
+          test "$PLAN_RESULT" = success
+          test "$WINDOWS_RESULT" = success || test "$WINDOWS_RESULT" = skipped
+          if test "$MATRIX" = '[]'; then
+            test "$RESULT" = skipped
+          else
+            test "$RESULT" = success
+          fi

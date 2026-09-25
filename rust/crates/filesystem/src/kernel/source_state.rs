@@ -9,7 +9,6 @@ use thiserror::Error;
 const DOMAIN: &[u8] = b"acyclic-fs-source-state-v1\0";
 const ID_DOMAIN: &[u8] = b"acyclic-fs-source-authority-v1\0";
 const VERSION: u16 = 2;
-const LEGACY_VERSION: u16 = 1;
 
 /// Durable source advancement policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,7 +42,6 @@ pub(crate) enum SourceInvalidation {
 /// Complete latest source fact; replaying the authority needs no side state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SourceFact {
-    pub(crate) schema_version: u16,
     pub(crate) volume_id: VolumeId,
     pub(crate) root_identity: [u8; 16],
     pub(crate) mode: DurableSourceMode,
@@ -77,7 +75,7 @@ pub(crate) fn source_authority_id(volume_id: VolumeId) -> AuthorityId {
 #[cfg(feature = "native-watch")]
 pub(crate) fn encode_source_fact(value: SourceFact) -> Result<Vec<u8>, SourceFactError> {
     validate(value)?;
-    let mut encoder = Encoder::new(DOMAIN, value.schema_version);
+    let mut encoder = Encoder::new(DOMAIN, VERSION);
     encoder.fixed(&value.volume_id.into_bytes());
     encoder.fixed(&value.root_identity);
     encoder.u8(match value.mode {
@@ -87,9 +85,7 @@ pub(crate) fn encode_source_fact(value: SourceFact) -> Result<Vec<u8>, SourceFac
     encoder.u32(value.maximum_paths);
     encoder.u32(value.maximum_extent_spans);
     encoder.u32(value.maximum_queued_changes);
-    if value.schema_version >= VERSION {
-        encoder.fixed(value.capture_policy.as_bytes());
-    }
+    encoder.fixed(value.capture_policy.as_bytes());
     match value.state {
         DurableSourceState::Clean => encoder.u8(1),
         DurableSourceState::PendingCapture => encoder.u8(2),
@@ -117,12 +113,11 @@ pub(crate) fn decode_source_fact(
             .try_into()
             .map_err(|_| invariant("source fact schema version is malformed"))?,
     );
-    if version != LEGACY_VERSION && version != VERSION {
+    if version != VERSION {
         return Err(invariant("unsupported source fact schema version").into());
     }
     let mut decoder = Decoder::new(bytes, DOMAIN, version, maximum_payload_bytes)?;
     let value = SourceFact {
-        schema_version: version,
         volume_id: VolumeId::from_bytes(decoder.fixed()?),
         root_identity: decoder.fixed()?,
         mode: match decoder.u8()? {
@@ -133,11 +128,7 @@ pub(crate) fn decode_source_fact(
         maximum_paths: decoder.u32()?,
         maximum_extent_spans: decoder.u32()?,
         maximum_queued_changes: decoder.u32()?,
-        capture_policy: if version >= VERSION {
-            Digest::from_bytes(decoder.fixed()?)
-        } else {
-            Digest::from_bytes([0; 32])
-        },
+        capture_policy: Digest::from_bytes(decoder.fixed()?),
         state: match decoder.u8()? {
             1 => DurableSourceState::Clean,
             2 => DurableSourceState::PendingCapture,
@@ -153,6 +144,7 @@ pub(crate) fn decode_source_fact(
     Ok(value)
 }
 
+#[cfg(feature = "local")]
 pub(crate) fn decode_source_volume(
     bytes: &[u8],
     maximum_payload_bytes: u64,
@@ -161,8 +153,7 @@ pub(crate) fn decode_source_volume(
 }
 
 fn validate(value: SourceFact) -> Result<(), SourceFactError> {
-    if (value.schema_version != LEGACY_VERSION && value.schema_version != VERSION)
-        || value.maximum_paths == 0
+    if value.maximum_paths == 0
         || value.maximum_extent_spans == 0
         || value.maximum_queued_changes == 0
     {
@@ -210,7 +201,6 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let volume_id = VolumeId::from_bytes([7; 16]);
         let value = SourceFact {
-            schema_version: VERSION,
             volume_id,
             root_identity: [8; 16],
             mode: DurableSourceMode::Tracking,
@@ -233,7 +223,6 @@ mod tests {
     #[test]
     fn source_fact_rejects_zero_bounds_and_unknown_tags() {
         let value = SourceFact {
-            schema_version: VERSION,
             volume_id: VolumeId::from_bytes([1; 16]),
             root_identity: [2; 16],
             mode: DurableSourceMode::Pinned,

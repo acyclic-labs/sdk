@@ -473,6 +473,45 @@ export declare type ForkCheckpointRequest = Message<"acyclic.machines.v1.ForkChe
 export declare const ForkCheckpointRequestSchema: GenMessage<ForkCheckpointRequest>;
 
 /**
+ * Forks a running machine, without an intermediate checkpoint, into `count` fresh
+ * children. Admission requires CAPABILITY_LIVE_FORK or CAPABILITY_DISK_FORK in the source
+ * machine's contract; a provider or machine without either rejects with UNIMPLEMENTED so
+ * callers fall back to Checkpoint + Fork or a restart. The admitted ForkFidelity states
+ * what the children inherited. Children inherit the source's exact MachineContract and
+ * receive fresh MachineIds and endpoints; open network connections are never carried over.
+ * See the acyclic-machines crate documentation for the complete semantics.
+ *
+ * @generated from message acyclic.machines.v1.ForkMachineRequest
+ */
+export declare type ForkMachineRequest = Message<"acyclic.machines.v1.ForkMachineRequest"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
+   */
+  protocol?: ProtocolVersion | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
+   */
+  idempotencyKey?: IdempotencyKey | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId machine = 3;
+   */
+  machine?: MachineId | undefined;
+
+  /**
+   * @generated from field: uint32 count = 4;
+   */
+  count: number;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.ForkMachineRequest.
+ * Use `create(ForkMachineRequestSchema)` to create a new message.
+ */
+export declare const ForkMachineRequestSchema: GenMessage<ForkMachineRequest>;
+
+/**
  * @generated from message acyclic.machines.v1.SetSuspensionPolicyRequest
  */
 export declare type SetSuspensionPolicyRequest = Message<"acyclic.machines.v1.SetSuspensionPolicyRequest"> & {
@@ -873,6 +912,42 @@ export declare type ForkAdmission = Message<"acyclic.machines.v1.ForkAdmission">
 export declare const ForkAdmissionSchema: GenMessage<ForkAdmission>;
 
 /**
+ * @generated from message acyclic.machines.v1.ForkMachineAdmission
+ */
+export declare type ForkMachineAdmission = Message<"acyclic.machines.v1.ForkMachineAdmission"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId source = 1;
+   */
+  source?: MachineId | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.machines.v1.MachineId children = 2;
+   */
+  children: MachineId[];
+
+  /**
+   * @generated from field: acyclic.machines.v1.OperationId operation = 3;
+   */
+  operation?: OperationId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.MachineContract contract = 4;
+   */
+  contract?: MachineContract | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.ForkFidelity fidelity = 5;
+   */
+  fidelity: ForkFidelity;
+};
+
+/**
+ * Describes the message acyclic.machines.v1.ForkMachineAdmission.
+ * Use `create(ForkMachineAdmissionSchema)` to create a new message.
+ */
+export declare const ForkMachineAdmissionSchema: GenMessage<ForkMachineAdmission>;
+
+/**
  * @generated from message acyclic.machines.v1.PolicyAdmission
  */
 export declare type PolicyAdmission = Message<"acyclic.machines.v1.PolicyAdmission"> & {
@@ -984,6 +1059,12 @@ export declare type RecoveredAdmission = Message<"acyclic.machines.v1.RecoveredA
      */
     value: MutationAdmission;
     case: "destroyCheckpoint";
+  } | {
+    /**
+     * @generated from field: acyclic.machines.v1.ForkMachineAdmission fork_machine = 10;
+     */
+    value: ForkMachineAdmission;
+    case: "forkMachine";
   } | { case: undefined; value?: undefined };
 };
 
@@ -1011,6 +1092,32 @@ export declare type ForkedMachines = Message<"acyclic.machines.v1.ForkedMachines
  * Use `create(ForkedMachinesSchema)` to create a new message.
  */
 export declare const ForkedMachinesSchema: GenMessage<ForkedMachines>;
+
+/**
+ * @generated from message acyclic.machines.v1.ForkedLiveMachines
+ */
+export declare type ForkedLiveMachines = Message<"acyclic.machines.v1.ForkedLiveMachines"> & {
+  /**
+   * @generated from field: acyclic.machines.v1.MachineId source = 1;
+   */
+  source?: MachineId | undefined;
+
+  /**
+   * @generated from field: acyclic.machines.v1.ForkFidelity fidelity = 2;
+   */
+  fidelity: ForkFidelity;
+
+  /**
+   * @generated from field: repeated acyclic.machines.v1.MachineState children = 3;
+   */
+  children: MachineState[];
+};
+
+/**
+ * Describes the message acyclic.machines.v1.ForkedLiveMachines.
+ * Use `create(ForkedLiveMachinesSchema)` to create a new message.
+ */
+export declare const ForkedLiveMachinesSchema: GenMessage<ForkedLiveMachines>;
 
 /**
  * @generated from message acyclic.machines.v1.PolicySet
@@ -1088,6 +1195,12 @@ export declare type MutationOutcome = Message<"acyclic.machines.v1.MutationOutco
      */
     value: CheckpointId;
     case: "checkpointDestroyed";
+  } | {
+    /**
+     * @generated from field: acyclic.machines.v1.ForkedLiveMachines machine_forked = 9;
+     */
+    value: ForkedLiveMachines;
+    case: "machineForked";
   } | { case: undefined; value?: undefined };
 };
 
@@ -1277,15 +1390,6 @@ export declare type UsageReceipt = Message<"acyclic.machines.v1.UsageReceipt"> &
   durablePrivateBytes: bigint;
 
   /**
-   * Wire tombstone retained for v1 binary compatibility. Servers MUST emit zero;
-   * public clients do not expose or consume it.
-   *
-   * @generated from field: uint64 lineage_shared_bytes = 8 [deprecated = true];
-   * @deprecated
-   */
-  lineageSharedBytes: bigint;
-
-  /**
    * @generated from field: bytes lineage_receipt_sha256 = 11;
    */
   lineageReceiptSha256: Uint8Array;
@@ -1375,6 +1479,16 @@ export enum Capability {
    * @generated from enum value: CAPABILITY_LIVE_MOVEMENT = 6;
    */
   LIVE_MOVEMENT = 6,
+
+  /**
+   * ForkMachine copies a running machine's persistent disk, but not its memory or processes,
+   * into fresh children. Which paths are persistent is provider-defined: a provider whose
+   * machines boot from an immutable image may copy only its declared data directory. CAPABILITY_LIVE_FORK is the memory-and-disk form and takes precedence
+   * when both are declared.
+   *
+   * @generated from enum value: CAPABILITY_DISK_FORK = 7;
+   */
+  DISK_FORK = 7,
 }
 
 /**
@@ -1568,6 +1682,36 @@ export enum MachineStatus {
 export declare const MachineStatusSchema: GenEnum<MachineStatus>;
 
 /**
+ * @generated from enum acyclic.machines.v1.ForkFidelity
+ */
+export enum ForkFidelity {
+  /**
+   * @generated from enum value: FORK_FIDELITY_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * Children resume from the source's memory, processes, and disk at the fork instant.
+   *
+   * @generated from enum value: FORK_FIDELITY_MEMORY_AND_DISK = 1;
+   */
+  MEMORY_AND_DISK = 1,
+
+  /**
+   * Children boot fresh over a copy of the source's persistent disk (provider-defined; see
+   * CAPABILITY_DISK_FORK) taken at one consistent instant; no process state is inherited.
+   *
+   * @generated from enum value: FORK_FIDELITY_DISK_ONLY = 2;
+   */
+  DISK_ONLY = 2,
+}
+
+/**
+ * Describes the enum acyclic.machines.v1.ForkFidelity.
+ */
+export declare const ForkFidelitySchema: GenEnum<ForkFidelity>;
+
+/**
  * @generated from enum acyclic.machines.v1.PressureKind
  */
 export enum PressureKind {
@@ -1662,6 +1806,14 @@ export declare const MachinesService: GenService<{
     methodKind: "unary";
     input: typeof ForkCheckpointRequestSchema;
     output: typeof ForkAdmissionSchema;
+  },
+  /**
+   * @generated from rpc acyclic.machines.v1.MachinesService.ForkMachine
+   */
+  forkMachine: {
+    methodKind: "unary";
+    input: typeof ForkMachineRequestSchema;
+    output: typeof ForkMachineAdmissionSchema;
   },
   /**
    * @generated from rpc acyclic.machines.v1.MachinesService.Suspend

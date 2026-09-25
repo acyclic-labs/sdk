@@ -1,6 +1,6 @@
 //! Local-only Linux qualification for exact native working-set costs.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", feature = "native-mount"))]
 
 use std::path::Path;
 use std::process::Command;

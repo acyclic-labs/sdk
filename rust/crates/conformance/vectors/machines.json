@@ -17,6 +17,11 @@
     "destroy-retains-terminal-observation",
     "indeterminate-recovery-never-redispatches",
     "operation-inspect-cancel-and-watch-are-correlated",
-    "all-six-capability-intents-round-trip"
+    "live-fork-fidelity-is-declared-not-inferred",
+    "live-fork-returns-exact-fresh-child-set",
+    "live-fork-children-inherit-the-source-contract",
+    "live-fork-without-capability-is-unsupported",
+    "live-fork-children-join-before-their-source",
+    "all-seven-capability-intents-round-trip"
   ]
 }

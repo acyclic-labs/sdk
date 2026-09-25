@@ -15,7 +15,7 @@ use std::os::windows::process::CommandExt as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use support::{
-    ACYCLIC, BoundedOutput, RequestFingerprint, ScriptedProvider, ServiceGuard,
+    ACYCLIC, BoundedOutput, PackagedPlugin, RequestFingerprint, ScriptedProvider, ServiceGuard,
     assert_service_absent, command, installed_host_binary, isolated_state, make_read_only,
     make_writable, output_after_provider_admission, output_with_stdin, output_with_stdin_timeout,
     output_with_timeout, package_production_plugin, test_tempdir, write_qualification_receipt,
@@ -26,56 +26,147 @@ use support::{
 // early completion while keeping cleanup qualification fast.
 const STALLED_PROVIDER_OBSERVATION: Duration = Duration::from_millis(250);
 
+/// Times every hook process end to end (spawn to exit with stdout collected)
+/// against a live service in an isolated state root: a session with a series
+/// of Bash tool calls and subagent spawns, then further sessions started and
+/// ended on the running service. Prints one JSON receipt line;
+/// `ACYCLIC_HOOK_LATENCY_PAIRS` sets the number of measured Bash calls.
 #[test]
-#[ignore = "local-only packaged hook latency comparison"]
-fn packaged_non_filesystem_hook_process_cost() {
-    let temporary = test_tempdir("hook-latency-");
+#[ignore = "local-only packaged hook latency receipt"]
+fn packaged_service_hook_latency_receipt() {
+    const WARMUP_PAIRS: usize = 5;
+    const SPAWNS: usize = 5;
+    const SESSIONS: usize = 10;
+    let pairs = std::env::var("ACYCLIC_HOOK_LATENCY_PAIRS")
+        .map_or(Ok(200), |pairs| pairs.parse::<usize>())
+        .expect("ACYCLIC_HOOK_LATENCY_PAIRS must be a count");
+    let temporary = test_tempdir("hook-service-latency-");
     let package = package_production_plugin(temporary.path());
-    let measure = |program: &Path, arguments: &[&str]| {
-        let mut samples = Vec::with_capacity(12);
-        for index in 0..15 {
-            let mut hook = command(program);
-            hook.args(arguments);
-            let started = Instant::now();
-            let output = output_with_stdin(&mut hook, br#"{"tool_name":"web.run"}"#);
-            let elapsed = started.elapsed();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert_eq!(output.stdout, b"{}");
-            if index >= 3 {
-                samples.push(elapsed);
-            }
-        }
-        samples.sort_unstable();
-        (
-            *samples.get(samples.len() / 2).expect("median sample"),
-            *samples.get(samples.len() * 95 / 100).expect("p95 sample"),
-        )
+    let service = ServiceGuard::new(temporary.path());
+    let hook = |session: usize, event: &str, fields: Value| {
+        timed_hook(&package.native, temporary.path(), session, event, fields)
     };
-    let native = measure(&package.native, &["__hook", "codex", "PreToolUse"]);
-    let launcher = measure(
-        Path::new("node"),
-        &[
-            package.launcher.to_str().expect("launcher path"),
-            "__hook",
-            "codex",
-            "PreToolUse",
-        ],
+    let mut samples = std::collections::BTreeMap::<&str, Vec<Duration>>::new();
+    let mut record = |label, elapsed| samples.entry(label).or_default().push(elapsed);
+    let none = || serde_json::json!({});
+    record(
+        "SessionStart (starts service)",
+        hook(0, "SessionStart", none()),
     );
+    for index in 0..WARMUP_PAIRS + pairs {
+        let tool = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_use_id": format!("bash-{index}"),
+            "tool_input": {"command": format!("git status --short # {index}")},
+        });
+        let pre = hook(0, "PreToolUse", tool.clone());
+        let post = hook(0, "PostToolUse", tool);
+        // A non-filesystem tool never leaves the hook process: the floor that
+        // process creation alone imposes on every hook.
+        let floor = hook(0, "PreToolUse", serde_json::json!({"tool_name": "web.run"}));
+        if index >= WARMUP_PAIRS {
+            record("PreToolUse Bash", pre);
+            record("PostToolUse Bash", post);
+            record("process floor (no-op hook)", floor);
+        }
+    }
+    for index in 0..SPAWNS {
+        let spawn = serde_json::json!({
+            "tool_name": "Agent",
+            "tool_use_id": format!("spawn-{index}"),
+            "tool_input": {"description": "latency", "prompt": "measure"},
+        });
+        let child = serde_json::json!({
+            "agent_id": format!("latency-child-{index}"),
+            "agent_type": "general",
+        });
+        record("PreToolUse Agent", hook(0, "PreToolUse", spawn.clone()));
+        record("SubagentStart", hook(0, "SubagentStart", child.clone()));
+        record("SubagentStop", hook(0, "SubagentStop", child));
+        record("PostToolUse Agent", hook(0, "PostToolUse", spawn));
+    }
+    for session in 1..=SESSIONS {
+        record(
+            "SessionStart (running service)",
+            hook(session, "SessionStart", none()),
+        );
+        record("SessionEnd", hook(session, "SessionEnd", none()));
+    }
+    hook(0, "SessionEnd", none());
+    service.drain();
+    let events = samples
+        .into_iter()
+        .map(|(label, durations)| (label.to_owned(), latency_summary(durations)))
+        .collect::<serde_json::Map<_, _>>();
     println!(
-        "packaged no-op hook median/p95: native={}/{}us Node={}/{}us",
-        native.0.as_micros(),
-        native.1.as_micros(),
-        launcher.0.as_micros(),
-        launcher.1.as_micros()
+        "{}",
+        serde_json::json!({
+            "schema": "acyclic-hook-latency-v1",
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "pairs": pairs,
+            "events": events,
+        })
     );
+}
+
+/// Runs one hook for session `session` in its own workspace and returns the
+/// process's end-to-end latency.
+fn timed_hook(native: &Path, root: &Path, session: usize, event: &str, fields: Value) -> Duration {
+    let workspace = root.join(format!("workspace-{session}"));
+    fs::create_dir_all(&workspace).expect("workspace");
+    let mut input = serde_json::json!({
+        "session_id": format!("latency-session-{session}"),
+        "cwd": workspace,
+        "hook_event_name": event,
+    });
+    let Value::Object(fields) = fields else {
+        panic!("hook fields must be an object");
+    };
+    input
+        .as_object_mut()
+        .expect("hook input object")
+        .extend(fields);
+    let input = serde_json::to_vec(&input).expect("hook input");
+    let mut process = command(native);
+    process
+        .args(["__hook", "claude-code", event])
+        .current_dir(&workspace);
+    isolated_state(&mut process, root);
+    let started = Instant::now();
+    let output = output_with_stdin(&mut process, &input);
+    let elapsed = started.elapsed();
     assert!(
-        native.1 < launcher.1,
-        "native hook did not beat the Node launcher"
+        output.status.success(),
+        "{event}: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    let response: Value = serde_json::from_slice(&output.stdout).expect("hook response");
+    assert!(
+        !response
+            .get("systemMessage")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("Acyclic is unavailable")),
+        "{event} failed: {response}"
+    );
+    elapsed
+}
+
+fn latency_summary(mut durations: Vec<Duration>) -> Value {
+    durations.sort_unstable();
+    let percentile = |percent: usize| {
+        durations
+            .get((durations.len() * percent / 100).min(durations.len() - 1))
+            .expect("percentile sample")
+            .as_micros()
+    };
+    serde_json::json!({
+        "samples": durations.len(),
+        "medianMicros": percentile(50),
+        "p95Micros": percentile(95),
+        "minMicros": durations.first().expect("minimum sample").as_micros(),
+        "maxMicros": durations.last().expect("maximum sample").as_micros(),
+    })
 }
 
 #[test]
@@ -157,7 +248,7 @@ fn hook_failure_allows_the_host_to_continue_with_a_visible_notice() {
 }
 
 #[test]
-fn immutable_packaged_launcher_runs_the_real_service_lifecycle() {
+fn immutable_package_command_runs_the_real_service_lifecycle() {
     let temporary = test_tempdir("immutable-lifecycle-");
     let workspace = temporary.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace");
@@ -209,11 +300,8 @@ fn immutable_packaged_launcher_runs_the_real_service_lifecycle() {
         output_with_stdin_timeout(&mut start, &input("SessionStart"), Duration::from_secs(5));
     let identity = service.assert_hook_service_live();
 
-    let mut agents = command("node");
-    agents
-        .arg(&package.launcher)
-        .arg("agents")
-        .current_dir(&workspace);
+    let mut agents = package.command(&["agents"]);
+    agents.current_dir(&workspace);
     isolated_state(&mut agents, temporary.path());
     let listed = output_with_timeout(&mut agents, Duration::from_secs(5));
 
@@ -255,7 +343,7 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     write_overlay_workflow_source(&workspace);
     let package = package_production_plugin(temporary.path());
 
-    let mut service = install_host(&package.launcher, "codex", &codex, temporary.path());
+    let mut service = install_host(&package, "codex", &codex, temporary.path());
     let provider = ScriptedProvider::start_codex(
         workspace.join("codex-e2e.txt").to_string_lossy().as_ref(),
         "codex-child-isolation.txt",
@@ -278,11 +366,8 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     let child_ran = assert_semantic_provider_exchange(&provider);
     service.assert_hook_service_live();
     assert_overlay_workflow_stayed_in_child(&workspace, "codex-child-isolation.txt");
-    let mut doctor = command("node");
-    doctor
-        .arg(&package.launcher)
-        .arg("doctor")
-        .current_dir(&workspace);
+    let mut doctor = package.command(&["doctor"]);
+    doctor.current_dir(&workspace);
     isolated_state(&mut doctor, temporary.path());
     let doctor = output_with_timeout(&mut doctor, Duration::from_secs(20));
     assert!(!doctor.expired, "doctor exceeded its deadline");
@@ -560,7 +645,7 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
     write_overlay_workflow_source(&workspace);
     let package = package_production_plugin(temporary.path());
 
-    let mut service = install_host(&package.launcher, "claude-code", &claude, temporary.path());
+    let mut service = install_host(&package, "claude-code", &claude, temporary.path());
     let provider = ScriptedProvider::start_claude_lifecycle(
         workspace.join("claude-e2e.txt").to_string_lossy().as_ref(),
         "claude-child-isolation.txt",
@@ -919,9 +1004,13 @@ fn assert_host_sentinel(name: &str, workspace: &Path, output: &std::process::Out
     );
 }
 
-fn install_host(launcher: &Path, host: &str, host_binary: &Path, home: &Path) -> ServiceGuard {
-    let mut install = command("node");
-    install.arg(launcher).args(["install", host]);
+fn install_host(
+    package: &PackagedPlugin,
+    host: &str,
+    host_binary: &Path,
+    home: &Path,
+) -> ServiceGuard {
+    let mut install = package.command(&["install", host]);
     prepend_binary_directory(&mut install, host_binary);
     isolated_state(&mut install, home);
     if host == "codex" {

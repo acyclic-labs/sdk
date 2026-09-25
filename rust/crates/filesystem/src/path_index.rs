@@ -206,20 +206,20 @@ impl GenerationPathIndex for MemoryGenerationPathIndex {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) struct NativeGenerationPathIndex {
     root: std::path::PathBuf,
     state: Mutex<NativePathIndexState>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[derive(Default)]
 struct NativePathIndexState {
     entries: BTreeMap<[u8; 32], usize>,
     retained_bytes: usize,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl NativeGenerationPathIndex {
     pub(crate) fn new(root: std::path::PathBuf) -> Self {
         let mut state = NativePathIndexState::default();
@@ -279,7 +279,7 @@ impl NativeGenerationPathIndex {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl GenerationPathIndex for NativeGenerationPathIndex {
     fn load(&self, key: [u8; 32]) -> Option<Vec<u8>> {
         let bytes = std::fs::read(self.path(key)).ok()?;

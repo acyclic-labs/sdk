@@ -46,7 +46,7 @@ for generated in acyclic_harness_wasm.js acyclic_harness_wasm.d.ts \
 done
 npm_stage="$work/npm-package"
 mkdir -p "$npm_stage/generated"
-install -m 0644 typescript/packages/harness/package.json typescript/packages/harness/README.md CHANGELOG.md "$npm_stage/"
+install -m 0644 typescript/packages/harness/package.json typescript/packages/harness/README.md typescript/packages/harness/CHANGELOG.md "$npm_stage/"
 cp -R typescript/packages/harness/dist "$npm_stage/dist"
 cp -R typescript/packages/harness/generated/proto "$npm_stage/generated/proto"
 cp -R "$wasm_output" "$npm_stage/generated/wasm"
@@ -77,51 +77,67 @@ install -m 0644 "$root/conformance/vectors/harness/native-wasm-event-v2.json" na
 bun test test 2>&1 | tee "$work/typescript-package-test.log"
 
 cd "$root"
-# Stage the exact public dependency closure. Harness cannot be registry-verified
-# until Stream is published, so test the extracted archives together and keep the
-# release order explicit.
-metadata="$("$cargo_bin" metadata --locked --no-deps --format-version 1)"
-runtime_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-native-runtime").version)')"
-stream_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-stream").version)')"
-harness_version="$(printf '%s' "$metadata" | bun -e 'const m=await Bun.stdin.json(); console.log(m.packages.find(p=>p.name==="acyclic-harness").version)')"
+# Stage the public Harness dependency closure from the same source as receipt
+# verification, including optional adapters.
+closure_output="$(bun scripts/harness-package-closure.mjs)"
+mapfile -t closure <<< "$closure_output"
+harness_version=""
+dependency_names=()
+for entry in "${closure[@]}"; do
+  IFS=$'\t' read -r name version <<< "$entry"
+  if [[ "$name" == "acyclic-harness" ]]; then
+    harness_version="$version"
+  else
+    dependency_names+=("$name")
+  fi
+done
+[[ -n "$harness_version" ]]
+for entry in "${closure[@]}"; do
+  IFS=$'\t' read -r name version <<< "$entry"
+  [[ "$version" == "$harness_version" ]] || { echo "Harness dependency version mismatch: $name" >&2; exit 1; }
+done
 package_target="$work/package-target"
 cargo_package_target="$package_target"
 if [[ "$cargo_bin" == "cargo.exe" ]]; then
   cargo_package_target="$(wslpath -w "$cargo_package_target")"
 fi
+package_arguments=()
+for name in "${dependency_names[@]}" acyclic-harness; do
+  package_arguments+=(-p "$name")
+done
 "$cargo_bin" package --locked --no-verify --allow-dirty --target-dir "$cargo_package_target" \
-  -p acyclic-native-runtime -p acyclic-stream -p acyclic-harness
-runtime_crate="$package_target/package/acyclic-native-runtime-$runtime_version.crate"
-stream_crate="$package_target/package/acyclic-stream-$stream_version.crate"
+  "${package_arguments[@]}"
 harness_crate="$package_target/package/acyclic-harness-$harness_version.crate"
 
 mkdir "$work/crates"
-tar -xf "$runtime_crate" -C "$work/crates"
-tar -xf "$stream_crate" -C "$work/crates"
+for name in "${dependency_names[@]}"; do
+  tar -xf "$package_target/package/$name-$harness_version.crate" -C "$work/crates"
+done
 tar -xf "$harness_crate" -C "$work/crates"
 mkdir -p "$work/crates/.cargo"
 install -m 0644 "$root/rust-toolchain.toml" "$work/crates/rust-toolchain.toml"
-runtime_patch_path="$work/crates/acyclic-native-runtime-$runtime_version"
-stream_patch_path="$work/crates/acyclic-stream-$stream_version"
-if [[ "$bun_platform" == "win32" ]]; then
-  runtime_patch_path="$(bash "$root/scripts/native-tool-path.sh" "$runtime_patch_path")"
-  stream_patch_path="$(bash "$root/scripts/native-tool-path.sh" "$stream_patch_path")"
-fi
-cat >"$work/crates/.cargo/config.toml" <<EOF
-[patch.crates-io]
-acyclic-native-runtime = { path = "$runtime_patch_path" }
-acyclic-stream = { path = "$stream_patch_path" }
-EOF
+printf '[patch.crates-io]\n' >"$work/crates/.cargo/config.toml"
+for name in "${dependency_names[@]}"; do
+  patch_path="$work/crates/$name-$harness_version"
+  if [[ "$bun_platform" == "win32" ]]; then
+    patch_path="$(bash "$root/scripts/native-tool-path.sh" "$patch_path")"
+  fi
+  printf '%s = { path = "%s" }\n' "$name" "$patch_path" >>"$work/crates/.cargo/config.toml"
+done
 cd "$work/crates"
 "$cargo_bin" test --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
   -- --test-threads=1 2>&1 | tee "$work/rust-package-test.log"
 
 mkdir -p "$output"
 install -m 0644 "$archive" "$output/"
-install -m 0644 "$runtime_crate" "$stream_crate" "$harness_crate" "$output/"
+for name in "${dependency_names[@]}"; do
+  install -m 0644 "$package_target/package/$name-$harness_version.crate" "$output/"
+done
+install -m 0644 "$harness_crate" "$output/"
 cmp --silent "$archive" "$output/acyclic-harness.tgz"
-cmp --silent "$runtime_crate" "$output/acyclic-native-runtime-$runtime_version.crate"
-cmp --silent "$stream_crate" "$output/acyclic-stream-$stream_version.crate"
+for name in "${dependency_names[@]}"; do
+  cmp --silent "$package_target/package/$name-$harness_version.crate" "$output/$name-$harness_version.crate"
+done
 cmp --silent "$harness_crate" "$output/acyclic-harness-$harness_version.crate"
 normalizer="$root/scripts/normalize-harness-evidence.mjs"
 rust_log="$work/rust-package-test.log"
@@ -129,10 +145,11 @@ typescript_log="$work/typescript-package-test.log"
 evidence_output="$output/CONFORMANCE-EVIDENCE.json"
 evidence_artifacts=(
   "$output/acyclic-harness.tgz"
-  "$output/acyclic-native-runtime-$runtime_version.crate"
-  "$output/acyclic-stream-$stream_version.crate"
   "$output/acyclic-harness-$harness_version.crate"
 )
+for name in "${dependency_names[@]}"; do
+  evidence_artifacts+=("$output/$name-$harness_version.crate")
+done
 if [[ "$bun_platform" == "win32" ]]; then
   normalizer="$(bash "$root/scripts/native-tool-path.sh" "$normalizer")"
   rust_log="$(bash "$root/scripts/native-tool-path.sh" "$rust_log")"

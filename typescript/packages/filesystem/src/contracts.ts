@@ -1054,6 +1054,13 @@ export interface FsCheckout {
 export interface NativeMount {
   readonly id: Uint8Array;
   readonly destination: string;
+  /**
+   * Waits until the mount reflects every change to its checkout made so far,
+   * including changes made through the checkout rather than the mount. Those
+   * reach the mount on their own shortly after; call this to read one through
+   * the mount immediately.
+   */
+  revalidate(): void;
   stop(): boolean;
 }
 
@@ -1145,9 +1152,9 @@ export interface NativeWorkspaceMount {
 export interface NativeFsWorkspace extends FsWorkspace {
   joinInto(target: FsWorkspace, options: JoinOptions): Promise<ResolvableFsJoinPlan>;
   mount(destination: string, options: NativeWorkspaceMountOptions): Promise<NativeWorkspaceMount>;
-  sourceState(): Promise<NativeSourceResult>;
-  reconcileSource(): Promise<NativeSourceResult>;
-  rescanSource(): Promise<NativeSourceResult>;
+  sourceState(): Promise<SourceResult>;
+  reconcileSource(): Promise<SourceResult>;
+  rescanSource(): Promise<SourceResult>;
   seal(): Promise<FsGeneration>;
 }
 
@@ -1182,11 +1189,6 @@ export interface SourceResult {
   readonly reason: SourceInvalidationReason | undefined;
   readonly generationId: Uint8Array | undefined;
 }
-
-/** @deprecated Use SourceStatus; source state is shared by native and hosted workspaces. */
-export type NativeSourceStatus = SourceStatus;
-/** @deprecated Use SourceResult; source state is shared by native and hosted workspaces. */
-export type NativeSourceResult = SourceResult;
 
 export interface WasmBindings {
   default(

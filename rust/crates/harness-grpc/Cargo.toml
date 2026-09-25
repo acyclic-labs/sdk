@@ -12,7 +12,7 @@ documentation = "https://docs.rs/acyclic-harness-grpc"
 build = "build.rs"
 
 [dependencies]
-acyclic-harness = { version = "0.1.0", path = "../harness" }
+acyclic-harness = { version = "0.1.5", path = "../harness" }
 futures.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true

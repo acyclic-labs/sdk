@@ -30,8 +30,8 @@ import type {
   NativeNamespacePath,
   CaptureResult,
   NativeWorkspaceMount,
-  NativeSourceResult,
-  NativeSourceStatus,
+  SourceResult,
+  SourceStatus,
   WorkCounters,
   WorkspaceRebaseResult,
   JoinResult,
@@ -104,7 +104,7 @@ export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOpti
 export { CrossVolumeError, MountedView } from "./mounted.js";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 
-const PACKAGE_VERSION = "0.1.0";
+const PACKAGE_VERSION = "0.1.5";
 const TARGETS = new Set([
   "win32-x64",
   "win32-arm64",
@@ -606,7 +606,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     },
     mount(destination, writable) {
       const value = raw.mount(destination, writable);
-      return { get id() { return copyBytes(value.id); }, destination: value.destination, stop() { return value.stop(); } };
+      return { get id() { return copyBytes(value.id); }, destination: value.destination, revalidate() { value.revalidate(); }, stop() { return value.stop(); } };
     },
     async materialize(options) {
       const value = await raw.materialize(options);
@@ -872,13 +872,13 @@ function adaptWorkspace(raw: NativeRawWorkspace): NativeFsWorkspace {
     get name() { return raw.name; },
     get id() { return copyBytes(raw.id); },
     ...workspaceOperations(raw, adaptGeneration, parseWorkspaceRebaseResult),
-    async sourceState(): Promise<NativeSourceResult> {
+    async sourceState(): Promise<SourceResult> {
       return parseSourceResult(await raw.sourceState());
     },
-    async reconcileSource(): Promise<NativeSourceResult> {
+    async reconcileSource(): Promise<SourceResult> {
       return parseSourceResult(await raw.reconcileSource());
     },
-    async rescanSource(): Promise<NativeSourceResult> {
+    async rescanSource(): Promise<SourceResult> {
       return parseSourceResult(await raw.rescanSource());
     },
     async seal(): Promise<FsGeneration> {
@@ -929,7 +929,7 @@ const parseJoinResult = (value: NativeRawJoinResult): JoinResult => parseSharedJ
 const parseWorkspaceRebaseResult = (value: NativeRawJoinResult): WorkspaceRebaseResult => parseSharedWorkspaceRebaseResult(value, decodeMergeConflict);
 const adaptJoinPlan = (raw: import("./contracts.js").NativeRawJoinPlan): ResolvableFsJoinPlan => adaptResolvableJoinPlan(raw, parseJoinResult);
 
-function parseSourceResult(value: NativeRawSourceResult): NativeSourceResult {
+function parseSourceResult(value: NativeRawSourceResult): SourceResult {
   const { status } = value;
   if (
     status !== "none" &&
@@ -941,7 +941,7 @@ function parseSourceResult(value: NativeRawSourceResult): NativeSourceResult {
   ) {
     throw new TypeError("native source has an invalid status");
   }
-  const typedStatus: NativeSourceStatus = status;
+  const typedStatus: SourceStatus = status;
   const reason = value.reason;
   if (
     reason !== undefined &&

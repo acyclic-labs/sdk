@@ -3,6 +3,7 @@
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import {
+  chmodSync,
   copyFileSync,
   cpSync,
   existsSync,
@@ -78,13 +79,12 @@ if (existsSync(out)) {
 rmSync(out, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 const plugin = join(out, "plugin");
 mkdirSync(join(plugin, "bin"), { recursive: true });
-for (const script of ["acyclic.js", "install.js", "verify.js", "targets.json"]) {
+for (const script of ["acyclic", "install.js", "verify.js", "targets.json"]) {
   copyFileSync(join(root, "bin", script), join(plugin, "bin", script));
 }
-for (const name of ["plugin.json", "package.json", "README.md"]) {
+for (const name of ["plugin.json", "package.json", "README.md", "CHANGELOG.md"]) {
   copyFileSync(join(root, name), join(plugin, name));
 }
-copyFileSync(join(repository, "CHANGELOG.md"), join(plugin, "CHANGELOG.md"));
 cpSync(join(root, ".codex-plugin"), join(plugin, ".codex-plugin"), { recursive: true });
 cpSync(join(root, ".agents"), join(plugin, ".agents"), { recursive: true });
 cpSync(join(root, "hooks"), join(plugin, "hooks"), { recursive: true });
@@ -102,6 +102,7 @@ for (const [platformTarget, binary] of args.binary.map(targetPath)) {
   const target = join(plugin, "bin", platformTarget, executable);
   mkdirSync(dirname(target), { recursive: true });
   copyFileSync(binary, target);
+  if (!platformTarget.startsWith("win32-")) chmodSync(target, 0o755);
   const entry = {
     path: `${platformTarget}/${executable}`,
     sha256: sha256File(target),

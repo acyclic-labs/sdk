@@ -4,7 +4,7 @@ import type {
   Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, EventFact,
   ExpirationPolicy, Image, ImageQualification, MachineContract, MachineEvent, MachineId,
   MachineObservation, MachineState, MutationOutcome, OperationId, OperationObservation,
-  OperationPhase, Performance, Pressure, SuspensionPolicy, UsageReceipt,
+  OperationPhase, Performance, Pressure, SuspensionPolicy, UsageReceipt, ForkFidelity,
 } from "./index.js";
 import { machinesResponseValidation as validate } from "./http.js";
 import { digestBytes } from "./digest.js";
@@ -50,6 +50,7 @@ const capabilities: Partial<Record<wire.Capability, Capability>> = {
   [wire.Capability.LIVE_FORK]: "live-fork",
   [wire.Capability.SUSPEND_RESUME]: "suspend-resume",
   [wire.Capability.LIVE_MOVEMENT]: "live-movement",
+  [wire.Capability.DISK_FORK]: "disk-fork",
 };
 function capability(value: wire.Capability): Capability { return required(capabilities[value], "capability"); }
 function compatibility(value: wire.CompatibilityPolicy | undefined): CompatibilityPolicy {
@@ -170,6 +171,15 @@ function mutation(value: wire.MutationOutcome): MutationOutcome {
     case "created": return { kind: "created", machine: machine(value.result.value) };
     case "checkpointed": return { kind: "checkpointed", checkpoint: checkpoint(value.result.value) };
     case "forked": return { kind: "forked", machines: value.result.value.machines.map(machine) };
+    case "machineForked": {
+      const result = value.result.value;
+      const fidelity: ForkFidelity = result.fidelity === wire.ForkFidelity.MEMORY_AND_DISK
+        ? "memory-and-disk"
+        : result.fidelity === wire.ForkFidelity.DISK_ONLY
+          ? "disk-only"
+          : (() => { throw new TypeError("machine fork fidelity is invalid"); })();
+      return { kind: "machine-forked", source: machineId(result.source), fidelity, children: result.children.map(machine) };
+    }
     case "suspended": return { kind: "suspended", machineId: machineId(value.result.value) };
     case "woken": return { kind: "woken", machineId: machineId(value.result.value) };
     case "suspensionPolicySet": return { kind: "suspension-policy-set", machineId: machineId(value.result.value.machine), policy: suspension(value.result.value.policy) };

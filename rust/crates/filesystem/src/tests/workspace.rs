@@ -334,38 +334,6 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
 }
 
 #[tokio::test]
-async fn existing_volume_adopts_workspace_api_without_changing_identity()
--> Result<(), Box<dyn Error>> {
-    let fs = Fs::memory();
-    let volume_id = VolumeId::new();
-    let volume = fs
-        .create_volume_with_id(
-            volume_id,
-            VolumeConfig::portable(Lifecycle::Ephemeral),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let expected = volume
-        .checkout(
-            GenerationSelector::Head,
-            CheckoutMode::read_only_pinned(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?
-        .value
-        .generation_id();
-
-    let workspace = fs.open_volume_workspace("legacy", volume_id).await?;
-
-    assert_eq!(workspace.id().into_bytes(), volume_id.into_bytes());
-    assert_eq!(workspace.head().await?.id(), expected);
-    Ok(())
-}
-
-#[tokio::test]
 async fn public_workspace_checkout_opens_pinned_and_live_private_views()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();

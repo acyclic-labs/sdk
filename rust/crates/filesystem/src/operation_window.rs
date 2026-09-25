@@ -16,6 +16,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
+#[cfg(feature = "distributed")]
 use futures::StreamExt as _;
 
 const STATE_VERSION: u32 = 1;
@@ -86,7 +87,6 @@ pub enum OperationWindowPhase {
         /// Newest coalesced parent, if the parent advanced.
         pending_parent: Option<GenerationId>,
         /// Parent observed after this reconciliation ticket was claimed.
-        #[serde(default)]
         subsequent_parent: Option<GenerationId>,
     },
 }
@@ -244,10 +244,12 @@ pub trait OperationWindowStore: Send + Sync {
 /// A generation publication conditioned on tail 1 therefore linearizes
 /// exactly against fencing.
 #[derive(Clone)]
+#[cfg(feature = "distributed")]
 pub struct StreamOperationWindowStore<P> {
     provider: Arc<P>,
 }
 
+#[cfg(feature = "distributed")]
 impl<P> StreamOperationWindowStore<P> {
     /// Binds operation windows to the exact provider used by filesystem
     /// authority publication.
@@ -258,6 +260,7 @@ impl<P> StreamOperationWindowStore<P> {
 }
 
 /// Stream-backed operation-window failure.
+#[cfg(feature = "distributed")]
 #[derive(Debug, Error)]
 pub enum StreamOperationWindowStoreError {
     /// The shared Stream provider rejected or could not durably resolve state.
@@ -268,6 +271,7 @@ pub enum StreamOperationWindowStoreError {
     Corrupt(String),
 }
 
+#[cfg(feature = "distributed")]
 impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperationWindowStore<P> {
     type Error = StreamOperationWindowStoreError;
 
@@ -400,6 +404,7 @@ impl<P: acyclic_stream::StreamProvider> OperationWindowStore for StreamOperation
     }
 }
 
+#[cfg(feature = "distributed")]
 fn phase_leases(phase: &OperationWindowPhase) -> BTreeMap<OperationLeaseId, OperationLease> {
     match phase {
         OperationWindowPhase::Active { leases, .. } => leases.clone(),
@@ -407,6 +412,7 @@ fn phase_leases(phase: &OperationWindowPhase) -> BTreeMap<OperationLeaseId, Oper
     }
 }
 
+#[cfg(feature = "distributed")]
 fn stream_window_path(
     workspace_id: WorkspaceId,
 ) -> Result<acyclic_stream::StreamPath, acyclic_stream::StreamError> {
@@ -416,6 +422,7 @@ fn stream_window_path(
     ))
 }
 
+#[cfg(feature = "distributed")]
 pub(crate) fn stream_lease_path(
     workspace_id: WorkspaceId,
     lease_id: OperationLeaseId,

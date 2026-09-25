@@ -93,8 +93,8 @@ pub struct SourceNode {
 pub struct SourceDirectoryEntry {
     /// Lossless host component encoding.
     pub name: crate::kernel::LogicalName,
-    /// Entry kind, observed without reading its body.
-    pub kind: SourceNodeKind,
+    /// The entry's node, exactly as a lookup of its path would report it.
+    pub node: SourceNode,
 }
 
 /// Cursor bound to one directory and one source epoch.
@@ -219,6 +219,15 @@ pub trait DemandSource: Send + Sync {
         cancellation: &CancellationToken,
     ) -> DemandResult<Bytes>;
 
+    /// Opens one regular file at exactly `expected` for repeated range reads.
+    async fn open_file(
+        &self,
+        source: SourceReference,
+        path: &NamespacePath,
+        expected: SourceVersion,
+        cancellation: &CancellationToken,
+    ) -> DemandResult<Box<dyn DemandFile>>;
+
     /// Reads one symbolic link's exact opaque target without following it.
     async fn read_link(
         &self,
@@ -250,6 +259,27 @@ pub trait DemandSource: Send + Sync {
         }
         Ok(answer)
     }
+}
+
+/// A regular source file opened at one exact version.
+///
+/// Reads block the calling thread like a native file read, so they belong on
+/// threads that may block, such as native mount callback threads. Every read
+/// proves that the opened version is still current before returning bytes.
+pub trait DemandFile: Send + Sync {
+    /// Reads at most `length` bytes at `offset`; a range past the end of the
+    /// file is shortened, never padded.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the same typed evidence as [`DemandSource::read_range`]
+    /// once the file, its path, or its source is no longer the opened one.
+    fn read_range(
+        &self,
+        offset: u64,
+        length: u64,
+        cancellation: &CancellationToken,
+    ) -> DemandResult<Bytes>;
 }
 
 /// Synchronous admission hook for directories reached by a native lazy source.
@@ -372,6 +402,24 @@ impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
             .await
     }
 
+    async fn open_file(
+        &self,
+        source: SourceReference,
+        path: &NamespacePath,
+        expected: SourceVersion,
+        cancellation: &CancellationToken,
+    ) -> DemandResult<Box<dyn DemandFile>> {
+        if self.excludes(path) {
+            return Err(OperationFailure::new(
+                DemandError::Absent,
+                WorkCounters::default(),
+            ));
+        }
+        self.inner
+            .open_file(source, path, expected, cancellation)
+            .await
+    }
+
     async fn read_link(
         &self,
         source: SourceReference,
@@ -396,10 +444,11 @@ impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
 pub mod native {
     use super::*;
     use crate::model::{FilesystemProfile, VolumeLimits};
-    use crate::native_host::HostRoot;
+    use crate::native_host::{HostListedEntry, HostRoot, HostStat, HostStatReader};
     #[cfg(unix)]
     use cap_std::fs::FileTypeExt as _;
-    use cap_std::fs::{Metadata, MetadataExt, ReadDir};
+    #[cfg(unix)]
+    use cap_std::fs::MetadataExt;
     use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -411,8 +460,8 @@ pub mod native {
     struct DirectoryState {
         directory: NamespacePath,
         version: SourceVersion,
-        entries: ReadDir,
-        pending: Option<cap_std::fs::DirEntry>,
+        entries: HostStatReader,
+        pending: Option<HostListedEntry>,
         replay: VecDeque<SourceDirectoryEntry>,
     }
 
@@ -512,6 +561,10 @@ pub mod native {
     struct NativeDemandInner {
         path: PathBuf,
         root: HostRoot,
+        /// Whether host I/O beneath the root may block a native callback
+        /// thread: only on a local filesystem, which cannot stall it past
+        /// the callback's timeout.
+        inline: bool,
         identity: [u8; 16],
         epoch: AtomicU64,
         profile: FilesystemProfile,
@@ -564,18 +617,6 @@ pub mod native {
                     })
                 })
                 .await;
-        }
-
-        #[cfg(test)]
-        pub(super) async fn validate_after_work_for_test(
-            &self,
-            work: WorkCounters,
-            cancellation: &CancellationToken,
-        ) -> DemandResult<()> {
-            self.run_blocking_after_work(work, cancellation, |_, _| {
-                unreachable!("validation must not start")
-            })
-            .await
         }
 
         #[cfg(test)]
@@ -713,6 +754,7 @@ pub mod native {
             Ok(Self {
                 inner: Arc::new(NativeDemandInner {
                     path,
+                    inline: root.is_local(),
                     root,
                     identity: reference.identity,
                     epoch: AtomicU64::new(reference.epoch),
@@ -746,6 +788,13 @@ pub mod native {
             if cancellation.is_cancelled() {
                 return Err(OperationFailure::before_work(DemandError::Cancelled));
             }
+            // A native callback thread blocks only its own request: run a
+            // local job there rather than hop to a pooled worker and back.
+            // A remote one stays on a worker, where the callback's timeout
+            // still bounds it.
+            if self.inner.inline && acyclic_native_runtime::inline_blocking_allowed() {
+                return job(self.clone(), cancellation.clone());
+            }
             let permit = tokio::select! {
                 acquired = self.inner.requests.clone().acquire_owned() =>
                     acquired.map_err(|_| OperationFailure::before_work(DemandError::WorkerUnavailable))?,
@@ -772,75 +821,6 @@ pub mod native {
             result.map_err(|_| OperationFailure::before_work(DemandError::WorkerUnavailable))?
         }
 
-        async fn run_blocking_after_work<T: Send + 'static>(
-            &self,
-            work: WorkCounters,
-            cancellation: &CancellationToken,
-            job: impl FnOnce(Self, CancellationToken) -> DemandResult<T> + Send + 'static,
-        ) -> DemandResult<T> {
-            if cancellation.is_cancelled() {
-                return Err(OperationFailure::new(DemandError::Cancelled, work));
-            }
-            let permit = tokio::select! {
-                acquired = self.inner.requests.clone().acquire_owned() =>
-                    acquired.map_err(|_| OperationFailure::new(DemandError::WorkerUnavailable, work))?,
-                () = cancellation.cancelled() =>
-                    return Err(OperationFailure::new(DemandError::Cancelled, work)),
-            };
-            let source = self.clone();
-            let cancel_on_drop = CancelWorkerOnDrop(CancellationToken::new());
-            let worker_cancellation = cancel_on_drop.0.clone();
-            let mut worker = tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                job(source, worker_cancellation)
-            });
-            let result = tokio::select! {
-                result = &mut worker => result,
-                () = cancellation.cancelled() => {
-                    cancel_on_drop.0.cancel();
-                    worker.await
-                },
-            };
-            result.map_err(|_| OperationFailure::new(DemandError::WorkerUnavailable, work))?
-        }
-
-        async fn validate_read_after_work(
-            &self,
-            relative: PathBuf,
-            validation_file: std::fs::File,
-            source: SourceReference,
-            expected: SourceVersion,
-            work: WorkCounters,
-            cancellation: &CancellationToken,
-        ) -> DemandResult<()> {
-            self.run_blocking_after_work(
-                work,
-                cancellation,
-                move |provider, worker_cancellation| {
-                    let after = cap_std::fs::File::from_std(validation_file)
-                        .metadata()
-                        .map_err(|error| OperationFailure::new(error.into(), work))?;
-                    if version(&after) != expected
-                        || provider
-                            .inner
-                            .root
-                            .symlink_metadata(&relative)
-                            .as_ref()
-                            .map(version)
-                            .ok()
-                            != Some(expected)
-                    {
-                        return Err(OperationFailure::new(DemandError::StaleVersion, work));
-                    }
-                    provider
-                        .check(source, &worker_cancellation)
-                        .map_err(|error| OperationFailure::new(error, work))?;
-                    Ok(OperationReceipt { value: (), work })
-                },
-            )
-            .await
-        }
-
         /// Invalidates prior source references and directory cursors without
         /// reading any descendant. Watch overflow and broad hints use this.
         pub fn invalidate(&self) -> SourceReference {
@@ -865,9 +845,11 @@ pub mod native {
             if cancellation.is_cancelled() {
                 return Err(DemandError::Cancelled);
             }
-            let current =
-                HostRoot::open(&self.inner.path).map_err(|_| DemandError::SourceUnavailable)?;
-            if current.identity() != self.inner.root.identity() {
+            // The held root answers for the source only while its path still
+            // names it. Comparing identities never reopens the root.
+            if crate::NativeRootIdentity::of_root_path(&self.inner.path).ok()
+                != Some(self.inner.root.identity())
+            {
                 return Err(DemandError::SourceUnavailable);
             }
             Ok(())
@@ -888,15 +870,15 @@ pub mod native {
                 .map_err(|_| DemandError::InvalidRequest)
         }
 
-        fn metadata(&self, path: &NamespacePath) -> Result<Option<Metadata>, DemandError> {
-            match self.inner.root.symlink_metadata(&self.relative(path)?) {
+        fn metadata(&self, path: &NamespacePath) -> Result<Option<HostStat>, DemandError> {
+            match self.inner.root.stat(&self.relative(path)?) {
                 Ok(metadata) => Ok(Some(metadata)),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(error.into()),
             }
         }
 
-        fn node(metadata: &Metadata) -> SourceNode {
+        fn node(metadata: &HostStat) -> SourceNode {
             let kind = node_kind(metadata.file_type());
             SourceNode {
                 kind,
@@ -964,18 +946,23 @@ pub mod native {
             Ok(DirectoryState {
                 directory: directory.clone(),
                 version: observed,
-                entries: self.inner.root.read_dir(&self.relative(directory)?)?,
+                entries: self.inner.root.read_dir_stats(&self.relative(directory)?)?,
                 pending: None,
                 replay: VecDeque::new(),
             })
         }
 
+        /// Converts one enumerated entry into the node a lookup reports,
+        /// stat'ing the name only where enumeration could not report it.
+        /// `None` means the entry vanished after enumeration.
         fn next_entry(
             &self,
-            entry: &cap_std::fs::DirEntry,
-        ) -> Result<SourceDirectoryEntry, DemandError> {
+            directory: &Path,
+            entry: &HostListedEntry,
+        ) -> Result<Option<SourceDirectoryEntry>, DemandError> {
+            let file_name = &entry.name;
             let (encoding, bytes) = crate::native_name::host_name_bytes(
-                &entry.file_name(),
+                file_name,
                 self.inner.profile,
                 self.inner.limits.maximum_component_bytes,
             )
@@ -986,8 +973,15 @@ pub mod native {
                 self.inner.limits.maximum_component_bytes,
             )
             .map_err(|_| DemandError::InvalidRequest)?;
-            let kind = node_kind(entry.file_type()?);
-            Ok(SourceDirectoryEntry { name, kind })
+            let node = match &entry.stat {
+                Some(stat) => Self::node(stat),
+                None => match self.inner.root.stat(&directory.join(file_name)) {
+                    Ok(stat) => Self::node(&stat),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(error.into()),
+                },
+            };
+            Ok(Some(SourceDirectoryEntry { name, node }))
         }
 
         fn page_entries(
@@ -1000,6 +994,7 @@ pub mod native {
         ) -> Result<Vec<SourceDirectoryEntry>, DemandError> {
             let mut entries = Vec::with_capacity(maximum_entries as usize);
             let result = (|| {
+                let directory = self.relative(&state.directory)?;
                 while entries.len() < maximum_entries as usize {
                     if cancellation.is_cancelled() {
                         return Err(DemandError::Cancelled);
@@ -1019,8 +1014,8 @@ pub mod native {
                     };
                     let Some(entry) = next else { break };
                     let entry = entry?;
-                    match self.next_entry(&entry) {
-                        Ok(converted) => entries.push(converted),
+                    match self.next_entry(&directory, &entry) {
+                        Ok(converted) => entries.extend(converted),
                         Err(error) => {
                             state.pending = Some(entry);
                             return Err(error);
@@ -1042,6 +1037,145 @@ pub mod native {
             }
             result.map(|()| entries)
         }
+    }
+
+    /// A byte range admitted for one native read: at most one MiB long and
+    /// addressable without overflow.
+    #[derive(Clone, Copy)]
+    struct ReadRange {
+        offset: u64,
+        length: u64,
+    }
+
+    impl ReadRange {
+        fn new(offset: u64, length: u64) -> Result<Self, DemandError> {
+            if length > 1024 * 1024 || offset.checked_add(length).is_none() {
+                return Err(DemandError::InvalidRequest);
+            }
+            Ok(Self { offset, length })
+        }
+    }
+
+    /// A regular source file held open after its version was proven against
+    /// the opened file itself. The type cannot exist without that proof.
+    ///
+    /// Reads never walk to the file or reopen the root: each is served from
+    /// the held file and then proves, exactly as a path-based read does, that
+    /// the file is unmodified, that its source path still names it, and that
+    /// the source root and reference are still current.
+    struct NativeDemandFile {
+        provider: NativeDemandSource,
+        source: SourceReference,
+        relative: PathBuf,
+        expected: SourceVersion,
+        logical_bytes: u64,
+        file: std::fs::File,
+    }
+
+    impl NativeDemandFile {
+        fn open(
+            provider: NativeDemandSource,
+            source: SourceReference,
+            path: &NamespacePath,
+            expected: SourceVersion,
+            cancellation: &CancellationToken,
+        ) -> Result<Self, DemandError> {
+            provider.check(source, cancellation)?;
+            provider.observe_parent(path)?;
+            let relative = provider.relative(path)?;
+            let file = match provider.inner.root.open_file(&relative) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(DemandError::Absent);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let file = file.into_std();
+            let opened = HostStat::from_file(&file)?;
+            if !opened.file_type().is_file() {
+                return Err(DemandError::NotRegularFile);
+            }
+            if version(&opened) != expected {
+                return Err(DemandError::StaleVersion);
+            }
+            Ok(Self {
+                provider,
+                source,
+                relative,
+                expected,
+                logical_bytes: opened.len(),
+                file,
+            })
+        }
+
+        fn read(
+            &self,
+            ReadRange { offset, length }: ReadRange,
+            cancellation: &CancellationToken,
+            work: &mut WorkCounters,
+        ) -> Result<Bytes, DemandError> {
+            let length = length.min(self.logical_bytes.saturating_sub(offset));
+            let mut bytes =
+                vec![0; usize::try_from(length).map_err(|_| DemandError::InvalidRequest)?];
+            let mut filled = 0;
+            while let Some(unfilled) = bytes.get_mut(filled..).filter(|rest| !rest.is_empty()) {
+                match read_at(&self.file, offset + filled as u64, unfilled) {
+                    Ok(0) => break,
+                    Ok(count) => filled += count,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            bytes.truncate(filled);
+            work.source_bytes_read = filled as u64;
+            self.prove_current(cancellation)?;
+            work.output_bytes = filled as u64;
+            Ok(Bytes::from(bytes))
+        }
+
+        /// Proves the bytes just read belong to the opened version: the held
+        /// file is unmodified (in-place writes), the source path still names
+        /// it (replacement by rename), and the root and reference are current.
+        fn prove_current(&self, cancellation: &CancellationToken) -> Result<(), DemandError> {
+            let held = HostStat::from_file(&self.file)?;
+            let named = self.provider.inner.root.stat(&self.relative);
+            if version(&held) != self.expected
+                || named.as_ref().map(version).ok() != Some(self.expected)
+            {
+                return Err(DemandError::StaleVersion);
+            }
+            self.provider.check(self.source, cancellation)
+        }
+    }
+
+    impl DemandFile for NativeDemandFile {
+        fn read_range(
+            &self,
+            offset: u64,
+            length: u64,
+            cancellation: &CancellationToken,
+        ) -> DemandResult<Bytes> {
+            let range = ReadRange::new(offset, length).map_err(OperationFailure::before_work)?;
+            measured(|work| self.read(range, cancellation, work))
+        }
+    }
+
+    #[cfg(unix)]
+    fn read_at(
+        file: &std::fs::File,
+        offset: u64,
+        destination: &mut [u8],
+    ) -> std::io::Result<usize> {
+        std::os::unix::fs::FileExt::read_at(file, destination, offset)
+    }
+
+    #[cfg(windows)]
+    fn read_at(
+        file: &std::fs::File,
+        offset: u64,
+        destination: &mut [u8],
+    ) -> std::io::Result<usize> {
+        std::os::windows::fs::FileExt::seek_read(file, destination, offset)
     }
 
     fn node_kind(file_type: cap_std::fs::FileType) -> SourceNodeKind {
@@ -1193,93 +1327,46 @@ pub mod native {
             length: u64,
             cancellation: &CancellationToken,
         ) -> DemandResult<Bytes> {
-            if cancellation.is_cancelled() {
-                return Err(OperationFailure::before_work(DemandError::Cancelled));
-            }
-            let length = usize::try_from(length)
-                .map_err(|_| OperationFailure::before_work(DemandError::InvalidRequest))?;
-            if length > 1024 * 1024 || offset.checked_add(length as u64).is_none() {
-                return Err(OperationFailure::before_work(DemandError::InvalidRequest));
-            }
-            let mut work = WorkCounters {
-                source_path_components: path.depth() as u64,
-                ..WorkCounters::default()
-            };
+            let range = ReadRange::new(offset, length).map_err(OperationFailure::before_work)?;
             let path = path.clone();
-            let prepared = self
-                .run_blocking(cancellation, move |provider, worker_cancellation| {
-                    provider
-                        .check(source, &worker_cancellation)
-                        .map_err(|error| OperationFailure::new(error, work))?;
-                    provider
-                        .observe_parent(&path)
-                        .map_err(|error| OperationFailure::new(error, work))?;
-                    let relative = provider
-                        .relative(&path)
-                        .map_err(|error| OperationFailure::new(error, work))?;
-                    let file = match provider.inner.root.open_file(&relative) {
-                        Ok(file) => file,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            return Err(OperationFailure::new(DemandError::Absent, work));
-                        }
-                        Err(error) => {
-                            return Err(OperationFailure::new(error.into(), work));
-                        }
-                    };
-                    let before = file
-                        .metadata()
-                        .map_err(|error| OperationFailure::new(error.into(), work))?;
-                    if !before.is_file() {
-                        return Err(OperationFailure::new(DemandError::NotRegularFile, work));
-                    }
-                    if version(&before) != expected {
-                        return Err(OperationFailure::new(DemandError::StaleVersion, work));
-                    }
-                    let available = before.len().saturating_sub(offset);
-                    let length = length.min(usize::try_from(available).unwrap_or(usize::MAX));
-                    Ok(OperationReceipt {
-                        value: (relative, file.into_std(), length),
-                        work,
-                    })
+            self.run_blocking(cancellation, move |provider, request_cancellation| {
+                measured(|work| {
+                    work.source_path_components = path.depth() as u64;
+                    NativeDemandFile::open(
+                        provider,
+                        source,
+                        &path,
+                        expected,
+                        &request_cancellation,
+                    )?
+                    .read(range, &request_cancellation, work)
                 })
-                .await?
-                .value;
-            let (relative, file, length) = prepared;
-            let validation_file = file
-                .try_clone()
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
-            let mut read = acyclic_native_runtime::read_batch_async(
-                file,
-                vec![acyclic_native_runtime::OwnedRead { offset, length }],
-            );
-            let mut cancelled = false;
-            let result = tokio::select! {
-                result = &mut read => result,
-                () = cancellation.cancelled() => {
-                    cancelled = true;
-                    read.await
-                }
-            }
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-            let bytes = result
-                .into_iter()
-                .next()
-                .ok_or_else(|| OperationFailure::new(DemandError::SourceUnavailable, work))?;
-            work.source_bytes_read = bytes.len() as u64;
-            if cancelled {
-                return Err(OperationFailure::new(DemandError::Cancelled, work));
-            }
-            self.validate_read_after_work(
-                relative,
-                validation_file,
-                source,
-                expected,
-                work,
-                cancellation,
-            )
-            .await?;
-            work.output_bytes = bytes.len() as u64;
-            Ok(OperationReceipt { value: bytes, work })
+            })
+            .await
+        }
+
+        async fn open_file(
+            &self,
+            source: SourceReference,
+            path: &NamespacePath,
+            expected: SourceVersion,
+            cancellation: &CancellationToken,
+        ) -> DemandResult<Box<dyn DemandFile>> {
+            let path = path.clone();
+            self.run_blocking(cancellation, move |provider, request_cancellation| {
+                measured(|work| {
+                    work.source_path_components = path.depth() as u64;
+                    let file = NativeDemandFile::open(
+                        provider,
+                        source,
+                        &path,
+                        expected,
+                        &request_cancellation,
+                    )?;
+                    Ok(Box::new(file) as Box<dyn DemandFile>)
+                })
+            })
+            .await
         }
 
         async fn read_link(
@@ -1330,7 +1417,7 @@ pub mod native {
         value.encode_wide().flat_map(u16::to_le_bytes).collect()
     }
 
-    fn version(metadata: &Metadata) -> SourceVersion {
+    fn version(metadata: &HostStat) -> SourceVersion {
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic-fs-native-source-version-v1\0");
         hash.update(&metadata.len().to_le_bytes());
@@ -1349,20 +1436,17 @@ pub mod native {
             hash.update(&metadata.last_write_time().to_le_bytes());
             hash.update(&metadata.creation_time().to_le_bytes());
             hash.update(
-                &cap_primitives::fs::_WindowsByHandle::volume_serial_number(metadata)
+                &metadata
+                    .volume_serial_number()
                     .unwrap_or_default()
                     .to_le_bytes(),
             );
-            hash.update(
-                &cap_primitives::fs::_WindowsByHandle::file_index(metadata)
-                    .unwrap_or_default()
-                    .to_le_bytes(),
-            );
+            hash.update(&metadata.file_index().unwrap_or_default().to_le_bytes());
         }
         SourceVersion(*hash.finalize().as_bytes())
     }
 
-    fn file_identity(metadata: &Metadata) -> [u8; 32] {
+    fn file_identity(metadata: &HostStat) -> [u8; 32] {
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic-fs-native-source-file-v1\0");
         #[cfg(unix)]
@@ -1373,29 +1457,24 @@ pub mod native {
         #[cfg(windows)]
         {
             hash.update(
-                &cap_primitives::fs::_WindowsByHandle::volume_serial_number(metadata)
+                &metadata
+                    .volume_serial_number()
                     .unwrap_or_default()
                     .to_le_bytes(),
             );
-            hash.update(
-                &cap_primitives::fs::_WindowsByHandle::file_index(metadata)
-                    .unwrap_or_default()
-                    .to_le_bytes(),
-            );
+            hash.update(&metadata.file_index().unwrap_or_default().to_le_bytes());
         }
         *hash.finalize().as_bytes()
     }
 
-    fn link_count(metadata: &Metadata) -> Option<u64> {
+    fn link_count(metadata: &HostStat) -> Option<u64> {
         #[cfg(unix)]
         {
             Some(metadata.nlink())
         }
-        #[cfg(windows)]
-        {
-            cap_primitives::fs::_WindowsByHandle::number_of_links(metadata).map(u64::from)
-        }
-        #[cfg(not(any(unix, windows)))]
+        // A Windows directory index records no link count, and a listed
+        // node must be exactly what a lookup reports.
+        #[cfg(not(unix))]
         {
             let _ = metadata;
             None
@@ -1406,7 +1485,7 @@ pub mod native {
         clippy::useless_conversion,
         reason = "dev_t and major/minor result widths differ across Unix targets"
     )]
-    fn device_identity(metadata: &Metadata, kind: SourceNodeKind) -> Option<(u32, u32)> {
+    fn device_identity(metadata: &HostStat, kind: SourceNodeKind) -> Option<(u32, u32)> {
         #[cfg(unix)]
         {
             if !matches!(
@@ -1428,7 +1507,7 @@ pub mod native {
         }
     }
 
-    fn source_metadata(metadata: &Metadata) -> SourceMetadata {
+    fn source_metadata(metadata: &HostStat) -> SourceMetadata {
         let mut result = SourceMetadata {
             created_ns: metadata.created().ok().and_then(system_time_nanos),
             modified_ns: metadata.modified().ok().and_then(system_time_nanos),
@@ -1608,6 +1687,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("directory"))?;
+        std::fs::write(root.path().join("file"), b"body")?;
+        std::fs::hard_link(root.path().join("file"), root.path().join("alias"))?;
+        // A link is listed as itself, never as its target.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("directory", root.path().join("link"))?;
+        let source = NativeDemandSource::open(
+            root.path(),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )
+        .await?;
+        let provider: &dyn DemandSource = &source;
+        let reference = provider.reference();
+        let cancellation = CancellationToken::new();
+        let page = provider
+            .list_page(reference, &path("/")?, None, 16, &cancellation)
+            .await?;
+        assert_eq!(page.value.entries.len(), if cfg!(unix) { 4 } else { 3 });
+        for entry in page.value.entries {
+            let name = entry
+                .name
+                .unicode_text()
+                .ok_or("listed name is not Unicode")?;
+            let looked_up = provider
+                .lookup(reference, &path(&format!("/{name}"))?, &cancellation)
+                .await?;
+            assert_eq!(looked_up.value, Some(entry.node), "{name}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn native_requests_wait_for_capacity_and_cancel_before_work() -> Result<(), Box<dyn Error>>
     {
         let root = tempfile::tempdir()?;
@@ -1639,37 +1753,118 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn post_read_validation_cancels_with_exact_prior_work() -> Result<(), Box<dyn Error>> {
-        let root = tempfile::tempdir()?;
-        let source = NativeDemandSource::open(
-            root.path(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-        )
-        .await?;
-        let permits = source.occupy_all_requests().await?;
+    /// Opens `/file` of a fresh source rooted at `<temporary>/source`.
+    async fn held_file(
+        contents: &[u8],
+    ) -> Result<(tempfile::TempDir, NativeDemandSource, Box<dyn DemandFile>), Box<dyn Error>> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("source");
+        std::fs::create_dir(&root)?;
+        std::fs::write(root.join("file"), contents)?;
+        let source =
+            NativeDemandSource::open(&root, FilesystemProfile::Portable, VolumeLimits::default())
+                .await?;
+        let reference = source.reference();
         let cancellation = CancellationToken::new();
-        let work = WorkCounters {
-            source_path_components: 2,
-            source_bytes_read: 17,
-            ..WorkCounters::default()
-        };
-        let validation = source.validate_after_work_for_test(work, &cancellation);
-        tokio::pin!(validation);
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), &mut validation)
-                .await
-                .is_err()
-        );
-        cancellation.cancel();
-        let failure = tokio::time::timeout(std::time::Duration::from_secs(1), &mut validation)
+        let node = source
+            .lookup(reference, &path("/file")?, &cancellation)
             .await?
+            .value
+            .ok_or("file absent")?;
+        let file = source
+            .open_file(reference, &path("/file")?, node.version, &cancellation)
+            .await?
+            .value;
+        Ok((temporary, source, file))
+    }
+
+    fn read_failure(file: &dyn DemandFile) -> Option<DemandError> {
+        file.read_range(0, 6, &CancellationToken::new())
             .err()
-            .ok_or("cancelled validation unexpectedly succeeded")?;
-        assert!(matches!(failure.error, DemandError::Cancelled));
-        assert_eq!(*failure.work, work);
-        drop(permits);
+            .map(|failure| failure.error)
+    }
+
+    #[tokio::test]
+    async fn held_file_reads_detect_in_place_modification() -> Result<(), Box<dyn Error>> {
+        use std::io::Write as _;
+        let (temporary, _source, file) = held_file(b"before").await?;
+        let read = file.read_range(0, 6, &CancellationToken::new())?;
+        assert_eq!(read.value.as_ref(), b"before");
+        assert_eq!(read.work.source_bytes_read, 6);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(temporary.path().join("source/file"))?
+            .write_all(b" and after")?;
+        assert!(matches!(
+            read_failure(file.as_ref()),
+            Some(DemandError::StaleVersion)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn held_file_reads_detect_path_replacement() -> Result<(), Box<dyn Error>> {
+        let (temporary, _source, file) = held_file(b"before").await?;
+        let root = temporary.path().join("source");
+        std::fs::rename(root.join("file"), root.join("moved"))?;
+        std::fs::write(root.join("file"), b"before")?;
+        assert!(matches!(
+            read_failure(file.as_ref()),
+            Some(DemandError::StaleVersion)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn held_file_reads_detect_invalidation() -> Result<(), Box<dyn Error>> {
+        let (_temporary, source, file) = held_file(b"before").await?;
+        source.invalidate();
+        assert!(matches!(
+            read_failure(file.as_ref()),
+            Some(DemandError::StaleSource)
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn held_file_reads_detect_root_replacement() -> Result<(), Box<dyn Error>> {
+        let (temporary, _source, file) = held_file(b"before").await?;
+        let root = temporary.path().join("source");
+        std::fs::rename(&root, temporary.path().join("moved"))?;
+        std::fs::create_dir(&root)?;
+        std::fs::write(root.join("file"), b"before")?;
+        assert!(matches!(
+            read_failure(file.as_ref()),
+            Some(DemandError::SourceUnavailable)
+        ));
+        Ok(())
+    }
+
+    /// A root that can be traversed but not opened for reading still serves
+    /// reads, so no read reopens it. (Privileged users bypass the mode.)
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reads_never_reopen_the_root() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (temporary, source, file) = held_file(b"before").await?;
+        let root = temporary.path().join("source");
+        let reference = source.reference();
+        let cancellation = CancellationToken::new();
+        let version = source
+            .lookup(reference, &path("/file")?, &cancellation)
+            .await?
+            .value
+            .ok_or("file absent")?
+            .version;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o100))?;
+        let held = file.read_range(0, 6, &cancellation);
+        let by_path = source
+            .read_range(reference, &path("/file")?, version, 0, 6, &cancellation)
+            .await;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))?;
+        assert_eq!(held?.value.as_ref(), b"before");
+        assert_eq!(by_path?.value.as_ref(), b"before");
         Ok(())
     }
 

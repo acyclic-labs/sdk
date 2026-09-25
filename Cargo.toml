@@ -1,11 +1,33 @@
 [workspace]
-# rust/crates/* are the SDK families; plugin is the single product
-# binary and portable agent-plugin package built on acyclic-fs.
-members = ["rust/crates/*", "plugin"]
+# Publishable SDK families, private qualification/binding crates, and the
+# single product binary are listed explicitly so retired crates cannot return.
+members = [
+  "rust/crates/conformance",
+  "rust/crates/filesystem",
+  "rust/crates/filesystem-napi",
+  "rust/crates/filesystem-wasm",
+  "rust/crates/harness-filesystem",
+  "rust/crates/harness-grpc",
+  "rust/crates/harness-machines",
+  "rust/crates/harness-objects",
+  "rust/crates/harness",
+  "rust/crates/inference",
+  "rust/crates/inference-wasm",
+  "rust/crates/machines",
+  "rust/crates/machines-wasm",
+  "rust/crates/machines-daytona",
+  "rust/crates/native-runtime",
+  "rust/crates/objects",
+  "rust/crates/objects-wasm",
+  "rust/crates/proto-codegen",
+  "rust/crates/stream",
+  "rust/crates/stream-wasm",
+  "plugin",
+]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.94"
 license = "Apache-2.0"
@@ -35,6 +57,7 @@ prost-build = "0.14.4"
 prost-types = "0.14.4"
 prost-reflect = { version = "0.16.3", features = ["serde"] }
 protoc-bin-vendored = "3.2.0"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rmcp = { version = "3.3.0", features = ["server", "macros", "transport-io", "schemars"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rustix = { version = "1.1.4", features = ["process"] }
@@ -51,6 +74,7 @@ subtle = "2.6.1"
 sync_wrapper = { version = "=1.0.2", features = ["futures"] }
 time = "0.3.55"
 toml = "0.8"
+tracing = "0.1.44"
 tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tonic = { version = "0.14.6", features = ["transport", "tls-ring", "tls-webpki-roots"] }

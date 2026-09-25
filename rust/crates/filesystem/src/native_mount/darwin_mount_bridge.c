@@ -29,6 +29,7 @@ struct acyclic_fs_native_stat {
   uint64_t device;
   uint32_t block_size;
   uint32_t flags;
+  uint64_t change;
 };
 
 struct acyclic_fs_native_times {
@@ -40,7 +41,6 @@ struct acyclic_fs_native_times {
 
 extern int acyclic_fs_darwin_mount_getattr(uintptr_t context, const char *path, uint64_t handle,
                                      struct acyclic_fs_native_stat *result);
-extern int acyclic_fs_darwin_mount_access(uintptr_t context, const char *path, int mask);
 extern int acyclic_fs_darwin_mount_open(uintptr_t context, const char *path, int flags,
                                   uint64_t *handle);
 extern int acyclic_fs_darwin_mount_create(uintptr_t context, const char *path, uint32_t mode,
@@ -53,6 +53,8 @@ extern int acyclic_fs_darwin_mount_write(uintptr_t context, const char *path, ui
 extern int acyclic_fs_darwin_mount_truncate(uintptr_t context, const char *path, uint64_t handle,
                                       int64_t length);
 extern int acyclic_fs_darwin_mount_flush(uintptr_t context, uint64_t handle);
+extern int acyclic_fs_darwin_mount_fsync(uintptr_t context);
+extern int acyclic_fs_darwin_mount_durable_writes(uintptr_t context);
 extern int acyclic_fs_darwin_mount_opendir(uintptr_t context, const char *path, uint64_t *handle);
 extern int acyclic_fs_darwin_mount_readdir(uintptr_t context, const char *path, void *buffer,
                                      fuse_fill_dir_t filler, int64_t offset, uint64_t handle);
@@ -123,6 +125,7 @@ static void apply_stat(struct stat *target, const struct acyclic_fs_native_stat 
   target->st_rdev = (dev_t)source->device;
   target->st_blksize = (blksize_t)source->block_size;
   target->st_flags = source->flags;
+  target->st_qspare[0] = (int64_t)source->change;
 }
 
 int acyclic_fs_darwin_mount_fill_directory(void *buffer, fuse_fill_dir_t filler, const char *name,
@@ -155,10 +158,6 @@ static int bridge_fgetattr(const char *path, struct stat *result,
     apply_stat(result, &portable);
   }
   return status;
-}
-
-static int bridge_access(const char *path, int mask) {
-  return acyclic_fs_darwin_mount_access(current_context(), path, mask);
 }
 
 static int bridge_open(const char *path, struct fuse_file_info *info) {
@@ -201,7 +200,8 @@ static int bridge_flush(const char *path, struct fuse_file_info *info) {
 static int bridge_fsync(const char *path, int data_only, struct fuse_file_info *info) {
   (void)path;
   (void)data_only;
-  return acyclic_fs_darwin_mount_flush(current_context(), info->fh);
+  (void)info;
+  return acyclic_fs_darwin_mount_fsync(current_context());
 }
 
 static int bridge_opendir(const char *path, struct fuse_file_info *info) {
@@ -317,12 +317,15 @@ static void *bridge_init(struct fuse_conn_info *connection) {
   if ((connection->capable & FUSE_CAP_EXPORT_SUPPORT) != 0) {
     connection->want |= FUSE_CAP_EXPORT_SUPPORT;
   }
+  if ((connection->capable & FUSE_CAP_DURABLE_WRITES) != 0 &&
+      acyclic_fs_darwin_mount_durable_writes(current_context())) {
+    connection->want |= FUSE_CAP_DURABLE_WRITES;
+  }
   return fuse_get_context()->private_data;
 }
 
 static const struct fuse_operations bridge_operations = {
     .getattr = bridge_getattr,
-    .access = bridge_access,
     .open = bridge_open,
     .create = bridge_create,
     .release = bridge_release,
@@ -425,14 +428,19 @@ int acyclic_fs_darwin_mount_invalidate(struct acyclic_fs_darwin_mount_session *s
   pthread_mutex_lock(&session->mutex);
   struct fuse *instance = session->instance;
   (void)path;
-  /* DarwinFUSE mounts with `noac`; there is no kernel-side entry cache to
-     invalidate, so a live session is already coherent. */
+  /* NFS has no server-to-client invalidation without delegations. The Rust
+     caller advances the change attribute, so the client discards cached
+     names and data at its next revalidation, within one second. */
   int status = instance == NULL ? -ESTALE : 0;
   if (instance != NULL) {
     fuse_mark_namespace_changed(instance);
   }
   pthread_mutex_unlock(&session->mutex);
   return status;
+}
+
+unsigned acyclic_fs_darwin_mount_attribute_timeout(void) {
+  return DARWINFUSE_ATTRIBUTE_TIMEOUT;
 }
 
 void acyclic_fs_darwin_mount_interrupt(struct acyclic_fs_darwin_mount_session *session) {

@@ -1,6 +1,6 @@
 {
   "name": "@acyclic-labs/pi",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "Pi model bridge for the Acyclic Harness runtime",
   "repository": "https://github.com/acyclic-labs/sdk",
   "license": "Apache-2.0",
@@ -11,6 +11,6 @@
   "types": "./dist/index.d.ts",
   "files": ["dist"],
   "scripts": { "build": "tsc -b", "test": "tsc -b --pretty false && tsc -p tsconfig.type-tests.json --pretty false" },
-  "peerDependencies": { "@acyclic-labs/harness": "0.1.0" },
+  "peerDependencies": { "@acyclic-labs/harness": "0.1.5" },
   "devDependencies": { "@acyclic-labs/harness": "workspace:*", "typescript": "7.0.2" }
 }

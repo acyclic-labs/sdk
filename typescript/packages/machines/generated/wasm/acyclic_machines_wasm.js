@@ -1,6 +1,13 @@
 /* @ts-self-types="./acyclic_machines_wasm.d.ts" */
 
 export class SimulatedMachinesBinding {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(SimulatedMachinesBinding.prototype);
+        obj.__wbg_ptr = ptr;
+        SimulatedMachinesBindingFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
@@ -95,6 +102,20 @@ export class SimulatedMachinesBinding {
         const ptr1 = passStringToWasm0(idempotency_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.simulatedmachinesbinding_fork(this.__wbg_ptr, ptr0, len0, count, performance, ptr1, len1);
+        return ret;
+    }
+    /**
+     * @param {string} id
+     * @param {number} count
+     * @param {string} idempotency_key
+     * @returns {Promise<Uint8Array>}
+     */
+    fork_machine(id, count, idempotency_key) {
+        const ptr0 = passStringToWasm0(id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(idempotency_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.simulatedmachinesbinding_fork_machine(this.__wbg_ptr, ptr0, len0, count, ptr1, len1);
         return ret;
     }
     /**
@@ -237,6 +258,19 @@ export class SimulatedMachinesBinding {
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.simulatedmachinesbinding_watch_operation(this.__wbg_ptr, ptr0, len0);
         return ret;
+    }
+    /**
+     * @param {Int32Array} values
+     * @returns {SimulatedMachinesBinding}
+     */
+    static with_capabilities(values) {
+        const ptr0 = passArray32ToWasm0(values, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.simulatedmachinesbinding_with_capabilities(ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return SimulatedMachinesBinding.__wrap(ret[0]);
     }
 }
 if (Symbol.dispose) SimulatedMachinesBinding.prototype[Symbol.dispose] = SimulatedMachinesBinding.prototype.free;
@@ -394,6 +428,14 @@ function getStringFromWasm0(ptr, len) {
     return decodeText(ptr, len);
 }
 
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
+}
+
 let cachedUint8ArrayMemory0 = null;
 function getUint8ArrayMemory0() {
     if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
@@ -441,6 +483,13 @@ function makeMutClosure(arg0, arg1, f) {
     };
     CLOSURE_DTORS.register(real, state, state);
     return real;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passArray8ToWasm0(arg, malloc) {
@@ -526,6 +575,7 @@ let wasmModule, wasm;
 function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
+    cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;

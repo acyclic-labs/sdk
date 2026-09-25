@@ -18,19 +18,19 @@ jobs:
         include:
           - target: linux-x64-gnu
             rust_target: x86_64-unknown-linux-gnu
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: blacksmith-16vcpu-ubuntu-2404
             executable: acyclic
           - target: linux-x64-musl
             rust_target: x86_64-unknown-linux-musl
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: blacksmith-16vcpu-ubuntu-2404
             executable: acyclic
           - target: linux-arm64-gnu
             rust_target: aarch64-unknown-linux-gnu
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            runner: blacksmith-16vcpu-ubuntu-2404-arm
             executable: acyclic
           - target: linux-arm64-musl
             rust_target: aarch64-unknown-linux-musl
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            runner: blacksmith-16vcpu-ubuntu-2404-arm
             executable: acyclic
           - target: darwin-x64
             rust_target: x86_64-apple-darwin
@@ -42,11 +42,11 @@ jobs:
             executable: acyclic
           - target: win32-x64
             rust_target: x86_64-pc-windows-msvc
-            runner: blacksmith-4vcpu-windows-2025
+            runner: blacksmith-16vcpu-windows-2025
             executable: acyclic.exe
           - target: win32-arm64
             rust_target: aarch64-pc-windows-msvc
-            runner: blacksmith-4vcpu-windows-2025
+            runner: blacksmith-16vcpu-windows-2025
             executable: acyclic.exe
     runs-on: ${{ matrix.runner }}
     steps:
@@ -55,6 +55,10 @@ jobs:
         with:
           toolchain: 1.94.0
           targets: ${{ matrix.rust_target }}
+      - name: Restore Rust build cache
+        uses: ./.github/actions/rust-build-cache
+        with:
+          scope: release-${{ matrix.rust_target }}
       - name: Install Windows ARM64 compiler
         if: matrix.rust_target == 'aarch64-pc-windows-msvc'
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
@@ -66,34 +70,68 @@ jobs:
         if: endsWith(matrix.rust_target, '-musl')
         shell: bash
         run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      # The product, the native qualification executable, and the Cargo
+      # installation check are independent builds with different flags, so they
+      # run side by side in separate target directories.
       - name: Build the unified executable
+        shell: bash
         env:
           CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
+          CC_aarch64_unknown_linux_musl: ${{ matrix.rust_target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.rust_target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
           CC_aarch64_pc_windows_msvc: ${{ matrix.rust_target == 'aarch64-pc-windows-msvc' && format('{0}/llvm/bin/clang.exe', runner.temp) || '' }}
-        run: node scripts/build-product.mjs
+          BUILD_QUALIFIER: ${{ matrix.target == 'linux-x64-gnu' || matrix.target == 'darwin-arm64' || matrix.target == 'win32-x64' }}
+          VERIFY_CARGO_INSTALL: ${{ matrix.target == 'linux-x64-gnu' }}
+        run: |
+          set -euo pipefail
+          # Complete rust-toolchain.toml components once, before parallel builds
+          # race to install them.
+          cargo --version
+          pids=()
+          names=()
+          if [[ "$BUILD_QUALIFIER" == true ]]; then
+            cargo build --locked --release --target "$CARGO_BUILD_TARGET" -p acyclic-conformance \
+              --features local-runner --bin native-mount-qualify --target-dir target-qualifier \
+              >"$RUNNER_TEMP/qualifier.log" 2>&1 &
+            pids+=("$!")
+            names+=(qualifier)
+          fi
+          if [[ "$VERIFY_CARGO_INSTALL" == true ]]; then
+            (
+              install_root=$(mktemp -d)
+              env -u CARGO_BUILD_TARGET cargo install --locked --path plugin --root "$install_root" \
+                --target-dir "$RUNNER_TEMP/cargo-install-target"
+              expected=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acyclic-plugin") | "acyclic \(.version)"')
+              test "$("$install_root/bin/acyclic" --version)" = "$expected"
+              "$install_root/bin/acyclic" --help
+            ) >"$RUNNER_TEMP/install.log" 2>&1 &
+            pids+=("$!")
+            names+=(install)
+          fi
+          # Report every concurrent build even when the product build fails.
+          status=0
+          node scripts/build-product.mjs || status=$?
+          for index in "${!pids[@]}"; do
+            if ! wait "${pids[$index]}"; then
+              status=1
+              echo "::error::${names[$index]} build failed"
+            fi
+            echo "::group::${names[$index]}"
+            cat "$RUNNER_TEMP/${names[$index]}.log"
+            echo "::endgroup::"
+          done
+          exit "$status"
       - name: Verify release architecture and runtime ABI
         shell: bash
         run: node scripts/verify-release-binary.mjs '${{ matrix.target }}' 'target/${{ matrix.rust_target }}/release/${{ matrix.executable }}'
-      - name: Verify Cargo installation
-        if: matrix.target == 'linux-x64-gnu'
-        shell: bash
-        run: |
-          install_root=$(mktemp -d)
-          cargo install --locked --path plugin --root "$install_root"
-          expected=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acyclic-labs-plugin") | "acyclic \(.version)"')
-          test "$("$install_root/bin/acyclic" --version)" = "$expected"
-          "$install_root/bin/acyclic" --help
-      - name: Build native qualification executable
-        if: matrix.target == 'linux-x64-gnu' || matrix.target == 'darwin-arm64' || matrix.target == 'win32-x64'
-        run: cargo build --locked --release --target '${{ matrix.rust_target }}' -p acyclic-conformance --features local-runner --bin native-mount-qualify
       - name: Stage normalized executable
         shell: bash
         run: |
           mkdir -p "release/${{ matrix.target }}"
           cp "target/${{ matrix.rust_target }}/release/${{ matrix.executable }}" "release/${{ matrix.target }}/${{ matrix.executable }}"
           case "${{ matrix.target }}" in
-            linux-x64-gnu|darwin-arm64) cp "target/${{ matrix.rust_target }}/release/native-mount-qualify" "release/${{ matrix.target }}/native-mount-qualify" ;;
-            win32-x64) cp "target/${{ matrix.rust_target }}/release/native-mount-qualify.exe" "release/${{ matrix.target }}/native-mount-qualify.exe" ;;
+            linux-x64-gnu|darwin-arm64) cp "target-qualifier/${{ matrix.rust_target }}/release/native-mount-qualify" "release/${{ matrix.target }}/native-mount-qualify" ;;
+            win32-x64) cp "target-qualifier/${{ matrix.rust_target }}/release/native-mount-qualify.exe" "release/${{ matrix.target }}/native-mount-qualify.exe" ;;
           esac
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -203,7 +241,10 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_REF_NAME" =~ ^acyclic-v([0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?)$ ]]
           version=${BASH_REMATCH[1]}
-          tag_oid=$(git rev-parse "$GITHUB_REF")
+          # checkout v4 may replace the local annotated tag with its peeled commit.
+          git fetch --no-tags --force origin \
+            "$GITHUB_REF:refs/release-tags/$GITHUB_REF_NAME"
+          tag_oid=$(git rev-parse "refs/release-tags/$GITHUB_REF_NAME")
           test "$(git cat-file -t "$tag_oid")" = tag
           source_sha=$(git rev-parse "$tag_oid^{commit}")
           test "$(git rev-parse HEAD)" = "$source_sha"
@@ -225,19 +266,28 @@ jobs:
           pattern: native-mount-*
           path: release/native-mount
           merge-multiple: true
+      - name: Restore executable modes after artifact download
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GitHub artifacts preserve bytes, but not executable mode.
+          for binary in release/binaries/acyclic-{linux,darwin}-*/*/acyclic; do
+            test -f "$binary"
+            chmod 755 "$binary"
+          done
       - name: Verify native receipts against release artifacts
         run: |
           qualifier=release/binaries/acyclic-linux-x64-gnu/linux-x64-gnu/native-mount-qualify
           chmod +x "$qualifier"
           version=$(node -p "require('./plugin/package.json').version")
           "$qualifier" --verify-receipt release/native-mount/linux-fuse.json \
-            --require-kind linux-fuse --release-version "$version" \
+            --require-kind linux-fuse --release-version "$version" --release-arch x86_64 \
             --release-executable release/binaries/acyclic-linux-x64-gnu/linux-x64-gnu/acyclic
           "$qualifier" --verify-receipt release/native-mount/macos-nfs.json \
-            --require-kind macos-nfs --release-version "$version" \
+            --require-kind macos-nfs --release-version "$version" --release-arch aarch64 \
             --release-executable release/binaries/acyclic-darwin-arm64/darwin-arm64/acyclic
           "$qualifier" --verify-receipt release/native-mount/windows-projfs.json \
-            --require-kind windows-projfs --release-version "$version" \
+            --require-kind windows-projfs --release-version "$version" --release-arch x86_64 \
             --release-executable release/binaries/acyclic-win32-x64/win32-x64/acyclic.exe
       - name: Build and validate the universal plugin
         run: |
@@ -288,12 +338,11 @@ jobs:
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/.agents/plugins/marketplace.json"
           test ! -e "$prefix/lib/node_modules/@acyclic-labs/plugin/src"
           test -f "$state/acyclic/state-v5/certification/native-mount-linux-x64-gnu.json"
-      - name: Run packaged Codex lifecycle end to end
+      - name: Validate packaged Codex installation and MCP bridge
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          test -n "$OPENAI_API_KEY"
           package="$ACYCLIC_NPM_PACKAGE"
           test -f "$package"
           prefix=$(mktemp -d)
@@ -303,17 +352,28 @@ jobs:
           export XDG_CONFIG_HOME="$home/.config"
           export XDG_STATE_HOME="$home/.state"
           export PATH="$prefix/bin:$PATH"
+          mkdir -p "$CODEX_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
           codex_version=$(node -p "require('./plugin/tests/hosts/package.json').dependencies['@openai/codex']")
           npm install --global --prefix "$prefix" "$package" "@openai/codex@$codex_version"
           acyclic install codex
           codex plugin list --marketplace acyclic --json | jq -e '.installed[] | select(.pluginId == "acyclic@acyclic" and .enabled == true)'
-          timeout 480 codex exec --ephemeral --json --skip-git-repo-check \
-            -c 'plugins."acyclic@acyclic".mcp_servers.acyclic.tools.acyclic.approval_mode="approve"' \
-            --dangerously-bypass-hook-trust -C "$GITHUB_WORKSPACE" \
-            'Call the acyclic MCP tool with arguments ["agents","--json"]. Only after it succeeds, reply exactly ACYCLIC_E2E_OK.' \
-            > "$home/fresh-task.jsonl"
-          grep -q 'ACYCLIC_E2E_OK' "$home/fresh-task.jsonl"
           acyclic agents --json | jq -e '.schemaVersion == 1'
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-e2e","version":"1"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"acyclic","arguments":{"argv":["agents","--json"]}}}' \
+            | timeout 20 acyclic __mcp-commandless > "$home/mcp-task.jsonl"
+          jq -e 'select(.id == 2) | .result.isError != true and ((.result.content[0].text | fromjson | .schemaVersion) == 1)' "$home/mcp-task.jsonl"
+          if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+            timeout 480 codex exec --ephemeral --json --skip-git-repo-check \
+              -c 'plugins."acyclic@acyclic".mcp_servers.acyclic.tools.acyclic.approval_mode="approve"' \
+              --dangerously-bypass-hook-trust -C "$GITHUB_WORKSPACE" \
+              'Call the acyclic MCP tool with arguments ["agents","--json"]. Only after it succeeds, reply exactly ACYCLIC_E2E_OK.' \
+              > "$home/fresh-task.jsonl"
+            grep -q 'ACYCLIC_E2E_OK' "$home/fresh-task.jsonl"
+          else
+            echo '::warning::OPENAI_API_KEY is not configured; live model invocation was skipped after packaged Codex registration and MCP tool-call verification.'
+          fi
           test -d "$XDG_STATE_HOME/acyclic/state-v5"
           acyclic uninstall codex
           test -d "$XDG_STATE_HOME/acyclic/state-v5"

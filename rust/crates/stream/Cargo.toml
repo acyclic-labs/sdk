@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-stream"
-version = "0.1.0"
+version = "0.1.5"
 edition.workspace = true
 rust-version = "1.92"
 license.workspace = true
@@ -37,7 +37,7 @@ uuid.workspace = true
 libc = { version = "0.2.175", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-acyclic-native-runtime = { version = "=0.1.0", path = "../native-runtime" }
+acyclic-native-runtime = { version = "=0.1.5", path = "../native-runtime" }
 
 [build-dependencies]
 protoc-bin-vendored.workspace = true
@@ -48,7 +48,7 @@ hyper = { version = "1.11.0", default-features = false, features = ["client", "h
 hyper-util.workspace = true
 rcgen = "0.14.10"
 tempfile = "3.27.0"
-tokio = { version = "1.48.0", features = ["test-util"] }
+tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
 tokio-stream.workspace = true
 tower.workspace = true
 

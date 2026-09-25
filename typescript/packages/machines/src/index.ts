@@ -17,7 +17,12 @@ export type Image =
   | { readonly kind: "custom"; readonly digestHex: string }
   | { readonly kind: "checkpoint"; readonly checkpointId: CheckpointId };
 
-export type Capability = "elastic-cpu" | "elastic-memory" | "live-checkpoint" | "live-fork" | "suspend-resume" | "live-movement";
+export type Capability = "elastic-cpu" | "elastic-memory" | "live-checkpoint" | "live-fork" | "suspend-resume" | "live-movement" | "disk-fork";
+/** Fidelity of children produced by a live machine fork. */
+export type ForkFidelity = "memory-and-disk" | "disk-only";
+export function forkFidelity(capabilities: readonly Capability[]): ForkFidelity | null {
+  return capabilities.includes("live-fork") ? "memory-and-disk" : capabilities.includes("disk-fork") ? "disk-only" : null;
+}
 export type CompatibilityPolicy = { readonly kind: "best-effort" } | { readonly kind: "require"; readonly capabilities: readonly Capability[] };
 export type Performance = "elastic" | "dedicated";
 export type SuspensionPolicy = { readonly kind: "manual" } | { readonly kind: "after-idle"; readonly milliseconds: number };
@@ -50,7 +55,7 @@ export type EventFact = { readonly kind: "state"; readonly state: MachineState }
 /** Sequence and timestamp remain exact and are rejected above Number.MAX_SAFE_INTEGER. */
 export interface MachineEvent { readonly machine: MachineId; readonly sequence: number; readonly observedAtUnixMs: number; readonly fact: EventFact }
 export interface UsageReceipt { readonly machine: MachineId; readonly startUnixMs: number; readonly endUnixMs: number; readonly elasticCpuNs: bigint; readonly dedicatedCpuNs: bigint; readonly privateResidentByteSeconds: bigint; readonly durablePrivateBytes: bigint; readonly lineageReceiptSha256: Uint8Array; readonly egressBytes: bigint; readonly receipt: Uint8Array }
-export type MutationOutcome = { readonly kind: "created"; readonly machine: MachineObservation } | { readonly kind: "checkpointed"; readonly checkpoint: CheckpointObservation } | { readonly kind: "forked"; readonly machines: readonly MachineObservation[] } | { readonly kind: "suspended" | "woken" | "machine-destroyed"; readonly machineId: MachineId } | { readonly kind: "suspension-policy-set"; readonly machineId: MachineId; readonly policy: SuspensionPolicy } | { readonly kind: "checkpoint-destroyed"; readonly checkpointId: CheckpointId };
+export type MutationOutcome = { readonly kind: "created"; readonly machine: MachineObservation } | { readonly kind: "checkpointed"; readonly checkpoint: CheckpointObservation } | { readonly kind: "forked"; readonly machines: readonly MachineObservation[] } | { readonly kind: "machine-forked"; readonly source: MachineId; readonly fidelity: ForkFidelity; readonly children: readonly MachineObservation[] } | { readonly kind: "suspended" | "woken" | "machine-destroyed"; readonly machineId: MachineId } | { readonly kind: "suspension-policy-set"; readonly machineId: MachineId; readonly policy: SuspensionPolicy } | { readonly kind: "checkpoint-destroyed"; readonly checkpointId: CheckpointId };
 
 /** Provider contract. Implementations must document their actual isolation and durability. */
 export interface MachinesProvider {
@@ -62,6 +67,7 @@ export interface MachinesProvider {
   checkpoint(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
   inspectCheckpoint(checkpointId: CheckpointId): Promise<CheckpointObservation>;
   fork(checkpointId: CheckpointId, count: number, performance: Performance, key: IdempotencyKey): Promise<MutationOutcome>;
+  forkMachine(machineId: MachineId, count: number, key: IdempotencyKey): Promise<MutationOutcome>;
   suspend(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
   wake(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
   setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, key: IdempotencyKey): Promise<MutationOutcome>;

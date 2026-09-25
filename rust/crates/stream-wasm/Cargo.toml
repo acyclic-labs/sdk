@@ -12,7 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acyclic-stream = { version = "=0.1.0", path = "../stream", default-features = false }
+acyclic-stream = { version = "=0.1.5", path = "../stream", default-features = false }
 bytes.workspace = true
 futures.workspace = true
 prost.workspace = true

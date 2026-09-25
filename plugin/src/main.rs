@@ -43,14 +43,15 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Read, Seek, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
+#[cfg(any(test, not(target_os = "linux")))]
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
-use acyclic_native_runtime::{RenameMode, durable_rename};
+use acyclic_native_runtime::{Durability, RenameMode, durable_rename, sync_file, sync_parent};
 use control_protocol::{ControlEnvelope, ControlLedger, LedgerDecision};
 use fs2::FileExt as _;
 #[cfg(target_os = "linux")]
@@ -358,11 +359,13 @@ impl LocalMount {
         Ok(())
     }
 
+    /// Publishes every route, then detaches them all, so a publication
+    /// failure leaves every route mounted and publishing again.
     async fn unmount(&self) -> Result<(), String> {
-        for mount in self.routes.values() {
-            mount.unmount().await.map_err(display)?;
-        }
-        Ok(())
+        self.sync().await?;
+        // Each route's own unmount is exactly this publication followed by
+        // its detach; publishing once per route is enough.
+        self.abandon()
     }
 
     fn abandon(&self) -> Result<(), String> {
@@ -1600,7 +1603,6 @@ struct RootBinding {
     repository_workspace_id: [u8; 16],
     source_identity: [u8; 16],
     source_epoch: u64,
-    #[serde(default)]
     native_root_identity: [u8; 16],
 }
 
@@ -1608,7 +1610,6 @@ struct RootBinding {
 struct RouteRoot {
     root_id: [u8; 16],
     repository_workspace_id: [u8; 16],
-    #[serde(default)]
     published_generation: [u8; 32],
 }
 
@@ -1629,11 +1630,8 @@ struct Route {
     context_id: [u8; 16],
     root_id: [u8; 16],
     parent_agent_id: String,
-    #[serde(default)]
     roots: BTreeMap<String, RouteRoot>,
-    #[serde(default)]
     mount_path: PathBuf,
-    #[serde(default)]
     lifecycle: RouteLifecycle,
 }
 
@@ -1674,18 +1672,13 @@ impl RouteLifecycle {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PendingSpawn {
     parent_agent_id: String,
-    #[serde(default)]
     tool_use_id: String,
-    #[serde(default)]
     active_root_id: Option<[u8; 16]>,
     expires_at_millis: u64,
     workspace_name: String,
     fork_key: [u8; 16],
-    #[serde(default)]
     roots: BTreeMap<String, RouteRoot>,
-    #[serde(default)]
     mount_path: PathBuf,
-    #[serde(default)]
     lifecycle: PendingSpawnLifecycle,
 }
 
@@ -1712,9 +1705,7 @@ impl PendingSpawn {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct LeaseRecord {
     agent_id: String,
-    #[serde(default)]
     turn_id: String,
-    #[serde(default)]
     tool_name: String,
     roots: BTreeMap<String, RootLeaseRecord>,
     expires_at_millis: u64,
@@ -1740,7 +1731,6 @@ struct DiscardAgent {
     agent_id: String,
     path: PathBuf,
     repository_workspace_ids: Vec<[u8; 16]>,
-    #[serde(default)]
     mount_detached: bool,
     workspaces: VecDeque<DiscardWorkspace>,
 }
@@ -1809,21 +1799,16 @@ struct AdapterState {
     root_session_id: String,
     active: bool,
     root_agent_id: String,
-    #[serde(default)]
     root_turns: BTreeSet<String>,
     root_context_id: [u8; 16],
     root_id: [u8; 16],
-    #[serde(default)]
     roots: BTreeMap<String, RootBinding>,
-    #[serde(default)]
     pending_root_registration: bool,
-    #[serde(default)]
     pending_root_adoptions: BTreeSet<String>,
     routes: BTreeMap<String, Route>,
     turns: BTreeMap<String, String>,
     pending: VecDeque<PendingSpawn>,
     leases: BTreeMap<String, LeaseRecord>,
-    #[serde(default)]
     pending_discards: BTreeMap<String, PendingDiscard>,
 }
 
@@ -1839,8 +1824,13 @@ struct ControlPlane {
     physical_roots: BTreeMap<String, Arc<SharedPhysicalRoot>>,
     mounts: BTreeMap<String, LocalMount>,
     pending_mounts: BTreeMap<[u8; 16], LocalMount>,
+    /// The last save was left unflushed; see [`Survives::ServiceCrash`].
+    unflushed: bool,
+    slots: StateSlots,
     #[cfg(test)]
     owns_local_root: bool,
+    #[cfg(test)]
+    fail_next_flush: bool,
     #[cfg(test)]
     fail_next_unmount: BTreeSet<String>,
     #[cfg(test)]
@@ -1886,7 +1876,7 @@ impl ControlPlane {
         let fs = LocalFs::local(LocalOptions::new(data.join("filesystem")))
             .await
             .map_err(display)?;
-        let store = LocalCoreStateStore::new(data.join("core-state"));
+        let store = LocalCoreStateStore::open_owned(data.join("core-state")).map_err(display)?;
         let mut control =
             Self::open_with(data.clone(), data, fs, store, SharedRootRegistry::default()).await?;
         control.owns_local_root = true;
@@ -1901,7 +1891,7 @@ impl ControlPlane {
         shared_roots: SharedRootRegistry,
     ) -> Result<Self, String> {
         fs::create_dir_all(&data).map_err(display)?;
-        let state = load_state(&data)?;
+        let (state, slots) = load_state(&data)?;
         let mut control = Self {
             data,
             config_root,
@@ -1914,8 +1904,12 @@ impl ControlPlane {
             physical_roots: BTreeMap::new(),
             mounts: BTreeMap::new(),
             pending_mounts: BTreeMap::new(),
+            unflushed: false,
+            slots,
             #[cfg(test)]
             owns_local_root: false,
+            #[cfg(test)]
+            fail_next_flush: false,
             #[cfg(test)]
             fail_next_unmount: BTreeSet::new(),
             #[cfg(test)]
@@ -2562,7 +2556,7 @@ impl ControlPlane {
             self.roots.insert(
                 key.clone(),
                 self.distributed
-                    .open_lazy(workspace, Arc::clone(&source))
+                    .open_or_attach_lazy(workspace, Arc::clone(&source))
                     .await
                     .map_err(display)?,
             );
@@ -2767,8 +2761,12 @@ impl ControlPlane {
             .await?;
         let source = Arc::clone(&physical.source);
         let source_reference = source.reference();
-        let workspace = self
-            .distributed
+        // The root's binding, lineage, and context commit as one change set
+        // with one flush. The durable intent below precedes it, so recovery
+        // can repeat all three, binding the root afresh if its attach was lost.
+        let (store, durability) = self.store.defer_durability();
+        let distributed = DistributedFs::new(self.fs.clone(), store);
+        let workspace = distributed
             .attach_lazy_with_config(
                 &workspace_name,
                 Arc::clone(&source),
@@ -2808,12 +2806,12 @@ impl ControlPlane {
             self.fail_after_root_intent = false;
             return Err("injected failure after root registration intent".to_owned());
         }
-        self.distributed
+        distributed
             .lineage()
             .register_root(workspace.workspace())
             .await
             .map_err(display)?;
-        self.distributed
+        distributed
             .contexts()
             .register_root(
                 context_id,
@@ -2828,10 +2826,13 @@ impl ControlPlane {
             )
             .await
             .map_err(display)?;
+        durability.commit().await.map_err(display)?;
         self.state.pending_root_registration = false;
         self.roots.insert(root_key(root_id), workspace);
         self.physical_roots.insert(root_key(root_id), physical);
-        self.persist()?;
+        // Losing this save leaves the flushed intent, from which restore_root
+        // repeats both registrations idempotently.
+        self.persist_unflushed()?;
         Ok(json!({
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
@@ -2851,7 +2852,7 @@ impl ControlPlane {
             return Err("root turn identity is already bound to a subagent".to_owned());
         }
         self.remember_root_turn(turn_id);
-        self.persist()?;
+        self.persist_unflushed()?;
         Ok(json!({"suppressOutput": true}))
     }
 
@@ -2920,7 +2921,10 @@ impl ControlPlane {
                 lifecycle: PendingSpawnLifecycle::Preparing,
             });
             self.persist()?;
-            if let Err(error) = self.prepare_pending_spawn(fork_key.into_bytes()).await {
+            if let Err(error) = self
+                .prepare_pending_spawn(fork_key.into_bytes(), Survives::ServiceCrash)
+                .await
+            {
                 let cleanup = self.discard_pending_spawn(fork_key.into_bytes()).await;
                 return match cleanup {
                     Ok(()) => Err(error),
@@ -3685,7 +3689,24 @@ impl ControlPlane {
             }
         }
         self.state.leases.remove(&tool_use_id);
-        self.persist()
+        let propagated = if sync_error.is_none() && !expired {
+            let mut propagated = Ok(());
+            for root_id in finished_roots {
+                propagated = self
+                    .propagate_parent_advance(&record.agent_id, root_id)
+                    .await;
+                if propagated.is_err() {
+                    break;
+                }
+            }
+            propagated
+        } else {
+            Ok(())
+        };
+        // The close is saved last, so that it is the request's final effect;
+        // the operation is already closed in the store, and recovery closes a
+        // lease whose close was lost.
+        self.persist_unflushed()
             .map_err(|error| format!("cannot persist the closed tool lease: {error}"))?;
         if let Some(error) = sync_error {
             let quarantine_error = self
@@ -3701,10 +3722,7 @@ impl ControlPlane {
         if expired {
             return Err("filesystem tool lease expired; late writes were fenced".to_owned());
         }
-        for root_id in finished_roots {
-            self.propagate_parent_advance(&record.agent_id, root_id)
-                .await?;
-        }
+        propagated?;
         if conflicts.is_empty() {
             Ok(json!({}))
         } else {
@@ -4011,7 +4029,13 @@ impl ControlPlane {
     /// to spawn it. `SubagentStart` is advisory in several hosts, while the
     /// spawn tool hook is a blocking boundary. Preparing here therefore closes
     /// the isolation gap without paying for a throwaway probe mount.
-    async fn prepare_pending_spawn(&mut self, fork_key: [u8; 16]) -> Result<(), String> {
+    /// Prepares a spawn's child workspaces and mount. `prepared` is how the
+    /// final mark is saved: unflushed only when it ends the request.
+    async fn prepare_pending_spawn(
+        &mut self,
+        fork_key: [u8; 16],
+        prepared: Survives,
+    ) -> Result<(), String> {
         let pending = self
             .state
             .pending
@@ -4051,6 +4075,10 @@ impl ControlPlane {
         }
         let mut route_roots = pending.roots.clone();
         if pending.lifecycle == PendingSpawnLifecycle::Preparing {
+            // Every root's fork binding, lineage, and the child context commit
+            // as one change set, durable before the mount mark below.
+            let (store, durability) = self.store.defer_durability();
+            let distributed = DistributedFs::new(self.fs.clone(), store);
             fs::create_dir_all(&pending.mount_path).map_err(display)?;
             if pending
                 .mount_path
@@ -4079,13 +4107,11 @@ impl ControlPlane {
                     source_binding.native_root_identity,
                     &source_binding.path,
                 )?;
-                let parent_workspace = self
-                    .distributed
+                let parent_workspace = distributed
                     .workspace(parent_root.workspace_id)
                     .await
                     .map_err(display)?;
-                let parent_lazy = self
-                    .distributed
+                let parent_lazy = distributed
                     .open_lazy(parent_workspace, source)
                     .await
                     .map_err(display)?;
@@ -4096,7 +4122,7 @@ impl ControlPlane {
                     .fork(&child_name, derived_idempotency_key(fork_key, *root_id))
                     .await
                     .map_err(display)?;
-                self.distributed
+                distributed
                     .lineage()
                     .register_existing_child(
                         parent_lazy.workspace(),
@@ -4122,11 +4148,12 @@ impl ControlPlane {
                     },
                 );
             }
-            self.distributed
+            distributed
                 .contexts()
                 .register_child(pending.context_id(), parent_context_id, context_roots)
                 .await
                 .map_err(display)?;
+            durability.commit().await.map_err(display)?;
             let prepared = self
                 .state
                 .pending
@@ -4135,6 +4162,8 @@ impl ControlPlane {
                 .ok_or_else(|| "pending spawn disappeared before mount intent".to_owned())?;
             prepared.roots.clone_from(&route_roots);
             prepared.lifecycle = PendingSpawnLifecycle::Mounting;
+            // Flushed: a mount can leave placeholders behind across a power
+            // loss, which recovery accepts only after this mark.
             self.persist()?;
         }
         let mut roots = Vec::with_capacity(route_roots.len());
@@ -4178,7 +4207,10 @@ impl ControlPlane {
             .find(|candidate| candidate.fork_key == fork_key)
             .ok_or_else(|| "pending spawn disappeared after mount".to_owned())?
             .lifecycle = PendingSpawnLifecycle::Prepared;
-        self.persist()
+        match prepared {
+            Survives::ServiceCrash => self.persist_unflushed(),
+            Survives::PowerLoss => self.persist(),
+        }
     }
 
     fn pending_active_root(&self, pending: &PendingSpawn) -> Result<WorkspaceRootId, String> {
@@ -4227,7 +4259,8 @@ impl ControlPlane {
             if expires_at <= now || lifecycle == PendingSpawnLifecycle::Discarding {
                 self.discard_pending_spawn(fork_key).await?;
             } else {
-                self.prepare_pending_spawn(fork_key).await?;
+                self.prepare_pending_spawn(fork_key, Survives::PowerLoss)
+                    .await?;
             }
         }
         Ok(())
@@ -4244,7 +4277,7 @@ impl ControlPlane {
         let pending = pending.clone();
         self.persist()?;
         if let Some(mount) = self.pending_mounts.get(&pending.fork_key) {
-            mount.unmount().await.map_err(display)?;
+            mount.unmount().await?;
             self.pending_mounts.remove(&pending.fork_key);
         }
         if let Ok(context) = self
@@ -5001,8 +5034,7 @@ impl ControlPlane {
             return Err("injected mount teardown failure".to_owned());
         }
         if let Some(mount) = self.mounts.get(agent_id) {
-            mount.sync().await.map_err(display)?;
-            mount.unmount().await.map_err(display)?;
+            mount.unmount().await?;
             self.mounts.remove(agent_id);
         }
         Ok(())
@@ -5459,11 +5491,50 @@ impl ControlPlane {
         Ok(())
     }
 
-    fn persist(&self) -> Result<(), String> {
-        save_state(&self.data, &self.state)
+    fn persist(&mut self) -> Result<(), String> {
+        self.slots
+            .save(&self.data, &self.state, Survives::PowerLoss)?;
+        // A flushed save is a whole snapshot, so it covers any unflushed one.
+        self.unflushed = false;
+        Ok(())
     }
 
-    async fn shutdown(mut self) -> Result<(), String> {
+    /// Saves the last transition of a request without flushing it; see
+    /// [`Survives::ServiceCrash`].
+    fn persist_unflushed(&mut self) -> Result<(), String> {
+        self.slots
+            .save(&self.data, &self.state, Survives::ServiceCrash)?;
+        self.unflushed = true;
+        Ok(())
+    }
+
+    /// Flushes an unflushed save. Every request starts here, so nothing ever
+    /// acts on a transition that a power loss could still undo.
+    async fn make_durable(&mut self) -> Result<(), String> {
+        if !self.unflushed {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_flush) {
+            return Err("injected adapter-state flush failure".to_owned());
+        }
+        let data = self.data.clone();
+        tokio::task::spawn_blocking(move || flush_state_slot(&data, ADAPTER_STATE_SLOTS[2]))
+            .await
+            .map_err(display)??;
+        self.unflushed = false;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    async fn shutdown(self) -> Result<(), String> {
+        self.close().await.map(drop)
+    }
+
+    /// Shuts the session down and hands back what it knows of its state
+    /// slots, for a terminal save.
+    async fn close(mut self) -> Result<StateSlots, String> {
+        self.make_durable().await?;
         #[cfg(test)]
         let root_released = if self.owns_local_root {
             self.fs.local_root_release_barrier()
@@ -5534,11 +5605,6 @@ impl ControlPlane {
                     }
                     continue;
                 }
-                if let Err(error) = mount.sync().await {
-                    first_error.get_or_insert_with(|| {
-                        format!("cannot synchronize agent '{agent_id}' during shutdown: {error}")
-                    });
-                }
                 if let Err(error) = mount.unmount().await {
                     first_error.get_or_insert_with(|| {
                         format!("cannot unmount agent '{agent_id}' during shutdown: {error}")
@@ -5560,6 +5626,7 @@ impl ControlPlane {
             first_error.map_or(Ok(()), Err)
         }
         .await;
+        let slots = self.slots;
         // The shared service owns the physical root-release boundary. A standalone test control
         // owns its root directly, so it waits here after dropping every provider handle.
         drop(self);
@@ -5575,7 +5642,7 @@ impl ControlPlane {
                 "standalone control retained filesystem handles after shutdown".to_owned()
             })?;
         }
-        result
+        result.map(|()| slots)
     }
 }
 
@@ -6360,90 +6427,256 @@ const MAXIMUM_ADAPTER_PENDING: usize = 4_096;
 const MAXIMUM_ADAPTER_LEASES: usize = 16_384;
 const MAXIMUM_ADAPTER_DISCARDS: usize = 4_096;
 
-fn load_state(data: &Path) -> Result<AdapterState, String> {
-    let path = data.join("adapter-state.json");
-    let previous = data.join("adapter-state.previous.json");
-    match read_state(&path) {
-        Ok(Some(state)) => Ok(state),
-        Ok(None) => match read_state(&previous) {
-            Ok(Some(state)) => Ok(state),
-            Ok(None) => Ok(AdapterState {
-                version: ADAPTER_STATE_VERSION,
-                ..AdapterState::default()
-            }),
-            Err(error) => Err(error),
-        },
-        Err(current_error) => match read_state(&previous) {
-            Ok(Some(state)) => Ok(state),
-            Ok(None) => Err(current_error),
-            Err(previous_error) => Err(format!(
-                "current adapter state is invalid: {current_error}; previous adapter state is invalid: {previous_error}"
-            )),
-        },
+/// Adapter state is saved into self-validating slots rewritten in place.
+/// Flushed saves alternate between two slots, and a save only ever overwrites
+/// the slot that does not hold the newest flushed save, so a torn write can
+/// damage nothing but itself. Unflushed saves go to a third slot that loading
+/// prefers only while it is intact and newer, so losing one to a power loss
+/// leaves the last flushed save.
+const ADAPTER_STATE_SLOTS: [&str; 3] = ["adapter-state.a", "adapter-state.b", "adapter-state.v"];
+
+/// The failures an adapter-state transition must survive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Survives {
+    /// Written without a flush, as the last action of a request. Nothing acts
+    /// on it until it is durable: the session flushes it before its next
+    /// request and before publishing it to other sessions, and loading a
+    /// session makes it durable first. Losing it to a power loss therefore
+    /// leaves exactly the state that a crash just before it leaves.
+    ServiceCrash,
+    /// Flushed before the caller continues.
+    PowerLoss,
+}
+const ADAPTER_STATE_MAGIC: [u8; 8] = *b"ACYSTAT1";
+/// Magic, little-endian generation, then the digest of generation and payload.
+const ADAPTER_STATE_HEADER_BYTES: usize = 8 + 8 + 32;
+
+enum StateSlot {
+    Missing,
+    Torn,
+    Saved { generation: u64, payload: Vec<u8> },
+}
+
+impl StateSlot {
+    const fn generation(&self) -> Option<u64> {
+        match self {
+            Self::Saved { generation, .. } => Some(*generation),
+            Self::Missing | Self::Torn => None,
+        }
     }
 }
 
-fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
-    save_state_with_rename(data, state, durable_rename)
+fn state_digest(generation: u64, payload: &[u8]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&generation.to_le_bytes());
+    hasher.update(payload);
+    *hasher.finalize().as_bytes()
 }
 
-fn save_state_with_rename(
-    data: &Path,
-    state: &AdapterState,
-    mut rename: impl FnMut(&Path, &Path, RenameMode) -> io::Result<()>,
-) -> Result<(), String> {
-    validate_state_version(state)?;
-    validate_state_bounds(state)?;
-    let mut serialized = BoundedJsonBuffer::new();
-    serde_json::to_writer(&mut serialized, state).map_err(|_| {
-        format!("adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound")
-    })?;
-    let path = data.join("adapter-state.json");
-    let previous = data.join("adapter-state.previous.json");
-    let next = data.join("adapter-state.next.json");
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&next)
+fn read_state_slot(path: &Path) -> Result<StateSlot, String> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(StateSlot::Missing),
+        Err(error) => return Err(display(error)),
+    };
+    let bound = MAXIMUM_ADAPTER_STATE_BYTES + ADAPTER_STATE_HEADER_BYTES as u64;
+    let mut bytes = Vec::new();
+    file.take(bound + 1)
+        .read_to_end(&mut bytes)
         .map_err(display)?;
-    file.write_all(&serialized.bytes).map_err(display)?;
-    file.sync_all().map_err(display)?;
-    drop(file);
-    if path.exists() {
-        rename(&path, &previous, RenameMode::Replace).map_err(display)?;
+    if bytes.len() as u64 > bound {
+        return Err(format!(
+            "adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound"
+        ));
     }
-    rename(&next, &path, RenameMode::Replace).map_err(display)
+    let parsed = bytes.split_first_chunk::<8>().and_then(|(magic, rest)| {
+        let (generation, rest) = rest.split_first_chunk::<8>()?;
+        let (digest, payload) = rest.split_first_chunk::<32>()?;
+        Some((magic, u64::from_le_bytes(*generation), digest, payload))
+    });
+    Ok(match parsed {
+        Some((magic, generation, digest, payload))
+            if *magic == ADAPTER_STATE_MAGIC && *digest == state_digest(generation, payload) =>
+        {
+            StateSlot::Saved {
+                generation,
+                payload: payload.to_vec(),
+            }
+        }
+        _ => StateSlot::Torn,
+    })
 }
 
-fn read_state(path: &Path) -> Result<Option<AdapterState>, String> {
-    match fs::File::open(path) {
-        Ok(file) => {
-            let length = file.metadata().map_err(display)?.len();
-            if length > MAXIMUM_ADAPTER_STATE_BYTES {
-                return Err(format!(
-                    "adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound"
-                ));
+/// What the owning process knows of a session's state slots. It is read once,
+/// when the session loads, and kept in step with every save, so a save writes
+/// its target slot and reads nothing.
+#[derive(Clone, Copy, Debug)]
+struct StateSlots {
+    /// The generation of each flushed slot's durable save; `None` when the
+    /// slot is missing or torn, or its last write did not complete durably.
+    /// Such a slot is never the newest flushed save, so it stays the target
+    /// until a flushed save completes in it.
+    flushed: [Option<u64>; 2],
+    /// Whether each flushed slot's directory entry is durable.
+    durable_entry: [bool; 2],
+    /// The highest generation read or ever written, whether or not the write
+    /// completed, so every save is newer than anything any slot can hold.
+    last_generation: u64,
+}
+
+impl StateSlots {
+    /// Reads every slot as `[flushed, flushed, unflushed]`.
+    fn read(data: &Path) -> Result<(Self, [StateSlot; 3]), String> {
+        let [first, second, unflushed] =
+            ADAPTER_STATE_SLOTS.map(|name| read_state_slot(&data.join(name)));
+        let slots = [first?, second?, unflushed?];
+        let known = Self {
+            flushed: [slots[0].generation(), slots[1].generation()],
+            durable_entry: [
+                !matches!(slots[0], StateSlot::Missing),
+                !matches!(slots[1], StateSlot::Missing),
+            ],
+            last_generation: slots
+                .iter()
+                .filter_map(StateSlot::generation)
+                .max()
+                .unwrap_or(0),
+        };
+        Ok((known, slots))
+    }
+
+    /// The flushed slot holding the newest flushed save.
+    fn newest_flushed(&self) -> usize {
+        usize::from(self.flushed[1] > self.flushed[0])
+    }
+
+    fn save(
+        &mut self,
+        data: &Path,
+        state: &AdapterState,
+        survives: Survives,
+    ) -> Result<(), String> {
+        validate_state_version(state)?;
+        validate_state_bounds(state)?;
+        let mut serialized = BoundedJsonBuffer::new();
+        serde_json::to_writer(&mut serialized, state)
+            .ok()
+            .filter(|()| serialized.bytes.len() as u64 <= MAXIMUM_ADAPTER_STATE_BYTES)
+            .ok_or_else(|| {
+                format!("adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound")
+            })?;
+        let generation = self
+            .last_generation
+            .checked_add(1)
+            .ok_or("adapter state generation is exhausted")?;
+        self.last_generation = generation;
+        let target = match survives {
+            Survives::ServiceCrash => 2,
+            Survives::PowerLoss => {
+                let target = 1 - self.newest_flushed();
+                if let Some(flushed) = self.flushed.get_mut(target) {
+                    *flushed = None;
+                }
+                target
             }
-            let capacity = usize::try_from(length)
-                .map_err(|_| "adapter state length does not fit this platform".to_owned())?;
-            let mut bytes = Vec::with_capacity(capacity);
-            file.take(MAXIMUM_ADAPTER_STATE_BYTES + 1)
-                .read_to_end(&mut bytes)
-                .map_err(display)?;
-            if bytes.len() as u64 > MAXIMUM_ADAPTER_STATE_BYTES {
-                return Err(format!(
-                    "adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound"
-                ));
+        };
+        let name = ADAPTER_STATE_SLOTS
+            .get(target)
+            .ok_or("adapter state slot is out of range")?;
+        let mut bytes = Vec::with_capacity(ADAPTER_STATE_HEADER_BYTES + serialized.bytes.len());
+        bytes.extend_from_slice(&ADAPTER_STATE_MAGIC);
+        bytes.extend_from_slice(&generation.to_le_bytes());
+        bytes.extend_from_slice(&state_digest(generation, &serialized.bytes));
+        bytes.extend_from_slice(&serialized.bytes);
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(data.join(name))
+            .map_err(display)?;
+        file.write_all(&bytes).map_err(display)?;
+        file.set_len(bytes.len() as u64).map_err(display)?;
+        if let (Some(flushed), Some(durable_entry)) = (
+            self.flushed.get_mut(target),
+            self.durable_entry.get_mut(target),
+        ) {
+            sync_file(&file, Durability::Full).map_err(display)?;
+            if !*durable_entry {
+                sync_parent(data, Durability::Full).map_err(display)?;
+                *durable_entry = true;
             }
-            let state = serde_json::from_slice(&bytes).map_err(display)?;
+            *flushed = Some(generation);
+        }
+        Ok(())
+    }
+}
+
+fn load_state(data: &Path) -> Result<(AdapterState, StateSlots), String> {
+    let (slots, [first, second, unflushed]) = StateSlots::read(data)?;
+    let (flushed, other) = if slots.newest_flushed() == 1 {
+        (second, first)
+    } else {
+        (first, second)
+    };
+    let newest = if unflushed.generation() > flushed.generation() {
+        // A process that exited before flushing its last save leaves it only
+        // in memory; nothing may act on it before it is durable.
+        flush_state_slot(data, ADAPTER_STATE_SLOTS[2])?;
+        unflushed
+    } else {
+        flushed
+    };
+    let state = match (newest, other) {
+        (StateSlot::Saved { payload, .. }, _) => {
+            let state = serde_json::from_slice(&payload).map_err(display)?;
             validate_state_version(&state)?;
             validate_state_bounds(&state)?;
-            Ok(Some(state))
+            state
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(display(error)),
-    }
+        // No flushed save was ever made, and no unflushed one survives.
+        (StateSlot::Missing, StateSlot::Missing) => AdapterState {
+            version: ADAPTER_STATE_VERSION,
+            ..AdapterState::default()
+        },
+        _ => return Err("adapter state holds no completed save".to_owned()),
+    };
+    Ok((state, slots))
+}
+
+/// Loads a session directory's state without keeping its slots.
+#[cfg(test)]
+fn load_saved_state(data: &Path) -> Result<AdapterState, String> {
+    load_state(data).map(|(state, _)| state)
+}
+
+/// Saves into a session directory that no loaded session owns.
+#[cfg(test)]
+fn save_state(data: &Path, state: &AdapterState, survives: Survives) -> Result<(), String> {
+    StateSlots::read(data)?.0.save(data, state, survives)
+}
+
+/// Makes an unflushed save durable.
+fn flush_state_slot(data: &Path, name: &str) -> Result<(), String> {
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(data.join(name))
+        .map_err(display)?;
+    sync_file(&file, Durability::Full).map_err(display)?;
+    sync_parent(data, Durability::Full).map_err(display)
+}
+
+/// When the session last completed a save, for newest-first recovery order.
+fn state_modified(data: &Path) -> std::time::SystemTime {
+    ADAPTER_STATE_SLOTS
+        .iter()
+        .filter_map(|slot| {
+            data.join(slot)
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        })
+        .max()
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
 }
 
 fn validate_state_version(state: &AdapterState) -> Result<(), String> {
@@ -6774,11 +7007,8 @@ struct ControlRequest {
     version: u32,
     command: ControlCommand,
     cwd: PathBuf,
-    #[serde(default)]
     argv: Vec<String>,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     arguments: Value,
 }
 
@@ -6895,8 +7125,12 @@ async fn start_control_endpoint(
         let pipe_path = format!(r"\\.\pipe\{opaque_name}");
         #[cfg(test)]
         let endpoint_pipe_path = pipe_path.clone();
+        // The first instance exists before this returns, so a started
+        // endpoint accepts connections at once.
+        let first = create_current_user_pipe(&pipe_path, true).map_err(display)?;
         let task = tokio::spawn(serve_windows_control(
             pipe_path,
+            first,
             control,
             ledger,
             shutdown.clone(),
@@ -7072,7 +7306,7 @@ async fn handle_linux_mailbox_request(
     control: Arc<impl ConcurrentControlRequestDispatcher>,
     ledger: Arc<ControlLedger>,
 ) -> Result<(), String> {
-    let response = match read_linux_control_file_at(&exchange, "processing").await {
+    let response = match read_linux_control_file_at(&exchange, "processing") {
         Ok(request) if request.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => {
             match serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request) {
                 Ok(envelope) => dispatch_control_envelope(&control, &ledger, envelope).await,
@@ -7082,7 +7316,6 @@ async fn handle_linux_mailbox_request(
         Ok(_) => uncorrelated_control_response("Acyclic control request exceeds the 4 MiB bound"),
         Err(error) => uncorrelated_control_response(&display(error)),
     };
-    let encoded = encode_control_response(&response)?;
     let Ok(response_file) = rustix::fs::openat(
         &*exchange,
         "response.pending",
@@ -7096,20 +7329,20 @@ async fn handle_linux_mailbox_request(
     ) else {
         return Ok(());
     };
-    let mut response_file = tokio::fs::File::from_std(std::fs::File::from(response_file));
-    if response_file.write_all(&encoded).await.is_err() || response_file.flush().await.is_err() {
+    if std::fs::File::from(response_file)
+        .write_all(&response)
+        .is_err()
+    {
         return Ok(());
     }
-    drop(response_file);
     let _ = rustix::fs::renameat(&*exchange, "response.pending", &*exchange, "response");
     Ok(())
 }
 
+/// Exchange files are bounded and live in a private runtime directory, so
+/// reading one directly is cheaper than a hop through the blocking pool.
 #[cfg(target_os = "linux")]
-async fn read_linux_control_file_at(
-    directory: &rustix::fd::OwnedFd,
-    name: &str,
-) -> io::Result<Vec<u8>> {
+fn read_linux_control_file_at(directory: &rustix::fd::OwnedFd, name: &str) -> io::Result<Vec<u8>> {
     let file = rustix::fs::openat(
         directory,
         name,
@@ -7127,15 +7360,14 @@ async fn read_linux_control_file_at(
             "Acyclic control message is not a regular file",
         ));
     }
-    let file = tokio::fs::File::from_std(std::fs::File::from(file));
+    let file = std::fs::File::from(file);
     let mut request = Vec::with_capacity(MAXIMUM_CONTROL_MESSAGE_BYTES.min(64 * 1024));
     file.take(
         u64::try_from(MAXIMUM_CONTROL_MESSAGE_BYTES)
             .unwrap_or(u64::MAX)
             .saturating_add(1),
     )
-    .read_to_end(&mut request)
-    .await?;
+    .read_to_end(&mut request)?;
     Ok(request)
 }
 
@@ -7172,11 +7404,7 @@ fn errno_to_io(error: rustix::io::Errno) -> io::Error {
     io::Error::from_raw_os_error(error.raw_os_error())
 }
 
-#[cfg(unix)]
-#[allow(
-    unsafe_code,
-    reason = "geteuid has no preconditions and reads no memory"
-)]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn unix_control_socket_path(data: &Path) -> PathBuf {
     unix_control_runtime_directory().join(format!(
         "service-{}.sock",
@@ -7306,21 +7534,23 @@ fn same_user_peer(stream: &tokio::net::UnixStream) -> Result<bool, String> {
 #[cfg(windows)]
 async fn serve_windows_control(
     pipe_path: String,
+    first: tokio::net::windows::named_pipe::NamedPipeServer,
     control: Arc<impl ConcurrentControlRequestDispatcher + 'static>,
     ledger: Arc<ControlLedger>,
     shutdown_sender: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
     #[cfg(test)] accepted: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
-    let mut first = true;
+    let mut next = Some(first);
     let mut connections = tokio::task::JoinSet::new();
     let result = 'result: loop {
-        let server = create_current_user_pipe(&pipe_path, first);
-        let server = match server {
-            Ok(server) => server,
-            Err(error) => break Err(display(error)),
+        let server = match next.take() {
+            Some(server) => server,
+            None => match create_current_user_pipe(&pipe_path, false) {
+                Ok(server) => server,
+                Err(error) => break Err(display(error)),
+            },
         };
-        first = false;
         let connected = loop {
             tokio::select! {
                 connected = server.connect(), if connections.len() < MAXIMUM_CONCURRENT_CONTROL_REQUESTS => break connected,
@@ -7474,9 +7704,8 @@ where
             }
         }
     };
-    let encoded = encode_control_response(&response)?;
     let write = async {
-        stream.write_all(&encoded).await.map_err(display)?;
+        stream.write_all(&response).await.map_err(display)?;
         stream.write_all(b"\n").await.map_err(display)?;
         stream.flush().await.map_err(display)
     };
@@ -7499,7 +7728,7 @@ async fn dispatch_control_envelope(
     control: &Arc<impl ConcurrentControlRequestDispatcher>,
     ledger: &Arc<ControlLedger>,
     envelope: ControlEnvelope<ControlRequest>,
-) -> Value {
+) -> Vec<u8> {
     let request_id = envelope.request_id.clone();
     if let Err(error) = envelope.validate() {
         return control_response_for(&request_id, Err(error));
@@ -7513,39 +7742,21 @@ async fn dispatch_control_envelope(
             dispatch_control_request(control, envelope.request).await,
         );
     }
-    let begin = {
-        let ledger = Arc::clone(ledger);
-        let envelope = envelope.clone();
-        tokio::task::spawn_blocking(move || ledger.begin(&envelope)).await
-    };
-    match begin {
-        Err(error) => control_response_for(
-            &request_id,
-            Err(format!("Acyclic control replay worker failed: {error}")),
-        ),
-        Ok(Err(error)) => control_response_for(&request_id, Err(error)),
-        Ok(Ok(LedgerDecision::Completed(response))) => response,
-        Ok(Ok(LedgerDecision::Execute)) => {
+    // Ledger transitions are single unflushed appends, cheaper than handing
+    // them to a blocking worker.
+    match ledger.begin(&envelope) {
+        Err(error) => control_response_for(&request_id, Err(error)),
+        Ok(LedgerDecision::Completed(response)) => response,
+        Ok(LedgerDecision::Execute) => {
             let result = dispatch_control_request(control, envelope.request.clone()).await;
+            // The ledger records exactly the bounded bytes that are sent.
             let response = control_response_for(&request_id, result);
-            let completion = {
-                let ledger = Arc::clone(ledger);
-                let envelope = envelope.clone();
-                let response = response.clone();
-                tokio::task::spawn_blocking(move || ledger.complete(&envelope, response)).await
-            };
-            match completion {
+            match ledger.complete(&envelope, &response) {
+                Ok(()) => response,
                 Err(error) => control_response_for(
                     &request_id,
                     Err(format!(
-                        "Acyclic completed the operation but its replay worker failed: {error}"
-                    )),
-                ),
-                Ok(Ok(())) => response,
-                Ok(Err(error)) => control_response_for(
-                    &request_id,
-                    Err(format!(
-                        "Acyclic completed the operation but could not durably record its response: {error}"
+                        "Acyclic completed the operation but could not record its response: {error}"
                     )),
                 ),
             }
@@ -7588,12 +7799,16 @@ struct ServiceResources {
 impl ServiceResources {
     async fn open(data: PathBuf) -> Result<(Self, BTreeMap<String, ControlPlane>), String> {
         fs::create_dir_all(data.join("sessions")).map_err(display)?;
+        // A binary that has not been identified since it changed is hashed in
+        // full; that runs alongside opening the filesystem.
+        let identity_data = data.clone();
+        let binary_identity = tokio::task::spawn_blocking(move || service_identity(&identity_data));
         let fs = LocalFs::local(LocalOptions::new(data.join("filesystem")))
             .await
             .map_err(display)?;
-        let binary_identity = service_identity()?;
+        let binary_identity = binary_identity.await.map_err(display)??;
         let resources = Self {
-            store: LocalCoreStateStore::new(data.join("core-state")),
+            store: LocalCoreStateStore::open_owned(data.join("core-state")).map_err(display)?,
             shared_roots: SharedRootRegistry::default(),
             binary_identity,
             instance_id: uuid::Uuid::new_v4().to_string(),
@@ -7615,20 +7830,14 @@ impl ServiceResources {
             .collect::<Result<Vec<_>, _>>()
             .map_err(display)?;
         entries.sort_by(|left, right| {
-            let modified = |path: &Path| {
-                path.join("adapter-state.json")
-                    .metadata()
-                    .and_then(|metadata| metadata.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-            };
-            modified(right)
-                .cmp(&modified(left))
+            state_modified(right)
+                .cmp(&state_modified(left))
                 .then_with(|| right.cmp(left))
         });
         let mut sessions = BTreeMap::new();
         let mut retained_sources = BTreeMap::<PathBuf, ([u8; 16], [u8; 16])>::new();
         for entry in entries {
-            let state = load_state(&entry)?;
+            let (state, _) = load_state(&entry)?;
             if !state.active {
                 continue;
             }
@@ -7864,30 +8073,33 @@ impl ServiceControl {
             .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())?;
         let mut terminal_state = control.state.clone();
         let directory = control.data.clone();
-        if let Err(shutdown_error) = control.shutdown().await {
-            let recovered = ControlPlane::open_with(
-                directory,
-                self.data.clone(),
-                self.fs.clone(),
-                self.store.clone(),
-                self.shared_roots.clone(),
-            )
-            .await;
-            return match recovered {
-                Ok(control) => {
-                    self.sessions.insert(session_id.to_owned(), control);
-                    Err(format!(
-                        "Acyclic session shutdown failed and was restored: {shutdown_error}"
-                    ))
-                }
-                Err(recovery_error) => Err(format!(
-                    "Acyclic session shutdown failed: {shutdown_error}; live recovery failed: {recovery_error}"
-                )),
-            };
-        }
+        let mut slots = match control.close().await {
+            Ok(slots) => slots,
+            Err(shutdown_error) => {
+                let recovered = ControlPlane::open_with(
+                    directory,
+                    self.data.clone(),
+                    self.fs.clone(),
+                    self.store.clone(),
+                    self.shared_roots.clone(),
+                )
+                .await;
+                return match recovered {
+                    Ok(control) => {
+                        self.sessions.insert(session_id.to_owned(), control);
+                        Err(format!(
+                            "Acyclic session shutdown failed and was restored: {shutdown_error}"
+                        ))
+                    }
+                    Err(recovery_error) => Err(format!(
+                        "Acyclic session shutdown failed: {shutdown_error}; live recovery failed: {recovery_error}"
+                    )),
+                };
+            }
+        };
         if deactivate {
             terminal_state.active = false;
-            save_state(&directory, &terminal_state)?;
+            slots.save(&directory, &terminal_state, Survives::PowerLoss)?;
         }
         Ok(())
     }
@@ -8440,11 +8652,27 @@ impl SessionHandle {
                             Some(control) => dispatch_session_request(control, request).await,
                             None => Err("Acyclic session actor has no workspace".to_owned()),
                         };
-                        let next = control.as_ref().map(|control| control.state.clone());
-                        if let Ok(mut snapshot) = actor_snapshot.write() {
-                            *snapshot = next;
+                        // Other sessions see only durable state: an unflushed
+                        // save is published once flushed, after the reply.
+                        let mut pending = Some((response, result));
+                        if control.as_ref().is_some_and(|control| control.unflushed)
+                            && let Some((response, result)) = pending.take()
+                        {
+                            let _ = response.send(result);
                         }
-                        let _ = response.send(result);
+                        let durable = match control.as_mut() {
+                            Some(control) => control.make_durable().await.is_ok(),
+                            None => true,
+                        };
+                        if durable {
+                            let next = control.as_ref().map(|control| control.state.clone());
+                            if let Ok(mut snapshot) = actor_snapshot.write() {
+                                *snapshot = next;
+                            }
+                        }
+                        if let Some((response, result)) = pending {
+                            let _ = response.send(result);
+                        }
                     }
                     SessionCommand::Shutdown {
                         deactivate,
@@ -8458,11 +8686,15 @@ impl SessionHandle {
                             Ok(current) => {
                                 let mut terminal_state = current.state.clone();
                                 let directory = current.data.clone();
-                                match current.shutdown().await {
-                                    Ok(()) => {
+                                match current.close().await {
+                                    Ok(mut slots) => {
                                         if deactivate {
                                             terminal_state.active = false;
-                                            save_state(&directory, &terminal_state)
+                                            slots.save(
+                                                &directory,
+                                                &terminal_state,
+                                                Survives::PowerLoss,
+                                            )
                                         } else {
                                             Ok(())
                                         }
@@ -9193,6 +9425,7 @@ async fn dispatch_session_request(
     control: &mut ControlPlane,
     request: ControlRequest,
 ) -> Result<Value, String> {
+    control.make_durable().await?;
     if request.command == ControlCommand::Hook {
         let (host, event) = request
             .name
@@ -9356,19 +9589,11 @@ async fn dispatch_plane_request(
     }
 }
 
-#[cfg(test)]
-fn control_response(result: Result<Value, String>) -> Value {
-    match result {
-        Ok(result) => json!({"version":1,"ok":true,"result":result}),
-        Err(error) => json!({"version":1,"ok":false,"error":error}),
-    }
+fn uncorrelated_control_response(error: &str) -> Vec<u8> {
+    encode_control_response(&json!({"version":2,"ok":false,"error":error}), None)
 }
 
-fn uncorrelated_control_response(error: &str) -> Value {
-    json!({"version":2,"ok":false,"error":error})
-}
-
-fn invalid_control_request_response(request: &[u8], error: &serde_json::Error) -> Value {
+fn invalid_control_request_response(request: &[u8], error: &serde_json::Error) -> Vec<u8> {
     let message = format!("invalid Acyclic control request: {error}");
     let request_id = serde_json::from_slice::<Value>(request)
         .ok()
@@ -9380,10 +9605,11 @@ fn invalid_control_request_response(request: &[u8], error: &serde_json::Error) -
     }
 }
 
+/// Encodes the response for one request, bounded to one control message.
 fn control_response_for(
     request_id: &control_protocol::RequestId,
     result: Result<Value, String>,
-) -> Value {
+) -> Vec<u8> {
     let response = match result {
         Ok(result) => {
             json!({"version":2,"requestId":request_id.as_str(),"ok":true,"result":result})
@@ -9392,18 +9618,7 @@ fn control_response_for(
             json!({"version":2,"requestId":request_id.as_str(),"ok":false,"error":error})
         }
     };
-    if serde_json::to_vec(&response)
-        .is_ok_and(|encoded| encoded.len().saturating_add(1) < MAXIMUM_CONTROL_MESSAGE_BYTES)
-    {
-        response
-    } else {
-        json!({
-            "version":2,
-            "requestId":request_id.as_str(),
-            "ok":false,
-            "error":"Acyclic control response exceeds the 4 MiB bound"
-        })
-    }
+    encode_control_response(&response, Some(request_id))
 }
 
 struct BoundedJsonBuffer {
@@ -9435,26 +9650,25 @@ impl Write for BoundedJsonBuffer {
     }
 }
 
-fn encode_control_response(response: &Value) -> Result<Vec<u8>, String> {
+/// Encodes `response` in under one control message (leaving room for the
+/// frame's newline), or, when it does not fit, the error that replaces it.
+fn encode_control_response(
+    response: &Value,
+    request_id: Option<&control_protocol::RequestId>,
+) -> Vec<u8> {
     let mut bounded = BoundedJsonBuffer::new();
     if serde_json::to_writer(&mut bounded, response).is_ok() {
-        return Ok(bounded.bytes);
+        return bounded.bytes;
     }
-    let fallback = response
-        .get("requestId")
-        .and_then(Value::as_str)
-        .map_or_else(
-            || uncorrelated_control_response("Acyclic control response exceeds the 4 MiB bound"),
-            |request_id| {
-                json!({
-                    "version":2,
-                    "requestId":request_id,
-                    "ok":false,
-                    "error":"Acyclic control response exceeds the 4 MiB bound"
-                })
-            },
-        );
-    serde_json::to_vec(&fallback).map_err(display)
+    // Request identities are validated ASCII identifiers, so they need no
+    // escaping.
+    let correlation = request_id.map_or_else(String::new, |request_id| {
+        format!(r#""requestId":"{}","#, request_id.as_str())
+    });
+    format!(
+        r#"{{"version":2,{correlation}"ok":false,"error":"Acyclic control response exceeds the 4 MiB bound"}}"#
+    )
+    .into_bytes()
 }
 
 /// Unified Acyclic CLI, local service, Codex hook bridge, and installer.
@@ -9503,6 +9717,10 @@ fn hook_invocation() -> Option<(String, String)> {
 }
 
 fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut arguments = env::args().skip(1);
+    if arguments.next().as_deref() == Some("__hook") {
+        return run_native_hook(&arguments.collect::<Vec<_>>());
+    }
     if is_foreground_cli_invocation() {
         let result = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -9531,6 +9749,79 @@ fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+/// Answers a native hook. A hook that stays inside this process returns
+/// before any runtime, path resolution or state directory is touched.
+fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let [host, event] = arguments else {
+        return Err(io::Error::other("acyclic __hook requires a host and event").into());
+    };
+    if !matches!(
+        host.as_str(),
+        "codex" | "claude-code" | "copilot" | "cursor"
+    ) {
+        return Err(io::Error::other("unsupported native hook host").into());
+    }
+    let mut input = Vec::new();
+    io::stdin()
+        .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
+        .read_to_end(&mut input)?;
+    if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
+        return Err(io::Error::other("native hook input exceeds the 4 MiB bound").into());
+    }
+    let input: Value = serde_json::from_slice(&input)?;
+    if native_hook_is_process_local_noop(host, event, &input) {
+        serde_json::to_writer(io::stdout().lock(), &json!({}))?;
+        return Ok(());
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(send_native_hook(host, event, input))
+}
+
+/// Sends one native hook to the service and prints its response.
+async fn send_native_hook(
+    host: &str,
+    event: &str,
+    input: Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let cwd = env::current_dir()?.canonicalize()?;
+    let data = default_data_directory();
+    let request = ControlRequest {
+        version: 1,
+        command: ControlCommand::Hook,
+        cwd,
+        argv: Vec::new(),
+        name: format!("{host}:{event}"),
+        arguments: input,
+    };
+    let envelope = ControlEnvelope::new(request);
+    let response = if matches!(event, "SessionStart" | "sessionStart") {
+        // Session boundaries are the one cheap, deterministic place to advance
+        // an idle service to the installed binary. Tool hooks stay on the direct
+        // single-round-trip path, and a service with live mounts remains intact.
+        ensure_service(&data).await.map_err(io::Error::other)?;
+        send_control_envelope(&data, &envelope)
+            .await
+            .map_err(|error| io::Error::other(error.to_string()))?
+    } else {
+        match send_control_envelope_once(&data, &envelope).await {
+            Ok(response) => response,
+            // An unavailable service never received the envelope, so this
+            // is the only retransmission, and no deadline applies to it.
+            Err(ControlRequestError::Unavailable(_)) => {
+                ensure_service(&data).await.map_err(io::Error::other)?;
+                send_control_envelope(&data, &envelope)
+                    .await
+                    .map_err(|error| io::Error::other(error.to_string()))?
+            }
+            Err(error) => return Err(io::Error::other(error.to_string()).into()),
+        }
+    };
+    serde_json::to_writer(io::stdout().lock(), &response)?;
+    Ok(())
+}
+
 fn is_foreground_cli_invocation() -> bool {
     let mut arguments = env::args_os().skip(1);
     let mut command = arguments.next();
@@ -9546,7 +9837,6 @@ fn is_foreground_cli_invocation() -> bool {
                     | "agents"
                     | "doctor"
                     | "discard"
-                    | "__hook"
                     | "install"
                     | "uninstall"
                     | "__service-drain"
@@ -9619,7 +9909,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             return Err(io::Error::other("certification receipt exceeds 1 MiB").into());
         }
         let receipt: Value = serde_json::from_slice(&bytes)?;
-        let digest = blake3_file(&env::current_exe()?).map_err(io::Error::other)?;
+        let digest = blake3_file(&current_executable().map_err(io::Error::other)?)
+            .map_err(io::Error::other)?;
         if !valid_platform_receipt(&receipt, &digest) {
             return Err(io::Error::other(
                 "certification receipt does not match this Acyclic executable",
@@ -9671,66 +9962,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if exit_code != 0 {
             std::process::exit(exit_code);
         }
-        return Ok(());
-    }
-    if arguments
-        .first()
-        .is_some_and(|argument| argument == "__hook")
-    {
-        let [_, host, event] = arguments.as_slice() else {
-            return Err(io::Error::other("acyclic __hook requires a host and event").into());
-        };
-        if !matches!(
-            host.as_str(),
-            "codex" | "claude-code" | "copilot" | "cursor"
-        ) {
-            return Err(io::Error::other("unsupported native hook host").into());
-        }
-        let mut input = Vec::new();
-        io::stdin()
-            .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
-            .read_to_end(&mut input)?;
-        if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
-            return Err(io::Error::other("native hook input exceeds the 4 MiB bound").into());
-        }
-        let input: Value = serde_json::from_slice(&input)?;
-        if native_hook_is_process_local_noop(host, event, &input) {
-            serde_json::to_writer(io::stdout().lock(), &json!({}))?;
-            return Ok(());
-        }
-        let data = default_data_directory();
-        let request = ControlRequest {
-            version: 1,
-            command: ControlCommand::Hook,
-            cwd,
-            argv: Vec::new(),
-            name: format!("{host}:{event}"),
-            arguments: input,
-        };
-        let envelope = prepare_control_envelope(&data, request)
-            .await
-            .map_err(io::Error::other)?;
-        let response = if matches!(event.as_str(), "SessionStart" | "sessionStart") {
-            // Session boundaries are the one cheap, deterministic place to advance
-            // an idle service to the installed binary. Tool hooks stay on the direct
-            // single-round-trip path, and a service with live mounts remains intact.
-            ensure_service(&data).await.map_err(io::Error::other)?;
-            send_control_envelope(&data, &envelope)
-                .await
-                .map_err(|error| io::Error::other(error.to_string()))?
-        } else {
-            match send_control_envelope_once(&data, &envelope).await {
-                Ok(response) => response,
-                Err(ControlRequestError::Unavailable(_)) => {
-                    ensure_service(&data).await.map_err(io::Error::other)?;
-                    send_control_envelope(&data, &envelope)
-                        .await
-                        .map_err(|error| io::Error::other(error.to_string()))?
-                }
-                Err(error) => return Err(io::Error::other(error.to_string()).into()),
-            }
-        };
-        serde_json::to_writer(io::stdout().lock(), &response)?;
         return Ok(());
     }
     if arguments
@@ -9822,12 +10053,151 @@ fn default_data_directory() -> PathBuf {
     env::temp_dir().join("acyclic-state-v5")
 }
 
-fn service_identity() -> Result<String, String> {
-    service_identity_for(&env::current_exe().map_err(display)?)
+/// The running executable's own path. macOS reports the path it was started
+/// through, which for the npm-installed command is a link outside the package.
+fn current_executable() -> Result<PathBuf, String> {
+    let executable = env::current_exe().map_err(display)?;
+    #[cfg(unix)]
+    let executable = executable.canonicalize().map_err(display)?;
+    Ok(executable)
 }
 
-fn service_identity_for(executable: &Path) -> Result<String, String> {
-    Ok(service_identity_from_digest(&blake3_file(executable)?))
+fn service_identity(data: &Path) -> Result<String, String> {
+    service_identity_for(data, &current_executable()?)
+}
+
+/// The identity of an executable's artifact bytes. Hashing tens of megabytes
+/// on every session start is avoidable: the identity is cached under the
+/// file's fingerprint, which every rewrite or replacement of the file changes.
+fn service_identity_for(data: &Path, executable: &Path) -> Result<String, String> {
+    let cache = data.join("executable-identity");
+    let file = fs::File::open(executable).map_err(display)?;
+    let (fingerprint, changed) = executable_fingerprint(&file)?;
+    if let Some(identity) = fs::read(&cache)
+        .ok()
+        .and_then(|cached| cached_identity(&cached, &fingerprint))
+    {
+        return Ok(identity);
+    }
+    let mut hasher = blake3::Hasher::new();
+    read_executable(&file, |bytes| {
+        hasher.update(bytes);
+    })?;
+    let identity = service_identity_from_digest(&hasher.finalize().to_hex());
+    // Cache only a hash of bytes that did not change while they were read and
+    // whose last change is older than any timestamp granularity: a later write
+    // in the same clock tick could otherwise keep the fingerprint (the racy
+    // timestamp problem Git's index solves the same way). A cache that cannot
+    // be written, or is lost, only costs the next caller one hash.
+    let settled = std::time::SystemTime::now()
+        .duration_since(changed)
+        .is_ok_and(|age| age > SETTLED_EXECUTABLE_AGE);
+    if settled && executable_fingerprint(&file)?.0 == fingerprint {
+        let staged = data.join(format!("executable-identity.{}", std::process::id()));
+        let entry = format!("{}\n{identity}", hex::encode(fingerprint));
+        if fs::write(&staged, entry)
+            .and_then(|()| fs::rename(&staged, &cache))
+            .is_err()
+        {
+            let _ = fs::remove_file(&staged);
+        }
+    }
+    Ok(identity)
+}
+
+fn cached_identity(cached: &[u8], fingerprint: &[u8; 32]) -> Option<String> {
+    let (cached_fingerprint, identity) = std::str::from_utf8(cached).ok()?.split_once('\n')?;
+    (cached_fingerprint == hex::encode(fingerprint)
+        && identity.len() == 64
+        && identity
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+    .then(|| identity.to_owned())
+}
+
+/// An executable changed longer ago than this has timestamps that any later
+/// write must advance.
+const SETTLED_EXECUTABLE_AGE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Digest of the file's identity, size, and modification and change times,
+/// with the change time. The change time cannot be set by callers, so no write
+/// can preserve it.
+#[cfg(unix)]
+fn executable_fingerprint(file: &fs::File) -> Result<([u8; 32], std::time::SystemTime), String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = file.metadata().map_err(display)?;
+    let mut hasher = blake3::Hasher::new();
+    for field in [
+        metadata.dev(),
+        metadata.ino(),
+        metadata.size(),
+        metadata.mtime().cast_unsigned(),
+        metadata.mtime_nsec().cast_unsigned(),
+        metadata.ctime().cast_unsigned(),
+        metadata.ctime_nsec().cast_unsigned(),
+    ] {
+        hasher.update(&field.to_le_bytes());
+    }
+    let changed = std::time::UNIX_EPOCH
+        .checked_add(std::time::Duration::new(
+            metadata.ctime().try_into().unwrap_or_default(),
+            metadata.ctime_nsec().try_into().unwrap_or_default(),
+        ))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    Ok((*hasher.finalize().as_bytes(), changed))
+}
+
+/// Digest of the file's volume and identity, size, and write and change
+/// times, with the change time. The change time cannot be set by callers, so
+/// no write can preserve it.
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "GetFileInformationByHandleEx fills fixed-size structures for a live handle"
+)]
+fn executable_fingerprint(file: &fs::File) -> Result<([u8; 32], std::time::SystemTime), String> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_BASIC_INFO, FILE_ID_INFO, FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx,
+    };
+    fn query<T>(file: &fs::File, class: i32) -> Result<T, String> {
+        let mut information = std::mem::MaybeUninit::<T>::zeroed();
+        let size = u32::try_from(std::mem::size_of::<T>()).map_err(display)?;
+        // SAFETY: the handle is live for the call and the buffer is exactly
+        // `size` writable bytes of the structure this class returns.
+        if unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                class,
+                information.as_mut_ptr().cast(),
+                size,
+            )
+        } == 0
+        {
+            return Err(display(io::Error::last_os_error()));
+        }
+        // SAFETY: the call succeeded, so it initialized the structure.
+        Ok(unsafe { information.assume_init() })
+    }
+    let identity = query::<FILE_ID_INFO>(file, FileIdInfo)?;
+    let basic = query::<FILE_BASIC_INFO>(file, FileBasicInfo)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&identity.VolumeSerialNumber.to_le_bytes());
+    hasher.update(&identity.FileId.Identifier);
+    hasher.update(&file.metadata().map_err(display)?.len().to_le_bytes());
+    for time in [basic.CreationTime, basic.LastWriteTime, basic.ChangeTime] {
+        hasher.update(&time.to_le_bytes());
+    }
+    // FILETIME counts 100 ns intervals from 1601; Unix time starts 11,644,473,600 s later.
+    let changed = u64::try_from(basic.ChangeTime)
+        .ok()
+        .and_then(|ticks| ticks.checked_sub(116_444_736_000_000_000))
+        .and_then(|ticks| {
+            std::time::UNIX_EPOCH
+                .checked_add(std::time::Duration::from_nanos(ticks.saturating_mul(100)))
+        })
+        .unwrap_or(std::time::UNIX_EPOCH);
+    Ok((*hasher.finalize().as_bytes(), changed))
 }
 
 fn service_identity_from_digest(digest: &str) -> String {
@@ -9836,8 +10206,8 @@ fn service_identity_from_digest(digest: &str) -> String {
         .to_string()
 }
 
-fn read_executable(executable: &Path, mut update: impl FnMut(&[u8])) -> Result<(), String> {
-    let mut file = fs::File::open(executable).map_err(display)?;
+fn read_executable(mut file: &fs::File, mut update: impl FnMut(&[u8])) -> Result<(), String> {
+    file.rewind().map_err(display)?;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer).map_err(display)?;
@@ -9859,7 +10229,7 @@ struct ExecutableDigests {
 }
 
 fn executable_digests() -> Result<ExecutableDigests, String> {
-    executable_digests_for(&env::current_exe().map_err(display)?)
+    executable_digests_for(&current_executable()?)
 }
 
 async fn executable_digests_async() -> Result<ExecutableDigests, String> {
@@ -9874,7 +10244,7 @@ fn executable_digests_for(executable: &Path) -> Result<ExecutableDigests, String
     // identical clients to continuously drain and replace each other's service.
     let mut sha256 = Sha256::new();
     let mut blake3 = blake3::Hasher::new();
-    read_executable(executable, |chunk| {
+    read_executable(&fs::File::open(executable).map_err(display)?, |chunk| {
         sha256.update(chunk);
         blake3.update(chunk);
     })?;
@@ -9889,7 +10259,7 @@ fn executable_digests_for(executable: &Path) -> Result<ExecutableDigests, String
 
 fn blake3_file(path: &Path) -> Result<String, String> {
     let mut hasher = blake3::Hasher::new();
-    read_executable(path, |bytes| {
+    read_executable(&fs::File::open(path).map_err(display)?, |bytes| {
         hasher.update(bytes);
     })?;
     Ok(hasher.finalize().to_hex().to_string())
@@ -9904,7 +10274,9 @@ fn valid_platform_receipt(receipt: &Value, executable_blake3: &str) -> bool {
         "create-read-write",
         "atomic-save",
         "rename-delete",
+        "rename-before-hydration",
         "nested-paths",
+        "large-directory-paging",
         "concurrent-handles",
         "watchers",
         "crash-detach-recovery",
@@ -9958,11 +10330,14 @@ fn valid_platform_receipt(receipt: &Value, executable_blake3: &str) -> bool {
     }
     let coverage = receipt.get("coverage").and_then(Value::as_array);
     if coverage.is_none_or(|values| {
-        values.len() != COVERAGE.len()
-            || values
-                .iter()
-                .zip(COVERAGE)
-                .any(|(value, expected)| value.as_str() != Some(*expected))
+        let observed = values
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<BTreeSet<_>>>();
+        observed.is_none_or(|observed| {
+            observed.len() != values.len()
+                || COVERAGE.iter().any(|expected| !observed.contains(expected))
+        })
     }) {
         return false;
     }
@@ -9997,10 +10372,14 @@ fn valid_platform_receipt(receipt: &Value, executable_blake3: &str) -> bool {
         .get("cases")
         .and_then(Value::as_array)
         .is_some_and(|cases| {
-            cases.len() == CASES.len()
-                && cases.iter().zip(CASES).all(|(case, expected)| {
-                    case.get("name").and_then(Value::as_str) == Some(*expected)
-                        && case.get("status").and_then(Value::as_str) == Some("passed")
+            let observed = cases
+                .iter()
+                .filter_map(|case| case.get("name").and_then(Value::as_str))
+                .collect::<BTreeSet<_>>();
+            observed.len() == cases.len()
+                && CASES.iter().all(|expected| observed.contains(expected))
+                && cases.iter().all(|case| {
+                    case.get("status").and_then(Value::as_str) == Some("passed")
                         && case.get("reason").is_some_and(Value::is_null)
                 })
         })
@@ -10032,7 +10411,7 @@ fn doctor_report(
     leases: usize,
     pending_recovery: bool,
 ) -> Result<Value, String> {
-    let executable = env::current_exe().map_err(display)?;
+    let executable = current_executable()?;
     let mut checks = Vec::new();
     let binary_identity_path = executable
         .parent()
@@ -10143,12 +10522,15 @@ fn doctor_report(
             ));
             let hooks = root.join("hooks/hooks.json");
             let mcp = root.join(".mcp.json");
-            let launcher = root.join("bin/acyclic.js");
+            // The npm command links to `bin/acyclic`: the executable itself on
+            // Unix, and on Windows a name that resolves to `acyclic.exe` once
+            // the installer has removed the placeholder.
             let native = root.join(if cfg!(windows) {
                 "bin/acyclic.exe"
             } else {
                 "bin/acyclic"
             });
+            let command_placeholder = cfg!(windows) && root.join("bin/acyclic").exists();
             let hooks_valid = fs::read(&hooks)
                 .ok()
                 .filter(|bytes| bytes.len() <= 1024 * 1024)
@@ -10186,7 +10568,7 @@ fn doctor_report(
                             })
                     })
                 });
-            let command_valid = launcher.is_file() && native.is_file() && !mcp.exists();
+            let command_valid = native.is_file() && !command_placeholder && !mcp.exists();
             checks.push(doctor_check(
                 "hooks",
                 if hooks_valid { "pass" } else { "fail" },
@@ -10196,9 +10578,9 @@ fn doctor_report(
                 "agent-command",
                 if command_valid { "pass" } else { "fail" },
                 if command_valid {
-                    "npm bin available; no MCP bridge exposed to shell-capable Codex"
+                    "npm command runs the native executable; no MCP bridge exposed to shell-capable Codex"
                 } else {
-                    "npm bin is missing or a commandless MCP bridge is exposed"
+                    "npm command does not reach the native executable, or a commandless MCP bridge is exposed"
                 },
             ));
         }
@@ -10460,7 +10842,9 @@ fn service_lock_is_contended(error: &io::Error) -> bool {
 }
 
 async fn run_service(data: PathBuf) -> Result<(), String> {
-    run_service_with_identity(data, None).await
+    // Taken first, so nothing the service prints can reach its starter.
+    let ready = acyclic_native_runtime::take_service_ready_signal().map_err(display)?;
+    run_service_with_identity(data, None, ready).await
 }
 
 async fn shutdown_service_endpoint(
@@ -10475,14 +10859,18 @@ async fn shutdown_service_endpoint(
     endpoint_result.and(control_result)
 }
 
+/// Runs the service. `ready`, when its starter waits on it, is signalled once
+/// the service answers requests, and closes unsignalled if it exits first,
+/// for instance because another service holds the lock.
 async fn run_service_with_identity(
     data: PathBuf,
     identity_override: Option<String>,
+    ready: Option<acyclic_native_runtime::ServiceReadySignal>,
 ) -> Result<(), String> {
     let Some(lock) = acquire_service_lock(&data)? else {
         return Ok(());
     };
-    let result = run_locked_service(data, identity_override).await;
+    let result = run_locked_service(data, identity_override, ready).await;
     drop(lock);
     result
 }
@@ -10490,6 +10878,7 @@ async fn run_service_with_identity(
 async fn run_locked_service(
     data: PathBuf,
     identity_override: Option<String>,
+    ready: Option<acyclic_native_runtime::ServiceReadySignal>,
 ) -> Result<(), String> {
     let mut service = ConcurrentServiceControl::open(data.clone()).await?;
     if let Some(identity) = identity_override {
@@ -10526,6 +10915,10 @@ async fn run_locked_service(
             };
         }
     };
+    if let Some(ready) = ready {
+        // A starter that stopped waiting has nothing to be told.
+        let _ = ready.signal();
+    }
     let service_result = tokio::select! {
         signal = tokio::signal::ctrl_c() => signal.map_err(display),
         () = upgrade.notified() => Ok(()),
@@ -10554,79 +10947,17 @@ async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bo
             Ok(false)
         }
         Err(ControlRequestError::Unavailable(_)) => {
-            drop(drain_service(data, None).await?);
-            Ok(false)
-        }
-        Err(ControlRequestError::ProtocolMismatch(_)) => {
-            drop(drain_legacy_service(data, None).await?);
-            clear_obsolete_runtime_state(data)?;
+            // Only a service that holds its lock can still open an endpoint;
+            // when none does, nothing needs waiting for.
+            if claim_stopped_service(data, None)?.is_none() {
+                drop(drain_service(data, None).await?);
+            }
             Ok(false)
         }
         Err(error) => Err(format!(
             "cannot safely identify the Acyclic service: {error}"
         )),
     }
-}
-
-async fn drain_legacy_service(
-    data: &Path,
-    expected_identity: Option<&str>,
-) -> Result<ServiceLock, String> {
-    let ping = ping_request()?;
-    let active = send_legacy_control_request_once(data, &ping)
-        .await
-        .map_err(|error| format!("cannot identify the legacy Acyclic service: {error}"))?;
-    let binary_identity = active
-        .get("identity")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "legacy Acyclic service omitted its identity".to_owned())?
-        .to_owned();
-    let instance_id = active
-        .get("instanceId")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let drain_identity = instance_id
-        .clone()
-        .unwrap_or_else(|| binary_identity.clone());
-    if expected_identity.is_some_and(|expected| expected != drain_identity) {
-        return Err("refusing to drain a replacement Acyclic service".to_owned());
-    }
-    let published_identity = fs::read_to_string(data.join("service.identity"))
-        .map_err(|error| format!("cannot authenticate the legacy Acyclic service: {error}"))?;
-    if published_identity != drain_identity {
-        return Err("legacy Acyclic endpoint does not match its published identity".to_owned());
-    }
-    let drain_id = uuid::Uuid::new_v4().to_string();
-    let arguments = instance_id.as_ref().map_or_else(
-        || json!({"identity":binary_identity,"drainId":drain_id}),
-        |instance_id| {
-            json!({"identity":binary_identity,"instanceId":instance_id,"drainId":drain_id})
-        },
-    );
-    let shutdown = ControlRequest {
-        version: 1,
-        command: ControlCommand::Shutdown,
-        cwd: env::current_dir().map_err(display)?,
-        argv: Vec::new(),
-        name: String::new(),
-        arguments,
-    };
-    match send_legacy_control_request_once(data, &shutdown).await {
-        Ok(_) | Err(ControlRequestError::Indeterminate(_)) => {}
-        Err(error) => return Err(format!("cannot drain the legacy Acyclic service: {error}")),
-    }
-    let mut endpoint_closed = false;
-    for _ in 0..250 {
-        if !endpoint_closed && send_legacy_control_request_once(data, &ping).await.is_err() {
-            endpoint_closed = true;
-        }
-        if endpoint_closed && let Some(lock) = acquire_service_lock(data)? {
-            verify_service_drain_completion(data, &drain_identity, &drain_id)?;
-            return Ok(lock);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    Err("legacy Acyclic service did not drain; durable state was preserved".to_owned())
 }
 
 fn clear_obsolete_runtime_state(data: &Path) -> Result<(), String> {
@@ -10638,13 +10969,17 @@ fn clear_obsolete_runtime_state(data: &Path) -> Result<(), String> {
 
 async fn ensure_service(data: &Path) -> Result<(), String> {
     fs::create_dir_all(data).map_err(display)?;
-    let identity = service_identity()?;
+    let identity = service_identity(data)?;
     if service_is_ready_for_identity(data, &identity).await? {
         return Ok(());
     }
     let ping = ping_request()?;
-    spawn_service_process(&env::current_exe().map_err(display)?)?;
+    let readiness = spawn_service_process(&current_executable()?)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    // The service signals once it answers requests. A channel that closes
+    // unsignalled means it exited, typically because another service holds
+    // the lock and is starting; only then does this poll for that one.
+    wait_for_service_readiness(readiness, deadline).await?;
     let last = loop {
         let last = match send_control_request_once(data, &ping).await {
             Ok(active)
@@ -10663,8 +10998,29 @@ async fn ensure_service(data: &Path) -> Result<(), String> {
     Err(format!("Acyclic service did not become ready: {last}"))
 }
 
-fn spawn_service_process(executable: &Path) -> Result<(), String> {
+fn spawn_service_process(
+    executable: &Path,
+) -> Result<acyclic_native_runtime::ServiceReadiness, String> {
     acyclic_native_runtime::spawn_service_process(executable).map_err(display)
+}
+
+/// Waits, until `deadline`, for a started service to signal readiness or
+/// exit. The blocking read runs on its own thread, which the process may
+/// leave behind when it exits.
+async fn wait_for_service_readiness(
+    readiness: acyclic_native_runtime::ServiceReadiness,
+    deadline: std::time::Instant,
+) -> Result<(), String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("acyclic-service-readiness".to_owned())
+        .spawn(move || {
+            let _ = sender.send(readiness.wait());
+        })
+        .map_err(display)?;
+    let wait = deadline.saturating_duration_since(std::time::Instant::now());
+    let _ = tokio::time::timeout(wait, receiver).await;
+    Ok(())
 }
 
 fn ping_request() -> Result<ControlRequest, String> {
@@ -10679,7 +11035,7 @@ fn ping_request() -> Result<ControlRequest, String> {
 }
 
 async fn send_cli_control_request(data: &Path, request: &ControlRequest) -> Result<Value, String> {
-    let identity = service_identity()?;
+    let identity = service_identity(data)?;
     // Sandboxed hosts may expose the already-running local endpoint while denying the client's
     // direct view of per-user state. Probe that endpoint before attempting a filesystem-backed
     // cold start. The published marker is an instance nonce, not a binary compatibility identity.
@@ -10827,17 +11183,15 @@ fn read_bounded_rpc_line(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>, S
 enum ControlRequestError {
     Unavailable(String),
     Indeterminate(String),
-    ProtocolMismatch(String),
     Response(String),
 }
 
 impl std::fmt::Display for ControlRequestError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unavailable(message)
-            | Self::Indeterminate(message)
-            | Self::ProtocolMismatch(message)
-            | Self::Response(message) => formatter.write_str(message),
+            Self::Unavailable(message) | Self::Indeterminate(message) | Self::Response(message) => {
+                formatter.write_str(message)
+            }
         }
     }
 }
@@ -10846,10 +11200,7 @@ async fn send_control_request(
     data: &Path,
     request: &ControlRequest,
 ) -> Result<Value, ControlRequestError> {
-    let envelope = prepare_control_envelope(data, request.clone())
-        .await
-        .map_err(ControlRequestError::Unavailable)?;
-    send_control_envelope(data, &envelope).await
+    send_control_envelope(data, &ControlEnvelope::new(request.clone())).await
 }
 
 async fn send_control_envelope(
@@ -10878,10 +11229,7 @@ async fn send_control_request_once(
     data: &Path,
     request: &ControlRequest,
 ) -> Result<Value, ControlRequestError> {
-    let envelope = prepare_control_envelope(data, request.clone())
-        .await
-        .map_err(ControlRequestError::Unavailable)?;
-    send_control_envelope_once(data, &envelope).await
+    send_control_envelope_once(data, &ControlEnvelope::new(request.clone())).await
 }
 
 async fn send_control_envelope_once(
@@ -10889,23 +11237,6 @@ async fn send_control_envelope_once(
     envelope: &ControlEnvelope<ControlRequest>,
 ) -> Result<Value, ControlRequestError> {
     send_control_envelope_with_attempts(data, envelope, 1, CONTROL_PROBE_WAIT).await
-}
-
-async fn prepare_control_envelope(
-    data: &Path,
-    request: ControlRequest,
-) -> Result<ControlEnvelope<ControlRequest>, String> {
-    if matches!(
-        request.command,
-        ControlCommand::Ping | ControlCommand::Doctor | ControlCommand::Agents
-    ) {
-        Ok(ControlEnvelope::ephemeral(request))
-    } else {
-        let data = data.to_path_buf();
-        tokio::task::spawn_blocking(move || ControlEnvelope::new_for_install(&data, request))
-            .await
-            .map_err(|error| format!("Acyclic control operation allocator failed: {error}"))?
-    }
 }
 
 async fn send_control_envelope_with_attempts(
@@ -10921,49 +11252,8 @@ async fn send_control_envelope_with_attempts(
         .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
     encoded.push(b'\n');
     #[cfg(target_os = "linux")]
-    match send_linux_mailbox_request(
+    return send_linux_mailbox_request(
         data,
-        &encoded,
-        &envelope.request_id,
-        remaining_control_wait(deadline)?,
-    )
-    .await
-    {
-        Ok(response) => return Ok(response),
-        Err(error @ ControlRequestError::Unavailable(_)) => {
-            // Releases before the mailbox transport served this same authenticated
-            // endpoint over a private Unix socket. During a live binary handoff the
-            // old process must keep its mounts, so a new client falls back until that
-            // process exits. New services expose only the mailbox.
-            // Once a mailbox exists, the request may already have executed. Never
-            // replay a potentially mutating command over the legacy socket.
-            if linux_control_mailbox_path(data).is_dir() {
-                return Err(error);
-            }
-        }
-        Err(error) => return Err(error),
-    }
-    #[cfg(target_os = "linux")]
-    let socket_path = unix_control_socket_path(data);
-    #[cfg(target_os = "linux")]
-    let stream = tokio::time::timeout(
-        CONTROL_PROBE_WAIT.min(remaining_control_wait(deadline)?),
-        tokio::net::UnixStream::connect(socket_path),
-    )
-    .await
-    .map_err(|_| {
-        ControlRequestError::Unavailable(
-            "Acyclic service connection exceeded the probe deadline".to_owned(),
-        )
-    })?
-    .map_err(|error| {
-        ControlRequestError::Unavailable(format!(
-            "Acyclic service is not running through either Linux control transport: {error}"
-        ))
-    })?;
-    #[cfg(target_os = "linux")]
-    return exchange_control_stream(
-        stream,
         &encoded,
         &envelope.request_id,
         remaining_control_wait(deadline)?,
@@ -10995,7 +11285,7 @@ async fn send_control_envelope_with_attempts(
             );
             let mut last = None;
             let mut connected = None;
-            for _ in 0..windows_connect_attempts {
+            for attempt in 1..=windows_connect_attempts {
                 let remaining = remaining_control_wait(deadline)?;
                 match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe) {
                     Ok(client) => {
@@ -11004,8 +11294,11 @@ async fn send_control_envelope_with_attempts(
                     }
                     Err(error) => {
                         last = Some(error);
-                        tokio::time::sleep(std::time::Duration::from_millis(20).min(remaining))
-                            .await;
+                        // Only a further attempt is worth waiting for.
+                        if attempt < windows_connect_attempts {
+                            tokio::time::sleep(std::time::Duration::from_millis(20).min(remaining))
+                                .await;
+                        }
                     }
                 }
             }
@@ -11041,6 +11334,7 @@ fn remaining_control_wait(
     Ok(deadline - now)
 }
 
+#[cfg(not(target_os = "linux"))]
 async fn exchange_control_stream(
     mut stream: impl AsyncRead + AsyncWrite + Unpin,
     encoded: &[u8],
@@ -11078,95 +11372,6 @@ async fn exchange_control_stream(
     }
     response.pop();
     decode_control_response(&response, request_id)
-}
-
-async fn exchange_legacy_control_stream(
-    mut stream: impl AsyncRead + AsyncWrite + Unpin,
-    request: &ControlRequest,
-) -> Result<Value, ControlRequestError> {
-    let mut encoded = serde_json::to_vec(request)
-        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-    encoded.push(b'\n');
-    let exchange = async {
-        stream
-            .write_all(&encoded)
-            .await
-            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-        stream
-            .flush()
-            .await
-            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-        let mut response = Vec::new();
-        BufReader::new(stream)
-            .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
-            .read_until(b'\n', &mut response)
-            .await
-            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-        Ok::<_, ControlRequestError>(response)
-    };
-    let mut response = tokio::time::timeout(CONTROL_PROBE_WAIT, exchange)
-        .await
-        .map_err(|_| {
-            ControlRequestError::Indeterminate(
-                "legacy Acyclic service did not answer before the probe deadline".to_owned(),
-            )
-        })??;
-    if response.len() > MAXIMUM_CONTROL_MESSAGE_BYTES || response.last() != Some(&b'\n') {
-        return Err(ControlRequestError::Indeterminate(
-            "invalid response from legacy Acyclic service".to_owned(),
-        ));
-    }
-    response.pop();
-    let response: Value = serde_json::from_slice(&response)
-        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-    if response.get("version").and_then(Value::as_u64) != Some(1) {
-        return Err(ControlRequestError::ProtocolMismatch(
-            "legacy Acyclic service returned an unexpected protocol version".to_owned(),
-        ));
-    }
-    if response.get("ok").and_then(Value::as_bool) == Some(true) {
-        Ok(response.get("result").cloned().unwrap_or(Value::Null))
-    } else {
-        Err(ControlRequestError::Response(
-            response
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("legacy Acyclic service request failed")
-                .to_owned(),
-        ))
-    }
-}
-
-async fn send_legacy_control_request_once(
-    data: &Path,
-    request: &ControlRequest,
-) -> Result<Value, ControlRequestError> {
-    #[cfg(unix)]
-    {
-        let stream = tokio::time::timeout(
-            CONTROL_PROBE_WAIT,
-            tokio::net::UnixStream::connect(unix_control_socket_path(data)),
-        )
-        .await
-        .map_err(|_| {
-            ControlRequestError::Unavailable(
-                "legacy Acyclic service connection exceeded the probe deadline".to_owned(),
-            )
-        })?
-        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        exchange_legacy_control_stream(stream, request).await
-    }
-    #[cfg(windows)]
-    {
-        let pipe = format!(
-            r"\\.\pipe\acyclic-{}",
-            short_hash(data.as_os_str().to_string_lossy().as_bytes())
-        );
-        let stream = tokio::net::windows::named_pipe::ClientOptions::new()
-            .open(&pipe)
-            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        exchange_legacy_control_stream(stream, request).await
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -11264,16 +11469,9 @@ async fn send_linux_mailbox_request(
             rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
         )
         .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        let mut request_file = tokio::fs::File::from_std(std::fs::File::from(request_file));
-        request_file
+        std::fs::File::from(request_file)
             .write_all(encoded)
-            .await
             .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        request_file
-            .flush()
-            .await
-            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        drop(request_file);
         rustix::fs::renameat(
             &*exchange_directory,
             "request.pending",
@@ -11281,24 +11479,41 @@ async fn send_linux_mailbox_request(
             "request",
         )
         .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        // The service publishes its response by renaming it into the exchange.
+        // Each check for the response follows the watch, so none is missed.
+        let published = rustix::fs::inotify::init(
+            rustix::fs::inotify::CreateFlags::CLOEXEC | rustix::fs::inotify::CreateFlags::NONBLOCK,
+        )
+        .and_then(|published| {
+            rustix::fs::inotify::add_watch(
+                &published,
+                mailbox.join(&exchange_name),
+                rustix::fs::inotify::WatchFlags::MOVED_TO
+                    | rustix::fs::inotify::WatchFlags::ONLYDIR
+                    | rustix::fs::inotify::WatchFlags::DONT_FOLLOW,
+            )?;
+            Ok(published)
+        })
+        .map_err(errno_to_io)
+        .and_then(tokio::io::unix::AsyncFd::new)
+        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
         let response = loop {
-            match read_linux_control_file_at(&exchange_directory, "response").await {
+            match read_linux_control_file_at(&exchange_directory, "response") {
                 Ok(response) if response.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => break response,
                 Ok(_) => {
                     return Err(ControlRequestError::Indeterminate(
                         "Acyclic control response exceeds the 4 MiB bound".to_owned(),
                     ));
                 }
-                Err(error)
-                    if error.kind() == io::ErrorKind::NotFound
-                        && tokio::time::Instant::now() < deadline =>
-                {
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    return Err(ControlRequestError::Indeterminate(
-                        "Acyclic service did not answer the filesystem control request".to_owned(),
-                    ));
+                    let mut ready = published
+                        .readable()
+                        .await
+                        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+                    let mut events = [0_u8; 4096];
+                    while let Ok(Ok(_)) = ready.try_io(|published| {
+                        rustix::io::read(published.get_ref(), &mut events).map_err(errno_to_io)
+                    }) {}
                 }
                 Err(error) => return Err(ControlRequestError::Indeterminate(error.to_string())),
             }
@@ -11311,7 +11526,7 @@ async fn send_linux_mailbox_request(
         .ok()
         .and_then(|mut slot| slot.take());
     if let Some(exchange) = exchange {
-        tokio::task::spawn_blocking(move || remove_linux_mailbox_exchange(&exchange));
+        remove_linux_mailbox_exchange(&exchange);
     }
     match result {
         Ok(result) => result,
@@ -11328,13 +11543,6 @@ fn decode_control_response(
     let response: Value = serde_json::from_slice(response)
         .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
     if response.get("requestId").and_then(Value::as_str) != Some(request_id.as_str()) {
-        if response.get("version").and_then(Value::as_u64) == Some(1)
-            && response.get("ok").and_then(Value::as_bool).is_some()
-        {
-            return Err(ControlRequestError::ProtocolMismatch(
-                "the running Acyclic service uses the legacy control protocol".to_owned(),
-            ));
-        }
         return Err(ControlRequestError::Indeterminate(
             "Acyclic control response does not match the request identity".to_owned(),
         ));
@@ -11616,6 +11824,32 @@ async fn purge_durable_state(data: &Path) -> Result<(), String> {
     remove_tree_checked(parent, data)
 }
 
+/// Takes the service lock when no service holds it, and clears the identity
+/// the last service published. A service holds its lock for as long as it
+/// runs, from before it opens its endpoint, so a free lock proves that none
+/// is running or starting.
+fn claim_stopped_service(
+    data: &Path,
+    expected_identity: Option<&str>,
+) -> Result<Option<ServiceLock>, String> {
+    let Some(lock) = acquire_service_lock(data)? else {
+        return Ok(None);
+    };
+    if let Some(expected) = expected_identity {
+        let marker = fs::read_to_string(data.join("service.identity"))
+            .map_err(|error| format!("cannot authenticate stale service: {error}"))?;
+        if marker != expected {
+            return Err("refusing to clean a replacement Acyclic service".to_owned());
+        }
+    }
+    match fs::remove_file(data.join("service.identity")) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(display(error)),
+    }
+    Ok(Some(lock))
+}
+
 async fn drain_service(
     data: &Path,
     expected_identity: Option<&str>,
@@ -11688,30 +11922,11 @@ async fn drain_service(
                     .to_owned(),
             )
         }
-        Err(ControlRequestError::Unavailable(_)) => match acquire_service_lock(data)? {
-            Some(lock) => {
-                if let Some(expected) = expected_identity {
-                    let marker = fs::read_to_string(data.join("service.identity"))
-                        .map_err(|error| format!("cannot authenticate stale service: {error}"))?;
-                    if marker != expected {
-                        return Err("refusing to clean a replacement Acyclic service".to_owned());
-                    }
-                }
-                match fs::remove_file(data.join("service.identity")) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(display(error)),
-                }
-                Ok(lock)
-            }
-            None => Err(
+        Err(ControlRequestError::Unavailable(_)) => claim_stopped_service(data, expected_identity)?
+            .ok_or_else(|| {
                 "Acyclic service lock is held without a reachable endpoint; state was preserved"
-                    .to_owned(),
-            ),
-        },
-        Err(ControlRequestError::ProtocolMismatch(_)) => {
-            drain_legacy_service(data, expected_identity).await
-        }
+                    .to_owned()
+            }),
         Err(error) => Err(format!(
             "cannot safely identify the Acyclic service: {error}"
         )),
@@ -11766,7 +11981,7 @@ fn install_host(host: &str, project: bool) -> Result<(), String> {
     if host == "codex" && !project {
         return install_codex_plugin();
     }
-    let executable = env::current_exe().map_err(display)?;
+    let executable = current_executable()?;
     if host == "claude-code" {
         let path = install_claude_hooks(&executable, project)?;
         println!(
@@ -12272,9 +12487,7 @@ struct CodexPluginOwnership {
     marketplace_root: PathBuf,
     added_marketplace: bool,
     plugin_was_installed: bool,
-    #[serde(default)]
     config_path: Option<PathBuf>,
-    #[serde(default)]
     prior_default_permissions: Option<String>,
 }
 
@@ -13046,7 +13259,7 @@ fn validate_existing_codex_plugin(installed: &Value) -> Result<(), String> {
 }
 
 fn plugin_root() -> Result<PathBuf, String> {
-    let executable = env::current_exe().map_err(display)?;
+    let executable = current_executable()?;
     let installed = installed_plugin_root()?;
     discover_plugin_root(&executable, &installed)
         .ok_or_else(|| "cannot locate the installed Acyclic plugin root".to_owned())
@@ -13509,7 +13722,7 @@ mod tests {
             .expect("drain completes")
             .expect("drain task")
             .expect("service shutdown");
-        let state = load_state(
+        let state = load_saved_state(
             &data
                 .join("sessions")
                 .join(blake3::hash(b"session").to_hex().as_str()),
@@ -13660,7 +13873,7 @@ mod tests {
             .await
             .expect("late duplicate close");
 
-        let state = load_state(
+        let state = load_saved_state(
             &service
                 .data
                 .join("sessions")
@@ -14289,16 +14502,16 @@ mod tests {
         let newer = service.session_directory("newer");
         service.shutdown().await.expect("shutdown");
 
-        let mut conflicting = load_state(&older).expect("older state");
+        let mut conflicting = load_saved_state(&older).expect("older state");
         conflicting.active = true;
         for binding in conflicting.roots.values_mut() {
             binding.source_identity = [9; 16];
         }
-        save_state(&older, &conflicting).expect("conflicting state");
+        save_state(&older, &conflicting, Survives::PowerLoss).expect("conflicting state");
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let mut current = load_state(&newer).expect("newer state");
+        let mut current = load_saved_state(&newer).expect("newer state");
         current.active = true;
-        save_state(&newer, &current).expect("refresh newer state");
+        save_state(&newer, &current, Survives::PowerLoss).expect("refresh newer state");
 
         let resumed = ServiceControl::open(state)
             .await
@@ -14403,7 +14616,7 @@ mod tests {
         let local = LocalFs::local(LocalOptions::new(data.join("filesystem")))
             .await
             .expect("local filesystem");
-        let store = LocalCoreStateStore::new(data.join("core-state"));
+        let store = LocalCoreStateStore::open_owned(data.join("core-state")).expect("state owner");
         let shared_roots = SharedRootRegistry::default();
         let mut control = ControlPlane::open_with(
             data.clone(),
@@ -15064,126 +15277,6 @@ mod tests {
             .expect("service drain thread");
     }
 
-    struct LegacyServiceDispatcher {
-        identity: String,
-        upgrade: Arc<tokio::sync::Notify>,
-        drain_id: Arc<Mutex<Option<String>>>,
-    }
-
-    impl ControlRequestDispatcher for LegacyServiceDispatcher {
-        async fn dispatch_request(&mut self, request: ControlRequest) -> Result<Value, String> {
-            match request.command {
-                ControlCommand::Ping => Ok(json!({"identity": self.identity})),
-                ControlCommand::Shutdown => {
-                    let expected = request
-                        .arguments
-                        .get("identity")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| "legacy shutdown omitted the binary identity".to_owned())?;
-                    if expected != self.identity {
-                        return Err("legacy shutdown targeted another binary".to_owned());
-                    }
-                    if request.arguments.get("instanceId").is_some() {
-                        return Err("legacy service cannot accept an instance identity".to_owned());
-                    }
-                    let drain_id = request
-                        .arguments
-                        .get("drainId")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| "legacy shutdown omitted the drain identity".to_owned())?;
-                    *self
-                        .drain_id
-                        .lock()
-                        .map_err(|_| "legacy drain identity lock is poisoned".to_owned())? =
-                        Some(drain_id.to_owned());
-                    let upgrade = Arc::clone(&self.upgrade);
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        upgrade.notify_waiters();
-                    });
-                    Ok(json!({"draining": true}))
-                }
-                _ => Err("legacy test service only supports lifecycle requests".to_owned()),
-            }
-        }
-    }
-
-    #[cfg(any(unix, windows))]
-    #[test]
-    fn service_drain_transitions_a_pre_instance_identity_service() {
-        std::thread::Builder::new()
-            .name("plugin-legacy-service-drain".to_owned())
-            .stack_size(32 * 1024 * 1024)
-            .spawn(|| {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("test runtime")
-                    .block_on(async {
-                        let temporary = tempfile::tempdir().expect("temporary directory");
-                        let data = temporary.path().join("state");
-                        let lock = acquire_service_lock(&data)
-                            .expect("legacy service lock")
-                            .expect("uncontended legacy service lock");
-                        let identity = "legacy-service-binary".to_owned();
-                        let marker = ServiceIdentityMarker::create(&data, &identity)
-                            .expect("legacy identity marker");
-                        let upgrade = Arc::new(tokio::sync::Notify::new());
-                        let drain_id = Arc::new(Mutex::new(None));
-                        let control = Arc::new(AsyncMutex::new(LegacyServiceDispatcher {
-                            identity: identity.clone(),
-                            upgrade: Arc::clone(&upgrade),
-                            drain_id: Arc::clone(&drain_id),
-                        }));
-                        let endpoint = start_control_endpoint(Arc::clone(&control), &data)
-                            .await
-                            .expect("legacy control endpoint");
-                        let service_data = data.clone();
-                        let service_identity = identity.clone();
-                        let service = tokio::spawn(async move {
-                            upgrade.notified().await;
-                            endpoint.shutdown().await.expect("legacy endpoint shutdown");
-                            drop(control);
-                            let requested_drain = drain_id
-                                .lock()
-                                .expect("legacy drain identity lock")
-                                .clone()
-                                .expect("legacy drain request");
-                            write_service_drain_completion(
-                                &service_data,
-                                &service_identity,
-                                &requested_drain,
-                                &Ok(()),
-                            )
-                            .expect("legacy drain completion");
-                            drop(marker);
-                            drop(lock);
-                        });
-
-                        let mismatch = drain_service(&data, Some("replacement-service")).await;
-                        assert!(matches!(
-                            mismatch,
-                            Err(error) if error == "refusing to drain a replacement Acyclic service"
-                        ));
-                        assert!(
-                            acquire_service_lock(&data)
-                                .expect("legacy service lock")
-                                .is_none(),
-                            "identity mismatch must leave the legacy service running"
-                        );
-                        let fence = drain_service(&data, Some(&identity))
-                            .await
-                            .expect("legacy service transition");
-                        service.await.expect("legacy service task");
-                        assert!(!data.join("service.identity").exists());
-                        drop(fence);
-                    });
-            })
-            .expect("test thread")
-            .join()
-            .expect("legacy service drain thread");
-    }
-
     #[cfg(any(unix, windows))]
     #[test]
     fn failed_identity_publication_releases_endpoint_service_and_root() {
@@ -15201,9 +15294,13 @@ mod tests {
                         fs::create_dir_all(data.join("service.identity"))
                             .expect("identity publication obstruction");
                         assert!(
-                            run_service_with_identity(data.clone(), Some("service".to_owned()))
-                                .await
-                                .is_err()
+                            run_service_with_identity(
+                                data.clone(),
+                                Some("service".to_owned()),
+                                None
+                            )
+                            .await
+                            .is_err()
                         );
                         #[cfg(unix)]
                         assert!(!data.join("service.sock").exists());
@@ -15234,27 +15331,72 @@ mod tests {
     #[test]
     fn service_identity_follows_artifact_bytes_not_launcher_path() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let launcher = temporary.path().join("launcher");
-        let plugin_cache = temporary.path().join("plugin-cache");
+        let data = temporary.path();
+        let launcher = data.join("launcher");
+        let plugin_cache = data.join("plugin-cache");
         fs::write(&launcher, b"same signed artifact").expect("launcher artifact");
         fs::write(&plugin_cache, b"same signed artifact").expect("cached artifact");
+        let identity = |path: &Path| service_identity_for(data, path).expect("identity");
 
+        assert_eq!(identity(&launcher), identity(&plugin_cache));
         assert_eq!(
-            service_identity_for(&launcher).expect("launcher identity"),
-            service_identity_for(&plugin_cache).expect("cached identity")
-        );
-        assert_eq!(
-            service_identity_for(&launcher).expect("launcher identity"),
+            identity(&launcher),
             executable_digests_for(&launcher)
                 .expect("full launcher digests")
                 .service_identity
         );
 
         fs::write(&plugin_cache, b"replacement artifact").expect("replacement artifact");
-        assert_ne!(
-            service_identity_for(&launcher).expect("launcher identity"),
-            service_identity_for(&plugin_cache).expect("replacement identity")
+        assert_ne!(identity(&launcher), identity(&plugin_cache));
+    }
+
+    #[test]
+    fn cached_service_identity_is_keyed_by_the_file_fingerprint() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path();
+        let executable = data.join("acyclic");
+        fs::write(&executable, b"first artifact").expect("artifact");
+        let identity = service_identity_for(data, &executable).expect("identity");
+        let cache = data.join("executable-identity");
+        assert!(
+            !cache.exists(),
+            "a just-written executable could change again within its timestamp tick"
         );
+        std::thread::sleep(SETTLED_EXECUTABLE_AGE + std::time::Duration::from_millis(100));
+        assert_eq!(
+            service_identity_for(data, &executable).expect("settled identity"),
+            identity
+        );
+        let entry = fs::read_to_string(&cache).expect("cached identity");
+        assert!(entry.ends_with(&identity));
+
+        // A hit returns the cached value without hashing the bytes again.
+        let (fingerprint, _) = entry.split_once('\n').expect("cache entry");
+        let marker = "0".repeat(64);
+        fs::write(&cache, format!("{fingerprint}\n{marker}")).expect("marked cache");
+        assert_eq!(
+            service_identity_for(data, &executable).expect("cached identity"),
+            marker
+        );
+
+        // Any rewrite changes the fingerprint, even to bytes of equal length.
+        fs::write(&executable, b"other artifact").expect("rewritten artifact");
+        let rewritten = service_identity_for(data, &executable).expect("rewritten identity");
+        assert_ne!(rewritten, marker);
+        assert_eq!(
+            rewritten,
+            executable_digests_for(&executable)
+                .expect("rewritten digests")
+                .service_identity
+        );
+
+        for torn in [b"".as_slice(), b"torn", entry.as_bytes().split_at(70).0] {
+            fs::write(&cache, torn).expect("torn cache");
+            assert_eq!(
+                service_identity_for(data, &executable).expect("identity despite torn cache"),
+                rewritten
+            );
+        }
     }
 
     #[test]
@@ -15333,6 +15475,7 @@ mod tests {
                             run_service_with_identity(
                                 service_data,
                                 Some("older-service-binary".to_owned()),
+                                None,
                             )
                             .await
                         });
@@ -15385,6 +15528,7 @@ mod tests {
                             run_service_with_identity(
                                 service_data,
                                 Some("older-service-binary".to_owned()),
+                                None,
                             )
                             .await
                         });
@@ -15477,13 +15621,13 @@ mod tests {
             assert!(error.contains("a-broken"));
             assert!(service.sessions.is_empty());
             assert!(
-                load_state(&broken_directory)
+                load_saved_state(&broken_directory)
                     .expect("failed session remains recoverable")
                     .active,
                 "failed teardown must not publish an inactive session"
             );
             assert!(
-                !load_state(&healthy_directory)
+                !load_saved_state(&healthy_directory)
                     .expect("healthy session state")
                     .active,
                 "a later session must be durably inactive despite an earlier failure"
@@ -16702,64 +16846,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_wire_is_probe_only_and_detected_by_v2() {
-        let request = ControlRequest {
-            version: 1,
-            command: ControlCommand::Ping,
-            cwd: PathBuf::from("legacy-probe"),
-            argv: Vec::new(),
-            name: String::new(),
-            arguments: Value::Null,
-        };
-        let (client, mut server) = tokio::io::duplex(16 * 1024);
-        let legacy_peer = tokio::spawn(async move {
-            let mut line = String::new();
-            BufReader::new(&mut server)
-                .read_line(&mut line)
-                .await
-                .expect("legacy request");
-            let request: ControlRequest = serde_json::from_str(&line).expect("bare request");
-            assert!(matches!(request.command, ControlCommand::Ping));
-            server
-                .write_all(b"{\"version\":1,\"ok\":true,\"result\":{\"identity\":\"legacy\"}}\n")
-                .await
-                .expect("legacy response");
-        });
-        let response = exchange_legacy_control_stream(client, &request)
-            .await
-            .expect("legacy probe");
-        assert_eq!(response["identity"], "legacy");
-        legacy_peer.await.expect("legacy peer");
-
-        let envelope = ControlEnvelope::new(request);
-        let request_id = envelope.request_id.clone();
-        let mut encoded = serde_json::to_vec(&envelope).expect("v2 envelope");
-        encoded.push(b'\n');
-        let (client, mut server) = tokio::io::duplex(16 * 1024);
-        let rejecting_peer = tokio::spawn(async move {
-            let mut ignored = String::new();
-            BufReader::new(&mut server)
-                .read_line(&mut ignored)
-                .await
-                .expect("v2 request");
-            server
-                .write_all(b"{\"version\":1,\"ok\":false,\"error\":\"unsupported request\"}\n")
-                .await
-                .expect("legacy rejection");
-        });
-        let error = exchange_control_stream(
-            client,
-            &encoded,
-            &request_id,
-            std::time::Duration::from_secs(1),
-        )
-        .await
-        .expect_err("v2 must classify the legacy peer");
-        assert!(matches!(error, ControlRequestError::ProtocolMismatch(_)));
-        rejecting_peer.await.expect("rejecting peer");
-    }
-
-    #[tokio::test]
     async fn durable_hook_response_is_replayed_without_reexecution_after_restart() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let data = temporary.path().join("plugin-data");
@@ -16782,8 +16868,12 @@ mod tests {
         let reopened = Arc::new(ControlLedger::open(&data).expect("reopened ledger"));
         let replay = dispatch_control_envelope(&dispatcher, &reopened, envelope).await;
 
-        assert_eq!(first["ok"], true, "first hook must execute: {first}");
-        assert_eq!(first, replay, "a retry must receive the durable response");
+        let executed: Value = serde_json::from_slice(&first).expect("first response");
+        assert_eq!(executed["ok"], true, "first hook must execute: {executed}");
+        assert_eq!(
+            first, replay,
+            "a retry must receive the exact bytes first sent"
+        );
         assert_eq!(
             dispatcher
                 .executions
@@ -16794,7 +16884,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ephemeral_control_commands_still_require_exact_protocol_negotiation() {
+    async fn unledgered_control_commands_still_require_exact_protocol_negotiation() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let data = temporary.path().join("plugin-data");
         fs::create_dir(&data).expect("plugin data directory");
@@ -16804,7 +16894,7 @@ mod tests {
         let ledger = Arc::new(ControlLedger::open(&data).expect("ledger"));
 
         for command in [ControlCommand::Ping, ControlCommand::Agents] {
-            let mut envelope = ControlEnvelope::ephemeral(ControlRequest {
+            let mut envelope = ControlEnvelope::new(ControlRequest {
                 version: 1,
                 command,
                 cwd: temporary.path().to_path_buf(),
@@ -16813,7 +16903,10 @@ mod tests {
                 arguments: Value::Null,
             });
             envelope.protocol.major = envelope.protocol.major.saturating_add(1);
-            let response = dispatch_control_envelope(&dispatcher, &ledger, envelope).await;
+            let response: Value = serde_json::from_slice(
+                &dispatch_control_envelope(&dispatcher, &ledger, envelope).await,
+            )
+            .expect("response");
             assert_eq!(response["ok"], false, "mismatched protocol was accepted");
         }
         assert_eq!(
@@ -16821,8 +16914,58 @@ mod tests {
                 .executions
                 .load(std::sync::atomic::Ordering::SeqCst),
             0,
-            "invalid ephemeral envelopes must not reach the dispatcher"
+            "invalid unledgered envelopes must not reach the dispatcher"
         );
+    }
+
+    #[tokio::test]
+    async fn no_request_runs_on_top_of_an_unflushed_transition() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("plugin-data");
+        let root = temporary.path().join("root");
+        fs::create_dir(&root).expect("root directory");
+        let mut control = ControlPlane::open(data.clone())
+            .await
+            .expect("control plane");
+        control
+            .session_start(json!({"session_id":"session","cwd":root}))
+            .await
+            .expect("session start");
+        let prompt = |turn: &str| ControlRequest {
+            version: 1,
+            command: ControlCommand::Hook,
+            cwd: root.clone(),
+            argv: Vec::new(),
+            name: "codex:UserPromptSubmit".to_owned(),
+            arguments: json!({"session_id":"session","cwd":root,"turn_id":turn}),
+        };
+        dispatch_session_request(&mut control, prompt("first"))
+            .await
+            .expect("first prompt");
+        assert!(
+            control.unflushed,
+            "a remembered root turn is saved unflushed"
+        );
+
+        // Until the transition is durable, no later request may act on it.
+        control.fail_next_flush = true;
+        let refused = dispatch_session_request(&mut control, prompt("second"))
+            .await
+            .expect_err("a request must wait for the previous transition to be durable");
+        assert!(refused.contains("flush"), "{refused}");
+        assert!(!control.state.root_turns.contains("second"));
+        assert!(control.unflushed);
+
+        dispatch_session_request(&mut control, prompt("second"))
+            .await
+            .expect("second prompt once the first is durable");
+        assert!(control.state.root_turns.contains("second"));
+        control
+            .shutdown()
+            .await
+            .expect("shutdown flushes the last transition");
+        let reopened = load_saved_state(&data).expect("durable state");
+        assert!(reopened.root_turns.contains("second"));
     }
 
     #[tokio::test]
@@ -16920,7 +17063,7 @@ mod tests {
                 data.clone(),
                 data.clone(),
                 fs.clone(),
-                LocalCoreStateStore::new(data.join("core-state")),
+                LocalCoreStateStore::open_owned(data.join("core-state")).expect("state owner"),
                 SharedRootRegistry::default(),
             )
             .await
@@ -18380,6 +18523,17 @@ mod tests {
             .expect("root intent")
             .repository_workspace_id;
         drop(initial);
+        // Only the root's attach reached the core log, unflushed: a power loss
+        // leaves the flushed intent without the binding.
+        let core_log = initial_data
+            .join("core-state")
+            .join("core-state-log-v1")
+            .join(format!("{}.json", "0".repeat(32)));
+        assert!(
+            fs::metadata(&core_log).expect("core log").len() > 0,
+            "the deferred attach reached the core log"
+        );
+        fs::write(&core_log, b"").expect("lose the unflushed attach");
         let resumed_initial = ControlPlane::open(initial_data)
             .await
             .expect("finish pending initial root registration");
@@ -18396,6 +18550,31 @@ mod tests {
             expected_workspace
         );
         resumed_initial.shutdown().await.expect("initial shutdown");
+
+        // A power loss after the root registered loses the unflushed final
+        // save; recovery repeats the registration against the durable intent.
+        let registered_data = temporary.path().join("registered-plugin-data");
+        let mut registered = ControlPlane::open(registered_data.clone())
+            .await
+            .expect("registered control plane");
+        registered
+            .session_start(json!({"session_id":"registered","cwd":first}))
+            .await
+            .expect("registered root");
+        assert!(!registered.state.pending_root_registration);
+        let expected_context = registered.state.root_context_id;
+        drop(registered);
+        fs::remove_file(registered_data.join(ADAPTER_STATE_SLOTS[2]))
+            .expect("lose the unflushed final save");
+        let reregistered = ControlPlane::open(registered_data)
+            .await
+            .expect("repeat the root registration");
+        assert!(!reregistered.state.pending_root_registration);
+        assert_eq!(reregistered.state.root_context_id, expected_context);
+        reregistered
+            .shutdown()
+            .await
+            .expect("reregistered shutdown");
 
         let mut control = ControlPlane::open(data.clone())
             .await
@@ -18735,10 +18914,8 @@ mod tests {
 
     #[test]
     fn control_responses_are_bounded() {
-        let oversized = control_response(Ok(json!({
-            "payload": "x".repeat(MAXIMUM_CONTROL_MESSAGE_BYTES)
-        })));
-        let encoded = encode_control_response(&oversized).expect("bounded response");
+        let payload = "x".repeat(MAXIMUM_CONTROL_MESSAGE_BYTES);
+        let encoded = encode_control_response(&json!({"payload": payload}), None);
         assert!(encoded.len() < MAXIMUM_CONTROL_MESSAGE_BYTES);
         let response: Value = serde_json::from_slice(&encoded).expect("response JSON");
         assert_eq!(response["ok"], false);
@@ -18749,13 +18926,10 @@ mod tests {
         );
 
         let request_id = control_protocol::RequestId::fresh();
-        let response = control_response_for(
-            &request_id,
-            Ok(json!({"payload":"x".repeat(MAXIMUM_CONTROL_MESSAGE_BYTES)})),
-        );
-        let encoded = encode_control_response(&response).expect("bounded v2 response");
+        let encoded = control_response_for(&request_id, Ok(json!({"payload": payload})));
         assert!(encoded.len() < MAXIMUM_CONTROL_MESSAGE_BYTES);
         let response: Value = serde_json::from_slice(&encoded).expect("v2 response JSON");
+        assert_eq!(response["version"], 2);
         assert_eq!(response["requestId"], request_id.as_str());
         assert_eq!(response["ok"], false);
     }
@@ -18770,7 +18944,9 @@ mod tests {
         .expect("invalid envelope fixture");
         let error = serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request)
             .expect_err("fixture must not be a valid envelope");
-        let response = invalid_control_request_response(&request, &error);
+        let response: Value =
+            serde_json::from_slice(&invalid_control_request_response(&request, &error))
+                .expect("correlated response");
         assert_eq!(response["version"], 2);
         assert_eq!(response["requestId"], request_id.as_str());
         assert_eq!(response["ok"], false);
@@ -18778,10 +18954,10 @@ mod tests {
         let uncorrelated = br#"{"unexpected":true}"#;
         let error = serde_json::from_slice::<ControlEnvelope<ControlRequest>>(uncorrelated)
             .expect_err("fixture must not be a valid envelope");
-        let response = invalid_control_request_response(uncorrelated, &error);
+        let encoded = invalid_control_request_response(uncorrelated, &error);
+        let response: Value = serde_json::from_slice(&encoded).expect("uncorrelated response");
         assert_eq!(response["version"], 2);
         assert!(response.get("requestId").is_none());
-        let encoded = serde_json::to_vec(&response).expect("uncorrelated response");
         assert!(matches!(
             decode_control_response(&encoded, &request_id),
             Err(ControlRequestError::Indeterminate(_))
@@ -19060,13 +19236,14 @@ mod tests {
     #[test]
     fn adapter_state_loading_is_byte_and_structure_bounded() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let oversized = temporary.path().join("oversized.json");
+        let oversized = temporary.path().join("oversized");
         let file = fs::File::create(&oversized).expect("oversized state");
-        file.set_len(MAXIMUM_ADAPTER_STATE_BYTES + 1)
+        file.set_len(MAXIMUM_ADAPTER_STATE_BYTES + ADAPTER_STATE_HEADER_BYTES as u64 + 1)
             .expect("extend oversized state");
         assert!(
-            read_state(&oversized)
-                .expect_err("oversized state must fail")
+            read_state_slot(&oversized)
+                .err()
+                .expect("oversized state must fail")
                 .contains("byte bound")
         );
 
@@ -19112,19 +19289,23 @@ mod tests {
         state.root_session_id = "x"
             .repeat(usize::try_from(MAXIMUM_ADAPTER_STATE_BYTES).expect("state bound fits usize"));
         assert!(
-            save_state(temporary.path(), &state)
+            save_state(temporary.path(), &state, Survives::PowerLoss)
                 .expect_err("oversized state persistence must fail")
                 .contains("byte bound")
         );
-        assert!(!temporary.path().join("adapter-state.json").exists());
+        assert!(
+            ADAPTER_STATE_SLOTS
+                .iter()
+                .all(|slot| !temporary.path().join(slot).exists())
+        );
     }
 
     #[test]
     fn adapter_state_requires_the_current_explicit_schema() {
-        let legacy = serde_json::from_value::<AdapterState>(json!({
+        let incomplete = serde_json::from_value::<AdapterState>(json!({
             "version": 1,
-            "root_session_id": "legacy-session",
-            "root_agent_id": "legacy-agent",
+            "root_session_id": "session",
+            "root_agent_id": "agent",
             "root_path": "root",
             "root_workspace_name": "workspace",
             "root_context_id": vec![0; 16],
@@ -19135,8 +19316,8 @@ mod tests {
             "pending": []
         }));
         assert!(
-            legacy.is_err(),
-            "legacy state must not be silently migrated"
+            incomplete.is_err(),
+            "state without the current schema must be refused"
         );
         let unsupported = AdapterState {
             version: ADAPTER_STATE_VERSION + 1,
@@ -19147,85 +19328,151 @@ mod tests {
     }
 
     #[test]
-    fn adapter_state_recovers_only_from_a_valid_bounded_previous_snapshot() {
+    fn adapter_state_loads_the_last_completed_save_despite_any_torn_write() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        fs::write(temporary.path().join("adapter-state.json"), b"not json")
-            .expect("corrupt current state");
-        let previous = AdapterState {
+        let data = temporary.path();
+        let named = |name: &str| AdapterState {
             version: ADAPTER_STATE_VERSION,
-            root_session_id: "previous".to_owned(),
+            root_session_id: name.to_owned(),
             ..AdapterState::default()
         };
-        fs::write(
-            temporary.path().join("adapter-state.previous.json"),
-            serde_json::to_vec(&previous).expect("previous state JSON"),
-        )
-        .expect("previous state");
-        assert_eq!(
-            load_state(temporary.path())
-                .expect("recovered state")
-                .root_session_id,
-            "previous"
-        );
-
-        fs::remove_file(temporary.path().join("adapter-state.previous.json"))
-            .expect("remove previous state");
+        let loaded = || load_saved_state(data).map(|state| state.root_session_id);
+        assert_eq!(loaded(), Ok(String::new()));
+        for name in ["first", "second", "third", "fourth"] {
+            save_state(data, &named(name), Survives::PowerLoss).expect("adapter state save");
+            assert_eq!(loaded().as_deref(), Ok(name));
+        }
+        let target = data.join(ADAPTER_STATE_SLOTS[0]);
+        let written = fs::read(&target).expect("newest slot");
+        let mut flipped = written.clone();
+        *flipped.last_mut().expect("payload byte") ^= 1;
+        let mut stale_tail = written.clone();
+        stale_tail.extend_from_slice(b"}}");
+        let prefixes = [
+            0,
+            1,
+            ADAPTER_STATE_HEADER_BYTES - 1,
+            ADAPTER_STATE_HEADER_BYTES,
+            written.len() - 1,
+        ]
+        .map(|length| written[..length].to_vec());
+        for torn in prefixes.into_iter().chain([flipped, stale_tail]) {
+            fs::write(&target, torn).expect("torn slot");
+            assert_eq!(loaded().as_deref(), Ok("third"));
+            save_state(data, &named("fifth"), Survives::PowerLoss)
+                .expect("save over the torn slot");
+            assert_eq!(loaded().as_deref(), Ok("fifth"));
+        }
+        for slot in ADAPTER_STATE_SLOTS {
+            fs::write(data.join(slot), b"torn").expect("torn slot");
+        }
         assert!(
-            load_state(temporary.path()).is_err(),
-            "corrupt current state without a valid recovery snapshot must fail closed"
+            loaded().is_err(),
+            "state without a completed save must fail closed"
         );
     }
 
     #[test]
-    fn adapter_state_rename_failures_keep_a_loadable_generation() {
+    fn unflushed_adapter_saves_never_touch_the_newest_flushed_save() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let mut state = AdapterState {
+        let data = temporary.path();
+        let named = |name: &str| AdapterState {
             version: ADAPTER_STATE_VERSION,
-            root_session_id: "first".to_owned(),
+            root_session_id: name.to_owned(),
             ..AdapterState::default()
         };
-        save_state(temporary.path(), &state).expect("initial state");
+        let loaded = || load_saved_state(data).map(|state| state.root_session_id);
+        let flushed_slots = || {
+            ADAPTER_STATE_SLOTS[..2]
+                .iter()
+                .map(|slot| fs::read(data.join(slot)).ok())
+                .collect::<Vec<_>>()
+        };
+        let unflushed = data.join(ADAPTER_STATE_SLOTS[2]);
 
-        state.root_session_id = "second".to_owned();
-        let mut calls = 0;
-        assert!(
-            save_state_with_rename(temporary.path(), &state, |from, to, mode| {
-                calls += 1;
-                if calls == 1 {
-                    Err(io::Error::other("injected first rename failure"))
-                } else {
-                    durable_rename(from, to, mode)
-                }
-            })
-            .is_err()
-        );
-        assert_eq!(
-            load_state(temporary.path())
-                .expect("current state")
-                .root_session_id,
-            "first"
-        );
+        // Losing every unflushed save before the first flushed one leaves the
+        // state before any save.
+        save_state(data, &named("volatile"), Survives::ServiceCrash).expect("unflushed save");
+        assert_eq!(loaded().as_deref(), Ok("volatile"));
+        fs::write(&unflushed, b"lost").expect("lose unflushed save");
+        assert_eq!(loaded(), Ok(String::new()));
 
-        save_state(temporary.path(), &state).expect("second state");
-        state.root_session_id = "third".to_owned();
-        let mut calls = 0;
-        assert!(
-            save_state_with_rename(temporary.path(), &state, |from, to, mode| {
-                calls += 1;
-                if calls == 2 {
-                    Err(io::Error::other("injected second rename failure"))
-                } else {
-                    durable_rename(from, to, mode)
-                }
-            })
-            .is_err()
-        );
+        save_state(data, &named("first"), Survives::PowerLoss).expect("flushed save");
+        let durable = flushed_slots();
+        for name in ["second", "third", "fourth"] {
+            save_state(data, &named(name), Survives::ServiceCrash).expect("unflushed save");
+            assert_eq!(loaded().as_deref(), Ok(name));
+            assert_eq!(flushed_slots(), durable);
+        }
+        fs::write(&unflushed, b"lost").expect("lose unflushed save");
+        assert_eq!(loaded().as_deref(), Ok("first"));
+
+        save_state(data, &named("fifth"), Survives::ServiceCrash).expect("unflushed save");
+        save_state(data, &named("sixth"), Survives::PowerLoss).expect("flushed save");
         assert_eq!(
-            load_state(temporary.path())
-                .expect("previous state after publication failure")
-                .root_session_id,
-            "second"
+            loaded().as_deref(),
+            Ok("sixth"),
+            "a later flushed save wins"
         );
+        save_state(data, &named("seventh"), Survives::ServiceCrash).expect("unflushed save");
+        let intact = fs::read(&unflushed).expect("unflushed slot");
+        fs::write(&unflushed, &intact[..intact.len() - 1]).expect("tear unflushed save");
+        assert_eq!(loaded().as_deref(), Ok("sixth"));
+    }
+
+    #[test]
+    fn a_session_saves_from_what_it_knows_of_its_slots() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path();
+        let named = |name: &str| AdapterState {
+            version: ADAPTER_STATE_VERSION,
+            root_session_id: name.to_owned(),
+            ..AdapterState::default()
+        };
+        let loaded = || load_saved_state(data).map(|state| state.root_session_id);
+        let on_disk = || StateSlots::read(data).expect("slots").0;
+        let (_, mut slots) = load_state(data).expect("fresh state");
+        for (index, name) in ["a", "b", "c", "d", "e", "f", "g", "h"]
+            .into_iter()
+            .enumerate()
+        {
+            let survives = if index % 3 == 1 {
+                Survives::ServiceCrash
+            } else {
+                Survives::PowerLoss
+            };
+            slots
+                .save(data, &named(name), survives)
+                .expect("adapter state save");
+            assert_eq!(loaded().as_deref(), Ok(name));
+            let read = on_disk();
+            assert_eq!(read.flushed, slots.flushed);
+            assert_eq!(read.durable_entry, slots.durable_entry);
+            assert_eq!(read.last_generation, slots.last_generation);
+        }
+
+        // A write that fails stays the target of the next flushed save, so the
+        // newest flushed save is never overwritten, and it consumes its
+        // generation.
+        let newest = data.join(ADAPTER_STATE_SLOTS[slots.newest_flushed()]);
+        let target = data.join(ADAPTER_STATE_SLOTS[1 - slots.newest_flushed()]);
+        let durable = fs::read(&newest).expect("newest flushed save");
+        fs::remove_file(&target).expect("remove target slot");
+        fs::create_dir(&target).expect("block target slot");
+        let before = slots.last_generation;
+        assert!(
+            slots
+                .save(data, &named("failed"), Survives::PowerLoss)
+                .is_err()
+        );
+        assert_eq!(slots.last_generation, before + 1);
+        fs::remove_dir(&target).expect("unblock target slot");
+        slots
+            .save(data, &named("retried"), Survives::PowerLoss)
+            .expect("retried save");
+        assert_eq!(fs::read(&newest).expect("newest flushed save"), durable);
+        assert_eq!(loaded().as_deref(), Ok("retried"));
+        assert_eq!(on_disk().last_generation, before + 2);
     }
 
     #[test]
@@ -19279,7 +19526,8 @@ mod tests {
             "os":env::consts::OS,
             "arch":env::consts::ARCH,
             "coverage":[
-                "create-read-write","atomic-save","rename-delete","nested-paths",
+                "create-read-write","atomic-save","rename-delete","rename-before-hydration",
+                "nested-paths","large-directory-paging",
                 "concurrent-handles","watchers","crash-detach-recovery",
                 "mount-restoration","hard-links","symbolic-links-reparse-points",
                 "metadata","case-behavior","escape-attempts",
@@ -19302,6 +19550,34 @@ mod tests {
         });
         assert!(valid_platform_receipt(&canonical, "exact-digest"));
         assert!(!valid_platform_receipt(&canonical, "other-digest"));
+        let mut expanded = canonical.clone();
+        expanded["coverage"]
+            .as_array_mut()
+            .expect("coverage")
+            .push(json!("future-coverage"));
+        expanded["cases"]
+            .as_array_mut()
+            .expect("cases")
+            .push(json!({
+                "name":"future-case","status":"passed","elapsed_ms":1,"reason":null
+            }));
+        assert!(valid_platform_receipt(&expanded, "exact-digest"));
+        let mut duplicate_case = expanded.clone();
+        duplicate_case["cases"]
+            .as_array_mut()
+            .expect("cases")
+            .push(json!({
+                "name":"future-case","status":"passed","elapsed_ms":1,"reason":null
+            }));
+        assert!(!valid_platform_receipt(&duplicate_case, "exact-digest"));
+        expanded["cases"][3]["status"] = json!("failed");
+        assert!(!valid_platform_receipt(&expanded, "exact-digest"));
+        let mut missing_coverage = canonical.clone();
+        missing_coverage["coverage"]
+            .as_array_mut()
+            .expect("coverage")
+            .pop();
+        assert!(!valid_platform_receipt(&missing_coverage, "exact-digest"));
         let mut incomplete = canonical.clone();
         incomplete["cases"].as_array_mut().expect("cases").pop();
         assert!(!valid_platform_receipt(&incomplete, "exact-digest"));

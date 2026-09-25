@@ -1,7 +1,7 @@
 //! One authenticated, bounded page-read boundary for persistent tree kernels.
 
 use super::allocation::{AllocationError, AllocationLedger};
-use super::codec::DecodedPageKind;
+use super::codec::{DecodedPageKind, DecodedPageShape};
 use super::persistent_btree::{Child, Format, Page};
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::{
@@ -632,6 +632,30 @@ fn invalid_batch_result() -> Error {
     ))
 }
 
+/// Owned bytes one decoded page of `shape` retains: its item container and
+/// every nested allocation.
+fn logical_page_bytes<F: Format>(shape: DecodedPageShape) -> Option<u64> {
+    let container_bytes = match shape.kind {
+        DecodedPageKind::Leaf => shape.items.checked_mul(size_of::<F::Value>()),
+        DecodedPageKind::Internal => shape.items.checked_mul(size_of::<Child<F::Key>>()),
+    }
+    .map(crate::foundation::usize_to_u64)?;
+    container_bytes.checked_add(shape.nested_bytes)
+}
+
+/// Decodes one page as the shared decoded-cache representation every page
+/// reader uses, sized as a read here would claim it.
+pub(crate) fn decoded_cache_value<F: Format>(
+    bytes: &[u8],
+    limits: DecodeLimits,
+) -> Result<DecodedCacheValue, CanonicalDecodeError> {
+    let shape = F::decode_shape(bytes, limits)?;
+    Ok(DecodedCacheValue {
+        value: Arc::new(F::decode(bytes, limits)?),
+        logical_bytes: logical_page_bytes::<F>(shape).unwrap_or(u64::MAX),
+    })
+}
+
 fn decode_read<F: Format>(
     read: &ObjectRead,
     limits: DecodeLimits,
@@ -642,15 +666,7 @@ fn decode_read<F: Format>(
     let prepared = (|| -> Result<_, Error> {
         let shape = F::decode_shape(read, limits)?;
         charge_items(work, u64::try_from(shape.items).unwrap_or(u64::MAX), budget)?;
-        let container_bytes = match shape.kind {
-            DecodedPageKind::Leaf => shape.items.checked_mul(size_of::<F::Value>()),
-            DecodedPageKind::Internal => shape.items.checked_mul(size_of::<Child<F::Key>>()),
-        }
-        .map(crate::foundation::usize_to_u64)
-        .ok_or(Error::AllocationFailed)?;
-        let logical_bytes = container_bytes
-            .checked_add(shape.nested_bytes)
-            .ok_or(Error::AllocationFailed)?;
+        let logical_bytes = logical_page_bytes::<F>(shape).ok_or(Error::AllocationFailed)?;
         Ok((shape, logical_bytes))
     })();
     let (shape, logical_bytes) = prepared?;
@@ -749,13 +765,7 @@ fn admit_clone(
 }
 
 fn charge_items(work: &mut WorkCounters, count: u64, budget: WorkBudget) -> Result<(), WorkError> {
-    let prospective = work.checked_add(WorkCounters {
-        items_examined: count,
-        ..WorkCounters::default()
-    })?;
-    prospective.verify(budget)?;
-    *work = prospective;
-    Ok(())
+    work.charge_items(count, &budget)
 }
 
 pub(crate) fn merge_backend_work(

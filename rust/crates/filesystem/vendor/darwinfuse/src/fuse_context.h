@@ -11,11 +11,12 @@
 #include <sys/types.h>
 
 /*
- * Set the thread-local FUSE context uid/gid.
- * Called by nfs4_server.c before invoking any FUSE callback,
- * using the uid/gid extracted from the ONC RPC AUTH_SYS credentials.
+ * Set the thread-local FUSE context identity: uid, gid, and supplementary
+ * groups. Called by nfs4_server.c before invoking any FUSE callback, from
+ * the ONC RPC AUTH_SYS credentials; fuse_getgroups() returns the groups.
  */
-void darwinfuse_set_context(uid_t uid, gid_t gid);
+void darwinfuse_set_context(uid_t uid, gid_t gid,
+                            unsigned ngroups, const gid_t *groups);
 
 /*
  * Set the thread-local FUSE context private_data.

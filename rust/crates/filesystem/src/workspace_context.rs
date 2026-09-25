@@ -808,16 +808,6 @@ pub(crate) fn update_context_children(
     }
 }
 
-pub(crate) fn context_children(
-    records: impl IntoIterator<Item = WorkspaceContext>,
-) -> WorkspaceContextChildren {
-    let mut children = WorkspaceContextChildren::new();
-    for record in records {
-        update_context_children(&mut children, None, Some(&record));
-    }
-    children
-}
-
 pub(crate) fn plan_context_subtree_discard(
     root: Option<&WorkspaceContext>,
     children: &WorkspaceContextChildren,
