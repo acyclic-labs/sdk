@@ -31,6 +31,8 @@ pub mod live;
 pub mod machines;
 #[cfg(feature = "host")]
 pub mod model;
+#[cfg(feature = "models")]
+pub mod models;
 #[cfg(feature = "host")]
 pub mod registry;
 pub mod resources;
