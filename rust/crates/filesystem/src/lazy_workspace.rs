@@ -2092,25 +2092,36 @@ where
         }
         let file_id = self.source_file_id(node);
         let state = self.state_measured(budget, cancellation).await?;
-        let generation = self
+        // A source that does not count links cannot rule an alias out, but
+        // an identity the head's file table does not hold has no name there.
+        let head = self
             .workspace
-            .head_measured(remaining_work(state.work, budget)?, cancellation)
-            .await
-            .map_err(workspace_error)?;
-        let mut work = account_work(state.work, generation.work, budget)?;
-        let state = state.value;
-        let paths = generation
-            .value
-            .paths_for_file_id_measured(
+            .head_with_file_record_measured(
                 file_id,
-                u32::MAX,
-                remaining_work(work, budget)?,
+                remaining_work(state.work, budget)?,
                 cancellation,
             )
             .await
             .map_err(workspace_error)?;
-        work = account_work(work, paths.work, budget)?;
-        if let Some(path) = paths.value.into_iter().next() {
+        let mut work = account_work(state.work, head.work, budget)?;
+        let state = state.value;
+        let (generation, held) = head.value;
+        let path = if held {
+            let paths = generation
+                .paths_for_file_id_measured(
+                    file_id,
+                    u32::MAX,
+                    remaining_work(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(workspace_error)?;
+            work = account_work(work, paths.work, budget)?;
+            paths.value.into_iter().next()
+        } else {
+            None
+        };
+        if let Some(path) = path {
             let stat = self
                 .workspace
                 .stat_optional_measured(&path, remaining_work(work, budget)?, cancellation)
@@ -3054,7 +3065,7 @@ where
         mounted_mask: Option<(&[String], bool)>,
     ) -> Result<(LazyDirectoryPage, LazyWorkspaceState), LazyWorkspaceError> {
         let cancellation = CancellationToken::new();
-        let state = self.state().await?;
+        let state = { self.state().await? };
         let page = self
             .list_directory_at(
                 &state,

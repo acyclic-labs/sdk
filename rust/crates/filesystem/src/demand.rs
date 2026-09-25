@@ -444,12 +444,11 @@ impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
 pub mod native {
     use super::*;
     use crate::model::{FilesystemProfile, VolumeLimits};
-    use crate::native_host::{HostRoot, HostStat};
+    use crate::native_host::{HostListedEntry, HostRoot, HostStat, HostStatReader};
     #[cfg(unix)]
     use cap_std::fs::FileTypeExt as _;
     #[cfg(unix)]
     use cap_std::fs::MetadataExt;
-    use cap_std::fs::ReadDir;
     use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -461,8 +460,8 @@ pub mod native {
     struct DirectoryState {
         directory: NamespacePath,
         version: SourceVersion,
-        entries: ReadDir,
-        pending: Option<cap_std::fs::DirEntry>,
+        entries: HostStatReader,
+        pending: Option<HostListedEntry>,
         replay: VecDeque<SourceDirectoryEntry>,
     }
 
@@ -940,22 +939,23 @@ pub mod native {
             Ok(DirectoryState {
                 directory: directory.clone(),
                 version: observed,
-                entries: self.inner.root.read_dir(&self.relative(directory)?)?,
+                entries: self.inner.root.read_dir_stats(&self.relative(directory)?)?,
                 pending: None,
                 replay: VecDeque::new(),
             })
         }
 
-        /// Converts one enumerated entry, reading its node exactly as a lookup
-        /// would. `None` means the entry vanished after enumeration.
+        /// Converts one enumerated entry into the node a lookup reports,
+        /// stat'ing the name only where enumeration could not report it.
+        /// `None` means the entry vanished after enumeration.
         fn next_entry(
             &self,
             directory: &Path,
-            entry: &cap_std::fs::DirEntry,
+            entry: &HostListedEntry,
         ) -> Result<Option<SourceDirectoryEntry>, DemandError> {
-            let file_name = entry.file_name();
+            let file_name = &entry.name;
             let (encoding, bytes) = crate::native_name::host_name_bytes(
-                &file_name,
+                file_name,
                 self.inner.profile,
                 self.inner.limits.maximum_component_bytes,
             )
@@ -966,14 +966,15 @@ pub mod native {
                 self.inner.limits.maximum_component_bytes,
             )
             .map_err(|_| DemandError::InvalidRequest)?;
-            match self.inner.root.stat(&directory.join(&file_name)) {
-                Ok(metadata) => Ok(Some(SourceDirectoryEntry {
-                    name,
-                    node: Self::node(&metadata),
-                })),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(error) => Err(error.into()),
-            }
+            let node = match &entry.stat {
+                Some(stat) => Self::node(stat),
+                None => match self.inner.root.stat(&directory.join(file_name)) {
+                    Ok(stat) => Self::node(&stat),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(error.into()),
+                },
+            };
+            Ok(Some(SourceDirectoryEntry { name, node }))
         }
 
         fn page_entries(
@@ -1464,11 +1465,9 @@ pub mod native {
         {
             Some(metadata.nlink())
         }
-        #[cfg(windows)]
-        {
-            metadata.number_of_links().map(u64::from)
-        }
-        #[cfg(not(any(unix, windows)))]
+        // A Windows directory index records no link count, and a listed
+        // node must be exactly what a lookup reports.
+        #[cfg(not(unix))]
         {
             let _ = metadata;
             None
@@ -1686,6 +1685,9 @@ mod tests {
         std::fs::create_dir(root.path().join("directory"))?;
         std::fs::write(root.path().join("file"), b"body")?;
         std::fs::hard_link(root.path().join("file"), root.path().join("alias"))?;
+        // A link is listed as itself, never as its target.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("directory", root.path().join("link"))?;
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Portable,
@@ -1698,7 +1700,7 @@ mod tests {
         let page = provider
             .list_page(reference, &path("/")?, None, 16, &cancellation)
             .await?;
-        assert_eq!(page.value.entries.len(), 3);
+        assert_eq!(page.value.entries.len(), if cfg!(unix) { 4 } else { 3 });
         for entry in page.value.entries {
             let name = entry
                 .name

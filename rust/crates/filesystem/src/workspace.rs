@@ -327,6 +327,62 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         })
     }
 
+    /// Selects the head generation and reports whether its file table holds
+    /// a record for `file_id`: one keyed read, where finding the names bound
+    /// to that identity is a namespace traversal. No name binds an identity
+    /// without a record.
+    pub(crate) async fn head_with_file_record_measured(
+        &self,
+        file_id: FileId,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<(Generation<A, O>, bool)>, WorkspaceError> {
+        let mut checkout = self
+            .volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| WorkspaceError::from(failure.error))?;
+        let mut work = checkout.work;
+        let held = match checkout
+            .value
+            .read_file_record_by_id(
+                file_id,
+                work.remaining(budget).map_err(WorkspaceError::engine)?,
+                cancellation,
+            )
+            .await
+        {
+            Ok(record) => {
+                work = work
+                    .checked_add(record.work)
+                    .map_err(WorkspaceError::engine)?;
+                true
+            }
+            Err(failure) if matches!(failure.error, crate::FsError::NotFound) => {
+                work = work
+                    .checked_add(*failure.work)
+                    .map_err(WorkspaceError::engine)?;
+                false
+            }
+            Err(failure) => return Err(WorkspaceError::from(failure.error)),
+        };
+        Ok(crate::OperationReceipt {
+            value: (
+                Generation {
+                    workspace: self.clone(),
+                    id: checkout.value.generation_id(),
+                },
+                held,
+            ),
+            work,
+        })
+    }
+
     /// Reopens and authenticates one exact immutable generation belonging to
     /// this workspace. This is the stateless transport/restart counterpart to
     /// retaining a live [`Generation`] handle.

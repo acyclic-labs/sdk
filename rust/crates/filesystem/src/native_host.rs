@@ -78,8 +78,10 @@ pub struct HostDataRange {
 #[cfg(not(windows))]
 pub type HostStat = Metadata;
 
-/// One object's kind, size, times, attributes, and identity, exactly as a
-/// handle query reports them, read without following its name's final link.
+/// One object's kind, size, times, attributes, and identity, read without
+/// following its name's final link. These are exactly the facts an NTFS
+/// directory index records for each name, so one enumeration reports them
+/// for a whole directory; a link count is not among them.
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug)]
 pub struct HostStat {
@@ -91,7 +93,6 @@ pub struct HostStat {
     last_write_time: u64,
     volume_serial_number: Option<u32>,
     file_index: Option<u64>,
-    number_of_links: Option<u32>,
 }
 
 #[cfg(windows)]
@@ -108,7 +109,6 @@ impl HostStat {
             last_write_time: metadata.last_write_time(),
             volume_serial_number: _WindowsByHandle::volume_serial_number(metadata),
             file_index: _WindowsByHandle::file_index(metadata),
-            number_of_links: _WindowsByHandle::number_of_links(metadata),
         }
     }
 
@@ -160,11 +160,6 @@ impl HostStat {
         self.file_index
     }
 
-    #[must_use]
-    pub const fn number_of_links(&self) -> Option<u32> {
-        self.number_of_links
-    }
-
     pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
         Ok(windows_time(self.creation_time))
     }
@@ -188,6 +183,211 @@ fn windows_time(ticks: u64) -> cap_std::time::SystemTime {
     } else {
         std::time::UNIX_EPOCH - since(UNIX_EPOCH_TICKS - ticks)
     })
+}
+
+/// One enumerated name with its facts. `stat` is `None` when enumeration
+/// cannot report the facts exactly as [`HostRoot::stat`] would, and the name
+/// must be stat'ed on its own.
+pub struct HostListedEntry {
+    pub name: OsString,
+    pub stat: Option<HostStat>,
+}
+
+/// The names of one held directory, each with its facts, read relative to
+/// the directory itself so no entry costs a path walk.
+#[cfg(not(windows))]
+pub struct HostStatReader(ReadDir);
+
+#[cfg(not(windows))]
+impl Iterator for HostStatReader {
+    type Item = io::Result<HostListedEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let entry = match self.0.next()? {
+            Ok(entry) => entry,
+            Err(error) => return Some(Err(error)),
+        };
+        // One no-follow stat relative to the held directory descriptor.
+        let stat = match entry.metadata() {
+            Ok(stat) => Some(stat),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(Ok(HostListedEntry {
+            name: entry.file_name(),
+            stat,
+        }))
+    }
+}
+
+/// The names of one held directory, each with the facts its index records,
+/// read one buffer of entries per kernel call.
+#[cfg(windows)]
+pub struct HostStatReader {
+    directory: Dir,
+    volume_serial_number: Option<u32>,
+    /// `u64` storage keeps every entry record 8-byte aligned.
+    buffer: Vec<u64>,
+    /// Byte offset of the next unread record in `buffer`, if any.
+    next: Option<usize>,
+    exhausted: bool,
+}
+
+#[cfg(windows)]
+impl HostStatReader {
+    const BUFFER_BYTES: usize = 64 * 1024;
+
+    /// Reads the next buffer of records; `false` once none remain.
+    #[allow(unsafe_code)]
+    fn refill(&mut self) -> io::Result<bool> {
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+        use windows::Win32::Foundation::{ERROR_NO_MORE_FILES, HANDLE};
+        use windows::Win32::Storage::FileSystem::{
+            FileIdExtdDirectoryInfo, GetFileInformationByHandleEx,
+        };
+
+        if self.exhausted {
+            return Ok(false);
+        }
+        let bytes = u32::try_from(self.buffer.len() * std::mem::size_of::<u64>())
+            .map_err(|_| io::Error::other("enumeration buffer size"))?;
+        // SAFETY: the held directory handle and the owned buffer outlive this
+        // synchronous call, and `bytes` is exactly the buffer's length.
+        let result = unsafe {
+            GetFileInformationByHandleEx(
+                HANDLE(self.directory.as_handle().as_raw_handle()),
+                FileIdExtdDirectoryInfo,
+                self.buffer.as_mut_ptr().cast(),
+                bytes,
+            )
+        };
+        match result {
+            Ok(()) => {
+                self.next = Some(0);
+                Ok(true)
+            }
+            Err(error)
+                if error.code() == windows::core::HRESULT::from_win32(ERROR_NO_MORE_FILES.0) =>
+            {
+                self.exhausted = true;
+                Ok(false)
+            }
+            Err(error) => Err(io::Error::from_raw_os_error(error.code().0 & 0xffff)),
+        }
+    }
+
+    /// Decodes the record at `offset` and advances past it.
+    #[allow(unsafe_code)]
+    fn take(&mut self, offset: usize) -> io::Result<Option<HostListedEntry>> {
+        use std::mem::{offset_of, size_of};
+        use std::os::windows::ffi::OsStringExt as _;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO,
+        };
+
+        let total = self.buffer.len() * size_of::<u64>();
+        let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed directory record");
+        let name_offset = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
+        if !offset.is_multiple_of(std::mem::align_of::<FILE_ID_EXTD_DIR_INFO>())
+            || offset
+                .checked_add(name_offset)
+                .is_none_or(|end| end > total)
+        {
+            return Err(malformed());
+        }
+        // SAFETY: the record's fixed part lies within the buffer and is
+        // aligned, as just checked; the kernel initialized it.
+        let record = unsafe {
+            &*self
+                .buffer
+                .as_ptr()
+                .cast::<u8>()
+                .add(offset)
+                .cast::<FILE_ID_EXTD_DIR_INFO>()
+        };
+        let name_bytes = usize::try_from(record.FileNameLength).map_err(|_| malformed())?;
+        let name_start = offset + name_offset;
+        if !name_bytes.is_multiple_of(2)
+            || name_start
+                .checked_add(name_bytes)
+                .is_none_or(|end| end > total)
+        {
+            return Err(malformed());
+        }
+        let step = usize::try_from(record.NextEntryOffset).map_err(|_| malformed())?;
+        self.next = (step != 0).then_some(offset + step);
+        // SAFETY: the name's UTF-16 units lie within the buffer, as checked,
+        // and a record's name is 2-byte aligned after its aligned fixed part.
+        let name = unsafe {
+            std::slice::from_raw_parts(
+                self.buffer
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(name_start)
+                    .cast::<u16>(),
+                name_bytes / 2,
+            )
+        };
+        let dot = u16::from(b'.');
+        if name == [dot] || name == [dot, dot] {
+            return Ok(None);
+        }
+        let name = OsString::from_wide(name);
+        let (index, high) = record.FileId.Identifier.split_at(8);
+        let file_index = u64::from_le_bytes(index.try_into().map_err(|_| malformed())?);
+        // A reparse point is resolved only by the held walk, and an identity
+        // wider than 64 bits has no exact counterpart in a handle query.
+        let stat = (record.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0
+            && record.ReparsePointTag == 0
+            && high.iter().all(|byte| *byte == 0))
+        .then(|| {
+            let unsigned = |value: i64| u64::try_from(value).map_err(|_| malformed());
+            Ok::<_, io::Error>(HostStat {
+                file_type: if record.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+                    cap_std::fs::FileType::dir()
+                } else {
+                    cap_std::fs::FileType::file()
+                },
+                len: unsigned(record.EndOfFile)?,
+                attributes: record.FileAttributes,
+                creation_time: unsigned(record.CreationTime)?,
+                last_access_time: unsigned(record.LastAccessTime)?,
+                last_write_time: unsigned(record.LastWriteTime)?,
+                volume_serial_number: self.volume_serial_number,
+                file_index: Some(file_index),
+            })
+        })
+        .transpose()?;
+        Ok(Some(HostListedEntry { name, stat }))
+    }
+}
+
+#[cfg(windows)]
+impl Iterator for HostStatReader {
+    type Item = io::Result<HostListedEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let Some(offset) = self.next.take() else {
+                match self.refill() {
+                    Ok(true) => continue,
+                    Ok(false) => return None,
+                    Err(error) => {
+                        self.exhausted = true;
+                        return Some(Err(error));
+                    }
+                }
+            };
+            match self.take(offset) {
+                Ok(Some(entry)) => return Some(Ok(entry)),
+                Ok(None) => {}
+                Err(error) => {
+                    self.exhausted = true;
+                    return Some(Err(error));
+                }
+            }
+        }
+    }
 }
 
 /// A held directory capability whose relative operations cannot escape through
@@ -607,6 +807,34 @@ impl HostRoot {
         }
     }
 
+    /// Enumerates the directory at `path`, reached without following any
+    /// link, with each entry's facts as [`Self::stat`] reports them, or with
+    /// `None` where only a separate stat of that name can report them.
+    pub fn read_dir_stats(&self, path: &Path) -> io::Result<HostStatReader> {
+        #[cfg(windows)]
+        {
+            // An enumeration's position belongs to the open file object, which
+            // a duplicated handle shares, so each listing opens its own.
+            let directory = if path.as_os_str().is_empty() {
+                self.directory.open_dir(Path::new("."))?
+            } else {
+                self.open_dir_held(path)?
+            };
+            Ok(HostStatReader {
+                directory,
+                // A path without reparse points never leaves the root's volume.
+                volume_serial_number: u32::try_from(self.identity.device).ok(),
+                buffer: vec![0; HostStatReader::BUFFER_BYTES / std::mem::size_of::<u64>()],
+                next: None,
+                exhausted: false,
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            self.open_dir_held(path)?.entries().map(HostStatReader)
+        }
+    }
+
     /// Enumerates through held directory capabilities without following any
     /// intermediate symlink or reparse point.
     pub fn open_dir_held(&self, path: &Path) -> io::Result<Dir> {
@@ -784,7 +1012,6 @@ impl HostRoot {
             // A path without reparse points never leaves the root's volume.
             volume_serial_number: u32::try_from(self.identity.device).ok(),
             file_index: Some(unsigned(information.FileId)?),
-            number_of_links: Some(information.NumberOfLinks),
         }))
     }
 
@@ -3119,7 +3346,7 @@ mod windows_clone_tests {
     }
 
     #[test]
-    fn by_name_stat_reports_exactly_what_a_handle_query_does() -> std::io::Result<()> {
+    fn by_name_and_listed_stats_report_exactly_what_a_handle_query_does() -> std::io::Result<()> {
         use super::HostStat;
 
         let temporary = tempfile::tempdir()?;
@@ -3138,7 +3365,6 @@ mod windows_clone_tests {
             assert_eq!(fast.last_write_time(), held.last_write_time());
             assert_eq!(fast.volume_serial_number(), held.volume_serial_number());
             assert_eq!(fast.file_index(), held.file_index());
-            assert_eq!(fast.number_of_links(), held.number_of_links());
             assert_eq!(fast.created()?, held.created()?);
             assert_eq!(fast.modified()?, held.modified()?);
             assert_eq!(fast.accessed()?, held.accessed()?);
@@ -3155,7 +3381,27 @@ mod windows_clone_tests {
             let held = HostStat::from_metadata(&root.symlink_metadata(path)?);
             same(&fast, &held)?;
         }
-        assert_eq!(root.stat(Path::new("alias"))?.number_of_links(), Some(2));
+        // Every enumerated name carries exactly the facts its own stat
+        // reports, except a reparse point, which only its own stat resolves.
+        for directory in [Path::new(""), Path::new("directory")] {
+            let mut names = Vec::new();
+            for entry in root.read_dir_stats(directory)? {
+                let entry = entry?;
+                let path = directory.join(&entry.name);
+                let listed = entry.stat.ok_or_else(|| {
+                    std::io::Error::other("a plain entry is listed with its facts")
+                })?;
+                same(&listed, &root.stat(&path)?)?;
+                names.push(entry.name);
+            }
+            names.sort();
+            let expected: &[&str] = if directory.as_os_str().is_empty() {
+                &["alias", "directory"]
+            } else {
+                &["file"]
+            };
+            assert_eq!(names, expected);
+        }
         assert_eq!(
             root.stat(Path::new("directory/missing"))
                 .map_err(|error| error.kind())
@@ -3175,6 +3421,14 @@ mod windows_clone_tests {
                 assert!(root.stat_by_name(Path::new("link"))?.is_none());
                 assert!(root.stat_by_name(Path::new("link/file"))?.is_none());
                 assert!(root.stat(Path::new("link"))?.file_type().is_symlink());
+                let listed = root
+                    .read_dir_stats(Path::new(""))?
+                    .find(|entry| entry.as_ref().is_ok_and(|entry| entry.name == "link"))
+                    .ok_or_else(|| std::io::Error::other("link is listed"))??;
+                assert!(
+                    listed.stat.is_none(),
+                    "a reparse point is stat'ed on its own"
+                );
             }
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
             Err(error) => return Err(error),
