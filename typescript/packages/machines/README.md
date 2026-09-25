@@ -15,6 +15,8 @@ console.log(await machines.qualifyImage(image));
 console.log(machines.assurance); // "process-local-simulation"
 ```
 
+`forkMachine(machineId, count, key)` (or `Machine.fork(count, key)`) forks a running machine into 1..=1024 fresh children without an intermediate checkpoint. Its contract must declare `live-fork` (children inherit memory, processes, and disk: fidelity `"memory-and-disk"`) or `disk-fork` (children boot fresh over a disk copy: `"disk-only"`); check `forkFidelity(contract.capabilities)` first and fall back to `checkpoint` plus `fork` when it is `null`. Destroy children before their source.
+
 Use `HttpMachinesProvider` for an authenticated HTTPS service. Qualify an immutable image before creating a machine, retain idempotency keys for recovery, and inspect operations whose outcome is indeterminate. The simulator is for contract tests: it does **not** execute an OS, isolate workloads, provide durability, or offer service availability. A hosted provider must document its own guarantees.
 
 [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/machines/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/machines)

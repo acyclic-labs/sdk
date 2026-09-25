@@ -25,6 +25,8 @@ pub struct Request {
     pub query: Vec<(String, String)>,
     /// `Authorization` header, if any.
     pub authorization: Option<String>,
+    /// Request body as text.
+    pub body: String,
 }
 
 impl Request {
@@ -132,6 +134,7 @@ async fn serve(
             path: url.path().to_owned(),
             query: url.query_pairs().into_owned().collect(),
             authorization,
+            body: String::from_utf8_lossy(&body).into_owned(),
         };
         log.lock()
             .unwrap_or_else(PoisonError::into_inner)

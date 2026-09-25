@@ -4,10 +4,13 @@
 //! provider stores the serialized [`MachineContract`] in a sandbox label at creation and reads
 //! it back on every observation. Everything here is a pure function over wire structs.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use acyclic_machines::{
-    CheckpointId, CheckpointObservation, Endpoint, ExpirationPolicy, IdempotencyKey,
+    Capability, CheckpointId, CheckpointObservation, Endpoint, ExpirationPolicy, IdempotencyKey,
     MachineContract, MachineId, MachineObservation, MachineState, ProviderError, SuspensionPolicy,
 };
 
@@ -35,10 +38,23 @@ pub const LABEL_CONTRACT: &str = "acyclic.contract";
 pub const KIND_CREATE: &str = "create";
 /// Value of [`LABEL_KIND`] for `fork`.
 pub const KIND_FORK: &str = "fork";
+/// Value of [`LABEL_KIND`] for `fork_machine` (live fork of a running machine).
+pub const KIND_LIVE_FORK: &str = "live-fork";
+/// Label a live-fork child carries, set to `true`, once it is a complete copy (native fork:
+/// as soon as it exists; disk fork: after its workspace is unpacked). Label recovery only
+/// returns a live fork whose every child is ready.
+pub const LABEL_READY: &str = "acyclic.ready";
+/// Label holding the sandbox a live-fork child was actually forked from: the requested machine
+/// or, in a doubling fan-out, an earlier child of the same fork.
+pub const LABEL_FORK_SOURCE: &str = "acyclic.fork_source";
+/// Label holding the source machine of a live-fork child.
+pub const LABEL_PARENT: &str = "acyclic.parent";
 /// Name of the single stable endpoint exposed per machine.
 pub const ENDPOINT_NAME: &str = "toolbox";
 /// Sandbox classes with pause/resume, memory snapshots, and native fork.
 pub const VM_CLASSES: [&str; 2] = ["linux-vm", "windows"];
+/// Container sandbox class: no pause, memory snapshot, or native fork.
+pub const CONTAINER_CLASS: &str = "container";
 
 /// Auto-delete value that disables automatic deletion.
 const AUTO_DELETE_DISABLED: i64 = -1;
@@ -88,6 +104,27 @@ pub fn is_settled(daytona: Option<&str>) -> bool {
 #[must_use]
 pub fn is_vm_class(class: Option<&str>) -> bool {
     class.is_some_and(|class| VM_CLASSES.iter().any(|vm| vm.eq_ignore_ascii_case(class)))
+}
+
+/// Capabilities this provider declares for sandboxes of `class`, or `None` for a class it
+/// does not admit.
+///
+/// VM classes get memory checkpoints, native memory-and-disk live fork, and pause/resume.
+/// Containers get only disk fork: the provider copies the workspace into fresh sandboxes
+/// booted from the parent's snapshot, and no process state is inherited.
+#[must_use]
+pub fn capabilities_for_class(class: Option<&str>) -> Option<BTreeSet<Capability>> {
+    if is_vm_class(class) {
+        Some(BTreeSet::from([
+            Capability::LiveCheckpoint,
+            Capability::LiveFork,
+            Capability::SuspendResume,
+        ]))
+    } else if class.is_some_and(|class| class.eq_ignore_ascii_case(CONTAINER_CLASS)) {
+        Some(BTreeSet::from([Capability::DiskFork]))
+    } else {
+        None
+    }
 }
 
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fff][Z|+00:00]` into Unix milliseconds.
@@ -277,12 +314,13 @@ pub fn relabel(
     labels
 }
 
-/// The provider-owned (`acyclic.*`) subset of a label map.
+/// The provider-owned (`acyclic.*`) subset of a label map that identifies which request made
+/// a sandbox; the [`LABEL_READY`] progress marker is left out.
 #[must_use]
 pub fn provider_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
     labels
         .iter()
-        .filter(|(name, _)| name.starts_with("acyclic."))
+        .filter(|(name, _)| name.starts_with("acyclic.") && name.as_str() != LABEL_READY)
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect()
 }
@@ -299,9 +337,40 @@ pub fn owned_by(sandbox: &Sandbox, tenant: Option<&str>) -> bool {
         && sandbox.labels.get(LABEL_TENANT).map(String::as_str) == tenant
 }
 
+/// Rounds of a doubling fork fan-out of `count` children: each round lists `(child index,
+/// source node)` pairs, where node 0 is the requested machine and node `n + 1` is child `n`.
+/// Every existing node forks once per round, so round `r` (from zero) forks up to `2^r`
+/// children, children are numbered in the order they are forked, and a node never forks twice
+/// in one round.
+#[must_use]
+pub fn fork_rounds(count: u32) -> Vec<Vec<(u32, usize)>> {
+    let mut rounds = Vec::new();
+    let mut produced: u32 = 0;
+    while produced < count {
+        let nodes = produced.saturating_add(1);
+        let batch = nodes.min(count - produced);
+        rounds.push(
+            (0..batch)
+                .map(|source| (produced + source, source as usize))
+                .collect(),
+        );
+        produced += batch;
+    }
+    rounds
+}
+
+/// Whether a failed Daytona fork was refused only because its source is not `started` yet
+/// (typically still `forking`), which a later attempt can succeed at.
+#[must_use]
+pub fn fork_refused_for_state(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("state") && detail.contains("fork")
+}
+
 /// The children of one fork in index order, only when they form the complete fork: every
-/// sandbox is a fork child recording the same requested count, and their indices are exactly
-/// `0..count`. `None` for a partial or inconsistent set.
+/// sandbox is a child of the same fork kind (checkpoint or live fork) and parent recording the
+/// same requested count, their indices are exactly `0..count`, and (for a live fork) every
+/// child is marked [`LABEL_READY`]. `None` for a partial, unfinished, or inconsistent set.
 #[must_use]
 pub fn complete_fork(sandboxes: &[Sandbox]) -> Option<Vec<&Sandbox>> {
     let parse = |sandbox: &Sandbox, label: &str| {
@@ -310,10 +379,20 @@ pub fn complete_fork(sandboxes: &[Sandbox]) -> Option<Vec<&Sandbox>> {
             .get(label)
             .and_then(|value| value.parse::<u32>().ok())
     };
-    let count = parse(sandboxes.first()?, LABEL_COUNT)?;
+    let first = sandboxes.first()?;
+    let count = parse(first, LABEL_COUNT)?;
+    let kind = first.labels.get(LABEL_KIND)?;
+    if kind != KIND_FORK && kind != KIND_LIVE_FORK {
+        return None;
+    }
+    let parent = first.labels.get(LABEL_PARENT);
     let mut slots = BTreeMap::new();
     for sandbox in sandboxes {
-        if sandbox.labels.get(LABEL_KIND).map(String::as_str) != Some(KIND_FORK)
+        let unready = kind == KIND_LIVE_FORK
+            && sandbox.labels.get(LABEL_READY).map(String::as_str) != Some("true");
+        if unready
+            || sandbox.labels.get(LABEL_KIND) != Some(kind)
+            || sandbox.labels.get(LABEL_PARENT) != parent
             || parse(sandbox, LABEL_COUNT) != Some(count)
         {
             return None;
@@ -434,7 +513,11 @@ pub fn create_request(
         env: BTreeMap::new(),
         labels: labels(key, slot, config.tenant.as_deref(), contract),
         auto_stop_interval: Some(INTERVAL_DISABLED),
-        auto_pause_interval: Some(autopause_minutes(contract.suspension)),
+        // Containers cannot pause; their contracts never declare suspend/resume.
+        auto_pause_interval: contract
+            .capabilities
+            .contains(&Capability::SuspendResume)
+            .then(|| autopause_minutes(contract.suspension)),
         auto_delete_interval: Some(auto_delete_interval),
         ttl_minutes,
         domain_allow_list,
@@ -640,6 +723,20 @@ mod tests {
         assert_eq!(sandbox.sandbox_class.as_deref(), Some("linux-vm"));
         assert!(is_vm_class(sandbox.sandbox_class.as_deref()));
         assert!(!is_vm_class(Some("container")));
+        assert_eq!(
+            capabilities_for_class(Some("linux-vm")),
+            Some(BTreeSet::from([
+                Capability::LiveCheckpoint,
+                Capability::LiveFork,
+                Capability::SuspendResume
+            ]))
+        );
+        assert_eq!(
+            capabilities_for_class(Some("container")),
+            Some(BTreeSet::from([Capability::DiskFork]))
+        );
+        assert_eq!(capabilities_for_class(Some("android")), None);
+        assert_eq!(capabilities_for_class(None), None);
         // The unmodelled fields survive in `extra` rather than being dropped.
         assert_eq!(sandbox.extra.get("gpu"), Some(&serde_json::json!(0)));
         let reencoded: Sandbox =
@@ -802,6 +899,78 @@ mod tests {
         let mut legacy = child(0, 1);
         legacy.labels.remove(LABEL_COUNT);
         assert!(complete_fork(&[legacy]).is_none(), "count unknown");
+    }
+
+    #[test]
+    fn a_live_fork_is_recovered_only_once_every_child_is_ready() {
+        let child = |index: u32, ready: bool| {
+            let mut labels = labels(
+                key(1),
+                Some(ForkSlot { index, count: 2 }),
+                None,
+                &contract(),
+            );
+            labels.insert(LABEL_KIND.to_owned(), KIND_LIVE_FORK.to_owned());
+            labels.insert(LABEL_PARENT.to_owned(), "p".to_owned());
+            if ready {
+                labels.insert(LABEL_READY.to_owned(), "true".to_owned());
+            }
+            Sandbox {
+                id: format!("child-{index}"),
+                labels,
+                ..Sandbox::default()
+            }
+        };
+        assert!(complete_fork(&[child(0, true), child(1, false)]).is_none());
+        assert_eq!(
+            complete_fork(&[child(1, true), child(0, true)])
+                .unwrap()
+                .len(),
+            2
+        );
+        let mut other_parent = child(1, true);
+        other_parent
+            .labels
+            .insert(LABEL_PARENT.to_owned(), "q".to_owned());
+        assert!(complete_fork(&[child(0, true), other_parent]).is_none());
+        assert_eq!(
+            provider_labels(&child(0, true).labels),
+            provider_labels(&child(0, false).labels),
+            "readiness does not change which request a sandbox belongs to"
+        );
+    }
+
+    #[test]
+    fn fork_rounds_double_the_forking_nodes() {
+        assert!(fork_rounds(0).is_empty());
+        assert_eq!(fork_rounds(1), [vec![(0, 0)]]);
+        assert_eq!(
+            fork_rounds(7),
+            [
+                vec![(0, 0)],
+                vec![(1, 0), (2, 1)],
+                vec![(3, 0), (4, 1), (5, 2), (6, 3)],
+            ]
+        );
+        assert_eq!(fork_rounds(15).len(), 4);
+        let sixteen = fork_rounds(16);
+        assert_eq!(sixteen.len(), 5);
+        assert_eq!(sixteen[4], [(15, 0)]);
+        let indices: Vec<u32> = sixteen.iter().flatten().map(|&(index, _)| index).collect();
+        assert_eq!(indices, (0..16).collect::<Vec<_>>());
+        for round in &sixteen {
+            // A source is the parent or a child forked in an earlier round.
+            for &(index, source) in round {
+                assert!(source == 0 || u32::try_from(source).unwrap() - 1 < index);
+            }
+            let mut sources: Vec<usize> = round.iter().map(|&(_, source)| source).collect();
+            sources.dedup();
+            assert_eq!(sources.len(), round.len(), "one fork per node per round");
+        }
+        assert!(fork_refused_for_state(
+            "{\"message\":\"Sandbox must be in started state to fork\"}"
+        ));
+        assert!(!fork_refused_for_state("name is invalid"));
     }
 
     #[test]
