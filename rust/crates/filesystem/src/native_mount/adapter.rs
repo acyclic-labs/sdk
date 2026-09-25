@@ -332,6 +332,49 @@ impl GroupedAdmission {
     }
 }
 
+/// A future polled in place by its caller that, if the caller drops it
+/// unfinished, continues on its own task: no caller's deadline can stop it
+/// midway.
+struct RunToCompletion {
+    future: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl RunToCompletion {
+    fn new(future: impl std::future::Future<Output = ()> + Send + 'static) -> Self {
+        Self {
+            future: Some(Box::pin(future)),
+            runtime: tokio::runtime::Handle::current(),
+        }
+    }
+}
+
+impl std::future::Future for RunToCompletion {
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        let Some(future) = self.future.as_mut() else {
+            return std::task::Poll::Ready(());
+        };
+        let polled = future.as_mut().poll(context);
+        if polled.is_ready() {
+            self.future = None;
+        }
+        polled
+    }
+}
+
+impl Drop for RunToCompletion {
+    fn drop(&mut self) {
+        if let Some(future) = self.future.take() {
+            drop(self.runtime.spawn(future));
+        }
+    }
+}
+
 /// Abandons a still-queued change when its caller stops waiting, so a
 /// change whose caller saw it fail can never apply later. A change already
 /// claimed is being applied and completes regardless.
@@ -446,7 +489,10 @@ impl<A, O> SharedCheckout<A, O> {
         if start_drain {
             let checkout = Arc::clone(self);
             let cancellation = cancellation.clone();
-            tokio::spawn(async move { checkout.drain_grouped(&cancellation).await });
+            // The caller that starts the drain runs it in place, saving a
+            // hand-off to another thread; if the caller stops waiting, the
+            // drain moves to its own task and still runs to completion.
+            RunToCompletion::new(async move { checkout.drain_grouped(&cancellation).await }).await;
         }
         outcome.await.map_err(|_| MountSourceError::Stale)?
     }
@@ -4032,6 +4078,48 @@ mod tests {
             source.lookup(&abandoned)?.is_none(),
             "a change its caller saw fail applied later"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_drain_outlives_the_caller_that_started_it() -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let abandoned = native_test_path("drainer.bin");
+        let kept = native_test_path("waiter.bin");
+        let create = |path: &MountPath| -> Result<GroupedChange, MountSourceError> {
+            Ok(GroupedChange::CreateFile {
+                path: source.path(path)?,
+                metadata: metadata(),
+            })
+        };
+        let (abandoned_change, kept_change) = (create(&abandoned)?, create(&kept)?);
+        source.runtime.block_on(|| async {
+            let held = source.checkout.lock().await;
+            // The first caller starts the drain in place, which waits for
+            // the held checkout; a second caller queues behind it.
+            let mut drainer = Box::pin(
+                source
+                    .checkout
+                    .apply_grouped(abandoned_change, &source.cancellation),
+            );
+            assert!(futures::poll!(drainer.as_mut()).is_pending());
+            let checkout = Arc::clone(&source.checkout);
+            let cancellation = source.cancellation.clone();
+            let waiter =
+                tokio::spawn(
+                    async move { checkout.apply_grouped(kept_change, &cancellation).await },
+                );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            // The drainer's caller gives up; the drain continues without it.
+            drop(drainer);
+            drop(held);
+            tokio::time::timeout(Duration::from_secs(5), waiter)
+                .await
+                .map_err(|_| MountSourceError::Stale)?
+                .map_err(|_| MountSourceError::Stale)?
+        })?;
+        assert!(source.lookup(&kept)?.is_some());
+        assert!(source.lookup(&abandoned)?.is_none());
         Ok(())
     }
 
