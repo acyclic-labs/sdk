@@ -68,6 +68,20 @@ impl Default for FileMetadata {
 }
 
 impl FileMetadata {
+    /// Records a content change made at `at_ns`, in signed Unix-epoch
+    /// nanoseconds: every represented modification and status-change time
+    /// takes that instant. Returns whether any such time is represented.
+    pub fn stamp_content_change(&mut self, at_ns: i64) -> bool {
+        let mut stamped = false;
+        for time in [&mut self.modified_ns, &mut self.changed_ns] {
+            if let MetadataField::Value(time) = time {
+                *time = at_ns;
+                stamped = true;
+            }
+        }
+        stamped
+    }
+
     fn validate(self) -> Result<(), CanonicalDecodeError> {
         validate_object(
             self.named_attributes,

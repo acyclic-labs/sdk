@@ -44,6 +44,7 @@ pub(crate) struct NativeViewBaseline;
 
 #[cfg(unix)]
 impl NativeViewBaseline {
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn new(root_identity: NativeRootIdentity) -> Self {
         Self { root_identity }
     }

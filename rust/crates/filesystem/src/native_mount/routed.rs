@@ -7,10 +7,12 @@
 //! adding or removing a checkout becomes a map mutation instead of a
 //! `mount_native`/unmount cycle.
 
+use super::view_ledger::ViewObservers;
 use super::{
-    MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry, MountDirectoryPage,
-    MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath,
-    MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease,
+    MountAttributePage, MountAttributeWriteMode, MountContentPin, MountDirectoryEntry,
+    MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
+    MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease,
+    ViewObserver, ViewStamp,
 };
 use crate::FileId;
 use crate::kernel::FileMetadata;
@@ -21,7 +23,7 @@ use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock, Weak};
 
 static ROUTE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -39,14 +41,27 @@ fn next_route_tag(name: &[u8]) -> [u8; 16] {
     tag
 }
 
-/// XORs one [`FileId`] with a route tag. Self-inverse: applying it twice
-/// with the same tag returns the original identity.
-fn remap_file_id(id: FileId, tag: [u8; 16]) -> FileId {
-    let mut bytes = id.into_bytes();
+/// XORs a route tag into leading identity bytes. Self-inverse: applying it
+/// twice with the same tag returns the original bytes.
+fn xor_route_tag(bytes: &mut [u8], tag: [u8; 16]) {
     for (byte, tag_byte) in bytes.iter_mut().zip(tag) {
         *byte ^= tag_byte;
     }
+}
+
+/// Binds one child [`FileId`] to its route.
+fn remap_file_id(id: FileId, tag: [u8; 16]) -> FileId {
+    let mut bytes = id.into_bytes();
+    xor_route_tag(&mut bytes, tag);
     FileId::from_bytes(bytes)
+}
+
+/// Binds one child content pin to its route, so a pin issued by a removed
+/// route never validates against a re-added one.
+fn remap_content_pin(pin: MountContentPin, tag: [u8; 16]) -> MountContentPin {
+    let mut bytes = pin.0;
+    xor_route_tag(&mut bytes, tag);
+    MountContentPin(bytes)
 }
 
 fn cross_route_error() -> MountSourceError {
@@ -212,6 +227,10 @@ pub struct RoutedMountSource {
     /// mtime/ctime: kernels re-validate cached children when the parent
     /// changes, which is what makes a removed route disappear promptly.
     revision: AtomicI64,
+    /// Position of the latest route change in the order of view changes.
+    routes_changed: AtomicU64,
+    /// Observers of this router, registered on every route it gains.
+    observers: ViewObservers,
 }
 
 impl RoutedMountSource {
@@ -221,6 +240,8 @@ impl RoutedMountSource {
         Self {
             view_gate: Arc::new(RouteViewGate::default()),
             revision: AtomicI64::new(1),
+            routes_changed: AtomicU64::new(0),
+            observers: ViewObservers::default(),
             routes: RwLock::new(BTreeMap::new()),
             file_id_index: RwLock::new(HashMap::new()),
             root_id: FileId::new(),
@@ -248,6 +269,9 @@ impl RoutedMountSource {
         let mut routes = self.routes.write().unwrap_or_else(PoisonError::into_inner);
         if routes.contains_key(&name) {
             return Err(MountSourceError::AlreadyExists);
+        }
+        for observer in self.observers.live() {
+            source.observe_view(Arc::downgrade(&observer));
         }
         routes.insert(name, Route { source, tag });
         self.bump_revision();
@@ -362,6 +386,8 @@ impl RoutedMountSource {
 
     fn bump_revision(&self) {
         self.revision.fetch_add(1, Ordering::AcqRel);
+        self.observers
+            .notify(ViewStamp::record(&self.routes_changed));
     }
 
     fn coherent_epoch_by(
@@ -384,11 +410,7 @@ impl RoutedMountSource {
         binding: bool,
     ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
         let mut lease = self.view_gate.read();
-        let epoch = if binding {
-            self.binding_epoch()
-        } else {
-            self.view_epoch()
-        };
+        let epoch = binding.then(|| self.binding_epoch()).flatten();
         if expected_epoch.is_some_and(|expected| Some(expected) != epoch) {
             return Err(MountSourceError::Stale);
         }
@@ -404,14 +426,10 @@ impl RoutedMountSource {
             children.push(if binding {
                 source.acquire_binding_lease(source.binding_epoch())?
             } else {
-                source.acquire_view_lease(source.view_epoch())?
+                source.acquire_view_lease()?
             });
         }
-        let current = if binding {
-            self.binding_epoch()
-        } else {
-            self.view_epoch()
-        };
+        let current = binding.then(|| self.binding_epoch()).flatten();
         if !self.view_is_stable() || current != epoch {
             return Err(MountSourceError::Stale);
         }
@@ -556,19 +574,86 @@ impl MountFilesystem for RoutedMountSource {
             .all(|route| route.source.view_is_stable())
     }
 
-    fn view_epoch(&self) -> Option<u64> {
-        Some(self.coherent_epoch_by(MountFilesystem::view_epoch))
+    fn view_stamp(&self) -> Option<ViewStamp> {
+        let routes = self.routes.read().unwrap_or_else(PoisonError::into_inner);
+        routes
+            .values()
+            .try_fold(ViewStamp::of(&self.routes_changed), |latest, route| {
+                route.source.view_stamp().map(|stamp| latest.max(stamp))
+            })
+    }
+
+    fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
+        for route in self
+            .routes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+        {
+            route.source.observe_view(Weak::clone(&observer));
+        }
+        self.observers.add(observer);
+    }
+
+    fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
+        stamp.precedes_none_of(&self.routes_changed)
+            && match self.route(path) {
+                Ok(None) => true,
+                Ok(Some(routed)) => routed.source.unchanged_since(
+                    &routed.sub_path,
+                    file_id.map(|file_id| remap_file_id(file_id, routed.tag)),
+                    stamp,
+                ),
+                Err(_) => false,
+            }
+    }
+
+    fn folded_path(&self, path: &MountPath) -> Option<MountPath> {
+        // Route names are exact; a route's own names fold as its source does.
+        let folds = self
+            .routes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .any(|route| route.source.folded_path(&MountPath::root()).is_some());
+        folds.then(|| match self.route(path).ok().flatten() {
+            Some(routed) => {
+                let sub_path = routed
+                    .source
+                    .folded_path(&routed.sub_path)
+                    .unwrap_or(routed.sub_path);
+                sub_path
+                    .components()
+                    .iter()
+                    .fold(MountPath::root().child(routed.name), |folded, component| {
+                        folded.child(component.clone())
+                    })
+            }
+            None => path.clone(),
+        })
+    }
+
+    fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
+        let owner = self
+            .file_id_index
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&file_id)
+            .cloned();
+        stamp.precedes_none_of(&self.routes_changed)
+            && owner.is_some_and(|name| {
+                self.locate(&name).is_ok_and(|(source, tag)| {
+                    source.node_unchanged_since(remap_file_id(file_id, tag), stamp)
+                })
+            })
     }
 
     fn binding_epoch(&self) -> Option<u64> {
         Some(self.coherent_epoch_by(MountFilesystem::binding_epoch))
     }
 
-    fn acquire_view_lease(
-        &self,
-        expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-        self.acquire_epoch_lease(expected_epoch, false)
+    fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+        self.acquire_epoch_lease(None, false)
     }
 
     fn acquire_binding_lease(
@@ -584,6 +669,22 @@ impl MountFilesystem for RoutedMountSource {
         };
         let result = routed.source.lookup(&routed.sub_path)?;
         Ok(result.map(|lookup| self.remap_lookup(lookup, routed.tag, &routed.name)))
+    }
+
+    fn lookup_pinned(
+        &self,
+        path: &MountPath,
+    ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
+        let Some(routed) = self.route(path)? else {
+            return Ok(Some((self.synthetic_root_lookup(), None)));
+        };
+        let result = routed.source.lookup_pinned(&routed.sub_path)?;
+        Ok(result.map(|(lookup, pin)| {
+            (
+                self.remap_lookup(lookup, routed.tag, &routed.name),
+                pin.map(|pin| remap_content_pin(pin, routed.tag)),
+            )
+        }))
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
@@ -633,6 +734,26 @@ impl MountFilesystem for RoutedMountSource {
             ));
         };
         routed.source.read_range(&routed.sub_path, offset, length)
+    }
+
+    fn read_pinned(
+        &self,
+        path: &MountPath,
+        pin: MountContentPin,
+        offset: u64,
+        length: u32,
+    ) -> Result<Bytes, MountSourceError> {
+        let Some(routed) = self.route(path)? else {
+            return Err(MountSourceError::Invalid(
+                "the synthetic mount root has no content".to_owned(),
+            ));
+        };
+        routed.source.read_pinned(
+            &routed.sub_path,
+            remap_content_pin(pin, routed.tag),
+            offset,
+            length,
+        )
     }
 
     fn seek(
@@ -1217,8 +1338,8 @@ mod tests {
         let router = Arc::new(RoutedMountSource::new());
         let route = component("a");
         router.add_route(route.clone(), memory_source()?)?;
-        let epoch = router.view_epoch();
-        let lease = router.acquire_view_lease(epoch)?;
+        let stamp = router.view_stamp().ok_or("router has no view stamp")?;
+        let lease = router.acquire_view_lease()?;
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let writer = Arc::clone(&router);
@@ -1239,7 +1360,7 @@ mod tests {
         thread
             .join()
             .map_err(|_| std::io::Error::other("writer thread panicked"))?;
-        assert_ne!(router.view_epoch(), epoch);
+        assert!(!router.unchanged_since(&test_path("a"), None, stamp));
         Ok(())
     }
 
@@ -1252,10 +1373,13 @@ mod tests {
         router.add_route(first.clone(), memory_source()?)?;
         router.add_route(second.clone(), memory_source()?)?;
         let binding = router.binding_epoch();
-        let cache = router.view_epoch();
-        router.create_file(&test_path("first").child(component("file")), metadata())?;
+        let created = test_path("first").child(component("file"));
+        let untouched = test_path("second").child(component("file"));
+        let stamp = router.view_stamp().ok_or("router has no view stamp")?;
+        router.create_file(&created, metadata())?;
         assert_eq!(router.binding_epoch(), binding);
-        assert_ne!(router.view_epoch(), cache);
+        assert!(!router.unchanged_since(&created, None, stamp));
+        assert!(router.unchanged_since(&untouched, None, stamp));
         let _lease = router.acquire_binding_lease(binding)?;
         Ok(())
     }

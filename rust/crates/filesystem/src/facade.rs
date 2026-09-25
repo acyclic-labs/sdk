@@ -49,7 +49,11 @@ use crate::kernel::{
     tree_mutation,
 };
 pub use crate::kernel::{LiveMutationOutcome, MergeConflict};
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "local",
+    feature = "native-watch",
+    not(target_arch = "wasm32")
+))]
 use crate::kernel::{decode_source_volume, source_authority_id};
 use crate::model::{
     AccessMode, CaseSensitivity, CheckoutMode, CheckoutModeError, ConcurrencyMode, ConsistencyMode,
@@ -61,8 +65,8 @@ use crate::performance::{
 };
 use crate::storage::{
     AppendOutcome, AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome,
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest, ObjectReadRetention,
-    ObjectStoreError, PublicationPermit, ReplayLimit, object_digest,
+    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest,
+    ObjectReadRetention, ObjectStoreError, PublicationPermit, ReplayLimit,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_native_runtime::OwnershipAnchor;
@@ -71,10 +75,12 @@ use acyclic_objects::ObjectsProvider as _;
 use bytes::Bytes;
 use futures::{StreamExt as _, stream};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(feature = "native-mount")]
+use std::marker::PhantomData;
 use std::mem::size_of;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::sync::{OnceLock, Weak};
 use thiserror::Error;
@@ -473,6 +479,7 @@ impl<A, O> Fs<A, O> {
     }
 }
 
+#[cfg(feature = "distributed")]
 impl<P, O> Fs<crate::StreamAuthorityStore<P>, O> {
     /// Opens the SDK operation-window store on the exact Stream provider used
     /// by generation authority. This co-location is what makes lease fencing
@@ -513,8 +520,164 @@ pub struct Checkout<A, O> {
     live_operation_id: Option<OperationId>,
     last_commit: Option<LastCommit>,
     prepared_merge_parent: Option<ObjectId>,
-    dependencies: CheckoutDependencies,
+    dependencies: DependencyLedger,
     mode: CheckoutMode,
+}
+
+/// Tracking proof of one checkout, shared with that checkout's observers.
+///
+/// Observers append observations under a short synchronous lock while their
+/// borrow excludes every mutation of the owning checkout. A private candidate
+/// copies the proof and never shares it.
+struct DependencyLedger {
+    proof: Arc<Mutex<Proof>>,
+    observing: bool,
+}
+
+/// One checkout's tracking proof, with the base paths whose complete
+/// observation it already holds.
+///
+/// A path observation's regions are only known by walking the base, so the
+/// proof remembers which walks it absorbed: repeating one against the same
+/// base adds nothing. The memory names its base file table and is forgotten
+/// with every proof it describes, so it can never claim an observation the
+/// proof lacks. Like the dependencies, it is shared between clones until one
+/// of them changes it, so copying a proof for a transaction costs nothing.
+#[derive(Clone)]
+struct Proof {
+    dependencies: CheckoutDependencies,
+    observed_base: Option<ObjectId>,
+    /// Each observed path, and whether its terminal record was observed.
+    observed_paths: Arc<BTreeMap<NamespacePath, bool>>,
+}
+
+impl Proof {
+    fn new(dependencies: CheckoutDependencies) -> Self {
+        Self {
+            dependencies,
+            observed_base: None,
+            observed_paths: Arc::default(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.dependencies.clear();
+        self.observed_paths = Arc::default();
+    }
+
+    /// Whether observing `path` against `base`, with its terminal when
+    /// `terminal` is set, would add nothing to the proof.
+    fn observes_path(&self, base: ObjectId, path: &NamespacePath, terminal: bool) -> bool {
+        self.observed_base == Some(base)
+            && self
+                .observed_paths
+                .get(path)
+                .is_some_and(|observed_terminal| *observed_terminal || !terminal)
+    }
+
+    /// Absorbs one complete path observation against `base`. The memory is
+    /// bounded like the proof; past that bound it restarts empty, which only
+    /// repeats walks.
+    fn observe_paths<'a>(
+        &mut self,
+        base: ObjectId,
+        paths: impl IntoIterator<Item = &'a NamespacePath>,
+        terminal: bool,
+        dependencies: Vec<Dependency>,
+        maximum_dependencies: u32,
+    ) -> Result<(), DependencyError> {
+        self.dependencies
+            .extend_observations(dependencies, maximum_dependencies)?;
+        let maximum_paths = usize::try_from(maximum_dependencies).unwrap_or(usize::MAX);
+        if self.observed_base != Some(base) {
+            self.observed_base = Some(base);
+            self.observed_paths = Arc::default();
+        }
+        for path in paths {
+            if self.observes_path(base, path, terminal) {
+                continue;
+            }
+            let observed = Arc::make_mut(&mut self.observed_paths);
+            if observed.len() >= maximum_paths {
+                observed.clear();
+            }
+            let entry = observed.entry(path.clone()).or_insert(terminal);
+            *entry |= terminal;
+        }
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for Proof {
+    type Target = CheckoutDependencies;
+
+    fn deref(&self) -> &Self::Target {
+        &self.dependencies
+    }
+}
+
+impl std::ops::DerefMut for Proof {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.dependencies
+    }
+}
+
+impl DependencyLedger {
+    fn new(dependencies: CheckoutDependencies) -> Self {
+        Self::sharing(Proof::new(dependencies))
+    }
+
+    fn sharing(proof: Proof) -> Self {
+        Self {
+            proof: Arc::new(Mutex::new(proof)),
+            observing: false,
+        }
+    }
+
+    fn proof(&self) -> MutexGuard<'_, Proof> {
+        self.proof.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[cfg(feature = "native-mount")]
+    fn observing(&self) -> Self {
+        Self {
+            proof: Arc::clone(&self.proof),
+            observing: true,
+        }
+    }
+
+    fn independent(&self) -> Self {
+        Self::sharing(self.proof().clone())
+    }
+}
+
+/// Read-only observer of one checkout's current candidate.
+///
+/// Its borrow of the owning checkout excludes every mutation of that checkout
+/// while it lives, so any number of observers may read concurrently. It reads
+/// as a pinned read-only checkout, so every mutation or generation advance
+/// through it is rejected, and it records exactly the observations its owner
+/// would record, into the owner's own proof.
+#[cfg(feature = "native-mount")]
+pub(crate) struct CheckoutObserver<'a, A, O> {
+    checkout: Checkout<A, O>,
+    owner: PhantomData<&'a Checkout<A, O>>,
+}
+
+#[cfg(feature = "native-mount")]
+impl<A, O> std::ops::Deref for CheckoutObserver<'_, A, O> {
+    type Target = Checkout<A, O>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.checkout
+    }
+}
+
+#[cfg(feature = "native-mount")]
+impl<A, O> std::ops::DerefMut for CheckoutObserver<'_, A, O> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.checkout
+    }
 }
 
 /// Cheap immutable reader over one authenticated pinned checkout candidate.
@@ -650,7 +813,7 @@ pub struct ResolvedDirectoryPage<A, O> {
     pub has_more: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct LastCommit {
     operation_id: OperationId,
     generation_id: GenerationId,
@@ -739,6 +902,258 @@ pub struct FileCloneRequest {
     pub destination_offset: u64,
     /// Positive logical byte count.
     pub length: u64,
+}
+
+/// One regular-file content change. `F` addresses files: an exact
+/// [`NamespacePath`] or a stable [`FileId`], for the changed file and for any
+/// clone source alike.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ContentChange<F> {
+    /// Replaces one range with caller bytes, preserving sparse untouched
+    /// ranges. Empty bytes only validate that the file is regular.
+    Write {
+        /// Inclusive logical offset.
+        offset: u64,
+        /// Replacement bytes.
+        bytes: Bytes,
+    },
+    /// Changes logical length while preserving sparse semantics.
+    Resize {
+        /// New logical byte length.
+        logical_bytes: u64,
+    },
+    /// Replaces one range with a hole or physically allocated zeros.
+    ZeroRange {
+        /// Replaced logical range.
+        range: ByteRange,
+        /// Preserve physical allocation instead of punching a hole.
+        allocated: bool,
+        /// Whether the replacement may extend logical file length.
+        extend: bool,
+    },
+    /// Allocates sparse holes while preserving all existing content.
+    Preallocate {
+        /// Allocated logical range.
+        range: ByteRange,
+        /// Preserve logical file length.
+        keep_size: bool,
+    },
+    /// Clones one range of another regular file by immutable extent
+    /// reference, without reading bytes.
+    CloneFrom {
+        /// Existing source regular file.
+        source: F,
+        /// Inclusive source byte offset.
+        source_offset: u64,
+        /// Inclusive byte offset in the changed file.
+        offset: u64,
+        /// Positive logical byte count.
+        length: u64,
+    },
+}
+
+/// One independent change that [`Checkout::apply_group`] may apply together
+/// with others as a single mutation.
+///
+/// Compiling a change reads at most the metadata of the file whose content
+/// it changes, and no kind writes anything another kind reads except
+/// content-change times, which each stamp overwrites completely. So every
+/// change compiles against the same candidate to exactly the operations it
+/// would compile to after its predecessors.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GroupedChange {
+    /// Creates one empty regular file with a fresh stable identity.
+    CreateFile {
+        /// New namespace path.
+        path: NamespacePath,
+        /// Exact cross-profile metadata.
+        metadata: FileMetadata,
+    },
+    /// Changes the content of one regular file by stable identity.
+    Content {
+        /// Existing regular-file identity.
+        file_id: FileId,
+        /// The content change.
+        change: ContentChange<FileId>,
+        /// Whether the change also stamps the file's content-change times.
+        times: ContentTimes,
+    },
+}
+
+/// What one successful [`GroupedChange`] produced.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GroupedOutcome {
+    /// The identity of the created file.
+    Created(FileId),
+    /// The content change applied.
+    Changed,
+}
+
+/// Whether a content change also records its time in the changed file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContentTimes {
+    /// Leaves the file's metadata unchanged.
+    Preserve,
+    /// Sets every represented modification and status-change time to this
+    /// instant, in signed Unix-epoch nanoseconds, within the same mutation
+    /// as the change itself.
+    Stamp(i64),
+}
+
+/// One content change with its bytes already staged, addressed by `F`.
+enum ContentOperation<F> {
+    ValidateRegular,
+    Write {
+        offset: u64,
+        length: u64,
+        content: ObjectId,
+    },
+    Resize {
+        logical_bytes: u64,
+    },
+    ZeroRange {
+        range: ByteRange,
+        allocated: bool,
+        extend: bool,
+    },
+    Preallocate {
+        range: ByteRange,
+        keep_size: bool,
+    },
+    CloneFrom {
+        source: F,
+        source_offset: u64,
+        offset: u64,
+        length: u64,
+    },
+    SetMetadata {
+        metadata: ObjectId,
+    },
+}
+
+/// How a content change names the file whose current metadata it stamps.
+enum ContentAddress<'a> {
+    Path(&'a NamespacePath),
+    File(FileId),
+}
+
+/// A way to address the regular file one content change applies to.
+trait ContentFile: Clone {
+    fn address(&self) -> ContentAddress<'_>;
+    fn mutation(self, operation: ContentOperation<Self>) -> Mutation;
+}
+
+impl ContentFile for NamespacePath {
+    fn address(&self) -> ContentAddress<'_> {
+        ContentAddress::Path(self)
+    }
+
+    fn mutation(self, operation: ContentOperation<Self>) -> Mutation {
+        let path = self;
+        match operation {
+            ContentOperation::ValidateRegular => Mutation::ValidateRegular { path },
+            ContentOperation::Write {
+                offset,
+                length,
+                content,
+            } => Mutation::Write {
+                path,
+                offset,
+                length,
+                content,
+                content_offset: 0,
+            },
+            ContentOperation::Resize { logical_bytes } => Mutation::Resize {
+                path,
+                logical_bytes,
+            },
+            ContentOperation::ZeroRange {
+                range,
+                allocated,
+                extend,
+            } => Mutation::ZeroRange {
+                path,
+                offset: range.offset,
+                length: range.length,
+                allocated,
+                extend,
+            },
+            ContentOperation::Preallocate { range, keep_size } => Mutation::Preallocate {
+                path,
+                offset: range.offset,
+                length: range.length,
+                keep_size,
+            },
+            ContentOperation::CloneFrom {
+                source,
+                source_offset,
+                offset,
+                length,
+            } => Mutation::CloneRange {
+                source,
+                source_offset,
+                destination: path,
+                destination_offset: offset,
+                length,
+            },
+            ContentOperation::SetMetadata { metadata } => Mutation::SetMetadata { path, metadata },
+        }
+    }
+}
+
+impl ContentFile for FileId {
+    fn address(&self) -> ContentAddress<'_> {
+        ContentAddress::File(*self)
+    }
+
+    fn mutation(self, operation: ContentOperation<Self>) -> Mutation {
+        let file_id = self;
+        let mutation = match operation {
+            ContentOperation::CloneFrom {
+                source,
+                source_offset,
+                offset,
+                length,
+            } => {
+                return Mutation::CloneFileRange {
+                    source_file_id: source,
+                    source_offset,
+                    destination_file_id: file_id,
+                    destination_offset: offset,
+                    length,
+                };
+            }
+            ContentOperation::ValidateRegular => FileMutation::ValidateRegular,
+            ContentOperation::Write {
+                offset,
+                length,
+                content,
+            } => FileMutation::Write {
+                offset,
+                length,
+                content,
+                content_offset: 0,
+            },
+            ContentOperation::Resize { logical_bytes } => FileMutation::Resize { logical_bytes },
+            ContentOperation::ZeroRange {
+                range,
+                allocated,
+                extend,
+            } => FileMutation::ZeroRange {
+                offset: range.offset,
+                length: range.length,
+                allocated,
+                extend,
+            },
+            ContentOperation::Preallocate { range, keep_size } => FileMutation::Preallocate {
+                offset: range.offset,
+                length: range.length,
+                keep_size,
+            },
+            ContentOperation::SetMetadata { metadata } => FileMutation::SetMetadata { metadata },
+        };
+        Mutation::File { file_id, mutation }
+    }
 }
 
 /// One caller-authored filesystem operation compiled into a single sparse,
@@ -1210,6 +1625,10 @@ pub enum FsError {
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error("local filesystem root setup failed: {0}")]
     LocalRoot(std::io::Error),
+    /// The private spill file for pre-publication staging could not be created.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[error("local staging spill file setup failed: {0}")]
+    LocalStaging(std::io::Error),
     /// A live process-local engine already owns this root with different limits.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     #[error("local filesystem root is already open with different options")]
@@ -1645,51 +2064,65 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             objects,
             object_cache,
         } = options;
-        let stream = std::sync::Arc::new(match &lifecycle {
-            Some(ownership) => {
-                acyclic_stream::LocalStream::open_with_ownership_anchor(
-                    root.join("stream"),
-                    stream,
-                    ownership.clone(),
-                )
-                .await?
-            }
-            None => acyclic_stream::LocalStream::open(root.join("stream"), stream).await?,
-        });
-        let objects = std::sync::Arc::new(match &lifecycle {
-            Some(ownership) => {
-                acyclic_objects::LocalObjects::open_with_ownership_anchor(
-                    root.join("objects"),
-                    objects,
-                    ownership.clone(),
-                )
-                .await?
-            }
-            None => acyclic_objects::LocalObjects::open(root.join("objects"), objects).await?,
-        });
-        let bucket = match objects
-            .bucket_named("filesystem-objects")
-            .await
-            .map_err(FsError::LocalObjectsBucket)?
-        {
-            Some(bucket) => bucket,
-            None => objects
-                .create_bucket(
-                    "filesystem-objects".to_owned(),
-                    Some("filesystem-objects-v1".to_owned()),
-                )
+        // The Stream and Objects providers own disjoint directories, so their
+        // recoveries and first-open flushes proceed concurrently. Both openers
+        // always run to completion: an abandoned one would keep opening in its
+        // detached task and could take its root after this open had failed,
+        // holding it past every handle's drop. A provider that opened beside a
+        // failed one is therefore dropped before the failure returns.
+        let open_stream = async {
+            Ok::<_, FsError>(std::sync::Arc::new(match &lifecycle {
+                Some(ownership) => {
+                    acyclic_stream::LocalStream::open_with_ownership_anchor(
+                        root.join("stream"),
+                        stream,
+                        ownership.clone(),
+                    )
+                    .await?
+                }
+                None => acyclic_stream::LocalStream::open(root.join("stream"), stream).await?,
+            }))
+        };
+        let open_objects = async {
+            let objects = std::sync::Arc::new(match &lifecycle {
+                Some(ownership) => {
+                    acyclic_objects::LocalObjects::open_with_ownership_anchor(
+                        root.join("objects"),
+                        objects,
+                        ownership.clone(),
+                    )
+                    .await?
+                }
+                None => acyclic_objects::LocalObjects::open(root.join("objects"), objects).await?,
+            });
+            let bucket = match objects
+                .bucket_named("filesystem-objects")
                 .await
                 .map_err(FsError::LocalObjectsBucket)?
-                .bucket
-                .ok_or(FsError::LocalObjectsBucket(
-                    acyclic_objects::ObjectsError::Unavailable,
-                ))?,
+            {
+                Some(bucket) => bucket,
+                None => objects
+                    .create_bucket(
+                        "filesystem-objects".to_owned(),
+                        Some("filesystem-objects-v1".to_owned()),
+                    )
+                    .await
+                    .map_err(FsError::LocalObjectsBucket)?
+                    .bucket
+                    .ok_or(FsError::LocalObjectsBucket(
+                        acyclic_objects::ObjectsError::Unavailable,
+                    ))?,
+            };
+            let objects = crate::cache::CachedObjectStore::new(
+                crate::distributed::ProviderObjectStore::new(objects, bucket),
+                object_cache,
+            )?;
+            crate::staged_objects::StagedObjects::open(objects, root.clone())
+                .await
+                .map_err(FsError::LocalStaging)
         };
-        let objects = crate::cache::CachedObjectStore::new(
-            crate::distributed::ProviderObjectStore::new(objects, bucket),
-            object_cache,
-        )?;
-        let objects = crate::staged_objects::StagedObjects::new(objects);
+        let (stream, objects) = futures::future::join(open_stream, open_objects).await;
+        let (stream, objects) = (stream?, objects?);
         Ok(Self::new_with_path_index(
             crate::distributed::StreamAuthorityStore::new(stream),
             objects,
@@ -2289,44 +2722,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-    /// Opens an existing volume through the workspace API without changing
-    /// its stable identity or durable state.
-    ///
-    /// This is the migration boundary for consumers created before named
-    /// workspaces existed. The supplied name is descriptive; the existing
-    /// volume remains the sole durable identity.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid names, absent volumes, and malformed creation state.
-    pub async fn open_volume_workspace(
-        &self,
-        name: impl AsRef<str>,
-        volume_id: VolumeId,
-    ) -> Result<crate::Workspace<A, O>, crate::workspace::WorkspaceError> {
-        let name = crate::WorkspaceName::new(name)?;
-        let volume = self
-            .open_volume(volume_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?
-            .value;
-        volume
-            .resolve_head_generation(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        Ok(crate::Workspace {
-            name,
-            id: crate::WorkspaceId::from_volume_id(volume_id),
-            volume,
-            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-            source: None,
-        })
-    }
-
     /// Adopts an already authenticated volume into the workspace facade.
     ///
-    /// This avoids reopening durable creation state when a compatibility
-    /// consumer already owns the volume returned by creation or migration.
+    /// This avoids reopening durable creation state when a consumer already
+    /// owns the volume returned by its creation.
     ///
     /// # Errors
     ///
@@ -2630,6 +3029,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .inner
             .objects
             .flush_before_publish(
+                crate::PublicationScope::Everything,
                 remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
                 cancellation,
             )
@@ -2770,6 +3170,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn workspace_join_changes(
         &self,
         base: GenerationId,
@@ -3873,7 +4274,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let drained = self
             .inner
             .objects
-            .flush_before_publish(remaining(work, budget)?, cancellation)
+            .flush_before_publish(
+                crate::PublicationScope::Everything,
+                remaining(work, budget)?,
+                cancellation,
+            )
             .await
             .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
         work = add(work, drained.work)?;
@@ -4045,10 +4450,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         prospective
             .verify(budget)
             .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let object = ObjectId {
-            kind,
-            digest: object_digest(kind, &encoded),
-        };
+        let hashed = HashedObject::new(kind, Bytes::from(encoded));
+        let object = hashed.object_id();
         let live_bytes = semantic.peak_allocation_bytes;
         let mut backend_budget = remaining(prospective, budget)?;
         // `prospective.verify` above proves the encoded buffer fits the
@@ -4057,7 +4460,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let receipt = self
             .inner
             .objects
-            .put(object, Bytes::from(encoded), backend_budget, cancellation)
+            .put_hashed(hashed, backend_budget, cancellation)
             .await
             .map_err(|failure| {
                 merge_simultaneous_failure(
@@ -4301,7 +4704,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 live_operation_id: None,
                 last_commit: None,
                 prepared_merge_parent: None,
-                dependencies,
+                dependencies: DependencyLedger::new(dependencies),
                 mode,
             },
             work,
@@ -4359,6 +4762,68 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
 }
 
 impl<A, O> Checkout<A, O> {
+    /// Replaces this checkout with `candidate`, a private candidate begun
+    /// from `base`, when this checkout is still the state `base` copied
+    /// apart from observations its readers have added since; the candidate
+    /// then carries those observations too. Returns whether it replaced.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn adopt_candidate(&mut self, base: &Self, candidate: Self) -> bool {
+        let Some(dependencies) = self.candidate_proof(base, &candidate) else {
+            return false;
+        };
+        // The candidate's memory of absorbed walks stays true: its proof
+        // only gains the readers' observations.
+        candidate.dependencies.proof().dependencies = dependencies;
+        *self = candidate;
+        true
+    }
+
+    /// Whether [`Self::adopt_candidate`] would adopt `candidate`.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn admits_candidate(&self, base: &Self, candidate: &Self) -> bool {
+        self.candidate_proof(base, candidate).is_some()
+    }
+
+    /// The proof `candidate` would carry over this checkout: its own merged
+    /// with every observation this checkout's readers added since `base`.
+    /// None when anything else changed since `base`, publication included,
+    /// since installing the candidate would undo that change. Every field is
+    /// compared, so none can change unnoticed.
+    #[cfg(feature = "native-mount")]
+    fn candidate_proof(&self, base: &Self, candidate: &Self) -> Option<CheckoutDependencies> {
+        let Self {
+            volume: _,
+            base_generation_root,
+            generation_root,
+            base_file_table,
+            base_root,
+            root,
+            authority_head,
+            authored_operation_id,
+            live_operation_id,
+            last_commit,
+            prepared_merge_parent,
+            dependencies,
+            mode,
+        } = self;
+        let unchanged = *base_generation_root == base.base_generation_root
+            && *generation_root == base.generation_root
+            && *base_file_table == base.base_file_table
+            && *base_root == base.base_root
+            && *root == base.root
+            && *authority_head == base.authority_head
+            && *authored_operation_id == base.authored_operation_id
+            && *live_operation_id == base.live_operation_id
+            && *last_commit == base.last_commit
+            && *prepared_merge_parent == base.prepared_merge_parent
+            && *mode == base.mode;
+        if !unchanged {
+            return None;
+        }
+        let live = dependencies.proof().dependencies.clone();
+        candidate.dependencies.proof().merged(&live)
+    }
+
     /// Owning volume identity.
     #[must_use]
     pub const fn volume_id(&self) -> VolumeId {
@@ -4395,6 +4860,12 @@ impl<A, O> Checkout<A, O> {
         self.root.file_table != self.base_file_table || self.prepared_merge_parent.is_some()
     }
 
+    /// Whether reads retain exact observations for safe rebase and commit.
+    /// An observer tracks exactly when its owner does.
+    fn tracks_observations(&self) -> bool {
+        self.mode.consistency != ConsistencyMode::Pinned || self.dependencies.observing
+    }
+
     /// Creates an immutable reader for this checkout's current private candidate.
     ///
     /// The reader snapshots the exact authenticated root already held by the
@@ -4413,9 +4884,10 @@ impl<A, O> Checkout<A, O> {
     ///
     /// # Errors
     ///
-    /// Rejects non-pinned checkouts before any storage work.
+    /// Rejects checkouts that track observations, including observers of a
+    /// tracking checkout, before any storage work.
     pub fn pinned_reader(&self) -> Result<PinnedReader<A, O>, FsError> {
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             return Err(FsError::MutationNotAllowed);
         }
         Ok(self.snapshot_reader())
@@ -4451,7 +4923,48 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ContentStager<A, O> {
     }
 }
 
+impl<A, O> PinnedReader<A, O> {
+    /// Exact immutable generation identity this reader is pinned to.
+    #[must_use]
+    pub const fn generation_id(&self) -> GenerationId {
+        GenerationId::new(self.generation_root.digest)
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+    /// Looks up file records by stable identity, reading each distinct
+    /// file-table frontier once for the whole batch, so one reader answers
+    /// a directory page's identity questions together.
+    ///
+    /// # Errors
+    ///
+    /// Returns measured batch-bound, authentication, cancellation, storage,
+    /// allocation, or bounded-work failures.
+    pub async fn file_records_by_id(
+        &self,
+        file_ids: &[FileId],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Option<FileRecord>>> {
+        let lookup = lookup_file_records_async(
+            &self.volume.fs.inner.objects,
+            self.root.file_table,
+            file_ids,
+            self.volume.config.limits.maximum_paths_per_batch,
+            decode_limits(self.volume.config),
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| {
+            OperationFailure::new(FsError::FileRecord(failure.error), *failure.work)
+        })?;
+        Ok(FsReceipt {
+            value: lookup.records,
+            work: lookup.work,
+        })
+    }
+
     async fn resolve_file_records(
         &self,
         paths: &[NamespacePath],
@@ -5444,7 +5957,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.generation_root = self.base_generation_root;
         self.live_operation_id = None;
         self.prepared_merge_parent = None;
-        self.dependencies.clear();
+        self.dependencies.proof().clear();
         Ok(FsReceipt { value: (), work })
     }
 
@@ -5503,7 +6016,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.base_root = self.root.clone();
         self.base_file_table = self.root.file_table;
         self.authority_head = Some(head);
-        self.dependencies.clear();
+        self.dependencies.proof().clear();
         Ok(FsReceipt {
             value: self.generation_id(),
             work,
@@ -5567,11 +6080,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             },
         )
         .map_err(|error| OperationFailure::new(FsError::Rebase(RebaseError::Probe(error)), work))?;
+        let dependencies = self.dependencies.proof().dependencies.clone();
         let classification = classify_rebase_async(
             &probe,
             base,
             candidate,
-            &self.dependencies,
+            &dependencies,
             maximum_conflicts,
             remaining(work, budget)?,
             cancellation,
@@ -6155,11 +6669,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let captured =
             Box::pin(self.capture_mutation_dependencies(&operations, budget, cancellation)).await?;
         let dependency_work = add(admitted.work, captured.work)?;
-        let mutation_dependencies = captured.value;
-        let mut next_dependencies = self.dependencies.clone();
-        next_dependencies
-            .extend_mutations(
-                mutation_dependencies,
+        // Validate against the proof now and apply only after the mutation
+        // lands; `&mut self` keeps the proof unchanged in between.
+        let extension = self
+            .dependencies
+            .proof()
+            .prepare_mutations(
+                captured.value,
                 self.volume.config.limits.maximum_checkout_dependencies,
             )
             .map_err(|error| OperationFailure::new(error.into(), dependency_work))?;
@@ -6177,9 +6693,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let work = add(dependency_work, receipt.work)?;
         if receipt.root.file_table != prior_file_table {
             if receipt.root.file_table == self.base_file_table {
-                next_dependencies.clear_mutations();
+                self.dependencies.proof().clear_mutations();
+            } else {
+                self.dependencies.proof().commit(extension);
             }
-            self.dependencies = next_dependencies;
             self.root = receipt.root;
         }
         Ok(FsReceipt { value: (), work })
@@ -6809,6 +7326,71 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     pub(crate) fn private_candidate(&self) -> Self {
+        self.replica(self.dependencies.independent(), self.mode)
+    }
+
+    /// Creates a read-only observer of this checkout's current candidate.
+    ///
+    /// A live checkout is observed at its current generation: advancing it is
+    /// a mutation of the owner, never of an observer.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn observer(&self) -> CheckoutObserver<'_, A, O> {
+        if !self.tracks_observations() {
+            return self.inspector();
+        }
+        CheckoutObserver {
+            checkout: self.replica(
+                self.dependencies.observing(),
+                CheckoutMode::read_only_pinned(),
+            ),
+            owner: PhantomData,
+        }
+    }
+
+    /// Diffs this checkout's candidate against another candidate of the same
+    /// volume, without recording an observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns measured diff, storage, cancellation, or bounded-work failures.
+    #[cfg(feature = "native-mount")]
+    pub(crate) async fn candidate_diff(
+        &self,
+        candidate: &Self,
+        maximum_changes: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<GenerationDiff> {
+        if candidate.volume.id != self.volume.id {
+            return Err(OperationFailure::before_work(FsError::VolumeMismatch));
+        }
+        diff_generation_file_tables(
+            &self.volume.fs.inner.objects,
+            self.root.file_table,
+            candidate.root.file_table,
+            maximum_changes,
+            self.volume.config,
+            WorkCounters::default(),
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Creates a read-only view of this checkout's current candidate that
+    /// records no observation, for bookkeeping that is not a semantic read.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn inspector(&self) -> CheckoutObserver<'_, A, O> {
+        CheckoutObserver {
+            checkout: self.replica(
+                self.dependencies.independent(),
+                CheckoutMode::read_only_pinned(),
+            ),
+            owner: PhantomData,
+        }
+    }
+
+    fn replica(&self, dependencies: DependencyLedger, mode: CheckoutMode) -> Self {
         Self {
             volume: self.volume.clone(),
             base_generation_root: self.base_generation_root,
@@ -6821,8 +7403,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             live_operation_id: self.live_operation_id,
             last_commit: self.last_commit,
             prepared_merge_parent: self.prepared_merge_parent,
-            dependencies: self.dependencies.clone(),
-            mode: self.mode,
+            dependencies,
+            mode,
         }
     }
 
@@ -7982,40 +8564,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if bytes.is_empty() {
-            return self
-                .mutate(
-                    vec![Mutation::ValidateRegular { path }],
-                    budget,
-                    cancellation,
-                )
-                .await;
-        }
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            > self.volume.config.limits.maximum_read_bytes
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let blob = self.stage_blob(bytes, budget, cancellation).await?;
-        let mut work = blob.work;
-        let mutation = self
-            .mutate(
-                vec![Mutation::Write {
-                    path,
-                    offset,
-                    length: blob.value.logical_bytes,
-                    content: blob.value.root,
-                    content_offset: 0,
-                }],
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, mutation.work)?;
-        Ok(FsReceipt { value: (), work })
+        self.change_content(
+            path,
+            ContentChange::Write { offset, bytes },
+            ContentTimes::Preserve,
+            budget,
+            cancellation,
+        )
+        .await
     }
 
     /// Captures one regular file as an ephemeral path-independent open view.
@@ -8083,7 +8639,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let record = lookup
             .value
             .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             work = self
                 .observe_identity_region(
                     DependencyRegion::FileRecord(file_id),
@@ -8185,7 +8741,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             };
             range.length = range.length.min(logical_bytes.saturating_sub(range.offset));
             if range.length == 0 {
-                if self.mode.consistency != ConsistencyMode::Pinned && requested_range.length != 0 {
+                if self.tracks_observations() && requested_range.length != 0 {
                     work = self
                         .observe_base_regular_range(
                             file_id,
@@ -8219,7 +8775,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
         .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
         work = add(work, read.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned && requested_range.length != 0 {
+        if self.tracks_observations() && requested_range.length != 0 {
             work = self
                 .observe_base_regular_range(file_id, requested_range, work, budget, cancellation)
                 .await?;
@@ -8263,7 +8819,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             FilePayload::InlineRegular(data) => {
                 let logical_bytes = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
                 validate_planned_file_range(logical_bytes, range, work)?;
-                if self.mode.consistency != ConsistencyMode::Pinned && range.length != 0 {
+                if self.tracks_observations() && range.length != 0 {
                     work = self
                         .observe_base_regular_range(file_id, range, work, budget, cancellation)
                         .await?;
@@ -8304,7 +8860,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             })
         })?;
         work = add(work, plan.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned && range.length != 0 {
+        if self.tracks_observations() && range.length != 0 {
             work = self
                 .observe_base_regular_range(file_id, range, work, budget, cancellation)
                 .await?;
@@ -8389,7 +8945,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 ));
             }
         };
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             work = self
                 .observe_identity_region(
                     DependencyRegion::SparseSeek {
@@ -8441,7 +8997,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         work = add(work, metadata.work)?;
         let value = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
             .map_err(|error| OperationFailure::new(error.into(), work))?;
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             work = self
                 .observe_base_metadata_ids(
                     std::slice::from_ref(&file_id),
@@ -8716,6 +9272,290 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(FsReceipt { value: (), work })
     }
 
+    /// Applies one content change to the regular file at `path`, stamping
+    /// its content-change times in the same mutation when `times` asks to.
+    ///
+    /// # Errors
+    ///
+    /// Returns measured path, blob, metadata, mutation, storage,
+    /// cancellation, allocation, or bounded-work failures. The candidate
+    /// changes only if the change and its time stamp both apply.
+    pub async fn change_content(
+        &mut self,
+        path: NamespacePath,
+        change: ContentChange<NamespacePath>,
+        times: ContentTimes,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<()> {
+        self.change_content_of(path, change, times, budget, cancellation)
+            .await
+    }
+
+    /// Applies one content change to a regular file by stable identity,
+    /// stamping its content-change times in the same mutation when `times`
+    /// asks to. Authenticated absence never scans the namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns measured blob, metadata, mutation, storage, cancellation,
+    /// allocation, or bounded-work failures. The candidate changes only if
+    /// the change and its time stamp both apply.
+    pub async fn change_content_by_id(
+        &mut self,
+        file_id: FileId,
+        change: ContentChange<FileId>,
+        times: ContentTimes,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<()> {
+        self.change_content_of(file_id, change, times, budget, cancellation)
+            .await
+    }
+
+    async fn change_content_of<F: ContentFile>(
+        &mut self,
+        file: F,
+        change: ContentChange<F>,
+        times: ContentTimes,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<()> {
+        let compiled = self
+            .compile_content(file, change, times, budget, cancellation)
+            .await?;
+        let mut work = compiled.work;
+        let mutation = self
+            .mutate(compiled.value, remaining(work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        work = add(work, mutation.work)?;
+        Ok(FsReceipt { value: (), work })
+    }
+
+    /// Stages one content change's bytes and time stamp and returns the
+    /// operations that apply it, reading at most the changed file's metadata.
+    async fn compile_content<F: ContentFile>(
+        &mut self,
+        file: F,
+        change: ContentChange<F>,
+        times: ContentTimes,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Mutation>> {
+        let mut work = WorkCounters::default();
+        let operation = match change {
+            ContentChange::Write { bytes, .. } if bytes.is_empty() => {
+                ContentOperation::ValidateRegular
+            }
+            ContentChange::Write { offset, bytes } => {
+                if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                    > self.volume.config.limits.maximum_read_bytes
+                {
+                    return Err(OperationFailure::before_work(FsError::FileRead(
+                        FileRangeReadError::InvalidRange,
+                    )));
+                }
+                let blob = self.stage_blob(bytes, budget, cancellation).await?;
+                work = blob.work;
+                ContentOperation::Write {
+                    offset,
+                    length: blob.value.logical_bytes,
+                    content: blob.value.root,
+                }
+            }
+            ContentChange::Resize { logical_bytes } => ContentOperation::Resize { logical_bytes },
+            ContentChange::ZeroRange {
+                range,
+                allocated,
+                extend,
+            } => ContentOperation::ZeroRange {
+                range,
+                allocated,
+                extend,
+            },
+            ContentChange::Preallocate { range, keep_size } => {
+                ContentOperation::Preallocate { range, keep_size }
+            }
+            ContentChange::CloneFrom {
+                source,
+                source_offset,
+                offset,
+                length,
+            } => ContentOperation::CloneFrom {
+                source,
+                source_offset,
+                offset,
+                length,
+            },
+        };
+        let mut operations = vec![file.clone().mutation(operation)];
+        if let ContentTimes::Stamp(at_ns) = times {
+            let current = match file.address() {
+                ContentAddress::Path(path) => {
+                    self.read_metadata(path, remaining(work, budget)?, cancellation)
+                        .await
+                }
+                ContentAddress::File(file_id) => {
+                    self.read_metadata_by_id(file_id, remaining(work, budget)?, cancellation)
+                        .await
+                }
+            }
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add(work, current.work)?;
+            let mut metadata = current.value;
+            if metadata.stamp_content_change(at_ns) {
+                let encoded = encode_file_metadata(metadata)
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
+                let (metadata, stored) = self
+                    .volume
+                    .fs
+                    .put_encoded(ObjectKind::Metadata, encoded, work, budget, cancellation)
+                    .await?;
+                work = stored;
+                operations.push(file.mutation(ContentOperation::SetMetadata { metadata }));
+            }
+        }
+        Ok(FsReceipt {
+            value: operations,
+            work,
+        })
+    }
+
+    /// Applies independent changes as if one at a time in order, landing
+    /// them as one mutation whenever they all apply.
+    ///
+    /// Each result is exactly what applying that change alone after its
+    /// successful predecessors returns: when the combined mutation fails,
+    /// every compiled change is retried alone in order, so one change's
+    /// failure never fails another. A change that fails leaves only harmless
+    /// unreferenced staged objects. `budget` bounds each change; the combined
+    /// mutation is bounded by the budgets of the changes it applies.
+    ///
+    /// # Errors
+    ///
+    /// Fails as a whole only if the group's summed work overflows; every
+    /// other failure, including an exhausted budget, belongs to its change.
+    pub async fn apply_group(
+        &mut self,
+        changes: Vec<GroupedChange>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Result<GroupedOutcome, FsError>>> {
+        let mut work = WorkCounters::default();
+        let mut staged_metadata = AuthoredMetadataCache::new();
+        let mut compiled = Vec::with_capacity(changes.len());
+        for change in changes {
+            let receipt = self
+                .compile_grouped(change, &mut staged_metadata, budget, cancellation)
+                .await;
+            compiled.push(match receipt {
+                Ok(receipt) => {
+                    work = add(work, receipt.work)?;
+                    Ok(receipt.value)
+                }
+                Err(failure) => {
+                    work = add(work, *failure.work)?;
+                    Err(failure.error)
+                }
+            });
+        }
+        let applicable = compiled.iter().filter(|change| change.is_ok()).count();
+        if applicable > 1 {
+            let operations = compiled
+                .iter()
+                .flatten()
+                .flat_map(|(operations, _)| operations.iter().cloned())
+                .collect();
+            match self
+                .mutate(operations, group_budget(budget, applicable), cancellation)
+                .await
+            {
+                Ok(mutation) => {
+                    work = add(work, mutation.work)?;
+                    let value = compiled
+                        .into_iter()
+                        .map(|change| change.map(|(_, outcome)| outcome))
+                        .collect();
+                    return Ok(FsReceipt { value, work });
+                }
+                Err(failure) => work = add(work, *failure.work)?,
+            }
+        }
+        let mut value = Vec::with_capacity(compiled.len());
+        for change in compiled {
+            let applied = match change {
+                Ok((operations, outcome)) => {
+                    match self.mutate(operations, budget, cancellation).await {
+                        Ok(mutation) => {
+                            work = add(work, mutation.work)?;
+                            Ok(outcome)
+                        }
+                        Err(failure) => {
+                            work = add(work, *failure.work)?;
+                            Err(failure.error)
+                        }
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            value.push(applied);
+        }
+        Ok(FsReceipt { value, work })
+    }
+
+    async fn compile_grouped(
+        &mut self,
+        change: GroupedChange,
+        staged_metadata: &mut AuthoredMetadataCache,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<(Vec<Mutation>, GroupedOutcome)> {
+        match change {
+            GroupedChange::CreateFile { path, metadata } => {
+                let mut operations = Vec::new();
+                let mut work = WorkCounters::default();
+                let created = self
+                    .compile_authored_mutation(
+                        AuthoredMutation::CreateFile {
+                            path,
+                            bytes: Bytes::new(),
+                            metadata,
+                        },
+                        &mut operations,
+                        &mut work,
+                        staged_metadata,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                let file_id = created.ok_or_else(|| {
+                    OperationFailure::new(
+                        FsError::Mutation(GenerationMutationError::InconsistentState),
+                        work,
+                    )
+                })?;
+                Ok(FsReceipt {
+                    value: (operations, GroupedOutcome::Created(file_id)),
+                    work,
+                })
+            }
+            GroupedChange::Content {
+                file_id,
+                change,
+                times,
+            } => {
+                let compiled = self
+                    .compile_content(file_id, change, times, budget, cancellation)
+                    .await?;
+                Ok(FsReceipt {
+                    value: (compiled.value, GroupedOutcome::Changed),
+                    work: compiled.work,
+                })
+            }
+        }
+    }
+
     /// Replaces one range of an attached regular file by stable identity.
     ///
     /// # Errors
@@ -8730,45 +9570,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if bytes.is_empty() {
-            return self
-                .mutate(
-                    vec![Mutation::File {
-                        file_id,
-                        mutation: FileMutation::ValidateRegular,
-                    }],
-                    budget,
-                    cancellation,
-                )
-                .await;
-        }
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            > self.volume.config.limits.maximum_read_bytes
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let blob = self.stage_blob(bytes, budget, cancellation).await?;
-        let mut work = blob.work;
-        let mutation = self
-            .mutate(
-                vec![Mutation::File {
-                    file_id,
-                    mutation: FileMutation::Write {
-                        offset,
-                        length: blob.value.logical_bytes,
-                        content: blob.value.root,
-                        content_offset: 0,
-                    },
-                }],
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, mutation.work)?;
-        Ok(FsReceipt { value: (), work })
+        self.change_content_by_id(
+            file_id,
+            ContentChange::Write { offset, bytes },
+            ContentTimes::Preserve,
+            budget,
+            cancellation,
+        )
+        .await
     }
 
     /// Replaces complete canonical metadata by stable identity.
@@ -8871,11 +9680,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::File {
-                file_id,
-                mutation: FileMutation::Resize { logical_bytes },
-            }],
+        self.change_content_by_id(
+            file_id,
+            ContentChange::Resize { logical_bytes },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -8896,16 +9704,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::File {
-                file_id,
-                mutation: FileMutation::ZeroRange {
-                    offset: range.offset,
-                    length: range.length,
-                    allocated,
-                    extend,
-                },
-            }],
+        self.change_content_by_id(
+            file_id,
+            ContentChange::ZeroRange {
+                range,
+                allocated,
+                extend,
+            },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -8925,15 +9731,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::File {
-                file_id,
-                mutation: FileMutation::Preallocate {
-                    offset: range.offset,
-                    length: range.length,
-                    keep_size,
-                },
-            }],
+        self.change_content_by_id(
+            file_id,
+            ContentChange::Preallocate { range, keep_size },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -8956,14 +9757,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::CloneFileRange {
-                source_file_id,
+        self.change_content_by_id(
+            destination_file_id,
+            ContentChange::CloneFrom {
+                source: source_file_id,
                 source_offset,
-                destination_file_id,
-                destination_offset,
+                offset: destination_offset,
                 length,
-            }],
+            },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9134,11 +9936,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::Resize {
-                path,
-                logical_bytes,
-            }],
+        self.change_content(
+            path,
+            ContentChange::Resize { logical_bytes },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9159,14 +9960,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::ZeroRange {
-                path,
-                offset: range.offset,
-                length: range.length,
+        self.change_content(
+            path,
+            ContentChange::ZeroRange {
+                range,
                 allocated,
                 extend,
-            }],
+            },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9191,13 +9992,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::Preallocate {
-                path,
-                offset: range.offset,
-                length: range.length,
-                keep_size,
-            }],
+        self.change_content(
+            path,
+            ContentChange::Preallocate { range, keep_size },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9215,14 +10013,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::CloneRange {
+        self.change_content(
+            request.destination,
+            ContentChange::CloneFrom {
                 source: request.source,
                 source_offset: request.source_offset,
-                destination: request.destination,
-                destination_offset: request.destination_offset,
+                offset: request.destination_offset,
                 length: request.length,
-            }],
+            },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9525,7 +10324,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.base_file_table = self.root.file_table;
                 self.authority_head = Some(head);
                 self.prepared_merge_parent = None;
-                self.dependencies.clear();
+                self.dependencies.proof().clear();
                 self.last_commit = Some(LastCommit {
                     operation_id,
                     generation_id,
@@ -9545,7 +10344,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.base_file_table = self.root.file_table;
                 self.authority_head = Some(head);
                 self.prepared_merge_parent = None;
-                self.dependencies.clear();
+                self.dependencies.proof().clear();
                 self.last_commit = Some(LastCommit {
                     operation_id,
                     generation_id,
@@ -9743,7 +10542,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         work = add(work, metadata.work)?;
         let metadata = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
             .map_err(|error| OperationFailure::new(error.into(), work))?;
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             work = self
                 .observe_base_metadata_ids(
                     std::slice::from_ref(&record.file_id),
@@ -9853,18 +10652,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
         capture_terminal: bool,
     ) -> FsResult<PathLookup> {
-        let lookup = if self.mode.consistency == ConsistencyMode::Pinned {
-            crate::kernel::lookup_path_async(
-                &self.volume.fs.inner.objects,
-                &self.root,
-                path,
-                self.volume.config,
-                budget,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?
-        } else {
+        let lookup = if self.tracks_observations() {
             let candidate = if self.has_pending_mutations() {
                 Some(
                     crate::kernel::lookup_path_async(
@@ -9883,6 +10671,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             } else {
                 None
             };
+            let base = self.base_root.file_table;
+            if let Some(candidate) = candidate
+                && self
+                    .dependencies
+                    .proof()
+                    .observes_path(base, path, capture_terminal)
+            {
+                return Ok(FsReceipt {
+                    work: candidate.work,
+                    value: candidate,
+                });
+            }
             let prior = candidate
                 .as_ref()
                 .map_or(WorkCounters::default(), |value| value.work);
@@ -9898,7 +10698,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .await?;
             let combined = observed.work;
             self.dependencies
-                .extend_observations(
+                .proof()
+                .observe_paths(
+                    base,
+                    [path],
+                    capture_terminal,
                     observed.value.dependencies,
                     self.volume.config.limits.maximum_checkout_dependencies,
                 )
@@ -9913,6 +10717,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     ..value
                 },
             )
+        } else {
+            crate::kernel::lookup_path_async(
+                &self.volume.fs.inner.objects,
+                &self.root,
+                path,
+                self.volume.config,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?
         };
         Ok(FsReceipt {
             work: lookup.work,
@@ -9995,39 +10810,99 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> FsResult<PathBatchLookup> {
         let synchronized = self.synchronize_live(budget, cancellation).await?;
         let prior = synchronized.work;
+        let config = self.volume.config;
+        let objects = &self.volume.fs.inner.objects;
+        let base = self.base_root.file_table;
+        if !self.tracks_observations() {
+            let mut lookup = crate::kernel::lookup_paths_async(
+                objects,
+                &self.root,
+                paths,
+                config,
+                remaining(prior, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(prior, FsError::Path))?;
+            lookup.work = add(prior, lookup.work)?;
+            return Ok(FsReceipt {
+                work: lookup.work,
+                value: lookup,
+            });
+        }
+        // An unchanged checkout resolves every path in the base itself, so
+        // one walk both answers and observes the batch.
+        if self.root == self.base_root {
+            let observed = crate::kernel::observe_paths_async(
+                objects,
+                &self.root,
+                paths,
+                config,
+                remaining(prior, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(prior, FsError::Path))?;
+            let mut lookup = observed.lookup;
+            lookup.work = add(prior, lookup.work)?;
+            self.dependencies
+                .proof()
+                .observe_paths(
+                    base,
+                    paths,
+                    true,
+                    observed.dependencies,
+                    config.limits.maximum_checkout_dependencies,
+                )
+                .map_err(|error| OperationFailure::new(error.into(), lookup.work))?;
+            return Ok(FsReceipt {
+                work: lookup.work,
+                value: lookup,
+            });
+        }
         let mut lookup = crate::kernel::lookup_paths_async(
-            &self.volume.fs.inner.objects,
+            objects,
             &self.root,
             paths,
-            self.volume.config,
+            config,
             remaining(prior, budget)?,
             cancellation,
         )
         .await
         .map_err(|failure| failure.map_with_prior_work(prior, FsError::Path))?;
         lookup.work = add(prior, lookup.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned {
-            let mut work = lookup.work;
-            for path in paths {
-                let observed = crate::kernel::observe_path_async(
-                    &self.volume.fs.inner.objects,
-                    &self.base_root,
-                    path,
-                    self.volume.config,
-                    remaining(work, budget)?,
-                    cancellation,
+        // Observe, in one base walk, only the paths the proof lacks.
+        let unobserved = {
+            let proof = self.dependencies.proof();
+            paths
+                .iter()
+                .filter(|path| !proof.observes_path(base, path, true))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if !unobserved.is_empty() {
+            let work = lookup.work;
+            let observed = crate::kernel::observe_paths_async(
+                objects,
+                &self.base_root,
+                &unobserved,
+                config,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::Path))?;
+            lookup.work = add(work, observed.lookup.work)?;
+            self.dependencies
+                .proof()
+                .observe_paths(
+                    base,
+                    &unobserved,
+                    true,
+                    observed.dependencies,
+                    config.limits.maximum_checkout_dependencies,
                 )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, FsError::Path))?;
-                work = add(work, observed.lookup.work)?;
-                self.dependencies
-                    .extend_observations(
-                        observed.dependencies,
-                        self.volume.config.limits.maximum_checkout_dependencies,
-                    )
-                    .map_err(|error| OperationFailure::new(error.into(), work))?;
-            }
-            lookup.work = work;
+                .map_err(|error| OperationFailure::new(error.into(), lookup.work))?;
         }
         Ok(FsReceipt {
             work: lookup.work,
@@ -10104,7 +10979,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         .map_err(|failure| failure.map_with_prior_work(work, FsError::Directory))?;
         work = add(work, page.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             let region = DependencyRegion::DirectoryRange {
                 directory_id: record.file_id,
                 after: after.cloned(),
@@ -10126,6 +11001,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .map_err(|failure| failure.map_with_prior_work(work, FsError::Probe))?;
             work = add(work, state.work)?;
             self.dependencies
+                .proof()
                 .extend_observations(
                     vec![Dependency {
                         region,
@@ -10177,7 +11053,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<DirectoryRecordPage> {
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             return Err(OperationFailure::before_work(FsError::UnsupportedCheckout));
         }
         self.list_directory_records_with_bound(
@@ -10306,7 +11182,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 metadata,
             });
         }
-        if self.mode.consistency != ConsistencyMode::Pinned && !entries.is_empty() {
+        if self.tracks_observations() && !entries.is_empty() {
             let mut file_ids = Vec::new();
             file_ids.try_reserve_exact(entries.len()).map_err(|_| {
                 OperationFailure::new(FsError::PendingMutationAllocationFailed, work)
@@ -10639,7 +11515,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             FilePayload::InlineRegular(data) => {
                 let logical_bytes = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
                 validate_planned_file_range(logical_bytes, range, work)?;
-                if self.mode.consistency != ConsistencyMode::Pinned && range.length != 0 {
+                if self.tracks_observations() && range.length != 0 {
                     work = self
                         .observe_base_regular_range(
                             record.file_id,
@@ -10686,7 +11562,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             })
         })?;
         work = add(work, plan.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned && range.length != 0 {
+        if self.tracks_observations() && range.length != 0 {
             work = self
                 .observe_base_regular_range(record.file_id, range, work, budget, cancellation)
                 .await?;
@@ -10777,7 +11653,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 ));
             }
         };
-        if self.mode.consistency != ConsistencyMode::Pinned {
+        if self.tracks_observations() {
             let region = DependencyRegion::SparseSeek {
                 file_id: record.file_id,
                 offset,
@@ -10799,6 +11675,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .map_err(|failure| failure.map_with_prior_work(work, FsError::Probe))?;
             work = add(work, state.work)?;
             self.dependencies
+                .proof()
                 .extend_observations(
                     vec![Dependency {
                         region,
@@ -10852,7 +11729,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
         .map_err(|failure| failure.map_with_prior_work(work, FsError::FileRead))?;
         work = add(work, read.work)?;
-        if self.mode.consistency != ConsistencyMode::Pinned && range.length != 0 {
+        if self.tracks_observations() && range.length != 0 {
             work = self
                 .observe_base_regular_range(record.file_id, range, work, budget, cancellation)
                 .await?;
@@ -10914,6 +11791,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
         work = add(work, captured.work)?;
         self.dependencies
+            .proof()
             .extend_observations(
                 captured.value,
                 self.volume.config.limits.maximum_checkout_dependencies,
@@ -10956,6 +11834,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, OperationFailure<FsError>> {
+        let file_ids = {
+            let proof = self.dependencies.proof();
+            file_ids
+                .iter()
+                .copied()
+                .filter(|file_id| !proof.observes(&DependencyRegion::Metadata(*file_id)))
+                .collect::<Vec<_>>()
+        };
         if file_ids.is_empty() {
             return Ok(work);
         }
@@ -10963,7 +11849,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let records = lookup_file_records_async(
             &self.volume.fs.inner.objects,
             self.base_root.file_table,
-            file_ids,
+            &file_ids,
             maximum,
             decode_limits(self.volume.config),
             remaining(work, budget)?,
@@ -10988,6 +11874,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 }),
         );
         self.dependencies
+            .proof()
             .extend_observations(
                 dependencies,
                 self.volume.config.limits.maximum_checkout_dependencies,
@@ -11591,153 +12478,105 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         })
     }
 
-    /// Writes caller bytes into the detached sparse file.
+    /// Applies one content change and, when `metadata` is given, replaces
+    /// the complete metadata in the same detached record transition: the
+    /// visible record changes only if both succeed. A detached file has no
+    /// other file to clone from, so that change cannot be expressed.
     ///
     /// # Errors
     ///
-    /// Returns typed range, blob, mutation, storage, cancellation, allocation,
-    /// or bounded-work failures.
-    pub async fn write_range(
+    /// Returns measured blob, encoding, mutation, storage, cancellation,
+    /// allocation, or bounded-work failures.
+    pub async fn change_content(
         &mut self,
-        offset: u64,
-        bytes: Bytes,
+        change: ContentChange<std::convert::Infallible>,
+        metadata: Option<FileMetadata>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if bytes.is_empty() {
-            return Ok(FsReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
-        }
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            > self.volume.config.limits.maximum_read_bytes
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let mut source = std::io::Cursor::new(bytes);
-        let blob = stage_content_for_volume(
-            &self.volume,
-            &mut source,
-            maximum_blob_bytes,
-            budget,
-            cancellation,
-        )
-        .await?;
-        let mut work = blob.work;
-        let mutation = self
-            .mutate_regular(
-                RegularMutation::Write {
+        let mut work = WorkCounters::default();
+        let mutation = match change {
+            ContentChange::Write { bytes, .. } if bytes.is_empty() => None,
+            ContentChange::Write { offset, bytes } => {
+                if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                    > self.volume.config.limits.maximum_read_bytes
+                {
+                    return Err(OperationFailure::before_work(FsError::FileRead(
+                        FileRangeReadError::InvalidRange,
+                    )));
+                }
+                let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                let mut source = std::io::Cursor::new(bytes);
+                let blob = stage_content_for_volume(
+                    &self.volume,
+                    &mut source,
+                    maximum_blob_bytes,
+                    budget,
+                    cancellation,
+                )
+                .await?;
+                work = blob.work;
+                Some(RegularMutation::Write {
                     offset,
                     length: blob.value.logical_bytes,
                     content: blob.value.root,
                     content_offset: 0,
-                },
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, mutation.work)?;
-        Ok(FsReceipt { value: (), work })
-    }
-
-    /// Changes detached logical file length.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed mutation, storage, cancellation, allocation, or work failures.
-    pub async fn resize(
-        &mut self,
-        logical_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        self.mutate_regular(
-            RegularMutation::Resize { logical_bytes },
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    /// Replaces one detached range with a hole or allocated zeros.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed mutation, storage, cancellation, allocation, or work failures.
-    pub async fn zero_range(
-        &mut self,
-        range: ByteRange,
-        allocated: bool,
-        extend: bool,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        self.mutate_regular(
-            RegularMutation::ZeroRange {
+                })
+            }
+            ContentChange::Resize { logical_bytes } => {
+                Some(RegularMutation::Resize { logical_bytes })
+            }
+            ContentChange::ZeroRange {
+                range,
+                allocated,
+                extend,
+            } => Some(RegularMutation::ZeroRange {
                 offset: range.offset,
                 length: range.length,
                 allocated,
                 extend,
-            },
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    /// Allocates detached sparse holes while preserving content.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed unsupported keep-size, mutation, storage, cancellation,
-    /// allocation, or work failures.
-    pub async fn preallocate(
-        &mut self,
-        range: ByteRange,
-        keep_size: bool,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        self.mutate_regular(
-            RegularMutation::Preallocate {
+            }),
+            ContentChange::Preallocate { range, keep_size } => Some(RegularMutation::Preallocate {
                 offset: range.offset,
                 length: range.length,
                 keep_size,
-            },
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    async fn mutate_regular(
-        &mut self,
-        mutation: RegularMutation,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        let receipt = apply_regular_mutation_async(
-            &self.volume.fs.inner.objects,
-            self.record.payload,
-            mutation,
-            self.volume.config,
-            budget,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            OperationFailure::new(FsError::DetachedMutation(failure.error), *failure.work)
-        })?;
-        self.record.payload = receipt.payload;
-        Ok(FsReceipt {
-            value: (),
-            work: receipt.work,
-        })
+            }),
+            ContentChange::CloneFrom { source, .. } => match source {},
+        };
+        let payload = match mutation {
+            Some(mutation) => {
+                let receipt = apply_regular_mutation_async(
+                    &self.volume.fs.inner.objects,
+                    self.record.payload,
+                    mutation,
+                    self.volume.config,
+                    remaining(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, FsError::DetachedMutation))?;
+                work = add(work, receipt.work)?;
+                receipt.payload
+            }
+            None => self.record.payload,
+        };
+        let metadata_id = match metadata {
+            Some(metadata) => {
+                let encoded = encode_file_metadata(metadata)
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
+                let (metadata_id, stored) = self
+                    .volume
+                    .fs
+                    .put_encoded(ObjectKind::Metadata, encoded, work, budget, cancellation)
+                    .await?;
+                work = stored;
+                metadata_id
+            }
+            None => self.record.metadata,
+        };
+        self.record.payload = payload;
+        self.record.metadata = metadata_id;
+        Ok(FsReceipt { value: (), work })
     }
 }
 
@@ -12355,6 +13194,16 @@ fn probe_limits(config: VolumeConfig) -> ProbeLimits {
         maximum_content_payload_bytes: config.limits.maximum_read_bytes,
         maximum_directory_entries: config.limits.maximum_directory_page_entries,
     }
+}
+
+/// The combined bound of `count` changes each bounded by `budget`.
+fn group_budget(budget: WorkBudget, count: usize) -> WorkBudget {
+    let count = u64::try_from(count).unwrap_or(u64::MAX);
+    let mut total = (1..count).fold(budget, |total, _| {
+        total.checked_add(budget).unwrap_or(WorkBudget::UNBOUNDED)
+    });
+    total.peak_allocation_bytes = budget.peak_allocation_bytes.saturating_mul(count);
+    total
 }
 
 fn empty_metadata() -> FileMetadata {

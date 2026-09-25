@@ -3,6 +3,22 @@
 //! Drivers project one canonical SDK checkout. They own kernel handles and
 //! callback cursors only; filesystem truth, COW state, and publication remain
 //! in `acyclic-fs`.
+//!
+//! # macOS
+//!
+//! The macOS mount is an `NFSv4` filesystem that only the kernel's NFS client
+//! can reach, over a local socket in a private directory. Where NFS defines
+//! behavior, it differs from APFS:
+//!
+//! - Cached names and attributes are revalidated at every open and within
+//!   one second otherwise, so a change made around the mount becomes visible
+//!   no later than that; [`NativeMountSession::revalidate`] waits it out.
+//!   Positive `access(2)` answers are cached for up to a minute, but the
+//!   server checks access again at every open.
+//! - Advisory locks exclude other processes, but the NFS client keys every
+//!   lock by process: two descriptors that one process opened never exclude
+//!   each other with `flock`, whereas APFS gives each open file description
+//!   its own `flock`. `fcntl` record locks are per process on both.
 
 use crate::kernel::FileMetadata;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -22,6 +38,9 @@ mod adapter;
 pub use adapter::{CheckoutMountSource, SharedCheckout, SharedCheckoutGuard, SharedCheckoutState};
 
 mod view_gate;
+
+mod view_ledger;
+pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
 mod lazy;
 pub use lazy::LazyMountSource;
@@ -92,6 +111,8 @@ fn system_time_ns(value: SystemTime) -> Result<i64, i32> {
 
 #[cfg(target_os = "windows")]
 mod projfs;
+#[cfg(target_os = "windows")]
+mod provider_stack;
 
 /// Concrete namespace mechanism selected for this binary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -171,6 +192,14 @@ pub struct MountLookup {
     /// Complete metadata; unavailable fields are never fabricated.
     pub metadata: FileMetadata,
 }
+
+/// Opaque evidence of the exact external content one lookup observed.
+///
+/// Only the issuing source interprets it. A driver whose projected metadata
+/// outlives the callback that produced it (a `ProjFS` placeholder) stores the
+/// pin with that metadata and later reads exactly the promised content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MountContentPin(pub [u8; 32]);
 
 /// Namespace kinds representable by native projections.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -490,6 +519,15 @@ impl MountPath {
     pub fn components(&self) -> &[Vec<u8>] {
         &self.components
     }
+
+    /// Returns the containing directory, or `None` at the volume root.
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
+        let (_, parent) = self.components.split_last()?;
+        Some(Self {
+            components: parent.to_vec(),
+        })
+    }
 }
 
 /// Errors returned by the canonical checkout callback bridge.
@@ -547,41 +585,84 @@ pub trait MountFilesystem: Send + Sync + 'static {
         true
     }
 
+    /// Whether [`Self::flush`] can publish anything. When it cannot, as
+    /// under manual publication, every acknowledged mutation is already as
+    /// durable as a native durability request (`fsync`) would make it.
+    fn flush_publishes(&self) -> bool {
+        true
+    }
+
     /// Whether a lookup may observe one coherent source view right now.
     /// Drivers must retry or fail stale while this is false.
     fn view_is_stable(&self) -> bool {
         true
     }
 
-    /// Returns the current coherent projection view, when the source can
-    /// precisely invalidate cached lookups.
+    /// Samples this source's position in the order of view changes, before a
+    /// lookup whose result a driver may cache.
     ///
-    /// Sources without an epoch return `None`; drivers must then resolve every
-    /// lookup through the source. An epoch may be reused only until this value
-    /// changes.
-    fn view_epoch(&self) -> Option<u64> {
+    /// Sources that cannot invalidate exactly return `None`; drivers must then
+    /// resolve every lookup through the source.
+    fn view_stamp(&self) -> Option<ViewStamp> {
         None
     }
 
+    /// Whether a lookup of `path`, which resolved to `file_id` (`None`: to
+    /// nothing) after `stamp` was sampled, still describes the view.
+    ///
+    /// It does until a change after `stamp` rebinds any component of `path`,
+    /// changes the listing or attributes of `path` itself, or changes the
+    /// node `file_id` under any of its names. A directory page cached at
+    /// `stamp` is current while its directory and every listed entry are.
+    fn unchanged_since(
+        &self,
+        _path: &MountPath,
+        _file_id: Option<FileId>,
+        _stamp: ViewStamp,
+    ) -> bool {
+        false
+    }
+
+    /// Whether facts about the node `file_id`, read after `stamp` was
+    /// sampled, still describe it: no change after `stamp` touched the node
+    /// under any of its names. Facts that follow from a directory's listing
+    /// also depend on its path, which only [`Self::unchanged_since`] checks.
+    fn node_unchanged_since(&self, _file_id: FileId, _stamp: ViewStamp) -> bool {
+        false
+    }
+
+    /// The spelling every equivalent spelling of `path` resolves to, when
+    /// this source folds names; `None` when every spelling is distinct.
+    ///
+    /// Drivers key their records by it, so all spellings of one name share
+    /// one record, and never let a case-sensitive kernel cache a spelling on
+    /// its own: a change through one spelling could not reach the others.
+    fn folded_path(&self, _path: &MountPath) -> Option<MountPath> {
+        None
+    }
+
+    /// Tells `observer` of every change to this source's view from now on,
+    /// together with the origin that made it.
+    ///
+    /// Drivers keep kernel caches for as long as [`Self::unchanged_since`]
+    /// holds, so a source that returns view stamps must report every change
+    /// here. Sources without stamps are never cached and need not.
+    fn observe_view(&self, _observer: std::sync::Weak<dyn ViewObserver>) {}
+
     /// Changes only when existing path or handle bindings may be replaced by
-    /// an external source transition. Ordinary mutations may advance
-    /// `view_epoch` to invalidate caches without making a native callback
-    /// stale. Sources without that distinction retain the conservative view
-    /// epoch behavior.
+    /// an external source transition. Ordinary mutations never change it;
+    /// they invalidate exactly what they change through [`Self::view_stamp`].
+    /// Sources without that distinction return `None`.
     fn binding_epoch(&self) -> Option<u64> {
-        self.view_epoch()
+        None
     }
 
     /// Pins the current coherent projection view for one native callback.
     ///
-    /// `expected_epoch` binds a continuation to the view in which it began.
     /// Stable sources need no retained state; rebindable sources override this
     /// method with an owned synchronization permit.
-    fn acquire_view_lease(
-        &self,
-        expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-        if !self.view_is_stable() || self.view_epoch() != expected_epoch {
+    fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+        if !self.view_is_stable() {
             return Err(MountSourceError::Stale);
         }
         Ok(Box::new(()))
@@ -606,6 +687,39 @@ pub trait MountFilesystem: Send + Sync + 'static {
     ///
     /// Returns a typed source failure without changing checkout state.
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError>;
+    /// Looks up one path like [`Self::lookup`], also pinning the exact
+    /// external content a regular file's later [`Self::read_pinned`] must
+    /// reproduce.
+    ///
+    /// Sources whose file content changes only through their own mutation
+    /// methods have nothing external to pin and return `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed source failure without changing checkout state.
+    fn lookup_pinned(
+        &self,
+        path: &MountPath,
+    ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
+        Ok(self.lookup(path)?.map(|lookup| (lookup, None)))
+    }
+    /// Reads one exact range of the content a [`Self::lookup_pinned`] pin
+    /// promised for `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Stale` when that exact content is no longer available, or
+    /// another typed source failure without partial output.
+    fn read_pinned(
+        &self,
+        path: &MountPath,
+        pin: MountContentPin,
+        offset: u64,
+        length: u32,
+    ) -> Result<Bytes, MountSourceError> {
+        let _ = (path, pin, offset, length);
+        Err(MountSourceError::Stale)
+    }
     /// Opens one regular file as an attached path-independent handle.
     ///
     /// # Errors
@@ -986,28 +1100,66 @@ impl NativeMountSession {
 
     /// Drops the kernel's cached entry/attributes for one mount-relative
     /// path (leading `/` optional). Linux FUSE also invalidates resident
-    /// file data. This makes a projection change — such as a
-    /// removed route — visible immediately instead of after a cache timeout.
+    /// file data and the parent's cached listing; Windows `ProjFS` drops an
+    /// unmodified projected placeholder and every cached absence. A change made
+    /// to the source around the mount, such as a removed route, becomes
+    /// visible through this call.
     /// Linux FUSE supports nested entries when the parent directory has a
-    /// cached inode; otherwise the entry becomes visible at cache expiry.
+    /// cached inode. The macOS NFS client cannot be told to drop its caches:
+    /// it sees the change at its next revalidation, which every open performs
+    /// and cached names and attributes undergo within one second.
     ///
     /// # Errors
     ///
-    /// Returns a driver error when the transport cannot invalidate (the
-    /// change then becomes visible at the cache's own expiry).
+    /// Returns a driver error when the transport cannot invalidate.
     pub fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
         match &self.driver {
             #[cfg(target_os = "linux")]
             Some(DriverSession::Fuse(session)) => session.invalidate(path),
             #[cfg(target_os = "macos")]
             Some(DriverSession::DarwinMount(session)) => session.invalidate(path),
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            Some(_) => {
+            #[cfg(target_os = "windows")]
+            Some(DriverSession::ProjFs(session)) => session.invalidate(path),
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            Some(DriverSession::Unsupported) => {
                 let _ = path;
-                Err(NativeMountError::Driver(
-                    "invalidation is not implemented for this transport".to_owned(),
-                ))
+                Err(NativeMountError::UnsupportedTarget)
             }
+            None => Err(NativeMountError::Driver("session is stopped".to_owned())),
+        }
+    }
+
+    /// Brings kernel caches in line with a changed source view.
+    ///
+    /// A mount owner that rebinds or advances its source calls this before
+    /// exposing the new view, even when the advance failed part way. Once it
+    /// returns, no access through the mount observes a name, attribute, or
+    /// file content that a change made around the mount before the call
+    /// superseded. Linux FUSE retains entries, attributes, and file data
+    /// until invalidated and drops what every change made around the mount
+    /// superseded as the source reports it; this waits until every change
+    /// reported so far has reached the kernel. Windows `ProjFS` forgets the
+    /// absences it caches without expiry. The macOS NFS client cannot be
+    /// told to drop anything, so this waits until everything it cached
+    /// before such a change has expired (at most the one-second attribute
+    /// timeout plus a reply-delivery allowance; see the module docs for the
+    /// `access(2)` exception). Views that only the mount itself changed
+    /// make this a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns a driver error when the kernel rejects an invalidation.
+    pub fn revalidate(&self) -> Result<(), NativeMountError> {
+        match &self.driver {
+            #[cfg(target_os = "linux")]
+            Some(DriverSession::Fuse(session)) => session.revalidate(),
+            #[cfg(target_os = "windows")]
+            Some(DriverSession::ProjFs(session)) => session.revalidate(),
+            #[cfg(target_os = "macos")]
+            Some(DriverSession::DarwinMount(session)) => session.revalidate(),
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            Some(DriverSession::Unsupported) => Ok(()),
+
             None => Err(NativeMountError::Driver("session is stopped".to_owned())),
         }
     }

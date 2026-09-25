@@ -73,6 +73,7 @@ pub mod core_state;
 pub mod demand;
 #[cfg(feature = "distributed")]
 pub mod distributed;
+#[cfg(feature = "distributed")]
 mod distributed_fs;
 pub mod facade;
 pub mod foundation;
@@ -140,23 +141,25 @@ pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObject
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 pub use async_storage::{
     AsyncAuthorityStore, AsyncObjectStore, GenerationFork, GenerationForkSource,
-    ImmediateAuthorityStore, ImmediateObjectStore,
+    ImmediateAuthorityStore, ImmediateObjectStore, PublicationScope,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub use core_state::{LocalCoreStateStore, LocalCoreStateStoreError};
+pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 #[cfg(feature = "distributed")]
 pub use distributed::{ProviderObjectStore, StreamAuthorityStore};
+#[cfg(feature = "distributed")]
 pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, ContentStager, DetachedFile, DirectoryBindingChange,
-    DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities,
-    FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError, FsReceipt, FsResult,
-    GenerationDiff, LiveMutationOutcome, MergeConflict, MergePreparation, NamedAttributeWriteMode,
-    PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile,
-    ResolvedFileRangeReadRequest, StagedContent, Volume,
+    CheckoutCommitOutcome, ContentChange, ContentStager, ContentTimes, DetachedFile,
+    DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
+    EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
+    FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome, LiveMutationOutcome,
+    MergeConflict, MergePreparation, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader,
+    ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
+    StagedContent, Volume,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{
@@ -264,10 +267,10 @@ pub use native_mount::recover_native_mount_destination_preserving_residue;
 pub use native_mount::{
     CheckoutMountSource, HostPathReplacement, HostPathRestore, LazyMount, LazyWorkingSet,
     MaterializationReceipt, MaterializeError, MaterializeOptions, Mount, MountAttributePage,
-    MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLifecycleError, MountLookup,
-    MountNode, MountNodeKind, MountOpenFile, MountOptions, MountPath, MountPublication,
-    MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange, MountSparseSpan,
-    MountViewLease, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
+    MountContentPin, MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLifecycleError,
+    MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions, MountPath,
+    MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange,
+    MountSparseSpan, MountViewLease, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
     NativeMountError, NativeMountKind, NativeMountRequest, NativeMountSession,
     NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
@@ -288,8 +291,10 @@ pub use operation_window::{
     MemoryOperationWindowStore, OperationLease, OperationLeaseId, OperationReconcileLimits,
     OperationWindowCoordinator, OperationWindowError, OperationWindowFinish, OperationWindowLease,
     OperationWindowPhase, OperationWindowReconcile, OperationWindowSnapshot, OperationWindowStore,
-    StreamOperationWindowStore, StreamOperationWindowStoreError, WorkspaceOperationFinish,
+    WorkspaceOperationFinish,
 };
+#[cfg(feature = "distributed")]
+pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
 pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
@@ -322,7 +327,7 @@ pub use speculation::{
 pub use storage::{
     AppendOutcome, AuthorityFailure, AuthorityReceipt, AuthorityResult, AuthorityStore,
     AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome, GuardedAppend,
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
+    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
     ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStore,
     ObjectStoreError, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
     object_digest,

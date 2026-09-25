@@ -204,16 +204,28 @@ where
 fn flush_session_callbacks(
     session: &Mutex<Option<NativeMountSession>>,
 ) -> Result<(), MountLifecycleError> {
+    with_live_session(session, NativeMountSession::flush_callbacks)
+}
+
+/// Waits until the kernel caches nothing a change to the source superseded.
+fn revalidate_session(
+    session: &Mutex<Option<NativeMountSession>>,
+) -> Result<(), MountLifecycleError> {
+    with_live_session(session, NativeMountSession::revalidate)
+}
+
+fn with_live_session(
+    session: &Mutex<Option<NativeMountSession>>,
+    operation: impl FnOnce(&NativeMountSession) -> Result<(), NativeMountError>,
+) -> Result<(), MountLifecycleError> {
     let owner = match session.lock() {
         Ok(owner) => owner,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if let Some(session) = owner.as_ref() {
-        session
-            .flush_callbacks()
-            .map_err(MountLifecycleError::Native)?;
-    }
-    Ok(())
+    owner
+        .as_ref()
+        .map_or(Ok(()), operation)
+        .map_err(MountLifecycleError::Native)
 }
 
 impl<A, O, D, S> LazyMount<A, O, D, S> {
@@ -283,10 +295,10 @@ where
     /// Returns a typed conflict or storage failure without changing the
     /// mounted generation.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
-        self.source
-            .advance_to_head_async()
-            .await
-            .map_err(MountLifecycleError::Source)
+        let advanced = self.source.advance_to_head_async().await;
+        // Even a failed advance may have moved part of the view.
+        revalidate_session(&self.session)?;
+        advanced.map_err(MountLifecycleError::Source)
     }
 
     /// Publishes all pending effects on the source's dedicated callback runtime.
@@ -379,10 +391,10 @@ where
 
     /// Advances an already-clean checkout to workspace head.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
-        self.source
-            .advance_to_head_async()
-            .await
-            .map_err(MountLifecycleError::Source)
+        let advanced = self.source.advance_to_head_async().await;
+        // Even a failed advance may have moved part of the view.
+        revalidate_session(&self.session)?;
+        advanced.map_err(MountLifecycleError::Source)
     }
 
     /// Publishes pending effects on the source callback runtime.

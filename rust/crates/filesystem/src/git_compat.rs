@@ -221,10 +221,8 @@ pub struct GitCommit {
     /// `tree` when newly ignored paths are omitted from compatibility history.
     pub workspace_tree: GitTreeRef,
     /// SDK-verified fork origin when the Git-visible tree is a filtered fork.
-    #[serde(default)]
     pub capture_proof: Option<GitCaptureProof>,
     /// Exact portable paths represented by this compatibility snapshot.
-    #[serde(default)]
     pub tracked_paths: BTreeSet<String>,
     /// Ordered compatibility parents.
     pub parents: Vec<GitCommitId>,
@@ -374,7 +372,6 @@ pub struct GitBranch {
     /// Last explicit compatibility commit, or unborn.
     pub head: Option<GitCommitId>,
     /// Paths represented by this branch's latest explicit commit.
-    #[serde(default)]
     pub tracked_paths: BTreeSet<String>,
 }
 
@@ -465,7 +462,6 @@ pub struct GitCompatState {
     /// Cross-repository parents introduced by direct child publication.
     /// These identities are explicit graph boundaries, never silently missing
     /// local records.
-    #[serde(default)]
     pub external_parents: BTreeSet<GitCommitId>,
     /// Lightweight tags.
     pub tags: BTreeMap<String, GitCommitId>,
@@ -473,19 +469,9 @@ pub struct GitCompatState {
     pub reflog: Vec<Option<GitCommitId>>,
     /// Stashed exact generations, newest last.
     pub stash: Vec<GitTreeRef>,
-    /// Version-five migration source. New state keeps tracking information on
-    /// each branch and never serializes this empty compatibility field.
-    #[serde(
-        default,
-        rename = "tracked_paths",
-        skip_serializing_if = "BTreeSet::is_empty"
-    )]
-    pub legacy_tracked_paths: BTreeSet<String>,
     /// Durable sequencer transition prepared before filesystem side effects.
-    #[serde(default)]
     pub pending: Option<GitPendingTransition>,
     /// Active first-parent bisection, if any.
-    #[serde(default)]
     pub bisect: Option<GitBisectState>,
 }
 
@@ -514,7 +500,6 @@ impl GitCompatState {
             tags: BTreeMap::new(),
             reflog: Vec::new(),
             stash: Vec::new(),
-            legacy_tracked_paths: BTreeSet::new(),
             pending: None,
             bisect: None,
         }
@@ -1864,23 +1849,12 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     async fn load(&self) -> Result<GitCompatState, GitCompatError<S::Error>> {
-        let mut state = self
+        let state = self
             .store
             .load(self.workspace_id)
             .await
             .map_err(GitCompatError::Store)?
             .unwrap_or_else(|| GitCompatState::new("main", self.workspace_id));
-        if !(1..=STATE_VERSION).contains(&state.version) || state.current().is_err() {
-            return Err(GitCompatError::InvalidState);
-        }
-        if state.version < 6 && !state.legacy_tracked_paths.is_empty() {
-            let migrated = std::mem::take(&mut state.legacy_tracked_paths);
-            state
-                .current_mut()
-                .map_err(|_| GitCompatError::InvalidState)?
-                .tracked_paths = migrated;
-        }
-        state.version = STATE_VERSION;
         validate_git_state(&state).map_err(|()| GitCompatError::InvalidState)?;
         Ok(state)
     }
@@ -1960,7 +1934,6 @@ fn validate_git_state(state: &GitCompatState) -> Result<(), ()> {
     if state.version != STATE_VERSION
         || state.branches.is_empty()
         || !state.branches.contains_key(&state.current_branch)
-        || !state.legacy_tracked_paths.is_empty()
     {
         return Err(());
     }
@@ -6364,6 +6337,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "local")]
     #[tokio::test]
     async fn incremental_capture_applies_only_changed_eligible_paths() {
         let fs = Fs::memory();

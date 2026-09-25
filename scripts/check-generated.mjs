@@ -35,7 +35,6 @@ try {
     throw new Error("native/WASM fixture is not bound into the Harness suite");
   }
 
-  const descriptor = join(temporary, "filesystem.bin");
   const executable = join(root, "node_modules", ".bin", process.platform === "win32" ? "buf.exe" : "buf");
   const objectsGenerated = spawnSync(
     executable,
@@ -47,38 +46,34 @@ try {
     process.stderr.write(objectsGenerated.stderr ?? "");
     throw new Error(`Objects generation failed with status ${objectsGenerated.status ?? "unknown"}`);
   }
-  for (const relative of ["objects/v1/objects_pb.js", "objects/v1/objects_pb.d.ts"]) {
+  for (const relative of [
+    "objects/v1/objects_pb.js",
+    "objects/v1/objects_pb.d.ts",
+    "machines/v1/machines_pb.js",
+    "machines/v1/machines_pb.d.ts",
+  ]) {
     const fresh = readFileSync(join(temporary, "generated/typescript", relative));
     const committed = readFileSync(join(root, "generated/typescript", relative));
-    if (!fresh.equals(committed)) throw new Error(`generated Objects TypeScript drift: ${relative}`);
+    if (!fresh.equals(committed)) throw new Error(`generated TypeScript drift: ${relative}`);
   }
-  const built = spawnSync(executable, ["build", "--path", "proto/filesystem", "-o", descriptor], {
-    cwd: root,
-    encoding: "utf8",
-  });
-  if (built.status !== 0) {
-    process.stderr.write(built.stdout ?? "");
-    process.stderr.write(built.stderr ?? "");
-    throw new Error(`buf build failed with status ${built.status ?? "unknown"}`);
-  }
-  const committed = join(root, "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin");
-  if (!readFileSync(descriptor).equals(readFileSync(committed))) {
-    throw new Error("filesystem descriptor is stale; run bun run generate");
-  }
-
-  const objectsDescriptor = join(temporary, "objects.bin");
-  const objectsBuilt = spawnSync(executable, ["build", "--path", "proto/objects", "-o", objectsDescriptor], {
-    cwd: root,
-    encoding: "utf8",
-  });
-  if (objectsBuilt.status !== 0) {
-    process.stderr.write(objectsBuilt.stdout ?? "");
-    process.stderr.write(objectsBuilt.stderr ?? "");
-    throw new Error(`buf build failed with status ${objectsBuilt.status ?? "unknown"}`);
-  }
-  const committedObjects = join(root, "rust/crates/objects/src/generated/acyclic-objects-v1.bin");
-  if (!readFileSync(objectsDescriptor).equals(readFileSync(committedObjects))) {
-    throw new Error("objects descriptor is stale; run bun run generate");
+  for (const [family, proto, committed] of [
+    ["filesystem", "proto/filesystem", "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin"],
+    ["objects", "proto/objects", "rust/crates/objects/src/generated/acyclic-objects-v1.bin"],
+    ["machines", "proto/machines", "rust/crates/machines/src/generated/acyclic-machines-v1.bin"],
+  ]) {
+    const descriptor = join(temporary, `${family}.bin`);
+    const built = spawnSync(executable, ["build", "--path", proto, "-o", descriptor], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    if (built.status !== 0) {
+      process.stderr.write(built.stdout ?? "");
+      process.stderr.write(built.stderr ?? "");
+      throw new Error(`buf build failed with status ${built.status ?? "unknown"}`);
+    }
+    if (!readFileSync(descriptor).equals(readFileSync(join(root, committed)))) {
+      throw new Error(`${family} descriptor is stale; run bun run generate`);
+    }
   }
 
   for (const relative of [

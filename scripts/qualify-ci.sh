@@ -274,6 +274,7 @@ case "$lane" in
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    node scripts/clippy-feature-sets.mjs
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     archive="$TOOLS_DIR/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz"
     if [[ ! -f "$archive" ]]; then
@@ -290,6 +291,12 @@ case "$lane" in
     ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
+    # The host clippy run cannot see code that only the browser build
+    # compiles or omits, so lint each browser build as it ships.
+    cargo clippy -p acyclic-fs-wasm --target wasm32-unknown-unknown \
+      --all-targets --all-features --locked -- -D warnings
+    cargo clippy -p acyclic-harness --no-default-features --features wasm \
+      --target wasm32-unknown-unknown --locked -- -D warnings
     if [[ "$(wasm-bindgen-test-runner --version 2>/dev/null)" != "wasm-bindgen-test-runner 0.2.117" ]]; then
       # The pinned release archive avoids compiling wasm-bindgen-cli on a cold cache.
       archive="$TOOLS_DIR/wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz"
@@ -307,6 +314,13 @@ case "$lane" in
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     GECKODRIVER="$(command -v geckodriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
+    # The shipped browser package end to end in headless Chrome: one tab, then
+    # concurrent tabs sharing one database.
+    source scripts/ensure-bun.sh
+    bun install --frozen-lockfile
+    bun run --filter '@acyclic-labs/fs' build
+    CHROME="$(command -v google-chrome || command -v chromium)" \
+      bun run --filter '@acyclic-labs/fs' test:browser
     ;;
   linux-arm64)
     if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \

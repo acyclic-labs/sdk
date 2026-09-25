@@ -23,7 +23,9 @@ typedef struct {
     uid_t       uid;            /* Owner UID (for access control) */
     gid_t       gid;            /* Owner GID */
     struct dfuse_inode_table_s  *inode_table;  /* dynamic inode table */
-    atomic_uint_fast64_t namespace_change; /* conservative directory change id */
+    atomic_uint_fast64_t namespace_change; /* READDIR continuation revision */
+    atomic_uint_fast64_t fresh_change;     /* counter behind unlabeled change values */
+    int durable_writes;        /* FUSE_CAP_DURABLE_WRITES was negotiated */
     uint8_t write_verifier[8]; /* unique per mount, including in-process remounts */
 } darwinfuse_config_t;
 
@@ -31,12 +33,14 @@ typedef struct {
 typedef struct darwinfuse_server darwinfuse_server_t;
 
 /*
- * Create and bind the TCP server on 127.0.0.1 with an ephemeral port.
- * On success, sets *port to the bound port number and returns the server.
+ * Create the server listening on a local socket in a fresh private
+ * directory; only the kernel's NFS client may connect.
  * On failure, returns NULL.
  */
-darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config,
-                                         uint16_t *port);
+darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config);
+
+/* The listening socket's path, for mount_nfs's "<path>:/" server spec. */
+const char *nfs4_server_socket_path(const darwinfuse_server_t *srv);
 
 /*
  * Run the NFS event loop. Blocks until the server is stopped
@@ -102,6 +106,9 @@ void nfs4_server_set_multithreaded(darwinfuse_server_t *srv, int num_threads);
  * Should be called after ops->init() returns.
  */
 void nfs4_server_set_private_data(darwinfuse_server_t *srv, void *private_data);
+
+/* Record whether init() negotiated FUSE_CAP_DURABLE_WRITES. */
+void nfs4_server_set_durable_writes(darwinfuse_server_t *srv, int durable);
 
 /* Invalidate outstanding READDIR cookie verifiers after an external change. */
 void nfs4_server_mark_namespace_changed(darwinfuse_server_t *srv);

@@ -1954,7 +1954,6 @@ mod tests {
             lineage_receipt_sha256,
             egress_bytes: 0,
             receipt: vec![1],
-            ..Default::default()
         };
         assert!(decode_usage_receipt(receipt(vec![7; 32]), machine, 1, 2).is_ok());
         assert!(decode_usage_receipt(receipt(Vec::new()), machine, 1, 2).is_err());

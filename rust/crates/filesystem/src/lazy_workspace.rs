@@ -9,8 +9,7 @@ use crate::demand::{
     SourceReference, SourceVersion,
 };
 use crate::kernel::{
-    FileKind, FileMetadata, FilePayload, FileRecord, LogicalName, MetadataField, NameEncoding,
-    NamespacePath,
+    FileKind, FileMetadata, FilePayload, FileRecord, LogicalName, MetadataField, NamespacePath,
 };
 use crate::model::VolumeConfig;
 use crate::path::PortablePath;
@@ -118,7 +117,6 @@ impl LazyOverlayId {
 
 /// Durable constant-size binding for one sparse workspace.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "LazyWorkspaceStateRecord")]
 pub struct LazyWorkspaceState {
     /// Serialization schema.
     pub schema_version: u32,
@@ -210,79 +208,6 @@ pub enum PendingLazyRemoveKind {
         /// The checkout publication whose result decides this overlay.
         idempotency_key: IdempotencyKey,
     },
-}
-
-/// Schema 5 (released in 0.1.0) differs only in its pending-removal layout.
-const LAZY_STATE_SCHEMA_V5: u32 = 5;
-
-#[derive(Deserialize)]
-struct LazyWorkspaceStateRecord {
-    schema_version: u32,
-    revision: u64,
-    workspace_id: WorkspaceId,
-    parent_workspace_id: Option<WorkspaceId>,
-    source: SourceReference,
-    overlay: LazyOverlayId,
-    shadows: LazyShadowId,
-    pending_remove: Option<PendingLazyRemoveRecord>,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum PendingLazyRemoveRecord {
-    Current(PendingLazyRemove),
-    V5 {
-        prior_overlay: LazyOverlayId,
-        tombstone_overlay: LazyOverlayId,
-        kind: PendingLazyRemoveKind,
-    },
-}
-
-impl TryFrom<LazyWorkspaceStateRecord> for LazyWorkspaceState {
-    type Error = &'static str;
-
-    fn try_from(record: LazyWorkspaceStateRecord) -> Result<Self, Self::Error> {
-        let (schema_version, pending_remove) = match (record.schema_version, record.pending_remove)
-        {
-            (LAZY_STATE_SCHEMA_V5, None) => (LAZY_STATE_SCHEMA, None),
-            // Schema 5 prepared shadows in place and never rolled them back, so
-            // the current shadows are exactly what its recovery would keep.
-            (
-                LAZY_STATE_SCHEMA_V5,
-                Some(PendingLazyRemoveRecord::V5 {
-                    prior_overlay,
-                    tombstone_overlay,
-                    kind,
-                }),
-            ) => (
-                LAZY_STATE_SCHEMA,
-                Some(PendingLazyRemove {
-                    prior_overlay,
-                    prior_shadows: record.shadows,
-                    prepared_overlay: tombstone_overlay,
-                    kind,
-                }),
-            ),
-            (LAZY_STATE_SCHEMA_V5, Some(PendingLazyRemoveRecord::Current(_))) => {
-                return Err("schema 5 lazy state has a current pending removal");
-            }
-            (schema, None) => (schema, None),
-            (schema, Some(PendingLazyRemoveRecord::Current(pending))) => (schema, Some(pending)),
-            (_, Some(PendingLazyRemoveRecord::V5 { .. })) => {
-                return Err("lazy state has a schema 5 pending removal");
-            }
-        };
-        Ok(Self {
-            schema_version,
-            revision: record.revision,
-            workspace_id: record.workspace_id,
-            parent_workspace_id: record.parent_workspace_id,
-            source: record.source,
-            overlay: record.overlay,
-            shadows: record.shadows,
-            pending_remove,
-        })
-    }
 }
 
 /// One immutable node in the persistent source-knowledge index.
@@ -820,6 +745,19 @@ impl<S: LazyWorkspaceStore> ImmutableTreap for ShadowTreap<'_, S> {
     }
 }
 
+/// Facts an inspection's caller already established, so it need not repeat them.
+#[derive(Clone, Copy, Default)]
+struct InspectBasis<'a> {
+    /// State the caller read; otherwise the current state is loaded.
+    state: Option<&'a LazyWorkspaceState>,
+    /// The caller's authored view already lacks the path.
+    authored_absent: bool,
+    /// Node a listing observed for the path after excluding tombstones.
+    listed: Option<SourceNode>,
+    /// Keep an observation pinned to an earlier source epoch.
+    retain_pinned_observation: bool,
+}
+
 /// A source-backed workspace whose unresolved paths remain outside its authored generation.
 pub struct LazyWorkspace<A, O, D, S> {
     workspace: Workspace<A, O>,
@@ -971,6 +909,8 @@ pub struct LazyDirectoryEntry {
     pub kind: SourceNodeKind,
     /// Whether the authored checkout overrides the source.
     pub authored: bool,
+    /// The source node observed while listing, for entries the source supplies.
+    pub source: Option<SourceNode>,
 }
 
 /// Opaque bounded continuation for a merged source/authored directory scan.
@@ -1173,6 +1113,28 @@ where
         };
         lazy.recover_pending_remove().await?;
         Ok(lazy)
+    }
+
+    /// Reopens `workspace`'s binding, or binds it to `source` afresh when no
+    /// binding is durable.
+    ///
+    /// A binding is absent only when its attach never became durable. Every
+    /// later change to the workspace's binding is ordered after the attach, so
+    /// nothing durable was built on a lost one and binding afresh is exact.
+    pub async fn open_or_attach(
+        workspace: Workspace<A, O>,
+        source: Arc<D>,
+        store: S,
+    ) -> Result<Self, LazyWorkspaceError> {
+        if store
+            .load_lazy_workspace(workspace.id())
+            .await
+            .map_err(store_error)?
+            .is_none()
+        {
+            return Self::attach_workspace(workspace, source, store).await;
+        }
+        Self::open(workspace, source, store).await
     }
 
     /// Reopens an existing sparse workspace without demanding source state.
@@ -1519,17 +1481,6 @@ where
             .map(|receipt| receipt.value.lookup)
     }
 
-    #[cfg(all(feature = "native-mount", not(unix)))]
-    pub(crate) async fn lookup_resolved(
-        &self,
-        path: &str,
-    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.lookup_measured(path, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| (receipt.value.lookup, receipt.value.source))
-    }
-
     async fn lookup_measured(
         &self,
         path: &str,
@@ -1607,24 +1558,13 @@ where
             .map(|receipt| receipt.value.lookup)
     }
 
-    #[cfg(any(unix, test))]
-    pub(crate) async fn inspect_resolved(
-        &self,
-        path: &str,
-    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.inspect_measured(path, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map(|receipt| (receipt.value.lookup, receipt.value.source))
-    }
-
     async fn inspect_measured(
         &self,
         path: &str,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        self.inspect_with_observation_policy(path, budget, cancellation, false, false)
+        self.inspect_with(path, InspectBasis::default(), budget, cancellation)
             .await
     }
 
@@ -1634,8 +1574,11 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        self.inspect_with_observation_policy(path, budget, cancellation, true, false)
-            .await
+        let basis = InspectBasis {
+            retain_pinned_observation: true,
+            ..InspectBasis::default()
+        };
+        self.inspect_with(path, basis, budget, cancellation).await
     }
 
     async fn inspect_snapshot_after_authored_absence(
@@ -1644,19 +1587,158 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        self.inspect_with_observation_policy(path, budget, cancellation, true, true)
-            .await
+        let basis = InspectBasis {
+            retain_pinned_observation: true,
+            authored_absent: true,
+            ..InspectBasis::default()
+        };
+        self.inspect_with(path, basis, budget, cancellation).await
     }
 
-    async fn inspect_with_observation_policy(
+    /// Resolves `path` for a mount whose own checkout already lacks it.
+    ///
+    /// The mount's checkout, not the published head, is its authored view, so
+    /// the head is not consulted again. `state` pins the snapshot a directory
+    /// page was listed against; otherwise the current state is read.
+    #[cfg(any(feature = "native-mount", test))]
+    pub(crate) async fn inspect_unauthored(
         &self,
         path: &str,
+        state: Option<&LazyWorkspaceState>,
+    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
+        let basis = InspectBasis {
+            state,
+            authored_absent: true,
+            ..InspectBasis::default()
+        };
+        self.inspect_with(
+            path,
+            basis,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| (receipt.value.lookup, receipt.value.source))
+    }
+
+    /// The source view lookups currently resolve in.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn source_reference(&self) -> SourceReference {
+        self.source.reference()
+    }
+
+    /// What the source itself names at `path` in the view `source`, read
+    /// afresh and bypassing the overlay.
+    #[cfg(feature = "native-mount")]
+    pub(crate) async fn source_lookup(
+        &self,
+        source: SourceReference,
+        path: &str,
+    ) -> Result<Option<SourceNode>, LazyWorkspaceError> {
+        self.source
+            .lookup(
+                source,
+                &self.namespace_path(path)?,
+                &CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| LazyWorkspaceError::from(failure.error))
+    }
+
+    /// Resolves a source entry of a page listed against `state`, reusing the
+    /// node the listing observed. The listing already excluded tombstoned and
+    /// authored names, so neither the source nor the tombstones are consulted.
+    #[cfg(feature = "native-mount")]
+    pub(crate) async fn inspect_listed(
+        &self,
+        state: &LazyWorkspaceState,
+        path: &str,
+        node: SourceNode,
+    ) -> Result<LazyLookup, LazyWorkspaceError> {
+        let basis = InspectBasis {
+            state: Some(state),
+            authored_absent: true,
+            listed: Some(node),
+            ..InspectBasis::default()
+        };
+        self.inspect_with(
+            path,
+            basis,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value.lookup)
+    }
+
+    /// The source node `path` names in `state`: a pinned observation, the node
+    /// a listing supplied, or a fresh source lookup, never a tombstoned path.
+    async fn source_node_in(
+        &self,
+        state: &LazyWorkspaceState,
+        path: &str,
+        basis: InspectBasis<'_>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-        retain_pinned_observation: bool,
-        authored_absent: bool,
+    ) -> Result<OperationReceipt<(SourceReference, SourceNode)>, LazyWorkspaceError> {
+        let fact = self
+            .overlay_fact_measured(state.overlay, path, budget, cancellation)
+            .await?;
+        let mut work = fact.work;
+        let observed = match fact.value {
+            Some(LazyOverlayChange::Tombstone) => return Err(LazyWorkspaceError::NotFound),
+            Some(LazyOverlayChange::Observe { source, node })
+                if basis.retain_pinned_observation || source == state.source =>
+            {
+                Some((source, node))
+            }
+            Some(LazyOverlayChange::Observe { .. }) | None => None,
+        };
+        let (source, node) = if let Some(observed) = observed {
+            observed
+        } else if let Some(node) = basis.listed {
+            (state.source, node)
+        } else {
+            let receipt = self
+                .source
+                .lookup(state.source, &self.namespace_path(path)?, cancellation)
+                .await
+                .map_err(|failure| LazyWorkspaceError::from(failure.error))?;
+            work = account_work(work, receipt.work, budget)?;
+            (
+                state.source,
+                receipt.value.ok_or(LazyWorkspaceError::NotFound)?,
+            )
+        };
+        if basis.listed.is_none() {
+            let tombstoned = self
+                .tombstoned_measured(
+                    state.overlay,
+                    path,
+                    remaining_work(work, budget)?,
+                    cancellation,
+                )
+                .await?;
+            work = account_work(work, tombstoned.work, budget)?;
+            if tombstoned.value {
+                return Err(LazyWorkspaceError::NotFound);
+            }
+        }
+        Ok(OperationReceipt {
+            value: (source, node),
+            work,
+        })
+    }
+
+    async fn inspect_with(
+        &self,
+        path: &str,
+        basis: InspectBasis<'_>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        let authored = if authored_absent {
+        let authored = if basis.authored_absent {
             OperationReceipt {
                 value: None,
                 work: WorkCounters::default(),
@@ -1680,55 +1762,26 @@ where
                 work,
             });
         }
-        let state_receipt = self
-            .state_measured(remaining_work(work, budget)?, cancellation)
-            .await?;
-        work = account_work(work, state_receipt.work, budget)?;
-        let state = state_receipt.value;
-        let fact = self
-            .overlay_fact_measured(
-                state.overlay,
-                path,
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await?;
-        work = account_work(work, fact.work, budget)?;
-        let observed = match fact.value {
-            Some(LazyOverlayChange::Tombstone) => return Err(LazyWorkspaceError::NotFound),
-            Some(LazyOverlayChange::Observe { source, node })
-                if retain_pinned_observation || source == state.source =>
-            {
-                Some((source, node))
-            }
-            Some(LazyOverlayChange::Observe { .. }) | None => None,
-        };
-        let (source, node) = if let Some(observed) = observed {
-            observed
+        let state = if let Some(state) = basis.state {
+            state.clone()
         } else {
             let receipt = self
-                .source
-                .lookup(state.source, &self.namespace_path(path)?, cancellation)
-                .await
-                .map_err(|failure| LazyWorkspaceError::from(failure.error))?;
+                .state_measured(remaining_work(work, budget)?, cancellation)
+                .await?;
             work = account_work(work, receipt.work, budget)?;
-            (
-                state.source,
-                receipt.value.ok_or(LazyWorkspaceError::NotFound)?,
-            )
+            receipt.value
         };
-        let tombstoned = self
-            .tombstoned_measured(
-                state.overlay,
+        let resolved = self
+            .source_node_in(
+                &state,
                 path,
+                basis,
                 remaining_work(work, budget)?,
                 cancellation,
             )
             .await?;
-        work = account_work(work, tombstoned.work, budget)?;
-        if tombstoned.value {
-            return Err(LazyWorkspaceError::NotFound);
-        }
+        work = account_work(work, resolved.work, budget)?;
+        let (source, node) = resolved.value;
         let authored = self
             .authored_alias_measured(&node, remaining_work(work, budget)?, cancellation)
             .await?;
@@ -1776,7 +1829,10 @@ where
         }
     }
 
-    #[cfg(any(feature = "native-mount", test))]
+    #[cfg(any(
+        feature = "native-mount",
+        all(test, feature = "native-watch", not(target_arch = "wasm32"))
+    ))]
     pub(crate) async fn stable_file_id_for_lookup(
         &self,
         path: &str,
@@ -1820,25 +1876,36 @@ where
         }
         let file_id = self.source_file_id(node);
         let state = self.state_measured(budget, cancellation).await?;
-        let generation = self
+        // A source that does not count links cannot rule an alias out, but
+        // an identity the head's file table does not hold has no name there.
+        let head = self
             .workspace
-            .head_measured(remaining_work(state.work, budget)?, cancellation)
-            .await
-            .map_err(workspace_error)?;
-        let mut work = account_work(state.work, generation.work, budget)?;
-        let state = state.value;
-        let paths = generation
-            .value
-            .paths_for_file_id_measured(
+            .head_with_file_record_measured(
                 file_id,
-                u32::MAX,
-                remaining_work(work, budget)?,
+                remaining_work(state.work, budget)?,
                 cancellation,
             )
             .await
             .map_err(workspace_error)?;
-        work = account_work(work, paths.work, budget)?;
-        if let Some(path) = paths.value.into_iter().next() {
+        let mut work = account_work(state.work, head.work, budget)?;
+        let state = state.value;
+        let (generation, held) = head.value;
+        let path = if held {
+            let paths = generation
+                .paths_for_file_id_measured(
+                    file_id,
+                    u32::MAX,
+                    remaining_work(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(workspace_error)?;
+            work = account_work(work, paths.work, budget)?;
+            paths.value.into_iter().next()
+        } else {
+            None
+        };
+        if let Some(path) = path {
             let stat = self
                 .workspace
                 .stat_optional_measured(&path, remaining_work(work, budget)?, cancellation)
@@ -1889,25 +1956,23 @@ where
             .map(|receipt| receipt.value)
     }
 
-    #[cfg(any(unix, test))]
-    pub(crate) async fn read_source_range(
+    /// Opens the inspected regular source file for repeated reads, each of
+    /// which proves `node` is still the file's current version.
+    #[cfg(any(feature = "native-mount", test))]
+    pub(crate) async fn open_source_file(
         &self,
         path: &str,
         source: SourceReference,
         node: SourceNode,
-        offset: u64,
-        length: u64,
-    ) -> Result<Bytes, LazyWorkspaceError> {
+    ) -> Result<Box<dyn crate::demand::DemandFile>, LazyWorkspaceError> {
         if node.kind != SourceNodeKind::RegularFile {
             return Err(LazyWorkspaceError::NotRegularFile);
         }
         self.source
-            .read_range(
+            .open_file(
                 source,
                 &self.namespace_path(path)?,
                 node.version,
-                offset,
-                length,
                 &CancellationToken::new(),
             )
             .await
@@ -2772,6 +2837,9 @@ where
     /// Reads the same merged sparse directory against an unpublished mounted
     /// checkout candidate instead of the workspace's last committed head.
     #[cfg(feature = "native-mount")]
+    ///
+    /// Returns the state the page was listed against, so callers resolve its
+    /// entries with [`Self::inspect_unauthored`] from the same snapshot.
     pub(crate) async fn list_directory_in_checkout(
         &self,
         checkout: &mut crate::Checkout<A, O>,
@@ -2779,19 +2847,23 @@ where
         cursor: Option<LazyDirectoryCursor>,
         maximum_entries: u32,
         mounted_mask: Option<(&[String], bool)>,
-    ) -> Result<LazyDirectoryPage, LazyWorkspaceError> {
+    ) -> Result<(LazyDirectoryPage, LazyWorkspaceState), LazyWorkspaceError> {
         let cancellation = CancellationToken::new();
-        self.list_directory_measured(
-            path,
-            cursor,
-            maximum_entries,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            Some(checkout),
-            mounted_mask,
-        )
-        .await
-        .map(|receipt| receipt.value)
+        let state = { self.state().await? };
+        let page = self
+            .list_directory_at(
+                &state,
+                WorkCounters::default(),
+                path,
+                cursor,
+                maximum_entries,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                Some(checkout),
+                mounted_mask,
+            )
+            .await?;
+        Ok((page.value, state))
     }
 
     /// A mounted replacement must not inherit entries from an unrelated
@@ -2835,13 +2907,41 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn list_directory_measured(
+        &self,
+        path: &str,
+        cursor: Option<LazyDirectoryCursor>,
+        maximum_entries: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+        mounted: Option<&mut crate::Checkout<A, O>>,
+        mounted_mask: Option<(&[String], bool)>,
+    ) -> Result<OperationReceipt<LazyDirectoryPage>, LazyWorkspaceError> {
+        let state = self.state_measured(budget, cancellation).await?;
+        self.list_directory_at(
+            &state.value,
+            state.work,
+            path,
+            cursor,
+            maximum_entries,
+            budget,
+            cancellation,
+            mounted,
+            mounted_mask,
+        )
+        .await
+    }
+
     #[allow(
         clippy::too_many_lines,
         clippy::too_many_arguments,
         clippy::cognitive_complexity
     )]
-    async fn list_directory_measured(
+    async fn list_directory_at(
         &self,
+        state: &LazyWorkspaceState,
+        mut work: WorkCounters,
         path: &str,
         cursor: Option<LazyDirectoryCursor>,
         maximum_entries: u32,
@@ -2853,9 +2953,6 @@ where
         if maximum_entries == 0 {
             return Err(LazyWorkspaceError::InvalidPageBound);
         }
-        let state = self.state_measured(budget, cancellation).await?;
-        let mut work = state.work;
-        let state = state.value;
         let directory = self.namespace_path(path)?;
         let mut phase = match cursor {
             Some(cursor)
@@ -3109,8 +3206,9 @@ where
                         }
                         entries.push(LazyDirectoryEntry {
                             name: entry.name,
-                            kind: entry.kind,
+                            kind: entry.node.kind,
                             authored: false,
+                            source: Some(entry.node),
                         });
                     }
                     let next = Some(LazyDirectoryCursor {
@@ -4579,24 +4677,13 @@ fn authored_entry(entry: WorkspaceDirectoryEntry) -> LazyDirectoryEntry {
         name: entry.name,
         kind: source_kind(entry.kind),
         authored: true,
+        source: None,
     }
 }
 
-fn logical_child_path(parent: &str, name: &LogicalName) -> Option<String> {
-    let component = match name.encoding() {
-        NameEncoding::Utf8 | NameEncoding::PosixBytes => {
-            std::str::from_utf8(name.as_bytes()).ok()?.to_owned()
-        }
-        NameEncoding::WindowsUtf16Le => {
-            let units = name
-                .as_bytes()
-                .chunks_exact(2)
-                .filter_map(|pair| pair.try_into().ok().map(u16::from_le_bytes));
-            char::decode_utf16(units)
-                .collect::<Result<String, _>>()
-                .ok()?
-        }
-    };
+/// Joins `name`, decoded by its declared encoding, onto a portable parent path.
+pub(crate) fn logical_child_path(parent: &str, name: &LogicalName) -> Option<String> {
+    let component = name.unicode_text()?;
     Some(if parent == "/" {
         format!("/{component}")
     } else {
@@ -4916,11 +5003,13 @@ fn exactify_batch_key(snapshot_id: LazySnapshotId, root: &str, index: u64) -> Id
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
+
     use super::*;
     use crate::demand::{
-        DemandResult, SourceCursor, SourceDirectoryEntry, SourceDirectoryPage, SourceMetadata,
-        SourceVersion,
+        DemandFile, DemandResult, SourceCursor, SourceDirectoryEntry, SourceDirectoryPage,
+        SourceMetadata, SourceVersion,
     };
+    use crate::kernel::NameEncoding;
     use crate::performance::{OperationFailure, OperationReceipt, WorkCounters};
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -4991,6 +5080,25 @@ mod tests {
                 .insert(epoch, bytes);
         }
 
+        fn pinned(
+            &self,
+            source: SourceReference,
+            expected: SourceVersion,
+        ) -> Result<Bytes, OperationFailure<DemandError>> {
+            let Some(node) = self.versioned_node(source) else {
+                return Err(OperationFailure::before_work(DemandError::StaleSource));
+            };
+            if expected != node.version {
+                return Err(OperationFailure::before_work(DemandError::StaleVersion));
+            }
+            self.versions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&source.epoch)
+                .cloned()
+                .ok_or_else(|| OperationFailure::before_work(DemandError::StaleSource))
+        }
+
         fn versioned_node(&self, source: SourceReference) -> Option<SourceNode> {
             if source.identity != self.identity {
                 return None;
@@ -5016,8 +5124,29 @@ mod tests {
             self.cancel_on_page.store(true, Ordering::Relaxed);
         }
 
+        #[cfg(feature = "native-mount")]
         fn cancel_next_range(&self) {
             self.cancel_on_range.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// One source version's bytes, pinned when the file was opened.
+    struct PinnedFile(Bytes);
+
+    impl DemandFile for PinnedFile {
+        fn read_range(
+            &self,
+            offset: u64,
+            length: u64,
+            _cancellation: &CancellationToken,
+        ) -> DemandResult<Bytes> {
+            let start = usize::try_from(offset)
+                .unwrap_or(usize::MAX)
+                .min(self.0.len());
+            let end = start
+                .saturating_add(usize::try_from(length).unwrap_or(usize::MAX))
+                .min(self.0.len());
+            CountingSource::receipt(self.0.slice(start..end))
         }
     }
 
@@ -5056,17 +5185,17 @@ mod tests {
                 cancellation.cancel();
                 return Err(OperationFailure::before_work(DemandError::Cancelled));
             }
-            if self.versioned_node(source).is_none() {
-                return Err(OperationFailure::before_work(DemandError::StaleSource));
-            }
             if cursor.is_some() {
                 return Err(OperationFailure::before_work(DemandError::StaleCursor));
             }
+            let Some(node) = self.versioned_node(source) else {
+                return Err(OperationFailure::before_work(DemandError::StaleSource));
+            };
             let entries = if self.directory_entries == 1 {
                 vec![SourceDirectoryEntry {
                     name: LogicalName::new(NameEncoding::Utf8, b"file.txt".to_vec(), 255)
                         .expect("name"),
-                    kind: SourceNodeKind::RegularFile,
+                    node,
                 }]
             } else {
                 (0..self.directory_entries)
@@ -5077,7 +5206,7 @@ mod tests {
                             255,
                         )
                         .expect("name"),
-                        kind: SourceNodeKind::RegularFile,
+                        node,
                     })
                     .collect()
             };
@@ -5101,26 +5230,17 @@ mod tests {
             if self.cancel_on_range.swap(false, Ordering::Relaxed) {
                 cancellation.cancel();
             }
-            let Some(node) = self.versioned_node(source) else {
-                return Err(OperationFailure::before_work(DemandError::StaleSource));
-            };
-            if expected != node.version {
-                return Err(OperationFailure::before_work(DemandError::StaleVersion));
-            }
-            let versions = self
-                .versions
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let bytes = versions
-                .get(&source.epoch)
-                .ok_or_else(|| OperationFailure::before_work(DemandError::StaleSource))?;
-            let start = usize::try_from(offset)
-                .unwrap_or(usize::MAX)
-                .min(bytes.len());
-            let end = start
-                .saturating_add(usize::try_from(length).unwrap_or(usize::MAX))
-                .min(bytes.len());
-            Self::receipt(bytes.slice(start..end))
+            PinnedFile(self.pinned(source, expected)?).read_range(offset, length, cancellation)
+        }
+
+        async fn open_file(
+            &self,
+            source: SourceReference,
+            _path: &NamespacePath,
+            expected: SourceVersion,
+            _cancellation: &CancellationToken,
+        ) -> DemandResult<Box<dyn DemandFile>> {
+            Self::receipt(Box::new(PinnedFile(self.pinned(source, expected)?)))
         }
 
         async fn read_link(
@@ -5611,12 +5731,14 @@ mod tests {
         let source_page = root
             .list_directory_in_checkout(&mut checkout, "/", None, 16, None)
             .await
+            .map(|(page, _)| page)
             .expect("source page");
         assert_eq!(source_page.entries.len(), 1);
         assert!(!source_page.entries[0].authored);
         let authored_page = root
             .list_directory_in_checkout(&mut checkout, "/", source_page.next, 16, None)
             .await
+            .map(|(page, _)| page)
             .expect("authored page");
         assert_eq!(authored_page.entries.len(), 1);
         assert!(authored_page.entries[0].authored);
@@ -5667,6 +5789,7 @@ mod tests {
             root.list_directory_in_checkout(&mut checkout, "/d", None, 16, None)
                 .await
                 .expect("source directory")
+                .0
                 .entries
                 .len(),
             1
@@ -5685,6 +5808,7 @@ mod tests {
         let page = root
             .list_directory_in_checkout(&mut checkout, "/d", None, 16, None)
             .await
+            .map(|(page, _)| page)
             .expect("replacement directory");
         assert!(page.entries.is_empty());
         assert!(page.next.is_none());
@@ -5824,7 +5948,7 @@ mod tests {
         let before = root.state().await.expect("state before inspection");
 
         let (lookup, source_reference) = root
-            .inspect_resolved("/file.txt")
+            .inspect_unauthored("/file.txt", None)
             .await
             .expect("inspect source file");
         let LazyLookup::Source(node) = lookup else {
@@ -5834,15 +5958,16 @@ mod tests {
 
         source.replace(Bytes::from_static(b"after"));
         assert_eq!(
-            root.read_source_range(
+            root.open_source_file(
                 "/file.txt",
                 source_reference.expect("source reference"),
                 node,
-                0,
-                6,
             )
             .await
-            .expect("read pinned version"),
+            .expect("open pinned version")
+            .read_range(0, 6, &CancellationToken::new())
+            .expect("read pinned version")
+            .value,
             Bytes::from_static(b"before")
         );
 
@@ -6703,86 +6828,6 @@ mod tests {
         assert_eq!(after.shadows, before.shadows);
         assert!(after.pending_remove.is_none());
         assert!(root.stat("/directory").await.expect("directory").authored);
-    }
-
-    #[tokio::test]
-    async fn open_migrates_released_schema_five_state() {
-        let fs = Fs::memory();
-        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
-        let store = MemoryLazyWorkspaceStore::default();
-        let root = LazyWorkspace::attach(&fs, "root", Arc::clone(&source), store.clone())
-            .await
-            .expect("attach");
-        root.write("/file.txt", Bytes::from_static(b"authored"))
-            .await
-            .expect("write");
-        let prior = root.state().await.expect("state");
-        let mut idle = serde_json::to_value(&prior).expect("encode");
-        idle["schema_version"] = LAZY_STATE_SCHEMA_V5.into();
-        assert_eq!(
-            serde_json::from_value::<LazyWorkspaceState>(idle).expect("idle schema 5"),
-            prior
-        );
-
-        let LazyLookup::Authored { stat, .. } = root.lookup("/file.txt").await.expect("authored")
-        else {
-            panic!("expected authored file");
-        };
-        let record = root
-            .workspace()
-            .record_by_id(stat.file_id)
-            .await
-            .expect("authored record");
-        let staged_shadows = root
-            .insert_shadow(prior.shadows, stat.file_id, record, stat.metadata)
-            .await
-            .expect("staged identity shadow");
-        let tombstone = root
-            .insert_overlay(
-                prior.overlay,
-                "/file.txt".to_owned(),
-                LazyOverlayChange::Tombstone,
-            )
-            .await
-            .expect("tombstone");
-        let mut pending = serde_json::to_value(LazyWorkspaceState {
-            revision: prior.revision + 1,
-            overlay: tombstone,
-            shadows: staged_shadows,
-            pending_remove: None,
-            ..prior.clone()
-        })
-        .expect("encode");
-        pending["schema_version"] = LAZY_STATE_SCHEMA_V5.into();
-        pending["pending_remove"] = serde_json::json!({
-            "path": "/file.txt",
-            "prior_overlay": prior.overlay,
-            "tombstone_overlay": tombstone,
-            "kind": PendingLazyRemoveKind::Authored {
-                idempotency_key: IdempotencyKey::from_bytes([0x35; 16]),
-            },
-        });
-        let pending = serde_json::from_value::<LazyWorkspaceState>(pending).expect("schema 5");
-        assert!(
-            store
-                .compare_and_swap_lazy_workspace(root.workspace().id(), prior.revision, pending)
-                .await
-                .expect("prepare")
-        );
-
-        let reopened = LazyWorkspace::open(
-            fs.open_workspace("root").await.expect("workspace"),
-            source,
-            store,
-        )
-        .await
-        .expect("reopen migrated state");
-        let recovered = reopened.state().await.expect("recovered state");
-        assert_eq!(recovered.schema_version, LAZY_STATE_SCHEMA);
-        assert_eq!(recovered.overlay, prior.overlay);
-        assert_eq!(recovered.shadows, staged_shadows);
-        assert!(recovered.pending_remove.is_none());
-        assert!(reopened.stat("/file.txt").await.expect("file").authored);
     }
 
     #[tokio::test]

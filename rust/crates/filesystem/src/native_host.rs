@@ -3,17 +3,17 @@
 
 use cap_fs_ext::DirExt as _;
 use cap_std::fs::{Dir, Metadata, OpenOptions, Permissions, ReadDir};
-#[cfg(unix)]
-use std::ffi::OsStr;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::path::Path;
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 use windows::Win32::Storage::FileSystem::FILE_BASIC_INFO;
 
 #[cfg(target_os = "linux")]
 #[derive(Debug, thiserror::Error)]
+#[cfg(any(feature = "native-mount", test))]
 pub(crate) enum LinuxMetadataError {
     #[error("Linux native metadata cannot represent {0}")]
     Unsupported(&'static str),
@@ -22,11 +22,13 @@ pub(crate) enum LinuxMetadataError {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(any(feature = "native-mount", test))]
 pub(crate) struct LinuxMetadataTarget {
     inode: std::os::fd::OwnedFd,
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum WindowsMetadataError {
     #[error("Windows native metadata cannot represent {0}")]
@@ -37,12 +39,14 @@ pub(crate) enum WindowsMetadataError {
 
 /// A no-follow leaf handle pinned before metadata work is deferred.
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 pub(crate) struct WindowsMetadataTarget {
     file: cap_std::fs::File,
 }
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, thiserror::Error)]
+#[cfg(any(feature = "native-mount", test))]
 pub(crate) enum MacMetadataError {
     #[error("macOS native metadata cannot represent {0}")]
     Unsupported(&'static str),
@@ -52,6 +56,7 @@ pub(crate) enum MacMetadataError {
 
 /// An exact, no-follow target pinned before metadata work is deferred.
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 pub(crate) enum MacMetadataTarget {
     Held(File),
     Noop {
@@ -66,6 +71,323 @@ pub(crate) enum MacMetadataTarget {
 pub struct HostDataRange {
     pub offset: u64,
     pub length: u64,
+}
+
+/// One object's kind, size, times, and identity, read without following its
+/// name's final link.
+#[cfg(not(windows))]
+pub type HostStat = Metadata;
+
+/// One object's kind, size, times, attributes, and identity, read without
+/// following its name's final link. These are exactly the facts an NTFS
+/// directory index records for each name, so one enumeration reports them
+/// for a whole directory; a link count is not among them.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug)]
+pub struct HostStat {
+    file_type: cap_std::fs::FileType,
+    len: u64,
+    attributes: u32,
+    creation_time: u64,
+    last_access_time: u64,
+    last_write_time: u64,
+    volume_serial_number: Option<u32>,
+    file_index: Option<u64>,
+}
+
+#[cfg(windows)]
+impl HostStat {
+    pub fn from_metadata(metadata: &Metadata) -> Self {
+        use cap_primitives::fs::_WindowsByHandle;
+        use cap_std::fs::MetadataExt;
+        Self {
+            file_type: metadata.file_type(),
+            len: metadata.len(),
+            attributes: MetadataExt::file_attributes(metadata),
+            creation_time: metadata.creation_time(),
+            last_access_time: metadata.last_access_time(),
+            last_write_time: metadata.last_write_time(),
+            volume_serial_number: _WindowsByHandle::volume_serial_number(metadata),
+            file_index: _WindowsByHandle::file_index(metadata),
+        }
+    }
+
+    pub fn from_file(file: &File) -> io::Result<Self> {
+        Metadata::from_file(file).map(|metadata| Self::from_metadata(&metadata))
+    }
+
+    #[must_use]
+    pub const fn file_type(&self) -> cap_std::fs::FileType {
+        self.file_type
+    }
+
+    #[must_use]
+    pub fn is_dir(&self) -> bool {
+        self.file_type.is_dir()
+    }
+
+    #[must_use]
+    #[allow(
+        clippy::len_without_is_empty,
+        reason = "mirrors Metadata::len: the byte length of the named object"
+    )]
+    pub const fn len(&self) -> u64 {
+        self.len
+    }
+
+    #[must_use]
+    pub const fn file_attributes(&self) -> u32 {
+        self.attributes
+    }
+
+    #[must_use]
+    pub const fn creation_time(&self) -> u64 {
+        self.creation_time
+    }
+
+    #[must_use]
+    pub const fn last_write_time(&self) -> u64 {
+        self.last_write_time
+    }
+
+    #[must_use]
+    pub const fn volume_serial_number(&self) -> Option<u32> {
+        self.volume_serial_number
+    }
+
+    #[must_use]
+    pub const fn file_index(&self) -> Option<u64> {
+        self.file_index
+    }
+
+    pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
+        Ok(windows_time(self.creation_time))
+    }
+
+    pub fn modified(&self) -> io::Result<cap_std::time::SystemTime> {
+        Ok(windows_time(self.last_write_time))
+    }
+
+    pub fn accessed(&self) -> io::Result<cap_std::time::SystemTime> {
+        Ok(windows_time(self.last_access_time))
+    }
+}
+
+/// The instant one `FILETIME` names, as the standard library reads it.
+#[cfg(windows)]
+fn windows_time(ticks: u64) -> cap_std::time::SystemTime {
+    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    let since = |ticks: u64| std::time::Duration::from_nanos(ticks.saturating_mul(100));
+    cap_std::time::SystemTime::from_std(if ticks >= UNIX_EPOCH_TICKS {
+        std::time::UNIX_EPOCH + since(ticks - UNIX_EPOCH_TICKS)
+    } else {
+        std::time::UNIX_EPOCH - since(UNIX_EPOCH_TICKS - ticks)
+    })
+}
+
+/// One enumerated name with its facts. `stat` is `None` when enumeration
+/// cannot report the facts exactly as [`HostRoot::stat`] would, and the name
+/// must be stat'ed on its own.
+pub struct HostListedEntry {
+    pub name: OsString,
+    pub stat: Option<HostStat>,
+}
+
+/// The names of one held directory, each with its facts, read relative to
+/// the directory itself so no entry costs a path walk.
+#[cfg(not(windows))]
+pub struct HostStatReader(ReadDir);
+
+#[cfg(not(windows))]
+impl Iterator for HostStatReader {
+    type Item = io::Result<HostListedEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let entry = match self.0.next()? {
+            Ok(entry) => entry,
+            Err(error) => return Some(Err(error)),
+        };
+        // One no-follow stat relative to the held directory descriptor.
+        let stat = match entry.metadata() {
+            Ok(stat) => Some(stat),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(Ok(HostListedEntry {
+            name: entry.file_name(),
+            stat,
+        }))
+    }
+}
+
+/// The names of one held directory, each with the facts its index records,
+/// read one buffer of entries per kernel call.
+#[cfg(windows)]
+pub struct HostStatReader {
+    directory: Dir,
+    volume_serial_number: Option<u32>,
+    /// `u64` storage keeps every entry record 8-byte aligned.
+    buffer: Vec<u64>,
+    /// Byte offset of the next unread record in `buffer`, if any.
+    next: Option<usize>,
+    exhausted: bool,
+}
+
+#[cfg(windows)]
+impl HostStatReader {
+    const BUFFER_BYTES: usize = 64 * 1024;
+
+    /// Reads the next buffer of records; `false` once none remain.
+    #[allow(unsafe_code)]
+    fn refill(&mut self) -> io::Result<bool> {
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+        use windows::Win32::Foundation::{ERROR_NO_MORE_FILES, HANDLE};
+        use windows::Win32::Storage::FileSystem::{
+            FileIdExtdDirectoryInfo, GetFileInformationByHandleEx,
+        };
+
+        if self.exhausted {
+            return Ok(false);
+        }
+        let bytes = u32::try_from(self.buffer.len() * std::mem::size_of::<u64>())
+            .map_err(|_| io::Error::other("enumeration buffer size"))?;
+        // SAFETY: the held directory handle and the owned buffer outlive this
+        // synchronous call, and `bytes` is exactly the buffer's length.
+        let result = unsafe {
+            GetFileInformationByHandleEx(
+                HANDLE(self.directory.as_handle().as_raw_handle()),
+                FileIdExtdDirectoryInfo,
+                self.buffer.as_mut_ptr().cast(),
+                bytes,
+            )
+        };
+        match result {
+            Ok(()) => {
+                self.next = Some(0);
+                Ok(true)
+            }
+            Err(error)
+                if error.code() == windows::core::HRESULT::from_win32(ERROR_NO_MORE_FILES.0) =>
+            {
+                self.exhausted = true;
+                Ok(false)
+            }
+            Err(error) => Err(io::Error::from_raw_os_error(error.code().0 & 0xffff)),
+        }
+    }
+
+    /// Decodes the record at `offset` and advances past it.
+    #[allow(unsafe_code)]
+    fn take(&mut self, offset: usize) -> io::Result<Option<HostListedEntry>> {
+        use std::mem::{offset_of, size_of};
+        use std::os::windows::ffi::OsStringExt as _;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO,
+        };
+
+        let total = self.buffer.len() * size_of::<u64>();
+        let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed directory record");
+        let name_offset = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
+        if !offset.is_multiple_of(std::mem::align_of::<FILE_ID_EXTD_DIR_INFO>())
+            || offset
+                .checked_add(name_offset)
+                .is_none_or(|end| end > total)
+        {
+            return Err(malformed());
+        }
+        // SAFETY: the record's fixed part lies within the buffer and is
+        // aligned, as just checked; the kernel initialized it.
+        let record = unsafe {
+            &*self
+                .buffer
+                .as_ptr()
+                .cast::<u8>()
+                .add(offset)
+                .cast::<FILE_ID_EXTD_DIR_INFO>()
+        };
+        let name_bytes = usize::try_from(record.FileNameLength).map_err(|_| malformed())?;
+        let name_start = offset + name_offset;
+        if !name_bytes.is_multiple_of(2)
+            || name_start
+                .checked_add(name_bytes)
+                .is_none_or(|end| end > total)
+        {
+            return Err(malformed());
+        }
+        let step = usize::try_from(record.NextEntryOffset).map_err(|_| malformed())?;
+        self.next = (step != 0).then_some(offset + step);
+        // SAFETY: the name's UTF-16 units lie within the buffer, as checked,
+        // and a record's name is 2-byte aligned after its aligned fixed part.
+        let name = unsafe {
+            std::slice::from_raw_parts(
+                self.buffer
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(name_start)
+                    .cast::<u16>(),
+                name_bytes / 2,
+            )
+        };
+        let dot = u16::from(b'.');
+        if name == [dot] || name == [dot, dot] {
+            return Ok(None);
+        }
+        let name = OsString::from_wide(name);
+        let (index, high) = record.FileId.Identifier.split_at(8);
+        let file_index = u64::from_le_bytes(index.try_into().map_err(|_| malformed())?);
+        // A reparse point is resolved only by the held walk, and an identity
+        // wider than 64 bits has no exact counterpart in a handle query.
+        let stat = (record.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0
+            && record.ReparsePointTag == 0
+            && high.iter().all(|byte| *byte == 0))
+        .then(|| {
+            let unsigned = |value: i64| u64::try_from(value).map_err(|_| malformed());
+            Ok::<_, io::Error>(HostStat {
+                file_type: if record.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+                    cap_std::fs::FileType::dir()
+                } else {
+                    cap_std::fs::FileType::file()
+                },
+                len: unsigned(record.EndOfFile)?,
+                attributes: record.FileAttributes,
+                creation_time: unsigned(record.CreationTime)?,
+                last_access_time: unsigned(record.LastAccessTime)?,
+                last_write_time: unsigned(record.LastWriteTime)?,
+                volume_serial_number: self.volume_serial_number,
+                file_index: Some(file_index),
+            })
+        })
+        .transpose()?;
+        Ok(Some(HostListedEntry { name, stat }))
+    }
+}
+
+#[cfg(windows)]
+impl Iterator for HostStatReader {
+    type Item = io::Result<HostListedEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let Some(offset) = self.next.take() else {
+                match self.refill() {
+                    Ok(true) => continue,
+                    Ok(false) => return None,
+                    Err(error) => {
+                        self.exhausted = true;
+                        return Some(Err(error));
+                    }
+                }
+            };
+            match self.take(offset) {
+                Ok(Some(entry)) => return Some(Ok(entry)),
+                Ok(None) => {}
+                Err(error) => {
+                    self.exhausted = true;
+                    return Some(Err(error));
+                }
+            }
+        }
+    }
 }
 
 /// A held directory capability whose relative operations cannot escape through
@@ -171,6 +493,7 @@ fn held_parent_leaf(root: &Dir, path: &Path) -> io::Result<(Dir, std::ffi::CStri
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
+#[cfg(any(feature = "native-mount", test))]
 impl LinuxMetadataTarget {
     fn open(root: &Dir, path: &Path) -> io::Result<Self> {
         use std::os::fd::{AsRawFd as _, FromRawFd as _};
@@ -287,13 +610,16 @@ impl LinuxMetadataTarget {
 #[cfg(target_os = "linux")]
 #[cfg(target_arch = "aarch64")]
 // libc does not expose SYS_fchmodat2 on aarch64 yet; asm-generic/unistd.h does.
+#[cfg(any(feature = "native-mount", test))]
 const LINUX_FCHMODAT2_SYSCALL: libc::c_long = 452;
 
 #[cfg(target_os = "linux")]
 #[cfg(not(target_arch = "aarch64"))]
+#[cfg(any(feature = "native-mount", test))]
 const LINUX_FCHMODAT2_SYSCALL: libc::c_long = libc::SYS_fchmodat2;
 
 #[cfg(target_os = "linux")]
+#[cfg(any(feature = "native-mount", test))]
 fn validate_linux_metadata(
     observed: libc::stat,
     metadata: crate::kernel::FileMetadata,
@@ -348,6 +674,7 @@ fn validate_linux_metadata(
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
+#[cfg(any(feature = "native-mount", test))]
 fn linux_require_fchmodat2() -> Result<(), LinuxMetadataError> {
     // An invalid descriptor makes the capability probe non-mutating. A kernel
     // with fchmodat2 and AT_EMPTY_PATH support returns EBADF; an older kernel
@@ -374,6 +701,7 @@ fn linux_require_fchmodat2() -> Result<(), LinuxMetadataError> {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(any(feature = "native-mount", test))]
 fn verify_linux_metadata(
     observed: libc::stat,
     metadata: crate::kernel::FileMetadata,
@@ -409,6 +737,7 @@ fn verify_linux_metadata(
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(any(feature = "native-mount", test))]
 fn linux_time_spec(
     field: crate::kernel::MetadataField<i64>,
 ) -> Result<libc::timespec, LinuxMetadataError> {
@@ -427,6 +756,7 @@ fn linux_time_spec(
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(any(feature = "native-mount", test))]
 fn linux_observed_ns(seconds: i64, nanos: i64) -> Result<i64, LinuxMetadataError> {
     seconds
         .checked_mul(1_000_000_000)
@@ -457,6 +787,22 @@ impl HostRoot {
         self.identity
     }
 
+    /// Whether this root's filesystem is local. A network or user-space
+    /// filesystem can stall a request indefinitely, so only local host I/O
+    /// may block a native callback thread that must answer within its
+    /// timeout. A filesystem that cannot be classified counts as remote.
+    pub(crate) fn is_local(&self) -> bool {
+        filesystem_is_local(&self.directory)
+    }
+
+    /// The held root directory's handle, for volume queries that must be
+    /// bound to exactly this root.
+    #[cfg(windows)]
+    pub(crate) fn directory_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        use std::os::windows::io::AsHandle as _;
+        self.directory.as_handle()
+    }
+
     pub fn is_empty(&self) -> io::Result<bool> {
         Ok(self.directory.entries()?.next().is_none())
     }
@@ -466,6 +812,34 @@ impl HostRoot {
             self.directory.entries()
         } else {
             self.directory.read_dir(path)
+        }
+    }
+
+    /// Enumerates the directory at `path`, reached without following any
+    /// link, with each entry's facts as [`Self::stat`] reports them, or with
+    /// `None` where only a separate stat of that name can report them.
+    pub fn read_dir_stats(&self, path: &Path) -> io::Result<HostStatReader> {
+        #[cfg(windows)]
+        {
+            // An enumeration's position belongs to the open file object, which
+            // a duplicated handle shares, so each listing opens its own.
+            let directory = if path.as_os_str().is_empty() {
+                self.directory.open_dir(Path::new("."))?
+            } else {
+                self.open_dir_held(path)?
+            };
+            Ok(HostStatReader {
+                directory,
+                // A path without reparse points never leaves the root's volume.
+                volume_serial_number: u32::try_from(self.identity.device).ok(),
+                buffer: vec![0; HostStatReader::BUFFER_BYTES / std::mem::size_of::<u64>()],
+                next: None,
+                exhausted: false,
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            self.open_dir_held(path)?.entries().map(HostStatReader)
         }
     }
 
@@ -529,6 +903,124 @@ impl HostRoot {
         } else {
             self.directory.symlink_metadata(path)
         }
+    }
+
+    /// Stats `path` without following its final link, as
+    /// [`Self::symlink_metadata`] does.
+    #[cfg(not(windows))]
+    pub fn stat(&self, path: &Path) -> io::Result<HostStat> {
+        self.symlink_metadata(path)
+    }
+
+    /// Stats `path` without following its final link, as
+    /// [`Self::symlink_metadata`] does. A path free of reparse points is
+    /// answered by one kernel query against the held root, without opening
+    /// a handle per component; any reparse point on it takes the held walk.
+    #[cfg(windows)]
+    pub fn stat(&self, path: &Path) -> io::Result<HostStat> {
+        match self.stat_by_name(path)? {
+            Some(stat) => Ok(stat),
+            None => self
+                .symlink_metadata(path)
+                .map(|metadata| HostStat::from_metadata(&metadata)),
+        }
+    }
+
+    /// One `FileStatInformation` query naming `path` relative to the held
+    /// root. `None` when the path names the root itself or crosses or ends
+    /// in any reparse point, which only the held walk may resolve.
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    fn stat_by_name(&self, path: &Path) -> io::Result<Option<HostStat>> {
+        use std::os::windows::ffi::OsStrExt as _;
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+        use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_STAT_INFORMATION, FileStatInformation, NtQueryInformationByName,
+        };
+        use windows::Win32::Foundation::{
+            HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError,
+            UNICODE_STRING,
+        };
+        use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
+        use windows::Win32::System::IO::IO_STATUS_BLOCK;
+        const REPARSE_POINT_ENCOUNTERED: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
+
+        let mut name = Vec::new();
+        for component in path.components() {
+            let std::path::Component::Normal(component) = component else {
+                return Ok(None);
+            };
+            if !name.is_empty() {
+                name.push(u16::from(b'\\'));
+            }
+            name.extend(component.encode_wide());
+        }
+        let Ok(length) = u16::try_from(name.len() * 2) else {
+            return Ok(None);
+        };
+        if length == 0 {
+            return Ok(None);
+        }
+        let name = UNICODE_STRING {
+            Length: length,
+            MaximumLength: length,
+            Buffer: windows::core::PWSTR(name.as_mut_ptr()),
+        };
+        let attributes = OBJECT_ATTRIBUTES {
+            Length: u32::try_from(std::mem::size_of::<OBJECT_ATTRIBUTES>())
+                .map_err(|_| io::Error::other("object attributes size"))?,
+            RootDirectory: HANDLE(self.directory.as_handle().as_raw_handle()),
+            ObjectName: &raw const name,
+            // Win32 names are case-insensitive unless the directory says
+            // otherwise; no reparse point may redirect the query.
+            Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+            ..OBJECT_ATTRIBUTES::default()
+        };
+        let mut status_block = IO_STATUS_BLOCK::default();
+        let mut information = FILE_STAT_INFORMATION::default();
+        // SAFETY: every pointer names a live, correctly sized value for this
+        // synchronous query, and the held root handle outlives it.
+        let status = unsafe {
+            NtQueryInformationByName(
+                &raw const attributes,
+                &raw mut status_block,
+                (&raw mut information).cast(),
+                u32::try_from(std::mem::size_of::<FILE_STAT_INFORMATION>())
+                    .map_err(|_| io::Error::other("stat information size"))?,
+                FileStatInformation,
+            )
+        };
+        if status == REPARSE_POINT_ENCOUNTERED {
+            return Ok(None);
+        }
+        if status.is_err() {
+            // SAFETY: a pure status-code translation.
+            let code = unsafe { RtlNtStatusToDosError(status) };
+            return Err(io::Error::from_raw_os_error(
+                i32::try_from(code).map_err(|_| io::Error::other("unmapped stat status"))?,
+            ));
+        }
+        if information.ReparseTag != 0 {
+            return Ok(None);
+        }
+        let unsigned =
+            |value: i64| u64::try_from(value).map_err(|_| io::Error::other("negative stat field"));
+        Ok(Some(HostStat {
+            file_type: if information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+                cap_std::fs::FileType::dir()
+            } else {
+                cap_std::fs::FileType::file()
+            },
+            len: unsigned(information.EndOfFile)?,
+            attributes: information.FileAttributes,
+            creation_time: unsigned(information.CreationTime)?,
+            last_access_time: unsigned(information.LastAccessTime)?,
+            last_write_time: unsigned(information.LastWriteTime)?,
+            // A path without reparse points never leaves the root's volume.
+            volume_serial_number: u32::try_from(self.identity.device).ok(),
+            file_index: Some(unsigned(information.FileId)?),
+        }))
     }
 
     /// Reads leaf metadata while refusing every intermediate link or reparse point.
@@ -745,9 +1237,14 @@ impl HostRoot {
 
     /// Copies one pinned regular source into a new file using `ReFS` block
     /// cloning when available, then owned-buffer overlapped I/O otherwise.
-    /// The caller must keep the source immutable and reserve the destination
-    /// name for this copy; this byte primitive does not capture SDK lineage or
-    /// preserve multi-file hard-link topology.
+    /// The caller must keep the source immutable; the copy fails rather than
+    /// replace an existing destination. This byte primitive does not capture
+    /// SDK lineage or preserve multi-file hard-link topology.
+    ///
+    /// The destination name only ever holds the complete copy: bytes are
+    /// written under a private staging name beside it and renamed into place
+    /// once complete, so a failed or cancelled copy leaves the destination
+    /// exactly as absent as it was.
     #[cfg(windows)]
     pub async fn copy_file_from(
         &self,
@@ -759,29 +1256,47 @@ impl HostRoot {
             directory: source_root.directory.try_clone()?,
             identity: source_root.identity,
         };
-        let destination_root = HostRoot {
-            directory: self.directory.try_clone()?,
+        let (parent, name) = open_windows_parent(&self.directory, destination)?;
+        let name = name.to_os_string();
+        let staging_root = HostRoot {
+            directory: parent,
             identity: self.identity,
         };
+        let staged = staging_name();
         let source = source.to_path_buf();
-        let destination = destination.to_path_buf();
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        // The detached owner drains admitted kernel I/O before removing a
-        // partial output even when its awaiting caller is cancelled.
+        // The detached owner drains admitted kernel I/O before discarding the
+        // staged bytes even when its awaiting caller is cancelled.
         tokio::spawn(async move {
             let mut created = false;
-            let result = copy_windows_file_worker(
+            let mut result = copy_windows_file_worker(
                 &source_root,
                 &source,
-                &destination_root,
-                &destination,
+                &staging_root,
+                &staged,
                 &sender,
                 &mut created,
             )
             .await;
-            if created && (result.is_err() || sender.is_closed()) {
-                let root = destination_root.directory.try_clone();
-                let path = destination.clone();
+            if result.is_ok() {
+                result = if sender.is_closed() {
+                    Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"))
+                } else {
+                    let parent = staging_root.directory.try_clone();
+                    let staged = staged.clone();
+                    match parent {
+                        Ok(parent) => acyclic_native_runtime::run_blocking_io(move || {
+                            publish_windows_file(&parent, &staged, &name)
+                        })
+                        .await
+                        .and_then(|published| published),
+                        Err(error) => Err(error),
+                    }
+                };
+            }
+            if created && result.is_err() {
+                let root = staging_root.directory.try_clone();
+                let path = staged.clone();
                 if let Ok(root) = root {
                     let _ =
                         acyclic_native_runtime::run_blocking_io(move || root.remove_file(&path))
@@ -812,6 +1327,7 @@ impl HostRoot {
 
     /// Pins one ordinary macOS inode before an offloaded metadata mutation.
     #[cfg(target_os = "macos")]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn open_macos_metadata_target(
         &self,
         path: &Path,
@@ -822,6 +1338,7 @@ impl HostRoot {
     /// Binds metadata restoration to the current inode before deferred I/O.
     /// A later rename or path replacement cannot redirect the mutation.
     #[cfg(target_os = "linux")]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn open_linux_metadata_target(
         &self,
         path: &Path,
@@ -831,6 +1348,7 @@ impl HostRoot {
 
     /// Pins the exact Windows leaf before metadata restoration is deferred.
     #[cfg(windows)]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn open_windows_metadata_target(
         &self,
         path: &Path,
@@ -878,6 +1396,7 @@ impl HostRoot {
 
     #[cfg(unix)]
     #[allow(unsafe_code)]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn create_fifo_held(&self, path: &Path, mode: u32) -> io::Result<()> {
         use std::os::fd::AsRawFd as _;
 
@@ -898,6 +1417,7 @@ impl HostRoot {
         clippy::useless_conversion,
         reason = "libc file-type constants differ in width between Linux and macOS"
     )]
+    #[cfg(any(feature = "native-mount", all(test, target_os = "macos")))]
     pub(crate) fn create_device_held(
         &self,
         path: &Path,
@@ -939,6 +1459,7 @@ impl HostRoot {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 fn open_macos_metadata_target(
     root: &Dir,
     path: &Path,
@@ -991,6 +1512,7 @@ fn open_macos_metadata_target(
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
+#[cfg(any(feature = "native-mount", test))]
 impl MacMetadataTarget {
     /// Applies representable metadata to the held inode and reads it back.
     /// Canonical ctime requires a durable native-view baseline first.
@@ -1068,6 +1590,7 @@ impl MacMetadataTarget {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 fn validate_macos_metadata_fields(
     metadata: crate::kernel::FileMetadata,
 ) -> Result<(), MacMetadataError> {
@@ -1105,6 +1628,7 @@ fn validate_macos_metadata_fields(
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
+#[cfg(any(feature = "native-mount", test))]
 fn apply_macos_timestamp_metadata(
     fd: libc::c_int,
     metadata: crate::kernel::FileMetadata,
@@ -1162,11 +1686,13 @@ fn apply_macos_timestamp_metadata(
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 fn macos_mismatch<T: Copy + Eq>(field: crate::kernel::MetadataField<T>, observed: T) -> bool {
     matches!(field, crate::kernel::MetadataField::Value(expected) if expected != observed)
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 fn macos_timespec(value: i64) -> libc::timespec {
     libc::timespec {
         tv_sec: value.div_euclid(1_000_000_000),
@@ -1175,6 +1701,7 @@ fn macos_timespec(value: i64) -> libc::timespec {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(any(feature = "native-mount", test))]
 fn macos_nanos(seconds: libc::time_t, nanoseconds: libc::c_long) -> Option<i64> {
     let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanoseconds);
     i64::try_from(nanos).ok()
@@ -1182,6 +1709,7 @@ fn macos_nanos(seconds: libc::time_t, nanoseconds: libc::c_long) -> Option<i64> 
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
+#[cfg(any(feature = "native-mount", test))]
 fn macos_fstat(fd: std::os::fd::RawFd) -> io::Result<libc::stat> {
     let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
     // SAFETY: fstat initializes the whole result on success.
@@ -1192,6 +1720,7 @@ fn macos_fstat(fd: std::os::fd::RawFd) -> io::Result<libc::stat> {
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 impl WindowsMetadataTarget {
     fn open(directory: &Dir, path: &Path) -> io::Result<Self> {
         use cap_std::fs::OpenOptionsExt as _;
@@ -1230,6 +1759,7 @@ impl WindowsMetadataTarget {
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 fn reject_unsupported_windows_metadata(
     metadata: crate::kernel::FileMetadata,
 ) -> Result<(), WindowsMetadataError> {
@@ -1269,6 +1799,7 @@ fn reject_unsupported_windows_metadata(
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 fn desired_windows_basic_info(
     metadata: crate::kernel::FileMetadata,
     current: FILE_BASIC_INFO,
@@ -1320,6 +1851,7 @@ fn desired_windows_basic_info(
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 fn verify_windows_basic_info(
     metadata: crate::kernel::FileMetadata,
     desired: FILE_BASIC_INFO,
@@ -1365,6 +1897,7 @@ fn verify_windows_basic_info(
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 #[allow(unsafe_code)]
 fn query_windows_basic_info(file: &cap_std::fs::File) -> io::Result<FILE_BASIC_INFO> {
     use std::mem::size_of;
@@ -1389,6 +1922,7 @@ fn query_windows_basic_info(file: &cap_std::fs::File) -> io::Result<FILE_BASIC_I
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 #[allow(unsafe_code)]
 fn set_windows_basic_info(
     file: &cap_std::fs::File,
@@ -1422,6 +1956,14 @@ fn open_windows_metadata_file(
     if path.as_os_str().is_empty() {
         return root.open_with(Path::new("."), options);
     }
+    let (parent, name) = open_windows_parent(root, path)?;
+    parent.open_with(Path::new(name), options)
+}
+
+/// Opens the directory holding `path`'s leaf without following any
+/// intermediate link, and returns it with that leaf name.
+#[cfg(windows)]
+fn open_windows_parent<'a>(root: &Dir, path: &'a Path) -> io::Result<(Dir, &'a OsStr)> {
     let mut parent = root.try_clone()?;
     let mut components = path.components().peekable();
     while let Some(component) = components.next() {
@@ -1432,13 +1974,84 @@ fn open_windows_metadata_file(
             ));
         };
         if components.peek().is_none() {
-            return parent.open_with(Path::new(name), options);
+            return Ok((parent, name));
         }
         parent = parent.open_dir_nofollow(name)?;
     }
     Err(io::Error::new(
         io::ErrorKind::InvalidInput,
         "metadata path has no leaf",
+    ))
+}
+
+/// Gives a completed file its final name within one directory, failing
+/// rather than replacing an existing entry. The name changes atomically, so
+/// no reader of `name` can observe the file before it is complete, and the
+/// target is named relative to the held directory, never re-resolved by path.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn publish_windows_file(parent: &Dir, staged: &Path, name: &OsStr) -> io::Result<()> {
+    use cap_std::fs::OpenOptionsExt as _;
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    use windows::Wdk::Storage::FileSystem::{
+        FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
+    };
+    use windows::Win32::Foundation::{HANDLE, RtlNtStatusToDosError};
+    use windows::Win32::Storage::FileSystem::{DELETE, FILE_FLAG_OPEN_REPARSE_POINT};
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let mut options = OpenOptions::new();
+    options
+        .access_mode(DELETE.0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0);
+    let staged = parent.open_with(staged, &options)?;
+    let name = name.encode_wide().collect::<Vec<_>>();
+    let overflow = || io::Error::other("rename information overflow");
+    let name_bytes = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(overflow)?;
+    let name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
+    let total = name_offset
+        .checked_add(name_bytes)
+        .ok_or_else(overflow)?
+        .max(size_of::<FILE_RENAME_INFORMATION>());
+    // u64 storage satisfies FILE_RENAME_INFORMATION's alignment.
+    let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
+    let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: `storage` spans `total` bytes, aligned for the structure, with
+    // `name_bytes` after the name offset; nothing else aliases it.
+    unsafe {
+        (*information).Anonymous.ReplaceIfExists = false;
+        (*information).RootDirectory = HANDLE(parent.as_handle().as_raw_handle());
+        (*information).FileNameLength = u32::try_from(name_bytes).map_err(|_| overflow())?;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            information.cast::<u8>().add(name_offset).cast::<u16>(),
+            name.len(),
+        );
+    }
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: both handles, the status block, and the initialized information
+    // buffer outlive this synchronous call; the length is exactly the buffer's.
+    let status = unsafe {
+        NtSetInformationFile(
+            HANDLE(staged.as_handle().as_raw_handle()),
+            &raw mut status_block,
+            information.cast(),
+            u32::try_from(total).map_err(|_| overflow())?,
+            FileRenameInformation,
+        )
+    };
+    if status.is_ok() {
+        return Ok(());
+    }
+    // SAFETY: a pure status-code translation.
+    let code = unsafe { RtlNtStatusToDosError(status) };
+    Err(io::Error::from_raw_os_error(
+        i32::try_from(code).map_err(|_| io::Error::other("unmapped rename status"))?,
     ))
 }
 
@@ -1479,6 +2092,15 @@ fn create_windows_copy_target(root: &Dir, path: &Path, overlapped: bool) -> io::
     }
     open_windows_metadata_file(root, path, &options).map(cap_std::fs::File::into_std)
 }
+
+/// One private name no other writer uses, for bytes not yet published.
+#[cfg(windows)]
+fn staging_name() -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4().simple()))
+}
+
+#[cfg(windows)]
+const STAGING_PREFIX: &str = ".acyclic-copy-";
 
 #[cfg(windows)]
 async fn copy_windows_file_worker(
@@ -1575,6 +2197,7 @@ async fn copy_windows_file_worker(
 }
 
 #[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
 fn metadata_time(
     field: crate::kernel::MetadataField<i64>,
     current: i64,
@@ -1711,6 +2334,86 @@ fn bind_unix_socket_in(parent: &Dir, name: &OsStr) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Network, clustered, and user-space filesystems, by `statfs(2)` magic.
+#[cfg(target_os = "linux")]
+const REMOTE_FILESYSTEMS: [u64; 12] = [
+    0x6969,      // NFS
+    0x517b,      // SMB
+    0xff53_4d42, // CIFS
+    0xfe53_4d42, // SMB2
+    0x5346_414f, // AFS
+    0x00c3_6400, // Ceph
+    0x6573_5546, // FUSE
+    0x0102_1997, // 9P
+    0x564c,      // NCP
+    0x7375_7245, // Coda
+    0x0bd0_0bd0, // Lustre
+    0x4750_4653, // GPFS
+];
+
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+fn filesystem_is_local(directory: &Dir) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
+    if unsafe { libc::fstatfs(directory.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    // SAFETY: `fstatfs` succeeded and initialized the struct.
+    let kind = unsafe { stats.assume_init() }.f_type;
+    // libc models `f_type` as signed for glibc and unsigned for musl.
+    u64::try_from(kind).is_ok_and(|kind| !REMOTE_FILESYSTEMS.contains(&kind))
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn filesystem_is_local(directory: &Dir) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
+    if unsafe { libc::fstatfs(directory.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    // SAFETY: `fstatfs` succeeded and initialized the struct.
+    let flags = unsafe { stats.assume_init() }.f_flags;
+    u32::try_from(libc::MNT_LOCAL).is_ok_and(|local| flags & local != 0)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn filesystem_is_local(directory: &Dir) -> bool {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Wdk::Storage::FileSystem::{
+        FileFsDeviceInformation, NtQueryVolumeInformationFile,
+    };
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
+    /// The characteristic of a volume on a network redirector.
+    const FILE_REMOTE_DEVICE: u32 = 0x10;
+    // `FILE_FS_DEVICE_INFORMATION`: the device type, then characteristics.
+    let mut device = [0_u32; 2];
+    let mut status = IO_STATUS_BLOCK::default();
+    // SAFETY: the handle is live for the call, and the buffer is exactly one
+    // `FILE_FS_DEVICE_INFORMATION` of the length passed.
+    let queried = unsafe {
+        NtQueryVolumeInformationFile(
+            HANDLE(directory.as_raw_handle()),
+            &raw mut status,
+            device.as_mut_ptr().cast(),
+            8,
+            FileFsDeviceInformation,
+        )
+    };
+    let [_, characteristics] = device;
+    queried.is_ok() && characteristics & FILE_REMOTE_DEVICE == 0
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn filesystem_is_local(_directory: &Dir) -> bool {
+    false
 }
 
 /// Deallocates an already-zero range of a host file.
@@ -2373,6 +3076,17 @@ mod tests {
     use std::io::Read;
     use std::path::Path;
 
+    /// Only a local root may serve host I/O inline on a native callback
+    /// thread; every other stays bounded by the callback's timeout.
+    #[test]
+    fn a_local_root_is_classified_local() -> std::io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        assert!(HostRoot::open(temporary.path())?.is_local());
+        #[cfg(target_os = "linux")]
+        assert!(super::REMOTE_FILESYSTEMS.contains(&0x6969));
+        Ok(())
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn capability_reads_do_not_change_owned_access_times() -> std::io::Result<()> {
@@ -2688,30 +3402,164 @@ mod windows_clone_tests {
                 .await
         });
         let copy_path = destination_path.join("copy");
-        for _ in 0..200 {
-            if copy_path.exists() || task.is_finished() {
-                break;
+        let staged = || -> std::io::Result<bool> {
+            for entry in std::fs::read_dir(&destination_path)? {
+                if entry?
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(super::STAGING_PREFIX)
+                {
+                    return Ok(true);
+                }
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            Ok(false)
+        };
+        // Every observation of the destination name, before and after the
+        // cancellation, finds it absent or complete.
+        let absent_or_complete = || match std::fs::metadata(&copy_path) {
+            Ok(metadata) => assert_eq!(metadata.len(), length, "partial destination"),
+            // Windows briefly denies metadata access while the copier's
+            // handle on the just-renamed file closes; that observes nothing.
+            Err(error) => assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                ),
+                "{error}"
+            ),
+        };
+        while !staged()? && !task.is_finished() {
+            absent_or_complete();
+            tokio::task::yield_now().await;
         }
         task.abort();
         let _ = task.await;
-        for _ in 0..400 {
-            match std::fs::metadata(&copy_path) {
-                Ok(metadata) if metadata.len() == length => return Ok(()),
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                // Windows can briefly deny metadata access while a cancelled
-                // copy releases its handle. Keep polling instead of treating
-                // the transient sharing race as an incomplete copy.
-                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
-                Err(error) => return Err(error),
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        // The detached owner always finishes: it publishes the complete copy
+        // or removes the staged bytes, and then no staged name remains.
+        while staged()? {
+            absent_or_complete();
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        Err(std::io::Error::other(
-            "cancelled copy retained a partial output",
-        ))
+        absent_or_complete();
+        Ok(())
+    }
+
+    #[test]
+    fn by_name_and_listed_stats_report_exactly_what_a_handle_query_does() -> std::io::Result<()> {
+        use super::HostStat;
+
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("directory"))?;
+        std::fs::write(temporary.path().join("directory").join("file"), b"payload")?;
+        std::fs::hard_link(
+            temporary.path().join("directory").join("file"),
+            temporary.path().join("alias"),
+        )?;
+        let root = HostRoot::open(temporary.path())?;
+        let same = |fast: &HostStat, held: &HostStat| {
+            assert_eq!(fast.file_type(), held.file_type());
+            assert_eq!(fast.len(), held.len());
+            assert_eq!(fast.file_attributes(), held.file_attributes());
+            assert_eq!(fast.creation_time(), held.creation_time());
+            assert_eq!(fast.last_write_time(), held.last_write_time());
+            assert_eq!(fast.volume_serial_number(), held.volume_serial_number());
+            assert_eq!(fast.file_index(), held.file_index());
+            assert_eq!(fast.created()?, held.created()?);
+            assert_eq!(fast.modified()?, held.modified()?);
+            assert_eq!(fast.accessed()?, held.accessed()?);
+            Ok::<(), std::io::Error>(())
+        };
+        for path in [
+            Path::new("directory"),
+            Path::new("directory/file"),
+            Path::new("DIRECTORY/FILE"),
+        ] {
+            let fast = root
+                .stat_by_name(path)?
+                .ok_or_else(|| std::io::Error::other("a plain path is answered by name"))?;
+            let held = HostStat::from_metadata(&root.symlink_metadata(path)?);
+            same(&fast, &held)?;
+        }
+        // Every enumerated name carries exactly the facts its own stat
+        // reports, except a reparse point, which only its own stat resolves.
+        for directory in [Path::new(""), Path::new("directory")] {
+            let mut names = Vec::new();
+            for entry in root.read_dir_stats(directory)? {
+                let entry = entry?;
+                let path = directory.join(&entry.name);
+                let listed = entry.stat.ok_or_else(|| {
+                    std::io::Error::other("a plain entry is listed with its facts")
+                })?;
+                same(&listed, &root.stat(&path)?)?;
+                names.push(entry.name);
+            }
+            names.sort();
+            let expected: &[&str] = if directory.as_os_str().is_empty() {
+                &["alias", "directory"]
+            } else {
+                &["file"]
+            };
+            assert_eq!(names, expected);
+        }
+        assert_eq!(
+            root.stat(Path::new("directory/missing"))
+                .map_err(|error| error.kind())
+                .err(),
+            Some(std::io::ErrorKind::NotFound)
+        );
+        // Only the held walk may resolve a reparse point, final or not.
+        assert!(
+            root.stat_by_name(Path::new(""))
+                .map(|stat| stat.is_none())?
+        );
+        match std::os::windows::fs::symlink_dir(
+            temporary.path().join("directory"),
+            temporary.path().join("link"),
+        ) {
+            Ok(()) => {
+                assert!(root.stat_by_name(Path::new("link"))?.is_none());
+                assert!(root.stat_by_name(Path::new("link/file"))?.is_none());
+                assert!(root.stat(Path::new("link"))?.file_type().is_symlink());
+                let listed = root
+                    .read_dir_stats(Path::new(""))?
+                    .find(|entry| entry.as_ref().is_ok_and(|entry| entry.name == "link"))
+                    .ok_or_else(|| std::io::Error::other("link is listed"))??;
+                assert!(
+                    listed.stat.is_none(),
+                    "a reparse point is stat'ed on its own"
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn copy_never_replaces_an_existing_destination() -> std::io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::write(temporary.path().join("source"), b"new")?;
+        std::fs::write(temporary.path().join("existing"), b"old")?;
+        let root = HostRoot::open(temporary.path())?;
+        let copied = root
+            .copy_file_from(&root, Path::new("source"), Path::new("existing"))
+            .await;
+        assert_eq!(
+            copied.map_err(|error| error.kind()),
+            Err(std::io::ErrorKind::AlreadyExists),
+            "an existing destination is never replaced"
+        );
+        assert_eq!(std::fs::read(temporary.path().join("existing"))?, b"old");
+        let mut names = std::fs::read_dir(temporary.path())?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        names.sort();
+        assert_eq!(
+            names,
+            ["existing", "source"],
+            "a staged copy was left behind"
+        );
+        Ok(())
     }
 
     #[test]

@@ -431,6 +431,55 @@ pub fn object_digest(kind: ObjectKind, bytes: &[u8]) -> Digest {
     Digest::from_bytes(*hasher.finalize().as_bytes())
 }
 
+/// Canonical immutable object bytes and the identity their hash proves.
+///
+/// The only constructor hashes the bytes, so holding one proves its identity:
+/// a store may admit it without hashing the same bytes again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HashedObject {
+    object_id: ObjectId,
+    bytes: Bytes,
+}
+
+impl HashedObject {
+    /// Hashes `bytes` as one object of `kind`.
+    #[must_use]
+    pub fn new(kind: ObjectKind, bytes: Bytes) -> Self {
+        Self {
+            object_id: ObjectId {
+                kind,
+                digest: object_digest(kind, &bytes),
+            },
+            bytes,
+        }
+    }
+
+    /// Admits `bytes` under `object_id` only if they hash to it.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    pub(crate) fn verify(object_id: ObjectId, bytes: Bytes) -> Option<Self> {
+        (object_digest(object_id.kind, &bytes) == object_id.digest)
+            .then_some(Self { object_id, bytes })
+    }
+
+    /// The identity the bytes hash to.
+    #[must_use]
+    pub const fn object_id(&self) -> ObjectId {
+        self.object_id
+    }
+
+    /// Exact canonical length.
+    #[must_use]
+    pub fn length(&self) -> u64 {
+        u64::try_from(self.bytes.len()).unwrap_or(u64::MAX)
+    }
+
+    /// Releases the identity and bytes.
+    #[must_use]
+    pub fn into_parts(self) -> (ObjectId, Bytes) {
+        (self.object_id, self.bytes)
+    }
+}
+
 /// Exact bounded logical byte range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ByteRange {

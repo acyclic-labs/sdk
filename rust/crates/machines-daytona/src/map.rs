@@ -896,9 +896,9 @@ mod tests {
             "mixed counts"
         );
         assert!(complete_fork(&[]).is_none());
-        let mut legacy = child(0, 1);
-        legacy.labels.remove(LABEL_COUNT);
-        assert!(complete_fork(&[legacy]).is_none(), "count unknown");
+        let mut uncounted = child(0, 1);
+        uncounted.labels.remove(LABEL_COUNT);
+        assert!(complete_fork(&[uncounted]).is_none(), "count unknown");
     }
 
     #[test]

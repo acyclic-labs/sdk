@@ -13,6 +13,8 @@
 int rpc_parse_call(xdr_buf_t *xdr, rpc_call_header_t *hdr)
 {
     memset(hdr, 0, sizeof(*hdr));
+    hdr->cred_uid = RPC_NOBODY;
+    hdr->cred_gid = (gid_t)RPC_NOBODY;
 
     /* xid */
     hdr->xid = xdr_decode_uint32(xdr);
@@ -55,8 +57,10 @@ int rpc_parse_call(xdr_buf_t *xdr, rpc_call_header_t *hdr)
 
         /* aux gids array */
         hdr->cred_ngroups = xdr_decode_uint32(xdr);
+        if (hdr->cred_ngroups > RPC_AUTH_SYS_MAX_GROUPS)
+            return -1;
         for (uint32_t i = 0; i < hdr->cred_ngroups && !xdr->error; i++)
-            xdr_decode_uint32(xdr);  /* skip each gid */
+            hdr->cred_groups[i] = (gid_t)xdr_decode_uint32(xdr);
 
         /* Ensure we consumed exactly cred_len bytes (padded) */
         size_t consumed = xdr_getpos(xdr) - cred_start;

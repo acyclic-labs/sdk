@@ -817,6 +817,57 @@ fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicates()
 }
 
 #[test]
+fn batch_observation_captures_exactly_each_paths_observation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let (generation, main) = fixture(&store)?;
+    let name = |bytes: &[u8]| LogicalName::new(NameEncoding::Utf8, bytes.to_vec(), 255);
+    let paths = [
+        main.clone(),
+        NamespacePath::new(vec![name(b"src")?, name(b"missing")?], config().limits)?,
+        NamespacePath::new(vec![name(b"absent")?, name(b"deeper")?], config().limits)?,
+        NamespacePath::new(vec![name(b"alias")?, name(b"main.rs")?], config().limits)?,
+        main,
+        NamespacePath::new(Vec::new(), config().limits)?,
+        NamespacePath::new(vec![name(b"src")?], config().limits)?,
+    ];
+    let cancellation = CancellationToken::new();
+    let observed = async_storage::poll_ready(observe_paths_async(
+        &store,
+        &generation,
+        &paths,
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("observed batch blocked")??;
+    let looked_up = lookup_paths(&store, &generation, &paths, config(), WorkBudget::UNBOUNDED)?;
+    assert_eq!(observed.lookup.entries, looked_up.entries);
+    let mut expected = std::collections::BTreeMap::new();
+    for path in &paths {
+        let single = async_storage::poll_ready(observe_path_async(
+            &store,
+            &generation,
+            path,
+            config(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("observed path blocked")??;
+        for dependency in single.dependencies {
+            expected.insert(dependency.region, dependency.expected);
+        }
+    }
+    let mut batched = std::collections::BTreeMap::new();
+    for dependency in observed.dependencies {
+        let prior = batched.insert(dependency.region, dependency.expected);
+        assert!(prior.is_none_or(|prior| prior == dependency.expected));
+    }
+    assert_eq!(batched, expected);
+    Ok(())
+}
+
+#[test]
 fn hardlinked_directory_aliases_share_one_directory_frontier()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();

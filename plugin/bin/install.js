@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 "use strict";
 
+// Installs the verified native executable as the package's `acyclic` command.
+// Its full SHA-256 is checked against the release manifest here, once; the
+// command then runs the executable directly, with nothing in between. Only
+// installation mutates the package directory, so hosts may keep an installed
+// package in an immutable store.
+
 const { spawnSync } = require("node:child_process");
 const { homedir, tmpdir } = require("node:os");
 const {
@@ -8,7 +14,7 @@ const {
   readFileSync, renameSync, rmSync, statSync, writeFileSync,
 } = require("node:fs");
 const { basename, dirname, join } = require("node:path");
-const { hostTarget, resolveTarget, sha256File, verifyTarget } = require("./verify.js");
+const { hostTarget, sha256File, verifyTarget } = require("./verify.js");
 
 const sha256 = sha256File;
 
@@ -299,10 +305,20 @@ function ensureInstalledLocked() {
   }
 }
 
+// The package's `acyclic` command links to `bin/acyclic`, which ships as an
+// interpreter-less placeholder so that every package manager links the command
+// to the executable itself. On Unix the install replaces it with the
+// executable; on Windows the command resolves `bin/acyclic` to `acyclic.exe`
+// only once the placeholder is gone.
+function removeCommandPlaceholder(helper) {
+  if (process.platform === "win32") durableRemove(join(__dirname, "acyclic"), helper);
+}
+
 function ensureInstalled() {
   const release = acquireInstallLock(__dirname);
   try {
     const installed = ensureInstalledLocked();
+    removeCommandPlaceholder(installed);
     const packageVersion = readJson(join(__dirname, "..", "package.json")).version;
     installCertification(packageVersion, installed);
     return installed;
@@ -311,30 +327,4 @@ function ensureInstalled() {
   }
 }
 
-function installedExecutable() {
-  const { manifest } = resolveTarget(__dirname);
-  const packageVersion = readJson(join(__dirname, "..", "package.json")).version;
-  const target = hostTarget();
-  const expectedSha256 = manifest.targets[target].sha256;
-  const installed = join(__dirname, process.platform === "win32" ? "acyclic.exe" : "acyclic");
-  const identityPath = join(__dirname, "installed-binary.json");
-  if (!existsSync(identityPath)) {
-    throw new Error("Acyclic installation identity is missing; reinstall the package");
-  }
-  const identity = readJson(identityPath);
-  if (
-    identity.version !== packageVersion
-    || identity.target !== target
-    || identity.sha256 !== expectedSha256
-  ) {
-    throw new Error("installed Acyclic binary has an invalid durable identity");
-  }
-  if (!existsSync(installed) || sha256(installed) !== expectedSha256) {
-    throw new Error("installed Acyclic binary does not match its durable identity");
-  }
-  return installed;
-}
-
-module.exports = { ensureInstalled, installedExecutable };
-
-if (require.main === module) ensureInstalled();
+ensureInstalled();

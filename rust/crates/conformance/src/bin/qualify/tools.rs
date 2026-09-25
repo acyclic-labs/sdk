@@ -40,6 +40,10 @@ pub(super) fn is_command(command: &str) -> bool {
             | "mount-smoke2"
             | "mount-hold"
             | "source-probe"
+            | "mount-bench"
+            | "mount-bench-writer"
+            | "kernel-bench"
+            | "par-bench"
     )
 }
 
@@ -55,9 +59,16 @@ pub(super) fn run() {
         Some("mount-smoke2") => mount_smoke2(&args[1..]),
         Some("mount-hold") => mount_hold(&args[1..]),
         Some("source-probe") => source_probe(&args[1..]),
+        Some("mount-bench") => mount_bench(&args[1..]),
+        Some("mount-bench-writer") => mount_bench_writer(&args[1..]),
+        Some("kernel-bench") => kernel_bench(&args[1..]),
+        Some("par-bench") => par_bench(&args[1..]),
         _ => Err(
             "usage: qualify fixture <dir> [--with-fifo] | roundtrip <src> <work> \
-             | corpus <dir> <files> <mb> | bench <src> <work> [rounds]"
+             | corpus <dir> <files> <mb> | bench <src> <work> [rounds] \
+             | mount-bench <work> [files] [file-bytes] [threads] \
+             | kernel-bench <work> [files] [file-bytes] \
+             | par-bench <work> [writers] [files] [lazy|workspace]"
                 .into(),
         ),
     };
@@ -711,25 +722,618 @@ fn corpus(args: &[String]) -> Result<(), Failure> {
     let files: u64 = args.get(1).ok_or("corpus: missing <files>")?.parse()?;
     let total_mb: u64 = args.get(2).ok_or("corpus: missing <mb>")?.parse()?;
     let bytes_per_file = (total_mb * 1024 * 1024) / files.max(1);
-    let mut payload = Vec::with_capacity(bytes_per_file as usize);
-    let mut state: u32 = 0x1234_5678;
-    while (payload.len() as u64) < bytes_per_file {
-        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        payload.extend_from_slice(&state.to_le_bytes());
-    }
     let started = Instant::now();
-    for index in 0..files {
-        let dir = root.join(format!("dir-{:05}", index / 100));
-        if index % 100 == 0 {
-            fs::create_dir_all(&dir)?;
-        }
-        fs::write(dir.join(format!("file-{index:07}.dat")), &payload)?;
-    }
+    write_corpus(&root, files, bytes_per_file)?;
     println!(
         "corpus: {files} files x {bytes_per_file} bytes in {:?}",
         started.elapsed()
     );
     Ok(())
+}
+
+fn write_corpus(root: &Path, files: u64, bytes_per_file: u64) -> Result<(), Failure> {
+    let payload = corpus_payload(bytes_per_file);
+    for index in 0..files {
+        if index % 100 == 0 {
+            fs::create_dir_all(root.join(corpus_directory(index / 100)))?;
+        }
+        fs::write(root.join(corpus_file(index)), &payload)?;
+    }
+    Ok(())
+}
+
+fn corpus_payload(bytes: u64) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(bytes as usize);
+    let mut state: u32 = 0x1234_5678;
+    while (payload.len() as u64) < bytes {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        payload.extend_from_slice(&state.to_le_bytes());
+    }
+    payload.truncate(bytes as usize);
+    payload
+}
+
+fn corpus_directory(directory: u64) -> String {
+    format!("dir-{directory:05}")
+}
+
+fn corpus_file(index: u64) -> PathBuf {
+    Path::new(&corpus_directory(index / 100)).join(format!("file-{index:07}.dat"))
+}
+
+// ---------------------------------------------------------------------------
+// mount-bench: the plugin's lazy mount of a physical root versus the same
+// operations on the root itself
+// ---------------------------------------------------------------------------
+
+fn mount_bench(args: &[String]) -> Result<(), Failure> {
+    let work = PathBuf::from(args.first().ok_or("mount-bench: missing <work>")?);
+    let files: u64 = args.get(1).map_or(Ok(2_000), |value| value.parse())?;
+    let file_bytes: u64 = args.get(2).map_or(Ok(4_096), |value| value.parse())?;
+    let threads: u64 = args.get(3).map_or(Ok(1), |value| value.parse())?;
+    if threads == 0 {
+        return Err("mount-bench: threads must be positive".into());
+    }
+    let source = work.join("src");
+    let native_writes = work.join("native-writes");
+    for directory in [&source, &native_writes] {
+        fs::create_dir_all(directory)?;
+    }
+    write_corpus(&source, files, file_bytes)?;
+    let source = source.canonicalize()?;
+    let profile = if cfg!(windows) {
+        FilesystemProfile::Windows
+    } else {
+        FilesystemProfile::Posix
+    };
+    let payload = corpus_payload(file_bytes);
+    let native = workload(
+        &source,
+        &native_writes,
+        files,
+        &payload,
+        threads,
+        &|| Ok(()),
+    )?;
+    let (mounted, unmount) = with_lazy_mount(&work, &source, profile, |mount_dir, sync| {
+        let mounted = |writes| {
+            workload(
+                mount_dir,
+                &mount_dir.join(writes),
+                files,
+                &payload,
+                threads,
+                sync,
+            )
+        };
+        Ok((mounted("writes-cold")?, mounted("writes-warm")?))
+    });
+    // Measurements stand on their own; report them before any unmount error.
+    let (cold, warm) = mounted?;
+    report_mount_bench(
+        files,
+        file_bytes,
+        threads,
+        [native, cold, warm],
+        unmount.as_ref().ok(),
+    );
+    unmount.map(|_| ())
+}
+
+/// Mounts a lazy workspace of `source` under `work` with manual
+/// publication, runs `measure` with the mount directory and its sync, and
+/// unmounts. Returns the measurement and, separately, the unmount time in
+/// milliseconds, which publishes every pending authored effect. Nothing may
+/// leave the mount attached.
+fn with_lazy_mount<T>(
+    work: &Path,
+    source: &Path,
+    profile: FilesystemProfile,
+    measure: impl FnOnce(&Path, &dyn Fn() -> Result<(), Failure>) -> Result<T, Failure>,
+) -> (Result<T, Failure>, Result<f64, Failure>) {
+    use acyclic_fs::demand::native::NativeDemandSource;
+    use acyclic_fs::model::VolumeLimits;
+    use acyclic_fs::native_mount::MountOptions;
+    use acyclic_fs::{DistributedFs, LocalCoreStateStore, MountPublication};
+    use std::sync::Arc;
+
+    let mount_dir = work.join("mnt");
+    let mounted = (|| -> Result<_, Failure> {
+        fs::create_dir_all(&mount_dir)?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let mount = runtime.block_on(async {
+            let engine = LocalFs::local(local_options(work.join("store"))?)
+                .await
+                .map_err(engine_err("open store"))?;
+            let state = LocalCoreStateStore::open_owned(work.join("core-state"))
+                .map_err(engine_err("open core state"))?;
+            let distributed = DistributedFs::new(engine, state);
+            let demand = NativeDemandSource::open(source, profile, VolumeLimits::default())
+                .await
+                .map_err(engine_err("open source"))?;
+            let workspace = distributed
+                .attach_lazy_with_config(
+                    "mount-bench",
+                    Arc::new(demand),
+                    VolumeConfig::native(Lifecycle::Durable),
+                )
+                .await
+                .map_err(engine_err("attach source"))?;
+            workspace
+                .mount(
+                    &mount_dir,
+                    MountOptions::read_write().publication(MountPublication::Manual),
+                )
+                .await
+                .map_err(engine_err("mount"))
+        })?;
+        Ok((runtime, mount))
+    })();
+    let (runtime, mount) = match mounted {
+        Ok(mounted) => mounted,
+        Err(error) => return (Err(error), Err("never mounted".into())),
+    };
+    // The mounted write boundary captures and publishes what was written.
+    let sync = || runtime.block_on(mount.sync()).map_err(engine_err("sync"));
+    let measured = measure(&mount_dir, &sync);
+    let started = Instant::now();
+    let unmounted = runtime
+        .block_on(mount.unmount())
+        .map_err(engine_err("unmount"))
+        .map(|()| started.elapsed().as_secs_f64() * 1e3);
+    (measured, unmounted)
+}
+
+/// Mounts one empty workspace under `work` directly over its checkout and
+/// runs `measure` with the mount directory and its sync, exactly as
+/// [`with_lazy_mount`] does.
+fn with_workspace_mount<T>(
+    work: &Path,
+    measure: impl FnOnce(&Path, &dyn Fn() -> Result<(), Failure>) -> Result<T, Failure>,
+) -> (Result<T, Failure>, Result<f64, Failure>) {
+    use acyclic_fs::MountPublication;
+    use acyclic_fs::native_mount::MountOptions;
+
+    let mount_dir = work.join("mnt");
+    let mounted = (|| -> Result<_, Failure> {
+        fs::create_dir_all(&mount_dir)?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let mount = runtime.block_on(async {
+            let engine = LocalFs::local(local_options(work.join("store"))?)
+                .await
+                .map_err(engine_err("open store"))?;
+            let workspace = engine
+                .create_workspace_with_config("par-bench", VolumeConfig::native(Lifecycle::Durable))
+                .await
+                .map_err(engine_err("create workspace"))?;
+            workspace
+                .mount(
+                    &mount_dir,
+                    MountOptions::read_write().publication(MountPublication::Manual),
+                )
+                .await
+                .map_err(engine_err("mount"))
+        })?;
+        Ok((runtime, mount))
+    })();
+    let (runtime, mount) = match mounted {
+        Ok(mounted) => mounted,
+        Err(error) => return (Err(error), Err("never mounted".into())),
+    };
+    let sync = || runtime.block_on(mount.sync()).map_err(engine_err("sync"));
+    let measured = measure(&mount_dir, &sync);
+    let started = Instant::now();
+    let unmounted = runtime
+        .block_on(mount.unmount())
+        .map_err(engine_err("unmount"))
+        .map(|()| started.elapsed().as_secs_f64() * 1e3);
+    (measured, unmounted)
+}
+
+/// Prints one mount-bench result: per-phase native, cold, and warm costs,
+/// the write phase's publication boundary on its own, and the unmount time
+/// when the mount detached.
+fn report_mount_bench(
+    files: u64,
+    file_bytes: u64,
+    threads: u64,
+    [native, cold, warm]: [[f64; 5]; 3],
+    unmount: Option<&f64>,
+) {
+    let phases = ["list", "stat", "read", "write", "sync"]
+        .into_iter()
+        .zip(native.into_iter().zip(cold).zip(warm))
+        .map(|(phase, ((native, cold), warm))| {
+            // Native writes have no publication boundary to compare against.
+            let compared = phase != "sync";
+            (
+                phase.to_owned(),
+                serde_json::json!({
+                    "nativeMicrosPerOp": native,
+                    "mountColdMicrosPerOp": cold,
+                    "mountWarmMicrosPerOp": warm,
+                    "coldRatio": compared.then(|| cold / native),
+                    "warmRatio": compared.then(|| warm / native),
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    println!(
+        "{}",
+        serde_json::json!({
+            "platform": std::env::consts::OS,
+            "files": files,
+            "fileBytes": file_bytes,
+            "threads": threads,
+            "phases": phases,
+            "unmountMillis": unmount,
+        })
+    );
+}
+
+/// Times directory listing, stat, full reads, and fresh writes over the
+/// corpus under `root`, returning wall-clock microseconds per operation for
+/// each phase. Each phase's operations are split evenly across `threads`.
+///
+/// Writes come from one child process, as an agent's tools write: a mount
+/// provider does not observe its own process's I/O. A write is complete once
+/// `boundary` has made it durable in the workspace, so that is timed too; the
+/// fifth phase, sync, is that boundary's share per written file.
+fn workload(
+    root: &Path,
+    writes: &Path,
+    files: u64,
+    payload: &[u8],
+    threads: u64,
+    boundary: &dyn Fn() -> Result<(), Failure>,
+) -> Result<[f64; 5], Failure> {
+    let directories = files.div_ceil(100);
+    let listed = std::sync::atomic::AtomicU64::new(0);
+    let list = timed_phase(directories, threads, |directory| {
+        let path = root.join(corpus_directory(directory));
+        let count = fs::read_dir(&path).map_err(io_at("list", &path))?.count();
+        listed.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    })?;
+    let listed = listed.into_inner();
+    if listed != files {
+        return Err(format!(
+            "listed {listed} of {files} corpus files under {}",
+            root.display()
+        )
+        .into());
+    }
+    let stat = timed_phase(files, threads, |index| {
+        let path = root.join(corpus_file(index));
+        if fs::metadata(&path).map_err(io_at("stat", &path))?.len() != payload.len() as u64 {
+            return Err(format!("corpus file {index} has the wrong length").into());
+        }
+        Ok(())
+    })?;
+    let read = timed_phase(files, threads, |index| {
+        let path = root.join(corpus_file(index));
+        if fs::read(&path).map_err(io_at("read", &path))? != payload {
+            return Err(format!("corpus file {index} differs from its payload").into());
+        }
+        Ok(())
+    })?;
+    fs::create_dir_all(writes).map_err(io_at("create", writes))?;
+    let written = files.min(500);
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .arg("mount-bench-writer")
+        .arg(writes)
+        .arg(written.to_string())
+        .arg(payload.len().to_string())
+        .arg(threads.to_string())
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "writer failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let writing: f64 = String::from_utf8(output.stdout)?.trim().parse()?;
+    let started = Instant::now();
+    boundary()?;
+    let sync = started.elapsed().as_secs_f64() * 1e6 / written.max(1) as f64;
+    Ok([list, stat, read, writing + sync, sync])
+}
+
+/// Child half of the write phase: writes `<count>` fresh files of
+/// `<file-bytes>` into `<dir>` across `<threads>` and prints the wall-clock
+/// microseconds per file that took.
+fn mount_bench_writer(args: &[String]) -> Result<(), Failure> {
+    let directory = PathBuf::from(args.first().ok_or("mount-bench-writer: missing <dir>")?);
+    let count: u64 = args
+        .get(1)
+        .ok_or("mount-bench-writer: missing <count>")?
+        .parse()?;
+    let file_bytes: u64 = args
+        .get(2)
+        .ok_or("mount-bench-writer: missing <file-bytes>")?
+        .parse()?;
+    let threads: u64 = args
+        .get(3)
+        .ok_or("mount-bench-writer: missing <threads>")?
+        .parse()?;
+    let payload = corpus_payload(file_bytes);
+    let per_file = timed_phase(count, threads, |index| {
+        let path = directory.join(format!("file-{index:07}.dat"));
+        fs::write(&path, &payload).map_err(io_at("write", &path))
+    })?;
+    println!("{per_file}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// kernel-bench: create and write small files directly through one checkout,
+// with no mount, look each up by path, then commit them
+// ---------------------------------------------------------------------------
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the benchmark's setup, timed loops, commit, and report are one straight-line procedure"
+)]
+fn kernel_bench(args: &[String]) -> Result<(), Failure> {
+    use acyclic_fs::AuthoredMutation;
+    use acyclic_fs::kernel::{FileMetadata, LogicalName, NameEncoding, NamespacePath};
+
+    let work = PathBuf::from(args.first().ok_or("kernel-bench: missing <work>")?);
+    let files: u64 = args.get(1).map_or(Ok(4_000), |value| value.parse())?;
+    let file_bytes: u64 = args.get(2).map_or(Ok(4_096), |value| value.parse())?;
+    if files == 0 {
+        return Err("kernel-bench: files must be positive".into());
+    }
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        let cancel = CancellationToken::new();
+        let engine = LocalFs::local(local_options(work.join("store"))?)
+            .await
+            .map_err(engine_err("open store"))?;
+        let config = VolumeConfig::native(Lifecycle::Durable);
+        let volume = engine
+            .create_volume(config, WorkCounters::UNBOUNDED, &cancel)
+            .await
+            .map_err(engine_err("create volume"))?
+            .value;
+        let mut checkout = volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode {
+                    access: AccessMode::ReadWrite,
+                    consistency: ConsistencyMode::TrackingSafe,
+                    mutations: MutationMode::PrivateOverlay,
+                },
+                WorkCounters::UNBOUNDED,
+                &cancel,
+            )
+            .await
+            .map_err(engine_err("checkout"))?
+            .value;
+        let name = |value: String| {
+            LogicalName::new(
+                NameEncoding::Utf8,
+                value.into_bytes(),
+                config.limits.maximum_component_bytes,
+            )
+        };
+        let file_path = |index: u64| -> Result<NamespacePath, Failure> {
+            Ok(NamespacePath::new(
+                vec![name("d".to_owned())?, name(format!("file-{index:07}.dat"))?],
+                config.limits,
+            )?)
+        };
+        checkout
+            .apply_authored_transaction(
+                vec![AuthoredMutation::CreateDirectory {
+                    path: NamespacePath::new(vec![name("d".to_owned())?], config.limits)?,
+                    metadata: FileMetadata::default(),
+                }],
+                WorkCounters::UNBOUNDED,
+                &cancel,
+            )
+            .await
+            .map_err(engine_err("create directory"))?;
+        let payload = bytes::Bytes::from(corpus_payload(file_bytes));
+        let mut create = std::time::Duration::ZERO;
+        let mut write = std::time::Duration::ZERO;
+        let mut last_fifth = std::time::Duration::ZERO;
+        for index in 0..files {
+            let started = Instant::now();
+            let created = checkout
+                .apply_authored_transaction(
+                    vec![AuthoredMutation::CreateFile {
+                        path: file_path(index)?,
+                        bytes: bytes::Bytes::new(),
+                        metadata: FileMetadata::default(),
+                    }],
+                    WorkCounters::UNBOUNDED,
+                    &cancel,
+                )
+                .await
+                .map_err(engine_err("create"))?;
+            let file_id = created
+                .value
+                .created_file_ids
+                .first()
+                .copied()
+                .flatten()
+                .ok_or("create returned no file identity")?;
+            let created_at = Instant::now();
+            checkout
+                .write_file_by_id(
+                    file_id,
+                    0,
+                    payload.clone(),
+                    WorkCounters::UNBOUNDED,
+                    &cancel,
+                )
+                .await
+                .map_err(engine_err("write"))?;
+            create += created_at - started;
+            write += created_at.elapsed();
+            if index >= files - files.div_ceil(5) {
+                last_fifth += started.elapsed();
+            }
+        }
+        // Exact-path metadata lookups of every authored file, as a mount's
+        // lookup and getattr callbacks issue them before publication.
+        let started = Instant::now();
+        for index in 0..files {
+            checkout
+                .lookup_no_follow_with_metadata(
+                    &file_path(index)?,
+                    WorkCounters::UNBOUNDED,
+                    &cancel,
+                )
+                .await
+                .map_err(engine_err("lookup"))?
+                .value
+                .ok_or("authored file is missing")?;
+        }
+        let lookup = started.elapsed();
+        let started = Instant::now();
+        checkout
+            .commit(OperationId::new(), WorkCounters::UNBOUNDED, &cancel)
+            .await
+            .map_err(engine_err("commit"))?;
+        let commit = started.elapsed();
+        let per_file =
+            |spent: std::time::Duration, count: u64| spent.as_secs_f64() * 1e6 / count as f64;
+        println!(
+            "{}",
+            serde_json::json!({
+                "platform": std::env::consts::OS,
+                "files": files,
+                "fileBytes": file_bytes,
+                "createMicrosPerFile": per_file(create, files),
+                "writeMicrosPerFile": per_file(write, files),
+                "lastFifthMicrosPerFile": per_file(last_fifth, files.div_ceil(5)),
+                "lookupMicrosPerFile": per_file(lookup, files),
+                "commitMillis": commit.as_secs_f64() * 1e3,
+            })
+        );
+        Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// par-bench: concurrent small-file creation natively and through a mount,
+// from several writer processes, one directory each
+// ---------------------------------------------------------------------------
+
+fn par_bench(args: &[String]) -> Result<(), Failure> {
+    let work = PathBuf::from(args.first().ok_or("par-bench: missing <work>")?);
+    let writers: u64 = args.get(1).map_or(Ok(8), |value| value.parse())?;
+    let files: u64 = args.get(2).map_or(Ok(2_000), |value| value.parse())?;
+    let mount = args.get(3).map_or("lazy", String::as_str);
+    if writers == 0 || files < writers {
+        return Err("par-bench: writers must be positive and at most files".into());
+    }
+    let each = files / writers;
+    // Writers are child processes, as agents' tools are: a mount provider
+    // does not observe its own process's I/O. Microseconds per file span the
+    // first writer's start to the last writer's exit.
+    let create = |root: &Path| -> Result<f64, Failure> {
+        let started = Instant::now();
+        let children = (0..writers)
+            .map(|writer| {
+                let directory = root.join("par").join(format!("w{writer:03}"));
+                fs::create_dir_all(&directory)?;
+                Ok(std::process::Command::new(std::env::current_exe()?)
+                    .arg("mount-bench-writer")
+                    .arg(&directory)
+                    .arg(each.to_string())
+                    .arg("4096")
+                    .arg("1")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()?)
+            })
+            .collect::<Result<Vec<_>, Failure>>()?;
+        for child in children {
+            let output = child.wait_with_output()?;
+            if !output.status.success() {
+                return Err(format!(
+                    "writer failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )
+                .into());
+            }
+        }
+        Ok(started.elapsed().as_secs_f64() * 1e6 / (each * writers) as f64)
+    };
+    let native = create(&work.join("native"))?;
+    let measure = |mount_dir: &Path, sync: &dyn Fn() -> Result<(), Failure>| {
+        let writing = create(mount_dir)?;
+        let started = Instant::now();
+        sync()?;
+        Ok((writing, started.elapsed().as_secs_f64() * 1e3))
+    };
+    let (measured, unmount) = match mount {
+        "lazy" => {
+            let source = work.join("src");
+            fs::create_dir_all(&source)?;
+            let profile = if cfg!(windows) {
+                FilesystemProfile::Windows
+            } else {
+                FilesystemProfile::Posix
+            };
+            with_lazy_mount(&work, &source.canonicalize()?, profile, measure)
+        }
+        "workspace" => with_workspace_mount(&work, measure),
+        other => return Err(format!("par-bench: unknown mount kind {other}").into()),
+    };
+    let (mounted, sync) = measured?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "platform": std::env::consts::OS,
+            "mount": mount,
+            "writers": writers,
+            "files": each * writers,
+            "nativeMicrosPerFile": native,
+            "mountMicrosPerFile": mounted,
+            "nativeFilesPerSecond": 1e6 / native,
+            "mountFilesPerSecond": 1e6 / mounted,
+            "syncMillis": sync,
+            "unmountMillis": unmount.as_ref().ok(),
+        })
+    );
+    unmount.map(|_| ())
+}
+
+/// Runs `operation` for every index below `operations`, interleaved across
+/// `threads`, and returns wall-clock microseconds per operation.
+fn timed_phase(
+    operations: u64,
+    threads: u64,
+    operation: impl Fn(u64) -> Result<(), Failure> + Sync,
+) -> Result<f64, Failure> {
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        let workers = (0..threads)
+            .map(|first| {
+                let operation = &operation;
+                scope.spawn(move || {
+                    (first..operations)
+                        .step_by(usize::try_from(threads).unwrap_or(usize::MAX))
+                        .try_for_each(operation)
+                })
+            })
+            .collect::<Vec<_>>();
+        workers.into_iter().try_for_each(|worker| {
+            worker
+                .join()
+                .map_err(|_| Failure::from("mount-bench worker panicked"))?
+        })
+    })?;
+    Ok(started.elapsed().as_secs_f64() * 1e6 / operations.max(1) as f64)
+}
+
+fn io_at<'a>(operation: &'a str, path: &'a Path) -> impl FnOnce(std::io::Error) -> Failure + 'a {
+    move |error| format!("{operation} {}: {error}", path.display()).into()
 }
 
 // ---------------------------------------------------------------------------

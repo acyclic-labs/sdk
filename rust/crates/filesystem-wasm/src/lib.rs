@@ -65,62 +65,62 @@ mod bindings {
 
     /// Encodes a merge-plan payload in the versioned compatibility envelope.
     #[wasm_bindgen(js_name = encodeMergePlanJson)]
-    pub fn encode_merge_plan_json(value_json: String) -> Result<String, JsValue> {
-        compat_wire::encode_merge_plan_payload(&value_json).map_err(wire_error)
+    pub fn encode_merge_plan_json(value_json: &str) -> Result<String, JsValue> {
+        compat_wire::encode_merge_plan_payload(value_json).map_err(wire_error)
     }
 
     /// Decodes a versioned merge-plan envelope to its canonical payload.
     #[wasm_bindgen(js_name = decodeMergePlanJson)]
-    pub fn decode_merge_plan_json(value_json: String) -> Result<String, JsValue> {
-        compat_wire::decode_merge_plan_payload(&value_json).map_err(wire_error)
+    pub fn decode_merge_plan_json(value_json: &str) -> Result<String, JsValue> {
+        compat_wire::decode_merge_plan_payload(value_json).map_err(wire_error)
     }
 
     /// Encodes a merge-candidate payload in the versioned compatibility envelope.
     #[wasm_bindgen(js_name = encodeMergeCandidateJson)]
-    pub fn encode_merge_candidate_json(value_json: String) -> Result<String, JsValue> {
-        compat_wire::encode_merge_candidate_payload(&value_json).map_err(wire_error)
+    pub fn encode_merge_candidate_json(value_json: &str) -> Result<String, JsValue> {
+        compat_wire::encode_merge_candidate_payload(value_json).map_err(wire_error)
     }
 
     /// Decodes a versioned merge-candidate envelope to its canonical payload.
     #[wasm_bindgen(js_name = decodeMergeCandidateJson)]
-    pub fn decode_merge_candidate_json(value_json: String) -> Result<String, JsValue> {
-        compat_wire::decode_merge_candidate_payload(&value_json).map_err(wire_error)
+    pub fn decode_merge_candidate_json(value_json: &str) -> Result<String, JsValue> {
+        compat_wire::decode_merge_candidate_payload(value_json).map_err(wire_error)
     }
 
     /// Encodes a multi-root plan payload in the versioned compatibility envelope.
     #[wasm_bindgen(js_name = encodeMultiRootPlanJson)]
-    pub fn encode_multi_root_plan_json(value_json: String) -> Result<String, JsValue> {
-        compat_wire::encode_multi_root_plan_payload(&value_json).map_err(wire_error)
+    pub fn encode_multi_root_plan_json(value_json: &str) -> Result<String, JsValue> {
+        compat_wire::encode_multi_root_plan_payload(value_json).map_err(wire_error)
     }
 
     /// Decodes a versioned multi-root plan envelope to its canonical payload.
     #[wasm_bindgen(js_name = decodeMultiRootPlanJson)]
-    pub fn decode_multi_root_plan_json(value_json: String) -> Result<String, JsValue> {
-        compat_wire::decode_multi_root_plan_payload(&value_json).map_err(wire_error)
+    pub fn decode_multi_root_plan_json(value_json: &str) -> Result<String, JsValue> {
+        compat_wire::decode_multi_root_plan_payload(value_json).map_err(wire_error)
     }
 
     /// Encodes a multi-root candidate payload in the compatibility envelope.
     #[wasm_bindgen(js_name = encodeMultiRootCandidateJson)]
-    pub fn encode_multi_root_candidate_json(value_json: String) -> Result<String, JsValue> {
-        compat_wire::encode_multi_root_candidate_payload(&value_json).map_err(wire_error)
+    pub fn encode_multi_root_candidate_json(value_json: &str) -> Result<String, JsValue> {
+        compat_wire::encode_multi_root_candidate_payload(value_json).map_err(wire_error)
     }
 
     /// Decodes a multi-root candidate envelope to its canonical payload.
     #[wasm_bindgen(js_name = decodeMultiRootCandidateJson)]
-    pub fn decode_multi_root_candidate_json(value_json: String) -> Result<String, JsValue> {
-        compat_wire::decode_multi_root_candidate_payload(&value_json).map_err(wire_error)
+    pub fn decode_multi_root_candidate_json(value_json: &str) -> Result<String, JsValue> {
+        compat_wire::decode_multi_root_candidate_payload(value_json).map_err(wire_error)
     }
 
     /// Encodes a publication payload in the versioned compatibility envelope.
     #[wasm_bindgen(js_name = encodePublicationJson)]
-    pub fn encode_publication_json(value_json: String) -> Result<String, JsValue> {
-        compat_wire::encode_publication_payload(&value_json).map_err(wire_error)
+    pub fn encode_publication_json(value_json: &str) -> Result<String, JsValue> {
+        compat_wire::encode_publication_payload(value_json).map_err(wire_error)
     }
 
     /// Decodes a versioned publication envelope to its canonical payload.
     #[wasm_bindgen(js_name = decodePublicationJson)]
-    pub fn decode_publication_json(value_json: String) -> Result<String, JsValue> {
-        compat_wire::decode_publication_payload(&value_json).map_err(wire_error)
+    pub fn decode_publication_json(value_json: &str) -> Result<String, JsValue> {
+        compat_wire::decode_publication_payload(value_json).map_err(wire_error)
     }
 
     #[derive(Clone)]
@@ -2589,6 +2589,12 @@ mod bindings {
         work: acyclic_fs::WorkCounters,
     }
 
+    impl Default for BrowserWorkspaceContextRegistry {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     #[wasm_bindgen]
     impl BrowserWorkspaceContextRegistry {
         /// Creates an in-process registry. Host persistence can be injected by
@@ -2758,10 +2764,10 @@ mod bindings {
     impl BrowserGitCompatRepository {
         /// Creates process-local compatibility state for one SDK workspace.
         #[wasm_bindgen(constructor)]
-        pub fn new(workspace_id: Vec<u8>) -> Result<BrowserGitCompatRepository, JsValue> {
+        pub fn new(workspace_id: &[u8]) -> Result<BrowserGitCompatRepository, JsValue> {
             Ok(Self {
                 inner: GitCompatRepository::new(
-                    WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
+                    WorkspaceId::from_bytes(fixed_16(workspace_id)?),
                     MemoryGitCompatStore::new(),
                 ),
             })

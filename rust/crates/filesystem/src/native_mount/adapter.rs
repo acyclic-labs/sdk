@@ -1,38 +1,47 @@
 //! One native callback adapter for every embedded checkout consumer.
 
 use super::view_gate::{ViewGate, ViewReadLease, ViewWriteLease};
+use super::view_ledger::{Installed, ViewChange, ViewLedger, ViewStamp};
 use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    MountViewLease, NativeMountError, capture_root_identity, capture_subtree, seal_checkout,
+    MountViewLease, NativeMountError, ViewObserver, ViewOrigin, capture_root_identity,
+    capture_subtree, seal_checkout,
 };
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
     FileRecord, GenerationMutationError, LogicalName, NameEncoding, NamespacePath, RebaseDecision,
 };
-use crate::model::{FilesystemProfile, VolumeConfig, VolumeLimits};
+use crate::model::{CaseSensitivity, FilesystemProfile, VolumeConfig, VolumeLimits};
 use crate::native_capture::{
     MAX_NATIVE_EXACT_CAPTURE_PATHS, NativeViewBaseline, capture_paths_batched_with_baseline,
     capture_subtrees_with_policy_and_baseline,
 };
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
-    Checkout, DetachedFile, FileId, FsError, NamedAttributeWriteMode, NativeRootIdentity,
-    OperationFailure, OperationId, VolumeId, WorkBudget,
+    Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, GroupedChange,
+    GroupedOutcome, NamedAttributeWriteMode, NativeRootIdentity, ObjectId, OperationFailure,
+    OperationId, VolumeId, WorkBudget,
 };
 use bytes::Bytes;
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::task::{Context, Poll, Wake, Waker};
+use std::thread::ThreadId;
 use std::time::Duration;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Diff bound for recording an installed candidate exactly; a larger effect
+/// is recorded as unenumerated.
+const MAXIMUM_EXACT_INSTALL_CHANGES: u32 = 65_536;
 const MAX_NATIVE_SUBTREE_CAPTURE_PATHS: u32 = 4_000_000;
 const CAPTURE_PENDING: u8 = 0;
 const CAPTURE_COMMITTED: u8 = 1;
@@ -89,17 +98,63 @@ pub struct CheckoutMountSource<A, O> {
     root: NamespacePath,
     limits: VolumeLimits,
     profile: FilesystemProfile,
+    /// Whether the volume resolves every case of a name to one entry.
+    folds_names: bool,
     cancellation: CancellationToken,
     capture_gate: StdMutex<CaptureSourceGate>,
     runtime: CallbackRuntime,
 }
 
+/// Blocking bridge from native driver threads into the shared async runtime.
+///
+/// A callback polls its future on the calling thread inside the runtime's
+/// context, so timers, I/O, and blocking pools resolve against the shared
+/// runtime while no helper thread is ever created. The future lives in one
+/// heap allocation, so while a callback waits, a driver thread's stack holds
+/// only poll frames, whatever the future's size.
 #[derive(Clone)]
 pub(super) struct CallbackRuntime {
     handle: tokio::runtime::Handle,
 }
 
 static CALLBACK_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+
+/// Wakes one callback thread parked on its future. The flag keeps a wake
+/// observable even when code polled on that thread consumes its park token.
+struct ParkedCallback {
+    thread: std::thread::Thread,
+    woken: AtomicBool,
+}
+
+impl Wake for ParkedCallback {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.woken.store(true, Ordering::Release);
+        self.thread.unpark();
+    }
+}
+
+impl ParkedCallback {
+    fn poll_to_completion<F: Future + Unpin>(mut future: F) -> F::Output {
+        let parked = Arc::new(Self {
+            thread: std::thread::current(),
+            woken: AtomicBool::new(false),
+        });
+        let waker = Waker::from(Arc::clone(&parked));
+        let mut context = Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(output) = Pin::new(&mut future).poll(&mut context) {
+                return output;
+            }
+            while !parked.woken.swap(false, Ordering::Acquire) {
+                std::thread::park();
+            }
+        }
+    }
+}
 
 impl CallbackRuntime {
     pub(super) fn create() -> Result<Self, NativeMountError> {
@@ -119,61 +174,42 @@ impl CallbackRuntime {
         }
     }
 
-    fn block_on<F>(&self, create: impl FnOnce() -> F + Send) -> Result<F::Output, MountSourceError>
-    where
-        F: Future,
-        F::Output: Send,
-    {
+    fn block_on<F: Future>(&self, create: impl FnOnce() -> F) -> F::Output {
+        // Polled in place, the callback would otherwise draw on the calling
+        // task's cooperative budget. On a current-thread runtime that budget
+        // refills only when the calling task yields, which it cannot do
+        // while blocked here: once spent, every Tokio resource would report
+        // Pending and wake at once, forever.
+        // The future is built in its heap allocation, never on this stack.
+        let future = tokio::task::unconstrained(Box::pin(async { create().await }));
+        let poll = || {
+            let _runtime = self.handle.enter();
+            // This thread serves exactly this callback until it completes.
+            let _inline = acyclic_native_runtime::InlineBlocking::enter();
+            ParkedCallback::poll_to_completion(future)
+        };
         match tokio::runtime::Handle::try_current() {
+            // A multi-thread worker first hands its scheduler core to another
+            // thread, so tasks queued behind this callback keep running.
             Ok(current)
                 if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
             {
-                Ok(tokio::task::block_in_place(|| {
-                    self.handle.block_on(create())
-                }))
+                tokio::task::block_in_place(poll)
             }
-            Ok(_) => self.block_on_worker(create),
-            // Linux FUSE and macOS NFS callbacks enter from driver-owned
-            // threads; concurrent callbacks can use the shared runtime
-            // directly without allocating a helper thread per request.
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            Err(_) => Ok(self.handle.block_on(create())),
-            // ProjFS can synchronously re-enter while a callback is being
-            // serviced. Preserve the scoped boundary to bound that recursion.
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            Err(_) => self.block_on_worker(create),
+            _ => poll(),
         }
     }
 
-    fn block_on_worker<F>(
+    /// Runs one callback's complete future under the finite callback deadline.
+    pub(super) fn wait<T, F: Future<Output = Result<T, MountSourceError>>>(
         &self,
-        create: impl FnOnce() -> F + Send,
-    ) -> Result<F::Output, MountSourceError>
-    where
-        F: Future,
-        F::Output: Send,
-    {
-        std::thread::scope(|scope| {
-            let worker = std::thread::Builder::new()
-                .name("acyclic-fs-callback".to_owned())
-                .spawn_scoped(scope, || self.handle.block_on(create()))
-                .map_err(|error| MountSourceError::Engine(error.to_string()))?;
-            match worker.join() {
-                Ok(value) => Ok(value),
-                Err(payload) => std::panic::resume_unwind(payload),
-            }
-        })
-    }
-
-    pub(super) fn wait<T: Send, F: Future<Output = Result<T, MountSourceError>>>(
-        &self,
-        create: impl FnOnce() -> F + Send,
+        create: impl FnOnce() -> F,
     ) -> Result<T, MountSourceError> {
         self.block_on(|| async {
             tokio::time::timeout(CALLBACK_TIMEOUT, create())
                 .await
                 .map_err(|_| MountSourceError::Stale)?
-        })?
+        })
     }
 }
 
@@ -183,8 +219,51 @@ struct DetachedMountState<A, O> {
     mutation_epoch: u64,
 }
 
+impl<A, O> DetachedMountState<A, O> {
+    /// Applies one content change with its time stamp, as every native
+    /// write does, as one detached record transition, then records it: the
+    /// change and its record happen together or not at all.
+    async fn change_content(
+        &mut self,
+        change: ContentChange<std::convert::Infallible>,
+        ledger: &ViewLedger,
+        cancellation: &CancellationToken,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let mut metadata = self.metadata;
+        let stamped = metadata
+            .stamp_content_change(content_change_time()?)
+            .then_some(metadata);
+        self.file
+            .change_content(change, stamped, boundary_budget(), cancellation)
+            .await
+            .map_err(engine_error)?;
+        self.metadata = metadata;
+        self.record_change(ledger)
+    }
+
+    /// Advances the identity's own publication epoch and invalidates every
+    /// cached lookup of the identity, under the lock its lookups take.
+    fn record_change(&mut self, ledger: &ViewLedger) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.mutation_epoch = self
+            .mutation_epoch
+            .checked_add(1)
+            .ok_or(MountSourceError::Stale)?;
+        ledger.record(&ViewChange::Node(self.file.file_id()));
+        Ok(())
+    }
+}
+
 pub(super) struct CheckoutDetachedFile<A, O> {
     state: tokio::sync::Mutex<DetachedMountState<A, O>>,
+    ledger: Arc<ViewLedger>,
     runtime: CallbackRuntime,
     cancellation: CancellationToken,
     profile: FilesystemProfile,
@@ -202,22 +281,134 @@ struct CheckoutAttachedFile<A, O> {
 
 /// One process-local serialization and publication-fencing boundary for every
 /// adapter, watcher, and transport view of the same checkout.
+///
+/// Mutations are exclusive and ordered; callback reads share the current view.
 pub struct SharedCheckout<A, O> {
-    state: tokio::sync::Mutex<SharedCheckoutState<A, O>>,
-    view_epoch: Arc<AtomicU64>,
+    state: tokio::sync::RwLock<SharedCheckoutState<A, O>>,
+    revision: Arc<AtomicU64>,
+    ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
+    grouped: StdMutex<GroupedQueue>,
+}
+
+/// Most queued changes one hold of the checkout applies as one mutation.
+const MAXIMUM_GROUPED_CHANGES: usize = 64;
+
+/// Changes waiting for group commit, and whether a drain is running.
+#[derive(Default)]
+struct GroupedQueue {
+    requests: std::collections::VecDeque<GroupedRequest>,
+    draining: bool,
+}
+
+/// One change waiting for group commit, and where its own result goes.
+struct GroupedRequest {
+    change: GroupedChange,
+    admission: Arc<GroupedAdmission>,
+    reply: tokio::sync::oneshot::Sender<Result<GroupedOutcome, MountSourceError>>,
+    /// The requester's origin, which its change takes whichever caller or
+    /// drain applies the group.
+    origin: ViewOrigin,
+}
+
+/// Whether a queued change was claimed for application or abandoned by its
+/// caller first. Exactly one of the two ever happens.
+struct GroupedAdmission(AtomicU8);
+
+const GROUPED_QUEUED: u8 = 0;
+const GROUPED_CLAIMED: u8 = 1;
+const GROUPED_ABANDONED: u8 = 2;
+
+impl GroupedAdmission {
+    fn claim(&self) -> bool {
+        self.0
+            .compare_exchange(
+                GROUPED_QUEUED,
+                GROUPED_CLAIMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+}
+
+/// A future polled in place by its caller that, if the caller drops it
+/// unfinished, continues on its own task: no caller's deadline can stop it
+/// midway.
+struct RunToCompletion {
+    future: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl RunToCompletion {
+    fn new(future: impl std::future::Future<Output = ()> + Send + 'static) -> Self {
+        Self {
+            future: Some(Box::pin(future)),
+            runtime: tokio::runtime::Handle::current(),
+        }
+    }
+}
+
+impl std::future::Future for RunToCompletion {
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        let Some(future) = self.future.as_mut() else {
+            return std::task::Poll::Ready(());
+        };
+        let polled = future.as_mut().poll(context);
+        if polled.is_ready() {
+            self.future = None;
+        }
+        polled
+    }
+}
+
+impl Drop for RunToCompletion {
+    fn drop(&mut self) {
+        if let Some(future) = self.future.take() {
+            drop(self.runtime.spawn(future));
+        }
+    }
+}
+
+/// Abandons a still-queued change when its caller stops waiting, so a
+/// change whose caller saw it fail can never apply later. A change already
+/// claimed is being applied and completes regardless.
+struct AbandonUnlessClaimed(Arc<GroupedAdmission>);
+
+impl Drop for AbandonUnlessClaimed {
+    fn drop(&mut self) {
+        let _ = self.0.0.compare_exchange(
+            GROUPED_QUEUED,
+            GROUPED_ABANDONED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
 }
 
 /// Exclusive access to a shared checkout. The retained view lease prevents a
 /// native callback from observing a partial external SDK operation.
+///
+/// A change to the checkout's view that no exact `ViewChange` accounts for
+/// invalidates every cached lookup before the guard releases the view.
 pub struct SharedCheckoutGuard<'a, A, O> {
     _view: ViewWriteLease,
-    state: tokio::sync::MutexGuard<'a, SharedCheckoutState<A, O>>,
+    state: tokio::sync::RwLockWriteGuard<'a, SharedCheckoutState<A, O>>,
 }
 
-struct SharedCheckoutReadGuard<'a, A, O> {
+/// One callback's shared admission to the checkout's current view.
+///
+/// Observations overlap freely. Each excludes every mutation until it drops,
+/// because a mutation first needs the view gate's exclusive lease; reads go
+/// through [`Checkout::observer`], which cannot outlive this admission.
+pub(super) struct SharedCheckoutObservation<'a, A, O> {
     _view: ViewReadLease,
-    state: tokio::sync::MutexGuard<'a, SharedCheckoutState<A, O>>,
+    state: tokio::sync::RwLockReadGuard<'a, SharedCheckoutState<A, O>>,
 }
 
 /// Locked checkout state. Dereferencing reaches the canonical checkout while
@@ -226,7 +417,10 @@ pub struct SharedCheckoutState<A, O> {
     checkout: Checkout<A, O>,
     publication_operation: Option<OperationId>,
     publication: MountPublication,
-    view_epoch: Arc<AtomicU64>,
+    revision: Arc<AtomicU64>,
+    ledger: Arc<ViewLedger>,
+    /// The file table every change up to now has been recorded against.
+    recorded_view: ObjectId,
 }
 
 impl<A, O> SharedCheckout<A, O> {
@@ -239,37 +433,154 @@ impl<A, O> SharedCheckout<A, O> {
     /// Creates a shared checkout with one explicit native publication policy.
     #[must_use]
     pub fn with_publication(checkout: Checkout<A, O>, publication: MountPublication) -> Self {
-        let view_epoch = Arc::new(AtomicU64::new(1));
+        let revision = Arc::new(AtomicU64::new(1));
+        let ledger = Arc::new(ViewLedger::new());
         Self {
-            state: tokio::sync::Mutex::new(SharedCheckoutState {
+            state: tokio::sync::RwLock::new(SharedCheckoutState {
+                recorded_view: checkout.root().file_table,
                 checkout,
                 publication_operation: None,
                 publication,
-                view_epoch: Arc::clone(&view_epoch),
+                revision: Arc::clone(&revision),
+                ledger: Arc::clone(&ledger),
             }),
-            view_epoch,
+            revision,
+            ledger,
             view_gate: Arc::new(ViewGate::new()),
+            grouped: StdMutex::new(GroupedQueue::default()),
+        }
+    }
+
+    /// Applies one change by group commit. Changes queued while the checkout
+    /// is busy are applied together, as one mutation per hold and in queue
+    /// order, by a drain that runs detached from every caller, so no
+    /// caller's deadline can interrupt a group; each caller receives exactly
+    /// its own change's result.
+    ///
+    /// Queued changes are concurrent: none was issued after another's result
+    /// returned, so applying them in queue order is linearizable. A caller
+    /// that stops waiting before its change is claimed abandons it, and an
+    /// abandoned change never applies.
+    pub(super) async fn apply_grouped(
+        self: &Arc<Self>,
+        change: GroupedChange,
+        cancellation: &CancellationToken,
+    ) -> Result<GroupedOutcome, MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        let (reply, outcome) = tokio::sync::oneshot::channel();
+        let admission = Arc::new(GroupedAdmission(AtomicU8::new(GROUPED_QUEUED)));
+        let _abandon = AbandonUnlessClaimed(Arc::clone(&admission));
+        let start_drain = {
+            let mut queue = self
+                .grouped
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            queue.requests.push_back(GroupedRequest {
+                change,
+                admission,
+                reply,
+                origin: ViewOrigin::current(),
+            });
+            !std::mem::replace(&mut queue.draining, true)
+        };
+        if start_drain {
+            let checkout = Arc::clone(self);
+            let cancellation = cancellation.clone();
+            // The caller that starts the drain runs it in place, saving a
+            // hand-off to another thread; if the caller stops waiting, the
+            // drain moves to its own task and still runs to completion.
+            RunToCompletion::new(async move { checkout.drain_grouped(&cancellation).await }).await;
+        }
+        outcome.await.map_err(|_| MountSourceError::Stale)?
+    }
+
+    /// Applies queued changes, one group per hold of the checkout, until the
+    /// queue is empty. Abandoned changes are discarded unapplied.
+    async fn drain_grouped(&self, cancellation: &CancellationToken)
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        loop {
+            let mut checkout = self.lock().await;
+            let requests = {
+                let mut queue = self
+                    .grouped
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut claimed = Vec::new();
+                while claimed.len() < MAXIMUM_GROUPED_CHANGES
+                    && let Some(request) = queue.requests.pop_front()
+                {
+                    if request.admission.claim() {
+                        claimed.push(request);
+                    }
+                }
+                if claimed.is_empty() {
+                    queue.draining = false;
+                    return;
+                }
+                claimed
+            };
+            checkout
+                .apply_grouped_requests(requests, cancellation)
+                .await;
         }
     }
 
     /// Serializes external checkout access and excludes native callbacks.
     pub async fn lock(&self) -> SharedCheckoutGuard<'_, A, O> {
         let view = self.view_gate.write().await;
-        let state = self.state.lock().await;
+        let state = self.state.write().await;
         SharedCheckoutGuard { _view: view, state }
     }
 
-    async fn read_lock(
+    /// Admits one callback to the current view alongside every other reader.
+    pub(super) async fn observe(
         &self,
-        owner: std::thread::ThreadId,
-    ) -> Result<SharedCheckoutReadGuard<'_, A, O>, MountSourceError> {
+        owner: ThreadId,
+    ) -> Result<SharedCheckoutObservation<'_, A, O>, MountSourceError> {
         let view = self.view_gate.read_for_callback(owner, None).await?;
-        let state = self.state.lock().await;
-        Ok(SharedCheckoutReadGuard { _view: view, state })
+        let state = self.state.read().await;
+        Ok(SharedCheckoutObservation { _view: view, state })
     }
 
-    pub(super) fn view_epoch(&self) -> u64 {
-        self.view_epoch.load(Ordering::Acquire)
+    /// Whether a native durability request (`fsync`, or a close that
+    /// publishes) publishes; [`MountPublication::Manual`] leaves every
+    /// publication to an explicit sync or unmount.
+    pub(super) async fn publishes_at_native_boundary(&self) -> bool {
+        self.state.read().await.publishes_at_native_boundary()
+    }
+
+    /// Begins an optimistic transaction on a copy of the current candidate.
+    /// No reader is excluded: the copy records nothing into this checkout.
+    pub(super) async fn candidate(&self) -> Result<CheckoutCandidate<A, O>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.state.read().await.candidate()
+    }
+
+    /// Advances with every recorded change to the checkout's view.
+    pub(super) fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
+    fn unchanged_since(
+        &self,
+        path: &NamespacePath,
+        file_id: Option<FileId>,
+        stamp: ViewStamp,
+    ) -> bool {
+        self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp)
+    }
+
+    fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
+        self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp)
     }
 }
 
@@ -287,17 +598,19 @@ impl<A, O> DerefMut for SharedCheckoutGuard<'_, A, O> {
     }
 }
 
-impl<A, O> Deref for SharedCheckoutReadGuard<'_, A, O> {
+impl<A, O> Drop for SharedCheckoutGuard<'_, A, O> {
+    fn drop(&mut self) {
+        if self.state.checkout.root().file_table != self.state.recorded_view {
+            self.state.record(&ViewChange::Everything);
+        }
+    }
+}
+
+impl<A, O> Deref for SharedCheckoutObservation<'_, A, O> {
     type Target = SharedCheckoutState<A, O>;
 
     fn deref(&self) -> &Self::Target {
         &self.state
-    }
-}
-
-impl<A, O> DerefMut for SharedCheckoutReadGuard<'_, A, O> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.state
     }
 }
 
@@ -320,9 +633,6 @@ impl<A, O> SharedCheckoutState<A, O> {
                 && self.checkout.mode().mutations == crate::model::MutationMode::PrivateOverlay)
         {
             self.clear_retained_operation(operation_id);
-        }
-        if result.is_ok() {
-            self.view_epoch.fetch_add(1, Ordering::AcqRel);
         }
         result
     }
@@ -363,13 +673,82 @@ impl<A, O> SharedCheckoutState<A, O> {
         {
             self.clear_retained_operation(operation_id);
         }
-        if result.is_ok() {
-            self.view_epoch.fetch_add(1, Ordering::AcqRel);
-        }
         result
     }
 
+    /// Applies one content change by stable identity and stamps its
+    /// modification and status-change times in the same mutation, as a
+    /// native write, truncation, or allocation does, then publishes it like
+    /// any mutation. Times a profile does not represent stay unavailable.
+    pub(super) async fn change_content_by_id(
+        &mut self,
+        file_id: FileId,
+        change: ContentChange<FileId>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.checkout
+            .change_content_by_id(
+                file_id,
+                change,
+                ContentTimes::Stamp(content_change_time()?),
+                boundary_budget(),
+                cancellation,
+            )
+            .await
+            .map_err(engine_error)?;
+        self.publish_after_mutation(ViewChange::Node(file_id), cancellation)
+            .await
+    }
+
+    /// Applies one content change at an exact path with its time stamp as
+    /// one mutation, exactly as [`Self::change_content_by_id`] does.
+    pub(super) async fn change_content(
+        &mut self,
+        path: NamespacePath,
+        change: ContentChange<NamespacePath>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let node = self.node_at(&path, cancellation).await?;
+        self.checkout
+            .change_content(
+                path,
+                change,
+                ContentTimes::Stamp(content_change_time()?),
+                boundary_budget(),
+                cancellation,
+            )
+            .await
+            .map_err(engine_error)?;
+        self.publish_after_mutation(ViewChange::Node(node), cancellation)
+            .await
+    }
+
+    /// Records exactly what one mutation changed, then publishes it when the
+    /// policy publishes every mutation.
     pub(super) async fn publish_after_mutation(
+        &mut self,
+        change: ViewChange<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.record(&change);
+        self.publish_mutation(cancellation).await
+    }
+
+    /// Publishes one recorded mutation when the policy publishes every
+    /// mutation.
+    pub(super) async fn publish_mutation(
         &mut self,
         cancellation: &CancellationToken,
     ) -> Result<(), MountSourceError>
@@ -377,7 +756,6 @@ impl<A, O> SharedCheckoutState<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.view_epoch.fetch_add(1, Ordering::AcqRel);
         if self.publication == MountPublication::PerMutation {
             self.seal(cancellation).await?;
         }
@@ -392,10 +770,14 @@ impl<A, O> SharedCheckoutState<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        if self.publication != MountPublication::Manual {
+        if self.publishes_at_native_boundary() {
             self.seal(cancellation).await?;
         }
         Ok(())
+    }
+
+    fn publishes_at_native_boundary(&self) -> bool {
+        self.publication != MountPublication::Manual
     }
 
     /// Rejects later mutation while one publication has an unresolved result.
@@ -448,13 +830,293 @@ impl<A, O> SharedCheckoutState<A, O> {
         }
     }
 
-    pub(super) fn view_epoch(&self) -> u64 {
-        self.view_epoch.load(Ordering::Acquire)
+    /// The node a mutation is about to change through `path`, read without
+    /// recording an observation.
+    async fn node_at(
+        &self,
+        path: &NamespacePath,
+        cancellation: &CancellationToken,
+    ) -> Result<FileId, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.node_if_bound(path, cancellation)
+            .await?
+            .ok_or(MountSourceError::NotFound)
     }
 
-    pub(super) fn install_candidate(&mut self, candidate: Checkout<A, O>) {
-        self.checkout = candidate;
+    async fn node_if_bound(
+        &self,
+        path: &NamespacePath,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<FileId>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        Ok(self
+            .checkout
+            .inspector()
+            .lookup_no_follow(path, boundary_budget(), cancellation)
+            .await
+            .map_err(engine_error)?
+            .value
+            .record
+            .map(|record| record.file_id))
     }
+
+    /// Begins an optimistic transaction on a copy of this candidate.
+    pub(super) fn candidate(&self) -> Result<CheckoutCandidate<A, O>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.ensure_publication_resolved()?;
+        Ok(CheckoutCandidate {
+            base: self.private_candidate(),
+            checkout: self.private_candidate(),
+        })
+    }
+
+    /// Whether a transaction's candidate may still be installed: nothing
+    /// but observations has changed this checkout since the transaction
+    /// began, so installing undoes no other change, publication included.
+    pub(super) fn admits(&self, candidate: &CheckoutCandidate<A, O>) -> bool {
+        self.checkout
+            .admits_candidate(&candidate.base, &candidate.checkout)
+    }
+
+    /// Installs a transaction's candidate with its recorded effect, only
+    /// when [`Self::admits`] it. Returns whether it installed; any other
+    /// change since leaves the checkout untouched for the caller to retry.
+    pub(super) fn install_candidate(
+        &mut self,
+        candidate: CheckoutCandidate<A, O>,
+        installed: &Installed,
+    ) -> bool {
+        if !self
+            .checkout
+            .adopt_candidate(&candidate.base, candidate.checkout)
+        {
+            return false;
+        }
+        self.record(&ViewChange::Installed(installed));
+        true
+    }
+
+    /// Applies queued changes as one group, records exactly what each
+    /// successful one changed, publishes once when the policy publishes
+    /// every mutation, and answers every caller.
+    async fn apply_grouped_requests(
+        &mut self,
+        requests: Vec<GroupedRequest>,
+        cancellation: &CancellationToken,
+    ) where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        if let Err(error) = self.ensure_publication_resolved() {
+            for request in requests {
+                let _ = request.reply.send(Err(error.clone()));
+            }
+            return;
+        }
+        let origins = requests
+            .iter()
+            .map(|request| request.origin)
+            .collect::<Vec<_>>();
+        let (changes, replies): (Vec<_>, Vec<_>) = requests
+            .into_iter()
+            .map(|request| (request.change, request.reply))
+            .unzip();
+        let views = changes
+            .iter()
+            .map(|change| match change {
+                GroupedChange::CreateFile { path, .. } => GroupedView::Bound(path.clone()),
+                GroupedChange::Content { file_id, .. } => GroupedView::Node(*file_id),
+            })
+            .collect::<Vec<_>>();
+        let results = match self
+            .checkout
+            .apply_group(changes, boundary_budget(), cancellation)
+            .await
+        {
+            Ok(receipt) => receipt.value,
+            Err(failure) => {
+                let error = engine_error(failure.error);
+                for reply in replies {
+                    let _ = reply.send(Err(error.clone()));
+                }
+                return;
+            }
+        };
+        let mut changed = false;
+        for ((result, view), origin) in results.iter().zip(&views).zip(origins) {
+            if result.is_ok() {
+                changed = true;
+                let _origin = origin.enter();
+                match view {
+                    GroupedView::Bound(path) => self.record(&ViewChange::Bound(path)),
+                    GroupedView::Node(file_id) => self.record(&ViewChange::Node(*file_id)),
+                }
+            }
+        }
+        let published = if changed {
+            self.publish_mutation(cancellation).await
+        } else {
+            Ok(())
+        };
+        for ((result, view), reply) in results.into_iter().zip(views).zip(replies) {
+            let answer = match result {
+                Ok(outcome) => published.clone().map(|()| outcome),
+                Err(error) => Err(match view {
+                    GroupedView::Bound(_) => fs_error(error),
+                    GroupedView::Node(_) => engine_error(error),
+                }),
+            };
+            let _ = reply.send(answer);
+        }
+    }
+
+    /// Records one change to the checkout's view. The exclusive guard keeps
+    /// every lookup from overlapping the change it records.
+    pub(super) fn record(&mut self, change: &ViewChange<'_>) {
+        self.ledger.record(change);
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        self.recorded_view = self.checkout.root().file_table;
+    }
+}
+
+/// One optimistic transaction: a copy of the checkout to change, and the
+/// exact checkout it began from, against which its effect is computed
+/// without holding any lock.
+pub(super) struct CheckoutCandidate<A, O> {
+    base: Checkout<A, O>,
+    pub(super) checkout: Checkout<A, O>,
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutCandidate<A, O> {
+    /// The exact effect installing this candidate has: the generation diff
+    /// from the checkout it began from. `scope` names what the candidate was
+    /// prepared to change and locates the directories whose names changed.
+    pub(super) async fn installed_changes(
+        &self,
+        scope: InstallScope<'_>,
+        cancellation: &CancellationToken,
+    ) -> Installed {
+        // Boxed: the diff and its lookups would otherwise inline into every
+        // installing caller's future.
+        Box::pin(installed_changes(
+            &self.base,
+            &self.checkout,
+            scope,
+            cancellation,
+        ))
+        .await
+    }
+
+    /// The checkout this transaction began from.
+    pub(super) fn base(&self) -> &Checkout<A, O> {
+        &self.base
+    }
+}
+
+/// What a prepared candidate was built to change.
+#[derive(Clone, Copy)]
+pub(super) enum InstallScope<'a> {
+    /// Exactly these paths.
+    Paths(&'a [NamespacePath]),
+    /// Anything beneath this path.
+    Subtree(&'a NamespacePath),
+}
+
+impl InstallScope<'_> {
+    fn paths(&self) -> &[NamespacePath] {
+        match self {
+            Self::Paths(paths) => paths,
+            Self::Subtree(root) => std::slice::from_ref(*root),
+        }
+    }
+}
+
+/// The exact effect of replacing `base` with `candidate`, from their
+/// generation diff. A changed name in a directory the scope's paths do not
+/// pass through is covered by its subtree scope, or by everything.
+async fn installed_changes<A, O>(
+    base: &Checkout<A, O>,
+    candidate: &Checkout<A, O>,
+    scope: InstallScope<'_>,
+    cancellation: &CancellationToken,
+) -> Installed
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    let diff = match base
+        .candidate_diff(
+            candidate,
+            MAXIMUM_EXACT_INSTALL_CHANGES,
+            boundary_budget(),
+            cancellation,
+        )
+        .await
+    {
+        Ok(receipt) if !receipt.value.truncated => receipt.value,
+        _ => {
+            return Installed {
+                everything: true,
+                ..Installed::default()
+            };
+        }
+    };
+    let mut directories = std::collections::HashMap::new();
+    if !diff.bindings.is_empty() {
+        for path in scope.paths() {
+            for prefix in prefixes(path, base.volume_config().limits) {
+                for checkout in [base, candidate] {
+                    if let Ok(receipt) = checkout
+                        .inspector()
+                        .lookup_no_follow(&prefix, boundary_budget(), cancellation)
+                        .await
+                        && let Some(record) = receipt.value.record
+                    {
+                        directories
+                            .entry(record.file_id)
+                            .or_insert_with(|| prefix.clone());
+                    }
+                }
+            }
+        }
+    }
+    let mut installed = Installed {
+        nodes: diff
+            .files
+            .into_iter()
+            .map(|change| change.file_id)
+            .collect(),
+        ..Installed::default()
+    };
+    for binding in diff.bindings {
+        match (directories.get(&binding.directory_id), scope) {
+            (Some(directory), _) => installed.names.push((directory.clone(), binding.name)),
+            (None, InstallScope::Subtree(root)) => {
+                if installed.subtrees.is_empty() {
+                    installed.subtrees.push(root.clone());
+                }
+            }
+            (None, InstallScope::Paths(_)) => installed.everything = true,
+        }
+    }
+    installed
+}
+
+/// Every proper and improper prefix of `path`, root first.
+fn prefixes(path: &NamespacePath, limits: VolumeLimits) -> Vec<NamespacePath> {
+    (0..=path.components().len())
+        .filter_map(|length| path.components().get(..length))
+        .filter_map(|components| NamespacePath::new(components.to_vec(), limits).ok())
+        .collect()
 }
 
 impl<A, O> Deref for SharedCheckoutState<A, O> {
@@ -496,6 +1158,45 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             Ok((state.file.record(), state.metadata, state.mutation_epoch))
         })
     }
+
+    /// Reports the detached identity's live state within a caller's callback.
+    pub(super) async fn lookup_async(&self) -> Result<MountLookup, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let state = self.state.lock().await;
+        Ok(MountLookup {
+            node: MountNode {
+                file_id: state.file.file_id(),
+                kind: MountNodeKind::Regular,
+                logical_bytes: state.file.logical_bytes(),
+                link_count: 0,
+                device: None,
+            },
+            metadata: state.metadata,
+        })
+    }
+}
+
+impl<A, O> CheckoutDetachedFile<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    /// Applies one content change to this detached file with its time
+    /// stamp as one record transition, and records it.
+    fn change_content(
+        &self,
+        change: ContentChange<std::convert::Infallible>,
+    ) -> Result<(), MountSourceError> {
+        self.runtime.wait(|| async {
+            let mut state = self.state.lock().await;
+            state
+                .change_content(change, &self.ledger, &self.cancellation)
+                .await
+        })
+    }
 }
 
 impl<A, O> MountOpenFile for CheckoutDetachedFile<A, O>
@@ -504,19 +1205,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
-        self.runtime.wait(|| async {
-            let state = self.state.lock().await;
-            Ok(MountLookup {
-                node: MountNode {
-                    file_id: state.file.file_id(),
-                    kind: MountNodeKind::Regular,
-                    logical_bytes: state.file.logical_bytes(),
-                    link_count: 0,
-                    device: None,
-                },
-                metadata: state.metadata,
-            })
-        })
+        self.runtime.wait(|| self.lookup_async())
     }
 
     fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
@@ -583,37 +1272,11 @@ where
     }
 
     fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut state = self.state.lock().await;
-            state
-                .file
-                .write_range(offset, bytes, boundary_budget(), &self.cancellation)
-                .await
-                .map(|_| ())
-                .map_err(engine_error)?;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
-        })
+        self.change_content(ContentChange::Write { offset, bytes })
     }
 
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut state = self.state.lock().await;
-            state
-                .file
-                .resize(logical_bytes, boundary_budget(), &self.cancellation)
-                .await
-                .map(|_| ())
-                .map_err(engine_error)?;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
-        })
+        self.change_content(ContentChange::Resize { logical_bytes })
     }
 
     fn allocate_range(
@@ -622,37 +1285,7 @@ where
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut state = self.state.lock().await;
-            let range = ByteRange { offset, length };
-            match operation {
-                MountRangeAllocation::PunchHole => {
-                    state
-                        .file
-                        .zero_range(range, false, false, boundary_budget(), &self.cancellation)
-                        .await
-                }
-                MountRangeAllocation::ZeroRange { extend } => {
-                    state
-                        .file
-                        .zero_range(range, true, extend, boundary_budget(), &self.cancellation)
-                        .await
-                }
-                MountRangeAllocation::Preallocate { keep_size } => {
-                    state
-                        .file
-                        .preallocate(range, keep_size, boundary_budget(), &self.cancellation)
-                        .await
-                }
-            }
-            .map(|_| ())
-            .map_err(engine_error)?;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
-        })
+        self.change_content(range_allocation(ByteRange { offset, length }, operation))
     }
 
     fn set_attributes(
@@ -673,11 +1306,7 @@ where
                 .await
                 .map_err(engine_error)?;
             state.metadata = metadata;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
+            state.record_change(&self.ledger)
         })
     }
 
@@ -751,11 +1380,7 @@ where
                 .await
                 .map_err(facade_error)?;
             state.metadata = receipt.value;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
+            state.record_change(&self.ledger)
         })
     }
 
@@ -769,11 +1394,7 @@ where
                 .await
                 .map_err(facade_error)?;
             state.metadata = receipt.value;
-            state.mutation_epoch = state
-                .mutation_epoch
-                .checked_add(1)
-                .ok_or(MountSourceError::Stale)?;
-            Ok(())
+            state.record_change(&self.ledger)
         })
     }
 }
@@ -794,6 +1415,28 @@ impl<A, O> CheckoutAttachedFile<A, O> {
     }
 }
 
+impl<A, O> CheckoutAttachedFile<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    /// Applies one content change to this file with its time stamp as one
+    /// mutation.
+    fn change_content(&self, change: ContentChange<FileId>) -> Result<(), MountSourceError> {
+        let change = GroupedChange::Content {
+            file_id: self.file_id,
+            change,
+            times: ContentTimes::Stamp(content_change_time()?),
+        };
+        self.runtime.wait(|| async {
+            self.checkout
+                .apply_grouped(change, &self.cancellation)
+                .await
+                .map(|_| ())
+        })
+    }
+}
+
 impl<A, O> MountOpenFile for CheckoutAttachedFile<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -802,7 +1445,8 @@ where
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             let record = checkout
                 .read_file_record_by_id(self.file_id, boundary_budget(), &self.cancellation)
                 .await
@@ -823,7 +1467,8 @@ where
     fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_file_range_by_id(
                     self.file_id,
@@ -843,7 +1488,8 @@ where
     fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_file_up_to_by_id(
                     self.file_id,
@@ -861,7 +1507,8 @@ where
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .seek_file_extent_by_id(
                     self.file_id,
@@ -880,38 +1527,11 @@ where
     }
 
     fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            checkout
-                .write_file_by_id(
-                    self.file_id,
-                    offset,
-                    bytes,
-                    boundary_budget(),
-                    &self.cancellation,
-                )
-                .await
-                .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
-        })
+        self.change_content(ContentChange::Write { offset, bytes })
     }
 
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            checkout
-                .resize_file_by_id(
-                    self.file_id,
-                    logical_bytes,
-                    boundary_budget(),
-                    &self.cancellation,
-                )
-                .await
-                .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
-        })
+        self.change_content(ContentChange::Resize { logical_bytes })
     }
 
     fn allocate_range(
@@ -920,50 +1540,7 @@ where
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            let range = ByteRange { offset, length };
-            match operation {
-                MountRangeAllocation::PunchHole => {
-                    checkout
-                        .zero_file_range_by_id(
-                            self.file_id,
-                            range,
-                            false,
-                            false,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-                MountRangeAllocation::ZeroRange { extend } => {
-                    checkout
-                        .zero_file_range_by_id(
-                            self.file_id,
-                            range,
-                            true,
-                            extend,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-                MountRangeAllocation::Preallocate { keep_size } => {
-                    checkout
-                        .preallocate_file_by_id(
-                            self.file_id,
-                            range,
-                            keep_size,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-            }
-            .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
-        })
+        self.change_content(range_allocation(ByteRange { offset, length }, operation))
     }
 
     fn set_attributes(
@@ -984,7 +1561,9 @@ where
                 )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .await
         })
     }
 
@@ -992,7 +1571,8 @@ where
         let name = self.attribute_name(name)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_named_attribute_by_id(
                     self.file_id,
@@ -1014,7 +1594,8 @@ where
         let cursor = cursor.map(|name| self.attribute_name(name)).transpose()?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             let receipt = checkout
                 .list_named_attributes_by_id(
                     self.file_id,
@@ -1070,7 +1651,9 @@ where
                 )
                 .await
                 .map_err(facade_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .await
         })
     }
 
@@ -1088,18 +1671,71 @@ where
                 )
                 .await
                 .map_err(facade_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(self.file_id), &self.cancellation)
+                .await
         })
     }
 }
 
+/// Encodes one authenticated name as this host's native mount component.
+pub(super) fn native_mount_name(name: &LogicalName) -> Result<Vec<u8>, MountSourceError> {
+    match (name.encoding(), std::env::consts::OS) {
+        (NameEncoding::Utf8 | NameEncoding::PosixBytes, "linux" | "macos") => {
+            Ok(name.as_bytes().to_vec())
+        }
+        (NameEncoding::WindowsUtf16Le, "windows") => Ok(name.as_bytes().to_vec()),
+        (NameEncoding::Utf8, "windows") => {
+            let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
+                MountSourceError::Invalid("authenticated UTF-8 name is malformed".to_owned())
+            })?;
+            Ok(text.encode_utf16().flat_map(u16::to_le_bytes).collect())
+        }
+        _ => Err(MountSourceError::Unsupported(
+            "authenticated name encoding is incompatible with this native mount".to_owned(),
+        )),
+    }
+}
+
 impl<A, O> CheckoutMountSource<A, O> {
+    /// Whether the volume resolves every case of a name to one entry.
+    pub(super) fn folds_names(&self) -> bool {
+        self.folds_names
+    }
+
     pub(super) fn shared_checkout(&self) -> &SharedCheckout<A, O> {
         &self.checkout
     }
 
     pub(super) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
+    }
+
+    /// The checkout's current generation, which publication advances.
+    #[cfg(all(test, target_os = "macos"))]
+    pub(super) fn generation_id(&self) -> Result<crate::GenerationId, MountSourceError>
+    where
+        A: Send + Sync,
+        O: Send + Sync,
+    {
+        let owner = ViewGate::callback_owner();
+        self.runtime
+            .wait(|| async { Ok(self.checkout.observe(owner).await?.generation_id()) })
+    }
+
+    /// The checkout path a mounted path names, as view changes key it.
+    pub(super) fn namespace_path(
+        &self,
+        path: &MountPath,
+    ) -> Result<NamespacePath, MountSourceError> {
+        self.path(path)
+    }
+
+    /// Records a change a composing source makes to its own projection of
+    /// this checkout. The caller holds that source's exclusive view, so no
+    /// lookup through it overlaps the change.
+    pub(super) fn record_projection_change(&self, change: &ViewChange<'_>) {
+        self.checkout.ledger.record(change);
     }
 
     /// Binds an existing source handle to the same stable identity once a
@@ -1114,7 +1750,8 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let owner = ViewGate::callback_owner();
         let present = self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             match checkout
                 .read_file_record_by_id(file_id, boundary_budget(), &self.cancellation)
                 .await
@@ -1137,15 +1774,64 @@ impl<A, O> CheckoutMountSource<A, O> {
         }))
     }
 
+    /// What a lookup of `path` would report in `checkout`, a transaction's
+    /// candidate or base, without recording an observation.
+    pub(super) async fn lookup_in(
+        &self,
+        checkout: &Checkout<A, O>,
+        path: &MountPath,
+    ) -> Result<Option<MountLookup>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let path = self.path(path)?;
+        let receipt = checkout
+            .inspector()
+            .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
+            .await
+            .map_err(engine_error)?;
+        Ok(receipt.value.map(|value| MountLookup {
+            node: mount_node(value.record),
+            metadata: value.metadata,
+        }))
+    }
+
+    /// Resolves one mounted path within a caller's callback future, so a
+    /// composed source spends one runtime entry on its whole callback.
+    pub(super) async fn lookup_async(
+        &self,
+        path: &MountPath,
+        owner: ThreadId,
+    ) -> Result<Option<MountLookup>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let path = self.path(path)?;
+        let observation = self.checkout.observe(owner).await?;
+        let mut checkout = observation.observer();
+        let receipt = checkout
+            .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
+            .await
+            .map_err(engine_error)?;
+        Ok(receipt.value.map(|value| MountLookup {
+            node: mount_node(value.record),
+            metadata: value.metadata,
+        }))
+    }
+
     pub(super) fn record_by_id(&self, file_id: FileId) -> Result<FileRecord, MountSourceError>
     where
         A: AsyncAuthorityStore + Send + Sync,
         O: AsyncObjectStore + Send + Sync,
     {
+        let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            checkout
+            let observation = self.checkout.observe(owner).await?;
+            observation.ensure_publication_resolved()?;
+            observation
+                .observer()
                 .read_file_record_by_id(file_id, boundary_budget(), &self.cancellation)
                 .await
                 .map(|receipt| receipt.value)
@@ -1162,9 +1848,13 @@ impl<A, O> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore + Send + Sync,
         O: AsyncObjectStore + Send + Sync,
     {
+        let owner = ViewGate::callback_owner();
         let file = self.runtime.wait(|| async {
-            let checkout = self.checkout.lock().await;
-            Ok(checkout.detached_from_record(record))
+            Ok(self
+                .checkout
+                .observe(owner)
+                .await?
+                .detached_from_record(record))
         })?;
         Ok(Arc::new(CheckoutDetachedFile {
             state: tokio::sync::Mutex::new(DetachedMountState {
@@ -1172,6 +1862,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 metadata,
                 mutation_epoch: 0,
             }),
+            ledger: Arc::clone(&self.checkout.ledger),
             runtime: self.runtime.clone(),
             cancellation: self.cancellation.clone(),
             profile: self.profile,
@@ -1215,6 +1906,13 @@ impl<A, O> CheckoutMountSource<A, O> {
             root,
             limits: config.limits,
             profile: config.profile,
+            // Only UTF-8 names have case variants; the others fold to
+            // themselves.
+            folds_names: config.case_sensitivity == CaseSensitivity::ProfileFolded
+                && matches!(
+                    config.profile,
+                    FilesystemProfile::Portable | FilesystemProfile::Browser
+                ),
             cancellation: CancellationToken::new(),
             capture_gate: StdMutex::new(CaptureSourceGate::default()),
             runtime,
@@ -1233,7 +1931,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let owner = ViewGate::callback_owner();
         self.runtime
-            .wait(|| async { Ok(self.checkout.read_lock(owner).await?.volume_id()) })
+            .wait(|| async { Ok(self.checkout.observe(owner).await?.volume_id()) })
     }
 
     /// Cancels future and in-flight canonical operations owned by this mount.
@@ -1341,6 +2039,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
+        let base = checkout.private_candidate();
         let decision = checkout
             .rebase_head(
                 self.limits.maximum_checkout_dependencies,
@@ -1351,9 +2050,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .map_err(engine_error)?;
         match decision.value {
             RebaseDecision::Safe { .. } => {
-                self.checkout.view_gate.begin_transition();
-                self.checkout.view_gate.finish_transition();
-                checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
+                self.record_advance(&mut checkout, &base).await;
                 Ok(())
             }
             RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
@@ -1369,14 +2066,50 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
+        let base = checkout.private_candidate();
         checkout
             .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
             .await
             .map_err(engine_error)?;
-        self.checkout.view_gate.begin_transition();
-        self.checkout.view_gate.finish_transition();
-        checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
+        self.record_advance(&mut checkout, &base).await;
         Ok(())
+    }
+
+    /// Records exactly what advancing the checkout from `base` changed in
+    /// the view, as a binding transition; an advance that changed nothing,
+    /// such as one to an unmoved head, records nothing, so drivers keep
+    /// every cache and a revalidation barrier has nothing to wait for.
+    async fn record_advance(
+        &self,
+        checkout: &mut SharedCheckoutGuard<'_, A, O>,
+        base: &Checkout<A, O>,
+    ) where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        if checkout.root().file_table == base.root().file_table {
+            return;
+        }
+        // Names that changed in directories at unknown paths are covered
+        // by the whole checkout, whichever root a composing source mounts.
+        let installed = match NamespacePath::new(Vec::new(), self.limits) {
+            Ok(root) => {
+                Box::pin(installed_changes(
+                    base,
+                    checkout,
+                    InstallScope::Subtree(&root),
+                    &self.cancellation,
+                ))
+                .await
+            }
+            Err(_) => Installed {
+                everything: true,
+                ..Installed::default()
+            },
+        };
+        self.checkout.view_gate.begin_transition();
+        checkout.record(&ViewChange::Installed(&installed));
+        self.checkout.view_gate.finish_transition();
     }
 
     fn path(&self, path: &MountPath) -> Result<NamespacePath, MountSourceError> {
@@ -1388,6 +2121,19 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .collect::<Result<Vec<_>, _>>()?,
         );
         NamespacePath::new(components, self.limits).map_err(engine_error)
+    }
+
+    /// The native spelling every case of `bytes` resolves to, or `None` for
+    /// a name this volume cannot represent (which no lookup resolves).
+    fn folded_name(&self, bytes: &[u8]) -> Option<Vec<u8>> {
+        let name = self.logical_name(bytes).ok()?;
+        let folded = LogicalName::new(
+            name.encoding(),
+            name.case_fold_key(),
+            self.limits.maximum_component_bytes,
+        )
+        .ok()?;
+        native_mount_name(&folded).ok()
     }
 
     fn logical_name(&self, bytes: &[u8]) -> Result<LogicalName, MountSourceError> {
@@ -1449,24 +2195,6 @@ impl<A, O> CheckoutMountSource<A, O> {
             self.limits.maximum_component_bytes,
         )
         .map_err(engine_error)
-    }
-
-    fn native_name(name: &LogicalName) -> Result<Vec<u8>, MountSourceError> {
-        match (name.encoding(), std::env::consts::OS) {
-            (NameEncoding::Utf8 | NameEncoding::PosixBytes, "linux" | "macos") => {
-                Ok(name.as_bytes().to_vec())
-            }
-            (NameEncoding::WindowsUtf16Le, "windows") => Ok(name.as_bytes().to_vec()),
-            (NameEncoding::Utf8, "windows") => {
-                let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
-                    MountSourceError::Invalid("authenticated UTF-8 name is malformed".to_owned())
-                })?;
-                Ok(text.encode_utf16().flat_map(u16::to_le_bytes).collect())
-            }
-            _ => Err(MountSourceError::Unsupported(
-                "authenticated name encoding is incompatible with this native mount".to_owned(),
-            )),
-        }
     }
 
     pub(crate) fn capture_host_paths_with_identity(
@@ -1618,20 +2346,13 @@ impl<A, O> CheckoutMountSource<A, O> {
                 maximum_extent_spans: 65_536,
             };
             for _ in 0..3 {
-                let (mut candidate, epoch) = {
-                    let checkout = self.checkout.lock().await;
-                    checkout.ensure_publication_resolved()?;
-                    (
-                        checkout.private_candidate(),
-                        checkout.view_epoch.load(Ordering::Acquire),
-                    )
-                };
+                let mut candidate = self.checkout.candidate().await?;
                 // Projected host reads may call back into this checkout. Never
                 // hold its view gate while observing the virtualization root.
                 match scope {
                     HostCaptureScope::ExactPaths => {
                         capture_paths_batched_with_baseline(
-                            &mut candidate,
+                            &mut candidate.checkout,
                             &paths,
                             &options,
                             64,
@@ -1647,7 +2368,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                             MountSourceError::Invalid("missing capture subtree".to_owned())
                         })?;
                         capture_subtrees_with_policy_and_baseline(
-                            &mut candidate,
+                            &mut candidate.checkout,
                             &[root],
                             &options,
                             &crate::CapturePolicy::allow_all(),
@@ -1659,8 +2380,16 @@ impl<A, O> CheckoutMountSource<A, O> {
                         .map_err(engine_error)?;
                     }
                 }
+                let scope = match scope {
+                    HostCaptureScope::ExactPaths => InstallScope::Paths(&paths),
+                    HostCaptureScope::Subtree => {
+                        InstallScope::Subtree(paths.first().ok_or_else(|| {
+                            MountSourceError::Invalid("missing capture subtree".to_owned())
+                        })?)
+                    }
+                };
                 if self
-                    .commit_host_capture(candidate, epoch, policy.request)
+                    .commit_host_capture(candidate, scope, policy.request)
                     .await?
                 {
                     return Ok(());
@@ -1672,17 +2401,19 @@ impl<A, O> CheckoutMountSource<A, O> {
 
     async fn commit_host_capture(
         &self,
-        candidate: Checkout<A, O>,
-        epoch: u64,
+        candidate: CheckoutCandidate<A, O>,
+        scope: InstallScope<'_>,
         request: Option<&CaptureCommitGate>,
     ) -> Result<bool, MountSourceError>
     where
         A: AsyncAuthorityStore + Send + Sync + 'static,
         O: AsyncObjectStore + Send + Sync + 'static,
     {
+        let installed = candidate.installed_changes(scope, &self.cancellation).await;
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
-        if checkout.view_epoch.load(Ordering::Acquire) != epoch {
+        // Decide before a lifecycle request commits to this candidate.
+        if !checkout.admits(&candidate) {
             return Ok(false);
         }
         {
@@ -1701,7 +2432,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     .cancellation
                     .check()
                     .map_err(|error| MountSourceError::Engine(error.to_string()))?;
-                if checkout.publication != MountPublication::Manual {
+                if checkout.publishes_at_native_boundary() {
                     return Err(MountSourceError::Invalid(
                         "lifecycle capture requires manual publication".to_owned(),
                     ));
@@ -1715,12 +2446,9 @@ impl<A, O> CheckoutMountSource<A, O> {
                         Ordering::Acquire,
                     )
                     .map_err(|_| MountSourceError::Stale)?;
-                checkout.checkout = candidate;
-                checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
-                return Ok(true);
+                return Ok(checkout.install_candidate(candidate, &installed));
             }
-            checkout.checkout = candidate;
-            checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
+            checkout.install_candidate(candidate, &installed);
         }
         checkout
             .publish_at_native_boundary(&self.cancellation)
@@ -1746,6 +2474,28 @@ fn profile_name(profile: FilesystemProfile) -> &'static str {
     }
 }
 
+impl<A, O> CheckoutMountSource<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    /// Applies one content change at `path` with its time stamp as one
+    /// mutation.
+    fn change_content(
+        &self,
+        path: NamespacePath,
+        change: ContentChange<NamespacePath>,
+    ) -> Result<(), MountSourceError> {
+        self.runtime.wait(|| async {
+            let mut checkout = self.checkout.lock().await;
+            checkout.ensure_publication_resolved()?;
+            checkout
+                .change_content(path, change, &self.cancellation)
+                .await
+        })
+    }
+}
+
 impl<A, O> MountFilesystem for CheckoutMountSource<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -1755,8 +2505,45 @@ where
         self.profile == FilesystemProfile::Posix
     }
 
-    fn view_epoch(&self) -> Option<u64> {
-        Some(self.checkout.view_epoch())
+    fn flush_publishes(&self) -> bool {
+        // The policy is fixed at construction; an unreadable answer keeps
+        // the conservative default.
+        self.runtime
+            .wait(|| async { Ok(self.checkout.publishes_at_native_boundary().await) })
+            .unwrap_or(true)
+    }
+
+    fn view_stamp(&self) -> Option<ViewStamp> {
+        self.checkout
+            .view_gate
+            .is_stable()
+            .then(|| self.checkout.ledger.stamp())
+    }
+
+    fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
+        self.checkout.ledger.observe(observer);
+    }
+
+    fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
+        self.path(path)
+            .is_ok_and(|path| self.checkout.unchanged_since(&path, file_id, stamp))
+    }
+
+    fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
+        self.checkout.node_unchanged_since(file_id, stamp)
+    }
+
+    fn folded_path(&self, path: &MountPath) -> Option<MountPath> {
+        self.folds_names().then(|| {
+            path.components()
+                .iter()
+                .fold(MountPath::root(), |folded, component| {
+                    folded.child(
+                        self.folded_name(component)
+                            .unwrap_or_else(|| component.clone()),
+                    )
+                })
+        })
     }
 
     fn binding_epoch(&self) -> Option<u64> {
@@ -1767,18 +2554,12 @@ where
         self.checkout.view_gate.is_stable()
     }
 
-    fn acquire_view_lease(
-        &self,
-        expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
+    fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
         let owner = ViewGate::callback_owner();
         let lease = self.runtime.wait(|| {
             let gate = Arc::clone(&self.checkout.view_gate);
             async move { gate.read_for_callback(owner, None).await }
         })?;
-        if self.view_epoch() != expected_epoch {
-            return Err(MountSourceError::Stale);
-        }
         Ok(Box::new(lease))
     }
 
@@ -1795,26 +2576,16 @@ where
     }
 
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
-        let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
-            let receipt = checkout
-                .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(engine_error)?;
-            Ok(receipt.value.map(|value| MountLookup {
-                node: mount_node(value.record),
-                metadata: value.metadata,
-            }))
-        })
+        self.runtime.wait(|| self.lookup_async(path, owner))
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         let file_id = self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             let record = checkout
                 .lookup_no_follow(&path, boundary_budget(), &self.cancellation)
                 .await
@@ -1843,8 +2614,9 @@ where
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         let (file, metadata) = self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
-            checkout.ensure_publication_resolved()?;
+            let observation = self.checkout.observe(owner).await?;
+            observation.ensure_publication_resolved()?;
+            let mut checkout = observation.observer();
             let lookup = checkout
                 .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
                 .await
@@ -1869,6 +2641,7 @@ where
                 metadata,
                 mutation_epoch: 0,
             }),
+            ledger: Arc::clone(&self.checkout.ledger),
             runtime: self.runtime.clone(),
             cancellation: self.cancellation.clone(),
             profile: self.profile,
@@ -1880,7 +2653,8 @@ where
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_symbolic_link(&path, boundary_budget(), &self.cancellation)
                 .await
@@ -1898,7 +2672,8 @@ where
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_file_range(
                     &path,
@@ -1924,7 +2699,8 @@ where
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .seek_file_extent(
                     &path,
@@ -1952,7 +2728,8 @@ where
         let cursor = cursor.map(|bytes| self.logical_name(bytes)).transpose()?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             let receipt = checkout
                 .list_directory_records(
                     &path,
@@ -1970,7 +2747,7 @@ where
                 .into_iter()
                 .map(|entry| {
                     Ok(MountDirectoryEntry {
-                        name: Self::native_name(&entry.name)?,
+                        name: native_mount_name(&entry.name)?,
                         node: mount_node(entry.record),
                         metadata: entry.metadata,
                     })
@@ -1993,30 +2770,18 @@ where
     ) -> Result<MountLookup, MountSourceError> {
         let path = self.path(path)?;
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            let receipt = checkout
-                .apply_authored_transaction(
-                    vec![AuthoredMutation::CreateFile {
-                        path,
-                        bytes: Bytes::new(),
-                        metadata,
-                    }],
-                    boundary_budget(),
+            let GroupedOutcome::Created(file_id) = self
+                .checkout
+                .apply_grouped(
+                    GroupedChange::CreateFile { path, metadata },
                     &self.cancellation,
                 )
-                .await
-                .map_err(facade_error)?;
-            let file_id = receipt
-                .value
-                .created_file_ids
-                .first()
-                .copied()
-                .flatten()
-                .ok_or_else(|| {
-                    MountSourceError::Engine("create omitted file identity".to_owned())
-                })?;
-            checkout.publish_after_mutation(&self.cancellation).await?;
+                .await?
+            else {
+                return Err(MountSourceError::Engine(
+                    "create omitted file identity".to_owned(),
+                ));
+            };
             Ok(MountLookup {
                 node: MountNode {
                     file_id,
@@ -2041,7 +2806,10 @@ where
             checkout.ensure_publication_resolved()?;
             let receipt = checkout
                 .apply_authored_transaction(
-                    vec![AuthoredMutation::CreateDirectory { path, metadata }],
+                    vec![AuthoredMutation::CreateDirectory {
+                        path: path.clone(),
+                        metadata,
+                    }],
                     boundary_budget(),
                     &self.cancellation,
                 )
@@ -2056,7 +2824,9 @@ where
                 .ok_or_else(|| {
                     MountSourceError::Engine("create omitted file identity".to_owned())
                 })?;
-            checkout.publish_after_mutation(&self.cancellation).await?;
+            checkout
+                .publish_after_mutation(ViewChange::Bound(&path), &self.cancellation)
+                .await?;
             Ok(MountLookup {
                 node: MountNode {
                     file_id,
@@ -2086,7 +2856,7 @@ where
             let receipt = checkout
                 .apply_authored_transaction(
                     vec![AuthoredMutation::CreateSymbolicLink {
-                        path,
+                        path: path.clone(),
                         target,
                         metadata,
                     }],
@@ -2104,7 +2874,9 @@ where
                 .ok_or_else(|| {
                     MountSourceError::Engine("create omitted file identity".to_owned())
                 })?;
-            checkout.publish_after_mutation(&self.cancellation).await?;
+            checkout
+                .publish_after_mutation(ViewChange::Bound(&path), &self.cancellation)
+                .await?;
             Ok(MountLookup {
                 node: MountNode {
                     file_id,
@@ -2130,7 +2902,7 @@ where
             (MountNodeKind::Fifo, None) => (
                 FileKind::Fifo,
                 AuthoredMutation::CreateEmptySpecial {
-                    path,
+                    path: path.clone(),
                     kind: FileKind::Fifo,
                     metadata,
                 },
@@ -2138,7 +2910,7 @@ where
             (MountNodeKind::Socket, None) => (
                 FileKind::Socket,
                 AuthoredMutation::CreateEmptySpecial {
-                    path,
+                    path: path.clone(),
                     kind: FileKind::Socket,
                     metadata,
                 },
@@ -2146,7 +2918,7 @@ where
             (MountNodeKind::CharacterDevice, Some((major, minor))) => (
                 FileKind::CharacterDevice,
                 AuthoredMutation::CreateDevice {
-                    path,
+                    path: path.clone(),
                     kind: FileKind::CharacterDevice,
                     major,
                     minor,
@@ -2156,7 +2928,7 @@ where
             (MountNodeKind::BlockDevice, Some((major, minor))) => (
                 FileKind::BlockDevice,
                 AuthoredMutation::CreateDevice {
-                    path,
+                    path: path.clone(),
                     kind: FileKind::BlockDevice,
                     major,
                     minor,
@@ -2185,7 +2957,9 @@ where
                 .ok_or_else(|| {
                     MountSourceError::Engine("create omitted file identity".to_owned())
                 })?;
-            checkout.publish_after_mutation(&self.cancellation).await?;
+            checkout
+                .publish_after_mutation(ViewChange::Bound(&path), &self.cancellation)
+                .await?;
             Ok(MountLookup {
                 node: MountNode {
                     file_id,
@@ -2212,6 +2986,7 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&path, &self.cancellation).await?;
             let mut authored = vec![AuthoredMutation::SetMetadata {
                 path: path.clone(),
                 metadata,
@@ -2226,7 +3001,9 @@ where
                 .apply_authored_transaction(authored, boundary_budget(), &self.cancellation)
                 .await
                 .map_err(facade_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .await
         })
     }
 
@@ -2239,7 +3016,8 @@ where
         let name = self.posix_attribute_name(name)?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             checkout
                 .read_named_attribute(&path, &name, boundary_budget(), &self.cancellation)
                 .await
@@ -2260,7 +3038,8 @@ where
             .transpose()?;
         let owner = ViewGate::callback_owner();
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.read_lock(owner).await?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
             let receipt = checkout
                 .list_named_attributes(
                     &path,
@@ -2307,6 +3086,7 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&path, &self.cancellation).await?;
             checkout
                 .write_named_attribute(
                     path,
@@ -2318,7 +3098,9 @@ where
                 )
                 .await
                 .map_err(facade_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .await
         })
     }
 
@@ -2328,11 +3110,14 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&path, &self.cancellation).await?;
             checkout
                 .remove_named_attribute(path, name, boundary_budget(), &self.cancellation)
                 .await
                 .map_err(facade_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Node(node), &self.cancellation)
+                .await
         })
     }
 
@@ -2343,28 +3128,12 @@ where
         bytes: Bytes,
     ) -> Result<(), MountSourceError> {
         let path = self.path(path)?;
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            checkout
-                .write_file(path, offset, bytes, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
-        })
+        self.change_content(path, ContentChange::Write { offset, bytes })
     }
 
     fn resize(&self, path: &MountPath, logical_bytes: u64) -> Result<(), MountSourceError> {
         let path = self.path(path)?;
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            checkout
-                .resize_file(path, logical_bytes, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
-        })
+        self.change_content(path, ContentChange::Resize { logical_bytes })
     }
 
     fn allocate_range(
@@ -2375,49 +3144,10 @@ where
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
         let path = self.path(path)?;
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            match operation {
-                MountRangeAllocation::PunchHole => {
-                    checkout
-                        .zero_file_range(
-                            path,
-                            ByteRange { offset, length },
-                            false,
-                            false,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-                MountRangeAllocation::ZeroRange { extend } => {
-                    checkout
-                        .zero_file_range(
-                            path,
-                            ByteRange { offset, length },
-                            true,
-                            extend,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-                MountRangeAllocation::Preallocate { keep_size } => {
-                    checkout
-                        .preallocate_file(
-                            path,
-                            ByteRange { offset, length },
-                            keep_size,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-            }
-            .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
-        })
+        self.change_content(
+            path,
+            range_allocation(ByteRange { offset, length }, operation),
+        )
     }
 
     fn clone_range(
@@ -2430,25 +3160,15 @@ where
     ) -> Result<(), MountSourceError> {
         let source = self.path(source)?;
         let destination = self.path(destination)?;
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            checkout
-                .clone_file_range(
-                    crate::FileCloneRequest {
-                        source,
-                        source_offset,
-                        destination,
-                        destination_offset,
-                        length,
-                    },
-                    boundary_budget(),
-                    &self.cancellation,
-                )
-                .await
-                .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
-        })
+        self.change_content(
+            destination,
+            ContentChange::CloneFrom {
+                source,
+                source_offset,
+                offset: destination_offset,
+                length,
+            },
+        )
     }
 
     fn clone_range_by_id(
@@ -2463,18 +3183,17 @@ where
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
             checkout
-                .clone_file_range_by_id(
-                    source_file_id,
-                    source_offset,
+                .change_content_by_id(
                     destination_file_id,
-                    destination_offset,
-                    length,
-                    boundary_budget(),
+                    ContentChange::CloneFrom {
+                        source: source_file_id,
+                        source_offset,
+                        offset: destination_offset,
+                        length,
+                    },
                     &self.cancellation,
                 )
                 .await
-                .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
         })
     }
 
@@ -2483,11 +3202,22 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = match expected {
+                Some(node) => node,
+                None => checkout.node_at(&path, &self.cancellation).await?,
+            };
             checkout
-                .remove(path, expected, boundary_budget(), &self.cancellation)
+                .remove(
+                    path.clone(),
+                    expected,
+                    boundary_budget(),
+                    &self.cancellation,
+                )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Unbound(&path, node), &self.cancellation)
+                .await
         })
     }
 
@@ -2502,17 +3232,31 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let moved = checkout.node_at(&source, &self.cancellation).await?;
+            let replaced = checkout
+                .node_if_bound(&destination, &self.cancellation)
+                .await?;
             checkout
                 .rename(
-                    source,
-                    destination,
+                    source.clone(),
+                    destination.clone(),
                     replace,
                     boundary_budget(),
                     &self.cancellation,
                 )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(
+                    ViewChange::Moved {
+                        from: &source,
+                        to: &destination,
+                        moved,
+                        replaced,
+                    },
+                    &self.cancellation,
+                )
+                .await
         })
     }
 
@@ -2526,16 +3270,29 @@ where
         self.runtime.wait(|| async {
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
+            let node = checkout.node_at(&source, &self.cancellation).await?;
             checkout
-                .hard_link(source, destination, boundary_budget(), &self.cancellation)
+                .hard_link(
+                    source,
+                    destination.clone(),
+                    boundary_budget(),
+                    &self.cancellation,
+                )
                 .await
                 .map_err(engine_error)?;
-            checkout.publish_after_mutation(&self.cancellation).await
+            checkout
+                .publish_after_mutation(ViewChange::Linked(&destination, node), &self.cancellation)
+                .await
         })
     }
 
     fn flush(&self) -> Result<(), MountSourceError> {
         self.runtime.wait(|| async {
+            // A manual checkout publishes nothing here, so it never excludes
+            // every callback just to decide that.
+            if !self.checkout.publishes_at_native_boundary().await {
+                return Ok(());
+            }
             let mut checkout = self.checkout.lock().await;
             checkout
                 .publish_at_native_boundary(&self.cancellation)
@@ -2579,16 +3336,9 @@ where
                 maximum_extent_spans: 65_536,
             };
             for _ in 0..3 {
-                let (mut candidate, epoch) = {
-                    let checkout = self.checkout.lock().await;
-                    checkout.ensure_publication_resolved()?;
-                    (
-                        checkout.private_candidate(),
-                        checkout.view_epoch.load(Ordering::Acquire),
-                    )
-                };
+                let mut candidate = self.checkout.candidate().await?;
                 capture_subtree(
-                    &mut candidate,
+                    &mut candidate.checkout,
                     path.clone(),
                     &options,
                     boundary_budget(),
@@ -2596,13 +3346,14 @@ where
                 )
                 .await
                 .map_err(engine_error)?;
+                let installed = candidate
+                    .installed_changes(InstallScope::Subtree(&path), &self.cancellation)
+                    .await;
                 let mut checkout = self.checkout.lock().await;
                 checkout.ensure_publication_resolved()?;
-                if checkout.view_epoch.load(Ordering::Acquire) != epoch {
+                if !checkout.install_candidate(candidate, &installed) {
                     continue;
                 }
-                checkout.checkout = candidate;
-                checkout.view_epoch.fetch_add(1, Ordering::AcqRel);
                 return checkout
                     .publish_at_native_boundary(&self.cancellation)
                     .await;
@@ -2647,12 +3398,52 @@ fn mount_node(record: FileRecord) -> MountNode {
     }
 }
 
+/// Sets every modification and status-change time the metadata represents
+/// to now, and returns whether it represents either.
+/// What one grouped change alters in the checkout's view.
+enum GroupedView {
+    Bound(NamespacePath),
+    Node(FileId),
+}
+
+/// The current instant as a content-change time, in signed Unix-epoch nanoseconds.
+fn content_change_time() -> Result<i64, MountSourceError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| i64::try_from(since.as_nanos()).ok())
+        .ok_or_else(|| MountSourceError::Engine("the clock is outside file time".to_owned()))
+}
+
+/// The content change one native range allocation requests.
+fn range_allocation<F>(range: ByteRange, operation: MountRangeAllocation) -> ContentChange<F> {
+    match operation {
+        MountRangeAllocation::PunchHole => ContentChange::ZeroRange {
+            range,
+            allocated: false,
+            extend: false,
+        },
+        MountRangeAllocation::ZeroRange { extend } => ContentChange::ZeroRange {
+            range,
+            allocated: true,
+            extend,
+        },
+        MountRangeAllocation::Preallocate { keep_size } => {
+            ContentChange::Preallocate { range, keep_size }
+        }
+    }
+}
+
 fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
     MountSourceError::Engine(error.to_string())
 }
 
 fn facade_error(error: OperationFailure<FsError>) -> MountSourceError {
-    match error.error {
+    fs_error(error.error)
+}
+
+fn fs_error(error: FsError) -> MountSourceError {
+    match error {
         FsError::CreationRejected | FsError::Mutation(GenerationMutationError::AlreadyExists) => {
             MountSourceError::AlreadyExists
         }
@@ -2776,31 +3567,186 @@ mod tests {
         Ok(())
     }
 
+    /// Objects in memory, refusing metadata while `refuse_metadata` is set.
+    #[derive(Default)]
+    struct MetadataRefusingObjects {
+        inner: crate::memory::MemoryObjectStore,
+        refuse_metadata: AtomicBool,
+    }
+
+    impl MetadataRefusingObjects {
+        fn admit(&self, object_id: ObjectId) -> Result<(), crate::storage::ObjectFailure> {
+            if object_id.kind == crate::storage::ObjectKind::Metadata
+                && self.refuse_metadata.load(Ordering::Acquire)
+            {
+                return Err(crate::storage::ObjectFailure::before_work(
+                    crate::storage::ObjectStoreError::Corrupt,
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    impl crate::storage::ObjectStore for MetadataRefusingObjects {
+        fn put(
+            &self,
+            object_id: ObjectId,
+            bytes: Bytes,
+            budget: WorkBudget,
+        ) -> crate::storage::ObjectResult<()> {
+            self.admit(object_id)?;
+            crate::storage::ObjectStore::put(&self.inner, object_id, bytes, budget)
+        }
+
+        fn put_many(
+            &self,
+            writes: &[crate::storage::ObjectWrite],
+            budget: WorkBudget,
+        ) -> crate::storage::ObjectResult<()> {
+            for write in writes {
+                self.admit(write.object_id)?;
+            }
+            crate::storage::ObjectStore::put_many(&self.inner, writes, budget)
+        }
+
+        fn read(
+            &self,
+            object_id: ObjectId,
+            maximum_bytes: u64,
+            budget: WorkBudget,
+        ) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
+            crate::storage::ObjectStore::read(&self.inner, object_id, maximum_bytes, budget)
+        }
+
+        fn read_many(
+            &self,
+            requests: &[crate::storage::ObjectReadRequest],
+            budget: WorkBudget,
+        ) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
+            crate::storage::ObjectStore::read_many(&self.inner, requests, budget)
+        }
+
+        fn contains(
+            &self,
+            object_id: ObjectId,
+            budget: WorkBudget,
+        ) -> crate::storage::ObjectResult<bool> {
+            crate::storage::ObjectStore::contains(&self.inner, object_id, budget)
+        }
+    }
+
+    impl crate::async_storage::ImmediateObjectStore for MetadataRefusingObjects {}
+
+    #[test]
+    fn a_detached_write_that_cannot_stamp_changes_nothing() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let objects = Arc::new(MetadataRefusingObjects::default());
+        let fs = Fs::new(
+            crate::memory::MemoryAuthorityStore::default(),
+            Arc::clone(&objects),
+            crate::EmbeddedCapabilities::MEMORY,
+        );
+        let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let checkout = runtime.block_on(async {
+            let cancellation = CancellationToken::new();
+            let volume = fs
+                .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value;
+            volume
+                .checkout(
+                    GenerationSelector::Head,
+                    CheckoutMode {
+                        access: AccessMode::ReadWrite,
+                        consistency: ConsistencyMode::Pinned,
+                        mutations: MutationMode::PrivateOverlay,
+                    },
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map(|receipt| receipt.value)
+        })?;
+        let source = CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?;
+        let path = native_test_path("stamped.bin");
+        let timed = FileMetadata {
+            modified_ns: crate::kernel::MetadataField::Value(1),
+            changed_ns: crate::kernel::MetadataField::Value(1),
+            ..metadata()
+        };
+        source.create_file(&path, timed)?;
+        source.write_range(&path, 0, Bytes::from_static(b"before"))?;
+        let detached = source.detach_file(&path)?;
+        let before = detached.lookup()?;
+
+        objects.refuse_metadata.store(true, Ordering::Release);
+        assert!(
+            detached
+                .write_range(0, Bytes::from_static(b"after!"))
+                .is_err()
+        );
+        assert!(detached.resize(64).is_err());
+        objects.refuse_metadata.store(false, Ordering::Release);
+
+        // Content and stamp are one transition: neither happened, so no
+        // cached fact about the file went stale without being invalidated.
+        assert_eq!(detached.lookup()?, before);
+        assert_eq!(detached.read_range(0, 6)?.as_ref(), b"before");
+        detached.write_range(0, Bytes::from_static(b"after!"))?;
+        let after = detached.lookup()?;
+        assert_eq!(detached.read_range(0, 6)?.as_ref(), b"after!");
+        assert_ne!(after.metadata, before.metadata);
+        Ok(())
+    }
+
     type MemorySource = CheckoutMountSource<
         crate::facade::MemoryAuthorityBackend,
         crate::facade::MemoryObjectBackend,
     >;
 
+    /// Publication changes the checkout without changing its view. A
+    /// candidate begun before it must not install over it: that would
+    /// restore the published-over head, and every later publication would
+    /// then conflict with it.
+    #[test]
+    fn a_candidate_never_installs_over_a_publication() -> Result<(), Box<dyn std::error::Error>> {
+        let (source, _) =
+            shared_sources_with_publication(FilesystemProfile::Portable, MountPublication::Manual)?;
+        source.create_file(&native_test_path("first"), FileMetadata::default())?;
+        let candidate = source.runtime.block_on(|| source.checkout.candidate())?;
+        source.sync()?;
+        let installed = source.runtime.block_on(|| async {
+            Ok::<_, MountSourceError>(
+                source
+                    .checkout
+                    .lock()
+                    .await
+                    .install_candidate(candidate, &Installed::default()),
+            )
+        })?;
+        assert!(!installed, "a candidate installed over a publication");
+        source.create_file(&native_test_path("second"), FileMetadata::default())?;
+        source.sync()?;
+        Ok(())
+    }
+
     #[test]
     fn cancelled_lifecycle_capture_cannot_commit_late() -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) =
             shared_sources_with_publication(FilesystemProfile::Portable, MountPublication::Manual)?;
-        let epoch = source
-            .view_epoch()
-            .ok_or_else(|| std::io::Error::other("missing checkout view epoch"))?;
-        let candidate = source
-            .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() })?;
+        let revision = source.checkout.revision();
+        let candidate = source.runtime.block_on(|| source.checkout.candidate())?;
         let request = Arc::new(CaptureCommitGate {
             cancellation: CancellationToken::new(),
             state: AtomicU8::new(CAPTURE_PENDING),
         });
         drop(CancelCaptureOnDrop(Arc::clone(&request)));
-        let result = source
-            .runtime
-            .block_on(|| source.commit_host_capture(candidate, epoch, Some(&request)))?;
+        let result = source.runtime.block_on(|| {
+            source.commit_host_capture(candidate, InstallScope::Paths(&[]), Some(&request))
+        });
         assert!(result.is_err());
-        assert_eq!(source.view_epoch(), Some(epoch));
+        assert_eq!(source.checkout.revision(), revision);
         let request = Arc::new(CaptureCommitGate {
             cancellation: CancellationToken::new(),
             state: AtomicU8::new(CAPTURE_PENDING),
@@ -2813,14 +3759,12 @@ mod tests {
             .push(Arc::downgrade(&request));
         source.cancel();
         assert!(request.cancellation.is_cancelled());
-        let candidate = source
-            .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() })?;
-        let result = source
-            .runtime
-            .block_on(|| source.commit_host_capture(candidate, epoch, Some(&request)))?;
+        let candidate = source.runtime.block_on(|| source.checkout.candidate())?;
+        let result = source.runtime.block_on(|| {
+            source.commit_host_capture(candidate, InstallScope::Paths(&[]), Some(&request))
+        });
         assert!(result.is_err());
-        assert_eq!(source.view_epoch(), Some(epoch));
+        assert_eq!(source.checkout.revision(), revision);
         Ok(())
     }
 
@@ -2843,7 +3787,7 @@ mod tests {
             .build()?;
         runtime.block_on(async {
             let held = source.checkout.lock().await;
-            let epoch = source.checkout.view_epoch();
+            let revision = source.checkout.revision();
             let worker = Arc::clone(&source);
             let root = directory.path().to_path_buf();
             let capture = tokio::spawn(async move {
@@ -2883,7 +3827,7 @@ mod tests {
                 }
             })
             .await?;
-            assert_eq!(source.checkout.view_epoch(), epoch);
+            assert_eq!(source.checkout.revision(), revision);
             assert!(!source.checkout.lock().await.has_pending_mutations());
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;
@@ -2908,7 +3852,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut zero_candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() })?;
+            .block_on(|| async { source.checkout.lock().await.private_candidate() });
         let zero_result = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
                 &mut zero_candidate,
@@ -2919,7 +3863,7 @@ mod tests {
                 &cancellation,
                 None,
             )
-        })?;
+        });
         let Err(zero_failure) = zero_result else {
             return Err(std::io::Error::other("zero budget admitted host observation").into());
         };
@@ -2927,7 +3871,7 @@ mod tests {
         assert!(!zero_candidate.has_pending_mutations());
         let mut candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() })?;
+            .block_on(|| async { source.checkout.lock().await.private_candidate() });
         let single = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
                 &mut candidate,
@@ -2938,13 +3882,13 @@ mod tests {
                 &cancellation,
                 None,
             )
-        })??;
+        })?;
         assert!(single.work.source_bytes_read > 0);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.source_bytes_read = single.work.source_bytes_read;
         let mut candidate = source
             .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() })?;
+            .block_on(|| async { source.checkout.lock().await.private_candidate() });
         let paths = [first, second];
         let result = source.runtime.block_on(|| {
             capture_paths_batched_with_baseline(
@@ -2956,7 +3900,7 @@ mod tests {
                 &cancellation,
                 None,
             )
-        })?;
+        });
         let Err(failure) = result else {
             return Err(std::io::Error::other("aggregate source budget was ignored").into());
         };
@@ -2965,18 +3909,20 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn external_callbacks_enter_the_shared_runtime_without_transient_threads()
+    fn callbacks_run_on_their_driver_threads_without_helper_threads()
     -> Result<(), Box<dyn std::error::Error>> {
         let runtime = CallbackRuntime::create()?;
         let callers = (0..32)
             .map(|index| {
                 let runtime = runtime.clone();
                 std::thread::Builder::new()
-                    .name(format!("callback-probe-{index}"))
+                    .name(format!("native-driver-{index}"))
                     .spawn(move || {
                         runtime.wait(|| async {
+                            // A real reactor wait parks the driver thread
+                            // until a runtime worker wakes it.
+                            tokio::time::sleep(Duration::from_millis(1)).await;
                             Ok::<_, MountSourceError>(
                                 std::thread::current().name().unwrap_or_default().to_owned(),
                             )
@@ -2988,10 +3934,32 @@ mod tests {
             assert_eq!(
                 caller
                     .join()
-                    .map_err(|_| std::io::Error::other("callback probe thread panicked"))??,
-                format!("callback-probe-{index}")
+                    .map_err(|_| std::io::Error::other("native driver thread panicked"))??,
+                format!("native-driver-{index}")
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn nested_callbacks_reenter_on_the_same_driver_thread() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let runtime = CallbackRuntime::create()?;
+        let nested = runtime.clone();
+        let observed = std::thread::Builder::new()
+            .name("native-driver".to_owned())
+            .spawn(move || {
+                runtime.wait(|| async {
+                    tokio::task::yield_now().await;
+                    nested.wait(|| async {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                        Ok(std::thread::current().name().unwrap_or_default().to_owned())
+                    })
+                })
+            })?
+            .join()
+            .map_err(|_| "native driver callback panicked")??;
+        assert_eq!(observed, "native-driver");
         Ok(())
     }
 
@@ -3012,9 +3980,7 @@ mod tests {
         }
     }
 
-    fn checkout_state(
-        source: &MemorySource,
-    ) -> Result<(crate::GenerationId, bool), MountSourceError> {
+    fn checkout_state(source: &MemorySource) -> (crate::GenerationId, bool) {
         source.runtime.block_on(|| async {
             let checkout = source.checkout.lock().await;
             (checkout.generation_id(), checkout.has_pending_mutations())
@@ -3032,10 +3998,153 @@ mod tests {
     }
 
     #[test]
+    fn a_grouped_change_takes_its_requesters_origin() -> Result<(), Box<dyn std::error::Error>> {
+        struct Origins(StdMutex<Vec<ViewOrigin>>);
+        impl ViewObserver for Origins {
+            fn view_changed(&self, _position: ViewStamp, origin: ViewOrigin) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(origin);
+            }
+        }
+
+        let source = source(FilesystemProfile::Portable)?;
+        let observer = Arc::new(Origins(StdMutex::new(Vec::new())));
+        let weak: Weak<dyn ViewObserver> = Arc::<Origins>::downgrade(&observer);
+        source.observe_view(weak);
+        let (requester, applier) = (ViewOrigin::new(), ViewOrigin::new());
+        // A request queued under one origin, then applied in the group of a
+        // caller under another.
+        let (reply, _outcome) = tokio::sync::oneshot::channel();
+        source
+            .checkout
+            .grouped
+            .lock()
+            .map_err(|_| "poisoned queue")?
+            .requests
+            .push_back(GroupedRequest {
+                change: GroupedChange::CreateFile {
+                    path: source.path(&native_test_path("queued"))?,
+                    metadata: metadata(),
+                },
+                admission: Arc::new(GroupedAdmission(AtomicU8::new(GROUPED_QUEUED))),
+                reply,
+                origin: requester,
+            });
+        {
+            let _applier = applier.enter();
+            source.create_file(&native_test_path("applied"), metadata())?;
+        }
+        let origins = observer.0.lock().map_err(|_| "poisoned origins")?.clone();
+        assert_eq!(origins.get(..2), Some(&[requester, applier][..]));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_place_callback_outlasts_its_callers_cooperative_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = CallbackRuntime::create()?;
+        let lock = tokio::sync::Mutex::new(());
+        // Each acquisition spends cooperative budget; far more than one
+        // task's budget must complete while the calling task is blocked.
+        let acquired = runtime.wait(|| async {
+            let mut acquired = 0_u32;
+            for _ in 0..4_096 {
+                drop(lock.lock().await);
+                acquired += 1;
+            }
+            Ok(acquired)
+        });
+        assert_eq!(acquired?, 4_096);
+        Ok(())
+    }
+
+    #[test]
+    fn an_abandoned_grouped_change_never_applies() -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let abandoned = native_test_path("abandoned.bin");
+        let kept = native_test_path("kept.bin");
+        let create = |path: &MountPath| -> Result<GroupedChange, MountSourceError> {
+            Ok(GroupedChange::CreateFile {
+                path: source.path(path)?,
+                metadata: metadata(),
+            })
+        };
+        let (abandoned_change, kept_change) = (create(&abandoned)?, create(&kept)?);
+        source.runtime.block_on(|| async {
+            // While another holder keeps the checkout, one caller queues its
+            // change and gives up waiting, as a callback deadline does.
+            let held = source.checkout.lock().await;
+            let gave_up = tokio::time::timeout(
+                Duration::from_millis(20),
+                source
+                    .checkout
+                    .apply_grouped(abandoned_change, &source.cancellation),
+            )
+            .await;
+            assert!(gave_up.is_err(), "the checkout was held");
+            drop(held);
+            source
+                .checkout
+                .apply_grouped(kept_change, &source.cancellation)
+                .await
+        })?;
+        assert!(source.lookup(&kept)?.is_some());
+        assert!(
+            source.lookup(&abandoned)?.is_none(),
+            "a change its caller saw fail applied later"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_drain_outlives_the_caller_that_started_it() -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let abandoned = native_test_path("drainer.bin");
+        let kept = native_test_path("waiter.bin");
+        let create = |path: &MountPath| -> Result<GroupedChange, MountSourceError> {
+            Ok(GroupedChange::CreateFile {
+                path: source.path(path)?,
+                metadata: metadata(),
+            })
+        };
+        let (abandoned_change, kept_change) = (create(&abandoned)?, create(&kept)?);
+        source.runtime.block_on(|| async {
+            let held = source.checkout.lock().await;
+            // The first caller starts the drain in place, which waits for
+            // the held checkout; a second caller queues behind it.
+            let mut drainer = Box::pin(
+                source
+                    .checkout
+                    .apply_grouped(abandoned_change, &source.cancellation),
+            );
+            assert!(futures::poll!(drainer.as_mut()).is_pending());
+            let checkout = Arc::clone(&source.checkout);
+            let cancellation = source.cancellation.clone();
+            let waiter =
+                tokio::spawn(
+                    async move { checkout.apply_grouped(kept_change, &cancellation).await },
+                );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            // The drainer's caller gives up; the drain continues without it.
+            drop(drainer);
+            drop(held);
+            tokio::time::timeout(Duration::from_secs(5), waiter)
+                .await
+                .map_err(|_| MountSourceError::Stale)?
+                .map_err(|_| MountSourceError::Stale)?
+        })?;
+        assert!(source.lookup(&kept)?.is_some());
+        assert!(source.lookup(&abandoned)?.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn direct_checkout_view_lease_excludes_concurrent_mutation()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = Arc::new(source(FilesystemProfile::Portable)?);
-        let lease = source.acquire_view_lease(source.view_epoch())?;
+        let lease = source.acquire_view_lease()?;
         let writer = Arc::clone(&source);
         let (completed, receive) = std::sync::mpsc::sync_channel(1);
         let task = std::thread::spawn(move || {
@@ -3055,15 +4164,347 @@ mod tests {
     }
 
     #[test]
+    fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error::Error>> {
+        let (source, _) = tracking_sources(FilesystemProfile::Portable)?;
+        let source = Arc::new(source);
+        let path = native_test_path("shared.bin");
+        source.create_file(&path, metadata())?;
+        source.write_range(&path, 0, Bytes::from_static(b"shared"))?;
+        let owner = ViewGate::callback_owner();
+        let held = source.runtime.block_on(|| source.checkout.observe(owner))?;
+        let reader = Arc::clone(&source);
+        let (completed, receive) = std::sync::mpsc::sync_channel(1);
+        let task = std::thread::spawn(move || {
+            let result = reader.read_range(&path, 0, 6);
+            assert!(completed.send(result).is_ok(), "read result receiver");
+        });
+        let read = receive.recv_timeout(Duration::from_secs(5)).map_err(|_| {
+            std::io::Error::other("a callback read waited for another callback's read")
+        })??;
+        assert_eq!(read.as_ref(), b"shared");
+        drop(held);
+        task.join()
+            .map_err(|_| std::io::Error::other("read thread panicked"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_observations_never_see_a_mutation_half_applied()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const ROUNDS: u8 = 32;
+        let (source, _) = tracking_sources(FilesystemProfile::Portable)?;
+        let source = Arc::new(source);
+        let pair = [
+            native_test_path("first.bin"),
+            native_test_path("second.bin"),
+        ];
+        for path in &pair {
+            source.create_file(path, metadata())?;
+            source.write_range(path, 0, Bytes::from_static(&[0]))?;
+        }
+        let pair = [source.path(&pair[0])?, source.path(&pair[1])?];
+        let done = Arc::new(AtomicBool::new(false));
+        let readers = (0..4)
+            .map(|_| {
+                let source = Arc::clone(&source);
+                let pair = pair.clone();
+                let done = Arc::clone(&done);
+                std::thread::spawn(move || -> Result<u32, MountSourceError> {
+                    let owner = ViewGate::callback_owner();
+                    let mut observed = 0;
+                    loop {
+                        let finished = done.load(Ordering::Acquire);
+                        let [first, second] = source.runtime.wait(|| async {
+                            let observation = source.checkout.observe(owner).await?;
+                            let mut checkout = observation.observer();
+                            let mut values = [0; 2];
+                            for (value, path) in values.iter_mut().zip(&pair) {
+                                let range = ByteRange {
+                                    offset: 0,
+                                    length: 1,
+                                };
+                                *value = checkout
+                                    .read_file_range(
+                                        path,
+                                        range,
+                                        boundary_budget(),
+                                        &source.cancellation,
+                                    )
+                                    .await
+                                    .map_err(engine_error)?
+                                    .value
+                                    .bytes[0];
+                                tokio::task::yield_now().await;
+                            }
+                            Ok(values)
+                        })?;
+                        assert_eq!(first, second, "an observation crossed a mutation");
+                        observed += 1;
+                        if finished {
+                            return Ok(observed);
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for round in 1..=ROUNDS {
+            source.runtime.wait(|| async {
+                let mut checkout = source.checkout.lock().await;
+                for path in &pair {
+                    checkout
+                        .write_file(
+                            path.clone(),
+                            0,
+                            Bytes::from(vec![round]),
+                            boundary_budget(),
+                            &source.cancellation,
+                        )
+                        .await
+                        .map_err(engine_error)?;
+                    tokio::task::yield_now().await;
+                }
+                checkout
+                    .publish_after_mutation(ViewChange::Everything, &source.cancellation)
+                    .await
+            })?;
+        }
+        done.store(true, Ordering::Release);
+        for reader in readers {
+            let observed = reader
+                .join()
+                .map_err(|_| std::io::Error::other("observation thread panicked"))??;
+            assert!(observed > 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn observers_cannot_mutate_or_advance_their_checkout() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (source, _) = tracking_sources(FilesystemProfile::Portable)?;
+        let path = native_test_path("observed.bin");
+        source.create_file(&path, metadata())?;
+        let path = source.path(&path)?;
+        let owner = ViewGate::callback_owner();
+        let (write, refresh) = source.runtime.block_on(|| async {
+            let observation = source.checkout.observe(owner).await?;
+            let mut observer = observation.observer();
+            let write = observer
+                .write_file(
+                    path,
+                    0,
+                    Bytes::from_static(b"lost"),
+                    boundary_budget(),
+                    &source.cancellation,
+                )
+                .await;
+            let refresh = observer
+                .refresh_head(boundary_budget(), &source.cancellation)
+                .await;
+            Ok::<_, MountSourceError>((write, refresh))
+        })?;
+        assert!(
+            matches!(write, Err(failure) if matches!(failure.error, FsError::MutationNotAllowed))
+        );
+        assert!(
+            matches!(refresh, Err(failure) if matches!(failure.error, FsError::RefreshNotAllowed))
+        );
+        Ok(())
+    }
+
+    #[test]
     fn native_mutation_invalidates_cache_without_rebinding_the_mount()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let binding = source.binding_epoch();
-        let cache = source.view_epoch();
-        source.create_file(&native_test_path("new-file"), metadata())?;
+        let created = native_test_path("new-file");
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        source.create_file(&created, metadata())?;
         assert_eq!(source.binding_epoch(), binding);
-        assert_ne!(source.view_epoch(), cache);
+        assert!(!source.unchanged_since(&created, None, stamp));
         let _lease = source.acquire_binding_lease(binding)?;
+        Ok(())
+    }
+
+    #[test]
+    fn view_changes_invalidate_exactly_the_lookups_they_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let directory = native_test_path("d");
+        let other = native_test_path("e");
+        let child = |parent: &MountPath, name: &str| {
+            let name = native_test_path(name);
+            parent.child(name.components()[0].clone())
+        };
+        let (a, b, c, x) = (
+            child(&directory, "a"),
+            child(&directory, "b"),
+            child(&directory, "c"),
+            child(&other, "x"),
+        );
+        let directory_id = source
+            .create_directory(&directory, metadata())?
+            .node
+            .file_id;
+        let other_id = source.create_directory(&other, metadata())?.node.file_id;
+        let a_id = source.create_file(&a, metadata())?.node.file_id;
+        let b_id = source.create_file(&b, metadata())?.node.file_id;
+        let x_id = source.create_file(&x, metadata())?.node.file_id;
+        let current = |stamp| {
+            [
+                source.unchanged_since(&directory, Some(directory_id), stamp),
+                source.unchanged_since(&a, Some(a_id), stamp),
+                source.unchanged_since(&b, Some(b_id), stamp),
+                source.unchanged_since(&c, None, stamp),
+                source.unchanged_since(&other, Some(other_id), stamp),
+                source.unchanged_since(&x, Some(x_id), stamp),
+            ]
+        };
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        assert_eq!(current(stamp), [true; 6]);
+
+        source.write_range(&a, 0, Bytes::from_static(b"a"))?;
+        assert_eq!(current(stamp), [true, false, true, true, true, true]);
+
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        source.create_file(&c, metadata())?;
+        assert_eq!(current(stamp), [false, true, true, false, true, true]);
+
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        source.remove(&b, Some(b_id))?;
+        assert_eq!(current(stamp), [false, true, false, true, true, true]);
+        Ok(())
+    }
+
+    #[test]
+    fn host_captures_invalidate_exactly_what_they_capture() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (source, _) =
+            shared_sources_with_publication(FilesystemProfile::Portable, MountPublication::Manual)?;
+        let host = tempfile::tempdir()?;
+        for directory in ["captured", "untouched"] {
+            std::fs::create_dir(host.path().join(directory))?;
+            source.create_directory(&native_test_path(directory), metadata())?;
+            for name in ["a", "b"] {
+                std::fs::write(host.path().join(directory).join(name), b"host")?;
+            }
+        }
+        let child = |directory: &str, name: &str| {
+            native_test_path(directory).child(native_test_path(name).components()[0].clone())
+        };
+        let (a, b) = (child("captured", "a"), child("captured", "b"));
+        let untouched = child("untouched", "a");
+        source.capture_host_paths(host.path(), std::slice::from_ref(&a))?;
+        let lookup = |path: &MountPath| -> Result<_, MountSourceError> {
+            Ok(source.lookup(path)?.map(|lookup| lookup.node.file_id))
+        };
+        let current = |stamp| -> Result<[bool; 4], MountSourceError> {
+            Ok([
+                source.unchanged_since(&a, lookup(&a)?, stamp),
+                source.unchanged_since(&b, lookup(&b)?, stamp),
+                source.unchanged_since(&untouched, lookup(&untouched)?, stamp),
+                source.unchanged_since(&native_test_path("untouched"), None, stamp),
+            ])
+        };
+
+        // Recapturing a changed file invalidates it alone.
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        std::fs::write(host.path().join("captured").join("a"), b"changed")?;
+        source.capture_host_paths(host.path(), std::slice::from_ref(&a))?;
+        assert_eq!(current(stamp)?, [false, true, true, true]);
+
+        // A first capture binds a new name in its directory.
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        source.capture_host_paths(host.path(), std::slice::from_ref(&b))?;
+        assert_eq!(current(stamp)?, [true, false, true, true]);
+
+        // A subtree capture invalidates beneath its root only.
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        std::fs::write(host.path().join("captured").join("b"), b"changed")?;
+        source.capture_host_subtree(host.path(), &native_test_path("captured"))?;
+        assert_eq!(current(stamp)?[2..], [true, true]);
+        assert!(!source.unchanged_since(&b, lookup(&b)?, stamp));
+        Ok(())
+    }
+
+    #[test]
+    fn an_advance_records_exactly_what_it_changed() -> Result<(), Box<dyn std::error::Error>> {
+        let (reader, writer) = tracking_sources(FilesystemProfile::Portable)?;
+        let untouched = native_test_path("untouched");
+        let advances: [&dyn Fn() -> Result<(), MountSourceError>; 2] = [
+            &|| reader.runtime.block_on(|| reader.refresh_async()),
+            &|| reader.runtime.block_on(|| reader.advance_to_head_async()),
+        ];
+        for (round, advance) in advances.into_iter().enumerate() {
+            let (published, written) = (
+                native_test_path(&format!("published-{round}")),
+                native_test_path(&format!("written-{round}")),
+            );
+            let written_id = writer.create_file(&written, metadata())?.node.file_id;
+            writer.sync()?;
+            advance()?;
+
+            let stamp = reader.view_stamp().ok_or("checkout has no view stamp")?;
+            advance()?;
+            assert_eq!(
+                reader.view_stamp(),
+                Some(stamp),
+                "an advance to an unmoved head records nothing"
+            );
+
+            let root = reader
+                .lookup(&MountPath::root())?
+                .map(|lookup| lookup.node.file_id);
+            writer.create_file(&published, metadata())?;
+            writer.write_range(&written, 0, Bytes::from_static(b"changed"))?;
+            writer.sync()?;
+            advance()?;
+            assert!(!reader.unchanged_since(&published, None, stamp));
+            assert!(!reader.unchanged_since(&written, Some(written_id), stamp));
+            assert!(!reader.unchanged_since(&MountPath::root(), root, stamp));
+            assert!(
+                reader.unchanged_since(&untouched, None, stamp),
+                "a name the advance left alone stays cached"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_write_through_one_name_invalidates_every_alias() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = source(FilesystemProfile::Portable)?;
+        let (first, alias) = (native_test_path("first"), native_test_path("alias"));
+        let file_id = source.create_file(&first, metadata())?.node.file_id;
+        source.hard_link(&first, &alias)?;
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        let attached = source.open_file(&first)?;
+        attached.write_range(0, Bytes::from_static(b"shared"))?;
+        assert!(!source.unchanged_since(&alias, Some(file_id), stamp));
+        Ok(())
+    }
+
+    #[test]
+    fn an_unrecorded_checkout_change_invalidates_every_lookup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let path = native_test_path("external.bin");
+        let namespace = source.path(&path)?;
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        let untouched = native_test_path("untouched");
+        source.runtime.block_on(|| async {
+            let mut checkout = source.checkout.lock().await;
+            checkout
+                .create_file(
+                    namespace,
+                    Bytes::new(),
+                    boundary_budget(),
+                    &source.cancellation,
+                )
+                .await
+                .map(|_| ())
+        })?;
+        assert!(!source.unchanged_since(&untouched, None, stamp));
         Ok(())
     }
 
@@ -3192,7 +4633,7 @@ mod tests {
                     let local = std::rc::Rc::new(42_u8);
                     tokio::time::sleep(Duration::from_millis(1)).await;
                     *local
-                })?;
+                });
                 assert_eq!(value, 42);
                 let path = native_test_path("runtime.bin");
                 source.volume_id()?;
@@ -3212,48 +4653,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn callback_runtime_enters_directly_from_native_driver_threads()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let callback = CallbackRuntime::create()?;
-        let observed = std::thread::Builder::new()
-            .name("native-driver".to_owned())
-            .spawn(move || {
-                callback.block_on(|| async {
-                    std::thread::current()
-                        .name()
-                        .unwrap_or("unnamed")
-                        .to_owned()
-                })
-            })?
-            .join()
-            .map_err(|_| "native driver callback panicked")??;
-
-        assert_eq!(observed, "native-driver");
-        Ok(())
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    #[test]
-    fn native_driver_callback_uses_a_fresh_stack() -> Result<(), Box<dyn std::error::Error>> {
-        let callback = CallbackRuntime::create()?;
-        let observed = std::thread::Builder::new()
-            .name("native-driver".to_owned())
-            .spawn(move || {
-                callback.block_on(|| async {
-                    std::thread::current()
-                        .name()
-                        .unwrap_or("unnamed")
-                        .to_owned()
-                })
-            })?
-            .join()
-            .map_err(|_| "native callback panicked")??;
-        assert_eq!(observed, "acyclic-fs-callback");
-        Ok(())
-    }
-
     #[test]
     fn publication_policies_are_exact_and_subtree_roots_do_not_scan_or_escape()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3263,12 +4662,12 @@ mod tests {
             FilesystemProfile::Posix
         };
         let (manual, _) = shared_sources_with_publication(profile, MountPublication::Manual)?;
-        let initial = checkout_state(&manual)?.0;
+        let initial = checkout_state(&manual).0;
         manual.create_directory(&native_test_path("src"), metadata())?;
         manual.flush()?;
-        assert_eq!(checkout_state(&manual)?, (initial, true));
+        assert_eq!(checkout_state(&manual), (initial, true));
         manual.sync()?;
-        let published = checkout_state(&manual)?.0;
+        let published = checkout_state(&manual).0;
         assert_ne!(published, initial);
 
         let config = {
@@ -3293,7 +4692,7 @@ mod tests {
 
         let (per_mutation, _) =
             shared_sources_with_publication(profile, MountPublication::PerMutation)?;
-        let before = checkout_state(&per_mutation)?.0;
+        let before = checkout_state(&per_mutation).0;
         per_mutation.create_file(&native_test_path("published.bin"), metadata())?;
         let published_directory = native_test_path("published-directory");
         let created_directory = per_mutation.create_directory(&published_directory, metadata())?;
@@ -3301,7 +4700,7 @@ mod tests {
             per_mutation.lookup(&published_directory)?,
             Some(created_directory)
         );
-        let (after, pending) = checkout_state(&per_mutation)?;
+        let (after, pending) = checkout_state(&per_mutation);
         assert_ne!(after, before);
         assert!(!pending);
 
@@ -3332,19 +4731,19 @@ mod tests {
         writer.write_range(&path, 0, Bytes::from_static(b"first"))?;
         writer.sync()?;
         let binding_before = reader.binding_epoch();
-        reader.runtime.block_on(|| reader.refresh_async())??;
+        reader.runtime.block_on(|| reader.refresh_async())?;
         let binding_after = reader.binding_epoch();
         assert_ne!(binding_after, binding_before);
         assert_eq!(reader.read_range(&path, 0, 5)?.as_ref(), b"first");
-        let observed_generation = checkout_state(&reader)?.0;
+        let observed_generation = checkout_state(&reader).0;
 
         writer.write_range(&path, 0, Bytes::from_static(b"other"))?;
         writer.sync()?;
         assert!(matches!(
-            reader.runtime.block_on(|| reader.refresh_async())?,
+            reader.runtime.block_on(|| reader.refresh_async()),
             Err(MountSourceError::Stale)
         ));
-        assert_eq!(checkout_state(&reader)?.0, observed_generation);
+        assert_eq!(checkout_state(&reader).0, observed_generation);
         assert_eq!(reader.binding_epoch(), binding_after);
         assert_eq!(reader.read_range(&path, 0, 5)?.as_ref(), b"first");
         Ok(())
@@ -3419,7 +4818,7 @@ mod tests {
                 .lock()
                 .await
                 .retain_operation_id(operation_id)
-        })??;
+        })?;
         let path = native_test_path("fenced.bin");
         assert!(matches!(
             second.create_file(&path, metadata()),
@@ -3431,7 +4830,7 @@ mod tests {
                 .lock()
                 .await
                 .clear_retained_operation(operation_id);
-        })?;
+        });
         second.create_file(&path, metadata())?;
         Ok(())
     }
@@ -3571,7 +4970,7 @@ mod tests {
     fn windows_mount_path_preserves_exact_utf16_components()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Windows)?;
-        let (initial, pending) = checkout_state(&source)?;
+        let (initial, pending) = checkout_state(&source);
         assert!(!pending);
         let name = "exact-α-😀"
             .encode_utf16()
@@ -3590,10 +4989,10 @@ mod tests {
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].name, name);
         assert_eq!(page.entries[0].metadata, exact_metadata);
-        assert!(checkout_state(&source)?.1);
+        assert!(checkout_state(&source).1);
         source.flush()?;
         source.flush()?;
-        let (published, pending) = checkout_state(&source)?;
+        let (published, pending) = checkout_state(&source);
         assert_ne!(published, initial);
         assert!(!pending);
 
@@ -3648,6 +5047,8 @@ mod tests {
             .env("ACYCLIC_FS_TEST_PATH", destination.join(first_name))
             .status()?;
         assert!(write_status.success());
+        // Captures of external operations are deferred until callbacks flush.
+        session.flush_callbacks()?;
         let first = windows_path(first_name);
         assert_eq!(source.read_range(&first, 0, 9)?.as_ref(), b"projected");
 
@@ -3662,6 +5063,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(second_name))
             .status()?;
         assert!(rename_status.success());
+        session.flush_callbacks()?;
         let second = windows_path(second_name);
         assert_eq!(source.lookup(&first)?, None);
         assert!(source.lookup(&second)?.is_some());
@@ -3677,6 +5079,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(linked_name))
             .status()?;
         assert!(link_status.success());
+        session.flush_callbacks()?;
         let linked = windows_path(linked_name);
         let second_id = source
             .lookup(&second)?
@@ -3702,6 +5105,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_PATH", destination.join(second_name))
             .status()?;
         assert!(delete_status.success());
+        session.flush_callbacks()?;
         assert_eq!(source.lookup(&second)?, None);
         assert!(source.lookup(&linked)?.is_some());
         assert!(session.stop()?);
@@ -4033,7 +5437,7 @@ mod tests {
         drop(file);
         assert_eq!(std::fs::read(&path)?, b"new");
         assert!(
-            !checkout_state(&source)?.1,
+            !checkout_state(&source).1,
             "fsync published the admitted write"
         );
         assert!(mount.stop()?);
@@ -4063,18 +5467,18 @@ mod tests {
         let syncer = std::fs::OpenOptions::new().read(true).open(&path)?;
         let mut writer = std::fs::OpenOptions::new().write(true).open(&path)?;
         writer.write_all(b"new")?;
-        assert!(checkout_state(&source)?.1, "write remains pending");
+        assert!(checkout_state(&source).1, "write remains pending");
         syncer.sync_all()?;
         assert!(
-            !checkout_state(&source)?.1,
+            !checkout_state(&source).1,
             "explicit fsync published the write"
         );
         assert_eq!(std::fs::read(&path)?, b"new");
         writer.write_all(b"2")?;
-        assert!(checkout_state(&source)?.1, "second write remains pending");
+        assert!(checkout_state(&source).1, "second write remains pending");
         std::fs::File::open(temporary.path())?.sync_all()?;
         assert!(
-            !checkout_state(&source)?.1,
+            !checkout_state(&source).1,
             "directory fsync published the write"
         );
         drop(writer);
@@ -4359,7 +5763,7 @@ mod tests {
     #[test]
     fn posix_mount_path_preserves_non_utf8_components() -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Posix)?;
-        let (initial, pending) = checkout_state(&source)?;
+        let (initial, pending) = checkout_state(&source);
         assert!(!pending);
         let name = vec![b'r', 0xff, b'w'];
         let path = MountPath::root().child(name.clone());
@@ -4383,10 +5787,10 @@ mod tests {
         let page = source.read_directory(&MountPath::root(), None, 8)?;
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].name, name);
-        assert!(checkout_state(&source)?.1);
+        assert!(checkout_state(&source).1);
         source.flush()?;
         source.flush()?;
-        let (published, pending) = checkout_state(&source)?;
+        let (published, pending) = checkout_state(&source);
         assert_ne!(published, initial);
         assert!(!pending);
         Ok(())

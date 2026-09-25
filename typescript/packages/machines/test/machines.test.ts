@@ -68,13 +68,12 @@ describe("Machines simulation", () => {
     await expect(provider.inspectOperation("operation:unknown:0")).rejects.toThrow("resource not found");
   });
 
-  test("uses the lineage receipt commitment instead of the retired quantity", async () => {
+  test("reports the lineage receipt commitment", async () => {
     const provider = new SimulatedMachines();
     const created = await provider.create(request("usage-1"));
     if (created.kind !== "created") throw new Error("wrong create outcome");
     const usage = await provider.usage(created.machine.id, 1, 2);
     expect(usage.lineageReceiptSha256).toEqual(new Uint8Array(32));
-    expect("lineageSharedBytes" in usage).toBe(false);
   });
 
   test("canonical replay ignores object insertion order", async () => {

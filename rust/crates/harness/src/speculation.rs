@@ -746,6 +746,7 @@ impl Scheduler {
     }
 
     /// Whether every structured descendant of `operation_id` is terminal.
+    #[cfg(feature = "host")]
     pub(crate) fn descendants_stopped(&self, operation_id: OperationId) -> bool {
         let mut pending = vec![operation_id];
         while let Some(current) = pending.pop() {

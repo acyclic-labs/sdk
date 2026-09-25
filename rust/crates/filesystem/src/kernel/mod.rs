@@ -31,6 +31,7 @@ mod persistent_btree;
 mod persistent_diff;
 mod persistent_io;
 mod persistent_pagination;
+mod persistent_point;
 mod probe;
 mod publication;
 mod range;
@@ -143,9 +144,10 @@ pub use mutation::{FileMutation, Mutation, MutationPlan, MutationPlanError, Muta
 pub use namespace_path::{NamespacePath, NamespacePathError};
 pub(crate) use path_access::observe_path_edges_async;
 pub use path_access::{
-    ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup, PathLookupError,
-    PathLookupFailure, lookup_path, lookup_path_async, lookup_path_refs, lookup_path_refs_async,
-    lookup_paths, lookup_paths_async, observe_path_async,
+    ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup,
+    PathLookupError, PathLookupFailure, lookup_path, lookup_path_async, lookup_path_refs,
+    lookup_path_refs_async, lookup_paths, lookup_paths_async, observe_path_async,
+    observe_paths_async,
 };
 pub(crate) use persistent_diff::{
     DiffError as PersistentDiffError, diff_file_records_async, diff_tree_entries_async,
@@ -185,13 +187,19 @@ pub use retention::{
     decode_workspace_deleted, encode_retention_created, encode_workspace_deleted,
     retention_authority_id,
 };
+#[cfg(all(
+    feature = "local",
+    feature = "native-watch",
+    not(target_arch = "wasm32")
+))]
+pub(crate) use source_state::decode_source_volume;
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub(crate) use source_state::source_authority_id;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) use source_state::{
     DurableSourceMode, DurableSourceState, SourceFact, SourceInvalidation, decode_source_fact,
     encode_source_fact,
 };
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-pub(crate) use source_state::{decode_source_volume, source_authority_id};
 pub use transfer::{
     GenerationTransferBatch, GenerationTransferError, GenerationTransferResult, TransferCursor,
     authenticate_generation_export_manifest_async, build_generation_export_manifest_async,

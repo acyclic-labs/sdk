@@ -328,7 +328,6 @@ pub struct Scheduler {
     pub(crate) operations: BTreeMap<OperationId, OperationState>,
     pub(crate) child_slots: BTreeMap<(OperationId, String), OperationId>,
     pub(crate) completion_order: Vec<OperationId>,
-    #[serde(default)]
     pub(crate) speculations: BTreeMap<OperationId, SpeculationState>,
 }
 

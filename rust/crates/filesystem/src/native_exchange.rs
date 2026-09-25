@@ -6,8 +6,6 @@ use thiserror::Error;
 
 use acyclic_native_runtime::durable_rename;
 
-const LEGACY_NATIVE_EXCHANGE_JOURNAL_VERSION: u32 = 1;
-const IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION: u32 = 2;
 const NATIVE_EXCHANGE_JOURNAL_VERSION: u32 = 3;
 
 /// Durable whole-tree exchange phase.
@@ -23,13 +21,10 @@ pub enum NativeExchangePhase {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NativeExchangeJournal {
     /// Version of the durable journal encoding.
-    #[serde(default = "legacy_journal_version")]
     pub version: u32,
     /// Stable identity of the caller-visible publication request.
-    #[serde(default = "legacy_operation")]
     pub operation: crate::IdempotencyKey,
     /// Opaque caller recovery bytes retained with the durable request.
-    #[serde(default)]
     pub recovery: Vec<u8>,
     /// Current live root.
     pub live: PathBuf,
@@ -120,9 +115,6 @@ pub enum NativeExchangeError {
     /// Durable journal was written by an unsupported format version.
     #[error("native exchange journal version {0} is unsupported")]
     UnsupportedJournalVersion(u32),
-    /// A legacy in-flight exchange has no request identity and needs an explicit recovery choice.
-    #[error("legacy native exchange outcome is ambiguous; recover it explicitly before retrying")]
-    AmbiguousLegacyJournal,
     /// Both copies of one carried path exist, so recovery cannot discard either.
     #[error("both copies of carried path exist: {0}")]
     CarriedPathConflict(PathBuf),
@@ -152,20 +144,11 @@ pub fn publish_native_exchange(
         if journal.live != live || journal.prepared != prepared {
             return Err(NativeExchangeError::IncompatibleJournal);
         }
-        if journal.version >= IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION
-            && (journal.operation != operation || journal.carried != carried)
-        {
+        if journal.operation != operation || journal.carried != carried {
             return Err(NativeExchangeError::IncompatibleJournal);
         }
-        if journal.version == LEGACY_NATIVE_EXCHANGE_JOURNAL_VERSION
-            && journal.phase == NativeExchangePhase::Exchanging
-        {
-            return Err(NativeExchangeError::AmbiguousLegacyJournal);
-        }
-        let same_operation = journal.version >= IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION
-            && journal.operation == operation;
         let recovered = recover_native_exchange(journal_path)?;
-        if recovered.published && same_operation {
+        if recovered.published {
             return Ok(recovered);
         }
     }
@@ -197,8 +180,7 @@ fn same_prepared_request(
     existing: &NativeExchangeJournal,
     requested: &NativeExchangeJournal,
 ) -> bool {
-    existing.version >= IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION
-        && existing.operation == requested.operation
+    existing.operation == requested.operation
         && existing.recovery == requested.recovery
         && existing.live == requested.live
         && existing.prepared == requested.prepared
@@ -231,6 +213,7 @@ pub fn exchange_native_entries(left: &Path, right: &Path) -> Result<(), NativeEx
 /// Resolves the two crash windows in the Windows three-rename entry exchange.
 /// Other platforms exchange entries in one kernel operation and need no
 /// scratch recovery.
+#[cfg(any(feature = "native-mount", windows))]
 pub(crate) fn recover_native_entry_exchange(live: &Path) -> Result<(), NativeExchangeError> {
     #[cfg(windows)]
     {
@@ -283,19 +266,9 @@ pub fn recover_native_exchange(
 fn read_journal(path: &Path) -> Result<NativeExchangeJournal, NativeExchangeError> {
     let journal: NativeExchangeJournal = serde_json::from_slice(&std::fs::read(path)?)?;
     match journal.version {
-        LEGACY_NATIVE_EXCHANGE_JOURNAL_VERSION
-        | IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION
-        | NATIVE_EXCHANGE_JOURNAL_VERSION => Ok(journal),
+        NATIVE_EXCHANGE_JOURNAL_VERSION => Ok(journal),
         version => Err(NativeExchangeError::UnsupportedJournalVersion(version)),
     }
-}
-
-const fn legacy_journal_version() -> u32 {
-    LEGACY_NATIVE_EXCHANGE_JOURNAL_VERSION
-}
-
-const fn legacy_operation() -> crate::IdempotencyKey {
-    crate::IdempotencyKey::from_bytes([0; 16])
 }
 
 fn validate_layout(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
@@ -779,38 +752,6 @@ mod tests {
     }
 
     #[test]
-    fn prior_identity_journal_retries_without_reencoding() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let live = temporary.path().join("live");
-        let prepared = temporary.path().join("prepared");
-        std::fs::create_dir(&live).expect("live tree");
-        std::fs::create_dir(&prepared).expect("prepared tree");
-        let journal_path = temporary.path().join("exchange.json");
-        let operation = crate::IdempotencyKey::from_bytes([14; 16]);
-        let journal = NativeExchangeJournal {
-            version: IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION,
-            operation,
-            recovery: Vec::new(),
-            live: live.clone(),
-            prepared: prepared.clone(),
-            carried: Vec::new(),
-            roots: [
-                root_identity(&live).expect("live identity"),
-                root_identity(&prepared).expect("prepared identity"),
-            ],
-            phase: NativeExchangePhase::Carrying,
-        };
-        write_journal(&journal_path, &journal).expect("journal");
-
-        prepare_native_exchange(&journal_path, &live, &prepared, operation, Vec::new())
-            .expect("compatible retry");
-        assert_eq!(
-            read_journal(&journal_path).expect("journal").version,
-            IDENTITY_NATIVE_EXCHANGE_JOURNAL_VERSION
-        );
-    }
-
-    #[test]
     fn publication_rejects_a_journal_for_different_roots() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let first_live = temporary.path().join("first-live");
@@ -857,45 +798,6 @@ mod tests {
             b"new"
         );
         assert!(journal_path.exists());
-    }
-
-    #[test]
-    fn legacy_journal_without_version_or_operation_recovers() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let live = temporary.path().join("live");
-        let prepared = temporary.path().join("prepared");
-        std::fs::create_dir(&live).expect("live tree");
-        std::fs::create_dir(&prepared).expect("prepared tree");
-        let journal_path = temporary.path().join("exchange.json");
-        let mut encoded = serde_json::to_value(NativeExchangeJournal {
-            version: NATIVE_EXCHANGE_JOURNAL_VERSION,
-            operation: crate::IdempotencyKey::from_bytes([9; 16]),
-            recovery: Vec::new(),
-            live: live.clone(),
-            prepared: prepared.clone(),
-            carried: Vec::new(),
-            roots: [
-                root_identity(&live).expect("live identity"),
-                root_identity(&prepared).expect("prepared identity"),
-            ],
-            phase: NativeExchangePhase::Carrying,
-        })
-        .expect("encode journal");
-        let object = encoded.as_object_mut().expect("journal object");
-        object.remove("version");
-        object.remove("operation");
-        std::fs::write(
-            &journal_path,
-            serde_json::to_vec(&encoded).expect("encode legacy journal"),
-        )
-        .expect("write legacy journal");
-
-        let outcome = recover_native_exchange(&journal_path).expect("recover legacy journal");
-        assert!(!outcome.published);
-        assert!(outcome.displaced.is_none());
-        assert!(live.exists());
-        assert!(prepared.exists());
-        assert!(!journal_path.exists());
     }
 
     #[test]
@@ -1118,75 +1020,6 @@ mod tests {
             Vec::new(),
         )
         .expect("publish after stale completed journal");
-        assert!(outcome.published);
-        assert_eq!(std::fs::read(live.join("third")).expect("third"), b"third");
-        assert_eq!(
-            std::fs::read(prepared.join("second")).expect("second"),
-            b"second"
-        );
-        assert!(!journal_path.exists());
-    }
-
-    #[test]
-    fn completed_legacy_journal_requires_explicit_recovery_before_new_publication() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let live = temporary.path().join("live");
-        let prepared = temporary.path().join("prepared");
-        std::fs::create_dir(&live).expect("live tree");
-        std::fs::create_dir(&prepared).expect("prepared tree");
-        std::fs::write(live.join("first"), b"first").expect("first live file");
-        std::fs::write(prepared.join("second"), b"second").expect("first prepared file");
-        let journal_path = temporary.path().join("exchange.json");
-        let mut encoded = serde_json::to_value(NativeExchangeJournal {
-            version: NATIVE_EXCHANGE_JOURNAL_VERSION,
-            operation: crate::IdempotencyKey::from_bytes([12; 16]),
-            recovery: Vec::new(),
-            live: live.clone(),
-            prepared: prepared.clone(),
-            carried: Vec::new(),
-            roots: [
-                root_identity(&live).expect("live identity"),
-                root_identity(&prepared).expect("prepared identity"),
-            ],
-            phase: NativeExchangePhase::Exchanging,
-        })
-        .expect("encode journal");
-        let object = encoded.as_object_mut().expect("journal object");
-        object.remove("version");
-        object.remove("operation");
-        std::fs::write(
-            &journal_path,
-            serde_json::to_vec(&encoded).expect("encode legacy journal"),
-        )
-        .expect("write legacy journal");
-        exchange(&live, &prepared).expect("completed first exchange");
-        std::fs::remove_file(prepared.join("first")).expect("replace displaced contents");
-        std::fs::write(prepared.join("third"), b"third").expect("next prepared file");
-
-        let operation = crate::IdempotencyKey::from_bytes([13; 16]);
-        assert!(matches!(
-            publish_native_exchange(&journal_path, &live, &prepared, operation, Vec::new(),),
-            Err(NativeExchangeError::AmbiguousLegacyJournal)
-        ));
-        assert_eq!(
-            std::fs::read(live.join("second")).expect("second"),
-            b"second"
-        );
-        assert_eq!(
-            std::fs::read(prepared.join("third")).expect("third"),
-            b"third"
-        );
-        assert!(journal_path.exists());
-
-        let recovered = recover_native_exchange(&journal_path).expect("recover legacy exchange");
-        assert!(recovered.published);
-        assert_eq!(recovered.displaced.as_deref(), Some(prepared.as_path()));
-        remove_entry(&prepared).expect("remove recovered displaced tree");
-        std::fs::create_dir(&prepared).expect("rebuild prepared tree");
-        std::fs::write(prepared.join("third"), b"third").expect("rebuilt prepared file");
-        let outcome =
-            publish_native_exchange(&journal_path, &live, &prepared, operation, Vec::new())
-                .expect("publish after explicit legacy recovery");
         assert!(outcome.published);
         assert_eq!(std::fs::read(live.join("third")).expect("third"), b"third");
         assert_eq!(

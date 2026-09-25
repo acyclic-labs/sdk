@@ -79,7 +79,7 @@ if (existsSync(out)) {
 rmSync(out, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 const plugin = join(out, "plugin");
 mkdirSync(join(plugin, "bin"), { recursive: true });
-for (const script of ["acyclic.js", "install.js", "verify.js", "targets.json"]) {
+for (const script of ["acyclic", "install.js", "verify.js", "targets.json"]) {
   copyFileSync(join(root, "bin", script), join(plugin, "bin", script));
 }
 for (const name of ["plugin.json", "package.json", "README.md", "CHANGELOG.md"]) {

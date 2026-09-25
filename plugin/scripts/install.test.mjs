@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import {
   chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
-  rmSync, statSync, writeFileSync,
+  realpathSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,12 +39,24 @@ function fixture() {
   const bin = join(root, "bin");
   cpSync(join(plugin, "bin"), bin, {
     recursive: true,
-    filter: source => !basename(source).startsWith("acyclic.") || ["acyclic.js"].includes(basename(source)),
+    filter: source => !basename(source).startsWith("acyclic."),
   });
   writeFileSync(join(root, "package.json"), JSON.stringify({ version: "9.8.7-test.1" }));
   const source = join(bin, target, executableName);
   mkdirSync(dirname(source), { recursive: true });
   copyFileSync(process.execPath, source);
+  // Package managers ship executables writable by their owner; the host
+  // interpreter may be installed read-only (Homebrew installs node 0555).
+  chmodSync(source, 0o755);
+  // The copy stands in for a self-contained release binary, which an
+  // official Node build is. A Homebrew Node links a sibling libnode and
+  // cannot run from another directory.
+  const relocated = spawnSync(source, ["--version"], { encoding: "utf8" });
+  assert.equal(
+    relocated.stdout?.trim(),
+    process.version,
+    `these tests need a relocatable Node (an official build), not ${process.execPath}: ${relocated.stderr}`,
+  );
   writeFileSync(join(bin, "platform-binaries.json"), JSON.stringify({
     version: 1,
     targets: { [target]: { path: `${target}/${executableName}`, sha256: digest(source) } },
@@ -155,7 +167,26 @@ function installAsync(bin) {
   });
 }
 
-test("installer is idempotent and launcher rejects modified installed bytes", () => {
+test("installed command is the verified executable itself", () => {
+  const value = fixture();
+  try {
+    const placeholder = join(value.bin, "acyclic");
+    assert.equal(readFileSync(placeholder, "utf8").startsWith("#!"), false);
+    const installed = install(value.bin);
+    assert.equal(installed.status, 0, installed.stderr);
+    assert.equal(digest(value.installed), digest(value.source));
+    // On Windows the command's `bin/acyclic` resolves to acyclic.exe only
+    // once the placeholder is gone; on Unix the placeholder is the executable.
+    assert.equal(existsSync(placeholder), process.platform !== "win32");
+    const ran = spawnSync(value.installed, ["--version"], { encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(ran.stdout.trim(), process.version);
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test("installer is idempotent and rejects modified installed bytes", () => {
   const value = fixture();
   try {
     const first = install(value.bin);
@@ -163,18 +194,15 @@ test("installer is idempotent and launcher rejects modified installed bytes", ()
     const second = install(value.bin);
     assert.equal(second.status, 0, second.stderr);
     writeFileSync(value.installed, "tampered");
-    const launched = spawnSync(process.execPath, [join(value.bin, "acyclic.js"), "--version"], {
-      encoding: "utf8",
-      env: { ...process.env, NODE_ENV: "test", ACYCLIC_INSTALL_SKIP_DRAIN: "1" },
-    });
-    assert.notEqual(launched.status, 0);
-    assert.match(launched.stderr, /durable identity/);
+    const rejected = install(value.bin);
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /durable identity/);
   } finally {
     rmSync(value.root, { recursive: true, force: true });
   }
 });
 
-test("launcher is read-only after installation", () => {
+test("running the installed command leaves the package unchanged", () => {
   const value = fixture();
   try {
     const installed = install(value.bin);
@@ -188,9 +216,7 @@ test("launcher is read-only after installation", () => {
       chmodSync(value.bin, 0o555);
       assert.equal(statSync(value.installed).mode & 0o111, 0o111);
     }
-    const launched = spawnSync(process.execPath, [join(value.bin, "acyclic.js"), "--version"], {
-      encoding: "utf8",
-    });
+    const launched = spawnSync(value.installed, ["--version"], { encoding: "utf8" });
     assert.equal(launched.status, 0, launched.stderr);
     assert.deepEqual(treeSnapshot(value.root), before);
   } finally {
@@ -202,7 +228,7 @@ test("launcher is read-only after installation", () => {
   }
 });
 
-test("concurrent launchers serialize first install", async () => {
+test("concurrent installers serialize first install", async () => {
   const value = fixture();
   try {
     const results = await Promise.all(Array.from({ length: 8 }, () => installAsync(value.bin)));
@@ -288,3 +314,119 @@ test("same version cannot be replaced with different bytes", () => {
     rmSync(value.root, { recursive: true, force: true });
   }
 });
+
+// Installs a package whose "native executable" is this Node binary with each
+// package manager, and checks that the `acyclic` command runs the executable
+// with no interpreter in between, across an upgrade to different bytes and an
+// uninstall.
+function packageRelease(version, extraBytes) {
+  const value = fixture();
+  const manifest = JSON.parse(readFileSync(join(value.bin, "platform-binaries.json")));
+  if (extraBytes) {
+    writeFileSync(value.source, Buffer.concat([readFileSync(value.source), extraBytes]));
+    manifest.targets[target].sha256 = digest(value.source);
+    writeFileSync(join(value.bin, "platform-binaries.json"), JSON.stringify(manifest));
+  }
+  const packageJson = JSON.parse(readFileSync(join(plugin, "package.json")));
+  writeFileSync(join(value.root, "package.json"), JSON.stringify({
+    name: packageJson.name,
+    version,
+    bin: packageJson.bin,
+    scripts: packageJson.scripts,
+  }));
+  const packed = run(`npm pack --silent --pack-destination "${value.root}"`, value.root);
+  return { ...value, tarball: join(value.root, packed.trim().split(/\r?\n/).pop()) };
+}
+
+function run(command, cwd, environment = {}) {
+  const result = spawnSync(command, {
+    cwd,
+    shell: true,
+    encoding: "utf8",
+    env: { ...process.env, NODE_ENV: "test", ...environment },
+  });
+  assert.equal(result.status, 0, `${command}\n${result.stdout}\n${result.stderr}`);
+  return result.stdout;
+}
+
+function available(tool) {
+  return spawnSync(`${tool} --version`, { shell: true }).status === 0;
+}
+
+const managers = {
+  npm: {
+    install: (tarball, home) => `npm install --global --prefix "${home}" --cache "${join(home, "cache")}" "${tarball}"`,
+    remove: home => `npm uninstall --global --prefix "${home}" @acyclic-labs/plugin`,
+    bin: home => (process.platform === "win32" ? home : join(home, "bin")),
+    root: home => (process.platform === "win32"
+      ? join(home, "node_modules", "@acyclic-labs", "plugin")
+      : join(home, "lib", "node_modules", "@acyclic-labs", "plugin")),
+  },
+  pnpm: {
+    project: { pnpm: { onlyBuiltDependencies: ["@acyclic-labs/plugin"] } },
+    install: (tarball, home) => `pnpm add "${tarball}" --dir "${home}" --store-dir "${join(home, "store")}"`,
+    remove: home => `pnpm remove @acyclic-labs/plugin --dir "${home}" --store-dir "${join(home, "store")}"`,
+    bin: home => join(home, "node_modules", ".bin"),
+    root: home => join(home, "node_modules", "@acyclic-labs", "plugin"),
+  },
+  bun: {
+    project: { trustedDependencies: ["@acyclic-labs/plugin"] },
+    // Bun leaves its Windows shims behind on removal for every package.
+    keepsShims: process.platform === "win32",
+    environment: home => ({ BUN_INSTALL_CACHE_DIR: join(home, "cache") }),
+    // `bun add` of a second tarball of the same package reports a dependency
+    // loop, so the upgrade changes the declared dependency and reinstalls.
+    install: (tarball, home) => {
+      const manifest = JSON.parse(readFileSync(join(home, "package.json")));
+      manifest.dependencies = { "@acyclic-labs/plugin": `file:${tarball}` };
+      writeFileSync(join(home, "package.json"), JSON.stringify(manifest));
+      return `bun install --cwd "${home}"`;
+    },
+    remove: home => `bun remove @acyclic-labs/plugin --cwd "${home}"`,
+    bin: home => join(home, "node_modules", ".bin"),
+    root: home => join(home, "node_modules", "@acyclic-labs", "plugin"),
+  },
+};
+
+for (const [name, manager] of Object.entries(managers)) {
+  test(`${name} links the acyclic command to the native executable`, { skip: !available(name) }, () => {
+    const first = packageRelease("9.8.7-test.1");
+    const second = packageRelease("9.8.7-test.2", Buffer.from("upgraded release bytes"));
+    const home = mkdtempSync(join(scratch, `${name}-`));
+    try {
+      if (manager.project) {
+        writeFileSync(join(home, "package.json"), JSON.stringify({ name: "consumer", private: true, ...manager.project }));
+      }
+      const environment = manager.environment?.(home) ?? {};
+      const commandPath = { PATH: `${manager.bin(home)}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}` };
+      const invoke = () => run("acyclic --version", home, { ...environment, ...commandPath }).trim();
+      for (const release of [first, second]) {
+        run(manager.install(release.tarball, home), home, environment);
+        const bin = join(manager.root(home), "bin");
+        const executable = join(bin, executableName);
+        assert.equal(digest(executable), digest(release.source));
+        assert.equal(invoke(), process.version);
+        if (process.platform === "win32") {
+          assert.equal(existsSync(join(bin, "acyclic")), false);
+          // No shim may start an interpreter: each runs bin/acyclic itself.
+          for (const shim of readdirSync(manager.bin(home)).filter(file => file.startsWith("acyclic"))) {
+            const path = join(manager.bin(home), shim);
+            if (statSync(path).size > 64 * 1024) continue;
+            assert.doesNotMatch(readFileSync(path, "utf8"), /node(\.exe)?["' ]|_prog/, `${shim} starts an interpreter`);
+          }
+        } else if (name === "npm") {
+          assert.equal(realpathSync(join(manager.bin(home), "acyclic")), realpathSync(executable));
+        }
+      }
+      run(manager.remove(home), home, environment);
+      assert.equal(existsSync(manager.root(home)), false);
+      if (!manager.keepsShims) {
+        const left = existsSync(manager.bin(home))
+          ? readdirSync(manager.bin(home)).filter(file => file.startsWith("acyclic")) : [];
+        assert.deepEqual(left, [], `${name} left ${left} in ${manager.bin(home)}`);
+      }
+    } finally {
+      for (const path of [first.root, second.root, home]) rmSync(path, { recursive: true, force: true });
+    }
+  });
+}

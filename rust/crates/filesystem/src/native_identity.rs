@@ -22,6 +22,15 @@ impl NativeRootIdentity {
         native_metadata_identity(metadata)
     }
 
+    /// Identifies the real directory `path` currently names, without
+    /// following its final component or opening it for reading. It accepts
+    /// exactly the directories a held root may be opened from, so comparing
+    /// the result with a held root's identity revalidates that root cheaply.
+    #[cfg(feature = "native-watch")]
+    pub(crate) fn of_root_path(path: &std::path::Path) -> std::io::Result<Self> {
+        native_root_path_identity(path)
+    }
+
     /// Returns the canonical platform-neutral 16-byte identity encoding.
     #[must_use]
     pub fn to_bytes(self) -> [u8; 16] {
@@ -99,8 +108,56 @@ fn native_root_identity(file: &std::fs::File) -> std::io::Result<NativeRootIdent
 
 #[cfg(windows)]
 fn native_root_identity(file: &std::fs::File) -> std::io::Result<NativeRootIdentity> {
-    let metadata = cap_std::fs::File::from_std(file.try_clone()?).metadata()?;
+    native_metadata_identity(&cap_std::fs::Metadata::from_file(file)?)
+}
+
+#[cfg(all(feature = "native-watch", any(unix, windows)))]
+fn not_a_real_directory() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "host root is not a real directory",
+    )
+}
+
+#[cfg(all(feature = "native-watch", unix))]
+fn native_root_path_identity(path: &std::path::Path) -> std::io::Result<NativeRootIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_dir() {
+        return Err(not_a_real_directory());
+    }
+    Ok(NativeRootIdentity {
+        device: metadata.dev(),
+        object: metadata.ino(),
+    })
+}
+
+#[cfg(all(feature = "native-watch", windows))]
+fn native_root_path_identity(path: &std::path::Path) -> std::io::Result<NativeRootIdentity> {
+    use cap_std::fs::MetadataExt as _;
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    let file = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES.0)
+        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)?;
+    let metadata = cap_std::fs::Metadata::from_file(&file)?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        return Err(not_a_real_directory());
+    }
     native_metadata_identity(&metadata)
+}
+
+#[cfg(all(feature = "native-watch", not(any(unix, windows))))]
+fn native_root_path_identity(_: &std::path::Path) -> std::io::Result<NativeRootIdentity> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "stable root identity is unavailable on this platform",
+    ))
 }
 
 #[cfg(not(any(unix, windows)))]
