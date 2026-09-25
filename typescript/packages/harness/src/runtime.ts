@@ -23,6 +23,13 @@ export interface TaskFailure {
   readonly code?: "approval_required" | "unsupported";
   readonly cause?: unknown;
 }
+/** A model operation may have reached its provider and must not be regenerated blindly. */
+export class IndeterminateModelTurnError extends Error {
+  constructor(readonly operationId: OperationId, cause?: unknown) {
+    super("model dispatch outcome is indeterminate; reconcile durably or explicitly abandon the local turn", { cause });
+    this.name = "IndeterminateModelTurnError";
+  }
+}
 export interface CancelReceipt { readonly requested: boolean; readonly taskId?: RuntimeTaskId; readonly groupId?: GroupId }
 export type Admission<Output> =
   | { readonly kind: "accepted"; readonly task: Task<Output> }
@@ -271,6 +278,8 @@ export interface HarnessRuntimeHost {
   policyIdentity(): PolicyIdentity | null;
   /** Admission, descendant ownership, state checkpoints, wait/effect boundaries, and replay are owned by the host. */
   admitResumable?<Input, Output>(operationId: string, definition: TaskDefinition<Input, Output>, input: Input, harness: AgentHarness, parentTaskId?: RuntimeTaskId): Promise<Admission<unknown>>;
+  /** Replay or reconcile one exact selected turn through the durable execution journal. */
+  executeSelectedTurn?(operationId: OperationId, selected: SelectedModelContext, harness: AgentHarness): Promise<Outcome<RunOutput, OperationId>>;
   reconcileBatch?(groupId: GroupId, batchId: BatchId, inputDigest: Uint8Array, harness: AgentHarness): Promise<HostBatchReplay>;
   attach(id: RuntimeTaskId, harness: AgentHarness): Promise<HostTaskAttachment>;
   reconcileEffect(taskId: RuntimeTaskId, effectId: EffectId): Promise<EffectStatus>;
@@ -1201,7 +1210,30 @@ export class AgentHarness {
       ? { kind: "succeeded", value: publishOutput(outcome.value) }
       : outcome;
   }
-  async runSelectedContext(selectedContext: SelectedModelContext): Promise<RunOutput> {
+  canReconcileSelectedTurn(): boolean { return this.host?.executeSelectedTurn !== undefined; }
+  async runSelectedContext(selectedContext: SelectedModelContext, operationId?: OperationId): Promise<RunOutput> {
+    if (this.host?.executeSelectedTurn !== undefined) {
+      if (operationId === undefined) throw new TypeError("durable selected turns require a stable operation ID");
+      await validateSelectedContext(selectedContext, this.limits);
+      this.#assertPolicyIdentity();
+      const outcome = await this.host.executeSelectedTurn(operationId, selectedContext, this);
+      this.#assertPolicyIdentity();
+      if (outcome.kind === "indeterminate") {
+        if (outcome.operationId !== operationId) throw new Error("host returned an unrelated model operation");
+        throw new IndeterminateModelTurnError(operationId);
+      }
+      if (outcome.kind === "failed") throw new Error(outcome.error.message);
+      if (outcome.kind === "cancelled") throw new Error("durable selected turn was cancelled");
+      if (outcome.value === null || typeof outcome.value !== "object"
+        || typeof outcome.value.text !== "string" || !Array.isArray(outcome.value.receipts)
+        || typeof outcome.value.taskId !== "string" || !outcome.value.taskId) {
+        throw new TypeError("host returned an invalid assistant output");
+      }
+      if (new TextEncoder().encode(outcome.value.text).byteLength > this.limits.file_bytes) {
+        throw new TypeError("host assistant output exceeds file limit");
+      }
+      return structuredClone(outcome.value);
+    }
     return this.run({ selectedContext });
   }
   async run(value: string | SelectedAgentInput): Promise<RunOutput> {

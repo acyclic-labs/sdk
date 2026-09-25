@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, composeContentBindings,
-  defineTool, descriptorFor, type AgentId, type FileRef, type OperationId } from "../src/index.js";
+  defineTool, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeHost, type OperationId,
+  type RuntimeTaskId } from "../src/index.js";
 
 const wasm = readFileSync(fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)));
 const contracts = await NativeContracts.create();
@@ -268,6 +269,33 @@ test("an unknown model attempt needs explicit owner abandonment before another t
     "user", "system", "user", "assistant",
   ]);
   host.free();
+});
+
+test("a durable turn host reconciles an unknown model attempt under the same selection", async () => {
+  const conversation = await MemoryConversation.create({ agent, wasm });
+  const requests: string[] = [];
+  const host: HarnessRuntimeHost = {
+    policyIdentity: () => null,
+    async executeSelectedTurn(operationId, selected) {
+      requests.push(`${operationId}:${selected.selection.conversationRevision}`);
+      if (requests.length === 1) return { kind: "indeterminate", operationId };
+      return { kind: "succeeded", value: { taskId: "task:recovered" as RuntimeTaskId,
+        text: "recovered answer", receipts: [{ kind: "model-completed", metadata: {} }] } };
+    },
+    async attach() { throw new Error("unused"); },
+    async reconcileEffect() { return { state: "indeterminate" }; },
+    async send(message) { return { accepted: true, messageId: message.id }; },
+    async *inbox() { yield* []; },
+  };
+  const runtime = Harness.builder(contracts).host(host).build();
+  const operation = "10101010-1010-1010-1010-101010101010" as OperationId;
+  const content = await conversation.stage("turns/ten/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
+  await expect(conversation.runConversation(runtime, operation, content))
+    .rejects.toBeInstanceOf(IndeterminateModelTurnError);
+  expect((await conversation.runConversation(runtime, operation, content)).text).toBe("recovered answer");
+  expect(requests).toEqual([`${operation}:1`, `${operation}:1`]);
+  expect(conversation.conversation().messages.map(message => message.kind)).toEqual(["user", "assistant"]);
+  conversation.free();
 });
 
 test("different local turns serialize and inherit the prior committed assistant", async () => {

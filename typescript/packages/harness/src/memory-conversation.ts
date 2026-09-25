@@ -6,18 +6,10 @@ import type {
 } from "./conversation.js";
 import { DEFAULT_LIMITS } from "./conversation.js";
 import { selectModelContext } from "./projection.js";
-import type { AgentHarness, ContentBindings, RunOutput } from "./runtime.js";
+import { IndeterminateModelTurnError, type AgentHarness, type ContentBindings, type RunOutput } from "./runtime.js";
 
 const encoder = new TextEncoder();
 const manifestType = "application/vnd.acyclic.harness.attachments+json";
-
-/** Dispatch may have reached the model; regenerating this operation is unsafe. */
-export class IndeterminateModelTurnError extends Error {
-  constructor(readonly operationId: OperationId, cause?: unknown) {
-    super("model dispatch outcome is indeterminate; reconcile durably or explicitly abandon the local turn", { cause });
-    this.name = "IndeterminateModelTurnError";
-  }
-}
 
 export interface MemoryConversationOptions {
   readonly agent: AgentId;
@@ -294,7 +286,7 @@ export class MemoryConversation {
           || (message.reply_to !== null && included.has(message.reply_to))).map(message => message.id) };
     }
     if (selection.message_ids.at(-1) !== userId) throw new TypeError("operation is bound to another context selection");
-    if (!newSelection && completed === undefined) {
+    if (!newSelection && completed === undefined && !runtime.canReconcileSelectedTurn()) {
       throw new IndeterminateModelTurnError(operationId);
     }
     let stableOutput = completed;
@@ -315,8 +307,9 @@ export class MemoryConversation {
         validateMessage: message => this.#core.validateConversationMessage(message, limits) });
       if (newSelection) this.#apply(operationId, "context", { kind: "select_model_context", selection });
       let output: RunOutput;
-      try { output = await runtime.runSelectedContext(selected); }
-      catch (error) { throw new IndeterminateModelTurnError(operationId, error); }
+      try { output = await runtime.runSelectedContext(selected, operationId); }
+      catch (error) { throw error instanceof IndeterminateModelTurnError
+        ? error : new IndeterminateModelTurnError(operationId, error); }
       if (typeof output.text !== "string") throw new TypeError("assistant output text is invalid");
       stableOutput = structuredClone(output);
       this.#outputs.set(operationId, stableOutput);
