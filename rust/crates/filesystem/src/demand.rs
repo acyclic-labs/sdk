@@ -782,6 +782,11 @@ pub mod native {
             if cancellation.is_cancelled() {
                 return Err(OperationFailure::before_work(DemandError::Cancelled));
             }
+            // A native callback thread blocks only its own request: run the
+            // job there rather than hop to a pooled worker and back.
+            if acyclic_native_runtime::inline_blocking_allowed() {
+                return job(self.clone(), cancellation.clone());
+            }
             let permit = tokio::select! {
                 acquired = self.inner.requests.clone().acquire_owned() =>
                     acquired.map_err(|_| OperationFailure::before_work(DemandError::WorkerUnavailable))?,

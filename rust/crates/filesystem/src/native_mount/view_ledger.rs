@@ -8,7 +8,7 @@
 //! so a stale cache entry cannot validate again.
 
 use crate::FileId;
-use crate::kernel::NamespacePath;
+use crate::kernel::{LogicalName, NamespacePath};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -73,11 +73,24 @@ pub(super) enum ViewChange<'a> {
         moved: FileId,
         replaced: Option<FileId>,
     },
-    /// A lazily projected node became authored under the same identity and
-    /// name; its ancestors may have been authored with it.
-    Promoted(&'a NamespacePath, FileId),
+    /// A prepared candidate replaced the checkout with this exact effect.
+    Installed(&'a Installed),
     /// An effect set that cannot be enumerated, such as a rebind.
     Everything,
+}
+
+/// The exact effect of installing a candidate prepared from a copy of the
+/// checkout, as the generation diff between the two reports it.
+#[derive(Default)]
+pub(super) struct Installed {
+    /// Nodes whose record changed.
+    pub(super) nodes: Vec<FileId>,
+    /// Names bound, unbound, or rebound within a directory at a known path.
+    pub(super) names: Vec<(NamespacePath, LogicalName)>,
+    /// Paths beneath which names changed in directories at unknown paths.
+    pub(super) subtrees: Vec<NamespacePath>,
+    /// Whether the effect could not be enumerated at all.
+    pub(super) everything: bool,
 }
 
 /// Change positions of one checkout's view.
@@ -133,11 +146,21 @@ impl ViewLedger {
                     self.node_changed(*replaced, position);
                 }
             }
-            ViewChange::Promoted(path, file_id) => {
-                for key in PathKeys::new(path) {
-                    position.record_in(self.slot(&self.directories, key));
+            ViewChange::Installed(installed) => {
+                for file_id in &installed.nodes {
+                    self.node_changed(*file_id, position);
                 }
-                self.node_changed(*file_id, position);
+                for (directory, name) in &installed.names {
+                    let directory = path_key(directory);
+                    position.record_in(self.slot(&self.bindings, child_key(directory, name)));
+                    position.record_in(self.slot(&self.directories, directory));
+                }
+                for subtree in &installed.subtrees {
+                    self.rebound(subtree, position);
+                }
+                if installed.everything {
+                    position.record_in(&self.everything);
+                }
             }
             ViewChange::Everything => position.record_in(&self.everything),
         }
@@ -219,14 +242,19 @@ impl Iterator for PathKeys<'_> {
     fn next(&mut self) -> Option<u64> {
         let next = match self.key {
             None => key_of(&()),
-            Some(parent) => {
-                let name = self.components.next()?;
-                key_of(&(parent, name.case_fold_key()))
-            }
+            Some(parent) => child_key(parent, self.components.next()?),
         };
         self.key = Some(next);
         Some(next)
     }
+}
+
+fn path_key(path: &NamespacePath) -> u64 {
+    PathKeys::new(path).last().unwrap_or_else(|| key_of(&()))
+}
+
+fn child_key(parent: u64, name: &LogicalName) -> u64 {
+    key_of(&(parent, name.case_fold_key()))
 }
 
 fn key_of(value: &impl Hash) -> u64 {

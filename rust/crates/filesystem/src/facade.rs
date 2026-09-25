@@ -7128,6 +7128,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
     }
 
+    /// Diffs this checkout's candidate against another candidate of the same
+    /// volume, without recording an observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns measured diff, storage, cancellation, or bounded-work failures.
+    #[cfg(feature = "native-mount")]
+    pub(crate) async fn candidate_diff(
+        &self,
+        candidate: &Self,
+        maximum_changes: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<GenerationDiff> {
+        if candidate.volume.id != self.volume.id {
+            return Err(OperationFailure::before_work(FsError::VolumeMismatch));
+        }
+        diff_generation_file_tables(
+            &self.volume.fs.inner.objects,
+            self.root.file_table,
+            candidate.root.file_table,
+            maximum_changes,
+            self.volume.config,
+            WorkCounters::default(),
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
     /// Creates a read-only view of this checkout's current candidate that
     /// records no observation, for bookkeeping that is not a semantic read.
     #[cfg(feature = "native-mount")]

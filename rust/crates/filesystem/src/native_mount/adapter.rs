@@ -1,7 +1,7 @@
 //! One native callback adapter for every embedded checkout consumer.
 
 use super::view_gate::{ViewGate, ViewReadLease, ViewWriteLease};
-use super::view_ledger::{ViewChange, ViewLedger, ViewStamp};
+use super::view_ledger::{Installed, ViewChange, ViewLedger, ViewStamp};
 use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
@@ -37,6 +37,9 @@ use std::thread::ThreadId;
 use std::time::Duration;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Diff bound for recording an installed candidate exactly; a larger effect
+/// is recorded as unenumerated.
+const MAXIMUM_EXACT_INSTALL_CHANGES: u32 = 65_536;
 const MAX_NATIVE_SUBTREE_CAPTURE_PATHS: u32 = 4_000_000;
 const CAPTURE_PENDING: u8 = 0;
 const CAPTURE_COMMITTED: u8 = 1;
@@ -171,6 +174,8 @@ impl CallbackRuntime {
         let future = Box::pin(async { create().await });
         let poll = || {
             let _runtime = self.handle.enter();
+            // This thread serves exactly this callback until it completes.
+            let _inline = acyclic_native_runtime::InlineBlocking::enter();
             ParkedCallback::poll_to_completion(future)
         };
         match tokio::runtime::Handle::try_current() {
@@ -353,17 +358,14 @@ impl<A, O> SharedCheckout<A, O> {
         self.state.read().await.publishes_at_native_boundary()
     }
 
-    /// Copies the current candidate and the revision it belongs to, for an
-    /// optimistic transaction that installs only if that revision still holds.
+    /// Begins an optimistic transaction on a copy of the current candidate.
     /// No reader is excluded: the copy records nothing into this checkout.
-    pub(super) async fn candidate(&self) -> Result<(Checkout<A, O>, u64), MountSourceError>
+    pub(super) async fn candidate(&self) -> Result<CheckoutCandidate<A, O>, MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let state = self.state.read().await;
-        state.ensure_publication_resolved()?;
-        Ok((state.private_candidate(), state.revision()))
+        self.state.read().await.candidate()
     }
 
     /// Advances with every change to the checkout; optimistic transactions
@@ -541,6 +543,19 @@ impl<A, O> SharedCheckoutState<A, O> {
         O: AsyncObjectStore,
     {
         self.record(&change);
+        self.publish_mutation(cancellation).await
+    }
+
+    /// Publishes one recorded mutation when the policy publishes every
+    /// mutation.
+    pub(super) async fn publish_mutation(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
         if self.publication == MountPublication::PerMutation {
             self.seal(cancellation).await?;
         }
@@ -655,11 +670,40 @@ impl<A, O> SharedCheckoutState<A, O> {
             .map(|record| record.file_id))
     }
 
-    /// Installs a candidate prepared from a copy of this checkout. The caller
-    /// records its change; one it leaves unrecorded invalidates everything
-    /// when the guard drops.
-    pub(super) fn install_candidate(&mut self, candidate: Checkout<A, O>) {
-        self.checkout = candidate;
+    /// Begins an optimistic transaction on a copy of this candidate.
+    pub(super) fn candidate(&self) -> Result<CheckoutCandidate<A, O>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.ensure_publication_resolved()?;
+        Ok(CheckoutCandidate {
+            base: self.private_candidate(),
+            checkout: self.private_candidate(),
+            revision: self.revision(),
+        })
+    }
+
+    /// Whether a transaction began from this exact checkout, so that its
+    /// candidate may still be installed.
+    pub(super) fn admits(&self, candidate: &CheckoutCandidate<A, O>) -> bool {
+        candidate.revision == self.revision()
+    }
+
+    /// Installs a transaction's candidate with its recorded effect, only
+    /// over the exact checkout it began from. Returns whether it installed;
+    /// a later change leaves the checkout untouched for the caller to retry.
+    pub(super) fn install_candidate(
+        &mut self,
+        candidate: CheckoutCandidate<A, O>,
+        installed: &Installed,
+    ) -> bool {
+        if !self.admits(&candidate) {
+            return false;
+        }
+        self.checkout = candidate.checkout;
+        self.record(&ViewChange::Installed(installed));
+        true
     }
 
     /// Records one change to the checkout's view. The exclusive guard keeps
@@ -669,6 +713,138 @@ impl<A, O> SharedCheckoutState<A, O> {
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.recorded_view = self.checkout.root().file_table;
     }
+}
+
+/// One optimistic transaction: a copy of the checkout to change, and the
+/// exact checkout it began from, against which its effect is computed
+/// without holding any lock.
+pub(super) struct CheckoutCandidate<A, O> {
+    base: Checkout<A, O>,
+    pub(super) checkout: Checkout<A, O>,
+    revision: u64,
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutCandidate<A, O> {
+    /// The exact effect installing this candidate has: the generation diff
+    /// from the checkout it began from. `scope` names what the candidate was
+    /// prepared to change and locates the directories whose names changed.
+    pub(super) async fn installed_changes(
+        &self,
+        scope: InstallScope<'_>,
+        cancellation: &CancellationToken,
+    ) -> Installed {
+        // Boxed: the diff and its lookups would otherwise inline into every
+        // installing caller's future.
+        Box::pin(installed_changes(
+            &self.base,
+            &self.checkout,
+            scope,
+            cancellation,
+        ))
+        .await
+    }
+
+    /// The checkout this transaction began from.
+    pub(super) fn base(&self) -> &Checkout<A, O> {
+        &self.base
+    }
+}
+
+/// What a prepared candidate was built to change.
+#[derive(Clone, Copy)]
+pub(super) enum InstallScope<'a> {
+    /// Exactly these paths.
+    Paths(&'a [NamespacePath]),
+    /// Anything beneath this path.
+    Subtree(&'a NamespacePath),
+}
+
+impl InstallScope<'_> {
+    fn paths(&self) -> &[NamespacePath] {
+        match self {
+            Self::Paths(paths) => paths,
+            Self::Subtree(root) => std::slice::from_ref(*root),
+        }
+    }
+}
+
+/// The exact effect of replacing `base` with `candidate`, from their
+/// generation diff. A changed name in a directory the scope's paths do not
+/// pass through is covered by its subtree scope, or by everything.
+async fn installed_changes<A, O>(
+    base: &Checkout<A, O>,
+    candidate: &Checkout<A, O>,
+    scope: InstallScope<'_>,
+    cancellation: &CancellationToken,
+) -> Installed
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    let diff = match base
+        .candidate_diff(
+            candidate,
+            MAXIMUM_EXACT_INSTALL_CHANGES,
+            boundary_budget(),
+            cancellation,
+        )
+        .await
+    {
+        Ok(receipt) if !receipt.value.truncated => receipt.value,
+        _ => {
+            return Installed {
+                everything: true,
+                ..Installed::default()
+            };
+        }
+    };
+    let mut directories = std::collections::HashMap::new();
+    if !diff.bindings.is_empty() {
+        for path in scope.paths() {
+            for prefix in prefixes(path, base.volume_config().limits) {
+                for checkout in [base, candidate] {
+                    if let Ok(receipt) = checkout
+                        .inspector()
+                        .lookup_no_follow(&prefix, boundary_budget(), cancellation)
+                        .await
+                        && let Some(record) = receipt.value.record
+                    {
+                        directories
+                            .entry(record.file_id)
+                            .or_insert_with(|| prefix.clone());
+                    }
+                }
+            }
+        }
+    }
+    let mut installed = Installed {
+        nodes: diff
+            .files
+            .into_iter()
+            .map(|change| change.file_id)
+            .collect(),
+        ..Installed::default()
+    };
+    for binding in diff.bindings {
+        match (directories.get(&binding.directory_id), scope) {
+            (Some(directory), _) => installed.names.push((directory.clone(), binding.name)),
+            (None, InstallScope::Subtree(root)) => {
+                if installed.subtrees.is_empty() {
+                    installed.subtrees.push(root.clone());
+                }
+            }
+            (None, InstallScope::Paths(_)) => installed.everything = true,
+        }
+    }
+    installed
+}
+
+/// Every proper and improper prefix of `path`, root first.
+fn prefixes(path: &NamespacePath, limits: VolumeLimits) -> Vec<NamespacePath> {
+    (0..=path.components().len())
+        .filter_map(|length| path.components().get(..length))
+        .filter_map(|components| NamespacePath::new(components.to_vec(), limits).ok())
+        .collect()
 }
 
 impl<A, O> Deref for SharedCheckoutState<A, O> {
@@ -1347,6 +1523,29 @@ impl<A, O> CheckoutMountSource<A, O> {
         }))
     }
 
+    /// What a lookup of `path` would report in `checkout`, a transaction's
+    /// candidate or base, without recording an observation.
+    pub(super) async fn lookup_in(
+        &self,
+        checkout: &Checkout<A, O>,
+        path: &MountPath,
+    ) -> Result<Option<MountLookup>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let path = self.path(path)?;
+        let receipt = checkout
+            .inspector()
+            .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
+            .await
+            .map_err(engine_error)?;
+        Ok(receipt.value.map(|value| MountLookup {
+            node: mount_node(value.record),
+            metadata: value.metadata,
+        }))
+    }
+
     /// Resolves one mounted path within a caller's callback future, so a
     /// composed source spends one runtime entry on its whole callback.
     pub(super) async fn lookup_async(
@@ -1841,13 +2040,13 @@ impl<A, O> CheckoutMountSource<A, O> {
                 maximum_extent_spans: 65_536,
             };
             for _ in 0..3 {
-                let (mut candidate, revision) = self.checkout.candidate().await?;
+                let mut candidate = self.checkout.candidate().await?;
                 // Projected host reads may call back into this checkout. Never
                 // hold its view gate while observing the virtualization root.
                 match scope {
                     HostCaptureScope::ExactPaths => {
                         capture_paths_batched_with_baseline(
-                            &mut candidate,
+                            &mut candidate.checkout,
                             &paths,
                             &options,
                             64,
@@ -1863,7 +2062,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                             MountSourceError::Invalid("missing capture subtree".to_owned())
                         })?;
                         capture_subtrees_with_policy_and_baseline(
-                            &mut candidate,
+                            &mut candidate.checkout,
                             &[root],
                             &options,
                             &crate::CapturePolicy::allow_all(),
@@ -1875,8 +2074,16 @@ impl<A, O> CheckoutMountSource<A, O> {
                         .map_err(engine_error)?;
                     }
                 }
+                let scope = match scope {
+                    HostCaptureScope::ExactPaths => InstallScope::Paths(&paths),
+                    HostCaptureScope::Subtree => {
+                        InstallScope::Subtree(paths.first().ok_or_else(|| {
+                            MountSourceError::Invalid("missing capture subtree".to_owned())
+                        })?)
+                    }
+                };
                 if self
-                    .commit_host_capture(candidate, revision, policy.request)
+                    .commit_host_capture(candidate, scope, policy.request)
                     .await?
                 {
                     return Ok(());
@@ -1888,17 +2095,19 @@ impl<A, O> CheckoutMountSource<A, O> {
 
     async fn commit_host_capture(
         &self,
-        candidate: Checkout<A, O>,
-        revision: u64,
+        candidate: CheckoutCandidate<A, O>,
+        scope: InstallScope<'_>,
         request: Option<&CaptureCommitGate>,
     ) -> Result<bool, MountSourceError>
     where
         A: AsyncAuthorityStore + Send + Sync + 'static,
         O: AsyncObjectStore + Send + Sync + 'static,
     {
+        let installed = candidate.installed_changes(scope, &self.cancellation).await;
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
-        if checkout.revision() != revision {
+        // Decide before a lifecycle request commits to this candidate.
+        if !checkout.admits(&candidate) {
             return Ok(false);
         }
         {
@@ -1931,12 +2140,9 @@ impl<A, O> CheckoutMountSource<A, O> {
                         Ordering::Acquire,
                     )
                     .map_err(|_| MountSourceError::Stale)?;
-                checkout.install_candidate(candidate);
-                checkout.record(&ViewChange::Everything);
-                return Ok(true);
+                return Ok(checkout.install_candidate(candidate, &installed));
             }
-            checkout.install_candidate(candidate);
-            checkout.record(&ViewChange::Everything);
+            checkout.install_candidate(candidate, &installed);
         }
         checkout
             .publish_at_native_boundary(&self.cancellation)
@@ -2809,9 +3015,9 @@ where
                 maximum_extent_spans: 65_536,
             };
             for _ in 0..3 {
-                let (mut candidate, revision) = self.checkout.candidate().await?;
+                let mut candidate = self.checkout.candidate().await?;
                 capture_subtree(
-                    &mut candidate,
+                    &mut candidate.checkout,
                     path.clone(),
                     &options,
                     boundary_budget(),
@@ -2819,13 +3025,14 @@ where
                 )
                 .await
                 .map_err(engine_error)?;
+                let installed = candidate
+                    .installed_changes(InstallScope::Subtree(&path), &self.cancellation)
+                    .await;
                 let mut checkout = self.checkout.lock().await;
                 checkout.ensure_publication_resolved()?;
-                if checkout.revision() != revision {
+                if !checkout.install_candidate(candidate, &installed) {
                     continue;
                 }
-                checkout.install_candidate(candidate);
-                checkout.record(&ViewChange::Everything);
                 return checkout
                     .publish_at_native_boundary(&self.cancellation)
                     .await;
@@ -3039,17 +3246,15 @@ mod tests {
         let (source, _) =
             shared_sources_with_publication(FilesystemProfile::Portable, MountPublication::Manual)?;
         let revision = source.checkout.revision();
-        let candidate = source
-            .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() });
+        let candidate = source.runtime.block_on(|| source.checkout.candidate())?;
         let request = Arc::new(CaptureCommitGate {
             cancellation: CancellationToken::new(),
             state: AtomicU8::new(CAPTURE_PENDING),
         });
         drop(CancelCaptureOnDrop(Arc::clone(&request)));
-        let result = source
-            .runtime
-            .block_on(|| source.commit_host_capture(candidate, revision, Some(&request)));
+        let result = source.runtime.block_on(|| {
+            source.commit_host_capture(candidate, InstallScope::Paths(&[]), Some(&request))
+        });
         assert!(result.is_err());
         assert_eq!(source.checkout.revision(), revision);
         let request = Arc::new(CaptureCommitGate {
@@ -3064,12 +3269,10 @@ mod tests {
             .push(Arc::downgrade(&request));
         source.cancel();
         assert!(request.cancellation.is_cancelled());
-        let candidate = source
-            .runtime
-            .block_on(|| async { source.checkout.lock().await.private_candidate() });
-        let result = source
-            .runtime
-            .block_on(|| source.commit_host_capture(candidate, revision, Some(&request)));
+        let candidate = source.runtime.block_on(|| source.checkout.candidate())?;
+        let result = source.runtime.block_on(|| {
+            source.commit_host_capture(candidate, InstallScope::Paths(&[]), Some(&request))
+        });
         assert!(result.is_err());
         assert_eq!(source.checkout.revision(), revision);
         Ok(())
@@ -3537,6 +3740,57 @@ mod tests {
         let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
         source.remove(&b, Some(b_id))?;
         assert_eq!(current(stamp), [false, true, false, true, true, true]);
+        Ok(())
+    }
+
+    #[test]
+    fn host_captures_invalidate_exactly_what_they_capture() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (source, _) =
+            shared_sources_with_publication(FilesystemProfile::Portable, MountPublication::Manual)?;
+        let host = tempfile::tempdir()?;
+        for directory in ["captured", "untouched"] {
+            std::fs::create_dir(host.path().join(directory))?;
+            source.create_directory(&native_test_path(directory), metadata())?;
+            for name in ["a", "b"] {
+                std::fs::write(host.path().join(directory).join(name), b"host")?;
+            }
+        }
+        let child = |directory: &str, name: &str| {
+            native_test_path(directory).child(native_test_path(name).components()[0].clone())
+        };
+        let (a, b) = (child("captured", "a"), child("captured", "b"));
+        let untouched = child("untouched", "a");
+        source.capture_host_paths(host.path(), std::slice::from_ref(&a))?;
+        let lookup = |path: &MountPath| -> Result<_, MountSourceError> {
+            Ok(source.lookup(path)?.map(|lookup| lookup.node.file_id))
+        };
+        let current = |stamp| -> Result<[bool; 4], MountSourceError> {
+            Ok([
+                source.unchanged_since(&a, lookup(&a)?, stamp),
+                source.unchanged_since(&b, lookup(&b)?, stamp),
+                source.unchanged_since(&untouched, lookup(&untouched)?, stamp),
+                source.unchanged_since(&native_test_path("untouched"), None, stamp),
+            ])
+        };
+
+        // Recapturing a changed file invalidates it alone.
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        std::fs::write(host.path().join("captured").join("a"), b"changed")?;
+        source.capture_host_paths(host.path(), std::slice::from_ref(&a))?;
+        assert_eq!(current(stamp)?, [false, true, true, true]);
+
+        // A first capture binds a new name in its directory.
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        source.capture_host_paths(host.path(), std::slice::from_ref(&b))?;
+        assert_eq!(current(stamp)?, [true, false, true, true]);
+
+        // A subtree capture invalidates beneath its root only.
+        let stamp = source.view_stamp().ok_or("checkout has no view stamp")?;
+        std::fs::write(host.path().join("captured").join("b"), b"changed")?;
+        source.capture_host_subtree(host.path(), &native_test_path("captured"))?;
+        assert_eq!(current(stamp)?[2..], [true, true]);
+        assert!(!source.unchanged_since(&b, lookup(&b)?, stamp));
         Ok(())
     }
 
