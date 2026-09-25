@@ -3605,20 +3605,8 @@ impl ControlPlane {
                 .await
                 .map_err(|error| format!("cannot synchronize the parent workspace: {error}"))?;
         }
+        // The final close rebases each root onto its parent's head itself.
         let operations = self.distributed.operations();
-        let parent_context = if last_live_child_lease {
-            Some(
-                self.distributed
-                    .contexts()
-                    .resolve(self.context_for_agent(&route.parent_agent_id)?)
-                    .await
-                    .map_err(|error| {
-                        format!("cannot resolve the parent workspace context: {error}")
-                    })?,
-            )
-        } else {
-            None
-        };
         let mut sync_error = None;
         let mut expired = false;
         let mut conflicts = Vec::new();
@@ -3630,27 +3618,6 @@ impl ControlPlane {
                 .workspace_root(&route, root_id)
                 .await
                 .map_err(|error| format!("cannot resolve the child workspace root: {error}"))?;
-            if let Some(parent_context) = parent_context.as_ref() {
-                let parent_root = parent_context
-                    .roots
-                    .get(&root_id)
-                    .ok_or_else(|| "direct parent root is missing".to_owned())?;
-                let parent = self
-                    .distributed
-                    .workspace(parent_root.workspace_id)
-                    .await
-                    .map_err(|error| format!("cannot open the parent workspace root: {error}"))?;
-                let parent_head = parent
-                    .head()
-                    .await
-                    .map_err(|error| format!("cannot read the parent workspace head: {error}"))?;
-                operations
-                    .observe_parent(workspace.id(), parent_head.id())
-                    .await
-                    .map_err(|error| {
-                        format!("cannot observe the latest parent generation: {error}")
-                    })?;
-            }
             let lease = root_record.lease();
             if last_live_child_lease && sync_error.is_none() {
                 let sync = match self.mounts.get(&record.agent_id) {

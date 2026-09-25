@@ -1172,6 +1172,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         })
     }
 
+    /// The parent head that [`Self::live_rebase`] would rebase this fork onto,
+    /// or `None` when the fork is already based on it.
+    pub(crate) async fn parent_advance(
+        &self,
+        maximum_generations: u32,
+    ) -> Result<Option<GenerationId>, WorkspaceError> {
+        self.volume
+            .fs
+            .parent_advance(&self.volume, maximum_generations)
+            .await
+    }
+
     /// Reads at most `maximum_bytes` from one complete file at the current
     /// immutable head.
     ///
