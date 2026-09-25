@@ -52,16 +52,44 @@ if (changelogText.split(/\r?\n/, 1)[0].trim() !== `# ${packageManifest.name} cha
   || !changelogText.split(/\r?\n/).some(line => line.startsWith(`## ${packageManifest.version} `))) {
   fail(`missing or invalid package changelog: ${changelog}`);
 }
+const assets = {};
 for (const path of [
   join(plugin, "plugin.json"),
   join(plugin, ".codex-plugin", "plugin.json"),
+  join(plugin, ".mcp.json"),
   join(plugin, "hooks", "hooks.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
-  JSON.parse(readFileSync(path, "utf8"));
+  assets[path] = JSON.parse(readFileSync(path, "utf8"));
 }
-if (existsSync(join(plugin, ".mcp.json"))) {
-  fail("shell-capable plugin package must not expose the commandless MCP bridge");
+// Codex delivers hooks to the plugin's one MCP server, which exposes no tool
+// to the model; the shell-capable package exposes no other MCP server.
+const HOOK_SERVER = "acyclic-hooks";
+const expectedMcp = {
+  mcpServers: {
+    [HOOK_SERVER]: {
+      type: "stdio",
+      command: "./bin/acyclic",
+      args: ["__mcp"],
+      cwd: ".",
+      env_vars: ["XDG_STATE_HOME"],
+      required: true,
+    },
+  },
+};
+if (JSON.stringify(assets[join(plugin, ".mcp.json")]) !== JSON.stringify(expectedMcp)) {
+  fail("the plugin MCP declaration must be exactly the Codex hook server");
+}
+if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== "./.mcp.json") {
+  fail("the Codex plugin manifest must declare ./.mcp.json");
+}
+const hookHandlers = Object.values(assets[join(plugin, "hooks", "hooks.json")].hooks ?? {})
+  .flat()
+  .flatMap(group => group.hooks ?? []);
+if (!hookHandlers.some(hook => hook.type === "mcp_tool")
+  || hookHandlers.some(hook => hook.type === "mcp_tool"
+    && (hook.server !== HOOK_SERVER || hook.tool !== "hook"))) {
+  fail("Codex MCP hooks must call the plugin's hook server");
 }
 
 // The `acyclic` command must link to an interpreter-less placeholder that the

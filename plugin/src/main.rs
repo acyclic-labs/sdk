@@ -2,6 +2,7 @@
 
 #![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 
+mod codex_hook_mcp;
 mod control_protocol;
 
 use acyclic_fs::demand::native::NativeDemandSource;
@@ -8183,7 +8184,11 @@ fn native_tool_identity(
     input: &Value,
     cwd: &Path,
 ) -> Result<(String, String, WorkspaceRootId), String> {
-    if let Some(agent_id) = hook_optional_id(input, "agent_id", "agentId")? {
+    let agent_id = match hook_optional_id(input, "agent_id", "agentId")? {
+        Some(agent_id) => Some(agent_id),
+        None => codex_thread_agent(control, host, input)?,
+    };
+    if let Some(agent_id) = agent_id {
         let route = control
             .state
             .routes
@@ -8257,6 +8262,27 @@ fn native_tool_identity(
         control.remember_root_turn(turn_id.clone());
     }
     Ok((caller, turn_id, root_id))
+}
+
+/// The spawned subagent a Codex tool event's calling thread is, if any.
+///
+/// Codex's command hooks carry `agent_id` only for spawned subagents, and a
+/// spawned subagent's agent identity is its thread identity. Codex's MCP hook
+/// transport cannot template a field that is present only sometimes, so it
+/// carries the calling thread (`thread_id`) instead. A thread with a
+/// registered route is therefore that agent, and any other thread (the root,
+/// or an internal Codex subagent that never sends `SubagentStart`) has no agent
+/// identity, exactly as on the command path.
+fn codex_thread_agent(
+    control: &ControlPlane,
+    host: &str,
+    input: &Value,
+) -> Result<Option<String>, String> {
+    if host != "codex" {
+        return Ok(None);
+    }
+    Ok(hook_optional_id(input, "thread_id", "threadId")?
+        .filter(|thread| control.state.routes.contains_key(thread)))
 }
 
 async fn dispatch_native_session_hook(
@@ -9596,55 +9622,20 @@ fn encode_control_response(
     .into_bytes()
 }
 
-/// Unified Acyclic CLI, local service, Codex hook bridge, and installer.
+/// Unified Acyclic CLI, local service, host hook bridges, and installer.
 fn main() {
     if let Err(error) = main_result() {
-        if let Some((host, event)) = hook_invocation() {
-            let notice = format!(
-                "Acyclic is unavailable; this tool will run without an isolated workspace: {error}"
-            );
-            let response = if matches!(event.as_str(), "PreToolUse" | "preToolUse") {
-                if host == "copilot" {
-                    json!({
-                        "permissionDecision": "allow",
-                        "permissionDecisionReason": notice,
-                        "systemMessage": notice
-                    })
-                } else {
-                    json!({
-                        "systemMessage": notice,
-                        "hookSpecificOutput": {
-                            "hookEventName": "PreToolUse",
-                            "permissionDecision": "allow",
-                            "permissionDecisionReason": notice,
-                            "additionalContext": notice
-                        }
-                    })
-                }
-            } else {
-                json!({"systemMessage": notice})
-            };
-            if serde_json::to_writer(io::stdout().lock(), &response).is_ok() {
-                return;
-            }
-        }
         eprintln!("{error}");
         std::process::exit(1);
     }
 }
 
-fn hook_invocation() -> Option<(String, String)> {
-    let arguments = env::args().skip(1).collect::<Vec<_>>();
-    arguments
-        .windows(3)
-        .find(|arguments| arguments.first().is_some_and(|value| value == "__hook"))
-        .and_then(|arguments| Some((arguments.get(1)?.clone(), arguments.get(2)?.clone())))
-}
-
 fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut arguments = env::args().skip(1);
-    if arguments.next().as_deref() == Some("__hook") {
-        return run_native_hook(&arguments.collect::<Vec<_>>());
+    match arguments.next().as_deref() {
+        Some("__hook") => return run_native_hook(&arguments.collect::<Vec<_>>()),
+        Some("__mcp") => return codex_hook_mcp::serve().map_err(Into::into),
+        _ => {}
     }
     if is_foreground_cli_invocation() {
         let result = tokio::runtime::Builder::new_current_thread()
@@ -9674,78 +9665,142 @@ fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-/// Answers a native hook. A hook that stays inside this process returns
-/// before any runtime, path resolution or state directory is touched.
+/// Answers a native hook delivered as a process: the event on standard input,
+/// the answer on standard output. A hook that stays inside this process
+/// returns before any runtime, path resolution or state directory is touched.
 fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let [host, event] = arguments else {
         return Err(io::Error::other("acyclic __hook requires a host and event").into());
     };
-    if !matches!(
-        host.as_str(),
-        "codex" | "claude-code" | "copilot" | "cursor"
-    ) {
-        return Err(io::Error::other("unsupported native hook host").into());
-    }
-    let mut input = Vec::new();
-    io::stdin()
-        .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
-        .read_to_end(&mut input)?;
-    if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
-        return Err(io::Error::other("native hook input exceeds the 4 MiB bound").into());
-    }
-    let input: Value = serde_json::from_slice(&input)?;
-    if native_hook_is_process_local_noop(host, event, &input) {
-        serde_json::to_writer(io::stdout().lock(), &json!({}))?;
-        return Ok(());
-    }
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(send_native_hook(host, event, input))
+    let response = (|| {
+        let mut input = Vec::new();
+        io::stdin()
+            .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
+            .read_to_end(&mut input)
+            .map_err(display)?;
+        if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
+            return Err("native hook input exceeds the 4 MiB bound".to_owned());
+        }
+        let input: Value = serde_json::from_slice(&input).map_err(display)?;
+        if let Some(answer) = local_native_hook_answer(host, event, &input)? {
+            return Ok(answer);
+        }
+        let cwd = env::current_dir().map_err(display)?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(display)?
+            .block_on(forward_native_hook(
+                host,
+                event,
+                cwd,
+                input,
+                ServiceStart::Allowed,
+            ))
+    })()
+    .unwrap_or_else(|error| native_hook_failure(host, event, &error));
+    serde_json::to_writer(io::stdout().lock(), &response)?;
+    Ok(())
 }
 
-/// Sends one native hook to the service and prints its response.
-async fn send_native_hook(
+/// The answer to a native hook that never needs the service, or `None` when
+/// it must be forwarded.
+fn local_native_hook_answer(
     host: &str,
     event: &str,
+    input: &Value,
+) -> Result<Option<Value>, String> {
+    if !matches!(host, "codex" | "claude-code" | "copilot" | "cursor") {
+        return Err("unsupported native hook host".to_owned());
+    }
+    Ok(native_hook_is_process_local_noop(host, event, input).then(|| json!({})))
+}
+
+/// Whether a hook transport may start or advance the service.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServiceStart {
+    /// A hook process owns no lasting resources, so a service it starts
+    /// outlives it.
+    Allowed,
+    /// A long-lived host-contained process (Codex's MCP servers run in a
+    /// Windows Job that kills every member when it closes and forbids
+    /// breakaway) must never parent the service.
+    Forbidden,
+}
+
+/// Sends one native hook to the service and returns its response. Every
+/// hook transport answers through this function; they differ only in how the
+/// event arrives and whether they may start the service.
+async fn forward_native_hook(
+    host: &str,
+    event: &str,
+    cwd: PathBuf,
     input: Value,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    service_start: ServiceStart,
+) -> Result<Value, String> {
     // The service canonicalizes whichever path a hook resolves to.
-    let cwd = env::current_dir()?;
     let data = default_data_directory();
-    let request = ControlRequest {
+    let envelope = ControlEnvelope::new(native_hook_request(host, event, cwd, input));
+    if service_start == ServiceStart::Allowed && matches!(event, "SessionStart" | "sessionStart") {
+        // Session boundaries are the one cheap, deterministic place to advance
+        // an idle service to the installed binary. Tool hooks stay on the direct
+        // single-round-trip path, and a service with live mounts remains intact.
+        ensure_service(&data).await?;
+        return send_control_envelope(&data, &envelope)
+            .await
+            .map_err(|error| error.to_string());
+    }
+    match send_control_envelope_once(&data, &envelope).await {
+        Ok(response) => Ok(response),
+        // An unavailable service never received the envelope, so this is the
+        // only retransmission, and no deadline applies to it.
+        Err(ControlRequestError::Unavailable(_)) if service_start == ServiceStart::Allowed => {
+            ensure_service(&data).await?;
+            send_control_envelope(&data, &envelope)
+                .await
+                .map_err(|error| error.to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// The service request for one native hook event.
+fn native_hook_request(host: &str, event: &str, cwd: PathBuf, input: Value) -> ControlRequest {
+    ControlRequest {
         version: 1,
         command: ControlCommand::Hook,
         cwd,
         argv: Vec::new(),
         name: format!("{host}:{event}"),
         arguments: input,
-    };
-    let envelope = ControlEnvelope::new(request);
-    let response = if matches!(event, "SessionStart" | "sessionStart") {
-        // Session boundaries are the one cheap, deterministic place to advance
-        // an idle service to the installed binary. Tool hooks stay on the direct
-        // single-round-trip path, and a service with live mounts remains intact.
-        ensure_service(&data).await.map_err(io::Error::other)?;
-        send_control_envelope(&data, &envelope)
-            .await
-            .map_err(|error| io::Error::other(error.to_string()))?
-    } else {
-        match send_control_envelope_once(&data, &envelope).await {
-            Ok(response) => response,
-            // An unavailable service never received the envelope, so this
-            // is the only retransmission, and no deadline applies to it.
-            Err(ControlRequestError::Unavailable(_)) => {
-                ensure_service(&data).await.map_err(io::Error::other)?;
-                send_control_envelope(&data, &envelope)
-                    .await
-                    .map_err(|error| io::Error::other(error.to_string()))?
-            }
-            Err(error) => return Err(io::Error::other(error.to_string()).into()),
+    }
+}
+
+/// The answer that lets the host continue, visibly, when Acyclic cannot
+/// answer a hook.
+fn native_hook_failure(host: &str, event: &str, error: &str) -> Value {
+    let notice = format!(
+        "Acyclic is unavailable; this tool will run without an isolated workspace: {error}"
+    );
+    if !matches!(event, "PreToolUse" | "preToolUse") {
+        return json!({"systemMessage": notice});
+    }
+    if host == "copilot" {
+        return json!({
+            "permissionDecision": "allow",
+            "permissionDecisionReason": notice,
+            "systemMessage": notice
+        });
+    }
+    json!({
+        "systemMessage": notice,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": notice,
+            "additionalContext": notice
         }
-    };
-    serde_json::to_writer(io::stdout().lock(), &response)?;
-    Ok(())
+    })
 }
 
 fn is_foreground_cli_invocation() -> bool {
@@ -10461,40 +10516,13 @@ fn doctor_report(
                 .ok()
                 .filter(|bytes| bytes.len() <= 1024 * 1024)
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .is_some_and(|document| {
-                    [
-                        "SessionStart",
-                        "UserPromptSubmit",
-                        "PreToolUse",
-                        "PostToolUse",
-                        "SubagentStart",
-                        "SubagentStop",
-                        "SessionEnd",
-                    ]
-                    .iter()
-                    .all(|event| {
-                        document
-                            .pointer(&format!("/hooks/{event}"))
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .flat_map(|entry| {
-                                entry
-                                    .get("hooks")
-                                    .and_then(Value::as_array)
-                                    .into_iter()
-                                    .flatten()
-                            })
-                            .any(|hook| {
-                                hook.get("command").and_then(Value::as_str)
-                                    == Some(format!("\"${{PLUGIN_ROOT}}/bin/acyclic\" __hook codex {event}").as_str())
-                                    && (!cfg!(windows)
-                                        || hook.get("commandWindows").and_then(Value::as_str)
-                                            == Some(format!("& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex {event}").as_str()))
-                            })
-                    })
-                });
-            let command_valid = native.is_file() && !command_placeholder && !mcp.exists();
+                .is_some_and(|document| codex_hook_mcp::hook_manifest_is_current(&document));
+            let server_valid = fs::read(&mcp)
+                .ok()
+                .filter(|bytes| bytes.len() <= 1024 * 1024)
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .is_some_and(|document| document == codex_hook_mcp::server_declaration());
+            let command_valid = native.is_file() && !command_placeholder && server_valid;
             checks.push(doctor_check(
                 "hooks",
                 if hooks_valid { "pass" } else { "fail" },
@@ -10504,9 +10532,9 @@ fn doctor_report(
                 "agent-command",
                 if command_valid { "pass" } else { "fail" },
                 if command_valid {
-                    "npm command runs the native executable; no MCP bridge exposed to shell-capable Codex"
+                    "npm command and Codex hook server run the native executable; no model-visible MCP bridge"
                 } else {
-                    "npm command does not reach the native executable, or a commandless MCP bridge is exposed"
+                    "npm command does not reach the native executable, or the plugin MCP declaration is not the Codex hook server"
                 },
             ));
         }
@@ -14811,6 +14839,252 @@ mod tests {
     #[test]
     fn codex_hooks_route_child_tools_by_documented_turn_identity() {
         run_large_stack("codex-hook-turn-identity", codex_hook_turn_identity_case);
+    }
+
+    #[test]
+    fn codex_mcp_hooks_reach_the_service_exactly_as_command_hooks() {
+        run_large_stack("codex-mcp-equivalence", codex_mcp_equivalence_case);
+    }
+
+    /// One Codex hook event exactly as Codex serializes it for a command hook
+    /// (every field its schema requires, and `agent_id`/`agent_type` only in
+    /// a spawned subagent's thread), with the thread Codex names in an MCP
+    /// hook call's metadata.
+    struct CodexEvent {
+        name: &'static str,
+        thread: &'static str,
+        fields: Value,
+    }
+
+    fn codex_session_events(root: &Path) -> Vec<CodexEvent> {
+        let root = root.display().to_string();
+        let common = |event: &str, turn: &str| {
+            json!({
+                "session_id": "root-thread",
+                "turn_id": turn,
+                "transcript_path": null,
+                "cwd": root,
+                "hook_event_name": event,
+                "model": "gpt-5.6-sol",
+                "permission_mode": "bypassPermissions",
+            })
+        };
+        let with = |mut base: Value, extra: Value| {
+            let object = base.as_object_mut().expect("event object");
+            object.extend(extra.as_object().expect("extra object").clone());
+            base
+        };
+        let child = |event: &'static str, turn: &str, extra: Value| CodexEvent {
+            name: event,
+            thread: "child-thread",
+            fields: with(
+                common(event, turn),
+                with(
+                    json!({"agent_id":"child-thread","agent_type":"explorer"}),
+                    extra,
+                ),
+            ),
+        };
+        let bash = |id: &str, command: &str| json!({"tool_name":"Bash","tool_use_id":id,"tool_input":{"command":command}});
+        let spawn = json!({
+            "tool_name":"collaborationspawn_agent","tool_use_id":"spawn-child",
+            "tool_input":{"message":"inspect","agent_type":"explorer"}
+        });
+        vec![
+            CodexEvent {
+                name: "UserPromptSubmit",
+                thread: "root-thread",
+                fields: with(
+                    common("UserPromptSubmit", "root-turn"),
+                    json!({"prompt":"Run it."}),
+                ),
+            },
+            CodexEvent {
+                name: "PreToolUse",
+                thread: "root-thread",
+                fields: with(
+                    common("PreToolUse", "root-turn"),
+                    bash("root-bash", "git status"),
+                ),
+            },
+            CodexEvent {
+                name: "PostToolUse",
+                thread: "root-thread",
+                fields: with(
+                    common("PostToolUse", "root-turn"),
+                    with(
+                        bash("root-bash", "git status"),
+                        json!({"tool_response":"clean"}),
+                    ),
+                ),
+            },
+            CodexEvent {
+                name: "PreToolUse",
+                thread: "root-thread",
+                fields: with(common("PreToolUse", "root-turn"), spawn.clone()),
+            },
+            CodexEvent {
+                name: "SubagentStart",
+                thread: "child-thread",
+                fields: with(
+                    common("SubagentStart", "child-turn"),
+                    json!({"agent_id":"child-thread","agent_type":"explorer"}),
+                ),
+            },
+            // A later turn of the child, bound to it by its thread alone.
+            child("PreToolUse", "child-later-turn", bash("child-pwd", "pwd")),
+            child(
+                "PostToolUse",
+                "child-later-turn",
+                with(bash("child-pwd", "pwd"), json!({"tool_response":"/"})),
+            ),
+            // An internal Codex subagent has a thread of its own but no agent
+            // identity, and its unbound turn is refused on both paths.
+            CodexEvent {
+                name: "PreToolUse",
+                thread: "review-thread",
+                fields: with(common("PreToolUse", "review-turn"), bash("review-ls", "ls")),
+            },
+            CodexEvent {
+                name: "SubagentStop",
+                thread: "child-thread",
+                fields: with(
+                    common("SubagentStop", "child-later-turn"),
+                    json!({
+                        "agent_id":"child-thread","agent_type":"explorer",
+                        "agent_transcript_path":null,"stop_hook_active":false,
+                        "last_assistant_message":"done"
+                    }),
+                ),
+            },
+            CodexEvent {
+                name: "PostToolUse",
+                thread: "root-thread",
+                fields: with(
+                    common("PostToolUse", "root-turn"),
+                    with(spawn, json!({"tool_response":{"agent_id":"child-thread"}})),
+                ),
+            },
+        ]
+    }
+
+    /// Codex's `mcp_tool` argument expansion: a string that is exactly one
+    /// `${path}` placeholder becomes that event field's JSON value, and a
+    /// missing field fails the hook.
+    fn codex_expand(template: &Value, event: &Value) -> Result<Value, String> {
+        match template {
+            Value::Object(object) => object
+                .iter()
+                .map(|(key, value)| Ok((key.clone(), codex_expand(value, event)?)))
+                .collect::<Result<serde_json::Map<_, _>, String>>()
+                .map(Value::Object),
+            Value::String(text) => {
+                let Some(path) = text
+                    .strip_prefix("${")
+                    .and_then(|path| path.strip_suffix('}'))
+                else {
+                    assert!(!text.contains("${"), "placeholders fill whole strings");
+                    return Ok(template.clone());
+                };
+                assert!(
+                    !path.contains(['{', '}', '$']),
+                    "one placeholder per string"
+                );
+                path.split('.')
+                    .try_fold(event, |value, field| value.get(field))
+                    .cloned()
+                    .ok_or_else(|| format!("hook input placeholder `{text}` was not found"))
+            }
+            _ => Ok(template.clone()),
+        }
+    }
+
+    /// Runs one Codex session through a fresh service, delivering its events
+    /// as Codex's MCP hook calls when `mcp` is set and as command hooks
+    /// otherwise, and returns every answer with this run's identities made
+    /// neutral.
+    async fn codex_session_answers(mcp: bool) -> Vec<Result<Value, String>> {
+        let manifest: Value =
+            serde_json::from_str(include_str!("../hooks/hooks.json")).expect("hook manifest");
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        fs::create_dir(&root).expect("root");
+        let service = ConcurrentServiceControl::open(temporary.path().join("state"))
+            .await
+            .expect("service");
+        service
+            .dispatch_request(super::native_hook_request(
+                "codex",
+                "SessionStart",
+                root.clone(),
+                json!({
+                    "session_id":"root-thread","transcript_path":null,"cwd":root,
+                    "hook_event_name":"SessionStart","model":"gpt-5.6-sol",
+                    "permission_mode":"bypassPermissions","source":"startup"
+                }),
+            ))
+            .await
+            .expect("session start");
+        let mut answers = Vec::new();
+        for event in codex_session_events(&root) {
+            let request = if mcp {
+                let template = manifest
+                    .pointer(&format!("/hooks/{}/0/hooks/0/input", event.name))
+                    .expect("MCP hook template");
+                let arguments = codex_expand(template, &event.fields).expect("template fields");
+                let (name, cwd, input) =
+                    codex_hook_mcp::hook_request(Some(&arguments), Some(event.thread.to_owned()))
+                        .expect("hook call");
+                super::native_hook_request("codex", name, cwd, input)
+            } else {
+                let cwd = PathBuf::from(event.fields["cwd"].as_str().expect("cwd"));
+                super::native_hook_request("codex", event.name, cwd, event.fields)
+            };
+            answers.push(service.dispatch_request(request).await);
+        }
+        service.shutdown().await.expect("service shutdown");
+        // Each run has its own directory and freshly generated workspace,
+        // root and generation identities (long base64url or hex words).
+        let neutral = |text: String| {
+            let temporary = temporary.path().display().to_string();
+            let escaped = serde_json::to_string(&temporary).expect("escaped path");
+            let text = text
+                .replace(escaped.trim_matches('"'), "<run>")
+                .replace(&temporary, "<run>")
+                .replace(&temporary.replace('\\', "/"), "<run>");
+            let mut neutral = String::with_capacity(text.len());
+            let mut word = String::new();
+            for character in text.chars().chain(std::iter::once(' ')) {
+                if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                    word.push(character);
+                    continue;
+                }
+                neutral.push_str(if word.len() >= 20 { "<id>" } else { &word });
+                word.clear();
+                neutral.push(character);
+            }
+            neutral.pop();
+            neutral
+        };
+        answers
+            .into_iter()
+            .map(|answer| match answer {
+                Ok(value) => {
+                    Ok(serde_json::from_str(&neutral(value.to_string())).expect("neutral answer"))
+                }
+                Err(error) => Err(neutral(error)),
+            })
+            .collect()
+    }
+
+    async fn codex_mcp_equivalence_case() {
+        let command = codex_session_answers(false).await;
+        let mcp = codex_session_answers(true).await;
+        for (index, answer) in command.iter().enumerate() {
+            // Only the internal subagent's unbound turn is refused.
+            assert_eq!(answer.is_ok(), index != 7, "event {index}: {answer:?}");
+        }
+        assert_eq!(command, mcp);
     }
 
     fn run_large_stack<F>(name: &str, make: impl FnOnce() -> F + Send + 'static)
