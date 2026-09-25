@@ -197,18 +197,25 @@ fn verify_receipt(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         option(args, "--require-kind").ok_or("--verify-receipt requires --require-kind")?;
     let release_version =
         option(args, "--release-version").ok_or("--verify-receipt requires --release-version")?;
+    let expected_arch =
+        option(args, "--release-arch").ok_or("--verify-receipt requires --release-arch")?;
     let (expected_os, provider_process_io_observable) = match required_kind.as_str() {
         "linux-fuse" => ("linux", true),
         "macos-nfs" => ("macos", true),
         "windows-projfs" => ("windows", false),
         _ => return Err(format!("unsupported receipt backend: {required_kind}").into()),
     };
-    let expected_arch = std::env::consts::ARCH;
     let report: ReceiptReport = serde_json::from_slice(&fs::read(receipt_path)?)?;
     let digest = file_blake3(&executable)?;
+    if report.arch != expected_arch {
+        return Err(format!(
+            "native mount receipt architecture {} does not match release target {expected_arch}",
+            report.arch
+        )
+        .into());
+    }
     if report.schema != "acyclic-native-mount-qualification-v2"
         || report.os != expected_os
-        || report.arch != expected_arch
         || !report
             .coverage
             .iter()
@@ -1882,6 +1889,71 @@ fn collect_paths(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::{COVERAGE, Failure, file_blake3, verify_receipt};
+    use std::ffi::OsString;
+
+    #[test]
+    fn verifies_the_release_target_architecture_not_the_verifier_host() -> Result<(), Failure> {
+        let directory = tempfile::tempdir()?;
+        let executable = directory.path().join("acyclic");
+        let receipt = directory.path().join("macos-nfs.json");
+        std::fs::write(&executable, b"release executable")?;
+        let digest = file_blake3(&executable)?;
+        std::fs::write(
+            &receipt,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "acyclic-native-mount-qualification-v2",
+                "os": "macos",
+                "arch": "aarch64",
+                "coverage": COVERAGE,
+                "capability": {
+                    "kind": "macos-nfs",
+                    "available": true,
+                    "writable": true,
+                    "provider_process_io_observable": true,
+                    "session_isolation": "SharedProcess",
+                    "unavailable_reason": null
+                },
+                "required_kind": "macos-nfs",
+                "release_version": "0.1.2",
+                "executable_blake3": digest,
+                "passed": true,
+                "cases": [
+                    {"name": "real-mount-mutation-matrix", "status": "passed"},
+                    {"name": "crash-detach-recovery", "status": "passed"},
+                    {"name": "checkout-and-git-untouched", "status": "passed"}
+                ]
+            }))?,
+        )?;
+        let mut args = vec![
+            OsString::from("--verify-receipt"),
+            receipt.into_os_string(),
+            OsString::from("--release-executable"),
+            executable.into_os_string(),
+            OsString::from("--require-kind"),
+            OsString::from("macos-nfs"),
+            OsString::from("--release-version"),
+            OsString::from("0.1.2"),
+            OsString::from("--release-arch"),
+            OsString::from("aarch64"),
+        ];
+        verify_receipt(&args)?;
+        *args.last_mut().ok_or("missing release architecture")? = OsString::from("x86_64");
+        let error = match verify_receipt(&args) {
+            Ok(()) => return Err("mismatched release architecture was accepted".into()),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("does not match release target x86_64")
+        );
+        Ok(())
+    }
 }
 
 #[cfg(test)]

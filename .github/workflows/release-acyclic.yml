@@ -240,13 +240,13 @@ jobs:
           chmod +x "$qualifier"
           version=$(node -p "require('./plugin/package.json').version")
           "$qualifier" --verify-receipt release/native-mount/linux-fuse.json \
-            --require-kind linux-fuse --release-version "$version" \
+            --require-kind linux-fuse --release-version "$version" --release-arch x86_64 \
             --release-executable release/binaries/acyclic-linux-x64-gnu/linux-x64-gnu/acyclic
           "$qualifier" --verify-receipt release/native-mount/macos-nfs.json \
-            --require-kind macos-nfs --release-version "$version" \
+            --require-kind macos-nfs --release-version "$version" --release-arch aarch64 \
             --release-executable release/binaries/acyclic-darwin-arm64/darwin-arm64/acyclic
           "$qualifier" --verify-receipt release/native-mount/windows-projfs.json \
-            --require-kind windows-projfs --release-version "$version" \
+            --require-kind windows-projfs --release-version "$version" --release-arch x86_64 \
             --release-executable release/binaries/acyclic-win32-x64/win32-x64/acyclic.exe
       - name: Build and validate the universal plugin
         run: |
