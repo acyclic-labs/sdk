@@ -1,5 +1,9 @@
 # @acyclic-labs/fs changelog
 
+## 0.1.4 - 2026-09-25
+
+- Aligns the native and browser clients with the qualified SDK 0.1.4 release.
+
 ## 0.1.3 - 2026-09-25
 
 - Makes the standalone package test build its distribution first, so clean

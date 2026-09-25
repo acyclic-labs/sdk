@@ -1,5 +1,10 @@
 # @acyclic-labs/plugin changelog
 
+## 0.1.4 - 2026-09-25
+
+- Restores executable modes for every Linux and macOS release binary and
+  validates those modes in the universal package.
+
 ## 0.1.3 - 2026-09-25
 
 - Rebuilds the universal `acyclic` distribution from the qualified SDK source,

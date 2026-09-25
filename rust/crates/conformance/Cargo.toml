@@ -14,12 +14,12 @@ local-runner = ["acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/
 s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum", "dep:s3s"]
 
 [dependencies]
-acyclic-fs = { version = "=0.1.3", path = "../filesystem" }
-acyclic-harness = { version = "=0.1.3", path = "../harness" }
-acyclic-machines = { version = "=0.1.3", path = "../machines" }
-acyclic-native-runtime = { version = "=0.1.3", path = "../native-runtime" }
-acyclic-objects = { version = "=0.1.3", path = "../objects" }
-acyclic-stream = { version = "=0.1.3", path = "../stream" }
+acyclic-fs = { version = "=0.1.4", path = "../filesystem" }
+acyclic-harness = { version = "=0.1.4", path = "../harness" }
+acyclic-machines = { version = "=0.1.4", path = "../machines" }
+acyclic-native-runtime = { version = "=0.1.4", path = "../native-runtime" }
+acyclic-objects = { version = "=0.1.4", path = "../objects" }
+acyclic-stream = { version = "=0.1.4", path = "../stream" }
 async-trait = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 bytes.workspace = true
