@@ -10950,7 +10950,11 @@ async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bo
             Ok(false)
         }
         Err(ControlRequestError::Unavailable(_)) => {
-            drop(drain_service(data, None).await?);
+            // Only a service that holds its lock can still open an endpoint;
+            // when none does, nothing needs waiting for.
+            if claim_stopped_service(data, None)?.is_none() {
+                drop(drain_service(data, None).await?);
+            }
             Ok(false)
         }
         Err(ControlRequestError::ProtocolMismatch(_)) => {
@@ -11368,7 +11372,7 @@ async fn send_control_envelope_with_attempts(
             );
             let mut last = None;
             let mut connected = None;
-            for _ in 0..windows_connect_attempts {
+            for attempt in 1..=windows_connect_attempts {
                 let remaining = remaining_control_wait(deadline)?;
                 match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe) {
                     Ok(client) => {
@@ -11377,8 +11381,11 @@ async fn send_control_envelope_with_attempts(
                     }
                     Err(error) => {
                         last = Some(error);
-                        tokio::time::sleep(std::time::Duration::from_millis(20).min(remaining))
-                            .await;
+                        // Only a further attempt is worth waiting for.
+                        if attempt < windows_connect_attempts {
+                            tokio::time::sleep(std::time::Duration::from_millis(20).min(remaining))
+                                .await;
+                        }
                     }
                 }
             }
@@ -11999,6 +12006,32 @@ async fn purge_durable_state(data: &Path) -> Result<(), String> {
     remove_tree_checked(parent, data)
 }
 
+/// Takes the service lock when no service holds it, and clears the identity
+/// the last service published. A service holds its lock for as long as it
+/// runs, from before it opens its endpoint, so a free lock proves that none
+/// is running or starting.
+fn claim_stopped_service(
+    data: &Path,
+    expected_identity: Option<&str>,
+) -> Result<Option<ServiceLock>, String> {
+    let Some(lock) = acquire_service_lock(data)? else {
+        return Ok(None);
+    };
+    if let Some(expected) = expected_identity {
+        let marker = fs::read_to_string(data.join("service.identity"))
+            .map_err(|error| format!("cannot authenticate stale service: {error}"))?;
+        if marker != expected {
+            return Err("refusing to clean a replacement Acyclic service".to_owned());
+        }
+    }
+    match fs::remove_file(data.join("service.identity")) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(display(error)),
+    }
+    Ok(Some(lock))
+}
+
 async fn drain_service(
     data: &Path,
     expected_identity: Option<&str>,
@@ -12071,27 +12104,11 @@ async fn drain_service(
                     .to_owned(),
             )
         }
-        Err(ControlRequestError::Unavailable(_)) => match acquire_service_lock(data)? {
-            Some(lock) => {
-                if let Some(expected) = expected_identity {
-                    let marker = fs::read_to_string(data.join("service.identity"))
-                        .map_err(|error| format!("cannot authenticate stale service: {error}"))?;
-                    if marker != expected {
-                        return Err("refusing to clean a replacement Acyclic service".to_owned());
-                    }
-                }
-                match fs::remove_file(data.join("service.identity")) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(display(error)),
-                }
-                Ok(lock)
-            }
-            None => Err(
+        Err(ControlRequestError::Unavailable(_)) => claim_stopped_service(data, expected_identity)?
+            .ok_or_else(|| {
                 "Acyclic service lock is held without a reachable endpoint; state was preserved"
-                    .to_owned(),
-            ),
-        },
+                    .to_owned()
+            }),
         Err(ControlRequestError::ProtocolMismatch(_)) => {
             drain_legacy_service(data, expected_identity).await
         }
