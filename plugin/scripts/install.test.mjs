@@ -186,6 +186,27 @@ test("installed command is the verified executable itself", () => {
   }
 });
 
+test("every install runs the installed executable once, and a failed run does not fail it", () => {
+  const { root, bin, installed } = fixture();
+  const log = join(root, "warm-up.log");
+  const warmUps = () => readFileSync(log, "utf8").trim().split("\n");
+  const first = install(bin, undefined, undefined, { ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log });
+  assert.equal(first.status, 0, first.stderr);
+  assert.deepEqual(warmUps(), [`${installed} status 0`]);
+  // An install that finds the executable in place warms it again.
+  const again = install(bin, undefined, undefined, { ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log });
+  assert.equal(again.status, 0, again.stderr);
+  assert.deepEqual(warmUps(), [`${installed} status 0`, `${installed} status 0`]);
+  const missing = join(root, "missing-executable");
+  const failed = install(bin, undefined, undefined, {
+    ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log,
+    ACYCLIC_INSTALL_TEST_WARM_UP_EXECUTABLE: missing,
+  });
+  assert.equal(failed.status, 0, failed.stderr);
+  assert.equal(warmUps().at(-1), `${missing} error ENOENT`);
+  assert.equal(digest(installed), digest(join(bin, target, executableName)));
+});
+
 test("installer is idempotent and rejects modified installed bytes", () => {
   const value = fixture();
   try {

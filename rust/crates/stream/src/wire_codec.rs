@@ -61,10 +61,12 @@ pub(crate) fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
             source,
             destination,
             at_tail,
+            records,
         } => wire::commit_mutation::Mutation::Fork(wire::ForkMutation {
             source: source.to_string(),
             destination: destination.to_string(),
             at_tail,
+            records,
         }),
         CommitMutation::Trim { path, before } => {
             wire::commit_mutation::Mutation::Trim(wire::TrimMutation {
@@ -95,6 +97,7 @@ pub(crate) fn mutation_from_wire(
             source: path(value.source)?,
             destination: path(value.destination)?,
             at_tail: value.at_tail,
+            records: value.records,
         }),
         wire::commit_mutation::Mutation::Trim(value) => Ok(CommitMutation::Trim {
             path: path(value.path)?,

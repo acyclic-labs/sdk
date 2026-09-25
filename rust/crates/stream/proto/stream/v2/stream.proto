@@ -141,10 +141,13 @@ message AppendMutation {
   repeated bytes records = 2;
 }
 
+// Forks the source's prefix ending at `at_tail` into the new destination,
+// then appends `records` to the destination, all at one linearization point.
 message ForkMutation {
   string source = 1;
   string destination = 2;
   uint64 at_tail = 3;
+  repeated bytes records = 4;
 }
 
 message TrimMutation {
@@ -185,6 +188,7 @@ message CommittedFork {
   string destination = 2;
   uint64 forked_at = 3;
   uint64 tail = 4;
+  repeated Record records = 5;
 }
 
 message CommittedTrim {

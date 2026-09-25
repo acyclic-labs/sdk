@@ -602,6 +602,9 @@ export declare type AppendMutation = Message<"acyclic.stream.v2.AppendMutation">
 export declare const AppendMutationSchema: GenMessage<AppendMutation>;
 
 /**
+ * Forks the source's prefix ending at `at_tail` into the new destination,
+ * then appends `records` to the destination, all at one linearization point.
+ *
  * @generated from message acyclic.stream.v2.ForkMutation
  */
 export declare type ForkMutation = Message<"acyclic.stream.v2.ForkMutation"> & {
@@ -619,6 +622,11 @@ export declare type ForkMutation = Message<"acyclic.stream.v2.ForkMutation"> & {
    * @generated from field: uint64 at_tail = 3;
    */
   atTail: bigint;
+
+  /**
+   * @generated from field: repeated bytes records = 4;
+   */
+  records: Uint8Array[];
 };
 
 /**
@@ -794,6 +802,11 @@ export declare type CommittedFork = Message<"acyclic.stream.v2.CommittedFork"> &
    * @generated from field: uint64 tail = 4;
    */
   tail: bigint;
+
+  /**
+   * @generated from field: repeated acyclic.stream.v2.Record records = 5;
+   */
+  records: Record[];
 };
 
 /**

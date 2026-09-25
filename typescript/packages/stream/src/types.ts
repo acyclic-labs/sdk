@@ -59,12 +59,13 @@ export type CommitCondition =
   | { readonly path: string; readonly ifAbsent: true };
 export type CommitMutation =
   | { readonly append: { readonly stream: import("./client.js").Stream<unknown>; readonly values: readonly unknown[] } }
-  | { readonly fork: { readonly source: import("./client.js").Stream<unknown>; readonly destination: string; readonly atTail: Sequence } }
+  /** Forks the source's prefix into a new destination, then appends `values` (encoded with the source's codec) to it in the same commit. */
+  | { readonly fork: { readonly source: import("./client.js").Stream<unknown>; readonly destination: string; readonly atTail: Sequence; readonly values?: readonly unknown[] } }
   | { readonly trim: { readonly stream: import("./client.js").Stream<unknown>; readonly before: Sequence } }
   | { readonly delete: { readonly stream: import("./client.js").Stream<unknown> } };
 export type CommittedMutation =
   | { readonly type: "append"; readonly path: string; readonly start: Sequence; readonly end: Sequence; readonly tail: Sequence; readonly records: readonly Record<unknown>[] }
-  | { readonly type: "fork"; readonly source: string; readonly destination: string; readonly forkedAt: Sequence; readonly tail: Sequence }
+  | { readonly type: "fork"; readonly source: string; readonly destination: string; readonly forkedAt: Sequence; readonly tail: Sequence; readonly records: readonly Record<unknown>[] }
   | { readonly type: "trim"; readonly path: string; readonly trimPoint: Sequence }
   | { readonly type: "delete"; readonly path: string };
 export interface CommittedEnvelope { readonly commitId: CommitId; readonly mutations: readonly CommittedMutation[] }
@@ -94,7 +95,7 @@ export interface ProviderCommitRequest {
   readonly conditions: readonly ({ readonly path: string; readonly ifTail: Sequence } | { readonly path: string; readonly ifAbsent: true })[];
   readonly mutations: readonly (
     | { readonly append: { readonly path: string; readonly values: readonly Uint8Array[] } }
-    | { readonly fork: { readonly source: string; readonly destination: string; readonly atTail: Sequence } }
+    | { readonly fork: { readonly source: string; readonly destination: string; readonly atTail: Sequence; readonly values: readonly Uint8Array[] } }
     | { readonly trim: { readonly path: string; readonly before: Sequence } }
     | { readonly delete: { readonly path: string } }
   )[];

@@ -1315,6 +1315,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .map_err(WorkspaceError::engine)
     }
 
+    /// Makes every object `records` reach durable before another durable
+    /// store records them.
+    pub(crate) async fn make_records_durable(
+        &self,
+        records: &[crate::kernel::FileRecord],
+    ) -> Result<(), WorkspaceError> {
+        self.volume
+            .fs
+            .make_records_durable(
+                self.volume.config,
+                records,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map_err(WorkspaceError::engine)
+    }
+
     pub(crate) fn detached_record(
         &self,
         record: crate::kernel::FileRecord,

@@ -141,7 +141,8 @@ pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObject
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 pub use async_storage::{
     AsyncAuthorityStore, AsyncObjectStore, GenerationFork, GenerationForkSource,
-    ImmediateAuthorityStore, ImmediateObjectStore, PublicationScope,
+    ImmediateAuthorityStore, ImmediateObjectStore, PublicationScope, WorkspaceForkCommit,
+    WorkspaceForkOutcome, append_first_record, commit_workspace_fork_in_steps,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
@@ -265,16 +266,16 @@ pub use native_identity::NativeRootIdentity;
 pub use native_mount::recover_native_mount_destination_preserving_residue;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
-    CheckoutMountSource, HostPathReplacement, HostPathRestore, LazyMount, LazyWorkingSet,
-    MaterializationReceipt, MaterializeError, MaterializeOptions, Mount, MountAttributePage,
-    MountContentPin, MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLifecycleError,
-    MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions, MountPath,
-    MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange,
-    MountSparseSpan, MountViewLease, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
-    NativeMountError, NativeMountKind, NativeMountRequest, NativeMountSession,
-    NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
-    NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
-    RoutedMountSource, SharedCheckout, SharedCheckoutState,
+    CheckoutMountSource, ContentSink, HostPathReplacement, HostPathRestore, LazyMount,
+    LazyWorkingSet, MaterializationReceipt, MaterializeError, MaterializeOptions, Mount,
+    MountAttributePage, MountContentPin, MountDirectoryEntry, MountDirectoryPage, MountFilesystem,
+    MountLifecycleError, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions,
+    MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
+    MountSparseRange, MountSparseSpan, MountViewLease, NativeBlockCloneAccelerationEvidence,
+    NativeMountCapabilities, NativeMountError, NativeMountKind, NativeMountRequest,
+    NativeMountSession, NativeMountSessionIsolation, NativeSparseAccelerationEvidence,
+    NativeStorageAccelerationError, NativeStorageAccelerationEvidence, NativeStorageCapabilities,
+    NativeStorageCapabilityError, RoutedMountSource, SharedCheckout, SharedCheckoutState,
     detach_native_mount_destination_after_crash, materialize_checkout,
     materialize_checkout_host_path, materialize_checkout_path, materialize_checkout_paths,
     mount_native, mount_native_over_existing, probe_native_mount,

@@ -96,6 +96,7 @@ mod browser {
                             destination: value.destination.to_string(),
                             forked_at: value.forked_at,
                             tail: value.tail,
+                            records: value.records.into_iter().map(record).collect(),
                         }),
                         CommittedMutation::Trim(value) => Mutation::Trim(wire::CommittedTrim {
                             path: value.path.to_string(),
@@ -221,6 +222,7 @@ mod browser {
                 source: path(value.source)?,
                 destination: path(value.destination)?,
                 at_tail: value.at_tail,
+                records: value.records,
             }),
             wire::commit_mutation::Mutation::Trim(value) => Ok(CommitMutation::Trim {
                 path: path(value.path)?,

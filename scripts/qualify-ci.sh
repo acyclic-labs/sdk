@@ -319,6 +319,8 @@ case "$lane" in
     # The shipped browser package end to end in headless Chrome: one tab, then
     # concurrent tabs sharing one database.
     source scripts/ensure-bun.sh
+    wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
+    export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
     bun run --filter '@acyclic-labs/fs' build
     CHROME="$(command -v google-chrome || command -v chromium)" \

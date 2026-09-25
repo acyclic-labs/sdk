@@ -124,6 +124,34 @@ pub(crate) async fn prove_blob_closure_async<S: crate::AsyncObjectStore>(
     Ok((objects, context.work))
 }
 
+/// Proves the complete object closure of individual file records that no
+/// generation need reach, such as the identity of a removed hard link a
+/// workspace still resolves, and returns every object it reaches. A
+/// directory record contributes its namespace pages; its children are
+/// records of their own.
+///
+/// # Errors
+///
+/// Fails closed on missing or corrupt objects, malformed canonical bytes,
+/// unsupported semantics, out-of-bounds content spans, or resource limits.
+pub(crate) async fn prove_record_closure_async<S: crate::AsyncObjectStore>(
+    store: &S,
+    records: &[FileRecord],
+    limits: ClosureLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<ObjectId>, WorkCounters), GenerationProofFailure> {
+    let mut context = ProofContext::new(store, limits, budget, cancellation);
+    for record in records {
+        if let Err(error) = context.prove_record(record).await {
+            return Err(OperationFailure::new(error, context.work));
+        }
+    }
+    let mut objects = context.objects.into_iter().collect::<Vec<_>>();
+    objects.sort_unstable();
+    Ok((objects, context.work))
+}
+
 struct ProofContext<'a, S> {
     store: &'a S,
     limits: ClosureLimits,
@@ -295,40 +323,49 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         }
         let mut directory_entries = BTreeMap::new();
         for record in records.values() {
-            if !record.kind.is_supported_by_profile(self.limits.profile)
-                || (record.kind == super::FileKind::SymbolicLink && !self.limits.symbolic_links)
-                || (record.link_count > 1 && !self.limits.hard_links)
-            {
-                return Err(ClosureError::UnsupportedVolumeSemantics);
-            }
-            self.prove_metadata(record.metadata).await?;
-            match record.payload {
-                FilePayload::Regular {
-                    logical_bytes,
-                    extents,
-                } => {
-                    self.prove_extent_tree(extents, logical_bytes).await?;
-                }
-                FilePayload::Directory { entries } => {
-                    directory_entries.insert(record.file_id, self.prove_tree(entries).await?);
-                }
-                FilePayload::SymbolicLink {
-                    target_bytes,
-                    target,
-                }
-                | FilePayload::ReparsePoint {
-                    payload_bytes: target_bytes,
-                    payload: target,
-                } => {
-                    if self.prove_blob(target).await? != target_bytes {
-                        return Err(ClosureError::BlobLengthMismatch);
-                    }
-                }
-                FilePayload::InlineRegular(_) | FilePayload::Empty | FilePayload::Device { .. } => {
-                }
+            if let Some(entries) = self.prove_record(record).await? {
+                directory_entries.insert(record.file_id, entries);
             }
         }
         Self::validate_namespace(root_file_id, records, &directory_entries)
+    }
+
+    /// Proves every object one record reaches: its metadata and its payload.
+    /// Returns a directory record's entries.
+    async fn prove_record(
+        &mut self,
+        record: &FileRecord,
+    ) -> Result<Option<Vec<TreeEntry>>, ClosureError> {
+        if !record.kind.is_supported_by_profile(self.limits.profile)
+            || (record.kind == super::FileKind::SymbolicLink && !self.limits.symbolic_links)
+            || (record.link_count > 1 && !self.limits.hard_links)
+        {
+            return Err(ClosureError::UnsupportedVolumeSemantics);
+        }
+        self.prove_metadata(record.metadata).await?;
+        match record.payload {
+            FilePayload::Regular {
+                logical_bytes,
+                extents,
+            } => {
+                self.prove_extent_tree(extents, logical_bytes).await?;
+            }
+            FilePayload::Directory { entries } => return Ok(Some(self.prove_tree(entries).await?)),
+            FilePayload::SymbolicLink {
+                target_bytes,
+                target,
+            }
+            | FilePayload::ReparsePoint {
+                payload_bytes: target_bytes,
+                payload: target,
+            } => {
+                if self.prove_blob(target).await? != target_bytes {
+                    return Err(ClosureError::BlobLengthMismatch);
+                }
+            }
+            FilePayload::InlineRegular(_) | FilePayload::Empty | FilePayload::Device { .. } => {}
+        }
+        Ok(None)
     }
 
     async fn prove_metadata(&mut self, metadata_id: ObjectId) -> Result<(), ClosureError> {

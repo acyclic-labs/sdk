@@ -44,6 +44,7 @@ pub(super) fn is_command(command: &str) -> bool {
             | "mount-bench-writer"
             | "kernel-bench"
             | "par-bench"
+            | "mount-run"
     )
 }
 
@@ -63,12 +64,13 @@ pub(super) fn run() {
         Some("mount-bench-writer") => mount_bench_writer(&args[1..]),
         Some("kernel-bench") => kernel_bench(&args[1..]),
         Some("par-bench") => par_bench(&args[1..]),
+        Some("mount-run") => mount_run(&args[1..]),
         _ => Err(
             "usage: qualify fixture <dir> [--with-fifo] | roundtrip <src> <work> \
              | corpus <dir> <files> <mb> | bench <src> <work> [rounds] \
              | mount-bench <work> [files] [file-bytes] [threads] \
              | kernel-bench <work> [files] [file-bytes] \
-             | par-bench <work> [writers] [files] [lazy|workspace]"
+             | par-bench <work> [writers] [files] [lazy|workspace]              | mount-run <src> <work> <runs> <program> [args...]"
                 .into(),
         ),
     };
@@ -816,6 +818,60 @@ fn mount_bench(args: &[String]) -> Result<(), Failure> {
         threads,
         [native, cold, warm],
         unmount.as_ref().ok(),
+    );
+    unmount.map(|_| ())
+}
+
+/// mount-run: times one external command in `<src>` itself, then `<runs>`
+/// times inside a fresh lazy mount of `<src>`: the first run meets an
+/// unprojected tree, later ones what earlier runs projected.
+fn mount_run(args: &[String]) -> Result<(), Failure> {
+    let source = PathBuf::from(args.first().ok_or("mount-run: missing <src>")?).canonicalize()?;
+    let work = PathBuf::from(args.get(1).ok_or("mount-run: missing <work>")?);
+    let runs: usize = args.get(2).ok_or("mount-run: missing <runs>")?.parse()?;
+    let program = args.get(3).ok_or("mount-run: missing <program>")?;
+    let arguments = args.get(4..).unwrap_or_default();
+    let run = |directory: &Path| -> Result<f64, Failure> {
+        let started = Instant::now();
+        let output = std::process::Command::new(program)
+            .args(arguments)
+            .current_dir(directory)
+            .output()?;
+        let elapsed = started.elapsed().as_secs_f64() * 1e3;
+        if !output.status.success() {
+            return Err(format!(
+                "{program} failed in {}: {}",
+                directory.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+            .into());
+        }
+        Ok(elapsed)
+    };
+    // The first native run warms the host caches the mount also reads from.
+    run(&source)?;
+    let native = (0..runs)
+        .map(|_| run(&source))
+        .collect::<Result<Vec<_>, _>>()?;
+    let profile = if cfg!(windows) {
+        FilesystemProfile::Windows
+    } else {
+        FilesystemProfile::Posix
+    };
+    let (mounted, unmount) = with_lazy_mount(&work, &source, profile, |mount_dir, _sync| {
+        (0..runs)
+            .map(|_| run(mount_dir))
+            .collect::<Result<Vec<_>, _>>()
+    });
+    println!(
+        "{}",
+        serde_json::json!({
+            "platform": std::env::consts::OS,
+            "command": std::iter::once(program).chain(arguments).collect::<Vec<_>>(),
+            "nativeMillis": native,
+            "mountMillis": mounted?,
+            "unmountMillis": unmount.as_ref().ok(),
+        })
     );
     unmount.map(|_| ())
 }

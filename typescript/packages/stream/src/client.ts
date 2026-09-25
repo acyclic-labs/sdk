@@ -125,7 +125,8 @@ export class StreamClient {
       if ("fork" in mutation) {
         sameProvider(this.provider, mutation.fork.source);
         pathValue(mutation.fork.destination);
-        return { fork: { source: mutation.fork.source.path, destination: mutation.fork.destination, atTail: sequence(mutation.fork.atTail) } };
+        const source = mutation.fork.source;
+        return { fork: { source: source.path, destination: mutation.fork.destination, atTail: sequence(mutation.fork.atTail), values: (mutation.fork.values ?? []).map(value => source.encode(value)) } };
       }
       if ("trim" in mutation) {
         sameProvider(this.provider, mutation.trim.stream);

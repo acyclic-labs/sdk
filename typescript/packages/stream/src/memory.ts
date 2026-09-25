@@ -62,7 +62,8 @@ function envelope(value: MessageShape<typeof CommittedEnvelopeSchema>): Committe
         type: "append", path: data.path, start: data.start, end: data.end, tail: data.tail,
         records: data.records.map(item => ({ sequence: item.sequence, value: Uint8Array.from(item.value), commitId: commitId(item.commitId) })),
       }; }
-      case "fork": { const data = item.mutation.value; return { type: "fork", source: data.source, destination: data.destination, forkedAt: data.forkedAt, tail: data.tail }; }
+      case "fork": { const data = item.mutation.value; return { type: "fork", source: data.source, destination: data.destination, forkedAt: data.forkedAt, tail: data.tail,
+        records: data.records.map(item => ({ sequence: item.sequence, value: Uint8Array.from(item.value), commitId: commitId(item.commitId) })) }; }
       case "trim": { const data = item.mutation.value; return { type: "trim", path: data.path, trimPoint: data.trimPoint }; }
       case "delete": return { type: "delete", path: item.mutation.value.path };
       default: throw new StreamError("invalid_response", "commit contains a mutation without a kind");
@@ -229,7 +230,8 @@ export class MemoryStreamProvider implements StreamProvider {
       : { condition: { case: "absent" as const, value: { path: item.path } } });
     const mutations = request.mutations.map(item => {
       if ("append" in item) return { mutation: { case: "append" as const, value: { path: item.append.path, records: item.append.values.map(value => Uint8Array.from(value)) } } };
-      if ("fork" in item) return { mutation: { case: "fork" as const, value: { source: item.fork.source, destination: item.fork.destination, atTail: item.fork.atTail } } };
+      if ("fork" in item) return { mutation: { case: "fork" as const, value: { source: item.fork.source, destination: item.fork.destination, atTail: item.fork.atTail,
+        records: item.fork.values.map(value => Uint8Array.from(value)) } } };
       if ("trim" in item) return { mutation: { case: "trim" as const, value: { path: item.trim.path, before: item.trim.before } } };
       return { mutation: { case: "delete" as const, value: { path: item.delete.path } } };
     });

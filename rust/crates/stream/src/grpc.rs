@@ -1349,6 +1349,11 @@ fn committed_mutation(value: wire::CommittedMutation) -> Result<CommittedMutatio
                 destination: path(value.destination)?,
                 forked_at: value.forked_at,
                 tail: value.tail,
+                records: value
+                    .records
+                    .into_iter()
+                    .map(record)
+                    .collect::<Result<_, _>>()?,
             }))
         }
         wire::committed_mutation::Mutation::Trim(value) => {
@@ -1382,6 +1387,7 @@ fn committed_mutation_wire(value: CommittedMutation) -> wire::CommittedMutation 
                 destination: value.destination.to_string(),
                 forked_at: value.forked_at,
                 tail: value.tail,
+                records: value.records.into_iter().map(record_wire).collect(),
             })
         }
         CommittedMutation::Trim(value) => {
@@ -1546,6 +1552,17 @@ mod tests {
                 }
             }),
         )
+    }
+
+    #[tokio::test]
+    async fn grpc_transport_passes_the_public_suite()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let transport = Client::from_channels(
+            Arc::from([in_memory_channel(Arc::new(MemoryStream::default()))]),
+            "fixture",
+        )?;
+        crate::conformance::verify(&transport).await?;
+        Ok(())
     }
 
     #[test]

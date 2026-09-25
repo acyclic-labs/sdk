@@ -5528,13 +5528,22 @@ impl ControlPlane {
 
     #[cfg(test)]
     async fn shutdown(self) -> Result<(), String> {
-        self.close().await.map(drop)
+        self.close(false).await.map(drop)
     }
 
     /// Shuts the session down and hands back what it knows of its state
-    /// slots, for a terminal save.
-    async fn close(mut self) -> Result<StateSlots, String> {
-        self.make_durable().await?;
+    /// slots. `terminal_save` says the caller follows a successful close with
+    /// a flushed save of the whole session, which then makes every earlier
+    /// save durable; otherwise the close leaves nothing unflushed itself.
+    async fn close(mut self, terminal_save: bool) -> Result<StateSlots, String> {
+        // Only finishing a lease or publishing a mount builds a durable
+        // effect on the session's state, and nothing may build one on a save
+        // a power loss could still undo. A close with neither saves nothing
+        // until the terminal save.
+        let has_leases = !self.state.leases.is_empty();
+        if has_leases || !self.mounts.is_empty() || !self.pending_mounts.is_empty() {
+            self.make_durable().await?;
+        }
         #[cfg(test)]
         let root_released = if self.owns_local_root {
             self.fs.local_root_release_barrier()
@@ -5592,8 +5601,10 @@ impl ControlPlane {
                     }
                 }
             }
-            self.state.leases.clear();
-            self.persist()?;
+            if has_leases {
+                self.state.leases.clear();
+                self.persist()?;
+            }
             let mounts = std::mem::take(&mut self.mounts);
             let mut first_error = None;
             for (agent_id, mount) in mounts {
@@ -5626,6 +5637,10 @@ impl ControlPlane {
             first_error.map_or(Ok(()), Err)
         }
         .await;
+        let result = match result {
+            Ok(()) if !terminal_save => self.make_durable().await,
+            result => result,
+        };
         let slots = self.slots;
         // The shared service owns the physical root-release boundary. A standalone test control
         // owns its root directly, so it waits here after dropping every provider handle.
@@ -6993,8 +7008,6 @@ const CONTROL_COMMAND_WAIT: std::time::Duration = std::time::Duration::from_secs
 #[serde(rename_all = "kebab-case")]
 enum ControlCommand {
     Ping,
-    Upgrade,
-    Shutdown,
     Doctor,
     Hook,
     Git,
@@ -7792,8 +7805,6 @@ struct ServiceResources {
     shared_roots: SharedRootRegistry,
     binary_identity: String,
     instance_id: String,
-    upgrade: Arc<tokio::sync::Notify>,
-    drain_id: Arc<Mutex<Option<String>>>,
 }
 
 impl ServiceResources {
@@ -7812,8 +7823,6 @@ impl ServiceResources {
             shared_roots: SharedRootRegistry::default(),
             binary_identity,
             instance_id: uuid::Uuid::new_v4().to_string(),
-            upgrade: Arc::new(tokio::sync::Notify::new()),
-            drain_id: Arc::new(Mutex::new(None)),
             data,
             fs,
         };
@@ -8073,7 +8082,7 @@ impl ServiceControl {
             .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())?;
         let mut terminal_state = control.state.clone();
         let directory = control.data.clone();
-        let mut slots = match control.close().await {
+        let mut slots = match control.close(deactivate).await {
             Ok(slots) => slots,
             Err(shutdown_error) => {
                 let recovered = ControlPlane::open_with(
@@ -8488,59 +8497,6 @@ impl ControlRequestDispatcher for ServiceControl {
                 "sessions": self.sessions.len(),
             }));
         }
-        if matches!(
-            request.command,
-            ControlCommand::Upgrade | ControlCommand::Shutdown
-        ) {
-            let expected = request
-                .arguments
-                .get("identity")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "upgrade request is missing the active identity".to_owned())?;
-            if expected != self.binary_identity {
-                return Err("upgrade request targets a different service binary".to_owned());
-            }
-            let expected_instance = request
-                .arguments
-                .get("instanceId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "upgrade request is missing the service instance".to_owned())?;
-            if expected_instance != self.instance_id {
-                return Err("upgrade request targets a replacement service".to_owned());
-            }
-            let drain_id = request
-                .arguments
-                .get("drainId")
-                .and_then(Value::as_str)
-                .filter(|value| {
-                    !value.is_empty()
-                        && value.len() <= 128
-                        && value
-                            .bytes()
-                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-                })
-                .ok_or_else(|| "upgrade request has an invalid drain identity".to_owned())?;
-            if matches!(request.command, ControlCommand::Upgrade) && !self.sessions.is_empty() {
-                return Err(format!(
-                    "cannot replace the Acyclic service while {} session(s) still own live mounts",
-                    self.sessions.len()
-                ));
-            }
-            if matches!(request.command, ControlCommand::Shutdown) {
-                self.shutdown_sessions(true).await?;
-            }
-            *self
-                .drain_id
-                .lock()
-                .map_err(|_| "service drain identity lock is poisoned".to_owned())? =
-                Some(drain_id.to_owned());
-            let notify = Arc::clone(&self.upgrade);
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                notify.notify_waiters();
-            });
-            return Ok(json!({ "draining": true }));
-        }
         if matches!(request.command, ControlCommand::Doctor) {
             parse_read_only_arguments(&request.argv)?;
             let executable = executable_digests_async().await?;
@@ -8686,7 +8642,7 @@ impl SessionHandle {
                             Ok(current) => {
                                 let mut terminal_state = current.state.clone();
                                 let directory = current.data.clone();
-                                match current.close().await {
+                                match current.close(deactivate).await {
                                     Ok(mut slots) => {
                                         if deactivate {
                                             terminal_state.active = false;
@@ -9258,6 +9214,15 @@ impl ConcurrentServiceControl {
         }
     }
 
+    /// Stops admitting requests ahead of a drain that ends every session, as a
+    /// stop request asks; see [`ServiceMarker`].
+    fn begin_drain(&self) {
+        self.shutdown_deactivates
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.lifecycle
+            .store(SERVICE_DRAINING, std::sync::atomic::Ordering::Release);
+    }
+
     async fn shutdown(self) -> Result<(), String> {
         let root_released = self.fs.local_root_release_barrier();
         let deactivate = self
@@ -9285,57 +9250,6 @@ impl ConcurrentControlRequestDispatcher for ConcurrentServiceControl {
                 "openingSessions": opening_sessions,
                 "drainingSessions": draining_sessions,
             }));
-        }
-        if matches!(
-            request.command,
-            ControlCommand::Upgrade | ControlCommand::Shutdown
-        ) {
-            let expected = request.arguments.get("identity").and_then(Value::as_str);
-            if expected != Some(self.binary_identity.as_str()) {
-                return Err("upgrade request targets a different service binary".to_owned());
-            }
-            let expected_instance = request.arguments.get("instanceId").and_then(Value::as_str);
-            if expected_instance != Some(self.instance_id.as_str()) {
-                return Err("upgrade request targets a replacement service".to_owned());
-            }
-            let drain_id = request
-                .arguments
-                .get("drainId")
-                .and_then(Value::as_str)
-                .filter(|value| {
-                    !value.is_empty()
-                        && value.len() <= 128
-                        && value
-                            .bytes()
-                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-                })
-                .ok_or_else(|| "upgrade request has an invalid drain identity".to_owned())?;
-            let live_claims = {
-                let catalog = self.catalog.lock().await;
-                catalog.active.len() + catalog.opening.len() + catalog.draining.len()
-            };
-            if request.command == ControlCommand::Upgrade && live_claims != 0 {
-                return Err(format!(
-                    "cannot replace the Acyclic service while {live_claims} session lifecycle claim(s) may own live mounts"
-                ));
-            }
-            *self
-                .drain_id
-                .lock()
-                .map_err(|_| "service drain identity lock is poisoned".to_owned())? =
-                Some(drain_id.to_owned());
-            self.shutdown_deactivates.store(
-                request.command == ControlCommand::Shutdown,
-                std::sync::atomic::Ordering::Release,
-            );
-            self.lifecycle
-                .store(SERVICE_DRAINING, std::sync::atomic::Ordering::Release);
-            let notify = Arc::clone(&self.upgrade);
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                notify.notify_waiters();
-            });
-            return Ok(json!({ "draining": true }));
         }
         self.ensure_running()?;
         if request.command == ControlCommand::Doctor {
@@ -9583,7 +9497,7 @@ async fn dispatch_plane_request(
                 None => control.root_git_tool(root_id, request.argv).await,
             }
         }
-        ControlCommand::Upgrade | ControlCommand::Shutdown | ControlCommand::Hook => {
+        ControlCommand::Hook => {
             Err("control command is invalid for a workspace session".to_owned())
         }
     }
@@ -10716,19 +10630,143 @@ impl Drop for ServiceLock {
     }
 }
 
-struct ServiceIdentityMarker {
+/// How any Acyclic binary identifies and stops the service of any other.
+///
+/// The control protocol changes between releases, and a service rejects a
+/// protocol it does not speak, so a new binary could neither identify nor
+/// drain an old service through it. This contract never changes, so every
+/// binary from this one on can hand off to any other:
+///
+/// - The service holds an exclusive lock on `service.lock` for its whole
+///   life, so a free lock proves that no service runs.
+/// - While its endpoint accepts requests it publishes `service.identity`,
+///   exactly `acyclic-service-v1\n{instance id}\n{binary identity}\n`.
+/// - A file `service-stop/{instance id}` holding a drain ID of at most 128
+///   ASCII letters, digits and hyphens asks that instance to drain every
+///   session and exit. It then writes `service-drain.json`, version 1, with
+///   its instance ID as `identity`, the `drainId` and whether teardown
+///   succeeded, and releases its lock.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ServiceMarker {
+    instance_id: String,
+    binary_identity: String,
+}
+
+const SERVICE_MARKER_HEADER: &str = "acyclic-service-v1";
+const SERVICE_STOP_DIRECTORY: &str = "service-stop";
+
+impl ServiceMarker {
+    fn path(data: &Path) -> PathBuf {
+        data.join("service.identity")
+    }
+
+    fn encode(&self) -> String {
+        format!(
+            "{SERVICE_MARKER_HEADER}\n{}\n{}\n",
+            self.instance_id, self.binary_identity
+        )
+    }
+
+    /// The running service's marker, if one is published.
+    fn read(data: &Path) -> Option<Self> {
+        let text = fs::read_to_string(Self::path(data)).ok()?;
+        let mut lines = text.strip_suffix('\n')?.split('\n');
+        let (Some(SERVICE_MARKER_HEADER), Some(instance_id), Some(binary_identity), None) =
+            (lines.next(), lines.next(), lines.next(), lines.next())
+        else {
+            return None;
+        };
+        is_handoff_id(instance_id).then(|| Self {
+            instance_id: instance_id.to_owned(),
+            binary_identity: binary_identity.to_owned(),
+        })
+    }
+}
+
+/// Instance and drain IDs name files, so they are short and plain.
+fn is_handoff_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+/// Asks the service instance `instance_id` to drain; see [`ServiceMarker`].
+fn request_service_stop(data: &Path, instance_id: &str, drain_id: &str) -> Result<(), String> {
+    let directory = data.join(SERVICE_STOP_DIRECTORY);
+    fs::create_dir_all(&directory).map_err(display)?;
+    // Written aside and renamed, so the service never reads a partial ID.
+    let staged = directory.join(format!("{instance_id}.{drain_id}.next"));
+    fs::write(&staged, drain_id).map_err(display)?;
+    fs::rename(&staged, directory.join(instance_id)).map_err(display)
+}
+
+/// The service's side of stop requests; see [`ServiceMarker`].
+struct StopRequests {
+    request: PathBuf,
+    arrived: Arc<tokio::sync::Notify>,
+    _watcher: notify::RecommendedWatcher,
+}
+
+impl StopRequests {
+    fn open(data: &Path, instance_id: &str) -> Result<Self, String> {
+        let directory = data.join(SERVICE_STOP_DIRECTORY);
+        fs::create_dir_all(&directory).map_err(display)?;
+        // Requests addressed to earlier instances can never be served.
+        for entry in fs::read_dir(&directory).map_err(display)? {
+            match fs::remove_file(entry.map_err(display)?.path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(display(error)),
+            }
+        }
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let notification = Arc::clone(&arrived);
+        // Any event, or a watcher error, only prompts another look.
+        let mut watcher =
+            notify::recommended_watcher(move |_| notification.notify_one()).map_err(display)?;
+        notify::Watcher::watch(
+            &mut watcher,
+            &directory,
+            notify::RecursiveMode::NonRecursive,
+        )
+        .map_err(display)?;
+        Ok(Self {
+            request: directory.join(instance_id),
+            arrived,
+            _watcher: watcher,
+        })
+    }
+
+    /// Waits for a stop request and returns its drain ID.
+    async fn next(&self) -> String {
+        loop {
+            if let Some(drain_id) = fs::read_to_string(&self.request)
+                .ok()
+                .filter(|drain_id| is_handoff_id(drain_id))
+            {
+                return drain_id;
+            }
+            self.arrived.notified().await;
+        }
+    }
+}
+
+/// The published marker, withdrawn when the service stops answering.
+struct PublishedServiceMarker {
     path: PathBuf,
 }
 
-impl ServiceIdentityMarker {
-    fn create(data: &Path, identity: &str) -> Result<Self, String> {
-        let path = data.join("service.identity");
-        fs::write(&path, identity).map_err(display)?;
+impl PublishedServiceMarker {
+    fn create(data: &Path, marker: &ServiceMarker) -> Result<Self, String> {
+        let path = ServiceMarker::path(data);
+        fs::write(&path, marker.encode()).map_err(display)?;
         Ok(Self { path })
     }
 }
 
-impl Drop for ServiceIdentityMarker {
+impl Drop for PublishedServiceMarker {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
@@ -10884,9 +10922,8 @@ async fn run_locked_service(
     if let Some(identity) = identity_override {
         service.resources.binary_identity = identity;
     }
-    let upgrade = Arc::clone(&service.upgrade);
-    let drain_id = Arc::clone(&service.drain_id);
     let instance_id = service.instance_id.clone();
+    let binary_identity = service.binary_identity.clone();
     let control = Arc::new(service);
     let endpoint = match start_control_endpoint(Arc::clone(&control), &data).await {
         Ok(endpoint) => endpoint,
@@ -10903,8 +10940,15 @@ async fn run_locked_service(
             };
         }
     };
-    let _identity_marker = match ServiceIdentityMarker::create(&data, &instance_id) {
-        Ok(marker) => marker,
+    let published = StopRequests::open(&data, &instance_id).and_then(|stops| {
+        let marker = ServiceMarker {
+            instance_id: instance_id.clone(),
+            binary_identity,
+        };
+        PublishedServiceMarker::create(&data, &marker).map(|marker| (stops, marker))
+    });
+    let (stops, _marker) = match published {
+        Ok(published) => published,
         Err(marker_error) => {
             let cleanup = shutdown_service_endpoint(endpoint, control).await;
             return match cleanup {
@@ -10919,15 +10963,15 @@ async fn run_locked_service(
         // A starter that stopped waiting has nothing to be told.
         let _ = ready.signal();
     }
-    let service_result = tokio::select! {
-        signal = tokio::signal::ctrl_c() => signal.map_err(display),
-        () = upgrade.notified() => Ok(()),
+    let (service_result, requested_drain) = tokio::select! {
+        signal = tokio::signal::ctrl_c() => (signal.map_err(display), None),
+        drain_id = stops.next() => {
+            control.begin_drain();
+            (Ok(()), Some(drain_id))
+        }
     };
+    drop(stops);
     let result = service_result.and(shutdown_service_endpoint(endpoint, control).await);
-    let requested_drain = drain_id
-        .lock()
-        .map_err(|_| "service drain identity lock is poisoned".to_owned())?
-        .clone();
     if let Some(drain_id) = requested_drain {
         write_service_drain_completion(&data, &instance_id, &drain_id, &result)?;
     }
@@ -10936,27 +10980,34 @@ async fn run_locked_service(
 
 async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bool, String> {
     let ping = ping_request()?;
-    match send_control_request_once(data, &ping).await {
-        Ok(active) => {
-            if active.get("identity").and_then(Value::as_str) == Some(identity) {
-                return Ok(true);
-            }
-            let fence = drain_service(data, None).await?;
+    let answer = send_control_request_once(data, &ping).await;
+    if let Ok(active) = &answer
+        && active.get("identity").and_then(Value::as_str) == Some(identity)
+    {
+        return Ok(true);
+    }
+    // Only a service that holds its lock can still open an endpoint; when
+    // none does, nothing needs waiting for.
+    if claim_stopped_service(data, None)?.is_some() {
+        return Ok(false);
+    }
+    // A running service says what it is through its marker, whatever
+    // protocol it speaks, and a service of another binary is stopped
+    // through the same contract.
+    match ServiceMarker::read(data) {
+        Some(marker) if marker.binary_identity != identity => {
+            let fence = drain_service(data, Some(&marker.instance_id)).await?;
             clear_obsolete_runtime_state(data)?;
             drop(fence);
             Ok(false)
         }
-        Err(ControlRequestError::Unavailable(_)) => {
-            // Only a service that holds its lock can still open an endpoint;
-            // when none does, nothing needs waiting for.
-            if claim_stopped_service(data, None)?.is_none() {
-                drop(drain_service(data, None).await?);
-            }
-            Ok(false)
-        }
-        Err(error) => Err(format!(
-            "cannot safely identify the Acyclic service: {error}"
-        )),
+        // This binary's service, or one still starting: it answers soon.
+        _ => match answer {
+            Ok(_) | Err(ControlRequestError::Unavailable(_)) => Ok(false),
+            Err(error) => Err(format!(
+                "cannot safely identify the Acyclic service: {error}"
+            )),
+        },
     }
 }
 
@@ -11213,9 +11264,7 @@ async fn send_control_envelope(
 
 fn control_request_wait(request: &ControlRequest) -> std::time::Duration {
     match request.command {
-        ControlCommand::Ping | ControlCommand::Upgrade | ControlCommand::Shutdown => {
-            CONTROL_PROBE_WAIT
-        }
+        ControlCommand::Ping => CONTROL_PROBE_WAIT,
         ControlCommand::Hook if request.name.ends_with(":SessionEnd") => CONTROL_PROBE_WAIT,
         ControlCommand::Hook => CONTROL_HOOK_WAIT,
         ControlCommand::Doctor
@@ -11836,13 +11885,14 @@ fn claim_stopped_service(
         return Ok(None);
     };
     if let Some(expected) = expected_identity {
-        let marker = fs::read_to_string(data.join("service.identity"))
-            .map_err(|error| format!("cannot authenticate stale service: {error}"))?;
-        if marker != expected {
+        let marker = ServiceMarker::read(data).ok_or_else(|| {
+            "cannot authenticate stale service: it published no identity".to_owned()
+        })?;
+        if marker.instance_id != expected {
             return Err("refusing to clean a replacement Acyclic service".to_owned());
         }
     }
-    match fs::remove_file(data.join("service.identity")) {
+    match fs::remove_file(ServiceMarker::path(data)) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(display(error)),
@@ -11850,91 +11900,48 @@ fn claim_stopped_service(
     Ok(Some(lock))
 }
 
+/// Stops the running service, if any, through the contract every binary
+/// understands (see [`ServiceMarker`]), and returns its lock. A service is
+/// named by its instance ID; `expected_identity` refuses any other.
 async fn drain_service(
     data: &Path,
     expected_identity: Option<&str>,
 ) -> Result<ServiceLock, String> {
-    let ping = ControlRequest {
-        version: 1,
-        command: ControlCommand::Ping,
-        cwd: env::current_dir().map_err(display)?,
-        argv: Vec::new(),
-        name: String::new(),
-        arguments: Value::Null,
-    };
-    match send_control_request(data, &ping).await {
-        Ok(active) => {
-            let binary_identity = active
-                .get("identity")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "cannot safely drain an unidentified Acyclic service".to_owned())?
-                .to_owned();
-            let instance_id = active
-                .get("instanceId")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let drain_identity = instance_id
-                .clone()
-                .unwrap_or_else(|| binary_identity.clone());
-            if expected_identity.is_some_and(|expected| expected != drain_identity) {
-                return Err("refusing to drain a replacement Acyclic service".to_owned());
-            }
-            let drain_id = uuid::Uuid::new_v4().to_string();
-            let arguments = instance_id.as_ref().map_or_else(
-                || {
-                    json!({
-                        "identity": binary_identity,
-                        "drainId": drain_id,
-                    })
-                },
-                |instance_id| {
-                    json!({
-                        "identity": binary_identity,
-                        "instanceId": instance_id,
-                        "drainId": drain_id,
-                    })
-                },
-            );
-            let request = ControlRequest {
-                version: 1,
-                command: ControlCommand::Shutdown,
-                cwd: env::current_dir().map_err(display)?,
-                argv: Vec::new(),
-                name: String::new(),
-                arguments,
-            };
-            send_control_request(data, &request)
-                .await
-                .map_err(|error| error.to_string())?;
-            let mut endpoint_closed = false;
-            for _ in 0..250 {
-                if !endpoint_closed && send_control_request(data, &ping).await.is_err() {
-                    endpoint_closed = true;
-                }
-                if endpoint_closed && let Some(lock) = acquire_service_lock(data)? {
-                    verify_service_drain_completion(data, &drain_identity, &drain_id)?;
-                    return Ok(lock);
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-            Err(
-                "Acyclic service did not drain; durable state and executable were preserved"
-                    .to_owned(),
-            )
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // A service publishes its marker once its endpoint opens, moments after
+    // it takes the lock.
+    let marker = loop {
+        if let Some(lock) = claim_stopped_service(data, expected_identity)? {
+            return Ok(lock);
         }
-        Err(ControlRequestError::Unavailable(_)) => claim_stopped_service(data, expected_identity)?
-            .ok_or_else(|| {
-                "Acyclic service lock is held without a reachable endpoint; state was preserved"
-                    .to_owned()
-            }),
-        Err(error) => Err(format!(
-            "cannot safely identify the Acyclic service: {error}"
-        )),
+        if let Some(marker) = ServiceMarker::read(data) {
+            break marker;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                "Acyclic service lock is held without a published identity; state was preserved"
+                    .to_owned(),
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    if expected_identity.is_some_and(|expected| expected != marker.instance_id) {
+        return Err("refusing to drain a replacement Acyclic service".to_owned());
     }
+    let drain_id = uuid::Uuid::new_v4().to_string();
+    request_service_stop(data, &marker.instance_id, &drain_id)?;
+    for _ in 0..250 {
+        if let Some(lock) = acquire_service_lock(data)? {
+            verify_service_drain_completion(data, &marker.instance_id, &drain_id)?;
+            return Ok(lock);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Err("Acyclic service did not drain; durable state and executable were preserved".to_owned())
 }
 
 async fn service_status(data: &Path) -> Result<Value, String> {
-    let marker_identity = fs::read_to_string(data.join("service.identity")).ok();
+    let marker_identity = ServiceMarker::read(data).map(|marker| marker.instance_id);
     let ping = ControlRequest {
         version: 1,
         command: ControlCommand::Ping,
@@ -13538,6 +13545,44 @@ mod tests {
     }
 
     #[test]
+    fn a_session_ending_after_an_unflushed_save_keeps_it_in_its_terminal_state() {
+        run_large_stack("terminal-save-covers-unflushed", terminal_save_case);
+    }
+
+    async fn terminal_save_case() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        let data = temporary.path().join("state");
+        fs::create_dir_all(&root).expect("root");
+        let service = ConcurrentServiceControl::open(data.clone())
+            .await
+            .expect("service");
+        for (event, extra) in [
+            ("SessionStart", json!({})),
+            // Saved unflushed, the last effect of its request.
+            ("UserPromptSubmit", json!({"turn_id":"last-turn"})),
+            // Nothing is mounted or leased, so only its terminal save flushes.
+            ("SessionEnd", json!({})),
+        ] {
+            service
+                .dispatch_request(native_hook_request("codex", event, "session", &root, extra))
+                .await
+                .expect(event);
+        }
+        service.shutdown().await.expect("service shutdown");
+        let directory = data
+            .join("sessions")
+            .join(blake3::hash(b"session").to_hex().as_str());
+        let (slots, [_, _, unflushed]) = StateSlots::read(&directory).expect("slots");
+        let state = load_saved_state(&directory).expect("terminal session state");
+        assert!(!state.active);
+        assert!(state.root_turns.contains("last-turn"));
+        // The terminal save is the newest flushed save; the unflushed slot
+        // holds an older generation and is never loaded again.
+        assert!(unflushed.generation() < slots.flushed.into_iter().max().flatten());
+    }
+
+    #[test]
     fn concurrent_service_isolates_sessions_and_fences_reused_ids() {
         run_large_stack("concurrent-service", concurrent_service_case);
     }
@@ -13665,11 +13710,11 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_shutdown_acknowledges_before_session_drain() {
-        run_large_stack("shutdown-ack-before-drain", shutdown_ack_before_drain_case);
+    fn a_stop_request_drains_without_waiting_for_a_busy_session() {
+        run_large_stack("stop-before-drain", stop_before_drain_case);
     }
 
-    async fn shutdown_ack_before_drain_case() {
+    async fn stop_before_drain_case() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let root = temporary.path().join("root");
         let data = temporary.path().join("state");
@@ -13689,26 +13734,7 @@ mod tests {
             .expect("session start");
         let handle = service.session("session").await.expect("session");
         let resume = handle.pause().await;
-        let shutdown = ControlRequest {
-            version: 1,
-            command: ControlCommand::Shutdown,
-            cwd: root,
-            argv: Vec::new(),
-            name: String::new(),
-            arguments: json!({
-                "identity": service.binary_identity,
-                "instanceId": service.instance_id,
-                "drainId": "scheduled-shutdown",
-            }),
-        };
-        let acknowledgement = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            service.dispatch_request(shutdown),
-        )
-        .await
-        .expect("shutdown must acknowledge before the actor resumes")
-        .expect("authenticated shutdown");
-        assert_eq!(acknowledgement["draining"], true);
+        service.begin_drain();
         assert_eq!(
             service.lifecycle.load(std::sync::atomic::Ordering::Acquire),
             SERVICE_DRAINING
@@ -15249,9 +15275,9 @@ mod tests {
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
-                        assert!(data.join("service.identity").exists());
-                        let identity = fs::read_to_string(data.join("service.identity"))
-                            .expect("service identity");
+                        let identity = ServiceMarker::read(&data)
+                            .expect("service identity")
+                            .instance_id;
                         let mismatch = drain_service(&data, Some("replacement-service")).await;
                         assert!(matches!(
                             mismatch,
@@ -15275,6 +15301,82 @@ mod tests {
             .expect("test thread")
             .join()
             .expect("service drain thread");
+    }
+
+    /// A service of another release speaks another control protocol, so it
+    /// rejects every request of this one; it is still identified and stopped
+    /// through the handoff contract.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_service_speaking_another_protocol_is_identified_and_stopped() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("state");
+        let service_data = data.clone();
+        let older = std::thread::Builder::new()
+            .name("older-protocol-service".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                control_protocol::TEST_PROTOCOL_MAJOR
+                    .with(|major| major.set(Some(control_protocol::CONTROL_PROTOCOL_MAJOR - 1)));
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("older service runtime")
+                    .block_on(run_service_with_identity(
+                        service_data,
+                        Some("older-service-binary".to_owned()),
+                        None,
+                    ))
+            })
+            .expect("older service thread");
+        std::thread::Builder::new()
+            .name("current-protocol-client".to_owned())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("client runtime")
+                    .block_on(async {
+                        let mut marker = None;
+                        for _ in 0..500 {
+                            marker = ServiceMarker::read(&data);
+                            if marker.is_some() {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                        let marker = marker.expect("older service marker");
+                        assert_eq!(marker.binary_identity, "older-service-binary");
+                        let ping = ping_request().expect("ping");
+                        let rejected = send_control_request_once(&data, &ping).await;
+                        assert!(
+                            matches!(rejected, Err(ControlRequestError::Response(ref error)) if error.contains("incompatible Acyclic control protocol")),
+                            "{rejected:?}"
+                        );
+                        let identity = service_identity(&data).expect("current identity");
+                        assert!(
+                            !service_is_ready_for_identity(&data, &identity)
+                                .await
+                                .expect("stop the older service")
+                        );
+                        assert!(ServiceMarker::read(&data).is_none());
+                        assert!(acquire_service_lock(&data).expect("service lock").is_some());
+                        let completion: Value = serde_json::from_slice(
+                            &fs::read(service_drain_completion_path(&data)).expect("drain record"),
+                        )
+                        .expect("drain record json");
+                        assert_eq!(completion["identity"], marker.instance_id.as_str());
+                        assert_eq!(completion["ok"], true);
+                    });
+            })
+            .expect("client thread")
+            .join()
+            .expect("current protocol client");
+        older
+            .join()
+            .expect("older service thread")
+            .expect("older service drained cleanly");
     }
 
     #[cfg(any(unix, windows))]
@@ -15485,8 +15587,9 @@ mod tests {
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
-                        let instance_id = fs::read_to_string(data.join("service.identity"))
-                            .expect("service instance identity");
+                        let instance_id = ServiceMarker::read(&data)
+                            .expect("service instance identity")
+                            .instance_id;
                         assert!(uuid::Uuid::parse_str(&instance_id).is_ok());
                         assert!(
                             !service_is_ready_for_identity(&data, "replacement-service-binary")

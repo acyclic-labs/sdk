@@ -193,6 +193,10 @@ pub struct MountLookup {
     pub metadata: FileMetadata,
 }
 
+/// Receives content one piece at a time: the piece's logical offset and its
+/// bytes.
+pub type ContentSink<'a> = dyn FnMut(u64, Bytes) -> Result<(), MountSourceError> + 'a;
+
 /// Opaque evidence of the exact external content one lookup observed.
 ///
 /// Only the issuing source interprets it. A driver whose projected metadata
@@ -703,21 +707,27 @@ pub trait MountFilesystem: Send + Sync + 'static {
     ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
         Ok(self.lookup(path)?.map(|lookup| (lookup, None)))
     }
-    /// Reads one exact range of the content a [`Self::lookup_pinned`] pin
-    /// promised for `path`.
+    /// Streams one range of the content a [`Self::lookup_pinned`] pin
+    /// promised for `path` to `sink`, in ascending gap-free pieces of at
+    /// most `piece` bytes, resolving and opening the source once for the
+    /// whole range. Content that ends inside the range ends the stream
+    /// with a short or missing last piece.
     ///
     /// # Errors
     ///
-    /// Returns `Stale` when that exact content is no longer available, or
-    /// another typed source failure without partial output.
+    /// Returns `Stale` when that exact content is no longer available, the
+    /// first failure `sink` returns, or another typed source failure.
+    /// Pieces already delivered stay delivered.
     fn read_pinned(
         &self,
         path: &MountPath,
         pin: MountContentPin,
         offset: u64,
-        length: u32,
-    ) -> Result<Bytes, MountSourceError> {
-        let _ = (path, pin, offset, length);
+        length: u64,
+        piece: u32,
+        sink: &mut ContentSink<'_>,
+    ) -> Result<(), MountSourceError> {
+        let _ = (path, pin, offset, length, piece, sink);
         Err(MountSourceError::Stale)
     }
     /// Opens one regular file as an attached path-independent handle.

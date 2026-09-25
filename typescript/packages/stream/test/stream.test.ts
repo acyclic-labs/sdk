@@ -172,6 +172,25 @@ describe("website Stream contract", () => {
     expect(() => client.json("../escape")).toThrow(StreamError);
   });
 
+  test("forks a prefix and extends the new path in one commit", async () => {
+    const client = new StreamClient(new MemoryStreamProvider());
+    const lineage = client.json<{ readonly generation: string }>("authorities/source/lineage");
+    await lineage.append({ generation: "one" });
+    await lineage.append({ generation: "two" });
+    const result = await client.commit({
+      conditions: [{ stream: lineage, ifTail: 2n }, { path: "authorities/child/lineage", ifAbsent: true }],
+      mutations: [{ fork: { source: lineage, destination: "authorities/child/lineage", atTail: 1n, values: [{ generation: "child" }] } }],
+    }, { idempotencyKey: key("fork-and-extend") });
+    expect(result).toMatchObject({ ok: true, forks: [{ path: "authorities/child/lineage", tail: 2n }] });
+    if (!result.ok) throw new Error("commit unexpectedly conflicted");
+    const [fork] = (await client.readCommit(result.commitId)).mutations;
+    expect(fork).toMatchObject({ type: "fork", forkedAt: 1n, tail: 2n, records: [{ sequence: 1n, commitId: result.commitId }] });
+    const child = client.json<{ readonly generation: string }>("authorities/child/lineage");
+    const values: { readonly generation: string }[] = [];
+    for await (const record of child.read({ from: 0n, limit: 8 })) values.push(record.value);
+    expect(values).toEqual([{ generation: "one" }, { generation: "child" }]);
+  });
+
   test("binds commit identities to request content", async () => {
     const left = await new MemoryStreamProvider().append("events", [new Uint8Array([1])]);
     const right = await new MemoryStreamProvider().append("events", [new Uint8Array([2])]);
