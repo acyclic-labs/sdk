@@ -5,6 +5,7 @@
 //! remain implementation details.
 
 use crate::foundation::{FileId, GenerationId, OperationId, VolumeId};
+use crate::heap_future::in_heap;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, MetadataField, NamespacePath,
 };
@@ -308,23 +309,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<Generation<A, O>>, WorkspaceError> {
-        let receipt = self
-            .volume
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode::read_only_pinned(),
-                budget,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?;
-        Ok(crate::OperationReceipt {
-            value: Generation {
-                workspace: self.clone(),
-                id: receipt.value.generation_id(),
-            },
-            work: receipt.work,
+        in_heap(move || async move {
+            let receipt = self
+                .volume
+                .checkout(
+                    GenerationSelector::Head,
+                    CheckoutMode::read_only_pinned(),
+                    budget,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| WorkspaceError::from(failure.error))?;
+            Ok(crate::OperationReceipt {
+                value: Generation {
+                    workspace: self.clone(),
+                    id: receipt.value.generation_id(),
+                },
+                work: receipt.work,
+            })
         })
+        .await
     }
 
     /// Selects the head generation and reports whether its file table holds
@@ -862,13 +866,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             return Err(WorkspaceError::ForeignGeneration);
         }
         let destination = WorkspaceName::new(destination)?;
-        Box::pin(self.volume.fs.fork_workspace_measured(
-            destination,
-            &options.generation,
-            options.idempotency_key,
-            budget,
-            cancellation,
-        ))
+        in_heap(|| {
+            self.volume.fs.fork_workspace_measured(
+                destination,
+                &options.generation,
+                options.idempotency_key,
+                budget,
+                cancellation,
+            )
+        })
         .await
     }
 
@@ -1301,15 +1307,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
-        list_generation_directory_measured(
-            self,
-            GenerationSelector::Head,
-            path,
-            after,
-            maximum_entries,
-            budget,
-            cancellation,
-        )
+        in_heap(move || async move {
+            list_generation_directory_measured(
+                self,
+                GenerationSelector::Head,
+                path,
+                after,
+                maximum_entries,
+                budget,
+                cancellation,
+            )
+            .await
+        })
         .await
     }
 
@@ -2598,13 +2607,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         &mut self,
         permit: crate::PublicationPermit,
     ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-        self.commit_with_permit_measured(
-            permit,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        in_heap(move || async move {
+            self.commit_with_permit_measured(
+                permit,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+        })
         .await
-        .map(|receipt| receipt.value)
     }
 
     /// Publishes this transaction under an exact work budget and cancellation token.
@@ -2616,21 +2628,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> Result<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError> {
         cancellation.check().map_err(WorkspaceError::from)?;
         if self.requires_rebase {
-            let receipt = Box::pin(self.checkout.retry_stale_commit(
-                self.idempotency_key.operation_id(),
-                permit,
-                budget,
-                cancellation,
-            ))
-            .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?;
+            let receipt = self
+                .checkout
+                .retry_stale_commit(
+                    self.idempotency_key.operation_id(),
+                    permit,
+                    budget,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| WorkspaceError::from(failure.error))?;
             let work = receipt.work;
             let Some(outcome) = receipt.value else {
-                let actual = Box::pin(self.workspace.head_measured(
-                    work.remaining(budget).map_err(WorkspaceError::from)?,
-                    cancellation,
-                ))
-                .await?;
+                let actual = self
+                    .workspace
+                    .head_measured(
+                        work.remaining(budget).map_err(WorkspaceError::from)?,
+                        cancellation,
+                    )
+                    .await?;
                 return Ok(crate::OperationReceipt {
                     value: TransactionCommit::Conflict {
                         actual: actual.value,
@@ -2640,18 +2656,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                         .map_err(WorkspaceError::from)?,
                 });
             };
-            return Box::pin(self.commit_outcome_measured(outcome, work, budget, cancellation))
+            return self
+                .commit_outcome_measured(outcome, work, budget, cancellation)
                 .await;
         }
-        let receipt = Box::pin(self.checkout.commit_with_permit(
-            self.idempotency_key.operation_id(),
-            permit,
-            budget,
-            cancellation,
-        ))
-        .await
-        .map_err(|failure| WorkspaceError::from(failure.error))?;
-        Box::pin(self.commit_outcome_measured(receipt.value, receipt.work, budget, cancellation))
+        let receipt = self
+            .checkout
+            .commit_with_permit(
+                self.idempotency_key.operation_id(),
+                permit,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| WorkspaceError::from(failure.error))?;
+        self.commit_outcome_measured(receipt.value, receipt.work, budget, cancellation)
             .await
     }
 
@@ -2662,40 +2681,45 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError> {
-        let value = match outcome {
-            CheckoutCommitOutcome::Committed { generation_id, .. } => {
-                TransactionCommit::Committed(Generation {
-                    workspace: self.workspace.clone(),
-                    id: generation_id,
-                })
-            }
-            CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
-                TransactionCommit::AlreadyCommitted(Generation {
-                    workspace: self.workspace.clone(),
-                    id: generation_id,
-                })
-            }
-            CheckoutCommitOutcome::Conflict { .. } => {
-                let actual = Box::pin(self.workspace.head_measured(
-                    work.remaining(budget).map_err(WorkspaceError::from)?,
-                    cancellation,
-                ))
-                .await?;
-                return Ok(crate::OperationReceipt {
-                    value: TransactionCommit::Conflict {
-                        actual: actual.value,
-                    },
-                    work: work
-                        .checked_add(actual.work)
-                        .map_err(WorkspaceError::from)?,
-                });
-            }
-            CheckoutCommitOutcome::Fenced { .. } => TransactionCommit::Fenced,
-            CheckoutCommitOutcome::IdempotencyConflict { .. } => {
-                TransactionCommit::IdempotencyConflict
-            }
-        };
-        Ok(crate::OperationReceipt { value, work })
+        in_heap(move || async move {
+            let value = match outcome {
+                CheckoutCommitOutcome::Committed { generation_id, .. } => {
+                    TransactionCommit::Committed(Generation {
+                        workspace: self.workspace.clone(),
+                        id: generation_id,
+                    })
+                }
+                CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
+                    TransactionCommit::AlreadyCommitted(Generation {
+                        workspace: self.workspace.clone(),
+                        id: generation_id,
+                    })
+                }
+                CheckoutCommitOutcome::Conflict { .. } => {
+                    let actual = self
+                        .workspace
+                        .head_measured(
+                            work.remaining(budget).map_err(WorkspaceError::from)?,
+                            cancellation,
+                        )
+                        .await?;
+                    return Ok(crate::OperationReceipt {
+                        value: TransactionCommit::Conflict {
+                            actual: actual.value,
+                        },
+                        work: work
+                            .checked_add(actual.work)
+                            .map_err(WorkspaceError::from)?,
+                    });
+                }
+                CheckoutCommitOutcome::Fenced { .. } => TransactionCommit::Fenced,
+                CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+                    TransactionCommit::IdempotencyConflict
+                }
+            };
+            Ok(crate::OperationReceipt { value, work })
+        })
+        .await
     }
 
     /// Safely advances this retained sparse candidate to the current workspace
@@ -4812,37 +4836,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> crate::FsResult<Vec<Option<crate::kernel::FileRecord>>> {
-        let checkout = self
-            .workspace
-            .volume
-            .checkout(
-                GenerationSelector::Exact(self.id),
-                CheckoutMode::read_only_pinned(),
-                budget,
-                cancellation,
-            )
-            .await?;
-        let checkout_work = checkout.work;
-        let remaining = checkout_work
-            .remaining(budget)
-            .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
-        let mut checkout = checkout.value;
-        let lookup = checkout
-            .lookup_batch_no_follow(paths, remaining, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(checkout_work, |error| error))?;
-        let work = checkout_work
-            .checked_add(lookup.work)
-            .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
-        Ok(crate::FsReceipt {
-            value: lookup
-                .value
-                .entries
-                .into_iter()
-                .map(|entry| entry.record)
-                .collect(),
-            work,
+        in_heap(move || async move {
+            let checkout = self
+                .workspace
+                .volume
+                .checkout(
+                    GenerationSelector::Exact(self.id),
+                    CheckoutMode::read_only_pinned(),
+                    budget,
+                    cancellation,
+                )
+                .await?;
+            let checkout_work = checkout.work;
+            let remaining = checkout_work
+                .remaining(budget)
+                .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
+            let mut checkout = checkout.value;
+            let lookup = checkout
+                .lookup_batch_no_follow(paths, remaining, cancellation)
+                .await
+                .map_err(|failure| failure.map_with_prior_work(checkout_work, |error| error))?;
+            let work = checkout_work
+                .checked_add(lookup.work)
+                .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
+            Ok(crate::FsReceipt {
+                value: lookup
+                    .value
+                    .entries
+                    .into_iter()
+                    .map(|entry| entry.record)
+                    .collect(),
+                work,
+            })
         })
+        .await
     }
 
     /// Returns one authenticated bounded directory page from this generation.

@@ -8,6 +8,7 @@ use crate::demand::{
     DemandError, DemandSource, SourceCursor, SourceDirectoryEntry, SourceNode, SourceNodeKind,
     SourceReference, SourceVersion,
 };
+use crate::heap_future::in_heap;
 use crate::kernel::{
     FileKind, FileMetadata, FilePayload, FileRecord, LogicalName, MetadataField, NamespacePath,
 };
@@ -1487,64 +1488,67 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<ResolvedLazyLookup>, LazyWorkspaceError> {
-        let authored = self
-            .workspace
-            .stat_optional_measured(path, budget, cancellation)
-            .await
-            .map_err(workspace_error)?;
-        let mut work = authored.work;
-        if let Some(stat) = authored.value {
-            return Ok(OperationReceipt {
-                value: ResolvedLazyLookup {
-                    lookup: LazyLookup::Authored {
-                        path: self.canonical_path(path)?,
-                        stat,
+        in_heap(move || async move {
+            let authored = self
+                .workspace
+                .stat_optional_measured(path, budget, cancellation)
+                .await
+                .map_err(workspace_error)?;
+            let mut work = authored.work;
+            if let Some(stat) = authored.value {
+                return Ok(OperationReceipt {
+                    value: ResolvedLazyLookup {
+                        lookup: LazyLookup::Authored {
+                            path: self.canonical_path(path)?,
+                            stat,
+                        },
+                        source: None,
                     },
-                    source: None,
-                },
-                work,
-            });
-        }
-        let state_receipt = self
-            .state_measured(remaining_work(work, budget)?, cancellation)
-            .await?;
-        work = account_work(work, state_receipt.work, budget)?;
-        let state = state_receipt.value;
-        let tombstoned = self
-            .tombstoned_measured(
-                state.overlay,
-                path,
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await?;
-        work = account_work(work, tombstoned.work, budget)?;
-        if tombstoned.value {
-            return Err(LazyWorkspaceError::NotFound);
-        }
-        let observed = self.observe_measured(path, state, cancellation).await?;
-        work = account_work(work, observed.work, budget)?;
-        let (source, node) = observed.value;
-        let authored = self
-            .authored_alias_measured(&node, remaining_work(work, budget)?, cancellation)
-            .await?;
-        work = account_work(work, authored.work, budget)?;
-        if let Some(authored) = authored.value {
-            return Ok(OperationReceipt {
+                    work,
+                });
+            }
+            let state_receipt = self
+                .state_measured(remaining_work(work, budget)?, cancellation)
+                .await?;
+            work = account_work(work, state_receipt.work, budget)?;
+            let state = state_receipt.value;
+            let tombstoned = self
+                .tombstoned_measured(
+                    state.overlay,
+                    path,
+                    remaining_work(work, budget)?,
+                    cancellation,
+                )
+                .await?;
+            work = account_work(work, tombstoned.work, budget)?;
+            if tombstoned.value {
+                return Err(LazyWorkspaceError::NotFound);
+            }
+            let observed = self.observe_measured(path, state, cancellation).await?;
+            work = account_work(work, observed.work, budget)?;
+            let (source, node) = observed.value;
+            let authored = self
+                .authored_alias_measured(&node, remaining_work(work, budget)?, cancellation)
+                .await?;
+            work = account_work(work, authored.work, budget)?;
+            if let Some(authored) = authored.value {
+                return Ok(OperationReceipt {
+                    value: ResolvedLazyLookup {
+                        lookup: authored,
+                        source: None,
+                    },
+                    work,
+                });
+            }
+            Ok(OperationReceipt {
                 value: ResolvedLazyLookup {
-                    lookup: authored,
-                    source: None,
+                    lookup: LazyLookup::Source(node),
+                    source: Some(source),
                 },
                 work,
-            });
-        }
-        Ok(OperationReceipt {
-            value: ResolvedLazyLookup {
-                lookup: LazyLookup::Source(node),
-                source: Some(source),
-            },
-            work,
+            })
         })
+        .await
     }
 
     /// Returns current facts without extending the immutable observation index.
@@ -1606,19 +1610,22 @@ where
         path: &str,
         state: Option<&LazyWorkspaceState>,
     ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
-        let basis = InspectBasis {
-            state,
-            authored_absent: true,
-            ..InspectBasis::default()
-        };
-        self.inspect_with(
-            path,
-            basis,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        in_heap(move || async move {
+            let basis = InspectBasis {
+                state,
+                authored_absent: true,
+                ..InspectBasis::default()
+            };
+            self.inspect_with(
+                path,
+                basis,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| (receipt.value.lookup, receipt.value.source))
+        })
         .await
-        .map(|receipt| (receipt.value.lookup, receipt.value.source))
     }
 
     /// The source view lookups currently resolve in.
@@ -1656,20 +1663,23 @@ where
         path: &str,
         node: SourceNode,
     ) -> Result<LazyLookup, LazyWorkspaceError> {
-        let basis = InspectBasis {
-            state: Some(state),
-            authored_absent: true,
-            listed: Some(node),
-            ..InspectBasis::default()
-        };
-        self.inspect_with(
-            path,
-            basis,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        in_heap(move || async move {
+            let basis = InspectBasis {
+                state: Some(state),
+                authored_absent: true,
+                listed: Some(node),
+                ..InspectBasis::default()
+            };
+            self.inspect_with(
+                path,
+                basis,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value.lookup)
+        })
         .await
-        .map(|receipt| receipt.value.lookup)
     }
 
     /// The source node `path` names in `state`: a pinned observation, the node
@@ -1864,83 +1874,86 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<Option<LazyLookup>>, LazyWorkspaceError> {
-        // Only source objects with multiple directory bindings can resolve
-        // through an authored alias. Avoid the generation-wide reverse-path
-        // query for ordinary files and directories; on large compiler trees
-        // that otherwise creates one derived path-index entry per stat.
-        if node.kind == SourceNodeKind::Directory || node.link_count == Some(1) {
-            return Ok(OperationReceipt {
-                value: None,
-                work: WorkCounters::default(),
-            });
-        }
-        let file_id = self.source_file_id(node);
-        let state = self.state_measured(budget, cancellation).await?;
-        // A source that does not count links cannot rule an alias out, but
-        // an identity the head's file table does not hold has no name there.
-        let head = self
-            .workspace
-            .head_with_file_record_measured(
-                file_id,
-                remaining_work(state.work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(workspace_error)?;
-        let mut work = account_work(state.work, head.work, budget)?;
-        let state = state.value;
-        let (generation, held) = head.value;
-        let path = if held {
-            let paths = generation
-                .paths_for_file_id_measured(
+        in_heap(move || async move {
+            // Only source objects with multiple directory bindings can resolve
+            // through an authored alias. Avoid the generation-wide reverse-path
+            // query for ordinary files and directories; on large compiler trees
+            // that otherwise creates one derived path-index entry per stat.
+            if node.kind == SourceNodeKind::Directory || node.link_count == Some(1) {
+                return Ok(OperationReceipt {
+                    value: None,
+                    work: WorkCounters::default(),
+                });
+            }
+            let file_id = self.source_file_id(node);
+            let state = self.state_measured(budget, cancellation).await?;
+            // A source that does not count links cannot rule an alias out, but
+            // an identity the head's file table does not hold has no name there.
+            let head = self
+                .workspace
+                .head_with_file_record_measured(
                     file_id,
-                    u32::MAX,
-                    remaining_work(work, budget)?,
+                    remaining_work(state.work, budget)?,
                     cancellation,
                 )
                 .await
                 .map_err(workspace_error)?;
-            work = account_work(work, paths.work, budget)?;
-            paths.value.into_iter().next()
-        } else {
-            None
-        };
-        if let Some(path) = path {
-            let stat = self
-                .workspace
-                .stat_optional_measured(&path, remaining_work(work, budget)?, cancellation)
-                .await
-                .map_err(workspace_error)?;
-            work = account_work(work, stat.work, budget)?;
-            let mut stat = stat.value.ok_or(LazyWorkspaceError::Concurrent)?;
-            if let Some(source_links) = node.link_count {
-                stat.link_count = stat.link_count.max(source_links);
+            let mut work = account_work(state.work, head.work, budget)?;
+            let state = state.value;
+            let (generation, held) = head.value;
+            let path = if held {
+                let paths = generation
+                    .paths_for_file_id_measured(
+                        file_id,
+                        u32::MAX,
+                        remaining_work(work, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(workspace_error)?;
+                work = account_work(work, paths.work, budget)?;
+                paths.value.into_iter().next()
+            } else {
+                None
+            };
+            if let Some(path) = path {
+                let stat = self
+                    .workspace
+                    .stat_optional_measured(&path, remaining_work(work, budget)?, cancellation)
+                    .await
+                    .map_err(workspace_error)?;
+                work = account_work(work, stat.work, budget)?;
+                let mut stat = stat.value.ok_or(LazyWorkspaceError::Concurrent)?;
+                if let Some(source_links) = node.link_count {
+                    stat.link_count = stat.link_count.max(source_links);
+                }
+                return Ok(OperationReceipt {
+                    value: Some(LazyLookup::Authored { path, stat }),
+                    work,
+                });
             }
-            return Ok(OperationReceipt {
-                value: Some(LazyLookup::Authored { path, stat }),
+            let shadow = self
+                .shadow_record_measured(
+                    state.shadows,
+                    file_id,
+                    remaining_work(work, budget)?,
+                    cancellation,
+                )
+                .await?;
+            work = account_work(work, shadow.work, budget)?;
+            let Some((record, metadata)) = shadow.value else {
+                return Ok(OperationReceipt { value: None, work });
+            };
+            Ok(OperationReceipt {
+                value: Some(LazyLookup::Shadow {
+                    record,
+                    metadata,
+                    source_link_count: node.link_count.unwrap_or(1),
+                }),
                 work,
-            });
-        }
-        let shadow = self
-            .shadow_record_measured(
-                state.shadows,
-                file_id,
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await?;
-        work = account_work(work, shadow.work, budget)?;
-        let Some((record, metadata)) = shadow.value else {
-            return Ok(OperationReceipt { value: None, work });
-        };
-        Ok(OperationReceipt {
-            value: Some(LazyLookup::Shadow {
-                record,
-                metadata,
-                source_link_count: node.link_count.unwrap_or(1),
-            }),
-            work,
+            })
         })
+        .await
     }
 
     /// Reads one exact range, demanding no unrelated content.
@@ -2230,104 +2243,107 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, LazyWorkspaceError> {
-        let node = &pinned.node;
-        let source = pinned.source;
-        let mut work = WorkCounters::default();
-        match node.kind {
-            SourceNodeKind::Directory => {
-                let applied = transaction
-                    .create_directory_measured(
-                        requested,
-                        remaining_work(work, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(workspace_error)?;
-                work = account_work(work, applied, budget)?;
+        in_heap(move || async move {
+            let node = &pinned.node;
+            let source = pinned.source;
+            let mut work = WorkCounters::default();
+            match node.kind {
+                SourceNodeKind::Directory => {
+                    let applied = transaction
+                        .create_directory_measured(
+                            requested,
+                            remaining_work(work, budget)?,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(workspace_error)?;
+                    work = account_work(work, applied, budget)?;
+                }
+                SourceNodeKind::RegularFile => {
+                    work = self
+                        .populate_regular_source_node(
+                            transaction,
+                            requested,
+                            pinned,
+                            maximum_bytes,
+                            budget,
+                            cancellation,
+                        )
+                        .await?;
+                }
+                SourceNodeKind::SymbolicLink => {
+                    let receipt = self
+                        .source
+                        .read_link(
+                            source,
+                            &self.namespace_path(requested)?,
+                            node.version,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(|failure| LazyWorkspaceError::from(failure.error))?;
+                    work = account_work(work, receipt.work, budget)?;
+                    let applied = transaction
+                        .create_symbolic_link_measured(
+                            requested,
+                            receipt.value,
+                            remaining_work(work, budget)?,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(workspace_error)?;
+                    work = account_work(work, applied, budget)?;
+                }
+                SourceNodeKind::Fifo
+                | SourceNodeKind::Socket
+                | SourceNodeKind::CharacterDevice
+                | SourceNodeKind::BlockDevice => {
+                    let kind = match node.kind {
+                        SourceNodeKind::Fifo => FileKind::Fifo,
+                        SourceNodeKind::Socket => FileKind::Socket,
+                        SourceNodeKind::CharacterDevice => FileKind::CharacterDevice,
+                        SourceNodeKind::BlockDevice => FileKind::BlockDevice,
+                        _ => unreachable!(),
+                    };
+                    let applied = transaction
+                        .create_special_measured(
+                            requested,
+                            kind,
+                            node.device,
+                            remaining_work(work, budget)?,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(workspace_error)?;
+                    work = account_work(work, applied, budget)?;
+                }
+                SourceNodeKind::Unsupported => return Err(LazyWorkspaceError::UnsupportedNode),
             }
-            SourceNodeKind::RegularFile => {
-                work = self
-                    .populate_regular_source_node(
-                        transaction,
-                        requested,
-                        pinned,
-                        maximum_bytes,
-                        budget,
-                        cancellation,
-                    )
-                    .await?;
-            }
-            SourceNodeKind::SymbolicLink => {
-                let receipt = self
-                    .source
-                    .read_link(
-                        source,
-                        &self.namespace_path(requested)?,
-                        node.version,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| LazyWorkspaceError::from(failure.error))?;
-                work = account_work(work, receipt.work, budget)?;
-                let applied = transaction
-                    .create_symbolic_link_measured(
-                        requested,
-                        receipt.value,
-                        remaining_work(work, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(workspace_error)?;
-                work = account_work(work, applied, budget)?;
-            }
-            SourceNodeKind::Fifo
-            | SourceNodeKind::Socket
-            | SourceNodeKind::CharacterDevice
-            | SourceNodeKind::BlockDevice => {
-                let kind = match node.kind {
-                    SourceNodeKind::Fifo => FileKind::Fifo,
-                    SourceNodeKind::Socket => FileKind::Socket,
-                    SourceNodeKind::CharacterDevice => FileKind::CharacterDevice,
-                    SourceNodeKind::BlockDevice => FileKind::BlockDevice,
-                    _ => unreachable!(),
-                };
-                let applied = transaction
-                    .create_special_measured(
-                        requested,
-                        kind,
-                        node.device,
-                        remaining_work(work, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(workspace_error)?;
-                work = account_work(work, applied, budget)?;
-            }
-            SourceNodeKind::Unsupported => return Err(LazyWorkspaceError::UnsupportedNode),
-        }
-        let applied = transaction
-            .set_metadata_measured(
-                requested,
-                source_file_metadata(node.metadata),
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(workspace_error)?;
-        work = account_work(work, applied, budget)?;
-        if node.kind != SourceNodeKind::Directory {
             let applied = transaction
-                .preserve_file_identity_measured(
+                .set_metadata_measured(
                     requested,
-                    self.source_file_id(node),
+                    source_file_metadata(node.metadata),
                     remaining_work(work, budget)?,
                     cancellation,
                 )
                 .await
                 .map_err(workspace_error)?;
             work = account_work(work, applied, budget)?;
-        }
-        Ok(work)
+            if node.kind != SourceNodeKind::Directory {
+                let applied = transaction
+                    .preserve_file_identity_measured(
+                        requested,
+                        self.source_file_id(node),
+                        remaining_work(work, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(workspace_error)?;
+                work = account_work(work, applied, budget)?;
+            }
+            Ok(work)
+        })
+        .await
     }
 
     async fn populate_regular_source_node(
@@ -2339,57 +2355,60 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, LazyWorkspaceError> {
-        let node = &pinned.node;
-        let source = pinned.source;
-        let length = node
-            .logical_bytes
-            .ok_or(LazyWorkspaceError::NotRegularFile)?;
-        if length > maximum_bytes {
-            return Err(LazyWorkspaceError::TooLarge);
-        }
-        let applied = transaction
-            .create_file_measured(requested, Bytes::new(), budget, cancellation)
-            .await
-            .map_err(workspace_error)?;
-        let mut work = account_work(WorkCounters::default(), applied, budget)?;
-        let mut offset = 0_u64;
-        while offset < length {
-            let requested_bytes = (length - offset).min(1024 * 1024);
-            let receipt = self
-                .source
-                .read_range(
-                    source,
-                    &self.namespace_path(requested)?,
-                    node.version,
-                    offset,
-                    requested_bytes,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| LazyWorkspaceError::from(failure.error))?;
-            work = account_work(work, receipt.work, budget)?;
-            let chunk = receipt.value;
-            if chunk.is_empty() {
-                return Err(LazyWorkspaceError::Demand(DemandError::StaleVersion));
+        in_heap(move || async move {
+            let node = &pinned.node;
+            let source = pinned.source;
+            let length = node
+                .logical_bytes
+                .ok_or(LazyWorkspaceError::NotRegularFile)?;
+            if length > maximum_bytes {
+                return Err(LazyWorkspaceError::TooLarge);
             }
-            let chunk_length =
-                u64::try_from(chunk.len()).map_err(|_| LazyWorkspaceError::TooLarge)?;
             let applied = transaction
-                .write_range_measured(
-                    requested,
-                    offset,
-                    chunk,
-                    remaining_work(work, budget)?,
-                    cancellation,
-                )
+                .create_file_measured(requested, Bytes::new(), budget, cancellation)
                 .await
                 .map_err(workspace_error)?;
-            work = account_work(work, applied, budget)?;
-            offset = offset
-                .checked_add(chunk_length)
-                .ok_or(LazyWorkspaceError::TooLarge)?;
-        }
-        Ok(work)
+            let mut work = account_work(WorkCounters::default(), applied, budget)?;
+            let mut offset = 0_u64;
+            while offset < length {
+                let requested_bytes = (length - offset).min(1024 * 1024);
+                let receipt = self
+                    .source
+                    .read_range(
+                        source,
+                        &self.namespace_path(requested)?,
+                        node.version,
+                        offset,
+                        requested_bytes,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|failure| LazyWorkspaceError::from(failure.error))?;
+                work = account_work(work, receipt.work, budget)?;
+                let chunk = receipt.value;
+                if chunk.is_empty() {
+                    return Err(LazyWorkspaceError::Demand(DemandError::StaleVersion));
+                }
+                let chunk_length =
+                    u64::try_from(chunk.len()).map_err(|_| LazyWorkspaceError::TooLarge)?;
+                let applied = transaction
+                    .write_range_measured(
+                        requested,
+                        offset,
+                        chunk,
+                        remaining_work(work, budget)?,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(workspace_error)?;
+                work = account_work(work, applied, budget)?;
+                offset = offset
+                    .checked_add(chunk_length)
+                    .ok_or(LazyWorkspaceError::TooLarge)?;
+            }
+            Ok(work)
+        })
+        .await
     }
 
     async fn stage_regular_source_content(
@@ -2631,58 +2650,61 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<bool>, LazyWorkspaceError> {
-        let mut work = WorkCounters::default();
-        let ResolvedLazyLookup { lookup, source } = lookup;
-        let pinned = match lookup {
-            LazyLookup::Source(node) => PinnedSourceNode {
-                source: source.ok_or(LazyWorkspaceError::Concurrent)?,
-                node,
-            },
-            LazyLookup::Authored {
-                path: authored_path,
-                ..
-            } => {
-                if authored_path == requested {
-                    return Ok(OperationReceipt { value: false, work });
+        in_heap(move || async move {
+            let mut work = WorkCounters::default();
+            let ResolvedLazyLookup { lookup, source } = lookup;
+            let pinned = match lookup {
+                LazyLookup::Source(node) => PinnedSourceNode {
+                    source: source.ok_or(LazyWorkspaceError::Concurrent)?,
+                    node,
+                },
+                LazyLookup::Authored {
+                    path: authored_path,
+                    ..
+                } => {
+                    if authored_path == requested {
+                        return Ok(OperationReceipt { value: false, work });
+                    }
+                    let applied = transaction
+                        .hard_link_measured(
+                            &authored_path,
+                            requested,
+                            remaining_work(work, budget)?,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(workspace_error)?;
+                    work = account_work(work, applied, budget)?;
+                    return Ok(OperationReceipt { value: true, work });
                 }
-                let applied = transaction
-                    .hard_link_measured(
-                        &authored_path,
-                        requested,
-                        remaining_work(work, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(workspace_error)?;
-                work = account_work(work, applied, budget)?;
-                return Ok(OperationReceipt { value: true, work });
-            }
-            LazyLookup::Shadow { record, .. } => {
-                let applied = transaction
-                    .restore_record_measured(
-                        requested,
-                        record,
-                        remaining_work(work, budget)?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(workspace_error)?;
-                work = account_work(work, applied, budget)?;
-                return Ok(OperationReceipt { value: true, work });
-            }
-        };
-        let populated = self
-            .populate_source_node_measured(
-                transaction,
-                requested,
-                &pinned,
-                maximum_bytes,
-                remaining_work(work, budget)?,
-                cancellation,
-            )
-            .await?;
-        work = account_work(work, populated, budget)?;
-        Ok(OperationReceipt { value: true, work })
+                LazyLookup::Shadow { record, .. } => {
+                    let applied = transaction
+                        .restore_record_measured(
+                            requested,
+                            record,
+                            remaining_work(work, budget)?,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(workspace_error)?;
+                    work = account_work(work, applied, budget)?;
+                    return Ok(OperationReceipt { value: true, work });
+                }
+            };
+            let populated = self
+                .populate_source_node_measured(
+                    transaction,
+                    requested,
+                    &pinned,
+                    maximum_bytes,
+                    remaining_work(work, budget)?,
+                    cancellation,
+                )
+                .await?;
+            work = account_work(work, populated, budget)?;
+            Ok(OperationReceipt { value: true, work })
+        })
+        .await
     }
 
     /// Promotes one source node and accepts only a durable successful outcome.
@@ -2731,83 +2753,91 @@ where
         maximum_bytes: u64,
         cancellation: &CancellationToken,
     ) -> Result<bool, LazyWorkspaceError> {
-        let requested = self.canonical_path(path)?;
-        let lookup = self
-            .lookup_measured(&requested, WorkBudget::UNBOUNDED, cancellation)
-            .await?
-            .value;
-        let actual = self.direct_file_id_for_lookup(&lookup.lookup);
-        if actual != expected_source {
-            return Err(LazyWorkspaceError::StaleIdentity);
-        }
-        let candidate_path = self.namespace_path(&requested)?;
-        if let Some(record) = checkout
-            .lookup_no_follow(&candidate_path, WorkBudget::UNBOUNDED, cancellation)
-            .await
-            .map_err(|failure| workspace_error(failure.error.into()))?
-            .value
-            .record
-        {
-            return (record.file_id == expected_source)
-                .then_some(false)
-                .ok_or(LazyWorkspaceError::StaleIdentity);
-        }
-        if matches!(
-            &lookup.lookup,
-            LazyLookup::Authored { path, .. } if path == &requested
-        ) {
-            return Err(LazyWorkspaceError::StaleIdentity);
-        }
-        let existing_identity = if matches!(
-            &lookup.lookup,
-            LazyLookup::Source(node) if node.kind != SourceNodeKind::Directory
-        ) {
-            match checkout
-                .read_file_record_by_id(expected_source, WorkBudget::UNBOUNDED, cancellation)
-                .await
-            {
-                Ok(receipt) => Some(receipt.value),
-                Err(failure) if matches!(failure.error, crate::FsError::NotFound) => None,
-                Err(failure) => {
-                    return Err(LazyWorkspaceError::Workspace(failure.error.to_string()));
-                }
+        in_heap(move || async move {
+            let requested = self.canonical_path(path)?;
+            let lookup = self
+                .lookup_measured(&requested, WorkBudget::UNBOUNDED, cancellation)
+                .await?
+                .value;
+            let actual = self.direct_file_id_for_lookup(&lookup.lookup);
+            if actual != expected_source {
+                return Err(LazyWorkspaceError::StaleIdentity);
             }
-        } else {
-            None
-        };
-        let mut transaction = crate::Transaction::for_checkout_candidate(
-            &self.workspace,
-            checkout.private_candidate(),
-        );
-        if let Some(parent) = parent_path(&requested) {
-            transaction
-                .create_dir_all_measured(parent, WorkBudget::UNBOUNDED, cancellation)
+            let candidate_path = self.namespace_path(&requested)?;
+            if let Some(record) = checkout
+                .lookup_no_follow(&candidate_path, WorkBudget::UNBOUNDED, cancellation)
                 .await
-                .map_err(workspace_error)?;
-        }
-        if let Some(record) = existing_identity {
-            transaction
-                .restore_record_measured(&requested, record, WorkBudget::UNBOUNDED, cancellation)
-                .await
-                .map_err(workspace_error)?;
-            *checkout = transaction.into_checkout_candidate();
-            return Ok(true);
-        }
-        let changed = self
-            .apply_resolved_promotion_measured(
-                &mut transaction,
-                &requested,
-                lookup,
-                maximum_bytes,
-                WorkBudget::UNBOUNDED,
-                cancellation,
-            )
-            .await?
-            .value;
-        if changed {
-            *checkout = transaction.into_checkout_candidate();
-        }
-        Ok(changed)
+                .map_err(|failure| workspace_error(failure.error.into()))?
+                .value
+                .record
+            {
+                return (record.file_id == expected_source)
+                    .then_some(false)
+                    .ok_or(LazyWorkspaceError::StaleIdentity);
+            }
+            if matches!(
+                &lookup.lookup,
+                LazyLookup::Authored { path, .. } if path == &requested
+            ) {
+                return Err(LazyWorkspaceError::StaleIdentity);
+            }
+            let existing_identity = if matches!(
+                &lookup.lookup,
+                LazyLookup::Source(node) if node.kind != SourceNodeKind::Directory
+            ) {
+                match checkout
+                    .read_file_record_by_id(expected_source, WorkBudget::UNBOUNDED, cancellation)
+                    .await
+                {
+                    Ok(receipt) => Some(receipt.value),
+                    Err(failure) if matches!(failure.error, crate::FsError::NotFound) => None,
+                    Err(failure) => {
+                        return Err(LazyWorkspaceError::Workspace(failure.error.to_string()));
+                    }
+                }
+            } else {
+                None
+            };
+            let mut transaction = crate::Transaction::for_checkout_candidate(
+                &self.workspace,
+                checkout.private_candidate(),
+            );
+            if let Some(parent) = parent_path(&requested) {
+                transaction
+                    .create_dir_all_measured(parent, WorkBudget::UNBOUNDED, cancellation)
+                    .await
+                    .map_err(workspace_error)?;
+            }
+            if let Some(record) = existing_identity {
+                transaction
+                    .restore_record_measured(
+                        &requested,
+                        record,
+                        WorkBudget::UNBOUNDED,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(workspace_error)?;
+                *checkout = transaction.into_checkout_candidate();
+                return Ok(true);
+            }
+            let changed = self
+                .apply_resolved_promotion_measured(
+                    &mut transaction,
+                    &requested,
+                    lookup,
+                    maximum_bytes,
+                    WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
+                .await?
+                .value;
+            if changed {
+                *checkout = transaction.into_checkout_candidate();
+            }
+            Ok(changed)
+        })
+        .await
     }
 
     /// Returns one bounded page combining unresolved source entries with the
@@ -2848,22 +2878,25 @@ where
         maximum_entries: u32,
         mounted_mask: Option<(&[String], bool)>,
     ) -> Result<(LazyDirectoryPage, LazyWorkspaceState), LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        let state = { self.state().await? };
-        let page = self
-            .list_directory_at(
-                &state,
-                WorkCounters::default(),
-                path,
-                cursor,
-                maximum_entries,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-                Some(checkout),
-                mounted_mask,
-            )
-            .await?;
-        Ok((page.value, state))
+        in_heap(move || async move {
+            let cancellation = CancellationToken::new();
+            let state = { self.state().await? };
+            let page = self
+                .list_directory_at(
+                    &state,
+                    WorkCounters::default(),
+                    path,
+                    cursor,
+                    maximum_entries,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                    Some(checkout),
+                    mounted_mask,
+                )
+                .await?;
+            Ok((page.value, state))
+        })
+        .await
     }
 
     /// A mounted replacement must not inherit entries from an unrelated
@@ -2880,31 +2913,34 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<bool, LazyWorkspaceError> {
-        let candidate = checkout
-            .lookup_no_follow(directory, remaining_work(*work, budget)?, cancellation)
-            .await
-            .map_err(|failure| LazyWorkspaceError::Workspace(failure.error.to_string()))?;
-        *work = account_work(*work, candidate.work, budget)?;
-        let tombstoned = self
-            .tombstoned_measured(overlay, path, remaining_work(*work, budget)?, cancellation)
-            .await?;
-        *work = account_work(*work, tombstoned.work, budget)?;
-        match candidate.value.record {
-            None if tombstoned.value => Err(LazyWorkspaceError::NotFound),
-            Some(_) if tombstoned.value => Ok(true),
-            Some(record) => {
-                let source = self
-                    .source
-                    .lookup(source, directory, cancellation)
-                    .await
-                    .map_err(|failure| failure.error)?;
-                *work = account_work(*work, source.work, budget)?;
-                Ok(source
-                    .value
-                    .is_none_or(|node| self.source_file_id(&node) != record.file_id))
+        in_heap(move || async move {
+            let candidate = checkout
+                .lookup_no_follow(directory, remaining_work(*work, budget)?, cancellation)
+                .await
+                .map_err(|failure| LazyWorkspaceError::Workspace(failure.error.to_string()))?;
+            *work = account_work(*work, candidate.work, budget)?;
+            let tombstoned = self
+                .tombstoned_measured(overlay, path, remaining_work(*work, budget)?, cancellation)
+                .await?;
+            *work = account_work(*work, tombstoned.work, budget)?;
+            match candidate.value.record {
+                None if tombstoned.value => Err(LazyWorkspaceError::NotFound),
+                Some(_) if tombstoned.value => Ok(true),
+                Some(record) => {
+                    let source = self
+                        .source
+                        .lookup(source, directory, cancellation)
+                        .await
+                        .map_err(|failure| failure.error)?;
+                    *work = account_work(*work, source.work, budget)?;
+                    Ok(source
+                        .value
+                        .is_none_or(|node| self.source_file_id(&node) != record.file_id))
+                }
+                None => Ok(false),
             }
-            None => Ok(false),
-        }
+        })
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2950,198 +2986,210 @@ where
         mut mounted: Option<&mut crate::Checkout<A, O>>,
         mounted_mask: Option<(&[String], bool)>,
     ) -> Result<OperationReceipt<LazyDirectoryPage>, LazyWorkspaceError> {
-        if maximum_entries == 0 {
-            return Err(LazyWorkspaceError::InvalidPageBound);
-        }
-        let directory = self.namespace_path(path)?;
-        let mut phase = match cursor {
-            Some(cursor)
-                if cursor.source == state.source
-                    && cursor.overlay == state.overlay
-                    && cursor.directory == directory =>
-            {
-                cursor.phase
+        in_heap(move || async move {
+            if maximum_entries == 0 {
+                return Err(LazyWorkspaceError::InvalidPageBound);
             }
-            Some(_) => return Err(LazyWorkspaceError::StaleCursor),
-            None => LazyDirectoryPhase::Source(None),
-        };
-        if mounted_mask.is_some_and(|(_, opaque)| opaque)
-            && matches!(phase, LazyDirectoryPhase::Source(None))
-        {
-            phase = LazyDirectoryPhase::Authored(None);
-        }
-        if matches!(phase, LazyDirectoryPhase::Source(None))
-            && !directory.is_root()
-            && let Some(checkout) = mounted.as_deref_mut()
-            && self
-                .mounted_directory_replaces_source(
-                    path,
-                    &directory,
-                    state.source,
-                    state.overlay,
-                    checkout,
-                    &mut work,
-                    budget,
-                    cancellation,
-                )
-                .await?
-        {
-            phase = LazyDirectoryPhase::Authored(None);
-        }
-        let mut source_absent = false;
-        loop {
-            match phase {
-                LazyDirectoryPhase::Source(source_cursor) => {
-                    let receipt = match self
-                        .source
-                        .list_page(
-                            state.source,
-                            &directory,
-                            source_cursor,
-                            maximum_entries,
-                            cancellation,
-                        )
-                        .await
-                    {
-                        Ok(receipt) => receipt,
-                        Err(failure)
-                            if mounted.is_some()
-                                && matches!(
-                                    failure.error,
-                                    DemandError::Absent | DemandError::NotDirectory
-                                ) =>
-                        {
-                            work = account_work(work, *failure.work, budget)?;
-                            source_absent = true;
-                            phase = LazyDirectoryPhase::Authored(None);
-                            continue;
-                        }
-                        Err(failure) => return Err(failure.error.into()),
-                    };
-                    work = account_work(work, receipt.work, budget)?;
-                    let page = receipt.value;
-                    if page.entries.len() > usize::try_from(maximum_entries).unwrap_or(usize::MAX) {
-                        return Err(LazyWorkspaceError::Work(
-                            "source directory page exceeded its requested bound".to_owned(),
-                        ));
-                    }
-                    let temporary_bytes = retained_directory_page_bytes(
-                        page.entries.capacity(),
-                        std::mem::size_of::<SourceDirectoryEntry>(),
-                        page.entries.iter().map(|entry| entry.name.retained_bytes()),
-                    )?;
-                    let mut entries = Vec::new();
-                    let projection_bytes = reserve_lazy_directory_page(
-                        &mut entries,
-                        page.entries.len(),
-                        temporary_bytes,
+            let directory = self.namespace_path(path)?;
+            let mut phase = match cursor {
+                Some(cursor)
+                    if cursor.source == state.source
+                        && cursor.overlay == state.overlay
+                        && cursor.directory == directory =>
+                {
+                    cursor.phase
+                }
+                Some(_) => return Err(LazyWorkspaceError::StaleCursor),
+                None => LazyDirectoryPhase::Source(None),
+            };
+            if mounted_mask.is_some_and(|(_, opaque)| opaque)
+                && matches!(phase, LazyDirectoryPhase::Source(None))
+            {
+                phase = LazyDirectoryPhase::Authored(None);
+            }
+            if matches!(phase, LazyDirectoryPhase::Source(None))
+                && !directory.is_root()
+                && let Some(checkout) = mounted.as_deref_mut()
+                && self
+                    .mounted_directory_replaces_source(
+                        path,
+                        &directory,
+                        state.source,
+                        state.overlay,
+                        checkout,
                         &mut work,
                         budget,
-                    )?;
-                    // A source page shares one authored generation. Resolve its
-                    // candidate children together so the authenticated directory
-                    // and file-table frontier is not rebuilt once per entry.
-                    let count = page.entries.len();
-                    let child_storage = count
-                        .checked_mul(
-                            std::mem::size_of::<NamespacePath>()
-                                + std::mem::size_of::<(bool, Option<usize>)>()
-                                + 1
-                                + (directory.components().len() + 1)
-                                    * std::mem::size_of::<LogicalName>(),
-                        )
-                        .and_then(|total| {
-                            page.entries.iter().try_fold(total, |sum, entry| {
-                                // Portable-to-native transcoding can expand a
-                                // name (notably UTF-8 to Windows UTF-16).
-                                sum.checked_add(entry.name.retained_bytes().saturating_mul(4))
-                            })
-                        })
-                        .and_then(|total| {
-                            total.checked_add(count.saturating_mul(path.len().saturating_mul(4)))
-                        })
-                        .and_then(|bytes| u64::try_from(bytes).ok())
-                        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
-                    let live_bytes = projection_bytes
-                        .checked_add(child_storage)
-                        .ok_or_else(|| LazyWorkspaceError::Work("counter overflow".to_owned()))?;
-                    work.peak_allocation_bytes = work.peak_allocation_bytes.max(live_bytes);
-                    work.verify(budget)
-                        .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
-                    let mut source_paths = Vec::new();
-                    let mut slots = Vec::new();
-                    source_paths.try_reserve_exact(count).map_err(|_| {
-                        LazyWorkspaceError::Work("source page lookup allocation failed".to_owned())
-                    })?;
-                    slots.try_reserve_exact(count).map_err(|_| {
-                        LazyWorkspaceError::Work("source page lookup allocation failed".to_owned())
-                    })?;
-                    let limits = self.workspace.limits();
-                    for entry in &page.entries {
-                        let child_path = logical_child_path(path, &entry.name);
-                        if let Some(child) = child_path.as_ref() {
-                            work = account_transient_string(work, child, live_bytes, budget)?;
-                            if mounted_mask
-                                .is_some_and(|(paths, _)| paths.binary_search(child).is_ok())
+                        cancellation,
+                    )
+                    .await?
+            {
+                phase = LazyDirectoryPhase::Authored(None);
+            }
+            let mut source_absent = false;
+            loop {
+                match phase {
+                    LazyDirectoryPhase::Source(source_cursor) => {
+                        let receipt = match self
+                            .source
+                            .list_page(
+                                state.source,
+                                &directory,
+                                source_cursor,
+                                maximum_entries,
+                                cancellation,
+                            )
+                            .await
+                        {
+                            Ok(receipt) => receipt,
+                            Err(failure)
+                                if mounted.is_some()
+                                    && matches!(
+                                        failure.error,
+                                        DemandError::Absent | DemandError::NotDirectory
+                                    ) =>
                             {
-                                slots.push((true, None));
+                                work = account_work(work, *failure.work, budget)?;
+                                source_absent = true;
+                                phase = LazyDirectoryPhase::Authored(None);
                                 continue;
                             }
-                            let tombstoned = self
-                                .tombstoned_measured(
-                                    state.overlay,
-                                    child,
-                                    remaining_work(work, budget)?,
-                                    cancellation,
-                                )
-                                .await?;
-                            work = account_nested_with_live_memory(
-                                work,
-                                tombstoned.work,
-                                live_bytes,
-                                budget,
-                            )?;
-                            if tombstoned.value {
-                                slots.push((true, None));
-                                continue;
-                            }
-                            let child = self.namespace_path(child)?;
-                            slots.push((false, Some(source_paths.len())));
-                            source_paths.push(child);
-                        } else {
-                            slots.push((false, None));
+                            Err(failure) => return Err(failure.error.into()),
+                        };
+                        work = account_work(work, receipt.work, budget)?;
+                        let page = receipt.value;
+                        if page.entries.len()
+                            > usize::try_from(maximum_entries).unwrap_or(usize::MAX)
+                        {
+                            return Err(LazyWorkspaceError::Work(
+                                "source directory page exceeded its requested bound".to_owned(),
+                            ));
                         }
-                    }
-                    let mut authored = Vec::new();
-                    authored
-                        .try_reserve_exact(source_paths.len())
-                        .map_err(|_| {
+                        let temporary_bytes = retained_directory_page_bytes(
+                            page.entries.capacity(),
+                            std::mem::size_of::<SourceDirectoryEntry>(),
+                            page.entries.iter().map(|entry| entry.name.retained_bytes()),
+                        )?;
+                        let mut entries = Vec::new();
+                        let projection_bytes = reserve_lazy_directory_page(
+                            &mut entries,
+                            page.entries.len(),
+                            temporary_bytes,
+                            &mut work,
+                            budget,
+                        )?;
+                        // A source page shares one authored generation. Resolve its
+                        // candidate children together so the authenticated directory
+                        // and file-table frontier is not rebuilt once per entry.
+                        let count = page.entries.len();
+                        let child_storage = count
+                            .checked_mul(
+                                std::mem::size_of::<NamespacePath>()
+                                    + std::mem::size_of::<(bool, Option<usize>)>()
+                                    + 1
+                                    + (directory.components().len() + 1)
+                                        * std::mem::size_of::<LogicalName>(),
+                            )
+                            .and_then(|total| {
+                                page.entries.iter().try_fold(total, |sum, entry| {
+                                    // Portable-to-native transcoding can expand a
+                                    // name (notably UTF-8 to Windows UTF-16).
+                                    sum.checked_add(entry.name.retained_bytes().saturating_mul(4))
+                                })
+                            })
+                            .and_then(|total| {
+                                total
+                                    .checked_add(count.saturating_mul(path.len().saturating_mul(4)))
+                            })
+                            .and_then(|bytes| u64::try_from(bytes).ok())
+                            .ok_or_else(|| {
+                                LazyWorkspaceError::Work("counter overflow".to_owned())
+                            })?;
+                        let live_bytes =
+                            projection_bytes.checked_add(child_storage).ok_or_else(|| {
+                                LazyWorkspaceError::Work("counter overflow".to_owned())
+                            })?;
+                        work.peak_allocation_bytes = work.peak_allocation_bytes.max(live_bytes);
+                        work.verify(budget)
+                            .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
+                        let mut source_paths = Vec::new();
+                        let mut slots = Vec::new();
+                        source_paths.try_reserve_exact(count).map_err(|_| {
                             LazyWorkspaceError::Work(
                                 "source page lookup allocation failed".to_owned(),
                             )
                         })?;
-                    authored.resize(source_paths.len(), false);
-                    if !source_paths.is_empty() {
-                        let generation = if mounted.is_some() {
-                            None
-                        } else {
-                            let head = self
-                                .workspace
-                                .head_measured(remaining_work(work, budget)?, cancellation)
-                                .await
-                                .map_err(workspace_error)?;
-                            work = account_nested_with_live_memory(
-                                work, head.work, live_bytes, budget,
-                            )?;
-                            Some(head.value)
-                        };
-                        let maximum = usize::try_from(limits.maximum_paths_per_batch)
-                            .unwrap_or(usize::MAX)
-                            .max(1);
-                        let mut offset = 0_usize;
-                        for chunk in source_paths.chunks(maximum) {
-                            let (records, lookup_work) =
-                                if let Some(checkout) = mounted.as_deref_mut() {
+                        slots.try_reserve_exact(count).map_err(|_| {
+                            LazyWorkspaceError::Work(
+                                "source page lookup allocation failed".to_owned(),
+                            )
+                        })?;
+                        let limits = self.workspace.limits();
+                        for entry in &page.entries {
+                            let child_path = logical_child_path(path, &entry.name);
+                            if let Some(child) = child_path.as_ref() {
+                                work = account_transient_string(work, child, live_bytes, budget)?;
+                                if mounted_mask
+                                    .is_some_and(|(paths, _)| paths.binary_search(child).is_ok())
+                                {
+                                    slots.push((true, None));
+                                    continue;
+                                }
+                                let tombstoned = self
+                                    .tombstoned_measured(
+                                        state.overlay,
+                                        child,
+                                        remaining_work(work, budget)?,
+                                        cancellation,
+                                    )
+                                    .await?;
+                                work = account_nested_with_live_memory(
+                                    work,
+                                    tombstoned.work,
+                                    live_bytes,
+                                    budget,
+                                )?;
+                                if tombstoned.value {
+                                    slots.push((true, None));
+                                    continue;
+                                }
+                                let child = self.namespace_path(child)?;
+                                slots.push((false, Some(source_paths.len())));
+                                source_paths.push(child);
+                            } else {
+                                slots.push((false, None));
+                            }
+                        }
+                        let mut authored = Vec::new();
+                        authored
+                            .try_reserve_exact(source_paths.len())
+                            .map_err(|_| {
+                                LazyWorkspaceError::Work(
+                                    "source page lookup allocation failed".to_owned(),
+                                )
+                            })?;
+                        authored.resize(source_paths.len(), false);
+                        if !source_paths.is_empty() {
+                            let generation = if mounted.is_some() {
+                                None
+                            } else {
+                                let head = self
+                                    .workspace
+                                    .head_measured(remaining_work(work, budget)?, cancellation)
+                                    .await
+                                    .map_err(workspace_error)?;
+                                work = account_nested_with_live_memory(
+                                    work, head.work, live_bytes, budget,
+                                )?;
+                                Some(head.value)
+                            };
+                            let maximum = usize::try_from(limits.maximum_paths_per_batch)
+                                .unwrap_or(usize::MAX)
+                                .max(1);
+                            let mut offset = 0_usize;
+                            for chunk in source_paths.chunks(maximum) {
+                                let (records, lookup_work) = if let Some(checkout) =
+                                    mounted.as_deref_mut()
+                                {
                                     let lookup = checkout
                                         .lookup_batch_no_follow(
                                             chunk,
@@ -3176,154 +3224,161 @@ where
                                         })?;
                                     (lookup.value, lookup.work)
                                 };
-                            work = account_nested_with_live_memory(
-                                work,
-                                lookup_work,
-                                live_bytes,
-                                budget,
-                            )?;
-                            for (slot, record) in authored
-                                .get_mut(offset..offset + chunk.len())
-                                .ok_or_else(|| {
-                                    LazyWorkspaceError::Work(
-                                        "lookup result offset overflow".to_owned(),
-                                    )
-                                })?
-                                .iter_mut()
-                                .zip(records)
+                                work = account_nested_with_live_memory(
+                                    work,
+                                    lookup_work,
+                                    live_bytes,
+                                    budget,
+                                )?;
+                                for (slot, record) in authored
+                                    .get_mut(offset..offset + chunk.len())
+                                    .ok_or_else(|| {
+                                        LazyWorkspaceError::Work(
+                                            "lookup result offset overflow".to_owned(),
+                                        )
+                                    })?
+                                    .iter_mut()
+                                    .zip(records)
+                                {
+                                    *slot = record.is_some();
+                                }
+                                offset += chunk.len();
+                            }
+                        }
+                        for (entry, (hidden, index)) in page.entries.into_iter().zip(slots) {
+                            if hidden
+                                || index.is_some_and(|index| {
+                                    authored.get(index).copied().unwrap_or(false)
+                                })
                             {
-                                *slot = record.is_some();
+                                continue;
                             }
-                            offset += chunk.len();
-                        }
-                    }
-                    for (entry, (hidden, index)) in page.entries.into_iter().zip(slots) {
-                        if hidden
-                            || index
-                                .is_some_and(|index| authored.get(index).copied().unwrap_or(false))
-                        {
-                            continue;
-                        }
-                        entries.push(LazyDirectoryEntry {
-                            name: entry.name,
-                            kind: entry.node.kind,
-                            authored: false,
-                            source: Some(entry.node),
-                        });
-                    }
-                    let next = Some(LazyDirectoryCursor {
-                        source: state.source,
-                        overlay: state.overlay,
-                        directory,
-                        phase: page
-                            .next
-                            .map_or(LazyDirectoryPhase::Authored(None), |next| {
-                                LazyDirectoryPhase::Source(Some(next))
-                            }),
-                    });
-                    return Ok(OperationReceipt {
-                        value: LazyDirectoryPage { entries, next },
-                        work,
-                    });
-                }
-                LazyDirectoryPhase::Authored(after) => {
-                    let authored_page = if let Some(checkout) = mounted {
-                        match checkout
-                            .list_directory(
-                                &directory,
-                                after.as_ref(),
-                                maximum_entries,
-                                remaining_work(work, budget)?,
-                                cancellation,
-                            )
-                            .await
-                        {
-                            Ok(page) => Ok(OperationReceipt {
-                                value: crate::WorkspaceDirectoryPage {
-                                    entries: page
-                                        .value
-                                        .entries
-                                        .into_iter()
-                                        .map(|entry| crate::WorkspaceDirectoryEntry {
-                                            name: entry.name,
-                                            file_id: entry.file_id,
-                                            kind: entry.kind,
-                                        })
-                                        .collect(),
-                                    has_more: page.value.has_more,
-                                },
-                                work: page.work,
-                            }),
-                            Err(failure) if matches!(failure.error, crate::FsError::NotFound) => {
-                                Err(WorkspaceError::NotFound)
-                            }
-                            Err(failure) => Err(WorkspaceError::from(failure.error)),
-                        }
-                    } else {
-                        self.workspace
-                            .list_directory_measured(
-                                path,
-                                after.as_ref(),
-                                maximum_entries,
-                                remaining_work(work, budget)?,
-                                cancellation,
-                            )
-                            .await
-                    };
-                    let page = match authored_page {
-                        Ok(page) => page,
-                        Err(WorkspaceError::NotFound) if source_absent => {
-                            return Err(LazyWorkspaceError::NotFound);
-                        }
-                        Err(WorkspaceError::NotFound) => {
-                            return Ok(OperationReceipt {
-                                value: LazyDirectoryPage {
-                                    entries: Vec::new(),
-                                    next: None,
-                                },
-                                work,
+                            entries.push(LazyDirectoryEntry {
+                                name: entry.name,
+                                kind: entry.node.kind,
+                                authored: false,
+                                source: Some(entry.node),
                             });
                         }
-                        Err(error) => return Err(workspace_error(error)),
-                    };
-                    work = account_work(work, page.work, budget)?;
-                    let page = page.value;
-                    if page.entries.len() > usize::try_from(maximum_entries).unwrap_or(usize::MAX) {
-                        return Err(LazyWorkspaceError::Work(
-                            "authored directory page exceeded its requested bound".to_owned(),
-                        ));
-                    }
-                    let next = if page.has_more {
-                        page.entries.last().map(|entry| LazyDirectoryCursor {
+                        let next = Some(LazyDirectoryCursor {
                             source: state.source,
                             overlay: state.overlay,
                             directory,
-                            phase: LazyDirectoryPhase::Authored(Some(entry.name.clone())),
-                        })
-                    } else {
-                        None
-                    };
-                    let temporary_bytes = retained_directory_page_bytes(
-                        page.entries.capacity(),
-                        std::mem::size_of::<crate::WorkspaceDirectoryEntry>(),
-                        page.entries.iter().map(|entry| entry.name.retained_bytes()),
-                    )?;
-                    let mut entries = Vec::new();
-                    let _projection_bytes = reserve_lazy_directory_page(
-                        &mut entries,
-                        page.entries.len(),
-                        temporary_bytes,
-                        &mut work,
-                        budget,
-                    )?;
-                    entries.extend(page.entries.into_iter().map(authored_entry));
-                    return Ok(OperationReceipt {
-                        value: LazyDirectoryPage { entries, next },
-                        work,
-                    });
+                            phase: page
+                                .next
+                                .map_or(LazyDirectoryPhase::Authored(None), |next| {
+                                    LazyDirectoryPhase::Source(Some(next))
+                                }),
+                        });
+                        return Ok(OperationReceipt {
+                            value: LazyDirectoryPage { entries, next },
+                            work,
+                        });
+                    }
+                    LazyDirectoryPhase::Authored(after) => {
+                        let authored_page = if let Some(checkout) = mounted {
+                            match checkout
+                                .list_directory(
+                                    &directory,
+                                    after.as_ref(),
+                                    maximum_entries,
+                                    remaining_work(work, budget)?,
+                                    cancellation,
+                                )
+                                .await
+                            {
+                                Ok(page) => Ok(OperationReceipt {
+                                    value: crate::WorkspaceDirectoryPage {
+                                        entries: page
+                                            .value
+                                            .entries
+                                            .into_iter()
+                                            .map(|entry| crate::WorkspaceDirectoryEntry {
+                                                name: entry.name,
+                                                file_id: entry.file_id,
+                                                kind: entry.kind,
+                                            })
+                                            .collect(),
+                                        has_more: page.value.has_more,
+                                    },
+                                    work: page.work,
+                                }),
+                                Err(failure)
+                                    if matches!(failure.error, crate::FsError::NotFound) =>
+                                {
+                                    Err(WorkspaceError::NotFound)
+                                }
+                                Err(failure) => Err(WorkspaceError::from(failure.error)),
+                            }
+                        } else {
+                            self.workspace
+                                .list_directory_measured(
+                                    path,
+                                    after.as_ref(),
+                                    maximum_entries,
+                                    remaining_work(work, budget)?,
+                                    cancellation,
+                                )
+                                .await
+                        };
+                        let page = match authored_page {
+                            Ok(page) => page,
+                            Err(WorkspaceError::NotFound) if source_absent => {
+                                return Err(LazyWorkspaceError::NotFound);
+                            }
+                            Err(WorkspaceError::NotFound) => {
+                                return Ok(OperationReceipt {
+                                    value: LazyDirectoryPage {
+                                        entries: Vec::new(),
+                                        next: None,
+                                    },
+                                    work,
+                                });
+                            }
+                            Err(error) => return Err(workspace_error(error)),
+                        };
+                        work = account_work(work, page.work, budget)?;
+                        let page = page.value;
+                        if page.entries.len()
+                            > usize::try_from(maximum_entries).unwrap_or(usize::MAX)
+                        {
+                            return Err(LazyWorkspaceError::Work(
+                                "authored directory page exceeded its requested bound".to_owned(),
+                            ));
+                        }
+                        let next = if page.has_more {
+                            page.entries.last().map(|entry| LazyDirectoryCursor {
+                                source: state.source,
+                                overlay: state.overlay,
+                                directory,
+                                phase: LazyDirectoryPhase::Authored(Some(entry.name.clone())),
+                            })
+                        } else {
+                            None
+                        };
+                        let temporary_bytes = retained_directory_page_bytes(
+                            page.entries.capacity(),
+                            std::mem::size_of::<crate::WorkspaceDirectoryEntry>(),
+                            page.entries.iter().map(|entry| entry.name.retained_bytes()),
+                        )?;
+                        let mut entries = Vec::new();
+                        let _projection_bytes = reserve_lazy_directory_page(
+                            &mut entries,
+                            page.entries.len(),
+                            temporary_bytes,
+                            &mut work,
+                            budget,
+                        )?;
+                        entries.extend(page.entries.into_iter().map(authored_entry));
+                        return Ok(OperationReceipt {
+                            value: LazyDirectoryPage { entries, next },
+                            work,
+                        });
+                    }
                 }
             }
-        }
+        })
+        .await
     }
 
     /// Captures every currently visible path into an exact authored generation.

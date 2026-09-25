@@ -16,6 +16,7 @@ use crate::LazySeekTarget;
 use crate::demand::{
     DemandError, DemandFile, DemandSource, SourceNode, SourceNodeKind, SourceReference,
 };
+use crate::heap_future::in_heap;
 use crate::kernel::{
     FileKind, FileMetadata, FileMutation, FilePayload, FileRecord, MetadataField, Mutation,
 };
@@ -48,32 +49,32 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    for _ in 0..MAXIMUM_PROMOTION_RETRIES {
-        let mut candidate = authored.shared_checkout().candidate().await?;
-        let changed = lazy
-            .stage_exact_into_checkout(
-                &mut candidate.checkout,
-                path,
-                expected_source,
-                MAXIMUM_PROMOTION_BYTES,
-                authored.cancellation(),
-            )
-            .await
-            .map_err(lazy_error)?;
-        if !changed {
-            return Ok(());
+    in_heap(move || async move {
+        for _ in 0..MAXIMUM_PROMOTION_RETRIES {
+            let mut candidate = authored.shared_checkout().candidate().await?;
+            let changed = lazy
+                .stage_exact_into_checkout(
+                    &mut candidate.checkout,
+                    path,
+                    expected_source,
+                    MAXIMUM_PROMOTION_BYTES,
+                    authored.cancellation(),
+                )
+                .await
+                .map_err(lazy_error)?;
+            if !changed {
+                return Ok(());
+            }
+            let installed = promotion_effect(lazy, authored, &candidate, path, mounted).await?;
+            let mut checkout = authored.shared_checkout().lock().await;
+            checkout.ensure_publication_resolved()?;
+            if checkout.install_candidate(candidate, &installed) {
+                return checkout.publish_mutation(authored.cancellation()).await;
+            }
         }
-        // Boxed: comparing lookups nests whole lookup futures, which would
-        // otherwise inline into every promoting caller's future.
-        let installed =
-            Box::pin(promotion_effect(lazy, authored, &candidate, path, mounted)).await?;
-        let mut checkout = authored.shared_checkout().lock().await;
-        checkout.ensure_publication_resolved()?;
-        if checkout.install_candidate(candidate, &installed) {
-            return checkout.publish_mutation(authored.cancellation()).await;
-        }
-    }
-    Err(MountSourceError::Stale)
+        Err(MountSourceError::Stale)
+    })
+    .await
 }
 
 /// The observable effect of promoting `mounted` and the ancestors staged
@@ -95,47 +96,50 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    let mut installed = Installed::default();
-    let mut prefix = mounted.clone();
-    let mut text = path.to_owned();
-    loop {
-        let after = authored.lookup_in(&candidate.checkout, &prefix).await?;
-        let base = authored.lookup_in(candidate.base(), &prefix).await?;
-        let parent = prefix.parent();
-        if let (None, Some(_), Some(parent)) = (base, after, &parent) {
-            installed.listings.push(authored.namespace_path(parent)?);
+    in_heap(move || async move {
+        let mut installed = Installed::default();
+        let mut prefix = mounted.clone();
+        let mut text = path.to_owned();
+        loop {
+            let after = authored.lookup_in(&candidate.checkout, &prefix).await?;
+            let base = authored.lookup_in(candidate.base(), &prefix).await?;
+            let parent = prefix.parent();
+            if let (None, Some(_), Some(parent)) = (base, after, &parent) {
+                installed.listings.push(authored.namespace_path(parent)?);
+            }
+            let before = match base {
+                Some(lookup) => Some(lookup),
+                None => match lazy.inspect_unauthored(&text, None).await {
+                    Ok((lookup, _)) => {
+                        let file_id = lazy
+                            .stable_file_id_for_lookup(&text, &lookup)
+                            .await
+                            .map_err(lazy_error)?;
+                        Some(mount_lookup(lookup, file_id))
+                    }
+                    Err(LazyWorkspaceError::NotFound) => None,
+                    Err(error) => return Err(lazy_error(error)),
+                },
+            };
+            if before != after {
+                installed.nodes.extend(
+                    [before, after]
+                        .into_iter()
+                        .flatten()
+                        .map(|lookup| lookup.node.file_id),
+                );
+            }
+            let Some(parent) = parent else {
+                return Ok(installed);
+            };
+            prefix = parent;
+            text = match text.rsplit_once('/') {
+                Some(("", _)) | None => "/".to_owned(),
+                Some((parent, _)) => parent.to_owned(),
+            };
         }
-        let before = match base {
-            Some(lookup) => Some(lookup),
-            None => match lazy.inspect_unauthored(&text, None).await {
-                Ok((lookup, _)) => {
-                    let file_id = lazy
-                        .stable_file_id_for_lookup(&text, &lookup)
-                        .await
-                        .map_err(lazy_error)?;
-                    Some(mount_lookup(lookup, file_id))
-                }
-                Err(LazyWorkspaceError::NotFound) => None,
-                Err(error) => return Err(lazy_error(error)),
-            },
-        };
-        if before != after {
-            installed.nodes.extend(
-                [before, after]
-                    .into_iter()
-                    .flatten()
-                    .map(|lookup| lookup.node.file_id),
-            );
-        }
-        let Some(parent) = parent else {
-            return Ok(installed);
-        };
-        prefix = parent;
-        text = match text.rsplit_once('/') {
-            Some(("", _)) | None => "/".to_owned(),
-            Some((parent, _)) => parent.to_owned(),
-        };
-    }
+    })
+    .await
 }
 
 struct StampedCursor<T> {
@@ -1027,14 +1031,17 @@ where
         D: DemandSource + 'static,
         S: LazyWorkspaceStore,
     {
-        let path = self.path(mounted)?;
-        let lookup = self.lazy.lookup(&path).await.map_err(lazy_error)?;
-        let expected_source = match lookup {
-            LazyLookup::Source(node) => self.lazy.source_file_id(&node),
-            LazyLookup::Authored { stat, .. } => stat.file_id,
-            LazyLookup::Shadow { record, .. } => record.file_id,
-        };
-        stage_mount_promotion(&self.lazy, &self.authored, &path, mounted, expected_source).await
+        in_heap(move || async move {
+            let path = self.path(mounted)?;
+            let lookup = self.lazy.lookup(&path).await.map_err(lazy_error)?;
+            let expected_source = match lookup {
+                LazyLookup::Source(node) => self.lazy.source_file_id(&node),
+                LazyLookup::Authored { stat, .. } => stat.file_id,
+                LazyLookup::Shadow { record, .. } => record.file_id,
+            };
+            stage_mount_promotion(&self.lazy, &self.authored, &path, mounted, expected_source).await
+        })
+        .await
     }
 
     fn promote_parents_locked(&self, path: &MountPath) -> Result<(), MountSourceError>
@@ -1070,64 +1077,70 @@ where
         A: AsyncAuthorityStore + Send + Sync + 'static,
         O: AsyncObjectStore + Send + Sync + 'static,
     {
-        if let Some(deferral) = self.resolutions.get(path) {
-            let file_id = deferral.node.map(|node| self.lazy.source_file_id(&node));
-            if self.unchanged_since(path, file_id, deferral.stamp) {
-                match self.lazy.source_lookup(deferral.source, text).await {
-                    Ok(node) if node == deferral.node => {
-                        return Ok(node.map_or(Resolution::Absent, |node| {
-                            Resolution::Unauthored(LazyLookup::Source(node), Some(deferral.source))
-                        }));
+        in_heap(move || async move {
+            if let Some(deferral) = self.resolutions.get(path) {
+                let file_id = deferral.node.map(|node| self.lazy.source_file_id(&node));
+                if self.unchanged_since(path, file_id, deferral.stamp) {
+                    match self.lazy.source_lookup(deferral.source, text).await {
+                        Ok(node) if node == deferral.node => {
+                            return Ok(node.map_or(Resolution::Absent, |node| {
+                                Resolution::Unauthored(
+                                    LazyLookup::Source(node),
+                                    Some(deferral.source),
+                                )
+                            }));
+                        }
+                        // The source changed, or its view was invalidated.
+                        Ok(_) | Err(LazyWorkspaceError::StaleSource) => {}
+                        Err(error) => return Err(lazy_error(error)),
                     }
-                    // The source changed, or its view was invalidated.
-                    Ok(_) | Err(LazyWorkspaceError::StaleSource) => {}
-                    Err(error) => return Err(lazy_error(error)),
                 }
             }
-        }
-        // Sampled first: a change to anything read below records a later
-        // position, so a remembered answer can never validate over it.
-        let stamp = self.view_stamp();
-        let source = self.lazy.source_reference();
-        if let Some(lookup) = self.authored.lookup_async(path, owner).await? {
-            if self.removed_identity(text, lookup.node.file_id)? {
-                return Ok(Resolution::Absent);
-            }
-            return Ok(Resolution::Authored(lookup));
-        }
-        if self.is_removed(text)? {
-            return Ok(Resolution::Absent);
-        }
-        let resolved = match self.lazy.inspect_unauthored(text, None).await {
-            Ok(resolved) => resolved,
-            Err(LazyWorkspaceError::NotFound) => {
-                if let Some(stamp) = stamp {
-                    let node = None;
-                    self.resolutions.remember(
-                        path,
-                        Deferral {
-                            stamp,
-                            source,
-                            node,
-                        },
-                    );
+            // Sampled first: a change to anything read below records a later
+            // position, so a remembered answer can never validate over it.
+            let stamp = self.view_stamp();
+            let source = self.lazy.source_reference();
+            if let Some(lookup) = self.authored.lookup_async(path, owner).await? {
+                if self.removed_identity(text, lookup.node.file_id)? {
+                    return Ok(Resolution::Absent);
                 }
+                return Ok(Resolution::Authored(lookup));
+            }
+            if self.is_removed(text)? {
                 return Ok(Resolution::Absent);
             }
-            Err(error) => return Err(lazy_error(error)),
-        };
-        if let (Some(stamp), (LazyLookup::Source(node), Some(source))) = (stamp, &resolved) {
-            let (source, node) = (*source, Some(*node));
-            self.resolutions.remember(
-                path,
-                Deferral {
-                    stamp,
-                    source,
-                    node,
-                },
-            );
-        }
-        Ok(Resolution::Unauthored(resolved.0, resolved.1))
+            let resolved = match self.lazy.inspect_unauthored(text, None).await {
+                Ok(resolved) => resolved,
+                Err(LazyWorkspaceError::NotFound) => {
+                    if let Some(stamp) = stamp {
+                        let node = None;
+                        self.resolutions.remember(
+                            path,
+                            Deferral {
+                                stamp,
+                                source,
+                                node,
+                            },
+                        );
+                    }
+                    return Ok(Resolution::Absent);
+                }
+                Err(error) => return Err(lazy_error(error)),
+            };
+            if let (Some(stamp), (LazyLookup::Source(node), Some(source))) = (stamp, &resolved) {
+                let (source, node) = (*source, Some(*node));
+                self.resolutions.remember(
+                    path,
+                    Deferral {
+                        stamp,
+                        source,
+                        node,
+                    },
+                );
+            }
+            Ok(Resolution::Unauthored(resolved.0, resolved.1))
+        })
+        .await
     }
 
     fn wait<T: Send, F>(&self, create: impl FnOnce() -> F + Send) -> Result<T, MountSourceError>

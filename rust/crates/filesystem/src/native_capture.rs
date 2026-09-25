@@ -1,5 +1,6 @@
 //! Bounded host-state capture into one atomic sparse checkout transaction.
 
+use crate::heap_future::in_heap;
 use crate::kernel::{
     FileKind, FileMetadata, FileRecord, LogicalName, MetadataField, NameEncoding, NamespacePath,
 };
@@ -1288,66 +1289,69 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
     cancellation: &CancellationToken,
     baseline: Option<&NativeViewBaseline>,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
-    let mut receipt = CaptureReceipt::default();
+    in_heap(move || async move {
+        let mut receipt = CaptureReceipt::default();
 
-    let mut observations = Vec::new();
-    let mut paths = Vec::new();
-    observations
-        .try_reserve(ordered.len())
-        .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
-    paths
-        .try_reserve(ordered.len())
-        .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
-    for (observation, path) in ordered {
-        observations.push(observation);
-        paths.push(path);
-    }
-    let current = if paths.is_empty() {
-        Vec::new()
-    } else {
+        let mut observations = Vec::new();
+        let mut paths = Vec::new();
+        observations
+            .try_reserve(ordered.len())
+            .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
+        paths
+            .try_reserve(ordered.len())
+            .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
+        for (observation, path) in ordered {
+            observations.push(observation);
+            paths.push(path);
+        }
+        let current = if paths.is_empty() {
+            Vec::new()
+        } else {
+            let remaining = receipt
+                .work
+                .remaining(budget)
+                .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+            let lookup = checkout
+                .lookup_batch_no_follow(&paths, remaining, cancellation)
+                .await
+                .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+            receipt.work = add_work(receipt.work, lookup.work)?;
+            lookup
+                .value
+                .entries
+                .into_iter()
+                .map(|entry| entry.record)
+                .collect()
+        };
+
+        let states = order_capture_states(observations, paths, current);
+        let mut host_links = BTreeMap::new();
         let remaining = receipt
             .work
             .remaining(budget)
             .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
-        let lookup = checkout
-            .lookup_batch_no_follow(&paths, remaining, cancellation)
-            .await
-            .map_err(|failure| map_engine_failure(failure, receipt.work))?;
-        receipt.work = add_work(receipt.work, lookup.work)?;
-        lookup
-            .value
-            .entries
-            .into_iter()
-            .map(|entry| entry.record)
-            .collect()
-    };
-
-    let states = order_capture_states(observations, paths, current);
-    let mut host_links = BTreeMap::new();
-    let remaining = receipt
-        .work
-        .remaining(budget)
-        .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
-    let captured = capture_ranked_paths_from_root(
-        checkout,
-        states,
-        &mut host_links,
-        maximum_extent_spans,
-        source_root,
-        remaining,
-        cancellation,
-        baseline,
-    )
-    .await
-    .map_err(|failure| map_capture_failure(failure, receipt.work))?;
-    receipt.examined_paths = captured.value.examined_paths;
-    receipt.changed_paths = captured.value.changed_paths;
-    receipt.staged_file_bytes = captured.value.staged_file_bytes;
-    receipt.work = add_work(receipt.work, captured.work)?;
-    Ok(OperationReceipt {
-        value: receipt,
-        work: receipt.work,
+        let captured = capture_ranked_paths_from_root(
+            checkout,
+            states,
+            &mut host_links,
+            maximum_extent_spans,
+            source_root,
+            remaining,
+            cancellation,
+            baseline,
+        )
+        .await
+        .map_err(|failure| map_capture_failure(failure, receipt.work))?;
+        receipt.examined_paths = captured.value.examined_paths;
+        receipt.changed_paths = captured.value.changed_paths;
+        receipt.staged_file_bytes = captured.value.staged_file_bytes;
+        receipt.work = add_work(receipt.work, captured.work)?;
+        Ok(OperationReceipt {
+            value: receipt,
+            work: receipt.work,
+        })
     })
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1488,13 +1492,13 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
-    Box::pin(capture_baseline_with_policy(
+    capture_baseline_with_policy(
         checkout,
         options,
         &CapturePolicy::allow_all(),
         budget,
         cancellation,
-    ))
+    )
     .await
 }
 
@@ -1506,62 +1510,65 @@ pub async fn capture_baseline_with_policy<A: AsyncAuthorityStore, O: AsyncObject
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
-    if checkout.has_pending_mutations() {
-        return Err(OperationFailure::before_work(CaptureError::DirtyCheckout));
-    }
-    if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
-        return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
-    }
-    let source_root = open_source_root(options).map_err(OperationFailure::before_work)?;
-    let limits = checkout.volume_config().limits;
-    let profile = checkout.volume_config().profile;
-    let maximum = usize::try_from(options.maximum_paths)
-        .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
-    let mut paths = Vec::new();
-    let mut work = WorkCounters::default();
-    let observed = collect_host_observations(
-        &source_root,
-        profile,
-        limits,
-        maximum,
-        policy,
-        &mut work,
-        budget,
-        cancellation,
-    )?;
-    Box::pin(collect_checkout_paths(
-        checkout,
-        limits,
-        policy,
-        maximum,
-        &mut paths,
-        &mut work,
-        budget,
-        cancellation,
-    ))
-    .await?;
-    let ordered = order_host_checkout_union(observed, paths, maximum)
-        .map_err(|error| OperationFailure::new(error, work))?;
-    let remaining = work
-        .remaining(budget)
-        .map_err(|error| OperationFailure::new(CaptureError::Work(error), work))?;
-    let mut captured = Box::pin(capture_observed_paths_from_root(
-        checkout,
-        ordered,
-        options.maximum_extent_spans,
-        &source_root,
-        remaining,
-        cancellation,
-        None,
-    ))
-    .await
-    .map_err(|failure| map_capture_failure(failure, work))?;
-    let combined = add_work(work, captured.work)?;
-    captured.value.work = combined;
-    Ok(OperationReceipt {
-        value: captured.value,
-        work: combined,
+    in_heap(move || async move {
+        if checkout.has_pending_mutations() {
+            return Err(OperationFailure::before_work(CaptureError::DirtyCheckout));
+        }
+        if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
+            return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
+        }
+        let source_root = open_source_root(options).map_err(OperationFailure::before_work)?;
+        let limits = checkout.volume_config().limits;
+        let profile = checkout.volume_config().profile;
+        let maximum = usize::try_from(options.maximum_paths)
+            .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
+        let mut paths = Vec::new();
+        let mut work = WorkCounters::default();
+        let observed = collect_host_observations(
+            &source_root,
+            profile,
+            limits,
+            maximum,
+            policy,
+            &mut work,
+            budget,
+            cancellation,
+        )?;
+        collect_checkout_paths(
+            checkout,
+            limits,
+            policy,
+            maximum,
+            &mut paths,
+            &mut work,
+            budget,
+            cancellation,
+        )
+        .await?;
+        let ordered = order_host_checkout_union(observed, paths, maximum)
+            .map_err(|error| OperationFailure::new(error, work))?;
+        let remaining = work
+            .remaining(budget)
+            .map_err(|error| OperationFailure::new(CaptureError::Work(error), work))?;
+        let mut captured = capture_observed_paths_from_root(
+            checkout,
+            ordered,
+            options.maximum_extent_spans,
+            &source_root,
+            remaining,
+            cancellation,
+            None,
+        )
+        .await
+        .map_err(|failure| map_capture_failure(failure, work))?;
+        let combined = add_work(work, captured.work)?;
+        captured.value.work = combined;
+        Ok(OperationReceipt {
+            value: captured.value,
+            work: combined,
+        })
     })
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1806,19 +1813,23 @@ async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore, P: 
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure<CaptureError>> {
-    let root = NamespacePath::new(Vec::new(), limits)
-        .map_err(|error| OperationFailure::before_work(CaptureError::Engine(error.to_string())))?;
-    collect_checkout_subtree_paths(
-        checkout,
-        limits,
-        root,
-        policy,
-        maximum,
-        paths,
-        work,
-        budget,
-        cancellation,
-    )
+    in_heap(move || async move {
+        let root = NamespacePath::new(Vec::new(), limits).map_err(|error| {
+            OperationFailure::before_work(CaptureError::Engine(error.to_string()))
+        })?;
+        collect_checkout_subtree_paths(
+            checkout,
+            limits,
+            root,
+            policy,
+            maximum,
+            paths,
+            work,
+            budget,
+            cancellation,
+        )
+        .await
+    })
     .await
 }
 
@@ -2036,6 +2047,7 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 /// Captures one watcher batch while omitting excluded paths symmetrically.
+#[allow(clippy::too_many_lines)]
 pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     batch: WatchBatch,
@@ -2044,384 +2056,370 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<WatchCaptureReceipt>, OperationFailure<CaptureError>> {
-    Box::pin(capture_watch_batch_with_policy_inner(
-        checkout,
-        batch,
-        options,
-        policy,
-        budget,
-        cancellation,
-    ))
-    .await
-}
-
-#[allow(clippy::too_many_lines)]
-async fn capture_watch_batch_with_policy_inner<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    batch: WatchBatch,
-    options: &CaptureOptions,
-    policy: &CapturePolicy,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<OperationReceipt<WatchCaptureReceipt>, OperationFailure<CaptureError>> {
-    let WatchBatch::Changes {
-        epoch,
-        first_sequence,
-        next_sequence,
-        changes,
-    } = batch
-    else {
-        let WatchBatch::RescanRequired { epoch, reason } = batch else {
-            unreachable!("watch batch variants are exhaustive")
-        };
-        return Err(OperationFailure::before_work(
-            CaptureError::RescanRequired {
-                epoch: epoch.get(),
-                reason,
-            },
-        ));
-    };
-    if options.maximum_paths == 0
-        || options.maximum_extent_spans == 0
-        || changes.len() > usize::try_from(options.maximum_paths).unwrap_or(usize::MAX)
-    {
-        return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
-    }
-    let source_root = open_source_root(options).map_err(OperationFailure::before_work)?;
-
-    let mut receipt = CaptureReceipt::default();
-    let mut mutations = Vec::new();
-    mutations
-        .try_reserve(changes.len().saturating_mul(4))
-        .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
-    let mut ordinary = BTreeMap::new();
-    let mut rename_records = BTreeMap::<NamespacePath, FileRecord>::new();
-    let mut renamed_directories = Vec::new();
-    let mut rename_destinations = Vec::new();
-    let mut moved_away = BTreeSet::new();
-
-    for change in changes.into_iter().filter_map(|change| match &change {
-        WatchChange::Created(path)
-        | WatchChange::Modified(path)
-        | WatchChange::Removed(path)
-        | WatchChange::MetadataChanged(path) => (!policy.excludes(path)).then_some(change),
-        WatchChange::Renamed { from, to } => match (policy.excludes(from), policy.excludes(to)) {
-            (false, false) => Some(change),
-            (true, false) => Some(WatchChange::Created(to.clone())),
-            (false, true) => Some(WatchChange::Removed(from.clone())),
-            (true, true) => None,
-        },
-    }) {
-        match change {
-            WatchChange::Created(path) => {
-                let current = current_record(&rename_records, &moved_away, &path);
-                ordinary.insert(path, (current, CaptureIntent::Replace));
-            }
-            WatchChange::Modified(path) | WatchChange::Removed(path) => {
-                let current = current_record(&rename_records, &moved_away, &path);
-                ordinary
-                    .entry(path)
-                    .or_insert((current, CaptureIntent::Complete));
-            }
-            WatchChange::MetadataChanged(path) => {
-                let current = current_record(&rename_records, &moved_away, &path);
-                ordinary
-                    .entry(path)
-                    .or_insert((current, CaptureIntent::MetadataOnly));
-            }
-            WatchChange::Renamed { from, to } => {
-                cancellation.check().map_err(|error| {
-                    OperationFailure::new(CaptureError::Engine(error.to_string()), receipt.work)
-                })?;
-                let prior_source = ordinary.remove(&from);
-                ordinary.remove(&to);
-                let record = if let Some(record) = rename_records.remove(&from) {
-                    Some(record)
-                } else if matches!(prior_source, Some((CurrentRecord::Known(None), _)))
-                    || moved_away.contains(&from)
-                {
-                    None
-                } else {
-                    let remaining = receipt.work.remaining(budget).map_err(|error| {
-                        OperationFailure::new(CaptureError::Work(error), receipt.work)
-                    })?;
-                    let source = checkout
-                        .lookup_no_follow(&from, remaining, cancellation)
-                        .await
-                        .map_err(|failure| map_engine_failure(failure, receipt.work))?;
-                    receipt.work = add_work(receipt.work, source.work)?;
-                    match source.value.record {
-                        Some(record) => Some(record),
-                        None if prior_source.is_some() => None,
-                        None => None,
-                    }
-                };
-                if let Some(record) = record {
-                    if record.kind == FileKind::Directory {
-                        renamed_directories.push((from.clone(), to.clone()));
-                    }
-                    rename_destinations.push(to.clone());
-                    mutations.push(AuthoredMutation::Rename {
-                        source: from.clone(),
-                        destination: to.clone(),
-                        replace: true,
-                    });
-                    rename_records.insert(to.clone(), record);
-                } else {
-                    ordinary.insert(to.clone(), (CurrentRecord::Lookup, CaptureIntent::Replace));
-                }
-                moved_away.insert(from);
-                moved_away.remove(&to);
-            }
-        }
-    }
-
-    Box::pin(expand_directory_hints(
-        checkout,
-        &mut ordinary,
-        &source_root,
-        options.maximum_paths,
-        policy,
-        &mut receipt,
-        budget,
-        cancellation,
-    ))
-    .await?;
-
-    // A watcher may report a nested file before any ancestor has been
-    // observed in this lazy checkout. Capture only the missing ancestors,
-    // rather than expanding their entire host subtrees as event roots.
-    let maximum_paths = usize::try_from(options.maximum_paths).unwrap_or(usize::MAX);
-    let ancestors = watch_ancestor_candidates(
-        ordinary
-            .keys()
-            .chain(rename_records.keys())
-            .chain(rename_destinations.iter()),
-        &ordinary,
-        &rename_records,
-        policy,
-        maximum_paths,
-        receipt.work,
-        cancellation,
-    )?;
-    let mut missing_ancestors = hydrate_watch_ancestors(
-        checkout,
-        &mut ordinary,
-        ancestors,
-        WatchAncestorScope {
-            source_root: &source_root,
-            epoch,
-            maximum_paths: maximum_paths.saturating_sub(rename_records.len()),
-            budget,
-            cancellation,
-        },
-        &mut receipt,
-    )
-    .await?;
-
-    let lookup_paths = ordinary
-        .iter()
-        .filter(|(_, (current, _))| matches!(current, CurrentRecord::Lookup))
-        .map(|(path, _)| path.clone())
-        .collect::<Vec<_>>();
-    if !lookup_paths.is_empty() {
-        let remaining = receipt
-            .work
-            .remaining(budget)
-            .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
-        let lookup = checkout
-            .lookup_batch_no_follow(&lookup_paths, remaining, cancellation)
-            .await
-            .map_err(|failure| map_engine_failure(failure, receipt.work))?;
-        receipt.work = add_work(receipt.work, lookup.work)?;
-        for (path, entry) in lookup_paths.into_iter().zip(lookup.value.entries) {
-            let mut record = entry.record;
-            if record.is_none()
-                && let Some(prior_path) = remap_renamed_directory_path(
-                    &path,
-                    &renamed_directories,
-                    checkout.volume_config().limits,
-                )
-                .map_err(|error| OperationFailure::new(error, receipt.work))?
-            {
-                let remaining = receipt.work.remaining(budget).map_err(|error| {
-                    OperationFailure::new(CaptureError::Work(error), receipt.work)
-                })?;
-                let prior = checkout
-                    .lookup_no_follow(&prior_path, remaining, cancellation)
-                    .await
-                    .map_err(|failure| map_engine_failure(failure, receipt.work))?;
-                receipt.work = add_work(receipt.work, prior.work)?;
-                record = prior.value.record;
-            }
-            let Some((current, _)) = ordinary.get_mut(&path) else {
-                return Err(OperationFailure::new(
-                    CaptureError::Engine("capture lookup path disappeared".into()),
-                    receipt.work,
-                ));
-            };
-            *current = CurrentRecord::Known(record);
-        }
-    }
-
-    let mut host_links = BTreeMap::new();
-    let mut prepared = Vec::new();
-    prepared
-        .try_reserve(rename_records.len().saturating_add(ordinary.len()))
-        .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, receipt.work))?;
-    // A rename can target a directory that has never been observed in this
-    // lazy checkout. Materialize only those host ancestors before the rename,
-    // preserving the event order for all remaining mutations.
-    missing_ancestors.sort_by(|left, right| {
-        left.depth()
-            .cmp(&right.depth())
-            .then_with(|| left.cmp(right))
-    });
-    let rename_mutations = std::mem::take(&mut mutations);
-    for path in missing_ancestors {
-        let Some((current, intent)) = ordinary.remove(&path) else {
-            return Err(OperationFailure::new(
-                CaptureError::Engine("capture ancestor path disappeared".into()),
-                receipt.work,
-            ));
-        };
-        let plan = prepare_final_path(
-            checkout,
-            path,
-            current,
-            intent,
-            &source_root,
-            None,
-            &mut host_links,
-            Some(epoch.get()),
-            None,
-            &mut mutations,
-            &mut receipt,
-            budget,
-            cancellation,
-        )
-        .await?;
-        if let Some(plan) = plan {
-            prepared.push(plan);
-        }
-    }
-    mutations.extend(rename_mutations);
-    let namespace_boundary = mutations.len();
-    for (path, record) in rename_records {
-        if ordinary.contains_key(&path) {
-            continue;
-        }
-        let plan = prepare_final_path(
-            checkout,
-            path,
-            CurrentRecord::Known(Some(record)),
-            CaptureIntent::Complete,
-            &source_root,
-            None,
-            &mut host_links,
-            Some(epoch.get()),
-            None,
-            &mut mutations,
-            &mut receipt,
-            budget,
-            cancellation,
-        )
-        .await?;
-        if let Some(plan) = plan {
-            prepared.push(plan);
-        }
-    }
-    let mut ordinary = ordinary
-        .into_iter()
-        .map(|(path, (current, intent))| {
-            let host_path = namespace_to_host_path(&path)?;
-            let observation = observe_host_path(&source_root, &host_path)?;
-            Ok((path, current, intent, observation))
-        })
-        .collect::<Result<Vec<_>, CaptureError>>()
-        .map_err(|error| OperationFailure::new(error, receipt.work))?;
-    ordinary.sort_by(|left, right| match (left.3.is_some(), right.3.is_some()) {
-        (true, true) => left
-            .0
-            .depth()
-            .cmp(&right.0.depth())
-            .then_with(|| left.0.cmp(&right.0)),
-        (false, false) => right
-            .0
-            .depth()
-            .cmp(&left.0.depth())
-            .then_with(|| left.0.cmp(&right.0)),
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-    });
-    for (path, current, intent, observation) in ordinary {
-        let plan = prepare_final_path(
-            checkout,
-            path,
-            current,
-            intent,
-            &source_root,
-            observation,
-            &mut host_links,
-            Some(epoch.get()),
-            None,
-            &mut mutations,
-            &mut receipt,
-            budget,
-            cancellation,
-        )
-        .await?;
-        if let Some(plan) = plan {
-            prepared.push(plan);
-        }
-    }
-    finish_prepared_paths(
-        &checkout.content_stager(),
-        &source_root,
-        prepared,
-        options.maximum_extent_spans,
-        &mut mutations,
-        &mut receipt,
-        budget,
-        cancellation,
-    )
-    .await?;
-    if namespace_boundary == 0 || namespace_boundary == mutations.len() {
-        apply_capture_transaction(checkout, mutations, &mut receipt, budget, cancellation).await?;
-    } else {
-        // Keep the watch batch atomic to callers, but compile the path-shape
-        // changes before mutations that address their resulting bindings.
-        // The authored compiler resolves those bindings against its input
-        // checkout, even though the kernel executes each batch in order.
-        let mut candidate = checkout.private_candidate();
-        let final_state = mutations.split_off(namespace_boundary);
-        apply_capture_transaction(
-            &mut candidate,
-            mutations,
-            &mut receipt,
-            budget,
-            cancellation,
-        )
-        .await?;
-        apply_capture_transaction(
-            &mut candidate,
-            final_state,
-            &mut receipt,
-            budget,
-            cancellation,
-        )
-        .await?;
-        *checkout = candidate;
-    }
-    Ok(OperationReceipt {
-        value: WatchCaptureReceipt {
+    in_heap(move || async move {
+        let WatchBatch::Changes {
             epoch,
             first_sequence,
             next_sequence,
-            capture: receipt,
-        },
-        work: receipt.work,
+            changes,
+        } = batch
+        else {
+            let WatchBatch::RescanRequired { epoch, reason } = batch else {
+                unreachable!("watch batch variants are exhaustive")
+            };
+            return Err(OperationFailure::before_work(
+                CaptureError::RescanRequired {
+                    epoch: epoch.get(),
+                    reason,
+                },
+            ));
+        };
+        if options.maximum_paths == 0
+            || options.maximum_extent_spans == 0
+            || changes.len() > usize::try_from(options.maximum_paths).unwrap_or(usize::MAX)
+        {
+            return Err(OperationFailure::before_work(CaptureError::InvalidOptions));
+        }
+        let source_root = open_source_root(options).map_err(OperationFailure::before_work)?;
+
+        let mut receipt = CaptureReceipt::default();
+        let mut mutations = Vec::new();
+        mutations
+            .try_reserve(changes.len().saturating_mul(4))
+            .map_err(|_| OperationFailure::before_work(CaptureError::InvalidOptions))?;
+        let mut ordinary = BTreeMap::new();
+        let mut rename_records = BTreeMap::<NamespacePath, FileRecord>::new();
+        let mut renamed_directories = Vec::new();
+        let mut rename_destinations = Vec::new();
+        let mut moved_away = BTreeSet::new();
+
+        for change in changes.into_iter().filter_map(|change| match &change {
+            WatchChange::Created(path)
+            | WatchChange::Modified(path)
+            | WatchChange::Removed(path)
+            | WatchChange::MetadataChanged(path) => (!policy.excludes(path)).then_some(change),
+            WatchChange::Renamed { from, to } => match (policy.excludes(from), policy.excludes(to))
+            {
+                (false, false) => Some(change),
+                (true, false) => Some(WatchChange::Created(to.clone())),
+                (false, true) => Some(WatchChange::Removed(from.clone())),
+                (true, true) => None,
+            },
+        }) {
+            match change {
+                WatchChange::Created(path) => {
+                    let current = current_record(&rename_records, &moved_away, &path);
+                    ordinary.insert(path, (current, CaptureIntent::Replace));
+                }
+                WatchChange::Modified(path) | WatchChange::Removed(path) => {
+                    let current = current_record(&rename_records, &moved_away, &path);
+                    ordinary
+                        .entry(path)
+                        .or_insert((current, CaptureIntent::Complete));
+                }
+                WatchChange::MetadataChanged(path) => {
+                    let current = current_record(&rename_records, &moved_away, &path);
+                    ordinary
+                        .entry(path)
+                        .or_insert((current, CaptureIntent::MetadataOnly));
+                }
+                WatchChange::Renamed { from, to } => {
+                    cancellation.check().map_err(|error| {
+                        OperationFailure::new(CaptureError::Engine(error.to_string()), receipt.work)
+                    })?;
+                    let prior_source = ordinary.remove(&from);
+                    ordinary.remove(&to);
+                    let record = if let Some(record) = rename_records.remove(&from) {
+                        Some(record)
+                    } else if matches!(prior_source, Some((CurrentRecord::Known(None), _)))
+                        || moved_away.contains(&from)
+                    {
+                        None
+                    } else {
+                        let remaining = receipt.work.remaining(budget).map_err(|error| {
+                            OperationFailure::new(CaptureError::Work(error), receipt.work)
+                        })?;
+                        let source = checkout
+                            .lookup_no_follow(&from, remaining, cancellation)
+                            .await
+                            .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+                        receipt.work = add_work(receipt.work, source.work)?;
+                        match source.value.record {
+                            Some(record) => Some(record),
+                            None if prior_source.is_some() => None,
+                            None => None,
+                        }
+                    };
+                    if let Some(record) = record {
+                        if record.kind == FileKind::Directory {
+                            renamed_directories.push((from.clone(), to.clone()));
+                        }
+                        rename_destinations.push(to.clone());
+                        mutations.push(AuthoredMutation::Rename {
+                            source: from.clone(),
+                            destination: to.clone(),
+                            replace: true,
+                        });
+                        rename_records.insert(to.clone(), record);
+                    } else {
+                        ordinary
+                            .insert(to.clone(), (CurrentRecord::Lookup, CaptureIntent::Replace));
+                    }
+                    moved_away.insert(from);
+                    moved_away.remove(&to);
+                }
+            }
+        }
+
+        expand_directory_hints(
+            checkout,
+            &mut ordinary,
+            &source_root,
+            options.maximum_paths,
+            policy,
+            &mut receipt,
+            budget,
+            cancellation,
+        )
+        .await?;
+
+        // A watcher may report a nested file before any ancestor has been
+        // observed in this lazy checkout. Capture only the missing ancestors,
+        // rather than expanding their entire host subtrees as event roots.
+        let maximum_paths = usize::try_from(options.maximum_paths).unwrap_or(usize::MAX);
+        let ancestors = watch_ancestor_candidates(
+            ordinary
+                .keys()
+                .chain(rename_records.keys())
+                .chain(rename_destinations.iter()),
+            &ordinary,
+            &rename_records,
+            policy,
+            maximum_paths,
+            receipt.work,
+            cancellation,
+        )?;
+        let mut missing_ancestors = hydrate_watch_ancestors(
+            checkout,
+            &mut ordinary,
+            ancestors,
+            WatchAncestorScope {
+                source_root: &source_root,
+                epoch,
+                maximum_paths: maximum_paths.saturating_sub(rename_records.len()),
+                budget,
+                cancellation,
+            },
+            &mut receipt,
+        )
+        .await?;
+
+        let lookup_paths = ordinary
+            .iter()
+            .filter(|(_, (current, _))| matches!(current, CurrentRecord::Lookup))
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        if !lookup_paths.is_empty() {
+            let remaining = receipt
+                .work
+                .remaining(budget)
+                .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+            let lookup = checkout
+                .lookup_batch_no_follow(&lookup_paths, remaining, cancellation)
+                .await
+                .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+            receipt.work = add_work(receipt.work, lookup.work)?;
+            for (path, entry) in lookup_paths.into_iter().zip(lookup.value.entries) {
+                let mut record = entry.record;
+                if record.is_none()
+                    && let Some(prior_path) = remap_renamed_directory_path(
+                        &path,
+                        &renamed_directories,
+                        checkout.volume_config().limits,
+                    )
+                    .map_err(|error| OperationFailure::new(error, receipt.work))?
+                {
+                    let remaining = receipt.work.remaining(budget).map_err(|error| {
+                        OperationFailure::new(CaptureError::Work(error), receipt.work)
+                    })?;
+                    let prior = checkout
+                        .lookup_no_follow(&prior_path, remaining, cancellation)
+                        .await
+                        .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+                    receipt.work = add_work(receipt.work, prior.work)?;
+                    record = prior.value.record;
+                }
+                let Some((current, _)) = ordinary.get_mut(&path) else {
+                    return Err(OperationFailure::new(
+                        CaptureError::Engine("capture lookup path disappeared".into()),
+                        receipt.work,
+                    ));
+                };
+                *current = CurrentRecord::Known(record);
+            }
+        }
+
+        let mut host_links = BTreeMap::new();
+        let mut prepared = Vec::new();
+        prepared
+            .try_reserve(rename_records.len().saturating_add(ordinary.len()))
+            .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, receipt.work))?;
+        // A rename can target a directory that has never been observed in this
+        // lazy checkout. Materialize only those host ancestors before the rename,
+        // preserving the event order for all remaining mutations.
+        missing_ancestors.sort_by(|left, right| {
+            left.depth()
+                .cmp(&right.depth())
+                .then_with(|| left.cmp(right))
+        });
+        let rename_mutations = std::mem::take(&mut mutations);
+        for path in missing_ancestors {
+            let Some((current, intent)) = ordinary.remove(&path) else {
+                return Err(OperationFailure::new(
+                    CaptureError::Engine("capture ancestor path disappeared".into()),
+                    receipt.work,
+                ));
+            };
+            let plan = prepare_final_path(
+                checkout,
+                path,
+                current,
+                intent,
+                &source_root,
+                None,
+                &mut host_links,
+                Some(epoch.get()),
+                None,
+                &mut mutations,
+                &mut receipt,
+                budget,
+                cancellation,
+            )
+            .await?;
+            if let Some(plan) = plan {
+                prepared.push(plan);
+            }
+        }
+        mutations.extend(rename_mutations);
+        let namespace_boundary = mutations.len();
+        for (path, record) in rename_records {
+            if ordinary.contains_key(&path) {
+                continue;
+            }
+            let plan = prepare_final_path(
+                checkout,
+                path,
+                CurrentRecord::Known(Some(record)),
+                CaptureIntent::Complete,
+                &source_root,
+                None,
+                &mut host_links,
+                Some(epoch.get()),
+                None,
+                &mut mutations,
+                &mut receipt,
+                budget,
+                cancellation,
+            )
+            .await?;
+            if let Some(plan) = plan {
+                prepared.push(plan);
+            }
+        }
+        let mut ordinary = ordinary
+            .into_iter()
+            .map(|(path, (current, intent))| {
+                let host_path = namespace_to_host_path(&path)?;
+                let observation = observe_host_path(&source_root, &host_path)?;
+                Ok((path, current, intent, observation))
+            })
+            .collect::<Result<Vec<_>, CaptureError>>()
+            .map_err(|error| OperationFailure::new(error, receipt.work))?;
+        ordinary.sort_by(|left, right| match (left.3.is_some(), right.3.is_some()) {
+            (true, true) => left
+                .0
+                .depth()
+                .cmp(&right.0.depth())
+                .then_with(|| left.0.cmp(&right.0)),
+            (false, false) => right
+                .0
+                .depth()
+                .cmp(&left.0.depth())
+                .then_with(|| left.0.cmp(&right.0)),
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+        });
+        for (path, current, intent, observation) in ordinary {
+            let plan = prepare_final_path(
+                checkout,
+                path,
+                current,
+                intent,
+                &source_root,
+                observation,
+                &mut host_links,
+                Some(epoch.get()),
+                None,
+                &mut mutations,
+                &mut receipt,
+                budget,
+                cancellation,
+            )
+            .await?;
+            if let Some(plan) = plan {
+                prepared.push(plan);
+            }
+        }
+        finish_prepared_paths(
+            &checkout.content_stager(),
+            &source_root,
+            prepared,
+            options.maximum_extent_spans,
+            &mut mutations,
+            &mut receipt,
+            budget,
+            cancellation,
+        )
+        .await?;
+        if namespace_boundary == 0 || namespace_boundary == mutations.len() {
+            apply_capture_transaction(checkout, mutations, &mut receipt, budget, cancellation)
+                .await?;
+        } else {
+            // Keep the watch batch atomic to callers, but compile the path-shape
+            // changes before mutations that address their resulting bindings.
+            // The authored compiler resolves those bindings against its input
+            // checkout, even though the kernel executes each batch in order.
+            let mut candidate = checkout.private_candidate();
+            let final_state = mutations.split_off(namespace_boundary);
+            apply_capture_transaction(
+                &mut candidate,
+                mutations,
+                &mut receipt,
+                budget,
+                cancellation,
+            )
+            .await?;
+            apply_capture_transaction(
+                &mut candidate,
+                final_state,
+                &mut receipt,
+                budget,
+                cancellation,
+            )
+            .await?;
+            *checkout = candidate;
+        }
+        Ok(OperationReceipt {
+            value: WatchCaptureReceipt {
+                epoch,
+                first_sequence,
+                next_sequence,
+                capture: receipt,
+            },
+            work: receipt.work,
+        })
     })
+    .await
 }
 
 #[derive(Clone, Copy)]
@@ -2629,75 +2627,78 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure<CaptureError>> {
-    let maximum = usize::try_from(maximum_paths)
-        .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, receipt.work))?;
-    if ordinary.len() > maximum {
-        return Err(OperationFailure::new(
-            CaptureError::InvalidOptions,
-            receipt.work,
-        ));
-    }
-    let limits = checkout.volume_config().limits;
-    let profile = checkout.volume_config().profile;
-    let mut roots = Vec::new();
-    for path in ordinary.keys() {
-        let host_path = namespace_to_host_path(path)
-            .map_err(|error| OperationFailure::new(error, receipt.work))?;
-        let observation = observe_host_path(source_root, &host_path)
-            .map_err(|error| OperationFailure::new(error, receipt.work))?;
-        if observation.is_some_and(|observation| observation.metadata.is_dir()) {
-            roots.push((host_path, path.clone()));
+    in_heap(move || async move {
+        let maximum = usize::try_from(maximum_paths)
+            .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, receipt.work))?;
+        if ordinary.len() > maximum {
+            return Err(OperationFailure::new(
+                CaptureError::InvalidOptions,
+                receipt.work,
+            ));
         }
-    }
-    let mut paths = ordinary.keys().cloned().collect::<BTreeSet<_>>();
-    for (host_path, volume_path) in roots {
-        collect_host_subtree_paths(
-            source_root,
-            profile,
-            limits,
-            host_path,
-            volume_path.clone(),
-            policy,
-            maximum,
-            &mut paths,
-            &mut receipt.work,
-            budget,
-            cancellation,
-        )?;
-        let remaining = receipt
-            .work
-            .remaining(budget)
-            .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
-        let lookup = checkout
-            .lookup_no_follow(&volume_path, remaining, cancellation)
-            .await
-            .map_err(|failure| map_engine_failure(failure, receipt.work))?;
-        receipt.work = add_work(receipt.work, lookup.work)?;
-        if lookup
-            .value
-            .record
-            .is_some_and(|record| record.kind == FileKind::Directory)
-        {
-            collect_checkout_subtree_paths(
-                checkout,
+        let limits = checkout.volume_config().limits;
+        let profile = checkout.volume_config().profile;
+        let mut roots = Vec::new();
+        for path in ordinary.keys() {
+            let host_path = namespace_to_host_path(path)
+                .map_err(|error| OperationFailure::new(error, receipt.work))?;
+            let observation = observe_host_path(source_root, &host_path)
+                .map_err(|error| OperationFailure::new(error, receipt.work))?;
+            if observation.is_some_and(|observation| observation.metadata.is_dir()) {
+                roots.push((host_path, path.clone()));
+            }
+        }
+        let mut paths = ordinary.keys().cloned().collect::<BTreeSet<_>>();
+        for (host_path, volume_path) in roots {
+            collect_host_subtree_paths(
+                source_root,
+                profile,
                 limits,
-                volume_path,
+                host_path,
+                volume_path.clone(),
                 policy,
                 maximum,
                 &mut paths,
                 &mut receipt.work,
                 budget,
                 cancellation,
-            )
-            .await?;
+            )?;
+            let remaining = receipt
+                .work
+                .remaining(budget)
+                .map_err(|error| OperationFailure::new(CaptureError::Work(error), receipt.work))?;
+            let lookup = checkout
+                .lookup_no_follow(&volume_path, remaining, cancellation)
+                .await
+                .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+            receipt.work = add_work(receipt.work, lookup.work)?;
+            if lookup
+                .value
+                .record
+                .is_some_and(|record| record.kind == FileKind::Directory)
+            {
+                collect_checkout_subtree_paths(
+                    checkout,
+                    limits,
+                    volume_path,
+                    policy,
+                    maximum,
+                    &mut paths,
+                    &mut receipt.work,
+                    budget,
+                    cancellation,
+                )
+                .await?;
+            }
         }
-    }
-    for path in paths {
-        ordinary
-            .entry(path)
-            .or_insert((CurrentRecord::Lookup, CaptureIntent::Complete));
-    }
-    Ok(())
+        for path in paths {
+            ordinary
+                .entry(path)
+                .or_insert((CurrentRecord::Lookup, CaptureIntent::Complete));
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]

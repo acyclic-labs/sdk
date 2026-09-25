@@ -9,6 +9,7 @@ use super::{
     MountViewLease, NativeMountError, ViewObserver, ViewOrigin, capture_root_identity,
     capture_subtree, seal_checkout,
 };
+use crate::heap_future::in_heap;
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
     FileRecord, GenerationMutationError, LogicalName, NameEncoding, NamespacePath, RebaseDecision,
@@ -180,13 +181,12 @@ impl CallbackRuntime {
         // refills only when the calling task yields, which it cannot do
         // while blocked here: once spent, every Tokio resource would report
         // Pending and wake at once, forever.
-        // The future is built in its heap allocation, never on this stack.
-        let future = tokio::task::unconstrained(Box::pin(async { create().await }));
         let poll = || {
+            // Built inside the runtime's context, which timers need.
             let _runtime = self.handle.enter();
             // This thread serves exactly this callback until it completes.
             let _inline = acyclic_native_runtime::InlineBlocking::enter();
-            ParkedCallback::poll_to_completion(future)
+            ParkedCallback::poll_to_completion(tokio::task::unconstrained(in_heap(create)))
         };
         match tokio::runtime::Handle::try_current() {
             // A multi-thread worker first hands its scheduler core to another
@@ -205,11 +205,8 @@ impl CallbackRuntime {
         &self,
         create: impl FnOnce() -> F,
     ) -> Result<T, MountSourceError> {
-        self.block_on(|| async {
-            tokio::time::timeout(CALLBACK_TIMEOUT, create())
-                .await
-                .map_err(|_| MountSourceError::Stale)?
-        })
+        self.block_on(|| tokio::time::timeout(CALLBACK_TIMEOUT, in_heap(create)))
+            .map_err(|_| MountSourceError::Stale)?
     }
 }
 
@@ -504,31 +501,34 @@ impl<A, O> SharedCheckout<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        loop {
-            let mut checkout = self.lock().await;
-            let requests = {
-                let mut queue = self
-                    .grouped
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let mut claimed = Vec::new();
-                while claimed.len() < MAXIMUM_GROUPED_CHANGES
-                    && let Some(request) = queue.requests.pop_front()
-                {
-                    if request.admission.claim() {
-                        claimed.push(request);
+        in_heap(move || async move {
+            loop {
+                let mut checkout = self.lock().await;
+                let requests = {
+                    let mut queue = self
+                        .grouped
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut claimed = Vec::new();
+                    while claimed.len() < MAXIMUM_GROUPED_CHANGES
+                        && let Some(request) = queue.requests.pop_front()
+                    {
+                        if request.admission.claim() {
+                            claimed.push(request);
+                        }
                     }
-                }
-                if claimed.is_empty() {
-                    queue.draining = false;
-                    return;
-                }
-                claimed
-            };
-            checkout
-                .apply_grouped_requests(requests, cancellation)
-                .await;
-        }
+                    if claimed.is_empty() {
+                        queue.draining = false;
+                        return;
+                    }
+                    claimed
+                };
+                checkout
+                    .apply_grouped_requests(requests, cancellation)
+                    .await;
+            }
+        })
+        .await;
     }
 
     /// Serializes external checkout access and excludes native callbacks.
@@ -756,10 +756,13 @@ impl<A, O> SharedCheckoutState<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        if self.publication == MountPublication::PerMutation {
-            self.seal(cancellation).await?;
-        }
-        Ok(())
+        in_heap(move || async move {
+            if self.publication == MountPublication::PerMutation {
+                self.seal(cancellation).await?;
+            }
+            Ok(())
+        })
+        .await
     }
 
     async fn publish_at_native_boundary(
@@ -916,67 +919,70 @@ impl<A, O> SharedCheckoutState<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        if let Err(error) = self.ensure_publication_resolved() {
-            for request in requests {
-                let _ = request.reply.send(Err(error.clone()));
-            }
-            return;
-        }
-        let origins = requests
-            .iter()
-            .map(|request| request.origin)
-            .collect::<Vec<_>>();
-        let (changes, replies): (Vec<_>, Vec<_>) = requests
-            .into_iter()
-            .map(|request| (request.change, request.reply))
-            .unzip();
-        let views = changes
-            .iter()
-            .map(|change| match change {
-                GroupedChange::CreateFile { path, .. } => GroupedView::Bound(path.clone()),
-                GroupedChange::Content { file_id, .. } => GroupedView::Node(*file_id),
-            })
-            .collect::<Vec<_>>();
-        let results = match self
-            .checkout
-            .apply_group(changes, boundary_budget(), cancellation)
-            .await
-        {
-            Ok(receipt) => receipt.value,
-            Err(failure) => {
-                let error = engine_error(failure.error);
-                for reply in replies {
-                    let _ = reply.send(Err(error.clone()));
+        in_heap(move || async move {
+            if let Err(error) = self.ensure_publication_resolved() {
+                for request in requests {
+                    let _ = request.reply.send(Err(error.clone()));
                 }
                 return;
             }
-        };
-        let mut changed = false;
-        for ((result, view), origin) in results.iter().zip(&views).zip(origins) {
-            if result.is_ok() {
-                changed = true;
-                let _origin = origin.enter();
-                match view {
-                    GroupedView::Bound(path) => self.record(&ViewChange::Bound(path)),
-                    GroupedView::Node(file_id) => self.record(&ViewChange::Node(*file_id)),
+            let origins = requests
+                .iter()
+                .map(|request| request.origin)
+                .collect::<Vec<_>>();
+            let (changes, replies): (Vec<_>, Vec<_>) = requests
+                .into_iter()
+                .map(|request| (request.change, request.reply))
+                .unzip();
+            let views = changes
+                .iter()
+                .map(|change| match change {
+                    GroupedChange::CreateFile { path, .. } => GroupedView::Bound(path.clone()),
+                    GroupedChange::Content { file_id, .. } => GroupedView::Node(*file_id),
+                })
+                .collect::<Vec<_>>();
+            let results = match self
+                .checkout
+                .apply_group(changes, boundary_budget(), cancellation)
+                .await
+            {
+                Ok(receipt) => receipt.value,
+                Err(failure) => {
+                    let error = engine_error(failure.error);
+                    for reply in replies {
+                        let _ = reply.send(Err(error.clone()));
+                    }
+                    return;
+                }
+            };
+            let mut changed = false;
+            for ((result, view), origin) in results.iter().zip(&views).zip(origins) {
+                if result.is_ok() {
+                    changed = true;
+                    let _origin = origin.enter();
+                    match view {
+                        GroupedView::Bound(path) => self.record(&ViewChange::Bound(path)),
+                        GroupedView::Node(file_id) => self.record(&ViewChange::Node(*file_id)),
+                    }
                 }
             }
-        }
-        let published = if changed {
-            self.publish_mutation(cancellation).await
-        } else {
-            Ok(())
-        };
-        for ((result, view), reply) in results.into_iter().zip(views).zip(replies) {
-            let answer = match result {
-                Ok(outcome) => published.clone().map(|()| outcome),
-                Err(error) => Err(match view {
-                    GroupedView::Bound(_) => fs_error(error),
-                    GroupedView::Node(_) => engine_error(error),
-                }),
+            let published = if changed {
+                self.publish_mutation(cancellation).await
+            } else {
+                Ok(())
             };
-            let _ = reply.send(answer);
-        }
+            for ((result, view), reply) in results.into_iter().zip(views).zip(replies) {
+                let answer = match result {
+                    Ok(outcome) => published.clone().map(|()| outcome),
+                    Err(error) => Err(match view {
+                        GroupedView::Bound(_) => fs_error(error),
+                        GroupedView::Node(_) => engine_error(error),
+                    }),
+                };
+                let _ = reply.send(answer);
+            }
+        })
+        .await;
     }
 
     /// Records one change to the checkout's view. The exclusive guard keeps
@@ -1005,15 +1011,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutCandidate<A, O> {
         scope: InstallScope<'_>,
         cancellation: &CancellationToken,
     ) -> Installed {
-        // Boxed: the diff and its lookups would otherwise inline into every
-        // installing caller's future.
-        Box::pin(installed_changes(
-            &self.base,
-            &self.checkout,
-            scope,
-            cancellation,
-        ))
-        .await
+        installed_changes(&self.base, &self.checkout, scope, cancellation).await
     }
 
     /// The checkout this transaction began from.
@@ -1053,62 +1051,65 @@ where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 {
-    let diff = match base
-        .candidate_diff(
-            candidate,
-            MAXIMUM_EXACT_INSTALL_CHANGES,
-            boundary_budget(),
-            cancellation,
-        )
-        .await
-    {
-        Ok(receipt) if !receipt.value.truncated => receipt.value,
-        _ => {
-            return Installed {
-                everything: true,
-                ..Installed::default()
-            };
-        }
-    };
-    let mut directories = std::collections::HashMap::new();
-    if !diff.bindings.is_empty() {
-        for path in scope.paths() {
-            for prefix in prefixes(path, base.volume_config().limits) {
-                for checkout in [base, candidate] {
-                    if let Ok(receipt) = checkout
-                        .inspector()
-                        .lookup_no_follow(&prefix, boundary_budget(), cancellation)
-                        .await
-                        && let Some(record) = receipt.value.record
-                    {
-                        directories
-                            .entry(record.file_id)
-                            .or_insert_with(|| prefix.clone());
+    in_heap(move || async move {
+        let diff = match base
+            .candidate_diff(
+                candidate,
+                MAXIMUM_EXACT_INSTALL_CHANGES,
+                boundary_budget(),
+                cancellation,
+            )
+            .await
+        {
+            Ok(receipt) if !receipt.value.truncated => receipt.value,
+            _ => {
+                return Installed {
+                    everything: true,
+                    ..Installed::default()
+                };
+            }
+        };
+        let mut directories = std::collections::HashMap::new();
+        if !diff.bindings.is_empty() {
+            for path in scope.paths() {
+                for prefix in prefixes(path, base.volume_config().limits) {
+                    for checkout in [base, candidate] {
+                        if let Ok(receipt) = checkout
+                            .inspector()
+                            .lookup_no_follow(&prefix, boundary_budget(), cancellation)
+                            .await
+                            && let Some(record) = receipt.value.record
+                        {
+                            directories
+                                .entry(record.file_id)
+                                .or_insert_with(|| prefix.clone());
+                        }
                     }
                 }
             }
         }
-    }
-    let mut installed = Installed {
-        nodes: diff
-            .files
-            .into_iter()
-            .map(|change| change.file_id)
-            .collect(),
-        ..Installed::default()
-    };
-    for binding in diff.bindings {
-        match (directories.get(&binding.directory_id), scope) {
-            (Some(directory), _) => installed.names.push((directory.clone(), binding.name)),
-            (None, InstallScope::Subtree(root)) => {
-                if installed.subtrees.is_empty() {
-                    installed.subtrees.push(root.clone());
+        let mut installed = Installed {
+            nodes: diff
+                .files
+                .into_iter()
+                .map(|change| change.file_id)
+                .collect(),
+            ..Installed::default()
+        };
+        for binding in diff.bindings {
+            match (directories.get(&binding.directory_id), scope) {
+                (Some(directory), _) => installed.names.push((directory.clone(), binding.name)),
+                (None, InstallScope::Subtree(root)) => {
+                    if installed.subtrees.is_empty() {
+                        installed.subtrees.push(root.clone());
+                    }
                 }
+                (None, InstallScope::Paths(_)) => installed.everything = true,
             }
-            (None, InstallScope::Paths(_)) => installed.everything = true,
         }
-    }
-    installed
+        installed
+    })
+    .await
 }
 
 /// Every proper and improper prefix of `path`, root first.
@@ -1808,17 +1809,20 @@ impl<A, O> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let path = self.path(path)?;
-        let observation = self.checkout.observe(owner).await?;
-        let mut checkout = observation.observer();
-        let receipt = checkout
-            .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
-            .await
-            .map_err(engine_error)?;
-        Ok(receipt.value.map(|value| MountLookup {
-            node: mount_node(value.record),
-            metadata: value.metadata,
-        }))
+        in_heap(move || async move {
+            let path = self.path(path)?;
+            let observation = self.checkout.observe(owner).await?;
+            let mut checkout = observation.observer();
+            let receipt = checkout
+                .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
+                .await
+                .map_err(engine_error)?;
+            Ok(receipt.value.map(|value| MountLookup {
+                node: mount_node(value.record),
+                metadata: value.metadata,
+            }))
+        })
+        .await
     }
 
     pub(super) fn record_by_id(&self, file_id: FileId) -> Result<FileRecord, MountSourceError>
@@ -2094,12 +2098,12 @@ impl<A, O> CheckoutMountSource<A, O> {
         // by the whole checkout, whichever root a composing source mounts.
         let installed = match NamespacePath::new(Vec::new(), self.limits) {
             Ok(root) => {
-                Box::pin(installed_changes(
+                installed_changes(
                     base,
                     checkout,
                     InstallScope::Subtree(&root),
                     &self.cancellation,
-                ))
+                )
                 .await
             }
             Err(_) => Installed {

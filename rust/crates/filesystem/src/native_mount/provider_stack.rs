@@ -1,12 +1,14 @@
 //! The stack every `ProjFS` callback runs on.
 //!
-//! `ProjFS` calls a provider back on threads it creates itself, with the
+//! Every driver polls a callback's source operation to completion in place,
+//! so a callback needs the stack its kind of operation uses, which the
+//! `stack_budget` tests bound. FUSE and macOS NFS callbacks arrive on threads
+//! their drivers create with stacks of fixed size, far larger than any
+//! budget. `ProjFS` alone calls a provider back on threads with the
 //! executable's default stack reserve: 1 MiB for most programs, and whatever
-//! an embedding host chose otherwise. A callback polls one whole source
-//! operation to completion in place, so the stack it needs is set by that
-//! operation, and a lazy workspace's listing needs more than 1 MiB in an
-//! unoptimized build. Overflowing that stack kills the provider, and every
-//! access to the projection then fails as unavailable.
+//! an embedding host chose otherwise, which the provider can neither see nor
+//! change. Overflowing that stack kills the provider, and every access to the
+//! projection then fails as unavailable.
 //!
 //! [`run`] therefore switches the calling thread onto a fiber whose stack the
 //! provider reserves, runs the callback there, and switches back. The callback
