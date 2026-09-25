@@ -13,7 +13,7 @@ use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
     FileRecord, GenerationMutationError, LogicalName, NameEncoding, NamespacePath, RebaseDecision,
 };
-use crate::model::{FilesystemProfile, VolumeConfig, VolumeLimits};
+use crate::model::{CaseSensitivity, FilesystemProfile, VolumeConfig, VolumeLimits};
 use crate::native_capture::{
     MAX_NATIVE_EXACT_CAPTURE_PATHS, NativeViewBaseline, capture_paths_batched_with_baseline,
     capture_subtrees_with_policy_and_baseline,
@@ -98,6 +98,8 @@ pub struct CheckoutMountSource<A, O> {
     root: NamespacePath,
     limits: VolumeLimits,
     profile: FilesystemProfile,
+    /// Whether the volume resolves every case of a name to one entry.
+    folds_names: bool,
     cancellation: CancellationToken,
     capture_gate: StdMutex<CaptureSourceGate>,
     runtime: CallbackRuntime,
@@ -1598,6 +1600,11 @@ pub(super) fn native_mount_name(name: &LogicalName) -> Result<Vec<u8>, MountSour
 }
 
 impl<A, O> CheckoutMountSource<A, O> {
+    /// Whether the volume resolves every case of a name to one entry.
+    pub(super) fn folds_names(&self) -> bool {
+        self.folds_names
+    }
+
     pub(super) fn shared_checkout(&self) -> &SharedCheckout<A, O> {
         &self.checkout
     }
@@ -1801,6 +1808,13 @@ impl<A, O> CheckoutMountSource<A, O> {
             root,
             limits: config.limits,
             profile: config.profile,
+            // Only UTF-8 names have case variants; the others fold to
+            // themselves.
+            folds_names: config.case_sensitivity == CaseSensitivity::ProfileFolded
+                && matches!(
+                    config.profile,
+                    FilesystemProfile::Portable | FilesystemProfile::Browser
+                ),
             cancellation: CancellationToken::new(),
             capture_gate: StdMutex::new(CaptureSourceGate::default()),
             runtime,
@@ -1974,6 +1988,19 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .collect::<Result<Vec<_>, _>>()?,
         );
         NamespacePath::new(components, self.limits).map_err(engine_error)
+    }
+
+    /// The native spelling every case of `bytes` resolves to, or `None` for
+    /// a name this volume cannot represent (which no lookup resolves).
+    fn folded_name(&self, bytes: &[u8]) -> Option<Vec<u8>> {
+        let name = self.logical_name(bytes).ok()?;
+        let folded = LogicalName::new(
+            name.encoding(),
+            name.case_fold_key(),
+            self.limits.maximum_component_bytes,
+        )
+        .ok()?;
+        native_mount_name(&folded).ok()
     }
 
     fn logical_name(&self, bytes: &[u8]) -> Result<LogicalName, MountSourceError> {
@@ -2363,6 +2390,19 @@ where
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
         self.checkout.node_unchanged_since(file_id, stamp)
+    }
+
+    fn folded_path(&self, path: &MountPath) -> Option<MountPath> {
+        self.folds_names().then(|| {
+            path.components()
+                .iter()
+                .fold(MountPath::root(), |folded, component| {
+                    folded.child(
+                        self.folded_name(component)
+                            .unwrap_or_else(|| component.clone()),
+                    )
+                })
+        })
     }
 
     fn binding_epoch(&self) -> Option<u64> {

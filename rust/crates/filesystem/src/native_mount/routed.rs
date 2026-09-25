@@ -608,6 +608,31 @@ impl MountFilesystem for RoutedMountSource {
             }
     }
 
+    fn folded_path(&self, path: &MountPath) -> Option<MountPath> {
+        // Route names are exact; a route's own names fold as its source does.
+        let folds = self
+            .routes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .any(|route| route.source.folded_path(&MountPath::root()).is_some());
+        folds.then(|| match self.route(path).ok().flatten() {
+            Some(routed) => {
+                let sub_path = routed
+                    .source
+                    .folded_path(&routed.sub_path)
+                    .unwrap_or(routed.sub_path);
+                sub_path
+                    .components()
+                    .iter()
+                    .fold(MountPath::root().child(routed.name), |folded, component| {
+                        folded.child(component.clone())
+                    })
+            }
+            None => path.clone(),
+        })
+    }
+
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
         let owner = self
             .file_id_index

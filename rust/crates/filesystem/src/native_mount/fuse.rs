@@ -415,6 +415,36 @@ enum AttributeTarget {
     Path(MountPath),
 }
 
+/// One name under a directory, as a caller spelled it and as the projection
+/// records it.
+///
+/// A source that folds names resolves every spelling of a name to one entry,
+/// while the kernel caches each spelling as its own entry. The projection
+/// keys its records by the folded spelling so all spellings share them, and
+/// the kernel never keeps a folded name's entry: a change through one
+/// spelling could not reach the entries of the others.
+struct ChildName {
+    spelled: MountPath,
+    folded: Option<MountPath>,
+}
+
+impl ChildName {
+    fn new(source: &dyn MountFilesystem, spelled: MountPath) -> Self {
+        let folded = source.folded_path(&spelled);
+        Self { spelled, folded }
+    }
+
+    /// The path the projection's records use.
+    fn key(&self) -> &MountPath {
+        self.folded.as_ref().unwrap_or(&self.spelled)
+    }
+
+    /// Whether the kernel may cache this spelling's entry.
+    fn is_exact(&self) -> bool {
+        self.folded.is_none()
+    }
+}
+
 /// One `LOOKUP`-style reply.
 struct Entry {
     attr: FileAttr,
@@ -550,14 +580,12 @@ impl ProjectionState {
         })
     }
 
-    /// Records that a reply hands the kernel facts about `inode`, reached
-    /// through `path` when given, derived after `stamp`; returns their cache
-    /// lifetime.
-    fn admit(
+    /// Records that a reply hands the kernel `inode`'s attributes, derived
+    /// after `stamp`; returns their cache lifetime.
+    fn admit_attributes(
         &mut self,
         source: &dyn MountFilesystem,
         inode: u64,
-        path: Option<&MountPath>,
         stamp: Option<ViewStamp>,
     ) -> Duration {
         let Some(entry) = self.by_inode.get(&inode) else {
@@ -565,18 +593,42 @@ impl ProjectionState {
         };
         let admitted = self.admissible(
             source,
-            path.unwrap_or_else(|| entry.anchor()),
+            entry.anchor(),
             Some(entry.lookup.node.file_id),
             stamp,
         );
-        let held = stamp.unwrap_or(ViewStamp::ORIGIN);
         if let Some(entry) = self.by_inode.get_mut(&inode) {
-            hold(&mut entry.kernel, held);
-            if let Some(binding) = path.and_then(|path| entry.binding_mut(path)) {
-                hold(&mut binding.kernel, held);
-            }
+            hold(&mut entry.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
         }
         if admitted { CACHE_TTL } else { Duration::ZERO }
+    }
+
+    /// Records that a reply hands the kernel `name`'s entry for `inode`,
+    /// with its attributes, derived after `stamp`; returns the lifetime of
+    /// both, which share one reply.
+    fn admit_entry(
+        &mut self,
+        source: &dyn MountFilesystem,
+        inode: u64,
+        name: &ChildName,
+        stamp: Option<ViewStamp>,
+    ) -> Duration {
+        let attributes = self.admit_attributes(source, inode, stamp);
+        if !name.is_exact() {
+            return Duration::ZERO;
+        }
+        let Some(entry) = self.by_inode.get(&inode) else {
+            return Duration::ZERO;
+        };
+        let admitted = self.admissible(source, name.key(), Some(entry.lookup.node.file_id), stamp);
+        if let Some(binding) = self
+            .by_inode
+            .get_mut(&inode)
+            .and_then(|entry| entry.binding_mut(name.key()))
+        {
+            hold(&mut binding.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
+        }
+        if admitted { attributes } else { Duration::ZERO }
     }
 
     /// Records a negative entry for `name` under `parent`, derived after
@@ -585,14 +637,15 @@ impl ProjectionState {
         &mut self,
         source: &dyn MountFilesystem,
         parent: u64,
-        path: &MountPath,
-        name: &[u8],
+        name: &ChildName,
         stamp: Option<ViewStamp>,
     ) -> Option<Duration> {
-        let stamp = stamp.filter(|_| self.admissible(source, path, None, stamp))?;
+        let stamp = stamp
+            .filter(|_| name.is_exact() && self.admissible(source, name.key(), None, stamp))?;
+        let component = name.key().components().last()?;
         self.by_inode
             .get_mut(&parent)
-            .is_some_and(|entry| entry.remember_negative_child(name, stamp))
+            .is_some_and(|entry| entry.remember_negative_child(component, stamp))
             .then_some(CACHE_TTL)
     }
 
@@ -649,7 +702,7 @@ impl ProjectionState {
         {
             binding.verified = resolved.stamp;
         }
-        let ttl = self.admit(source, inode, resolved.through.as_ref(), resolved.stamp);
+        let ttl = self.admit_attributes(source, inode, resolved.stamp);
         Ok((self.attr(inode, &lookup)?, ttl))
     }
 
@@ -1046,12 +1099,12 @@ impl ProjectionState {
             let Some(entry) = stream.entries.pop_front() else {
                 return listing.ok();
             };
-            let child_path = stream.path.child(entry.name.clone());
+            let child = ChildName::new(source, stream.path.child(entry.name.clone()));
             // A buffered entry is current only while its directory's listing
             // and its own node are.
             let current = stream.entries_stamp.filter(|stamp| {
                 source.unchanged_since(&stream.path, None, *stamp)
-                    && source.unchanged_since(&child_path, Some(entry.node.file_id), *stamp)
+                    && source.unchanged_since(child.key(), Some(entry.node.file_id), *stamp)
             });
             let page_lookup = MountLookup {
                 node: entry.node,
@@ -1069,7 +1122,7 @@ impl ProjectionState {
                     .map_or(page_lookup, |known| known.lookup)
             };
             let listed_attr =
-                match self.intern(child_path.clone(), &lookup, current, L::COUNTS_LOOKUPS) {
+                match self.intern(child.key().clone(), &lookup, current, L::COUNTS_LOOKUPS) {
                     Ok(child) => self
                         .attr(child, &lookup)
                         .inspect_err(|_| self.release_listed_reference::<L>(child)),
@@ -1088,7 +1141,7 @@ impl ProjectionState {
                 }
             };
             let ttl = if L::COUNTS_LOOKUPS {
-                self.admit(source, attr.ino.0, Some(&child_path), current)
+                self.admit_entry(source, attr.ino.0, &child, current)
             } else {
                 Duration::ZERO
             };
@@ -1340,7 +1393,10 @@ impl ProjectionCore {
 
 impl ViewObserver for ProjectionCore {
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin) {
-        // The kernel applied this session's own changes as it made them.
+        // The kernel applied this session's own changes as it made them: a
+        // change reaches every entry it keeps for the changed name, since it
+        // keeps no entry for a spelling of a folded name (`ChildName`), and
+        // attributes, pages, and listings belong to inodes, not spellings.
         if origin == self.origin {
             return;
         }
@@ -1508,15 +1564,15 @@ impl FuseSession {
                 "FUSE invalidation requires a canonical non-root path".to_owned(),
             ));
         };
+        let source = self.core.source.as_ref();
+        let child = ChildName::new(source, parent.child(name.to_vec()));
+        let parent = source.folded_path(&parent).unwrap_or(parent);
         let items = {
             let state = self.lock_state()?;
             let parent_inode = state.inode_by_path.get(&parent).copied().ok_or_else(|| {
                 NativeMountError::Driver("FUSE invalidation parent is not cached".to_owned())
             })?;
-            let file_inode = state
-                .inode_by_path
-                .get(&parent.child(name.to_vec()))
-                .copied();
+            let file_inode = state.inode_by_path.get(child.key()).copied();
             // The parent's listing changes with the name it contains.
             file_inode
                 .map(KernelCacheItem::Inode)
@@ -1770,38 +1826,46 @@ impl FuseProjection {
         self.core.source.as_ref()
     }
 
+    /// The name `name` under `parent`, as spelled and as recorded.
+    fn child(&self, state: &ProjectionState, parent: u64, name: &OsStr) -> Result<ChildName, i32> {
+        Ok(ChildName::new(
+            self.source(),
+            state.child_path(parent, name)?,
+        ))
+    }
+
     fn lookup_entry(&self, parent: u64, name: &OsStr) -> Result<Entry, i32> {
         let source = self.source();
         let _names = self.core.names()?;
-        let path = {
+        let child = {
             let mut state = self.core.state()?;
-            let path = state.child_path(parent, name)?;
-            if let Some((inode, lookup, stamp)) = state.cached_lookup(source, &path) {
+            let child = self.child(&state, parent, name)?;
+            if let Some((inode, lookup, stamp)) = state.cached_lookup(source, child.key()) {
                 let attr = state.attr(inode, &lookup)?;
-                let ttl = state.admit(source, inode, Some(&path), Some(stamp));
+                let ttl = state.admit_entry(source, inode, &child, Some(stamp));
                 return Ok(Entry { attr, ttl });
             }
-            path
+            child
         };
-        let (found, stamp) = resolve_path(source, &path)?;
+        let (found, stamp) = resolve_path(source, &child.spelled)?;
         let mut state = self.core.state()?;
         let Some(lookup) = found else {
-            state.remove_path_cache(&path);
+            state.remove_path_cache(child.key());
             // A zero-inode LOOKUP response carries a negative-dentry TTL.
             // Plain ENOENT has no cache lifetime and makes compiler probes
             // traverse the same absent dependency paths thousands of times.
             let ttl = state
-                .admit_negative(source, parent, &path, name.as_bytes(), stamp)
+                .admit_negative(source, parent, &child, stamp)
                 .ok_or(libc::ENOENT)?;
             let mut attr = state.node_attr(ROOT_INODE).map_err(|_| libc::ESTALE)?;
             attr.ino = INodeNo(0);
             return Ok(Entry { attr, ttl });
         };
-        let inode = state.intern(path.clone(), &lookup, stamp, true)?;
+        let inode = state.intern(child.key().clone(), &lookup, stamp, true)?;
         let attr = state
             .attr(inode, &lookup)
             .inspect_err(|_| state.release_lookup_reference(inode, 1))?;
-        let ttl = state.admit(source, inode, Some(&path), stamp);
+        let ttl = state.admit_entry(source, inode, &child, stamp);
         Ok(Entry { attr, ttl })
     }
 
@@ -1817,7 +1881,7 @@ impl FuseProjection {
             match state.node_facts(source, inode, handle)? {
                 Ok(current) => {
                     let attr = state.attr(inode, &current.lookup)?;
-                    let ttl = state.admit(source, inode, current.through.as_ref(), current.stamp);
+                    let ttl = state.admit_attributes(source, inode, current.stamp);
                     return Ok((attr, ttl));
                 }
                 facts => facts,
@@ -1893,44 +1957,45 @@ impl FuseProjection {
     ) -> Result<Entry, i32> {
         let source = self.source();
         let _names = self.core.names()?;
-        let path = {
+        let child = {
             let state = self.core.state()?;
             state.admit_write()?;
-            state.child_path(parent, name)?
+            self.child(&state, parent, name)?
         };
         let stamp = source.view_stamp();
-        let lookup = create(&path).map_err(errno)?;
+        let lookup = create(&child.spelled).map_err(errno)?;
         let mut state = self.core.state()?;
-        let inode = state.intern(path.clone(), &lookup, stamp, true)?;
+        let inode = state.intern(child.key().clone(), &lookup, stamp, true)?;
         let attr = state
             .attr(inode, &lookup)
             .inspect_err(|_| state.release_lookup_reference(inode, 1))?;
-        let ttl = state.admit(source, inode, Some(&path), stamp);
+        let ttl = state.admit_entry(source, inode, &child, stamp);
         Ok(Entry { attr, ttl })
     }
 
     fn remove_name(&self, parent: u64, name: &OsStr) -> Result<(), i32> {
         let source = self.source();
         let _names = self.core.names_exclusive()?;
-        let path = {
+        let child = {
             let state = self.core.state()?;
             state.admit_write()?;
-            state.child_path(parent, name)?
+            self.child(&state, parent, name)?
         };
-        let current = source.lookup(&path).map_err(errno)?;
+        let path = &child.spelled;
+        let current = source.lookup(path).map_err(errno)?;
         let detaching = self.core.state()?.detaching_inode(current.as_ref());
         let detached = detaching
-            .map(|inode| source.detach_file(&path).map(|detached| (inode, detached)))
+            .map(|inode| source.detach_file(path).map(|detached| (inode, detached)))
             .transpose()
             .map_err(errno)?;
         source
-            .remove(&path, current.map(|lookup| lookup.node.file_id))
+            .remove(path, current.map(|lookup| lookup.node.file_id))
             .map_err(errno)?;
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
             state.retain_detached_handles(inode, &detached);
         }
-        state.remove_path_cache(&path);
+        state.remove_path_cache(child.key());
         Ok(())
     }
 
@@ -1952,29 +2017,39 @@ impl FuseProjection {
             let state = self.core.state()?;
             state.admit_write()?;
             (
-                state.child_path(parent, name)?,
-                state.child_path(new_parent, new_name)?,
+                self.child(&state, parent, name)?,
+                self.child(&state, new_parent, new_name)?,
             )
         };
         let replaced = if replace {
-            source.lookup(&to).map_err(errno)?
+            source.lookup(&to.spelled).map_err(errno)?
         } else {
             None
         };
         let detaching = self.core.state()?.detaching_inode(replaced.as_ref());
         let detached = detaching
-            .map(|inode| source.detach_file(&to).map(|detached| (inode, detached)))
+            .map(|inode| {
+                source
+                    .detach_file(&to.spelled)
+                    .map(|detached| (inode, detached))
+            })
             .transpose()
             .map_err(errno)?;
-        source.rename(&from, &to, replace).map_err(errno)?;
+        source
+            .rename(&from.spelled, &to.spelled, replace)
+            .map_err(errno)?;
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
             state.retain_detached_handles(inode, &detached);
         }
-        if replace {
-            state.invalidate_prefix(&to);
+        // Renaming between spellings of one folded name moves nothing the
+        // projection records.
+        if from.key() != to.key() {
+            if replace {
+                state.invalidate_prefix(to.key());
+            }
+            state.rename_prefix(from.key(), to.key());
         }
-        state.rename_prefix(&from, &to);
         Ok(())
     }
 
@@ -1986,7 +2061,7 @@ impl FuseProjection {
             state.admit_write()?;
             (
                 state.path(inode)?.clone(),
-                state.child_path(new_parent, new_name)?,
+                self.child(&state, new_parent, new_name)?,
                 state.node_facts(source, inode, None)?,
             )
         };
@@ -1997,23 +2072,23 @@ impl FuseProjection {
             .link_count
             .checked_add(1)
             .ok_or(libc::EMLINK)?;
-        source.hard_link(&from, &to).map_err(errno)?;
+        source.hard_link(&from, &to.spelled).map_err(errno)?;
         let mut state = self.core.state()?;
         let attr = state.attr(inode, &projected)?;
         let entry = state.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
         if entry.lookup.node.file_id != projected.node.file_id {
             return Err(libc::ESTALE);
         }
-        if entry.binding(&to).is_none() {
+        if entry.binding(to.key()).is_none() {
             entry.bindings.try_reserve(1).map_err(|_| libc::ENOMEM)?;
-            entry.bindings.push(Binding::new(to.clone(), None));
+            entry.bindings.push(Binding::new(to.key().clone(), None));
         }
         // Derived locally from the facts before the link, not read back.
         entry.lookup = projected;
         entry.facts = None;
         entry.lookup_references = entry.lookup_references.saturating_add(1);
-        state.inode_by_path.insert(to.clone(), inode);
-        let ttl = state.admit(source, inode, Some(&to), current.stamp);
+        state.inode_by_path.insert(to.key().clone(), inode);
+        let ttl = state.admit_entry(source, inode, &to, current.stamp);
         Ok(Entry { attr, ttl })
     }
 
@@ -2024,7 +2099,7 @@ impl FuseProjection {
         let stamp = source.view_stamp();
         let target = source.read_link(&path).map_err(errno)?;
         // The kernel keeps the target it receives.
-        self.core.state()?.admit(source, inode, None, stamp);
+        self.core.state()?.admit_attributes(source, inode, stamp);
         Ok(target)
     }
 
@@ -2104,14 +2179,15 @@ impl FuseProjection {
     ) -> Result<(Entry, u64, FopenFlags), i32> {
         let source = self.source();
         let _names = self.core.names()?;
-        let path = {
+        let child = {
             let state = self.core.state()?;
             state.admit_write()?;
-            state.child_path(parent, name)?
+            self.child(&state, parent, name)?
         };
+        let path = &child.spelled;
         let stamp = source.view_stamp();
         let (lookup, open_file, dirty) =
-            if let Some(existing) = source.lookup(&path).map_err(errno)? {
+            if let Some(existing) = source.lookup(path).map_err(errno)? {
                 {
                     if flags & libc::O_EXCL != 0 {
                         return Err(libc::EEXIST);
@@ -2119,7 +2195,7 @@ impl FuseProjection {
                     if existing.node.kind != MountNodeKind::Regular {
                         return Err(libc::EISDIR);
                     }
-                    let open_file = source.open_file(&path).map_err(errno)?;
+                    let open_file = source.open_file(path).map_err(errno)?;
                     let opened = open_file.lookup().map_err(errno)?;
                     if opened.node.file_id != existing.node.file_id {
                         return Err(libc::ESTALE);
@@ -2133,19 +2209,20 @@ impl FuseProjection {
                 }
             } else {
                 let metadata = create_metadata(request, mode, S_IFREG);
-                let created = source.create_file(&path, metadata).map_err(errno)?;
-                (created, source.open_file(&path).map_err(errno)?, true)
+                let created = source.create_file(path, metadata).map_err(errno)?;
+                (created, source.open_file(path).map_err(errno)?, true)
             };
         let mut state = self.core.state()?;
-        let inode = state.intern(path.clone(), &lookup, stamp, true)?;
+        let inode = state.intern(child.key().clone(), &lookup, stamp, true)?;
         let created = state.attr(inode, &lookup).and_then(|attr| {
-            let open_flags = state.file_open_flags(source, inode, &path, &lookup, stamp, flags);
+            let open_flags =
+                state.file_open_flags(source, inode, child.key(), &lookup, stamp, flags);
             let handle = state.insert_file_handle(inode, open_file, dirty)?;
             Ok((attr, handle, open_flags))
         });
         let (attr, handle, open_flags) =
             created.inspect_err(|_| state.release_lookup_reference(inode, 1))?;
-        let ttl = state.admit(source, inode, Some(&path), stamp);
+        let ttl = state.admit_entry(source, inode, &child, stamp);
         Ok((Entry { attr, ttl }, handle, open_flags))
     }
 
@@ -3692,13 +3769,19 @@ mod tests {
     type MemoryCheckout =
         crate::Checkout<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
 
+    /// A POSIX volume, whose names are all distinct.
+    fn posix_config() -> crate::model::VolumeConfig {
+        let mut config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
+        config.profile = crate::model::FilesystemProfile::Posix;
+        config
+    }
+
     fn memory_checkout(
+        config: crate::model::VolumeConfig,
         mode: crate::model::CheckoutMode,
         count: usize,
     ) -> Result<(Vec<MemoryCheckout>, crate::model::VolumeConfig), Box<dyn std::error::Error>> {
-        use crate::model::{FilesystemProfile, GenerationSelector, Lifecycle, VolumeConfig};
-        let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
-        config.profile = FilesystemProfile::Posix;
+        use crate::model::GenerationSelector;
         let fs = crate::Fs::memory();
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         let checkouts = runtime.block_on(async {
@@ -3730,6 +3813,7 @@ mod tests {
     fn tracking_sources() -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
         use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
         let (checkouts, config) = memory_checkout(
+            posix_config(),
             CheckoutMode {
                 access: AccessMode::ReadWrite,
                 consistency: ConsistencyMode::TrackingSafe,
@@ -3752,8 +3836,15 @@ mod tests {
     /// Two sources over one shared checkout: changes through either are
     /// changes around a mount of the other.
     fn shared_sources() -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
+        shared_sources_of(posix_config())
+    }
+
+    fn shared_sources_of(
+        config: crate::model::VolumeConfig,
+    ) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
         use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
         let (checkouts, config) = memory_checkout(
+            config,
             CheckoutMode {
                 access: AccessMode::ReadWrite,
                 consistency: ConsistencyMode::Pinned,
@@ -3921,6 +4012,84 @@ mod tests {
         expected.push("added".to_owned());
         expected.sort();
         assert_eq!(names(&many)?, expected);
+        assert!(session.stop()?);
+        Ok(())
+    }
+
+    #[test]
+    fn only_folding_volumes_with_case_variants_fold_names() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use crate::model::{CaseSensitivity, FilesystemProfile, Lifecycle, VolumeConfig};
+        let folds = |profile, case_sensitivity| -> Result<bool, Box<dyn std::error::Error>> {
+            let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
+            config.profile = profile;
+            config.case_sensitivity = case_sensitivity;
+            let (source, _) = shared_sources_of(config)?;
+            let folded = source.folded_path(&name("Dir").child(b"MiXeD".to_vec()));
+            assert_eq!(
+                folded.is_some(),
+                source.folded_path(&MountPath::root()).is_some(),
+                "folding is a property of the volume, not of one path"
+            );
+            if let Some(folded) = folded {
+                assert_eq!(folded, name("dir").child(b"mixed".to_vec()));
+            }
+            Ok(source.folded_path(&MountPath::root()).is_some())
+        };
+        assert!(folds(
+            FilesystemProfile::Portable,
+            CaseSensitivity::ProfileFolded
+        )?);
+        assert!(!folds(
+            FilesystemProfile::Portable,
+            CaseSensitivity::Sensitive
+        )?);
+        // POSIX names are opaque bytes, so they have no case variants.
+        assert!(!folds(
+            FilesystemProfile::Posix,
+            CaseSensitivity::ProfileFolded
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a live Linux FUSE mount"]
+    fn linux_folded_names_stay_exact_through_the_mount() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let mut config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
+        config.case_sensitivity = crate::model::CaseSensitivity::ProfileFolded;
+        let (source, _) = shared_sources_of(config)?;
+        assert_eq!(
+            source.folded_path(&name("Foo")),
+            Some(name("foo")),
+            "a folding volume keys every spelling alike"
+        );
+        let volume_id = source.volume_id()?;
+        source.create_file(&name("foo"), FileMetadata::default())?;
+        let temporary = tempfile::tempdir()?;
+        let mut session = mount(Arc::new(source), volume_id, temporary.path())?;
+        let at = |name: &str| temporary.path().join(name);
+        let exists = |name: &str| at(name).exists();
+
+        // Every spelling resolves to the one node.
+        let inode = std::fs::metadata(at("foo"))?.ino();
+        assert_eq!(std::fs::metadata(at("FOO"))?.ino(), inode);
+        assert_eq!(std::fs::metadata(at("Foo"))?.ino(), inode);
+        // A rename through one spelling reaches every other spelling at once.
+        std::fs::rename(at("foo"), at("bar"))?;
+        assert!(!exists("FOO") && !exists("Foo") && !exists("foo"));
+        assert_eq!(std::fs::metadata(at("BAR"))?.ino(), inode);
+        // So does a create after absences were looked up in other spellings.
+        assert!(!exists("NEW") && !exists("New"));
+        std::fs::write(at("new"), b"new")?;
+        assert_eq!(std::fs::read(at("NEW"))?, b"new");
+        assert_eq!(std::fs::read(at("New"))?, b"new");
+        // And a removal through yet another spelling.
+        std::fs::remove_file(at("NeW"))?;
+        assert!(!exists("new") && !exists("NEW"));
+        std::fs::remove_file(at("Bar"))?;
+        assert!(!exists("bar") && !exists("BAR"));
         assert!(session.stop()?);
         Ok(())
     }

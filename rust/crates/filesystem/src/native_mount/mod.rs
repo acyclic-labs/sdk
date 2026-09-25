@@ -620,6 +620,16 @@ pub trait MountFilesystem: Send + Sync + 'static {
         false
     }
 
+    /// The spelling every equivalent spelling of `path` resolves to, when
+    /// this source folds names; `None` when every spelling is distinct.
+    ///
+    /// Drivers key their records by it, so all spellings of one name share
+    /// one record, and never let a case-sensitive kernel cache a spelling on
+    /// its own: a change through one spelling could not reach the others.
+    fn folded_path(&self, _path: &MountPath) -> Option<MountPath> {
+        None
+    }
+
     /// Tells `observer` of every change to this source's view from now on,
     /// together with the origin that made it.
     ///
