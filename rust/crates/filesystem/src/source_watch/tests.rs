@@ -39,6 +39,24 @@ impl Recorded {
     }
 }
 
+/// Everything reported until `reported` holds of it, or ten seconds pass. A
+/// fence proves delivery on Linux and Windows; on macOS, where it reports
+/// everything instead, the reports themselves are waited for.
+fn reports_until(
+    watch: &NativeSourceWatch,
+    recorded: &Recorded,
+    reported: impl Fn(&[HostChange]) -> bool,
+) -> std::io::Result<Vec<HostChange>> {
+    watch.fence()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut changes = recorded.take();
+    while !reported(&changes) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        changes.extend(recorded.take());
+    }
+    Ok(changes)
+}
+
 fn watch(root: &Path) -> Result<(NativeSourceWatch, Arc<Recorded>), Box<dyn std::error::Error>> {
     let recorded = Arc::new(Recorded::default());
     let watch = NativeSourceWatch::start(&HostRoot::open(root)?, recorded.clone())?;
@@ -54,7 +72,7 @@ fn admit(watch: &NativeSourceWatch, directory: &str) {
 }
 
 /// Every kind of change beneath the root is reported under the names it
-/// touched, once a fence returns.
+/// touched.
 #[test]
 fn changes_beneath_the_root_are_reported_by_name() -> TestResult {
     let root = tempfile::tempdir()?;
@@ -69,9 +87,13 @@ fn changes_beneath_the_root_are_reported_by_name() -> TestResult {
     std::fs::rename(root.path().join("g"), root.path().join("h"))?;
     std::fs::remove_file(root.path().join("new"))?;
     std::fs::create_dir(root.path().join("e"))?;
-    watch.fence()?;
-    let changes = recorded.take();
-    for path in ["d/f", "new", "g", "h", "e"] {
+    let expected = ["d/f", "new", "g", "h", "e"];
+    let changes = reports_until(&watch, &recorded, |changes| {
+        expected
+            .iter()
+            .all(|path| Recorded::reported(changes, Path::new(path)))
+    })?;
+    for path in expected {
         assert!(
             Recorded::reported(&changes, &PathBuf::from(path)),
             "{path} was not reported: {changes:?}"
@@ -88,6 +110,8 @@ fn changes_beneath_the_root_are_reported_by_name() -> TestResult {
             "{path}: {changes:?}"
         );
     }
+    // Nothing was lost; a macOS fence reports everything by design.
+    #[cfg(not(target_os = "macos"))]
     assert!(
         !Recorded::everything(&changes),
         "nothing was lost: {changes:?}"

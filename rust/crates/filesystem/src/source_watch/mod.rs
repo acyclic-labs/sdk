@@ -17,9 +17,9 @@
 //!   source reads before it reads it (see [`NativeSourceWatch::admit`]).
 //!   The kernel queues each event before the system call that caused it
 //!   returns.
-//! - macOS: one `FSEvents` stream over the root and a private fence
-//!   directory; the kernel appends each event to one ordered queue as the
-//!   operation completes.
+//! - macOS: one `FSEvents` stream over the root. Its reports arrive shortly
+//!   after each change but in no order a fence could rely on, so a fence
+//!   there reports everything instead (see the backend's docs).
 //! - Windows: `ReadDirectoryChangesExW` over the whole root, which the file
 //!   system reports into before the operation that caused it completes.
 //!
@@ -43,7 +43,8 @@
 //! build step waiting for a writer to exit) and must see it through the
 //! mount calls [`NativeSourceWatch::fence`] first, which the mount's
 //! revalidation does: once it returns, every change that completed before
-//! it was called has been recorded. Hosts report a file's content and size
+//! it was called has been recorded, exactly on Linux and Windows and, on
+//! macOS, by recording that anything may have changed. Hosts report a file's content and size
 //! at different points: Linux at every write, macOS and Windows once the
 //! writer closes (or flushes) the file, which is NFS close-to-open
 //! consistency.

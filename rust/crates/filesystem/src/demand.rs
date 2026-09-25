@@ -1869,6 +1869,25 @@ mod tests {
                 &mut *self.0.lock().map_err(|_| "recording poisoned")?,
             ))
         }
+
+        /// Everything reported until `reported` holds of it, or ten seconds
+        /// pass. A fence proves delivery on Linux and Windows; on macOS,
+        /// where it reports everything instead, the reports themselves are
+        /// waited for.
+        fn until(
+            &self,
+            watch: &dyn SourceWatch,
+            reported: impl Fn(&[SourceChange]) -> bool,
+        ) -> Result<Vec<SourceChange>, Box<dyn Error>> {
+            watch.fence()?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut changes = self.take()?;
+            while !reported(&changes) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                changes.extend(self.take()?);
+            }
+            Ok(changes)
+        }
     }
 
     /// A native source reports each change by the name it touched and by
@@ -1905,8 +1924,13 @@ mod tests {
 
         std::fs::write(root.path().join("f"), b"changed")?;
         std::fs::write(root.path().join("d").join("x"), b"x")?;
-        watch.fence()?;
-        let changes = recorded.take()?;
+        let (f, x) = (path("/f")?, path("/d/x")?);
+        let changes = recorded.until(watch.as_ref(), |changes| {
+            changes.contains(&SourceChange::Node(node.file_identity))
+                && changes.contains(&SourceChange::Name(x.clone()))
+                && (changes.contains(&SourceChange::Entry(f.clone()))
+                    || changes.contains(&SourceChange::Name(f.clone())))
+        })?;
         // `FSEvents` may coalesce the file's recent creation into its write,
         // which reports the name rebound rather than its entry altered.
         assert!(
@@ -1922,6 +1946,8 @@ mod tests {
             changes.contains(&SourceChange::Name(path("/d/x")?)),
             "{changes:?}"
         );
+        // Nothing was lost; a macOS fence reports everything by design.
+        #[cfg(not(target_os = "macos"))]
         assert!(!changes.contains(&SourceChange::Everything));
         assert!(watch.is_exact());
         Ok(())
@@ -1948,8 +1974,10 @@ mod tests {
             .ok_or("a local root is watched")?;
         std::fs::write(root.path().join(".git").join("index"), b"x")?;
         std::fs::write(root.path().join("visible"), b"x")?;
-        watch.fence()?;
-        let changes = recorded.take()?;
+        let visible = path("/visible")?;
+        let changes = recorded.until(watch.as_ref(), |changes| {
+            changes.contains(&SourceChange::Name(visible.clone()))
+        })?;
         let excluded = path("/.git")?;
         assert!(
             changes.contains(&SourceChange::Name(path("/visible")?)),

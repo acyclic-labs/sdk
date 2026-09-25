@@ -4274,9 +4274,16 @@ mod tests {
 
         std::fs::write(source.path().join("a"), b"much longer")?;
         std::fs::write(source.path().join("absent"), b"present")?;
-        view.fence_changes()?;
-        assert_eq!(size(&a)?, Some(11));
-        assert_eq!(size(&absent)?, Some(7));
+        // Waits for the reports themselves: a macOS fence would report
+        // everything and read every name again.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while (size(&a)?, size(&absent)?) != (Some(11), Some(7)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the changes were never reported"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let reread = demand.lookups();
         assert!(reread > read, "a reported change reads the source again");
         assert_eq!(size(&b)?, Some(5));
