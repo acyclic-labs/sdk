@@ -84,6 +84,9 @@ jobs:
           VERIFY_CARGO_INSTALL: ${{ matrix.target == 'linux-x64-gnu' }}
         run: |
           set -euo pipefail
+          # Complete rust-toolchain.toml components once, before parallel builds
+          # race to install them.
+          cargo --version
           pids=()
           names=()
           if [[ "$BUILD_QUALIFIER" == true ]]; then

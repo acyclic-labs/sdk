@@ -82,6 +82,9 @@ jobs:
           target="$RUNNER_TEMP/native-mount-target"
           suffix=""
           if [[ "$RUNNER_OS" == Windows ]]; then suffix=.exe; fi
+          # Complete rust-toolchain.toml components once, before parallel builds
+          # race to install them.
+          cargo --version
           cargo build --locked -p acyclic-plugin --release --target-dir "$target" &
           release=$!
           cargo build --locked -p acyclic-conformance --features local-runner \
