@@ -11,10 +11,11 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Bump to invalidate every recorded marker at once.
 const SCHEMA = "sdk-qualification-v1";
-const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 
 const documentation = path =>
   /^(README|CONTRIBUTING|SECURITY)\.md$/.test(path) || /^docs\/[^/]+\.md$/.test(path);
@@ -26,7 +27,7 @@ const unrelatedGithub = path => path.startsWith(".github/") && !qualificationDef
 const standaloneProjects = path => path.startsWith("arena/") || path.startsWith("examples/");
 
 // Each predicate returns true for paths the lane can never observe.
-const ignored = {
+export const ignored = {
   // Cargo, Rust sources, protocol and conformance data, scripts, release metadata.
   rust: path =>
     documentation(path) ||
@@ -44,38 +45,64 @@ const ignored = {
   policy: path => documentation(path),
 };
 
-const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 1 << 28 });
-const output = (name, value) => {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${text}\n`);
-  console.log(`${name}=${text}`);
-};
-
-function fingerprints() {
-  const entries = git("ls-tree", "-r", "-z", "--full-tree", "HEAD").split("\0").filter(Boolean);
+// `entries` are `git ls-tree -r` records: "<mode> <type> <object>\t<path>".
+export function laneKeys(lanes, entries) {
   const keys = {};
   for (const lane of lanes) {
     const predicate = ignored[lane.inputs];
     if (!predicate) throw new Error(`lane ${lane.lane} names unknown inputs ${lane.inputs}`);
     const digest = createHash("sha256");
     digest.update(`${SCHEMA}\0${JSON.stringify(lane)}\0`);
-    let observed = 0;
     for (const entry of entries) {
-      const path = entry.slice(entry.indexOf("\t") + 1);
-      if (predicate(path)) continue;
+      if (predicate(entry.slice(entry.indexOf("\t") + 1))) continue;
       digest.update(entry);
       digest.update("\0");
-      observed += 1;
     }
     keys[lane.lane] = `sdk-qualified-${lane.lane}-${digest.digest("hex")}`;
-    console.error(`${lane.lane}: ${observed} observed paths -> ${keys[lane.lane]}`);
   }
-  output("keys", keys);
-  output("lanes", lanes.map(lane => lane.lane));
+  return keys;
 }
 
-function gh(path) {
-  return JSON.parse(execFileSync("gh", ["api", "--method", "GET", path], { encoding: "utf8" }));
+// Decides each lane's fate. `marker(lane)` returns the run that recorded the
+// lane's fingerprint, if any; `retained(runId, prefix)` names the artifact that
+// run still retains, or "".
+export function chooseLanes(lanes, { force, mainPush, trusted, marker, retained }) {
+  const matrix = [];
+  const reused = {};
+  for (const lane of lanes) {
+    // Source-bound artifacts record the commit they were built from, and
+    // releases require that commit to be the main commit being released.
+    if (force || (mainPush && lane.source_bound)) {
+      matrix.push(lane);
+      continue;
+    }
+    let source = trusted ?? marker(lane.lane);
+    let artifact = "";
+    if (source && lane.artifact) {
+      artifact = retained(source.run_id, lane.artifact);
+      if (!artifact) source = null;
+    }
+    if (source) reused[lane.lane] = { run_id: source.run_id, run_attempt: source.run_attempt, artifact };
+    else matrix.push(lane);
+  }
+  return { matrix, reused };
+}
+
+const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 1 << 28 });
+const gh = path => JSON.parse(execFileSync("gh", ["api", "--method", "GET", path], { encoding: "utf8" }));
+const output = (name, value) => {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${text}\n`);
+  console.log(`${name}=${text}`);
+};
+const readLanes = () => JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
+
+function fingerprints() {
+  const lanes = readLanes();
+  const entries = git("ls-tree", "-r", "-z", "--full-tree", "HEAD").split("\0").filter(Boolean);
+  const keys = laneKeys(lanes, entries);
+  output("keys", keys);
+  output("lanes", lanes.map(lane => lane.lane));
 }
 
 // A squash merge of an up-to-date pull request lands the exact tree that the
@@ -105,7 +132,7 @@ function qualifiedPullRequestRun() {
     runs.sort((a, b) => b.run_number - a.run_number || b.run_attempt - a.run_attempt);
     if (runs.length > 0) {
       console.error(`reusing #${pull.number} run ${runs[0].id} attempt ${runs[0].run_attempt}`);
-      return { run_id: runs[0].id, run_attempt: runs[0].run_attempt, source: `pull/${pull.number}` };
+      return { run_id: runs[0].id, run_attempt: runs[0].run_attempt };
     }
   }
   return null;
@@ -129,42 +156,32 @@ function retainedArtifact(runId, prefix) {
   return candidates[0]?.name ?? "";
 }
 
+function recordedMarker(lane) {
+  const path = `.qualification/${lane}.json`;
+  if (!existsSync(path)) return null;
+  try {
+    const recorded = JSON.parse(readFileSync(path, "utf8"));
+    return Number.isSafeInteger(recorded.run_id) && Number.isSafeInteger(recorded.run_attempt)
+      ? recorded
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function select() {
   const force = process.env.FORCE === "true";
-  const event = process.env.GITHUB_EVENT_NAME;
-  const trusted =
-    !force && event === "push" && process.env.GITHUB_REF === "refs/heads/main"
-      ? qualifiedPullRequestRun()
-      : null;
-  const matrix = [];
-  const reused = {};
-  for (const lane of lanes) {
-    const marker = `.qualification/${lane.lane}.json`;
-    let source = trusted;
-    if (!source && !force && existsSync(marker)) {
-      try {
-        const recorded = JSON.parse(readFileSync(marker, "utf8"));
-        if (Number.isSafeInteger(recorded.run_id) && Number.isSafeInteger(recorded.run_attempt)) {
-          source = recorded;
-        }
-      } catch {
-        source = null;
-      }
-    }
-    let artifact = "";
-    if (source && lane.artifact) {
-      artifact = retainedArtifact(source.run_id, lane.artifact);
-      if (!artifact) {
-        console.error(`${lane.lane}: ${lane.artifact} is no longer retained by run ${source.run_id}`);
-        source = null;
-      }
-    }
-    if (source) {
-      reused[lane.lane] = { run_id: source.run_id, run_attempt: source.run_attempt, artifact };
-      console.error(`${lane.lane}: reused from run ${source.run_id} attempt ${source.run_attempt}`);
-    } else {
-      matrix.push(lane);
-    }
+  const mainPush = process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF === "refs/heads/main";
+  const trusted = !force && mainPush ? qualifiedPullRequestRun() : null;
+  const { matrix, reused } = chooseLanes(readLanes(), {
+    force,
+    mainPush,
+    trusted,
+    marker: recordedMarker,
+    retained: retainedArtifact,
+  });
+  for (const [lane, source] of Object.entries(reused)) {
+    console.error(`${lane}: reused from run ${source.run_id} attempt ${source.run_attempt}`);
   }
   output("matrix", matrix);
   output("reused", reused);
@@ -180,7 +197,7 @@ function record() {
   const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
   const reused = JSON.parse(process.env.REUSED || "{}");
   const trusted = process.env.TRUSTED === "true";
-  const names = new Set(lanes.map(lane => lane.lane));
+  const names = new Set(readLanes().map(lane => lane.lane));
   const jobs = gh(`repos/${repository}/actions/runs/${runId}/attempts/${runAttempt}/jobs?per_page=100`).jobs;
   const recorded = [];
   mkdirSync(".qualification", { recursive: true });
@@ -201,8 +218,10 @@ function record() {
   output("recorded", recorded);
 }
 
-const command = process.argv[2];
-if (command === "fingerprints") fingerprints();
-else if (command === "select") select();
-else if (command === "record") record();
-else throw new Error("usage: plan-qualification.mjs fingerprints|select|record");
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const command = process.argv[2];
+  if (command === "fingerprints") fingerprints();
+  else if (command === "select") select();
+  else if (command === "record") record();
+  else throw new Error("usage: plan-qualification.mjs fingerprints|select|record");
+}

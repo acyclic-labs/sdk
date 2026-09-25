@@ -5,7 +5,8 @@
     "workers": 4,
     "artifact": "coverage",
     "artifact_path": "coverage",
-    "inputs": "rust"
+    "inputs": "rust",
+    "source_bound": false
   },
   {
     "lane": "linux",
@@ -13,7 +14,8 @@
     "workers": 16,
     "artifact": "packages-linux",
     "artifact_path": "packages",
-    "inputs": "repository"
+    "inputs": "repository",
+    "source_bound": true
   },
   {
     "lane": "web",
@@ -21,7 +23,8 @@
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
-    "inputs": "rust"
+    "inputs": "rust",
+    "source_bound": false
   },
   {
     "lane": "linux-arm64",
@@ -29,7 +32,8 @@
     "workers": 16,
     "artifact": "packages-linux-arm64",
     "artifact_path": "packages",
-    "inputs": "rust"
+    "inputs": "rust",
+    "source_bound": false
   },
   {
     "lane": "linux-musl",
@@ -37,7 +41,8 @@
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
-    "inputs": "rust"
+    "inputs": "rust",
+    "source_bound": false
   },
   {
     "lane": "linux-arm64-musl",
@@ -45,7 +50,8 @@
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
-    "inputs": "rust"
+    "inputs": "rust",
+    "source_bound": false
   },
   {
     "lane": "windows",
@@ -53,7 +59,8 @@
     "workers": 16,
     "artifact": "",
     "artifact_path": "",
-    "inputs": "product"
+    "inputs": "product",
+    "source_bound": false
   },
   {
     "lane": "macos",
@@ -61,7 +68,8 @@
     "workers": 12,
     "artifact": "packages-macos",
     "artifact_path": "packages",
-    "inputs": "rust"
+    "inputs": "rust",
+    "source_bound": false
   },
   {
     "lane": "policy",
@@ -69,6 +77,7 @@
     "workers": 4,
     "artifact": "",
     "artifact_path": "",
-    "inputs": "policy"
+    "inputs": "policy",
+    "source_bound": false
   }
 ]
