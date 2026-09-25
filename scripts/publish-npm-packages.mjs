@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -31,14 +32,28 @@ function publishedIntegrity(name, version) {
 
 function publishedLatest(name) {
   const result = run("npm", ["view", name, "dist-tags.latest", "--json", "--prefer-online"]);
+  if (/E404|404 Not Found/.test(`${result.stderr}\n${result.stdout}`)) return null;
   if (result.status !== 0) fail(`could not inspect latest for ${name}: ${result.stderr || result.stdout}`);
   return JSON.parse(result.stdout);
 }
 
-function requireLatest(name, version) {
-  const observed = publishedLatest(name);
-  if (observed !== version) {
-    fail(`${name} latest is ${observed}, not ${version}; repair the dist-tag interactively`);
+async function waitForPublishedExact(name, version, expectedIntegrity) {
+  const deadline = Date.now() + 300_000;
+  let observedIntegrity;
+  let latest;
+  while (true) {
+    observedIntegrity = publishedIntegrity(name, version);
+    if (observedIntegrity !== null && observedIntegrity !== expectedIntegrity) {
+      fail(`${name}@${version} exists with different bytes`);
+    }
+    if (observedIntegrity === expectedIntegrity) {
+      latest = publishedLatest(name);
+      if (latest === version) return;
+    }
+    if (Date.now() >= deadline) {
+      fail(`${name}@${version} did not become visible with exact bytes and latest tag; observed integrity: ${observedIntegrity ?? "not found"}, latest: ${latest ?? "not found"}`);
+    }
+    await delay(5_000);
   }
 }
 
@@ -72,14 +87,12 @@ for (const item of packages) {
   if (observedIntegrity !== null) {
     if (observedIntegrity !== expectedIntegrity) fail(`${item.name}@${releaseVersion} exists with different bytes`);
     console.log(`Already published exact archive: ${item.name}@${releaseVersion}`);
-    requireLatest(item.name, releaseVersion);
+    await waitForPublishedExact(item.name, releaseVersion, expectedIntegrity);
     continue;
   }
 
   const publication = run("npm", ["publish", archive, "--access", "public", "--tag", "latest", "--provenance"], { stdio: "inherit" });
   if (publication.status !== 0) fail(`npm publication failed for ${item.name}@${releaseVersion}`);
-  const registryIntegrity = publishedIntegrity(item.name, releaseVersion);
-  if (registryIntegrity !== expectedIntegrity) fail(`registry bytes differ for ${item.name}@${releaseVersion}`);
-  requireLatest(item.name, releaseVersion);
+  await waitForPublishedExact(item.name, releaseVersion, expectedIntegrity);
   console.log(`Published and verified: ${item.name}@${releaseVersion}`);
 }
