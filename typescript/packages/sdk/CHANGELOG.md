@@ -1,5 +1,9 @@
 # @acyclic-labs/sdk changelog
 
+## 0.1.5 - 2026-09-25
+
+- Aligns the umbrella SDK with the qualified 0.1.5 package family.
+
 ## 0.1.4 - 2026-09-25
 
 - Aligns the umbrella SDK with the qualified 0.1.4 package family.

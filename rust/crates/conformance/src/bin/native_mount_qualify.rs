@@ -1919,7 +1919,7 @@ mod receipt_tests {
                     "unavailable_reason": null
                 },
                 "required_kind": "macos-nfs",
-                "release_version": "0.1.4",
+                "release_version": "0.1.5",
                 "executable_blake3": digest,
                 "passed": true,
                 "cases": [
@@ -1937,7 +1937,7 @@ mod receipt_tests {
             OsString::from("--require-kind"),
             OsString::from("macos-nfs"),
             OsString::from("--release-version"),
-            OsString::from("0.1.4"),
+            OsString::from("0.1.5"),
             OsString::from("--release-arch"),
             OsString::from("aarch64"),
         ];

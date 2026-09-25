@@ -1,5 +1,9 @@
 # @acyclic-labs/machines changelog
 
+## 0.1.5 - 2026-09-25
+
+- Aligns machine clients with the qualified SDK 0.1.5 release.
+
 ## 0.1.4 - 2026-09-25
 
 - Aligns machine clients with the qualified SDK 0.1.4 release.
