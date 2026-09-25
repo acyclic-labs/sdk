@@ -433,6 +433,20 @@ pub(crate) struct WorkspaceRebaseRequest<'a, A, O> {
     pub maximum_conflicts: u32,
 }
 
+/// Where a fork stands against the parent it was forked from.
+struct RebaseLineage<A, O> {
+    target_object: ObjectId,
+    target_head: Head,
+    target_root: GenerationRoot,
+    /// The parent generation that the fork is based on.
+    base_object: ObjectId,
+    base_root: GenerationRoot,
+    /// The parent.
+    source: Volume<A, O>,
+    /// The parent's head.
+    source_object: ObjectId,
+}
+
 /// Capabilities that cannot be inferred from storage trait syntax alone.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EmbeddedCapabilities {
@@ -3847,24 +3861,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-    #[allow(clippy::too_many_lines)]
-    pub(crate) async fn live_rebase_workspace(
+    /// Resolves where a fork stands against the parent it was forked from:
+    /// its head, the parent generation that it is based on, and the parent's
+    /// head, reading at most `maximum_generations` of its own history.
+    async fn rebase_lineage(
         &self,
-        request: WorkspaceRebaseRequest<'_, A, O>,
-    ) -> Result<WorkspaceJoinOutcome, crate::workspace::WorkspaceError> {
-        let WorkspaceRebaseRequest {
-            target,
-            operation_id,
-            maximum_generations,
-            maximum_changes,
-            maximum_conflicts,
-        } = request;
-        if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
-            return Err(crate::workspace::WorkspaceError::JoinLimit);
-        }
-        let cancellation = CancellationToken::new();
-        let (target_object, expected_head, _) = target
-            .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)
+        target: &Volume<A, O>,
+        maximum_generations: u32,
+        cancellation: &CancellationToken,
+    ) -> Result<RebaseLineage<A, O>, crate::workspace::WorkspaceError> {
+        let (target_object, target_head, _) = target
+            .resolve_head_generation(WorkBudget::UNBOUNDED, cancellation)
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
         let (target_root, _) = read_generation_root(
@@ -3872,7 +3879,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             target_object,
             target.config,
             WorkBudget::UNBOUNDED,
-            &cancellation,
+            cancellation,
         )
         .await
         .map_err(crate::workspace::WorkspaceError::engine)?;
@@ -3885,7 +3892,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cursor,
                 target.config,
                 WorkBudget::UNBOUNDED,
-                &cancellation,
+                cancellation,
             )
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
@@ -3905,7 +3912,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             return Err(crate::workspace::WorkspaceError::LineageLimit);
         };
         let source = self
-            .open_volume(base_root.volume_id, WorkBudget::UNBOUNDED, &cancellation)
+            .open_volume(base_root.volume_id, WorkBudget::UNBOUNDED, cancellation)
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?
             .value;
@@ -3913,9 +3920,61 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace);
         }
         let (source_object, _, _) = source
-            .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)
+            .resolve_head_generation(WorkBudget::UNBOUNDED, cancellation)
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
+        Ok(RebaseLineage {
+            target_object,
+            target_head,
+            target_root,
+            base_object,
+            base_root,
+            source,
+            source_object,
+        })
+    }
+
+    /// The parent head that a fork would rebase onto, or `None` when the fork
+    /// is already based on it.
+    pub(crate) async fn parent_advance(
+        &self,
+        target: &Volume<A, O>,
+        maximum_generations: u32,
+    ) -> Result<Option<GenerationId>, crate::workspace::WorkspaceError> {
+        let lineage = self
+            .rebase_lineage(target, maximum_generations, &CancellationToken::new())
+            .await?;
+        Ok((lineage.source_object != lineage.base_object)
+            .then(|| GenerationId::new(lineage.source_object.digest)))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(crate) async fn live_rebase_workspace(
+        &self,
+        request: WorkspaceRebaseRequest<'_, A, O>,
+    ) -> Result<WorkspaceJoinOutcome, crate::workspace::WorkspaceError> {
+        let WorkspaceRebaseRequest {
+            target,
+            operation_id,
+            maximum_generations,
+            maximum_changes,
+            maximum_conflicts,
+        } = request;
+        if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
+            return Err(crate::workspace::WorkspaceError::JoinLimit);
+        }
+        let cancellation = CancellationToken::new();
+        let RebaseLineage {
+            target_object,
+            target_head: expected_head,
+            target_root,
+            base_object,
+            base_root,
+            source,
+            source_object,
+        } = self
+            .rebase_lineage(target, maximum_generations, &cancellation)
+            .await?;
         if source_object == base_object {
             return Ok(WorkspaceJoinOutcome::NoChanges(GenerationId::new(
                 target_object.digest,

@@ -18,7 +18,12 @@ const flags = [
 ];
 if (process.platform === "win32") flags.push("-C", "link-arg=/Brepro");
 
-const cargoArguments = ["build", "--locked", "--release", "-p", "acyclic-plugin"];
+// Configured flags join the repository's own target flags in
+// .cargo/config.toml, which RUSTFLAGS would replace.
+const cargoArguments = [
+  "build", "--locked", "--release", "-p", "acyclic-plugin",
+  "--config", `target.'cfg(all())'.rustflags = ${JSON.stringify(flags)}`,
+];
 if (process.env.CARGO_BUILD_TARGET) cargoArguments.push("--target", process.env.CARGO_BUILD_TARGET);
 
 const result = spawnSync(
@@ -29,7 +34,6 @@ const result = spawnSync(
     env: {
       ...process.env,
       CARGO_TARGET_DIR: target,
-      CARGO_ENCODED_RUSTFLAGS: flags.join("\x1f"),
     },
     stdio: "inherit",
   },

@@ -28,14 +28,16 @@ const STALLED_PROVIDER_OBSERVATION: Duration = Duration::from_millis(250);
 
 /// Times every hook process end to end (spawn to exit with stdout collected)
 /// against a live service in an isolated state root: a session with a series
-/// of Bash tool calls and subagent spawns, then further sessions started and
-/// ended on the running service. Prints one JSON receipt line;
-/// `ACYCLIC_HOOK_LATENCY_PAIRS` sets the number of measured Bash calls.
+/// of Bash tool calls and subagent spawns, each subagent running Bash calls in
+/// its own workspace, then further sessions started and ended on the running
+/// service. Prints one JSON receipt line; `ACYCLIC_HOOK_LATENCY_PAIRS` sets
+/// the number of measured Bash calls.
 #[test]
 #[ignore = "local-only packaged hook latency receipt"]
 fn packaged_service_hook_latency_receipt() {
     const WARMUP_PAIRS: usize = 5;
     const SPAWNS: usize = 5;
+    const CHILD_PAIRS: usize = 10;
     const SESSIONS: usize = 10;
     let pairs = std::env::var("ACYCLIC_HOOK_LATENCY_PAIRS")
         .map_or(Ok(200), |pairs| pairs.parse::<usize>())
@@ -43,8 +45,19 @@ fn packaged_service_hook_latency_receipt() {
     let temporary = test_tempdir("hook-service-latency-");
     let package = package_production_plugin(temporary.path());
     let service = ServiceGuard::new(temporary.path());
+    let workspace = |session: usize| temporary.path().join(format!("workspace-{session}"));
+    let hook_at = |session: usize, cwd: &Path, event: &str, fields: Value| {
+        timed_hook(
+            &package.native,
+            temporary.path(),
+            session,
+            cwd,
+            event,
+            fields,
+        )
+    };
     let hook = |session: usize, event: &str, fields: Value| {
-        timed_hook(&package.native, temporary.path(), session, event, fields)
+        hook_at(session, &workspace(session), event, fields).0
     };
     let mut samples = std::collections::BTreeMap::<&str, Vec<Duration>>::new();
     let mut record = |label, elapsed| samples.entry(label).or_default().push(elapsed);
@@ -81,7 +94,21 @@ fn packaged_service_hook_latency_receipt() {
             "agent_type": "general",
         });
         record("PreToolUse Agent", hook(0, "PreToolUse", spawn.clone()));
-        record("SubagentStart", hook(0, "SubagentStart", child.clone()));
+        let (elapsed, started) = hook_at(0, &workspace(0), "SubagentStart", child.clone());
+        record("SubagentStart", elapsed);
+        let mount = child_workspace_mount(&started);
+        for call in 0..CHILD_PAIRS {
+            let tool = serde_json::json!({
+                "agent_id": format!("latency-child-{index}"),
+                "tool_name": "Bash",
+                "tool_use_id": format!("child-{index}-bash-{call}"),
+                "tool_input": {"command": format!("git status --short # {call}")},
+            });
+            let pre = hook_at(0, &mount, "PreToolUse", tool.clone()).0;
+            record("PreToolUse Bash (subagent)", pre);
+            let post = hook_at(0, &mount, "PostToolUse", tool).0;
+            record("PostToolUse Bash (subagent)", post);
+        }
         record("SubagentStop", hook(0, "SubagentStop", child));
         record("PostToolUse Agent", hook(0, "PostToolUse", spawn));
     }
@@ -110,11 +137,17 @@ fn packaged_service_hook_latency_receipt() {
     );
 }
 
-/// Runs one hook for session `session` in its own workspace and returns the
-/// process's end-to-end latency.
-fn timed_hook(native: &Path, root: &Path, session: usize, event: &str, fields: Value) -> Duration {
-    let workspace = root.join(format!("workspace-{session}"));
-    fs::create_dir_all(&workspace).expect("workspace");
+/// Runs one hook for session `session` from `workspace` and returns the
+/// process's end-to-end latency and its response.
+fn timed_hook(
+    native: &Path,
+    root: &Path,
+    session: usize,
+    workspace: &Path,
+    event: &str,
+    fields: Value,
+) -> (Duration, Value) {
+    fs::create_dir_all(workspace).expect("workspace");
     let mut input = serde_json::json!({
         "session_id": format!("latency-session-{session}"),
         "cwd": workspace,
@@ -131,7 +164,7 @@ fn timed_hook(native: &Path, root: &Path, session: usize, event: &str, fields: V
     let mut process = command(native);
     process
         .args(["__hook", "claude-code", event])
-        .current_dir(&workspace);
+        .current_dir(workspace);
     isolated_state(&mut process, root);
     let started = Instant::now();
     let output = output_with_stdin(&mut process, &input);
@@ -149,7 +182,21 @@ fn timed_hook(native: &Path, root: &Path, session: usize, event: &str, fields: V
             .is_some_and(|message| message.contains("Acyclic is unavailable")),
         "{event} failed: {response}"
     );
-    elapsed
+    (elapsed, response)
+}
+
+/// The workspace mount that a `SubagentStart` response hands the subagent.
+fn child_workspace_mount(started: &Value) -> std::path::PathBuf {
+    let context = started
+        .pointer("/hookSpecificOutput/additionalContext")
+        .and_then(Value::as_str)
+        .expect("SubagentStart context");
+    let mount = context
+        .strip_prefix("Your workspace mount is ")
+        .and_then(|rest| rest.split_once(". "))
+        .expect("SubagentStart names the workspace mount")
+        .0;
+    std::path::PathBuf::from(mount)
 }
 
 fn latency_summary(mut durations: Vec<Duration>) -> Value {
