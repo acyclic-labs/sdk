@@ -150,6 +150,19 @@ impl<S> StagedObjects<S> {
         &self.inner
     }
 
+    /// Whether `object_id` is known to be staged. Staged pages are the
+    /// private working set of unpublished candidates: each is resident or
+    /// spilled already, and most are superseded by the next mutation that
+    /// reads them, so they bypass the shared decoded cache instead of
+    /// evicting published pages from it. An uncertain answer, while another
+    /// operation holds the window, admits as usual; either choice is sound
+    /// because the cache is keyed by immutable identity.
+    fn is_staged(&self, object_id: ObjectId) -> bool {
+        self.pending
+            .try_lock()
+            .is_ok_and(|pending| pending.objects.contains_key(&object_id))
+    }
+
     /// Moves the least recently used resident objects, down to half the
     /// window, to the end of the spill file with one unsynchronized write.
     /// Objects are re-indexed only after the write completes, so a failed
@@ -380,6 +393,9 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         &self,
         key: DecodedCacheKey,
     ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
+        if self.is_staged(key.object_id) {
+            return Ok(None);
+        }
         self.inner.decoded_cache_get(key)
     }
 
@@ -388,6 +404,9 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         key: DecodedCacheKey,
         value: DecodedCacheValue,
     ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
+        if self.is_staged(key.object_id) {
+            return Ok(DecodedCacheAdmission::Uncached(value));
+        }
         self.inner.decoded_cache_admit(key, value)
     }
 
@@ -913,6 +932,17 @@ mod tests {
             .put_hashed(object.clone(), WorkBudget::UNBOUNDED, &token)
             .await?;
         assert_eq!(admitted.work.bytes_hashed, 0);
+        assert!(
+            store.is_staged(object.object_id()),
+            "a staged page bypasses the shared decoded cache"
+        );
+        store
+            .flush_before_publish(PublicationScope::Everything, WorkBudget::UNBOUNDED, &token)
+            .await?;
+        assert!(
+            !store.is_staged(object.object_id()),
+            "a durable page is cached like any published page"
+        );
         let (object_id, _) = object.into_parts();
         let forged = store
             .put(
