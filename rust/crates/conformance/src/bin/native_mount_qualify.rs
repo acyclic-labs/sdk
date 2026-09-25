@@ -1892,6 +1892,69 @@ fn collect_paths(
 }
 
 #[cfg(test)]
+mod receipt_tests {
+    use super::{COVERAGE, file_blake3, verify_receipt};
+    use std::ffi::OsString;
+
+    #[test]
+    fn verifies_the_release_target_architecture_not_the_verifier_host() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("acyclic");
+        let receipt = directory.path().join("macos-nfs.json");
+        std::fs::write(&executable, b"release executable").unwrap();
+        let digest = file_blake3(&executable).unwrap();
+        std::fs::write(
+            &receipt,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "acyclic-native-mount-qualification-v2",
+                "os": "macos",
+                "arch": "aarch64",
+                "coverage": COVERAGE,
+                "capability": {
+                    "kind": "macos-nfs",
+                    "available": true,
+                    "writable": true,
+                    "provider_process_io_observable": true,
+                    "session_isolation": "SharedProcess",
+                    "unavailable_reason": null
+                },
+                "required_kind": "macos-nfs",
+                "release_version": "0.1.2",
+                "executable_blake3": digest,
+                "passed": true,
+                "cases": [
+                    {"name": "real-mount-mutation-matrix", "status": "passed"},
+                    {"name": "crash-detach-recovery", "status": "passed"},
+                    {"name": "checkout-and-git-untouched", "status": "passed"}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut args = vec![
+            OsString::from("--verify-receipt"),
+            receipt.into_os_string(),
+            OsString::from("--release-executable"),
+            executable.into_os_string(),
+            OsString::from("--require-kind"),
+            OsString::from("macos-nfs"),
+            OsString::from("--release-version"),
+            OsString::from("0.1.2"),
+            OsString::from("--release-arch"),
+            OsString::from("aarch64"),
+        ];
+        verify_receipt(&args).unwrap();
+        *args.last_mut().unwrap() = OsString::from("x86_64");
+        let error = verify_receipt(&args).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not match release target x86_64")
+        );
+    }
+}
+
+#[cfg(test)]
 mod parallel_io_tests {
     use super::{retry_nfs_directory_listing, retryable_nfs_directory_error};
     use std::io::{Error, ErrorKind};
