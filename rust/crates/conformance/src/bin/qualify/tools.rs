@@ -41,6 +41,7 @@ pub(super) fn is_command(command: &str) -> bool {
             | "mount-hold"
             | "source-probe"
             | "mount-bench"
+            | "mount-bench-writer"
     )
 }
 
@@ -57,6 +58,7 @@ pub(super) fn run() {
         Some("mount-hold") => mount_hold(&args[1..]),
         Some("source-probe") => source_probe(&args[1..]),
         Some("mount-bench") => mount_bench(&args[1..]),
+        Some("mount-bench-writer") => mount_bench_writer(&args[1..]),
         _ => Err(
             "usage: qualify fixture <dir> [--with-fifo] | roundtrip <src> <work> \
              | corpus <dir> <files> <mb> | bench <src> <work> [rounds] \
@@ -815,7 +817,16 @@ fn mount_bench(args: &[String]) -> Result<(), Failure> {
     // Nothing below may leave the mount attached.
     let measured = (|| -> Result<_, Failure> {
         let payload = corpus_payload(file_bytes);
-        let native = workload(&source, &native_writes, files, &payload, threads)?;
+        let native = workload(
+            &source,
+            &native_writes,
+            files,
+            &payload,
+            threads,
+            &|| Ok(()),
+        )?;
+        // The mounted write boundary captures and publishes what was written.
+        let sync = || runtime.block_on(mount.sync()).map_err(engine_err("sync"));
         let mounted = |writes| {
             workload(
                 &mount_dir,
@@ -823,6 +834,7 @@ fn mount_bench(args: &[String]) -> Result<(), Failure> {
                 files,
                 &payload,
                 threads,
+                &sync,
             )
         };
         let cold = mounted("writes-cold")?;
@@ -833,7 +845,18 @@ fn mount_bench(args: &[String]) -> Result<(), Failure> {
         .block_on(mount.unmount())
         .map_err(engine_err("unmount"));
     let (native, cold, warm) = measured?;
-    unmounted?;
+    // Measurements stand on their own; report them before any unmount error.
+    report_mount_bench(files, file_bytes, threads, [native, cold, warm]);
+    unmounted
+}
+
+/// Prints one mount-bench result: per-phase native, cold, and warm costs.
+fn report_mount_bench(
+    files: u64,
+    file_bytes: u64,
+    threads: u64,
+    [native, cold, warm]: [[f64; 4]; 3],
+) {
     let phases = ["list", "stat", "read", "write"]
         .into_iter()
         .zip(native.into_iter().zip(cold).zip(warm))
@@ -860,18 +883,22 @@ fn mount_bench(args: &[String]) -> Result<(), Failure> {
             "phases": phases,
         })
     );
-    Ok(())
 }
 
 /// Times directory listing, stat, full reads, and fresh writes over the
 /// corpus under `root`, returning wall-clock microseconds per operation for
 /// each phase. Each phase's operations are split evenly across `threads`.
+///
+/// Writes come from one child process, as an agent's tools write: a mount
+/// provider does not observe its own process's I/O. A write is complete once
+/// `boundary` has made it durable in the workspace, so that is timed too.
 fn workload(
     root: &Path,
     writes: &Path,
     files: u64,
     payload: &[u8],
     threads: u64,
+    boundary: &dyn Fn() -> Result<(), Failure>,
 ) -> Result<[f64; 4], Failure> {
     let directories = files.div_ceil(100);
     let listed = std::sync::atomic::AtomicU64::new(0);
@@ -904,11 +931,52 @@ fn workload(
         Ok(())
     })?;
     fs::create_dir_all(writes).map_err(io_at("create", writes))?;
-    let write = timed_phase(files.min(500), threads, |index| {
-        let path = writes.join(format!("file-{index:07}.dat"));
-        fs::write(&path, payload).map_err(io_at("write", &path))
-    })?;
+    let written = files.min(500);
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .arg("mount-bench-writer")
+        .arg(writes)
+        .arg(written.to_string())
+        .arg(payload.len().to_string())
+        .arg(threads.to_string())
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "writer failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let writing: f64 = String::from_utf8(output.stdout)?.trim().parse()?;
+    let started = Instant::now();
+    boundary()?;
+    let write = writing + started.elapsed().as_secs_f64() * 1e6 / written.max(1) as f64;
     Ok([list, stat, read, write])
+}
+
+/// Child half of the write phase: writes `<count>` fresh files of
+/// `<file-bytes>` into `<dir>` across `<threads>` and prints the wall-clock
+/// microseconds per file that took.
+fn mount_bench_writer(args: &[String]) -> Result<(), Failure> {
+    let directory = PathBuf::from(args.first().ok_or("mount-bench-writer: missing <dir>")?);
+    let count: u64 = args
+        .get(1)
+        .ok_or("mount-bench-writer: missing <count>")?
+        .parse()?;
+    let file_bytes: u64 = args
+        .get(2)
+        .ok_or("mount-bench-writer: missing <file-bytes>")?
+        .parse()?;
+    let threads: u64 = args
+        .get(3)
+        .ok_or("mount-bench-writer: missing <threads>")?
+        .parse()?;
+    let payload = corpus_payload(file_bytes);
+    let per_file = timed_phase(count, threads, |index| {
+        let path = directory.join(format!("file-{index:07}.dat"));
+        fs::write(&path, &payload).map_err(io_at("write", &path))
+    })?;
+    println!("{per_file}");
+    Ok(())
 }
 
 /// Runs `operation` for every index below `operations`, interleaved across
