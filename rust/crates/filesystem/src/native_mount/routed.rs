@@ -608,6 +608,21 @@ impl MountFilesystem for RoutedMountSource {
             }
     }
 
+    fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
+        let owner = self
+            .file_id_index
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&file_id)
+            .cloned();
+        stamp.precedes_none_of(&self.routes_changed)
+            && owner.is_some_and(|name| {
+                self.locate(&name).is_ok_and(|(source, tag)| {
+                    source.node_unchanged_since(remap_file_id(file_id, tag), stamp)
+                })
+            })
+    }
+
     fn binding_epoch(&self) -> Option<u64> {
         Some(self.coherent_epoch_by(MountFilesystem::binding_epoch))
     }

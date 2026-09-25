@@ -383,6 +383,10 @@ impl<A, O> SharedCheckout<A, O> {
     ) -> bool {
         self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp)
     }
+
+    fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
+        self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp)
+    }
 }
 
 impl<A, O> Deref for SharedCheckoutGuard<'_, A, O> {
@@ -2214,6 +2218,10 @@ where
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
         self.path(path)
             .is_ok_and(|path| self.checkout.unchanged_since(&path, file_id, stamp))
+    }
+
+    fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
+        self.checkout.node_unchanged_since(file_id, stamp)
     }
 
     fn binding_epoch(&self) -> Option<u64> {

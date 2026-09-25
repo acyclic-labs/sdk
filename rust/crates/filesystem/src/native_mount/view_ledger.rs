@@ -304,6 +304,17 @@ impl ViewLedger {
             })
     }
 
+    /// Whether facts read about the node `file_id` after `stamp` still
+    /// describe it: nothing changed the node itself since. A directory's
+    /// listing is keyed by its path, so only [`Self::unchanged_since`] covers
+    /// facts that follow from a listing.
+    pub(super) fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
+        stamp.precedes_none_of(&self.everything)
+            && self
+                .nodes
+                .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id)))
+    }
+
     /// A name's binding changed: every lookup through it, and the listing
     /// and attributes of the directory holding it, are stale.
     fn rebound(&self, path: &NamespacePath, position: ViewStamp) {

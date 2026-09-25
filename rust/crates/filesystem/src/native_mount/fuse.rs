@@ -134,8 +134,15 @@ const DIRECTORY_PAGE_SIZE: u32 = 256;
 const ATTRIBUTE_PAGE_SIZE: u32 = 256;
 const MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES: usize = 1024 * 1024;
 const DETACHED_COPY_CHUNK_BYTES: u32 = 1024 * 1024;
+/// Directory listings a projection keeps positioned for the kernel.
+const MAXIMUM_DIRECTORY_STREAMS: usize = 256;
 
-struct DirectoryHandle {
+/// One position in a directory listing the kernel is reading.
+///
+/// Listings need no open handle: the kernel resumes one at the offset it
+/// last received, so streams wait keyed by inode and offset. That lets the
+/// kernel skip `OPENDIR` and `RELEASEDIR` entirely where it supports that.
+struct DirectoryStream {
     path: MountPath,
     parent_inode: u64,
     binding_epoch: Option<u64>,
@@ -144,7 +151,48 @@ struct DirectoryHandle {
     /// Source view the buffered entries were read after, if cacheable.
     entries_stamp: Option<ViewStamp>,
     exhausted: bool,
+    /// Offset of the next entry: `.` and `..` are 1 and 2.
     emitted: u64,
+    /// When this stream was last parked, for eviction.
+    parked: u64,
+}
+
+/// Streams waiting for the kernel's next listing request, at most
+/// [`MAXIMUM_DIRECTORY_STREAMS`]. A request whose stream was evicted
+/// restarts the listing and skips to its offset.
+#[derive(Default)]
+struct DirectoryStreams {
+    waiting: HashMap<(u64, u64), DirectoryStream>,
+    parked: u64,
+}
+
+impl DirectoryStreams {
+    fn take(&mut self, inode: u64, offset: u64) -> Option<DirectoryStream> {
+        self.waiting.remove(&(inode, offset))
+    }
+
+    fn park(&mut self, inode: u64, mut stream: DirectoryStream) {
+        if self.waiting.len() >= MAXIMUM_DIRECTORY_STREAMS
+            && let Some(oldest) = self
+                .waiting
+                .iter()
+                .min_by_key(|(_, stream)| stream.parked)
+                .map(|(key, _)| *key)
+        {
+            self.waiting.remove(&oldest);
+        }
+        self.parked = self.parked.wrapping_add(1);
+        stream.parked = self.parked;
+        self.waiting.insert((inode, stream.emitted), stream);
+    }
+
+    fn rename_prefix(&mut self, source: &MountPath, destination: &MountPath) {
+        for stream in self.waiting.values_mut() {
+            if let Some(rebased) = replace_prefix(&stream.path, source, destination) {
+                stream.path = rebased;
+            }
+        }
+    }
 }
 
 /// One name of an inode.
@@ -171,8 +219,8 @@ impl Binding {
 struct InodeEntry {
     bindings: Vec<Binding>,
     lookup: MountLookup,
-    /// Position after which `lookup` was resolved through a name; `None`
-    /// for facts read through a handle, which authorize no reuse.
+    /// Position after which `lookup` was read, through a name or a handle;
+    /// `None` when unknown.
     facts: Option<ViewStamp>,
     /// Lower bound on the position everything the kernel holds for this
     /// inode (attributes, pages, listing, link target) was derived after.
@@ -223,11 +271,27 @@ impl InodeEntry {
     }
 
     /// The position the node facts are current after, if they still are.
+    ///
+    /// A directory's attributes follow its listing, which the source tracks
+    /// by path; every other node's attributes change only with the node.
     fn current_facts(&self, source: &dyn MountFilesystem) -> Option<ViewStamp> {
-        let anchor = self.bindings.first()?;
-        self.facts.filter(|stamp| {
-            source.unchanged_since(&anchor.path, Some(self.lookup.node.file_id), *stamp)
-        })
+        let stamp = self.facts?;
+        let file_id = self.lookup.node.file_id;
+        let current = if self.lookup.node.kind == MountNodeKind::Directory {
+            self.bindings
+                .first()
+                .is_some_and(|anchor| source.unchanged_since(&anchor.path, Some(file_id), stamp))
+        } else {
+            source.node_unchanged_since(file_id, stamp)
+        };
+        current.then_some(stamp)
+    }
+
+    /// Whether the node certainly has no named attributes: its current
+    /// metadata carries no attribute table, which every source reads first.
+    fn lacks_named_attributes(&self, source: &dyn MountFilesystem) -> bool {
+        self.lookup.metadata.named_attributes == MetadataField::Unavailable
+            && self.current_facts(source).is_some()
     }
 
     /// Records the version a new handle opens and reports whether pages the
@@ -373,7 +437,7 @@ struct ProjectionState {
     inode_by_path: HashMap<MountPath, u64>,
     inode_by_file: HashMap<crate::FileId, u64>,
     files: HashMap<u64, FileHandle>,
-    directories: HashMap<u64, DirectoryHandle>,
+    streams: DirectoryStreams,
     invalidation: InvalidationQueue,
 }
 
@@ -575,16 +639,15 @@ impl ProjectionState {
             return Err(libc::ESTALE);
         }
         entry.lookup = lookup;
-        match &resolved.through {
-            Some(path) => {
-                entry.facts = resolved.stamp;
-                if let Some(binding) = entry.binding_mut(path) {
-                    binding.verified = resolved.stamp;
-                }
-            }
-            // Handle identity can intentionally outlive its namespace
-            // binding. Never authorize path-cache reuse from it.
-            None => entry.facts = None,
+        entry.facts = resolved.stamp;
+        // A handle can outlive its names, so only a name it was resolved
+        // through is verified.
+        if let Some(binding) = resolved
+            .through
+            .as_ref()
+            .and_then(|path| entry.binding_mut(path))
+        {
+            binding.verified = resolved.stamp;
         }
         let ttl = self.admit(source, inode, resolved.through.as_ref(), resolved.stamp);
         Ok((self.attr(inode, &lookup)?, ttl))
@@ -604,18 +667,18 @@ impl ProjectionState {
                 .map(|open_file| Err(NodeFacts::Handle(open_file)));
         }
         let entry = self.by_inode.get(&inode).ok_or(libc::ESTALE)?;
+        if let Some(stamp) = entry.current_facts(source) {
+            return Ok(Ok(Resolved {
+                lookup: entry.lookup,
+                stamp: Some(stamp),
+                through: entry.bindings.first().map(|binding| binding.path.clone()),
+            }));
+        }
         if entry.bindings.is_empty() {
             return self
                 .open_inode(inode)
                 .map(|open_file| Err(NodeFacts::Handle(open_file)))
                 .ok_or(libc::ESTALE);
-        }
-        if let Some(stamp) = entry.current_facts(source) {
-            return Ok(Ok(Resolved {
-                lookup: entry.lookup,
-                stamp: Some(stamp),
-                through: Some(entry.anchor().clone()),
-            }));
         }
         Ok(Err(NodeFacts::Names {
             file_id: (inode != ROOT_INODE).then_some(entry.lookup.node.file_id),
@@ -776,6 +839,24 @@ impl ProjectionState {
             .map(|file| Arc::clone(&file.open_file))
     }
 
+    /// Where to read `inode`'s named attributes; `None` when its current
+    /// facts prove it has none, as the kernel's capability check before
+    /// every write asks, so no source call is needed.
+    fn attributes_to_read(
+        &self,
+        source: &dyn MountFilesystem,
+        inode: u64,
+    ) -> Result<Option<AttributeTarget>, i32> {
+        if self
+            .by_inode
+            .get(&inode)
+            .is_some_and(|entry| entry.lacks_named_attributes(source))
+        {
+            return Ok(None);
+        }
+        self.attribute_target(inode).map(Some)
+    }
+
     fn attribute_target(&self, inode: u64) -> Result<AttributeTarget, i32> {
         match self.open_inode(inode) {
             Some(open_file) => Ok(AttributeTarget::Handle(open_file)),
@@ -786,13 +867,13 @@ impl ProjectionState {
     }
 
     /// Replaces the node facts of a handle's inode with facts read through
-    /// that handle, which authorize no path-cache reuse.
-    fn apply_handle_facts(&mut self, inode: u64, lookup: MountLookup) {
+    /// that handle after `stamp`.
+    fn apply_handle_facts(&mut self, inode: u64, lookup: MountLookup, stamp: Option<ViewStamp>) {
         if let Some(entry) = self.by_inode.get_mut(&inode)
             && entry.lookup.node.file_id == lookup.node.file_id
         {
             entry.lookup = lookup;
-            entry.facts = None;
+            entry.facts = stamp;
         }
     }
 
@@ -874,11 +955,7 @@ impl ProjectionState {
                 }
             }
         }
-        for directory in self.directories.values_mut() {
-            if let Some(rebased) = replace_prefix(&directory.path, source, destination) {
-                directory.path = rebased;
-            }
-        }
+        self.streams.rename_prefix(source, destination);
         self.inode_by_path.clear();
         for (inode, entry) in &self.by_inode {
             for binding in &entry.bindings {
@@ -887,11 +964,30 @@ impl ProjectionState {
         }
     }
 
-    fn open_directory(
+    /// Kernel caching of `inode`'s listing: the kernel resets a cached
+    /// listing whenever the directory changes through the mount or its
+    /// modification time changes, and the invalidator drops it when the
+    /// source changes around the mount. A source without view stamps cannot
+    /// report that, so its listings are never kept.
+    fn directory_open_flags(source: &dyn MountFilesystem) -> FopenFlags {
+        if source.view_stamp().is_some() {
+            FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE
+        } else {
+            FopenFlags::empty()
+        }
+    }
+
+    /// The stream the kernel resumes `inode`'s listing at `offset` from: the
+    /// one parked there, or a fresh one that must first skip to it.
+    fn directory_stream(
         &mut self,
         source: &dyn MountFilesystem,
         inode: u64,
-    ) -> Result<(u64, FopenFlags), i32> {
+        offset: u64,
+    ) -> Result<DirectoryStream, i32> {
+        if let Some(stream) = self.streams.take(inode, offset) {
+            return Ok(stream);
+        }
         if !source.view_is_stable() {
             return Err(libc::ESTALE);
         }
@@ -899,60 +995,40 @@ impl ProjectionState {
         let parent_inode = split_parent(&path)
             .and_then(|(parent, _name)| self.inode_by_path.get(&parent).copied())
             .unwrap_or(ROOT_INODE);
-        let handle = self.next_handle;
-        self.next_handle = self.next_handle.saturating_add(1).max(1);
-        self.directories.insert(
-            handle,
-            DirectoryHandle {
-                path,
-                parent_inode,
-                binding_epoch: source.binding_epoch(),
-                cursor: None,
-                entries: VecDeque::new(),
-                entries_stamp: None,
-                exhausted: false,
-                emitted: 0,
-            },
-        );
-        // The kernel resets a cached listing whenever the directory changes
-        // through the mount or its modification time changes, and the
-        // invalidator drops it when the source changes around the mount. A
-        // source without view stamps cannot report that, so it is never kept.
-        let cached = if source.view_stamp().is_some() {
-            FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE
-        } else {
-            FopenFlags::empty()
-        };
-        Ok((handle, cached))
+        Ok(DirectoryStream {
+            path,
+            parent_inode,
+            binding_epoch: source.binding_epoch(),
+            cursor: None,
+            entries: VecDeque::new(),
+            entries_stamp: None,
+            exhausted: false,
+            emitted: 0,
+            parked: 0,
+        })
     }
 
-    /// Emits an open directory handle's buffered entries into one kernel
-    /// listing reply; [`FuseProjection::buffer_directory_page`] reads the next
-    /// source page beforehand, outside this state's lock.
+    /// Emits a stream's buffered entries into one kernel listing reply;
+    /// [`FuseProjection::position_directory_stream`] reads the next source
+    /// page beforehand, outside this state's lock.
     fn list_directory<L: DirectoryListing>(
         &mut self,
         source: &dyn MountFilesystem,
         inode: u64,
-        handle: u64,
-        offset: u64,
+        stream: &mut DirectoryStream,
         mut listing: L,
     ) {
-        let Some(directory) = self.directories.get(&handle) else {
-            return listing.error(Errno::from_i32(libc::ESTALE));
-        };
-        if offset != directory.emitted {
-            return listing.error(Errno::from_i32(libc::EINVAL));
-        }
-        let entries_stamp = directory.entries_stamp;
-        if directory.emitted == 0 {
-            let parent_inode = directory.parent_inode;
+        if stream.emitted < 2 {
+            let parent_inode = stream.parent_inode;
             let attr = match self.node_attr(inode) {
                 Ok(attr) => attr,
                 Err(error) => return listing.error(Errno::from_i32(error)),
             };
             // The kernel never instantiates dot entries, so they carry the
             // directory's own attributes without a cache lifetime.
-            for (dot_inode, name, next) in [(inode, ".", 1), (parent_inode, "..", 2)] {
+            let resumed = stream.emitted;
+            let dots = [(inode, ".", 1), (parent_inode, "..", 2)];
+            for (dot_inode, name, next) in dots.into_iter().filter(|dot| dot.2 > resumed) {
                 let dot = FileAttr {
                     ino: INodeNo(dot_inode),
                     ..attr
@@ -960,26 +1036,21 @@ impl ProjectionState {
                 if listing.push(next, OsStr::new(name), &dot, &Duration::ZERO) {
                     return listing.ok();
                 }
-                if let Some(directory) = self.directories.get_mut(&handle) {
-                    directory.emitted = next;
-                }
+                stream.emitted = next;
             }
         }
-        self.admit_listing(source, inode, entries_stamp);
+        self.admit_listing(source, inode, stream.entries_stamp);
         let mut listed = false;
         loop {
-            let Some(directory) = self.directories.get_mut(&handle) else {
-                return listing.error(Errno::from_i32(libc::ESTALE));
-            };
-            let next = directory.emitted.saturating_add(1);
-            let Some(entry) = directory.entries.pop_front() else {
+            let next = stream.emitted.saturating_add(1);
+            let Some(entry) = stream.entries.pop_front() else {
                 return listing.ok();
             };
-            let child_path = directory.path.child(entry.name.clone());
+            let child_path = stream.path.child(entry.name.clone());
             // A buffered entry is current only while its directory's listing
             // and its own node are.
-            let current = directory.entries_stamp.filter(|stamp| {
-                source.unchanged_since(&directory.path, None, *stamp)
+            let current = stream.entries_stamp.filter(|stamp| {
+                source.unchanged_since(&stream.path, None, *stamp)
                     && source.unchanged_since(&child_path, Some(entry.node.file_id), *stamp)
             });
             let page_lookup = MountLookup {
@@ -1009,7 +1080,7 @@ impl ProjectionState {
                 // Entries already listed stand; the failure repeats on the
                 // kernel's next request, which starts at this entry.
                 Err(error) => {
-                    self.restore_directory_entry(handle, entry);
+                    stream.entries.push_front(entry);
                     if listed {
                         return listing.ok();
                     }
@@ -1023,19 +1094,11 @@ impl ProjectionState {
             };
             if listing.push(next, OsStr::from_bytes(&entry.name), &attr, &ttl) {
                 self.release_listed_reference::<L>(attr.ino.0);
-                self.restore_directory_entry(handle, entry);
+                stream.entries.push_front(entry);
                 return listing.ok();
             }
             listed = true;
-            if let Some(directory) = self.directories.get_mut(&handle) {
-                directory.emitted = next;
-            }
-        }
-    }
-
-    fn restore_directory_entry(&mut self, handle: u64, entry: MountDirectoryEntry) {
-        if let Some(directory) = self.directories.get_mut(&handle) {
-            directory.entries.push_front(entry);
+            stream.emitted = next;
         }
     }
 
@@ -1404,6 +1467,10 @@ fn resolve_node(
 
 struct FuseProjection {
     core: Arc<ProjectionCore>,
+    /// Whether the kernel lists directories without opening them, which it
+    /// then does with the listing cached as [`ProjectionState::directory_open_flags`]
+    /// would allow for a source with view stamps.
+    skips_opendir: bool,
 }
 
 /// One background libfuse session.
@@ -1540,7 +1607,7 @@ impl FuseSession {
             inode_by_path: HashMap::from([(MountPath::root(), ROOT_INODE)]),
             inode_by_file: HashMap::from([(root.node.file_id, ROOT_INODE)]),
             files: HashMap::new(),
-            directories: HashMap::new(),
+            streams: DirectoryStreams::default(),
             invalidation: InvalidationQueue::default(),
         };
         let core = Arc::new(ProjectionCore {
@@ -1553,6 +1620,12 @@ impl FuseSession {
         });
         let observer: Weak<ProjectionCore> = Arc::downgrade(&core);
         core.source.observe_view(observer);
+        // Even with `noatime`, a writable mount pays one GETATTR per file
+        // after the kernel reads its pages from the daemon: every page read
+        // marks the cached access time stale unless the whole superblock is
+        // read-only (`fuse_invalidate_atime`), and `stat` always asks for it.
+        // Pages the kernel retains serve later reads without that cost, and
+        // the daemon answers the GETATTR from its current facts.
         let mut options = vec![
             MountOption::FSName("acyclic-fs".to_owned()),
             MountOption::DefaultPermissions,
@@ -1565,9 +1638,12 @@ impl FuseSession {
         let mut config = Config::default();
         config.mount_options = options;
         config.n_threads = Some(8);
+        // Measured: a descriptor per thread does not change 8-way stat or
+        // read throughput here, whose cost is in the source, not the queue.
         config.clone_fd = false;
         let filesystem = FuseProjection {
             core: Arc::clone(&core),
+            skips_opendir: false,
         };
         let session = fuser::spawn_mount(filesystem, &request.destination, &config)
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
@@ -2097,14 +2173,7 @@ impl FuseProjection {
                 .filter(|file| file.inode == inode && Arc::ptr_eq(&file.operation, &operation))
                 .ok_or(libc::ESTALE)?;
             file.dirty = true;
-            let open_file = Arc::clone(&file.open_file);
-            if let Some(entry) = state.by_inode.get_mut(&inode) {
-                // The write changes the node. Until the handle-relative
-                // refresh below completes, no namespace lookup may reuse this
-                // cached record.
-                entry.facts = None;
-            }
-            open_file
+            Arc::clone(&file.open_file)
         };
 
         #[cfg(test)]
@@ -2114,6 +2183,9 @@ impl FuseProjection {
         open_file
             .write_range(offset, Bytes::copy_from_slice(data))
             .map_err(errno)?;
+        // The write recorded its change to the node, so these facts are
+        // current exactly until the next change.
+        let stamp = self.source().view_stamp();
         let refreshed = open_file.lookup().ok();
         let mut state = self.core.state()?;
         let current = state.files.get(&handle).is_some_and(|file| {
@@ -2122,7 +2194,7 @@ impl FuseProjection {
                 && Arc::ptr_eq(&file.open_file, &open_file)
         });
         if current && let Some(lookup) = refreshed {
-            state.apply_handle_facts(inode, lookup);
+            state.apply_handle_facts(inode, lookup, stamp);
         }
         Ok(length)
     }
@@ -2175,104 +2247,79 @@ impl FuseProjection {
         }
     }
 
-    fn list_directory<L: DirectoryListing>(
-        &self,
-        inode: u64,
-        handle: u64,
-        offset: u64,
-        listing: L,
-    ) {
+    fn list_directory<L: DirectoryListing>(&self, inode: u64, offset: u64, listing: L) {
+        let source = self.source();
         let listed = (|| {
             let names = self.core.names()?;
-            self.buffer_directory_page(handle)?;
-            let expected = self
-                .core
-                .state()?
-                .directories
-                .get(&handle)
-                .ok_or(libc::ESTALE)?
-                .binding_epoch;
-            let source = self.source();
+            let mut stream = self.core.state()?.directory_stream(source, inode, offset)?;
+            self.position_directory_stream(&mut stream, offset)?;
+            let expected = stream.binding_epoch;
             let lease = source
                 .acquire_binding_lease(expected)
                 .ok()
-                .filter(|_| source.view_is_stable() && source.binding_epoch() == expected);
+                .filter(|_| source.view_is_stable() && source.binding_epoch() == expected)
+                .ok_or(libc::ESTALE)?;
             let state = self.core.state()?;
-            Ok((names, lease, state))
+            Ok((names, lease, stream, state))
         })();
         match listed {
-            Ok((_names, Some(_lease), mut state)) => {
-                state.list_directory(self.source(), inode, handle, offset, listing);
+            Ok((_names, _lease, mut stream, mut state)) => {
+                state.list_directory(source, inode, &mut stream, listing);
+                state.streams.park(inode, stream);
                 self.core.release(state);
-            }
-            Ok((_names, None, mut state)) => {
-                state.directories.remove(&handle);
-                listing.error(Errno::ESTALE);
             }
             Err(error) => listing.error(Errno::from_i32(error)),
         }
     }
 
-    /// Buffers source entries for an open directory handle until it holds
-    /// some or its listing is exhausted. Source paging dominates listing
-    /// cost, so it runs outside the state lock; a lease pins the handle's
-    /// binding instead, and the page is labelled with the view it was read
-    /// in.
-    fn buffer_directory_page(&self, handle: u64) -> Result<(), i32> {
+    /// Advances `stream` to `offset` and buffers source entries until it
+    /// holds some or its listing is exhausted. Source paging dominates
+    /// listing cost, so it runs outside the state lock; a lease pins the
+    /// stream's binding instead, and each page is labelled with the view it
+    /// was read in.
+    fn position_directory_stream(
+        &self,
+        stream: &mut DirectoryStream,
+        offset: u64,
+    ) -> Result<(), i32> {
         let source = self.source();
+        // The dot entries need no source page to skip.
+        stream.emitted = stream.emitted.max(offset.min(2));
         loop {
-            let (path, cursor, binding_epoch) = {
-                let state = self.core.state()?;
-                let directory = state.directories.get(&handle).ok_or(libc::ESTALE)?;
-                if !directory.entries.is_empty() || directory.exhausted {
-                    return Ok(());
-                }
-                (
-                    directory.path.clone(),
-                    directory.cursor.clone(),
-                    directory.binding_epoch,
-                )
-            };
-            let (page, entries_stamp) = {
-                let _lease = source
-                    .acquire_binding_lease(binding_epoch)
-                    .map_err(|_| libc::ESTALE)?;
-                let stamp = source.view_stamp();
-                let page = source
-                    .read_directory(&path, cursor.as_deref(), DIRECTORY_PAGE_SIZE)
-                    .map_err(errno)?;
-                if !source.view_is_stable() || source.binding_epoch() != binding_epoch {
-                    return Err(libc::ESTALE);
-                }
-                (page, stamp)
-            };
-            let mut state = self.core.state()?;
-            let directory = state.directories.get_mut(&handle).ok_or(libc::ESTALE)?;
-            // Only the page after the handle's current position may land.
-            if directory.cursor == cursor && directory.entries.is_empty() && !directory.exhausted {
-                directory.exhausted = page.next_cursor.is_none();
-                directory.cursor = page.next_cursor;
-                directory.entries.extend(page.entries);
-                directory.entries_stamp = entries_stamp;
+            if stream.emitted < offset
+                && let Some(_skipped) = stream.entries.pop_front()
+            {
+                stream.emitted += 1;
+                continue;
             }
+            if !stream.entries.is_empty() || stream.exhausted {
+                return Ok(());
+            }
+            let _lease = source
+                .acquire_binding_lease(stream.binding_epoch)
+                .map_err(|_| libc::ESTALE)?;
+            let stamp = source.view_stamp();
+            let page = source
+                .read_directory(&stream.path, stream.cursor.as_deref(), DIRECTORY_PAGE_SIZE)
+                .map_err(errno)?;
+            if !source.view_is_stable() || source.binding_epoch() != stream.binding_epoch {
+                return Err(libc::ESTALE);
+            }
+            stream.exhausted = page.next_cursor.is_none();
+            stream.cursor = page.next_cursor;
+            stream.entries.extend(page.entries);
+            stream.entries_stamp = stamp;
         }
     }
 
-    fn sync_directory(&self, handle: u64) -> Result<(), i32> {
-        if !self.core.state()?.directories.contains_key(&handle) {
-            return Err(libc::ESTALE);
-        }
-        // Directory fsync is an explicit durability boundary too; never hold
-        // the state lock across SDK publication.
-        self.source().flush().map_err(errno)
-    }
-
-    fn attribute_target(&self, inode: u64, write: bool) -> Result<AttributeTarget, i32> {
+    fn attributes_to_write(&self, inode: u64) -> Result<AttributeTarget, i32> {
         let state = self.core.state()?;
-        if write {
-            state.admit_write()?;
-        }
+        state.admit_write()?;
         state.attribute_target(inode)
+    }
+
+    fn attributes_to_read(&self, inode: u64) -> Result<Option<AttributeTarget>, i32> {
+        self.core.state()?.attributes_to_read(self.source(), inode)
     }
 
     fn write_named_attribute(
@@ -2297,7 +2344,7 @@ impl FuseProjection {
         };
         let _names = self.core.names()?;
         let value = Bytes::copy_from_slice(value);
-        match self.attribute_target(inode, true)? {
+        match self.attributes_to_write(inode)? {
             AttributeTarget::Handle(open_file) => {
                 open_file.write_attribute(name.as_bytes(), value, mode)
             }
@@ -2311,9 +2358,12 @@ impl FuseProjection {
 
     fn read_named_attribute(&self, inode: u64, name: &OsStr) -> Result<Bytes, i32> {
         let _names = self.core.names()?;
-        match self.attribute_target(inode, false)? {
-            AttributeTarget::Handle(open_file) => open_file.read_attribute(name.as_bytes()),
-            AttributeTarget::Path(path) => self.source().read_attribute(&path, name.as_bytes()),
+        match self.attributes_to_read(inode)? {
+            Some(AttributeTarget::Handle(open_file)) => open_file.read_attribute(name.as_bytes()),
+            Some(AttributeTarget::Path(path)) => {
+                self.source().read_attribute(&path, name.as_bytes())
+            }
+            None => Ok(None),
         }
         .map_err(|error| match error {
             MountSourceError::NotFound => libc::ENODATA,
@@ -2324,7 +2374,9 @@ impl FuseProjection {
 
     fn list_named_attributes(&self, inode: u64) -> Result<Vec<u8>, i32> {
         let _names = self.core.names()?;
-        let target = self.attribute_target(inode, false)?;
+        let Some(target) = self.attributes_to_read(inode)? else {
+            return Ok(Vec::new());
+        };
         let mut cursor: Option<Vec<u8>> = None;
         let mut encoded = Vec::new();
         loop {
@@ -2359,7 +2411,7 @@ impl FuseProjection {
 
     fn remove_named_attribute(&self, inode: u64, name: &OsStr) -> Result<(), i32> {
         let _names = self.core.names()?;
-        match self.attribute_target(inode, true)? {
+        match self.attributes_to_write(inode)? {
             AttributeTarget::Handle(open_file) => open_file.remove_attribute(name.as_bytes()),
             AttributeTarget::Path(path) => self.source().remove_attribute(&path, name.as_bytes()),
         }
@@ -2404,11 +2456,12 @@ impl FuseProjection {
         open_file
             .allocate_range(offset, length, operation)
             .map_err(errno)?;
+        let stamp = self.source().view_stamp();
         let refreshed = open_file.lookup().ok();
         let mut state = self.core.state()?;
         state.mark_handle_dirty(inode, handle)?;
         if let Some(lookup) = refreshed {
-            state.apply_handle_facts(inode, lookup);
+            state.apply_handle_facts(inode, lookup, stamp);
         }
         Ok(())
     }
@@ -2463,11 +2516,12 @@ impl FuseProjection {
             destination_offset,
             length,
         )?;
+        let stamp = self.source().view_stamp();
         let refreshed = destination_open.lookup().ok();
         let mut state = self.core.state()?;
         state.mark_handle_dirty(destination_inode, destination_handle)?;
         if let Some(lookup) = refreshed {
-            state.apply_handle_facts(destination_inode, lookup);
+            state.apply_handle_facts(destination_inode, lookup, stamp);
         }
         Ok(transferred)
     }
@@ -2555,6 +2609,13 @@ macro_rules! respond {
 impl Filesystem for FuseProjection {
     fn init(&mut self, request: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
         let _ = request;
+        // A kernel that lists without opening keeps every listing cached,
+        // which only a source with view stamps can keep coherent.
+        self.skips_opendir = config
+            .capabilities()
+            .contains(InitFlags::FUSE_NO_OPENDIR_SUPPORT)
+            && ProjectionState::directory_open_flags(self.source())
+                .contains(FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE);
         let supported = REQUESTED_CAPABILITIES & config.capabilities();
         config
             .add_capabilities(supported)
@@ -2868,13 +2929,15 @@ impl Filesystem for FuseProjection {
     }
 
     fn opendir(&self, request: &Request, inode: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
-        let _ = (request, flags);
-        respond!(
-            reply,
-            self.core
-                .state()
-                .and_then(|mut state| state.open_directory(self.source(), inode.0)),
-            |(handle, flags)| reply.opened(FuseFileHandle(handle), flags)
+        let _ = (request, inode, flags);
+        // `ENOSYS` tells the kernel to list every directory without opening
+        // it from now on, with its listing cached.
+        if self.skips_opendir {
+            return reply.error(Errno::ENOSYS);
+        }
+        reply.opened(
+            FuseFileHandle(0),
+            ProjectionState::directory_open_flags(self.source()),
         );
     }
 
@@ -2886,9 +2949,9 @@ impl Filesystem for FuseProjection {
         offset: u64,
         reply: ReplyDirectory,
     ) {
-        let _ = request;
+        let _ = (request, fh);
         let _origin = self.core.origin.enter();
-        self.list_directory(inode.0, fh.0, offset, reply);
+        self.list_directory(inode.0, offset, reply);
     }
 
     fn readdirplus(
@@ -2899,9 +2962,9 @@ impl Filesystem for FuseProjection {
         offset: u64,
         reply: ReplyDirectoryPlus,
     ) {
-        let _ = request;
+        let _ = (request, fh);
         let _origin = self.core.origin.enter();
-        self.list_directory(inode.0, fh.0, offset, reply);
+        self.list_directory(inode.0, offset, reply);
     }
 
     fn releasedir(
@@ -2912,11 +2975,8 @@ impl Filesystem for FuseProjection {
         flags: OpenFlags,
         reply: ReplyEmpty,
     ) {
-        let _ = (request, inode, flags);
-        respond!(reply, self.core.state(), |mut state| {
-            state.directories.remove(&fh.0);
-            reply.ok();
-        });
+        let _ = (request, inode, fh, flags);
+        reply.ok();
     }
 
     fn fsyncdir(
@@ -2927,9 +2987,11 @@ impl Filesystem for FuseProjection {
         datasync: bool,
         reply: ReplyEmpty,
     ) {
-        let _ = (request, inode, datasync);
+        let _ = (request, inode, fh, datasync);
         let _origin = self.core.origin.enter();
-        respond!(reply, self.sync_directory(fh.0), |()| reply.ok());
+        // Directory fsync is an explicit durability boundary too; never hold
+        // the state lock across SDK publication.
+        respond!(reply, self.source().flush().map_err(errno), |()| reply.ok());
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3458,6 +3520,79 @@ mod tests {
     }
 
     #[test]
+    fn directory_streams_wait_at_their_offset_and_evict_the_oldest() {
+        let stream = |emitted| super::DirectoryStream {
+            path: MountPath::root(),
+            parent_inode: ROOT_INODE,
+            binding_epoch: None,
+            cursor: None,
+            entries: std::collections::VecDeque::new(),
+            entries_stamp: None,
+            exhausted: false,
+            emitted,
+            parked: 0,
+        };
+        let mut streams = super::DirectoryStreams::default();
+        for offset in 0..super::MAXIMUM_DIRECTORY_STREAMS as u64 {
+            streams.park(ROOT_INODE, stream(offset));
+        }
+        assert!(streams.take(ROOT_INODE, 3).is_some());
+        assert!(
+            streams.take(ROOT_INODE, 3).is_none(),
+            "a stream resumes once"
+        );
+        streams.park(ROOT_INODE, stream(3));
+        streams.park(ROOT_INODE, stream(1_000));
+        assert!(
+            streams.take(ROOT_INODE, 0).is_none(),
+            "the longest-waiting stream makes room"
+        );
+        assert!(streams.take(ROOT_INODE, 3).is_some());
+        assert!(streams.take(ROOT_INODE, 1_000).is_some());
+        assert!(streams.take(ROOT_INODE + 1, 1).is_none());
+    }
+
+    #[test]
+    fn node_facts_follow_the_node_and_directory_facts_its_listing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (source, _) = shared_sources()?;
+        let file = source.create_file(&name("file"), FileMetadata::default())?;
+        let directory = source.create_directory(&name("directory"), FileMetadata::default())?;
+        let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
+        let mut file_entry = InodeEntry::new(name("file"), file, Some(stamp), 1);
+        let directory_entry = InodeEntry::new(name("directory"), directory, Some(stamp), 1);
+        assert_eq!(file_entry.current_facts(&source), Some(stamp));
+        assert!(file_entry.lacks_named_attributes(&source));
+
+        // Names changing around a node leave its facts current...
+        source.create_file(&name("sibling"), FileMetadata::default())?;
+        source.hard_link(&name("sibling"), &name("alias"))?;
+        assert_eq!(file_entry.current_facts(&source), Some(stamp));
+        // ...but not a directory's, whose listing they change.
+        source.create_file(
+            &name("directory").child(b"child".to_vec()),
+            FileMetadata::default(),
+        )?;
+        assert_eq!(directory_entry.current_facts(&source), None);
+
+        // A change to the node supersedes its facts.
+        source.write_range(&name("file"), 0, Bytes::from_static(b"changed"))?;
+        assert_eq!(file_entry.current_facts(&source), None);
+        assert!(!file_entry.lacks_named_attributes(&source));
+        file_entry.facts = source.view_stamp();
+        file_entry.lookup = source.lookup(&name("file"))?.ok_or("file")?;
+        assert!(file_entry.lacks_named_attributes(&source));
+        source.write_attribute(
+            &name("file"),
+            b"user.present",
+            Bytes::from_static(b"value"),
+            MountAttributeWriteMode::Upsert,
+        )?;
+        assert!(!file_entry.lacks_named_attributes(&source));
+        Ok(())
+    }
+
+    #[test]
     fn rename_noreplace_matches_linux_libc() {
         assert_eq!(super::RENAME_NOREPLACE, libc::RENAME_NOREPLACE);
     }
@@ -3704,6 +3839,94 @@ mod tests {
 
     #[test]
     #[ignore = "requires a live Linux FUSE mount"]
+    fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::error::Error>> {
+        let (inner, _) = shared_sources()?;
+        let volume_id = inner.volume_id()?;
+        let counted = Arc::new(GatedSource::ungated(Arc::new(inner)));
+        let temporary = tempfile::tempdir()?;
+        let mut session = mount(
+            Arc::clone(&counted) as Arc<dyn MountFilesystem>,
+            volume_id,
+            temporary.path(),
+        )?;
+        let written = temporary.path().join("written");
+        std::fs::write(&written, b"first")?;
+        let before = counted.reads().len();
+        // The kernel asks whether each write must drop capabilities, and
+        // stats after writes; the facts the writes returned answer both.
+        for body in [b"second write".as_slice(), b"third".as_slice()] {
+            let mut file = std::fs::OpenOptions::new().write(true).open(&written)?;
+            std::io::Write::write_all(&mut file, body)?;
+            drop(file);
+            assert_eq!(std::fs::metadata(&written)?.len(), 12);
+        }
+        // The directory's own attributes change with each write's parent
+        // update and are read again; the written file's never are.
+        assert!(
+            !counted.reads()[before..].contains(&b"written".to_vec()),
+            "a stat or capability check after a write went back to the source"
+        );
+        assert_eq!(std::fs::read(&written)?, b"thirdd write");
+        assert!(session.stop()?);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a live Linux FUSE mount"]
+    fn linux_listings_resume_across_pages_and_readers() -> Result<(), Box<dyn std::error::Error>> {
+        let (inner, around) = shared_sources()?;
+        let volume_id = inner.volume_id()?;
+        inner.create_directory(&name("many"), FileMetadata::default())?;
+        let mut expected = (0..700)
+            .map(|index| format!("entry-{index:04}"))
+            .collect::<Vec<_>>();
+        for entry in &expected {
+            inner.create_file(
+                &name("many").child(entry.as_bytes().to_vec()),
+                FileMetadata::default(),
+            )?;
+        }
+        let temporary = tempfile::tempdir()?;
+        let mut session = mount(
+            Arc::new(inner) as Arc<dyn MountFilesystem>,
+            volume_id,
+            temporary.path(),
+        )?;
+        let many = temporary.path().join("many");
+        let names = |directory: &std::path::Path| -> std::io::Result<Vec<String>> {
+            let mut names = listing(directory)?
+                .into_iter()
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            names.sort();
+            Ok(names)
+        };
+        // Several readers list concurrently, each across many kernel pages.
+        std::thread::scope(|scope| {
+            let readers = (0..4)
+                .map(|_| scope.spawn(|| names(&many)))
+                .collect::<Vec<_>>();
+            for reader in readers {
+                let listed = reader.join().map_err(|_| "reader panicked")??;
+                assert_eq!(listed, expected);
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        // A change around the mount reaches the cached listing.
+        around.create_file(
+            &name("many").child(b"added".to_vec()),
+            FileMetadata::default(),
+        )?;
+        session.revalidate()?;
+        expected.push("added".to_owned());
+        expected.sort();
+        assert_eq!(names(&many)?, expected);
+        assert!(session.stop()?);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a live Linux FUSE mount"]
     fn linux_rebind_reaches_every_kernel_cache() -> Result<(), Box<dyn std::error::Error>> {
         let (reader, writer) = tracking_sources()?;
         let reader = Arc::new(reader);
@@ -3747,6 +3970,38 @@ mod tests {
         gated_directory: Vec<u8>,
         entered: SyncSender<()>,
         released: Mutex<Receiver<()>>,
+        /// The final name of every lookup and attribute read that reached
+        /// the source, in order.
+        reads: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl GatedSource {
+        fn ungated(inner: Arc<dyn MountFilesystem>) -> Self {
+            let (entered, _) = sync_channel(0);
+            let (_, released) = sync_channel(0);
+            Self {
+                inner,
+                gated_lookup: Vec::new(),
+                gated_directory: Vec::new(),
+                entered,
+                released: Mutex::new(released),
+                reads: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn record_read(&self, path: &MountPath) {
+            self.reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(path.components().last().cloned().unwrap_or_default());
+        }
+
+        fn reads(&self) -> Vec<Vec<u8>> {
+            self.reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
     }
 
     impl GatedSource {
@@ -3775,6 +4030,9 @@ mod tests {
         fn view_stamp(&self) -> Option<ViewStamp> {
             self.inner.view_stamp()
         }
+        fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
+            self.inner.node_unchanged_since(file_id, stamp)
+        }
         fn unchanged_since(
             &self,
             path: &MountPath,
@@ -3799,6 +4057,7 @@ mod tests {
             self.inner.acquire_binding_lease(expected_epoch)
         }
         fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
+            self.record_read(path);
             self.pass(path, &self.gated_lookup);
             self.inner.lookup(path)
         }
@@ -3883,6 +4142,7 @@ mod tests {
             path: &MountPath,
             name: &[u8],
         ) -> Result<Option<Bytes>, MountSourceError> {
+            self.record_read(path);
             self.inner.read_attribute(path, name)
         }
         fn list_attributes(
@@ -4036,6 +4296,7 @@ mod tests {
             gated_directory: b"blocked-mkdir".to_vec(),
             entered,
             released: Mutex::new(released),
+            reads: Mutex::new(Vec::new()),
         });
         let temporary = tempfile::tempdir()?;
         let mut session = mount(gated, volume_id, temporary.path())?;

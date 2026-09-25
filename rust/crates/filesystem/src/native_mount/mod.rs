@@ -612,6 +612,14 @@ pub trait MountFilesystem: Send + Sync + 'static {
         false
     }
 
+    /// Whether facts about the node `file_id`, read after `stamp` was
+    /// sampled, still describe it: no change after `stamp` touched the node
+    /// under any of its names. Facts that follow from a directory's listing
+    /// also depend on its path, which only [`Self::unchanged_since`] checks.
+    fn node_unchanged_since(&self, _file_id: FileId, _stamp: ViewStamp) -> bool {
+        false
+    }
+
     /// Tells `observer` of every change to this source's view from now on,
     /// together with the origin that made it.
     ///
