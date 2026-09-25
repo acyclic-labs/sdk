@@ -41,7 +41,7 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK,
     PRJ_NOTIFY_TYPES, PRJ_PLACEHOLDER_INFO, PRJ_PLACEHOLDER_VERSION_INFO,
     PRJ_STARTVIRTUALIZING_OPTIONS, PrjAllocateAlignedBuffer, PrjClearNegativePathCache,
-    PrjDeleteFile, PrjFileNameCompare, PrjFileNameMatch, PrjFillDirEntryBuffer,
+    PrjCompleteCommand, PrjDeleteFile, PrjFileNameCompare, PrjFileNameMatch, PrjFillDirEntryBuffer,
     PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder,
     PrjStartVirtualizing, PrjStopVirtualizing, PrjWriteFileData, PrjWritePlaceholderInfo,
     PrjWritePlaceholderInfo2,
@@ -58,6 +58,7 @@ const HR_NOT_SUPPORTED: HRESULT = HRESULT(0x8007_0032_u32.cast_signed());
 const HR_OUT_OF_MEMORY: HRESULT = HRESULT(0x8007_000e_u32.cast_signed());
 const HR_UNEXPECTED: HRESULT = HRESULT(0x8000_ffff_u32.cast_signed());
 const HR_INSUFFICIENT_BUFFER: HRESULT = HRESULT(0x8007_007a_u32.cast_signed());
+const HR_IO_PENDING: HRESULT = HRESULT(0x8007_03e5_u32.cast_signed());
 const HR_FILE_INVALID: HRESULT = HRESULT(0x8007_03ee_u32.cast_signed());
 const HR_IO_DEVICE: HRESULT = HRESULT(0x8007_045d_u32.cast_signed());
 const HR_VIRTUALIZATION_INVALID_OPERATION: HRESULT = HRESULT(0x8007_0181_u32.cast_signed());
@@ -123,7 +124,7 @@ struct Runtime {
     /// Every absence `ProjFS` holds in its negative path cache, with the
     /// basis its lookup began in; `None` when this source cannot version an
     /// absence, so none is cached.
-    negative_paths: Option<Mutex<NegativePaths>>,
+    negative_paths: Option<Absences>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
     post_operation_failure: Arc<Mutex<PostOperationFailures>>,
     callbacks: CallbackGate,
@@ -495,6 +496,162 @@ struct NegativePaths {
     proven: Option<ViewStamp>,
 }
 
+impl NegativePaths {
+    /// Forgets every absence once any may have been filled, through
+    /// `clear`, which clears `ProjFS`'s cache. Nothing is checked while the
+    /// source records no change at all.
+    fn prune(
+        &mut self,
+        source: &dyn MountFilesystem,
+        clear: impl FnOnce() -> Result<(), HRESULT>,
+    ) -> Result<(), HRESULT> {
+        let now = source.view_stamp();
+        if now.is_some() && now == self.proven {
+            return Ok(());
+        }
+        if !self
+            .absent
+            .iter()
+            .all(|(path, basis)| basis.still_describes(source, path, None))
+        {
+            clear()?;
+            self.absent.clear();
+        }
+        self.proven = now;
+        Ok(())
+    }
+
+    /// Decides how one lookup's absence completes. `ProjFS` caches
+    /// `FILE_NOT_FOUND` as a negative path, so that is reported only for an
+    /// absence proven to hold now, and it is recorded for pruning; any other
+    /// absence is the equally absent but uncached `PATH_NOT_FOUND`.
+    fn admit(
+        &mut self,
+        source: &dyn MountFilesystem,
+        path: MountPath,
+        basis: Option<ReadBasis>,
+        clear: impl FnOnce() -> Result<(), HRESULT>,
+    ) -> HRESULT {
+        let Some(basis) = basis.filter(|basis| basis.still_describes(source, &path, None)) else {
+            return HR_PATH_NOT_FOUND;
+        };
+        if self.absent.len() >= MAXIMUM_CACHED_ABSENCES {
+            if clear().is_err() {
+                return HR_PATH_NOT_FOUND;
+            }
+            self.absent.clear();
+        }
+        self.absent.push((path, basis));
+        HR_FILE_NOT_FOUND
+    }
+}
+
+/// One placeholder lookup whose absence is completed asynchronously.
+struct AbsenceReport {
+    command_id: i32,
+    path: MountPath,
+    basis: Option<ReadBasis>,
+}
+
+/// `ProjFS`'s cached absences and the one worker that completes absence
+/// lookups.
+///
+/// `ProjFS` records a negative path only when the lookup completes. The
+/// worker decides and completes each absence while holding `paths`, the
+/// lock every clear also takes, so a clear either precedes a completion,
+/// which then re-proves its absence against the changed view, or follows
+/// it and removes what it recorded. A callback could not do that itself:
+/// it can only return, and `ProjFS` records the result after the return.
+struct Absences {
+    paths: Arc<Mutex<NegativePaths>>,
+    reports: Mutex<Option<std::sync::mpsc::Sender<AbsenceReport>>>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl Absences {
+    /// Starts the worker that completes absences for `context`.
+    fn attach(
+        &self,
+        source: Arc<dyn MountFilesystem>,
+        context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    ) -> Result<(), NativeMountError> {
+        let (sender, receiver) = std::sync::mpsc::channel::<AbsenceReport>();
+        let paths = Arc::clone(&self.paths);
+        let context = SendContext(context);
+        let worker = std::thread::Builder::new()
+            .name("acyclic-projfs-absences".to_owned())
+            .spawn(move || {
+                let context = context;
+                complete_absences(
+                    receiver,
+                    source.as_ref(),
+                    &paths,
+                    || clear_negative_path_cache(context.0),
+                    |command_id, result| {
+                        // A cancelled command has nothing left to complete.
+                        // SAFETY: the context outlives this worker, which
+                        // `stop` joins before it stops virtualizing.
+                        let _ = unsafe { PrjCompleteCommand(context.0, command_id, result, None) };
+                    },
+                );
+            })
+            .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+        *lock_recover(&self.reports) = Some(sender);
+        *lock_recover(&self.worker) = Some(worker);
+        Ok(())
+    }
+
+    /// Completes `report` asynchronously, or reports the absence uncached
+    /// once the worker has stopped.
+    fn report(&self, report: AbsenceReport) -> HRESULT {
+        let sent = lock_recover(&self.reports)
+            .as_ref()
+            .is_some_and(|reports| reports.send(report).is_ok());
+        if sent {
+            HR_IO_PENDING
+        } else {
+            HR_PATH_NOT_FOUND
+        }
+    }
+
+    /// Stops accepting reports and completes every one already queued.
+    fn finish(&self) {
+        lock_recover(&self.reports).take();
+        if let Some(worker) = lock_recover(&self.worker).take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+/// Decides and completes each queued absence while holding `paths`, so no
+/// clear can fall between an absence's proof and its completion.
+fn complete_absences(
+    reports: std::sync::mpsc::Receiver<AbsenceReport>,
+    source: &dyn MountFilesystem,
+    paths: &Mutex<NegativePaths>,
+    clear: impl Fn() -> Result<(), HRESULT>,
+    complete: impl Fn(i32, HRESULT),
+) {
+    for report in reports {
+        let mut negative = lock_recover(paths);
+        let result = negative.admit(source, report.path, report.basis, &clear);
+        complete(report.command_id, result);
+        drop(negative);
+    }
+}
+
+/// A virtualization context moved to the absence worker. The handle is an
+/// opaque token `ProjFS` accepts from any thread.
+struct SendContext(PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT);
+
+// SAFETY: see `SendContext`; its lifetime is bounded by `Absences::finish`.
+unsafe impl Send for SendContext {}
+
+fn clear_negative_path_cache(context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT) -> Result<(), HRESULT> {
+    // SAFETY: callers hold a context of a live mounted runtime.
+    unsafe { PrjClearNegativePathCache(context, None) }.map_err(|error| error.code())
+}
+
 fn has_pending_capture(failure: &Mutex<PostOperationFailures>, path: &MountPath) -> bool {
     let failure = lock_recover(failure);
     failure.unreplayable.is_some()
@@ -540,9 +697,11 @@ impl ProjFsSession {
 
         // An absence can be cached only by a source that versions its view;
         // any later change of that view clears the cache before new lookups.
-        let negative_paths = source
-            .view_stamp()
-            .map(|_| Mutex::new(NegativePaths::default()));
+        let negative_paths = source.view_stamp().map(|_| Absences {
+            paths: Arc::new(Mutex::new(NegativePaths::default())),
+            reports: Mutex::new(None),
+            worker: Mutex::new(None),
+        });
         let mut runtime = Box::new(Runtime {
             source,
             root: request.destination.clone(),
@@ -610,6 +769,13 @@ impl ProjFsSession {
                 return Err(start_error.into());
             }
         };
+        if let Some(absences) = runtime.negative_paths.as_ref()
+            && let Err(error) = absences.attach(Arc::clone(&runtime.source), context)
+        {
+            // SAFETY: the sole owner stops the context it just started.
+            unsafe { PrjStopVirtualizing(context) };
+            return Err(error.into());
+        }
         Ok(Self {
             context: Some(context),
             runtime: Some(runtime),
@@ -625,6 +791,15 @@ impl ProjFsSession {
             self.flush_callbacks()?;
         }
         if let Some(context) = self.context.take() {
+            // Absences arriving from here on complete uncached; queued ones
+            // complete before the context they need is stopped.
+            if let Some(absences) = self
+                .runtime
+                .as_ref()
+                .and_then(|runtime| runtime.negative_paths.as_ref())
+            {
+                absences.finish();
+            }
             // SAFETY: this is the sole owner and sole stop call for the context.
             unsafe { PrjStopVirtualizing(context) };
         }
@@ -771,73 +946,45 @@ fn forget_negative_paths(
     runtime: &Runtime,
     context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
 ) -> Result<(), NativeMountError> {
-    let Some(negative_paths) = runtime.negative_paths.as_ref() else {
+    let Some(absences) = runtime.negative_paths.as_ref() else {
         return Ok(());
     };
-    let mut negative = lock_recover(negative_paths);
-    // SAFETY: the context belongs to this live mounted runtime.
-    unsafe { PrjClearNegativePathCache(context, None) }.map_err(|error| driver_error(&error))?;
+    let mut negative = lock_recover(&absences.paths);
+    clear_negative_path_cache(context)
+        .map_err(|code| driver_error(&windows::core::Error::from_hresult(code)))?;
     *negative = NegativePaths::default();
     Ok(())
 }
 
-/// Keeps `ProjFS`'s cached absences exact: once any of them may have been
-/// filled, all are forgotten. Nothing is checked while the source records
-/// no change at all.
+/// Keeps `ProjFS`'s cached absences exact after a source change.
 fn prune_negative_paths(
     runtime: &Runtime,
     context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
 ) -> Result<(), HRESULT> {
-    let Some(negative_paths) = runtime.negative_paths.as_ref() else {
+    let Some(absences) = runtime.negative_paths.as_ref() else {
         return Ok(());
     };
-    let source = runtime.source.as_ref();
-    let mut negative = lock_recover(negative_paths);
-    let now = source.view_stamp();
-    if now.is_some() && now == negative.proven {
-        return Ok(());
-    }
-    if !negative
-        .absent
-        .iter()
-        .all(|(path, basis)| basis.still_describes(source, path, None))
-    {
-        // SAFETY: the context belongs to this live mounted runtime.
-        unsafe { PrjClearNegativePathCache(context, None) }.map_err(|error| error.code())?;
-        negative.absent.clear();
-    }
-    negative.proven = now;
-    Ok(())
+    lock_recover(&absences.paths).prune(runtime.source.as_ref(), || {
+        clear_negative_path_cache(context)
+    })
 }
 
-/// Reports one placeholder lookup's absence. `ProjFS` caches
-/// `FILE_NOT_FOUND` as a negative path, so that is reported only for an
-/// absence proven to hold now and recorded for pruning; any other absence is
-/// the equally absent but uncached `PATH_NOT_FOUND`.
+/// Reports one placeholder lookup's absence: through the absence worker
+/// where `ProjFS` caches absences, and uncached otherwise.
 fn report_absence(
     runtime: &Runtime,
-    context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    data: &PRJ_CALLBACK_DATA,
     path: MountPath,
     basis: Option<ReadBasis>,
 ) -> HRESULT {
-    let Some(negative_paths) = runtime.negative_paths.as_ref() else {
+    let Some(absences) = runtime.negative_paths.as_ref() else {
         return HR_FILE_NOT_FOUND;
     };
-    let Some(basis) =
-        basis.filter(|basis| basis.still_describes(runtime.source.as_ref(), &path, None))
-    else {
-        return HR_PATH_NOT_FOUND;
-    };
-    let mut negative = lock_recover(negative_paths);
-    if negative.absent.len() >= MAXIMUM_CACHED_ABSENCES {
-        // SAFETY: the context belongs to this live mounted runtime.
-        if unsafe { PrjClearNegativePathCache(context, None) }.is_err() {
-            return HR_PATH_NOT_FOUND;
-        }
-        negative.absent.clear();
-    }
-    negative.absent.push((path, basis));
-    HR_FILE_NOT_FOUND
+    absences.report(AbsenceReport {
+        command_id: data.CommandId,
+        path,
+        basis,
+    })
 }
 
 /// Reports one typed source failure as its distinct Win32 status. Only the
@@ -1832,7 +1979,7 @@ unsafe extern "system" fn placeholder(callback_data: *const PRJ_CALLBACK_DATA) -
     let (node, pin) = match runtime.source.lookup_pinned(&path) {
         Ok(Some(found)) => found,
         Ok(None) | Err(MountSourceError::NotFound) => {
-            return report_absence(runtime, context, path, basis);
+            return report_absence(runtime, data, path, basis);
         }
         Err(error) => return source_hresult(&error),
     };
@@ -2415,7 +2562,8 @@ fn callbacks() -> PRJ_CALLBACKS {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::{
-        CONTENT_PIN_PROVIDER, CallbackGate, PostOperationFailures, ProjectionCache, ReadBasis,
+        AbsenceReport, CONTENT_PIN_PROVIDER, CallbackGate, HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND,
+        NegativePaths, PostOperationFailures, ProjectionCache, ReadBasis, complete_absences,
         finish_cleanup, flush_callback_gate, placeholder_info, placeholder_pin,
         record_post_operation_failure, recover_cache_only_destination,
         remove_authenticated_destination, source_hresult,
@@ -2881,6 +3029,97 @@ mod tests {
         );
         assert_eq!(std::fs::read(destination.join("stable.txt"))?, b"stable");
         mount.unmount().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_absence_completes_cached_only_if_it_still_holds_when_completing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let absent = windows_path("absent.txt");
+        let clears = std::cell::Cell::new(0);
+        let clear = || {
+            clears.set(clears.get() + 1);
+            Ok(())
+        };
+        let mut negative = NegativePaths::default();
+
+        // Completed in the view it was looked up in, the absence is cached.
+        let basis = ReadBasis::sample(source.as_ref());
+        assert_eq!(
+            negative.admit(source.as_ref(), absent.clone(), basis, clear),
+            HR_FILE_NOT_FOUND
+        );
+        // A later creation makes the next prune forget it.
+        source.create_file(&absent, FileMetadata::default())?;
+        negative
+            .prune(source.as_ref(), clear)
+            .map_err(windows::core::Error::from_hresult)?;
+        assert_eq!(clears.get(), 1);
+        assert!(negative.absent.is_empty());
+
+        // The race: a lookup finds the name absent, a prune runs and proves
+        // the (still empty) cache, and the name is created before the lookup
+        // completes. Completion re-proves the absence and must not let
+        // `ProjFS` cache it, since no later prune would find it to clear.
+        let late = windows_path("late.txt");
+        let basis = ReadBasis::sample(source.as_ref());
+        negative
+            .prune(source.as_ref(), clear)
+            .map_err(windows::core::Error::from_hresult)?;
+        source.create_file(&late, FileMetadata::default())?;
+        assert_eq!(
+            negative.admit(source.as_ref(), late, basis, clear),
+            HR_PATH_NOT_FOUND
+        );
+        assert!(negative.absent.is_empty());
+        // A view that cannot be versioned is never cached.
+        assert_eq!(
+            negative.admit(source.as_ref(), windows_path("unversioned"), None, clear),
+            HR_PATH_NOT_FOUND
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn absences_complete_while_every_clear_is_excluded()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let paths = Mutex::new(NegativePaths::default());
+        let (reports, queue) = std::sync::mpsc::channel();
+        let basis = ReadBasis::sample(source.as_ref());
+        for (command_id, name) in [(1, "first"), (2, "second")] {
+            reports.send(AbsenceReport {
+                command_id,
+                path: windows_path(name),
+                basis,
+            })?;
+        }
+        drop(reports);
+        let completed = Mutex::new(Vec::new());
+        complete_absences(
+            queue,
+            source.as_ref(),
+            &paths,
+            || Ok(()),
+            |command_id, result| {
+                // A clear, which takes this lock, cannot run until the
+                // completion `ProjFS` records has been delivered.
+                assert!(
+                    matches!(paths.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
+                    "completed without excluding clears"
+                );
+                completed
+                    .lock()
+                    .expect("completions")
+                    .push((command_id, result));
+            },
+        );
+        assert_eq!(
+            *completed.lock().expect("completions"),
+            [(1, HR_FILE_NOT_FOUND), (2, HR_FILE_NOT_FOUND)]
+        );
+        assert_eq!(paths.lock().expect("absences").absent.len(), 2);
         Ok(())
     }
 
