@@ -607,16 +607,117 @@ pub fn write_all_batch_async(file: File, writes: Vec<OwnedWrite>) -> UnitComplet
     UnitCompletion::submit(file, NativeUnitOperation::Write(writes), None, None)
 }
 
-/// Starts the current executable's `__service` mode without inheriting host
-/// standard-I/O handles.
+/// The argument that tells a service started by [`spawn_service_process`]
+/// that its standard output is the readiness channel.
+pub const SERVICE_READY_ARGUMENT: &str = "--signal-ready";
+
+/// The starter's end of a service's readiness channel.
+#[derive(Debug)]
+pub struct ServiceReadiness(File);
+
+impl ServiceReadiness {
+    /// Blocks until the service signals that it answers requests (`true`),
+    /// or exits without signalling (`false`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure to read the channel.
+    pub fn wait(mut self) -> io::Result<bool> {
+        let mut signal = [0_u8; 1];
+        loop {
+            match self.0.read(&mut signal) {
+                Ok(read) => return Ok(read != 0),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                // A closed Windows pipe reports that its writer is gone.
+                Err(error) if error.kind() == io::ErrorKind::BrokenPipe => return Ok(false),
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+/// The service's end of its readiness channel.
+#[derive(Debug)]
+pub struct ServiceReadySignal(File);
+
+impl ServiceReadySignal {
+    /// Tells the starter that the service answers requests, and closes the
+    /// channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure to write the channel, such as a starter that has
+    /// already exited.
+    pub fn signal(mut self) -> io::Result<()> {
+        io::Write::write_all(
+            &mut self.0,
+            b"
+",
+        )
+    }
+}
+
+/// Takes a service's readiness channel from its standard output, which then
+/// discards everything written to it, so nothing the service prints can
+/// reach, or fail on, a starter that has exited. Returns `None` when the
+/// service was not started with [`SERVICE_READY_ARGUMENT`].
 ///
-/// On Windows this uses a detached process group and disables handle
-/// inheritance at process creation, preventing a durable service from keeping
-/// a short-lived hook runner's pipes open.
-pub fn spawn_service_process(executable: &Path) -> io::Result<()> {
+/// # Errors
+///
+/// Returns a failure to detach standard output.
+pub fn take_service_ready_signal() -> io::Result<Option<ServiceReadySignal>> {
+    if !std::env::args_os()
+        .skip(2)
+        .any(|argument| argument == SERVICE_READY_ARGUMENT)
+    {
+        return Ok(None);
+    }
     #[cfg(windows)]
     {
-        windows::spawn_service_process(executable)
+        windows::take_standard_output().map(|file| file.map(ServiceReadySignal))
+    }
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    {
+        take_standard_output().map(|file| Some(ServiceReadySignal(file)))
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+    {
+        Ok(None)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[allow(
+    unsafe_code,
+    reason = "dup2 replaces one descriptor number with an open one"
+)]
+fn take_standard_output() -> io::Result<File> {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+
+    let taken = io::stdout().as_fd().try_clone_to_owned()?;
+    let discard = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
+    // SAFETY: both descriptors are open for the duration of the call.
+    if unsafe { libc::dup2(discard.as_raw_fd(), libc::STDOUT_FILENO) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(File::from(taken))
+}
+
+/// Starts the current executable's `__service` mode without inheriting host
+/// standard-I/O handles, and returns the channel on which the service
+/// signals that it answers requests.
+///
+/// On Windows this uses a detached process group and lets the service
+/// inherit only its readiness channel, preventing a durable service from
+/// keeping a short-lived hook runner's pipes open.
+///
+/// # Errors
+///
+/// Returns a failure to create the channel or the process.
+pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> {
+    #[cfg(windows)]
+    {
+        windows::spawn_service_process(executable).map(ServiceReadiness)
     }
     #[cfg(unix)]
     {
@@ -624,27 +725,21 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<()> {
 
         let mut command = std::process::Command::new(executable);
         command
-            .arg("__service")
+            .args(["__service", SERVICE_READY_ARGUMENT])
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
         // A fresh process group keeps the independently durable service outside the caller's
         // process-tree containment so client teardown cannot substitute for service drain.
         command.process_group(0);
-        command.spawn().map(drop)
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        use std::os::unix::process::CommandExt as _;
-
-        let mut command = std::process::Command::new(executable);
-        command
-            .arg("__service")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .process_group(0);
-        command.spawn().map(drop)
+        let mut child = command.spawn()?;
+        let readiness = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("service readiness channel is missing"))?;
+        Ok(ServiceReadiness(File::from(std::os::fd::OwnedFd::from(
+            readiness,
+        ))))
     }
 }
 
@@ -1965,6 +2060,21 @@ mod tests {
     use std::task::{Poll, Wake};
     use std::thread::Thread;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_service_that_exits_without_signalling_closes_its_readiness_channel() -> io::Result<()> {
+        // This test binary rejects the service arguments and exits, writing
+        // only to its discarded standard error.
+        let readiness = spawn_service_process(&std::env::current_exe()?)?;
+        assert!(!readiness.wait()?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_process_not_started_as_a_signalled_service_has_no_readiness_channel() -> io::Result<()> {
+        assert!(take_service_ready_signal()?.is_none());
+        Ok(())
+    }
 
     #[cfg(any(windows, target_os = "linux"))]
     #[test]

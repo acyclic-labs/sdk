@@ -7145,8 +7145,12 @@ async fn start_control_endpoint(
         let pipe_path = format!(r"\\.\pipe\{opaque_name}");
         #[cfg(test)]
         let endpoint_pipe_path = pipe_path.clone();
+        // The first instance exists before this returns, so a started
+        // endpoint accepts connections at once.
+        let first = create_current_user_pipe(&pipe_path, true).map_err(display)?;
         let task = tokio::spawn(serve_windows_control(
             pipe_path,
+            first,
             control,
             ledger,
             shutdown.clone(),
@@ -7554,21 +7558,23 @@ fn same_user_peer(stream: &tokio::net::UnixStream) -> Result<bool, String> {
 #[cfg(windows)]
 async fn serve_windows_control(
     pipe_path: String,
+    first: tokio::net::windows::named_pipe::NamedPipeServer,
     control: Arc<impl ConcurrentControlRequestDispatcher + 'static>,
     ledger: Arc<ControlLedger>,
     shutdown_sender: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
     #[cfg(test)] accepted: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
-    let mut first = true;
+    let mut next = Some(first);
     let mut connections = tokio::task::JoinSet::new();
     let result = 'result: loop {
-        let server = create_current_user_pipe(&pipe_path, first);
-        let server = match server {
-            Ok(server) => server,
-            Err(error) => break Err(display(error)),
+        let server = match next.take() {
+            Some(server) => server,
+            None => match create_current_user_pipe(&pipe_path, false) {
+                Ok(server) => server,
+                Err(error) => break Err(display(error)),
+            },
         };
-        first = false;
         let connected = loop {
             tokio::select! {
                 connected = server.connect(), if connections.len() < MAXIMUM_CONCURRENT_CONTROL_REQUESTS => break connected,
@@ -7817,10 +7823,14 @@ struct ServiceResources {
 impl ServiceResources {
     async fn open(data: PathBuf) -> Result<(Self, BTreeMap<String, ControlPlane>), String> {
         fs::create_dir_all(data.join("sessions")).map_err(display)?;
+        // A binary that has not been identified since it changed is hashed in
+        // full; that runs alongside opening the filesystem.
+        let identity_data = data.clone();
+        let binary_identity = tokio::task::spawn_blocking(move || service_identity(&identity_data));
         let fs = LocalFs::local(LocalOptions::new(data.join("filesystem")))
             .await
             .map_err(display)?;
-        let binary_identity = service_identity(&data)?;
+        let binary_identity = binary_identity.await.map_err(display)??;
         let resources = Self {
             store: LocalCoreStateStore::open_owned(data.join("core-state")).map_err(display)?,
             shared_roots: SharedRootRegistry::default(),
@@ -10856,7 +10866,9 @@ fn service_lock_is_contended(error: &io::Error) -> bool {
 }
 
 async fn run_service(data: PathBuf) -> Result<(), String> {
-    run_service_with_identity(data, None).await
+    // Taken first, so nothing the service prints can reach its starter.
+    let ready = acyclic_native_runtime::take_service_ready_signal().map_err(display)?;
+    run_service_with_identity(data, None, ready).await
 }
 
 async fn shutdown_service_endpoint(
@@ -10871,14 +10883,18 @@ async fn shutdown_service_endpoint(
     endpoint_result.and(control_result)
 }
 
+/// Runs the service. `ready`, when its starter waits on it, is signalled once
+/// the service answers requests, and closes unsignalled if it exits first,
+/// for instance because another service holds the lock.
 async fn run_service_with_identity(
     data: PathBuf,
     identity_override: Option<String>,
+    ready: Option<acyclic_native_runtime::ServiceReadySignal>,
 ) -> Result<(), String> {
     let Some(lock) = acquire_service_lock(&data)? else {
         return Ok(());
     };
-    let result = run_locked_service(data, identity_override).await;
+    let result = run_locked_service(data, identity_override, ready).await;
     drop(lock);
     result
 }
@@ -10886,6 +10902,7 @@ async fn run_service_with_identity(
 async fn run_locked_service(
     data: PathBuf,
     identity_override: Option<String>,
+    ready: Option<acyclic_native_runtime::ServiceReadySignal>,
 ) -> Result<(), String> {
     let mut service = ConcurrentServiceControl::open(data.clone()).await?;
     if let Some(identity) = identity_override {
@@ -10922,6 +10939,10 @@ async fn run_locked_service(
             };
         }
     };
+    if let Some(ready) = ready {
+        // A starter that stopped waiting has nothing to be told.
+        let _ = ready.signal();
+    }
     let service_result = tokio::select! {
         signal = tokio::signal::ctrl_c() => signal.map_err(display),
         () = upgrade.notified() => Ok(()),
@@ -11043,8 +11064,12 @@ async fn ensure_service(data: &Path) -> Result<(), String> {
         return Ok(());
     }
     let ping = ping_request()?;
-    spawn_service_process(&current_executable()?)?;
+    let readiness = spawn_service_process(&current_executable()?)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    // The service signals once it answers requests. A channel that closes
+    // unsignalled means it exited, typically because another service holds
+    // the lock and is starting; only then does this poll for that one.
+    wait_for_service_readiness(readiness, deadline).await?;
     let last = loop {
         let last = match send_control_request_once(data, &ping).await {
             Ok(active)
@@ -11063,8 +11088,29 @@ async fn ensure_service(data: &Path) -> Result<(), String> {
     Err(format!("Acyclic service did not become ready: {last}"))
 }
 
-fn spawn_service_process(executable: &Path) -> Result<(), String> {
+fn spawn_service_process(
+    executable: &Path,
+) -> Result<acyclic_native_runtime::ServiceReadiness, String> {
     acyclic_native_runtime::spawn_service_process(executable).map_err(display)
+}
+
+/// Waits, until `deadline`, for a started service to signal readiness or
+/// exit. The blocking read runs on its own thread, which the process may
+/// leave behind when it exits.
+async fn wait_for_service_readiness(
+    readiness: acyclic_native_runtime::ServiceReadiness,
+    deadline: std::time::Instant,
+) -> Result<(), String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("acyclic-service-readiness".to_owned())
+        .spawn(move || {
+            let _ = sender.send(readiness.wait());
+        })
+        .map_err(display)?;
+    let wait = deadline.saturating_duration_since(std::time::Instant::now());
+    let _ = tokio::time::timeout(wait, receiver).await;
+    Ok(())
 }
 
 fn ping_request() -> Result<ControlRequest, String> {
@@ -15601,9 +15647,13 @@ mod tests {
                         fs::create_dir_all(data.join("service.identity"))
                             .expect("identity publication obstruction");
                         assert!(
-                            run_service_with_identity(data.clone(), Some("service".to_owned()))
-                                .await
-                                .is_err()
+                            run_service_with_identity(
+                                data.clone(),
+                                Some("service".to_owned()),
+                                None
+                            )
+                            .await
+                            .is_err()
                         );
                         #[cfg(unix)]
                         assert!(!data.join("service.sock").exists());
@@ -15778,6 +15828,7 @@ mod tests {
                             run_service_with_identity(
                                 service_data,
                                 Some("older-service-binary".to_owned()),
+                                None,
                             )
                             .await
                         });
@@ -15830,6 +15881,7 @@ mod tests {
                             run_service_with_identity(
                                 service_data,
                                 Some("older-service-binary".to_owned()),
+                                None,
                             )
                             .await
                         });
