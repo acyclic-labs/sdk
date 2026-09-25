@@ -113,6 +113,8 @@ fn system_time_ns(value: SystemTime) -> Result<i64, i32> {
 mod projfs;
 #[cfg(target_os = "windows")]
 mod provider_stack;
+#[cfg(test)]
+mod stack_budget;
 
 /// Concrete namespace mechanism selected for this binary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
