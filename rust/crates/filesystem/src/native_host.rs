@@ -79,9 +79,11 @@ pub struct HostDataRange {
 pub type HostStat = Metadata;
 
 /// One object's kind, size, times, attributes, and identity, read without
-/// following its name's final link. These are exactly the facts an NTFS
-/// directory index records for each name, so one enumeration reports them
-/// for a whole directory; a link count is not among them.
+/// following its name's final link. Every plain object's facts come from one
+/// `FileStatInformation` query of its file record, by name or by handle, so
+/// a name and a handle on it always agree. An NTFS directory index is never
+/// a source: it may describe an older state of a file written through
+/// another link or through a handle still open.
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug)]
 pub struct HostStat {
@@ -112,8 +114,30 @@ impl HostStat {
         }
     }
 
-    pub fn from_file(file: &File) -> io::Result<Self> {
-        Metadata::from_file(file).map(|metadata| Self::from_metadata(&metadata))
+    /// The facts one `FileStatInformation` query reports for an object
+    /// with no reparse point, on the volume `volume_serial_number` names.
+    fn from_stat_information(
+        information: &windows::Wdk::Storage::FileSystem::FILE_STAT_INFORMATION,
+        volume_serial_number: Option<u32>,
+    ) -> io::Result<Self> {
+        use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
+
+        let unsigned =
+            |value: i64| u64::try_from(value).map_err(|_| io::Error::other("negative stat field"));
+        Ok(Self {
+            file_type: if information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+                cap_std::fs::FileType::dir()
+            } else {
+                cap_std::fs::FileType::file()
+            },
+            len: unsigned(information.EndOfFile)?,
+            attributes: information.FileAttributes,
+            creation_time: unsigned(information.CreationTime)?,
+            last_access_time: unsigned(information.LastAccessTime)?,
+            last_write_time: unsigned(information.LastWriteTime)?,
+            volume_serial_number,
+            file_index: Some(unsigned(information.FileId)?),
+        })
     }
 
     #[must_use]
@@ -243,8 +267,9 @@ impl Iterator for HostStatReader {
     }
 }
 
-/// The names of one held directory, each with the facts its index records,
-/// read one buffer of entries per kernel call.
+/// The names of one held directory, read one buffer of index records per
+/// kernel call, each stat'ed by name relative to the held directory exactly
+/// as a lookup stats it.
 #[cfg(windows)]
 pub struct HostStatReader {
     directory: Dir,
@@ -304,9 +329,7 @@ impl HostStatReader {
     fn take(&mut self, offset: usize) -> io::Result<Option<HostListedEntry>> {
         use std::mem::{offset_of, size_of};
         use std::os::windows::ffi::OsStringExt as _;
-        use windows::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO,
-        };
+        use windows::Win32::Storage::FileSystem::FILE_ID_EXTD_DIR_INFO;
 
         let total = self.buffer.len() * size_of::<u64>();
         let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed directory record");
@@ -356,31 +379,12 @@ impl HostStatReader {
             return Ok(None);
         }
         let name = OsString::from_wide(name);
-        let (index, high) = record.FileId.Identifier.split_at(8);
-        let file_index = u64::from_le_bytes(index.try_into().map_err(|_| malformed())?);
-        // A reparse point is resolved only by the held walk, and an identity
-        // wider than 64 bits has no exact counterpart in a handle query.
-        let stat = (record.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0
-            && record.ReparsePointTag == 0
-            && high.iter().all(|byte| *byte == 0))
-        .then(|| {
-            let unsigned = |value: i64| u64::try_from(value).map_err(|_| malformed());
-            Ok::<_, io::Error>(HostStat {
-                file_type: if record.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
-                    cap_std::fs::FileType::dir()
-                } else {
-                    cap_std::fs::FileType::file()
-                },
-                len: unsigned(record.EndOfFile)?,
-                attributes: record.FileAttributes,
-                creation_time: unsigned(record.CreationTime)?,
-                last_access_time: unsigned(record.LastAccessTime)?,
-                last_write_time: unsigned(record.LastWriteTime)?,
-                volume_serial_number: self.volume_serial_number,
-                file_index: Some(file_index),
-            })
-        })
-        .transpose()?;
+        // The index names the entry; only the file record states its facts.
+        let stat = match stat_at(&self.directory, Path::new(&name), self.volume_serial_number) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
         Ok(Some(HostListedEntry { name, stat }))
     }
 }
@@ -410,6 +414,90 @@ impl Iterator for HostStatReader {
                 }
             }
         }
+    }
+}
+
+/// One `FileStatInformation` query naming `path` relative to `directory`,
+/// which no reparse point may redirect; its object's own reparse tag is
+/// reported, not resolved. `None` when the path names the directory itself
+/// or redirection was refused, which only a held walk may resolve.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn stat_information_at(
+    directory: &Dir,
+    path: &Path,
+) -> io::Result<Option<windows::Wdk::Storage::FileSystem::FILE_STAT_INFORMATION>> {
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
+    use windows::Wdk::Storage::FileSystem::{
+        FILE_STAT_INFORMATION, FileStatInformation, NtQueryInformationByName,
+    };
+    use windows::Win32::Foundation::{
+        HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError,
+        UNICODE_STRING,
+    };
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
+    const REPARSE_POINT_ENCOUNTERED: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
+
+    let Some((mut name, length)) = relative_kernel_name(path) else {
+        return Ok(None);
+    };
+    let name = UNICODE_STRING {
+        Length: length,
+        MaximumLength: length,
+        Buffer: windows::core::PWSTR(name.as_mut_ptr()),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: u32::try_from(std::mem::size_of::<OBJECT_ATTRIBUTES>())
+            .map_err(|_| io::Error::other("object attributes size"))?,
+        RootDirectory: HANDLE(directory.as_handle().as_raw_handle()),
+        ObjectName: &raw const name,
+        // Win32 names are case-insensitive unless the directory says
+        // otherwise; no reparse point may redirect the query.
+        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        ..OBJECT_ATTRIBUTES::default()
+    };
+    let mut status_block = IO_STATUS_BLOCK::default();
+    let mut information = FILE_STAT_INFORMATION::default();
+    // SAFETY: every pointer names a live, correctly sized value for this
+    // synchronous query, and the held directory handle outlives it.
+    let status = unsafe {
+        NtQueryInformationByName(
+            &raw const attributes,
+            &raw mut status_block,
+            (&raw mut information).cast(),
+            u32::try_from(std::mem::size_of::<FILE_STAT_INFORMATION>())
+                .map_err(|_| io::Error::other("stat information size"))?,
+            FileStatInformation,
+        )
+    };
+    if status == REPARSE_POINT_ENCOUNTERED {
+        return Ok(None);
+    }
+    if status.is_err() {
+        // SAFETY: a pure status-code translation.
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        return Err(io::Error::from_raw_os_error(
+            i32::try_from(code).map_err(|_| io::Error::other("unmapped stat status"))?,
+        ));
+    }
+    Ok(Some(information))
+}
+
+/// Stats `path` relative to `directory` with one [`stat_information_at`]
+/// query, on the volume `volume_serial_number` names. `None` when the path
+/// crosses or ends in a reparse point, which only a held walk may resolve.
+#[cfg(windows)]
+fn stat_at(
+    directory: &Dir,
+    path: &Path,
+    volume_serial_number: Option<u32>,
+) -> io::Result<Option<HostStat>> {
+    match stat_information_at(directory, path)? {
+        Some(information) if information.ReparseTag == 0 => {
+            HostStat::from_stat_information(&information, volume_serial_number).map(Some)
+        }
+        _ => Ok(None),
     }
 }
 
@@ -954,31 +1042,7 @@ impl HostRoot {
     /// in any reparse point, which only the held walk may resolve.
     #[cfg(windows)]
     fn stat_by_name(&self, path: &Path) -> io::Result<Option<HostStat>> {
-        use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
-
-        let Some(information) = self.stat_information_by_name(path)? else {
-            return Ok(None);
-        };
-        if information.ReparseTag != 0 {
-            return Ok(None);
-        }
-        let unsigned =
-            |value: i64| u64::try_from(value).map_err(|_| io::Error::other("negative stat field"));
-        Ok(Some(HostStat {
-            file_type: if information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
-                cap_std::fs::FileType::dir()
-            } else {
-                cap_std::fs::FileType::file()
-            },
-            len: unsigned(information.EndOfFile)?,
-            attributes: information.FileAttributes,
-            creation_time: unsigned(information.CreationTime)?,
-            last_access_time: unsigned(information.LastAccessTime)?,
-            last_write_time: unsigned(information.LastWriteTime)?,
-            // A path without reparse points never leaves the root's volume.
-            volume_serial_number: u32::try_from(self.identity.device).ok(),
-            file_index: Some(unsigned(information.FileId)?),
-        }))
+        stat_at(&self.directory, path, self.volume_serial_number())
     }
 
     /// One `FileStatInformation` query naming `path` relative to the held
@@ -986,49 +1050,47 @@ impl HostRoot {
     /// tag is reported, not resolved. `None` when the path names the root
     /// itself or redirection was refused, which only the held walk may
     /// resolve. A name the query answers lies on the root's volume.
-    #[cfg(windows)]
-    #[allow(unsafe_code)]
+    #[cfg(all(windows, feature = "native-mount"))]
     pub(crate) fn stat_information_by_name(
         &self,
         path: &Path,
     ) -> io::Result<Option<windows::Wdk::Storage::FileSystem::FILE_STAT_INFORMATION>> {
-        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
-        use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
-        use windows::Wdk::Storage::FileSystem::{
-            FILE_STAT_INFORMATION, FileStatInformation, NtQueryInformationByName,
-        };
-        use windows::Win32::Foundation::{
-            HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError,
-            UNICODE_STRING,
-        };
-        use windows::Win32::System::IO::IO_STATUS_BLOCK;
-        const REPARSE_POINT_ENCOUNTERED: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
+        stat_information_at(&self.directory, path)
+    }
 
-        let Some((mut name, length)) = relative_kernel_name(path) else {
-            return Ok(None);
+    /// The volume every name resolved without a reparse point lies on.
+    #[cfg(windows)]
+    fn volume_serial_number(&self) -> Option<u32> {
+        u32::try_from(self.identity.device).ok()
+    }
+
+    /// Stats one file this root opened, exactly as [`Self::stat`] stats its
+    /// name: the same query reports the same facts for the same object.
+    #[cfg(not(windows))]
+    pub fn stat_file(&self, file: &File) -> io::Result<HostStat> {
+        Metadata::from_file(file)
+    }
+
+    /// Stats one file this root opened, exactly as [`Self::stat`] stats its
+    /// name: one `FileStatInformation` query on the handle, or, for a
+    /// reparse point, the handle facts the held walk also reads.
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    pub fn stat_file(&self, file: &File) -> io::Result<HostStat> {
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_STAT_INFORMATION, FileStatInformation, NtQueryInformationFile,
         };
-        let name = UNICODE_STRING {
-            Length: length,
-            MaximumLength: length,
-            Buffer: windows::core::PWSTR(name.as_mut_ptr()),
-        };
-        let attributes = OBJECT_ATTRIBUTES {
-            Length: u32::try_from(std::mem::size_of::<OBJECT_ATTRIBUTES>())
-                .map_err(|_| io::Error::other("object attributes size"))?,
-            RootDirectory: HANDLE(self.directory.as_handle().as_raw_handle()),
-            ObjectName: &raw const name,
-            // Win32 names are case-insensitive unless the directory says
-            // otherwise; no reparse point may redirect the query.
-            Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
-            ..OBJECT_ATTRIBUTES::default()
-        };
+        use windows::Win32::Foundation::{HANDLE, RtlNtStatusToDosError};
+        use windows::Win32::System::IO::IO_STATUS_BLOCK;
+
         let mut status_block = IO_STATUS_BLOCK::default();
         let mut information = FILE_STAT_INFORMATION::default();
-        // SAFETY: every pointer names a live, correctly sized value for this
-        // synchronous query, and the held root handle outlives it.
+        // SAFETY: the handle, status block, and correctly sized information
+        // buffer all outlive this synchronous query.
         let status = unsafe {
-            NtQueryInformationByName(
-                &raw const attributes,
+            NtQueryInformationFile(
+                HANDLE(file.as_handle().as_raw_handle()),
                 &raw mut status_block,
                 (&raw mut information).cast(),
                 u32::try_from(std::mem::size_of::<FILE_STAT_INFORMATION>())
@@ -1036,9 +1098,6 @@ impl HostRoot {
                 FileStatInformation,
             )
         };
-        if status == REPARSE_POINT_ENCOUNTERED {
-            return Ok(None);
-        }
         if status.is_err() {
             // SAFETY: a pure status-code translation.
             let code = unsafe { RtlNtStatusToDosError(status) };
@@ -1046,7 +1105,12 @@ impl HostRoot {
                 i32::try_from(code).map_err(|_| io::Error::other("unmapped stat status"))?,
             ));
         }
-        Ok(Some(information))
+        if information.ReparseTag != 0 {
+            return Metadata::from_file(file).map(|metadata| HostStat::from_metadata(&metadata));
+        }
+        // A file opened without traversing a reparse point lies on the
+        // root's volume.
+        HostStat::from_stat_information(&information, self.volume_serial_number())
     }
 
     /// Reads leaf metadata while refusing every intermediate link or reparse point.
@@ -3553,6 +3617,7 @@ mod windows_clone_tests {
     #[test]
     fn by_name_and_listed_stats_report_exactly_what_a_handle_query_does() -> std::io::Result<()> {
         use super::HostStat;
+        use std::io::Write as _;
 
         let temporary = tempfile::tempdir()?;
         std::fs::create_dir(temporary.path().join("directory"))?;
@@ -3561,6 +3626,14 @@ mod windows_clone_tests {
             temporary.path().join("directory").join("file"),
             temporary.path().join("alias"),
         )?;
+        // Growing the file through one link leaves the other link's index
+        // record stale, and an open writer's record is stale until it closes.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(temporary.path().join("directory").join("file"))?
+            .write_all(b" grown through one link")?;
+        let mut writer = std::fs::File::create(temporary.path().join("open"))?;
+        writer.write_all(b"written, never closed")?;
         let root = HostRoot::open(temporary.path())?;
         let same = |fast: &HostStat, held: &HostStat| {
             assert_eq!(fast.file_type(), held.file_type());
@@ -3597,11 +3670,17 @@ mod windows_clone_tests {
                     std::io::Error::other("a plain entry is listed with its facts")
                 })?;
                 same(&listed, &root.stat(&path)?)?;
+                if listed.file_type().is_file() {
+                    same(
+                        &listed,
+                        &root.stat_file(&root.open_file(&path)?.into_std())?,
+                    )?;
+                }
                 names.push(entry.name);
             }
             names.sort();
             let expected: &[&str] = if directory.as_os_str().is_empty() {
-                &["alias", "directory"]
+                &["alias", "directory", "open"]
             } else {
                 &["file"]
             };

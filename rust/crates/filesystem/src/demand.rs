@@ -1091,7 +1091,7 @@ pub mod native {
                 Err(error) => return Err(error.into()),
             };
             let file = file.into_std();
-            let opened = HostStat::from_file(&file)?;
+            let opened = provider.inner.root.stat_file(&file)?;
             if !opened.file_type().is_file() {
                 return Err(DemandError::NotRegularFile);
             }
@@ -1137,7 +1137,7 @@ pub mod native {
         /// file is unmodified (in-place writes), the source path still names
         /// it (replacement by rename), and the root and reference are current.
         fn prove_current(&self, cancellation: &CancellationToken) -> Result<(), DemandError> {
-            let held = HostStat::from_file(&self.file)?;
+            let held = self.provider.inner.root.stat_file(&self.file)?;
             let named = self.provider.inner.root.stat(&self.relative);
             if version(&held) != self.expected
                 || named.as_ref().map(version).ok() != Some(self.expected)
@@ -1695,6 +1695,22 @@ mod tests {
         // A link is listed as itself, never as its target.
         #[cfg(unix)]
         std::os::unix::fs::symlink("directory", root.path().join("link"))?;
+        // Growing a file through one of its links leaves the other link's
+        // directory record describing the old file on NTFS.
+        {
+            use std::io::Write as _;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(root.path().join("file"))?
+                .write_all(b" grown through one link")?;
+        }
+        // A writer still open has not updated its name's directory record.
+        let mut open = std::fs::File::create(root.path().join("open"))?;
+        {
+            use std::io::Write as _;
+            open.write_all(b"written, never closed")?;
+            open.flush()?;
+        }
         let source = NativeDemandSource::open(
             root.path(),
             FilesystemProfile::Portable,
@@ -1707,17 +1723,43 @@ mod tests {
         let page = provider
             .list_page(reference, &path("/")?, None, 16, &cancellation)
             .await?;
-        assert_eq!(page.value.entries.len(), if cfg!(unix) { 4 } else { 3 });
+        assert_eq!(page.value.entries.len(), if cfg!(unix) { 5 } else { 4 });
+        let mut listed = Vec::new();
         for entry in page.value.entries {
             let name = entry
                 .name
                 .unicode_text()
-                .ok_or("listed name is not Unicode")?;
+                .ok_or("listed name is not Unicode")?
+                .to_string();
             let looked_up = provider
                 .lookup(reference, &path(&format!("/{name}"))?, &cancellation)
                 .await?;
             assert_eq!(looked_up.value, Some(entry.node), "{name}");
+            listed.push((name, entry.node));
         }
+        // Every listed version opens: a listing never pins a version that a
+        // handle on the same file disagrees with.
+        for (name, node) in listed {
+            if node.kind != SourceNodeKind::RegularFile {
+                continue;
+            }
+            let file = provider
+                .open_file(
+                    reference,
+                    &path(&format!("/{name}"))?,
+                    node.version,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| format!("{name}: {:?}", failure.error))?
+                .value;
+            let length = node.logical_bytes.ok_or("regular file has no length")?;
+            let read = file
+                .read_range(0, length, &cancellation)
+                .map_err(|failure| format!("{name}: {:?}", failure.error))?;
+            assert_eq!(read.value.len() as u64, length, "{name}");
+        }
+        drop(open);
         Ok(())
     }
 
