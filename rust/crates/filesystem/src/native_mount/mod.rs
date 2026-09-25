@@ -38,7 +38,7 @@ pub use adapter::{CheckoutMountSource, SharedCheckout, SharedCheckoutGuard, Shar
 mod view_gate;
 
 mod view_ledger;
-pub use view_ledger::ViewStamp;
+pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
 mod lazy;
 pub use lazy::LazyMountSource;
@@ -612,6 +612,14 @@ pub trait MountFilesystem: Send + Sync + 'static {
         false
     }
 
+    /// Tells `observer` of every change to this source's view from now on,
+    /// together with the origin that made it.
+    ///
+    /// Drivers keep kernel caches for as long as [`Self::unchanged_since`]
+    /// holds, so a source that returns view stamps must report every change
+    /// here. Sources without stamps are never cached and need not.
+    fn observe_view(&self, _observer: std::sync::Weak<dyn ViewObserver>) {}
+
     /// Changes only when existing path or handle bindings may be replaced by
     /// an external source transition. Ordinary mutations never change it;
     /// they invalidate exactly what they change through [`Self::view_stamp`].
@@ -1097,9 +1105,11 @@ impl NativeMountSession {
     /// A mount owner that rebinds or advances its source calls this before
     /// exposing the new view, even when the advance failed part way. Linux
     /// FUSE retains entries, attributes, and file data until invalidated and
-    /// drops everything derived from the superseded binding; Windows `ProjFS`
-    /// forgets the absences it caches without expiry. macOS attribute caches
-    /// expire on their own. Unchanged views make this a no-op.
+    /// drops what every change made around the mount superseded as the
+    /// source reports it; this waits until every change reported so far has
+    /// reached the kernel. Windows `ProjFS` forgets the absences it caches
+    /// without expiry. macOS attribute caches expire on their own. Unchanged
+    /// views make this a no-op.
     ///
     /// # Errors
     ///

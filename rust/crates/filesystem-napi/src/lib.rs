@@ -6357,6 +6357,28 @@ impl NativeMount {
         self.destination.clone()
     }
 
+    /// Waits until everything the kernel caches through this mount reflects
+    /// every change to the checkout made so far, including changes made
+    /// through the checkout itself rather than the mount.
+    ///
+    /// Such changes reach the mount on their own shortly after they are made;
+    /// call this before reading one through the mount immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns a native driver failure when the mount is stopped or the
+    /// kernel rejects an invalidation.
+    #[napi]
+    pub fn revalidate(&self) -> Result<()> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .ok_or_else(|| napi_error("mount is stopped"))?
+            .revalidate()
+            .map_err(napi_error)
+    }
+
     /// Stops this projection exactly once.
     ///
     /// # Errors

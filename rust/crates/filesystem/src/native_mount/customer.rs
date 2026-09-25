@@ -207,7 +207,7 @@ fn flush_session_callbacks(
     with_live_session(session, NativeMountSession::flush_callbacks)
 }
 
-/// Drops kernel caches derived from the binding a rebind just superseded.
+/// Waits until the kernel caches nothing a change to the source superseded.
 fn revalidate_session(
     session: &Mutex<Option<NativeMountSession>>,
 ) -> Result<(), MountLifecycleError> {

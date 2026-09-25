@@ -1054,6 +1054,13 @@ export interface FsCheckout {
 export interface NativeMount {
   readonly id: Uint8Array;
   readonly destination: string;
+  /**
+   * Waits until the mount reflects every change to its checkout made so far,
+   * including changes made through the checkout rather than the mount. Those
+   * reach the mount on their own shortly after; call this to read one through
+   * the mount immediately.
+   */
+  revalidate(): void;
   stop(): boolean;
 }
 

@@ -10,7 +10,7 @@ use super::{
     CheckoutMountSource, MountAttributePage, MountAttributeWriteMode, MountContentPin,
     MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountNode,
     MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, MountViewLease, capture_root_identity,
+    MountSourceError, MountViewLease, ViewObserver, capture_root_identity,
 };
 use crate::LazySeekTarget;
 use crate::demand::{DemandFile, DemandSource, SourceNode, SourceNodeKind, SourceReference};
@@ -1377,6 +1377,10 @@ where
             .flatten()
     }
 
+    fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
+        self.authored.observe_view(observer);
+    }
+
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
         self.source_view.is_stable() && self.authored.unchanged_since(path, file_id, stamp)
     }
@@ -2609,6 +2613,92 @@ mod tests {
             lazy.lookup("/b").await,
             Err(LazyWorkspaceError::NotFound)
         ));
+        Ok(())
+    }
+
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn removing_a_source_only_file_supersedes_its_cached_lookups()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::native::NativeDemandSource;
+        use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, VolumeLimits};
+        use crate::native_mount::{MountPublication, SharedCheckout, ViewOrigin};
+        use crate::{Fs, MemoryLazyWorkspaceStore};
+
+        #[derive(Default)]
+        struct Recorded(Mutex<Vec<ViewStamp>>);
+
+        impl ViewObserver for Recorded {
+            fn view_changed(&self, position: ViewStamp, _origin: ViewOrigin) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(position);
+            }
+        }
+
+        let source_root = tempfile::tempdir()?;
+        std::fs::write(source_root.path().join("source-only"), b"source")?;
+        let demand = Arc::new(
+            NativeDemandSource::open(
+                source_root.path(),
+                FilesystemProfile::Portable,
+                VolumeLimits::default(),
+            )
+            .await?,
+        );
+        let fs = Fs::memory();
+        let lazy = Arc::new(
+            LazyWorkspace::attach(
+                &fs,
+                "removed-source-only",
+                demand,
+                MemoryLazyWorkspaceStore::default(),
+            )
+            .await?,
+        );
+        let checkout = lazy
+            .workspace()
+            .engine_checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        let config = checkout.volume_config();
+        let authored = Arc::new(CheckoutMountSource::new(
+            Arc::new(SharedCheckout::with_publication(
+                checkout,
+                MountPublication::Manual,
+            )),
+            config,
+        )?);
+        let view = LazyMountSource::new(Arc::clone(&lazy), authored, "/".to_owned())?;
+        let recorded = Arc::new(Recorded::default());
+        let observer: Weak<Recorded> = Arc::downgrade(&recorded);
+        view.observe_view(observer);
+        let path = MountPath::root().child(if cfg!(windows) {
+            "source-only"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect()
+        } else {
+            b"source-only".to_vec()
+        });
+        let stamp = view.view_stamp().ok_or("a lazy view carries stamps")?;
+        let file_id = view.lookup(&path)?.ok_or("source-only file")?.node.file_id;
+        assert!(view.unchanged_since(&path, Some(file_id), stamp));
+
+        view.remove(&path, Some(file_id))?;
+
+        assert_eq!(view.lookup(&path)?, None);
+        assert!(!view.unchanged_since(&path, Some(file_id), stamp));
+        assert!(!view.unchanged_since(&path, None, stamp));
+        assert!(!view.unchanged_since(&MountPath::root(), None, stamp));
+        let positions = recorded.0.lock().map_err(|_| "poisoned observer")?.clone();
+        assert!(
+            positions.iter().any(|position| *position > stamp),
+            "observers learn of the removal"
+        );
         Ok(())
     }
 

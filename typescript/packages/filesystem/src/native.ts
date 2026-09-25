@@ -733,7 +733,12 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     },
     mount(destination, writable) {
       const value = raw.mount(destination, writable);
-      return { get id() { return value.id.slice(); }, destination: value.destination, stop() { return value.stop(); } };
+      return {
+        get id() { return value.id.slice(); },
+        destination: value.destination,
+        revalidate() { value.revalidate(); },
+        stop() { return value.stop(); },
+      };
     },
     async materialize(options) {
       const value = await raw.materialize(options);
