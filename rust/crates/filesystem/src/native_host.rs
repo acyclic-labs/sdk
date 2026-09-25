@@ -73,6 +73,123 @@ pub struct HostDataRange {
     pub length: u64,
 }
 
+/// One object's kind, size, times, and identity, read without following its
+/// name's final link.
+#[cfg(not(windows))]
+pub type HostStat = Metadata;
+
+/// One object's kind, size, times, attributes, and identity, exactly as a
+/// handle query reports them, read without following its name's final link.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug)]
+pub struct HostStat {
+    file_type: cap_std::fs::FileType,
+    len: u64,
+    attributes: u32,
+    creation_time: u64,
+    last_access_time: u64,
+    last_write_time: u64,
+    volume_serial_number: Option<u32>,
+    file_index: Option<u64>,
+    number_of_links: Option<u32>,
+}
+
+#[cfg(windows)]
+impl HostStat {
+    pub fn from_metadata(metadata: &Metadata) -> Self {
+        use cap_primitives::fs::_WindowsByHandle;
+        use cap_std::fs::MetadataExt;
+        Self {
+            file_type: metadata.file_type(),
+            len: metadata.len(),
+            attributes: MetadataExt::file_attributes(metadata),
+            creation_time: metadata.creation_time(),
+            last_access_time: metadata.last_access_time(),
+            last_write_time: metadata.last_write_time(),
+            volume_serial_number: _WindowsByHandle::volume_serial_number(metadata),
+            file_index: _WindowsByHandle::file_index(metadata),
+            number_of_links: _WindowsByHandle::number_of_links(metadata),
+        }
+    }
+
+    pub fn from_file(file: &File) -> io::Result<Self> {
+        Metadata::from_file(file).map(|metadata| Self::from_metadata(&metadata))
+    }
+
+    #[must_use]
+    pub const fn file_type(&self) -> cap_std::fs::FileType {
+        self.file_type
+    }
+
+    #[must_use]
+    pub fn is_dir(&self) -> bool {
+        self.file_type.is_dir()
+    }
+
+    #[must_use]
+    #[allow(
+        clippy::len_without_is_empty,
+        reason = "mirrors Metadata::len: the byte length of the named object"
+    )]
+    pub const fn len(&self) -> u64 {
+        self.len
+    }
+
+    #[must_use]
+    pub const fn file_attributes(&self) -> u32 {
+        self.attributes
+    }
+
+    #[must_use]
+    pub const fn creation_time(&self) -> u64 {
+        self.creation_time
+    }
+
+    #[must_use]
+    pub const fn last_write_time(&self) -> u64 {
+        self.last_write_time
+    }
+
+    #[must_use]
+    pub const fn volume_serial_number(&self) -> Option<u32> {
+        self.volume_serial_number
+    }
+
+    #[must_use]
+    pub const fn file_index(&self) -> Option<u64> {
+        self.file_index
+    }
+
+    #[must_use]
+    pub const fn number_of_links(&self) -> Option<u32> {
+        self.number_of_links
+    }
+
+    pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
+        Ok(windows_time(self.creation_time))
+    }
+
+    pub fn modified(&self) -> io::Result<cap_std::time::SystemTime> {
+        Ok(windows_time(self.last_write_time))
+    }
+
+    pub fn accessed(&self) -> io::Result<cap_std::time::SystemTime> {
+        Ok(windows_time(self.last_access_time))
+    }
+}
+
+/// The instant one `FILETIME` names, as the standard library reads it.
+#[cfg(windows)]
+fn windows_time(ticks: u64) -> cap_std::time::SystemTime {
+    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    let since = |ticks: u64| std::time::Duration::from_nanos(ticks.saturating_mul(100));
+    cap_std::time::SystemTime::from_std(if ticks >= UNIX_EPOCH_TICKS {
+        std::time::UNIX_EPOCH + since(ticks - UNIX_EPOCH_TICKS)
+    } else {
+        std::time::UNIX_EPOCH - since(UNIX_EPOCH_TICKS - ticks)
+    })
+}
+
 /// A held directory capability whose relative operations cannot escape through
 /// path traversal or an intermediate symbolic link/reparse point.
 pub struct HostRoot {
@@ -550,6 +667,125 @@ impl HostRoot {
         } else {
             self.directory.symlink_metadata(path)
         }
+    }
+
+    /// Stats `path` without following its final link, as
+    /// [`Self::symlink_metadata`] does.
+    #[cfg(not(windows))]
+    pub fn stat(&self, path: &Path) -> io::Result<HostStat> {
+        self.symlink_metadata(path)
+    }
+
+    /// Stats `path` without following its final link, as
+    /// [`Self::symlink_metadata`] does. A path free of reparse points is
+    /// answered by one kernel query against the held root, without opening
+    /// a handle per component; any reparse point on it takes the held walk.
+    #[cfg(windows)]
+    pub fn stat(&self, path: &Path) -> io::Result<HostStat> {
+        match self.stat_by_name(path)? {
+            Some(stat) => Ok(stat),
+            None => self
+                .symlink_metadata(path)
+                .map(|metadata| HostStat::from_metadata(&metadata)),
+        }
+    }
+
+    /// One `FileStatInformation` query naming `path` relative to the held
+    /// root. `None` when the path names the root itself or crosses or ends
+    /// in any reparse point, which only the held walk may resolve.
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    fn stat_by_name(&self, path: &Path) -> io::Result<Option<HostStat>> {
+        use std::os::windows::ffi::OsStrExt as _;
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+        use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_STAT_INFORMATION, FileStatInformation, NtQueryInformationByName,
+        };
+        use windows::Win32::Foundation::{
+            HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError,
+            UNICODE_STRING,
+        };
+        use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
+        use windows::Win32::System::IO::IO_STATUS_BLOCK;
+        const REPARSE_POINT_ENCOUNTERED: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
+
+        let mut name = Vec::new();
+        for component in path.components() {
+            let std::path::Component::Normal(component) = component else {
+                return Ok(None);
+            };
+            if !name.is_empty() {
+                name.push(u16::from(b'\\'));
+            }
+            name.extend(component.encode_wide());
+        }
+        let Ok(length) = u16::try_from(name.len() * 2) else {
+            return Ok(None);
+        };
+        if length == 0 {
+            return Ok(None);
+        }
+        let name = UNICODE_STRING {
+            Length: length,
+            MaximumLength: length,
+            Buffer: windows::core::PWSTR(name.as_mut_ptr()),
+        };
+        let attributes = OBJECT_ATTRIBUTES {
+            Length: u32::try_from(std::mem::size_of::<OBJECT_ATTRIBUTES>())
+                .map_err(|_| io::Error::other("object attributes size"))?,
+            RootDirectory: HANDLE(self.directory.as_handle().as_raw_handle()),
+            ObjectName: &raw const name,
+            // Win32 names are case-insensitive unless the directory says
+            // otherwise; no reparse point may redirect the query.
+            Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+            ..OBJECT_ATTRIBUTES::default()
+        };
+        let mut status_block = IO_STATUS_BLOCK::default();
+        let mut information = FILE_STAT_INFORMATION::default();
+        // SAFETY: every pointer names a live, correctly sized value for this
+        // synchronous query, and the held root handle outlives it.
+        let status = unsafe {
+            NtQueryInformationByName(
+                &raw const attributes,
+                &raw mut status_block,
+                (&raw mut information).cast(),
+                u32::try_from(std::mem::size_of::<FILE_STAT_INFORMATION>())
+                    .map_err(|_| io::Error::other("stat information size"))?,
+                FileStatInformation,
+            )
+        };
+        if status == REPARSE_POINT_ENCOUNTERED {
+            return Ok(None);
+        }
+        if status.is_err() {
+            // SAFETY: a pure status-code translation.
+            let code = unsafe { RtlNtStatusToDosError(status) };
+            return Err(io::Error::from_raw_os_error(
+                i32::try_from(code).map_err(|_| io::Error::other("unmapped stat status"))?,
+            ));
+        }
+        if information.ReparseTag != 0 {
+            return Ok(None);
+        }
+        let unsigned =
+            |value: i64| u64::try_from(value).map_err(|_| io::Error::other("negative stat field"));
+        Ok(Some(HostStat {
+            file_type: if information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+                cap_std::fs::FileType::dir()
+            } else {
+                cap_std::fs::FileType::file()
+            },
+            len: unsigned(information.EndOfFile)?,
+            attributes: information.FileAttributes,
+            creation_time: unsigned(information.CreationTime)?,
+            last_access_time: unsigned(information.LastAccessTime)?,
+            last_write_time: unsigned(information.LastWriteTime)?,
+            // A path without reparse points never leaves the root's volume.
+            volume_serial_number: u32::try_from(self.identity.device).ok(),
+            file_index: Some(unsigned(information.FileId)?),
+            number_of_links: Some(information.NumberOfLinks),
+        }))
     }
 
     /// Reads leaf metadata while refusing every intermediate link or reparse point.
@@ -2871,6 +3107,70 @@ mod windows_clone_tests {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         absent_or_complete();
+        Ok(())
+    }
+
+    #[test]
+    fn by_name_stat_reports_exactly_what_a_handle_query_does() -> std::io::Result<()> {
+        use super::HostStat;
+
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("directory"))?;
+        std::fs::write(temporary.path().join("directory").join("file"), b"payload")?;
+        std::fs::hard_link(
+            temporary.path().join("directory").join("file"),
+            temporary.path().join("alias"),
+        )?;
+        let root = HostRoot::open(temporary.path())?;
+        let same = |fast: &HostStat, held: &HostStat| {
+            assert_eq!(fast.file_type(), held.file_type());
+            assert_eq!(fast.len(), held.len());
+            assert_eq!(fast.file_attributes(), held.file_attributes());
+            assert_eq!(fast.creation_time(), held.creation_time());
+            assert_eq!(fast.last_write_time(), held.last_write_time());
+            assert_eq!(fast.volume_serial_number(), held.volume_serial_number());
+            assert_eq!(fast.file_index(), held.file_index());
+            assert_eq!(fast.number_of_links(), held.number_of_links());
+            assert_eq!(fast.created()?, held.created()?);
+            assert_eq!(fast.modified()?, held.modified()?);
+            assert_eq!(fast.accessed()?, held.accessed()?);
+            Ok::<(), std::io::Error>(())
+        };
+        for path in [
+            Path::new("directory"),
+            Path::new("directory/file"),
+            Path::new("DIRECTORY/FILE"),
+        ] {
+            let fast = root
+                .stat_by_name(path)?
+                .ok_or_else(|| std::io::Error::other("a plain path is answered by name"))?;
+            let held = HostStat::from_metadata(&root.symlink_metadata(path)?);
+            same(&fast, &held)?;
+        }
+        assert_eq!(root.stat(Path::new("alias"))?.number_of_links(), Some(2));
+        assert_eq!(
+            root.stat(Path::new("directory/missing"))
+                .map_err(|error| error.kind())
+                .err(),
+            Some(std::io::ErrorKind::NotFound)
+        );
+        // Only the held walk may resolve a reparse point, final or not.
+        assert!(
+            root.stat_by_name(Path::new(""))
+                .map(|stat| stat.is_none())?
+        );
+        match std::os::windows::fs::symlink_dir(
+            temporary.path().join("directory"),
+            temporary.path().join("link"),
+        ) {
+            Ok(()) => {
+                assert!(root.stat_by_name(Path::new("link"))?.is_none());
+                assert!(root.stat_by_name(Path::new("link/file"))?.is_none());
+                assert!(root.stat(Path::new("link"))?.file_type().is_symlink());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+            Err(error) => return Err(error),
+        }
         Ok(())
     }
 

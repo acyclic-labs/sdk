@@ -444,10 +444,12 @@ impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
 pub mod native {
     use super::*;
     use crate::model::{FilesystemProfile, VolumeLimits};
-    use crate::native_host::HostRoot;
+    use crate::native_host::{HostRoot, HostStat};
     #[cfg(unix)]
     use cap_std::fs::FileTypeExt as _;
-    use cap_std::fs::{Metadata, MetadataExt, ReadDir};
+    #[cfg(unix)]
+    use cap_std::fs::MetadataExt;
+    use cap_std::fs::ReadDir;
     use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -862,15 +864,15 @@ pub mod native {
                 .map_err(|_| DemandError::InvalidRequest)
         }
 
-        fn metadata(&self, path: &NamespacePath) -> Result<Option<Metadata>, DemandError> {
-            match self.inner.root.symlink_metadata(&self.relative(path)?) {
+        fn metadata(&self, path: &NamespacePath) -> Result<Option<HostStat>, DemandError> {
+            match self.inner.root.stat(&self.relative(path)?) {
                 Ok(metadata) => Ok(Some(metadata)),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(error.into()),
             }
         }
 
-        fn node(metadata: &Metadata) -> SourceNode {
+        fn node(metadata: &HostStat) -> SourceNode {
             let kind = node_kind(metadata.file_type());
             SourceNode {
                 kind,
@@ -964,11 +966,7 @@ pub mod native {
                 self.inner.limits.maximum_component_bytes,
             )
             .map_err(|_| DemandError::InvalidRequest)?;
-            match self
-                .inner
-                .root
-                .symlink_metadata(&directory.join(&file_name))
-            {
+            match self.inner.root.stat(&directory.join(&file_name)) {
                 Ok(metadata) => Ok(Some(SourceDirectoryEntry {
                     name,
                     node: Self::node(&metadata),
@@ -1084,8 +1082,9 @@ pub mod native {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let opened = file.metadata()?;
-            if !opened.is_file() {
+            let file = file.into_std();
+            let opened = HostStat::from_file(&file)?;
+            if !opened.file_type().is_file() {
                 return Err(DemandError::NotRegularFile);
             }
             if version(&opened) != expected {
@@ -1097,7 +1096,7 @@ pub mod native {
                 relative,
                 expected,
                 logical_bytes: opened.len(),
-                file: file.into_std(),
+                file,
             })
         }
 
@@ -1130,8 +1129,8 @@ pub mod native {
         /// file is unmodified (in-place writes), the source path still names
         /// it (replacement by rename), and the root and reference are current.
         fn prove_current(&self, cancellation: &CancellationToken) -> Result<(), DemandError> {
-            let held = Metadata::from_file(&self.file)?;
-            let named = self.provider.inner.root.symlink_metadata(&self.relative);
+            let held = HostStat::from_file(&self.file)?;
+            let named = self.provider.inner.root.stat(&self.relative);
             if version(&held) != self.expected
                 || named.as_ref().map(version).ok() != Some(self.expected)
             {
@@ -1410,7 +1409,7 @@ pub mod native {
         value.encode_wide().flat_map(u16::to_le_bytes).collect()
     }
 
-    fn version(metadata: &Metadata) -> SourceVersion {
+    fn version(metadata: &HostStat) -> SourceVersion {
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic-fs-native-source-version-v1\0");
         hash.update(&metadata.len().to_le_bytes());
@@ -1429,20 +1428,17 @@ pub mod native {
             hash.update(&metadata.last_write_time().to_le_bytes());
             hash.update(&metadata.creation_time().to_le_bytes());
             hash.update(
-                &cap_primitives::fs::_WindowsByHandle::volume_serial_number(metadata)
+                &metadata
+                    .volume_serial_number()
                     .unwrap_or_default()
                     .to_le_bytes(),
             );
-            hash.update(
-                &cap_primitives::fs::_WindowsByHandle::file_index(metadata)
-                    .unwrap_or_default()
-                    .to_le_bytes(),
-            );
+            hash.update(&metadata.file_index().unwrap_or_default().to_le_bytes());
         }
         SourceVersion(*hash.finalize().as_bytes())
     }
 
-    fn file_identity(metadata: &Metadata) -> [u8; 32] {
+    fn file_identity(metadata: &HostStat) -> [u8; 32] {
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic-fs-native-source-file-v1\0");
         #[cfg(unix)]
@@ -1453,27 +1449,24 @@ pub mod native {
         #[cfg(windows)]
         {
             hash.update(
-                &cap_primitives::fs::_WindowsByHandle::volume_serial_number(metadata)
+                &metadata
+                    .volume_serial_number()
                     .unwrap_or_default()
                     .to_le_bytes(),
             );
-            hash.update(
-                &cap_primitives::fs::_WindowsByHandle::file_index(metadata)
-                    .unwrap_or_default()
-                    .to_le_bytes(),
-            );
+            hash.update(&metadata.file_index().unwrap_or_default().to_le_bytes());
         }
         *hash.finalize().as_bytes()
     }
 
-    fn link_count(metadata: &Metadata) -> Option<u64> {
+    fn link_count(metadata: &HostStat) -> Option<u64> {
         #[cfg(unix)]
         {
             Some(metadata.nlink())
         }
         #[cfg(windows)]
         {
-            cap_primitives::fs::_WindowsByHandle::number_of_links(metadata).map(u64::from)
+            metadata.number_of_links().map(u64::from)
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -1486,7 +1479,7 @@ pub mod native {
         clippy::useless_conversion,
         reason = "dev_t and major/minor result widths differ across Unix targets"
     )]
-    fn device_identity(metadata: &Metadata, kind: SourceNodeKind) -> Option<(u32, u32)> {
+    fn device_identity(metadata: &HostStat, kind: SourceNodeKind) -> Option<(u32, u32)> {
         #[cfg(unix)]
         {
             if !matches!(
@@ -1508,7 +1501,7 @@ pub mod native {
         }
     }
 
-    fn source_metadata(metadata: &Metadata) -> SourceMetadata {
+    fn source_metadata(metadata: &HostStat) -> SourceMetadata {
         let mut result = SourceMetadata {
             created_ns: metadata.created().ok().and_then(system_time_nanos),
             modified_ns: metadata.modified().ok().and_then(system_time_nanos),
