@@ -134,6 +134,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/plan-qualification.mjs select
 
+      # The early Windows job reads this step's conclusion through the API.
+      - name: Windows lane required
+        if: steps.select.outputs.windows == 'true'
+        run: echo 'windows executes in its early-start job'
+
   qualification:
     name: ${{ matrix.lane }}
     needs: plan
@@ -162,157 +167,76 @@ jobs:
           fetch-tags: false
           persist-credentials: false
 
-      # Windows restores caches and unpacks crates slowly, so the toolchain
-      # install and crate unpacking run detached while the caches below restore.
-      - name: Start Windows Rust setup
-        if: runner.os == 'Windows'
+      - name: Run qualification lane
+        uses: ./.github/actions/qualification-lane
+        with:
+          lane: ${{ matrix.lane }}
+          artifact: ${{ matrix.artifact }}
+          artifact_path: ${{ matrix.artifact_path }}
+
+  # Windows is the longest lane and its runners take a minute or more to
+  # provision, so on pull requests it is requested at workflow start rather
+  # than after the plan, then waits for the plan's decision before any work.
+  # Its runner must match the windows entry in .github/qualification-lanes.json.
+  windows:
+    name: windows
+    if: github.event_name == 'pull_request'
+    runs-on: blacksmith-16vcpu-windows-2025
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CARGO_BUILD_JOBS: 16
+      CMAKE_BUILD_PARALLEL_LEVEL: 16
+      MAKEFLAGS: -j16
+      RAYON_NUM_THREADS: 16
+      RUST_TEST_THREADS: 16
+      SCCACHE_CACHE_SIZE: 3G
+    timeout-minutes: 25
+    steps:
+      - name: Await the qualification plan
+        id: plan
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
-          .\scripts\windows-rust-setup.ps1 -Phase start
-
-      - name: Configure lane-local compiler cache
-        shell: bash
-        run: echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
-
-      # Only compressed crate archives and indexes are cached: Cargo unpacks the
-      # sources it needs far faster than a cache can restore them file by file.
-      - name: Restore shared dependencies
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            ${{ runner.temp }}/bun-install-cache
-          key: sdk-deps-v8-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '**/Cargo.lock', 'bun.lock', 'scripts/ensure-bun.sh', 'scripts/ensure-bun.ps1') }}
-          restore-keys: |
-            sdk-deps-v8-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Unpack Windows crates
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: .\scripts\windows-rust-setup.ps1 -Phase dependencies
-
-      - name: Install exact Rust toolchain
-        if: runner.os != 'Windows'
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-        with:
-          toolchain: 1.94.0
-          components: ${{ matrix.lane == 'policy' && 'clippy,rustfmt' || '' }}
-
-      # Every tool is installed under a versioned path or verified by its version
-      # before use, so the first saved tools cache stays a safe starting point.
-      # Bump the version when a pinned tool changes to refresh it.
-      - name: Restore lane tools
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: ${{ runner.temp }}/tools
-          key: sdk-tools-v6-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}
-
-      # Exact cache hits are reliable where prefix fallbacks are not, and saving
-      # a fresh multi-gigabyte cache per commit evicts everything else. Compiler
-      # output is therefore keyed by what shapes compiler invocations (toolchain,
-      # lockfile, manifests, lane scripts), not by workspace sources, which
-      # recompile either way. Lane-local caches restore and save once instead
-      # of contending on sccache object writes.
-      - name: Restore lane build cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: ${{ runner.temp }}/sccache
-          key: sdk-build-v4-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml', '.github/workflows/qualification.yml', 'scripts/qualify-ci.sh', 'scripts/qualify-ci.ps1', 'scripts/build-product.mjs') }}
-          restore-keys: |
-            sdk-build-v4-${{ matrix.lane }}-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Enable compiler cache
-        uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
-
-      - name: Find Visual Studio clang
-        id: clang
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $found = $false
-          if (Test-Path -LiteralPath $vswhere) {
-            $path = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath
-            $found = [bool]$path -and (Test-Path -LiteralPath (Join-Path $path 'VC\Tools\Llvm\x64\bin\clang.exe'))
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/attempts/$env:GITHUB_RUN_ATTEMPT/jobs?per_page=100"
+          $deadline = (Get-Date).AddMinutes(15)
+          while ((Get-Date) -lt $deadline) {
+            $plan = (Invoke-RestMethod -Uri $uri -Headers $headers).jobs | Where-Object name -eq 'plan'
+            if ($plan -and $plan.status -eq 'completed') {
+              if ($plan.conclusion -ne 'success') { throw "plan concluded $($plan.conclusion)" }
+              $step = $plan.steps | Where-Object name -eq 'Windows lane required'
+              $run = [bool]$step -and $step.conclusion -eq 'success'
+              "run=$($run.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+              Write-Host "windows lane required: $run"
+              exit 0
+            }
+            Start-Sleep -Seconds 2
           }
-          "found=$($found.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          throw 'timed out waiting for the qualification plan'
 
-      - name: Restore Windows ARM64 compiler
-        id: llvm-cache
-        if: runner.os == 'Windows' && steps.clang.outputs.found != 'true'
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - name: Check out exact source
+        if: steps.plan.outputs.run == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          path: ${{ runner.temp }}/llvm
-          key: sdk-llvm-v1-20.1.8-${{ runner.os }}-${{ runner.arch }}
-
-      - name: Install Windows ARM64 compiler
-        if: runner.os == 'Windows' && steps.clang.outputs.found != 'true'
-        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
-        with:
-          version: 20.1.8
-          directory: ${{ runner.temp }}/llvm
-          cached: ${{ steps.llvm-cache.outputs.cache-hit }}
-          env: false
-
-      - name: Finish Windows Rust setup
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: .\scripts\windows-rust-setup.ps1 -Phase finish
-
-      - name: Enable Windows ProjFS
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $feature = Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS
-          if ($feature.State -ne 'Enabled') {
-            Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -All -NoRestart
-          }
-          if ((Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS).State -ne 'Enabled') {
-            throw 'Client-ProjFS could not be enabled without a reboot'
-          }
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
 
       - name: Run qualification lane
-        if: runner.os != 'Windows'
-        shell: bash
-        env:
-          SDK_TEMP_DIR: ${{ runner.temp }}/sdk
-          SDK_ARTIFACT_DIR: ${{ runner.temp }}/artifacts
-          CARGO_TARGET_DIR: ${{ runner.temp }}/target
-          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-install-cache
-          TOOLS_DIR: ${{ runner.temp }}/tools/${{ matrix.lane }}-${{ runner.arch }}
-        run: bash scripts/qualify-ci.sh "${{ matrix.lane }}"
-
-      - name: Run Windows qualification lane
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          SDK_TEMP_DIR: ${{ runner.temp }}/sdk
-          SDK_ARTIFACT_DIR: ${{ runner.temp }}/artifacts
-          CARGO_TARGET_DIR: ${{ runner.temp }}/target
-          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-install-cache
-          TOOLS_DIR: ${{ runner.temp }}/tools/${{ matrix.lane }}-${{ runner.arch }}
-          LLVM_PATH: ${{ runner.temp }}/llvm
-        run: .\scripts\qualify-ci.ps1 -Lane windows
-
-      - name: Retain qualified outputs
-        if: matrix.artifact != '' && success()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: steps.plan.outputs.run == 'true'
+        uses: ./.github/actions/qualification-lane
         with:
-          name: ${{ matrix.artifact }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/artifacts/${{ matrix.artifact_path }}
-          compression-level: 0
-          if-no-files-found: error
-          include-hidden-files: false
-          retention-days: 90
+          lane: windows
 
   # Records qualified lanes and forwards reused artifacts. It is not the
   # required check, but release workflows only accept fully successful runs.
   record:
     name: record
-    needs: [plan, qualification]
+    needs: [plan, qualification, windows]
     if: always() && needs.plan.result == 'success'
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
@@ -447,7 +371,7 @@ jobs:
   gate:
     name: SDK Qualification
     if: always()
-    needs: [plan, qualification]
+    needs: [plan, qualification, windows]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
     steps:
@@ -456,8 +380,10 @@ jobs:
           PLAN_RESULT: ${{ needs.plan.result }}
           MATRIX: ${{ needs.plan.outputs.matrix }}
           RESULT: ${{ needs.qualification.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
         run: |
           test "$PLAN_RESULT" = success
+          test "$WINDOWS_RESULT" = success || test "$WINDOWS_RESULT" = skipped
           if test "$MATRIX" = '[]'; then
             test "$RESULT" = skipped
           else

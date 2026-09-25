@@ -183,7 +183,13 @@ function select() {
   for (const [lane, source] of Object.entries(reused)) {
     console.error(`${lane}: reused from run ${source.run_id} attempt ${source.run_attempt}`);
   }
-  output("matrix", matrix);
+  // On pull requests, early-start lanes run in their own job that is queued at
+  // workflow start and executes only when the plan requires it.
+  const early = process.env.GITHUB_EVENT_NAME === "pull_request"
+    ? matrix.filter(lane => lane.early_start)
+    : [];
+  output("matrix", matrix.filter(lane => !early.includes(lane)));
+  output("windows", early.some(lane => lane.lane === "windows") ? "true" : "false");
   output("reused", reused);
   output("trusted", trusted ? "true" : "false");
 }
