@@ -204,7 +204,7 @@ fn checkout_state<A, O>(checkout: &Checkout<A, O>) -> CheckoutState {
         root: checkout.root.clone(),
         authority_head: checkout.authority_head,
         prepared_merge_parent: checkout.prepared_merge_parent,
-        dependencies: checkout.dependencies.proof().clone(),
+        dependencies: checkout.dependencies.proof().dependencies.clone(),
         mode: checkout.mode,
     }
 }
@@ -11284,5 +11284,89 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
     .ok_or("read blocked")??
     .value;
     assert_eq!(read.bytes.as_ref(), b"TWOa");
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn repeated_lookups_observe_the_base_once_and_still_conflict()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([151; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut local = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_tracking(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("local checkout blocked")??
+    .value;
+    let mut remote = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote checkout blocked")??
+    .value;
+    poll_ready(local.create_file(
+        path("authored")?,
+        Bytes::from_static(b"local"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("local create blocked")??;
+
+    let observed = path("observed")?;
+    let first = poll_ready(local.lookup_no_follow_with_metadata(
+        &observed,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("first lookup blocked")??;
+    assert!(first.value.is_none());
+    let proof = local.dependencies.proof().dependencies.clone();
+    let second = poll_ready(local.lookup_no_follow_with_metadata(
+        &observed,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("second lookup blocked")??;
+    assert!(second.value.is_none());
+    assert_eq!(
+        local.dependencies.proof().dependencies,
+        proof,
+        "repeating an observation leaves the proof unchanged"
+    );
+    assert!(
+        second.work.page_reads < first.work.page_reads,
+        "the repeated lookup walks only the candidate"
+    );
+
+    // The observation absorbed once still fences a racing binding.
+    poll_ready(remote.create_file(
+        observed,
+        Bytes::from_static(b"remote"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote create blocked")??;
+    poll_ready(remote.commit(
+        OperationId::from_bytes([152; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote commit blocked")??;
+    let rebase = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("rebase blocked")??;
+    assert!(matches!(rebase.value, RebaseDecision::Conflicted { .. }));
     Ok(())
 }

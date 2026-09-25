@@ -525,19 +525,99 @@ pub struct Checkout<A, O> {
 /// borrow excludes every mutation of the owning checkout. A private candidate
 /// copies the proof and never shares it.
 struct DependencyLedger {
-    proof: Arc<Mutex<CheckoutDependencies>>,
+    proof: Arc<Mutex<Proof>>,
     observing: bool,
+}
+
+/// One checkout's tracking proof, with the base paths whose complete
+/// observation it already holds.
+///
+/// A path observation's regions are only known by walking the base, so the
+/// proof remembers which walks it absorbed: repeating one against the same
+/// base adds nothing. The memory names its base file table and is forgotten
+/// with every proof it describes, so it can never claim an observation the
+/// proof lacks.
+#[derive(Clone)]
+struct Proof {
+    dependencies: CheckoutDependencies,
+    observed_base: Option<ObjectId>,
+    observed_paths: BTreeSet<(NamespacePath, bool)>,
+}
+
+impl Proof {
+    fn new(dependencies: CheckoutDependencies) -> Self {
+        Self {
+            dependencies,
+            observed_base: None,
+            observed_paths: BTreeSet::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.dependencies.clear();
+        self.observed_paths.clear();
+    }
+
+    /// Whether observing `path` against `base`, with its terminal when
+    /// `terminal` is set, would add nothing to the proof.
+    fn observes_path(&self, base: ObjectId, path: &NamespacePath, terminal: bool) -> bool {
+        self.observed_base == Some(base)
+            && (self.observed_paths.contains(&(path.clone(), true))
+                || (!terminal && self.observed_paths.contains(&(path.clone(), false))))
+    }
+
+    /// Absorbs one complete path observation against `base`. The memory is
+    /// bounded like the proof; past that bound it restarts empty, which only
+    /// repeats walks.
+    fn observe_path(
+        &mut self,
+        base: ObjectId,
+        path: &NamespacePath,
+        terminal: bool,
+        dependencies: Vec<Dependency>,
+        maximum_dependencies: u32,
+    ) -> Result<(), DependencyError> {
+        self.dependencies
+            .extend_observations(dependencies, maximum_dependencies)?;
+        if self.observed_base != Some(base)
+            || self.observed_paths.len()
+                >= usize::try_from(maximum_dependencies).unwrap_or(usize::MAX)
+        {
+            self.observed_base = Some(base);
+            self.observed_paths.clear();
+        }
+        self.observed_paths.insert((path.clone(), terminal));
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for Proof {
+    type Target = CheckoutDependencies;
+
+    fn deref(&self) -> &Self::Target {
+        &self.dependencies
+    }
+}
+
+impl std::ops::DerefMut for Proof {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.dependencies
+    }
 }
 
 impl DependencyLedger {
     fn new(dependencies: CheckoutDependencies) -> Self {
+        Self::sharing(Proof::new(dependencies))
+    }
+
+    fn sharing(proof: Proof) -> Self {
         Self {
-            proof: Arc::new(Mutex::new(dependencies)),
+            proof: Arc::new(Mutex::new(proof)),
             observing: false,
         }
     }
 
-    fn proof(&self) -> MutexGuard<'_, CheckoutDependencies> {
+    fn proof(&self) -> MutexGuard<'_, Proof> {
         self.proof.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -550,7 +630,7 @@ impl DependencyLedger {
     }
 
     fn independent(&self) -> Self {
-        Self::new(self.proof().clone())
+        Self::sharing(self.proof().clone())
     }
 }
 
@@ -5901,7 +5981,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             },
         )
         .map_err(|error| OperationFailure::new(FsError::Rebase(RebaseError::Probe(error)), work))?;
-        let dependencies = self.dependencies.proof().clone();
+        let dependencies = self.dependencies.proof().dependencies.clone();
         let classification = classify_rebase_async(
             &probe,
             base,
@@ -10498,6 +10578,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             } else {
                 None
             };
+            let base = self.base_root.file_table;
+            if let Some(candidate) = candidate
+                && self
+                    .dependencies
+                    .proof()
+                    .observes_path(base, path, capture_terminal)
+            {
+                return Ok(FsReceipt {
+                    work: candidate.work,
+                    value: candidate,
+                });
+            }
             let prior = candidate
                 .as_ref()
                 .map_or(WorkCounters::default(), |value| value.work);
@@ -10514,7 +10606,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let combined = observed.work;
             self.dependencies
                 .proof()
-                .extend_observations(
+                .observe_path(
+                    base,
+                    path,
+                    capture_terminal,
                     observed.value.dependencies,
                     self.volume.config.limits.maximum_checkout_dependencies,
                 )
@@ -11587,6 +11682,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, OperationFailure<FsError>> {
+        let file_ids = {
+            let proof = self.dependencies.proof();
+            file_ids
+                .iter()
+                .copied()
+                .filter(|file_id| !proof.observes(&DependencyRegion::Metadata(*file_id)))
+                .collect::<Vec<_>>()
+        };
         if file_ids.is_empty() {
             return Ok(work);
         }
@@ -11594,7 +11697,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let records = lookup_file_records_async(
             &self.volume.fs.inner.objects,
             self.base_root.file_table,
-            file_ids,
+            &file_ids,
             maximum,
             decode_limits(self.volume.config),
             remaining(work, budget)?,
