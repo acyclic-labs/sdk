@@ -115,7 +115,7 @@ export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOpti
 export { CrossVolumeError, MountedView } from "./mounted.js";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 
-const PACKAGE_VERSION = "0.1.0";
+const PACKAGE_VERSION = "0.1.2";
 const TARGETS = new Set([
   "win32-x64",
   "win32-arm64",

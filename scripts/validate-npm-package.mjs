@@ -62,7 +62,9 @@ export function validateArchive(archive, name, version, directory) {
   if (readme.toString("utf8").split(/\r?\n/, 1)[0].trim() !== `# ${name}`) {
     fail("npm README does not match the qualified package");
   }
-  if (changelog.toString("utf8").split(/\r?\n/, 1)[0].trim() !== "# Changelog") {
+  const changelogLines = changelog.toString("utf8").split(/\r?\n/);
+  if (changelogLines[0].trim() !== `# ${name} changelog`
+    || !changelogLines.some(line => line.startsWith(`## ${version} `))) {
     fail("npm changelog does not match the release history");
   }
   return sha256(compressed);

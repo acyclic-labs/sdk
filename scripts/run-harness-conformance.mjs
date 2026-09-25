@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { harnessPackageClosure } from "./harness-package-closure.mjs";
 
 if (process.argv.length !== 5) {
   throw new Error("usage: run-harness-conformance.mjs ARTIFACT_DIR REPORT.json RECEIPT.json");
@@ -47,18 +48,21 @@ if (
 }
 const suiteBytes = readFileSync("conformance/vectors/core.json");
 const suite = JSON.parse(suiteBytes.toString("utf8"));
+const command = (executable, args, input) => {
+  const result = spawnSync(executable, args, { encoding: "utf8", input });
+  if (result.status !== 0) throw new Error(`${executable} failed: ${result.stderr || result.stdout}`);
+  return result.stdout.trim();
+};
+const expectedArtifacts = [
+  "acyclic-harness.tgz",
+  ...harnessPackageClosure().map(({ name, version }) => `${name}-${version}.crate`),
+].sort();
 
 const artifacts = readdirSync(artifactDirectory)
   .filter(name => name.endsWith(".crate") || name.endsWith(".tgz"))
   .sort();
-if (
-  artifacts.length !== 4
-  || !artifacts.includes("acyclic-harness.tgz")
-  || artifacts.filter(name => /^acyclic-harness-[^-].*\.crate$/.test(name)).length !== 1
-  || artifacts.filter(name => /^acyclic-native-runtime-[^-].*\.crate$/.test(name)).length !== 1
-  || artifacts.filter(name => /^acyclic-stream-[^-].*\.crate$/.test(name)).length !== 1
-) {
-  throw new Error("expected exact native runtime, Stream, Harness, and npm archives");
+if (JSON.stringify(artifacts) !== JSON.stringify(expectedArtifacts)) {
+  throw new Error(`expected exact Harness dependency archives: ${expectedArtifacts.join(", ")}`);
 }
 const artifactEvidence = artifacts.map(name => ({
   name,
@@ -96,11 +100,6 @@ const markers = new Map([
 
 const harnessCases = suite.cases.filter(item => item.family === "harness");
 if (harnessCases.length !== markers.size) throw new Error("executable marker map does not exactly cover the Harness suite");
-const command = (executable, args, input) => {
-  const result = spawnSync(executable, args, { encoding: "utf8", input });
-  if (result.status !== 0) throw new Error(`${executable} failed: ${result.stderr || result.stdout}`);
-  return result.stdout.trim();
-};
 command("cargo", ["build", "--quiet", "--locked", "-p", "acyclic-conformance", "--bin", "harness-conformance"]);
 const metadata = JSON.parse(command("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]));
 const runnerBinary = resolve(metadata.target_directory, `debug/harness-conformance${process.platform === "win32" ? ".exe" : ""}`);

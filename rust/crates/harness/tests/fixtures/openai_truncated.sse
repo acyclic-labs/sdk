@@ -1,0 +1,2 @@
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}
+

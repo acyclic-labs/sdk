@@ -16,6 +16,13 @@ There is no staging registry or `next` promotion step.
    by [`cargo-crates.json`](cargo-crates.json).
 
 Both publishers are idempotent. npm requires identical registry integrity.
+The npm publisher also verifies that `latest` points at the release version,
+including on a retry after an exact archive was already published. If it does
+not, repair the dist-tag interactively before retrying. npm trusted-publisher
+OIDC authorizes `npm publish`, but not `npm dist-tag` or `npm deprecate`; do not
+add a standing token to automate those account-management commands. After
+publication, deprecate obsolete RC and plugin versions interactively and
+verify their registry deprecation notices.
 Cargo requires identical archive checksums, except for the already published
 0.1.0 crates pinned in [`cargo-equivalent-archives.json`](cargo-equivalent-archives.json):
 their registry checksums are accepted only while the crate source, workspace

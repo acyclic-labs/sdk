@@ -81,10 +81,9 @@ mkdirSync(join(plugin, "bin"), { recursive: true });
 for (const script of ["acyclic", "install.js", "verify.js", "targets.json"]) {
   copyFileSync(join(root, "bin", script), join(plugin, "bin", script));
 }
-for (const name of ["plugin.json", "package.json", "README.md"]) {
+for (const name of ["plugin.json", "package.json", "README.md", "CHANGELOG.md"]) {
   copyFileSync(join(root, name), join(plugin, name));
 }
-copyFileSync(join(repository, "CHANGELOG.md"), join(plugin, "CHANGELOG.md"));
 cpSync(join(root, ".codex-plugin"), join(plugin, ".codex-plugin"), { recursive: true });
 cpSync(join(root, ".agents"), join(plugin, ".agents"), { recursive: true });
 cpSync(join(root, "hooks"), join(plugin, "hooks"), { recursive: true });

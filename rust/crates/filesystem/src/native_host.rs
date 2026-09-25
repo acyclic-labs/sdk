@@ -3092,7 +3092,15 @@ mod windows_clone_tests {
         // cancellation, finds it absent or complete.
         let absent_or_complete = || match std::fs::metadata(&copy_path) {
             Ok(metadata) => assert_eq!(metadata.len(), length, "partial destination"),
-            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+            // Windows briefly denies metadata access while the copier's
+            // handle on the just-renamed file closes; that observes nothing.
+            Err(error) => assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                ),
+                "{error}"
+            ),
         };
         while !staged()? && !task.is_finished() {
             absent_or_complete();

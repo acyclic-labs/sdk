@@ -1,6 +1,8 @@
 #![deny(unsafe_code)]
 #![doc = include_str!("../README.md")]
 
+extern crate self as acyclic_harness;
+
 #[cfg(feature = "host")]
 pub mod bundle;
 #[cfg(feature = "host")]
@@ -13,18 +15,29 @@ pub mod distributed;
 pub mod effects;
 #[cfg(feature = "host")]
 pub mod executor;
+#[cfg(feature = "filesystem")]
+pub mod filesystem;
 pub mod fork;
+#[cfg(feature = "grpc")]
+pub mod grpc;
 #[cfg(feature = "host")]
 mod handles;
+#[cfg(feature = "http")]
+pub mod http;
 pub mod interaction;
 #[cfg(feature = "host")]
 pub mod live;
+#[cfg(feature = "machines")]
+pub mod machines;
 #[cfg(feature = "host")]
 pub mod model;
+#[cfg(feature = "models")]
+pub mod models;
 #[cfg(feature = "host")]
 pub mod registry;
 pub mod resources;
 pub mod scheduler;
+pub mod speculation;
 #[cfg(feature = "host")]
 pub mod store;
 #[cfg(feature = "host")]

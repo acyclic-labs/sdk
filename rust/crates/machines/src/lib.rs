@@ -189,6 +189,39 @@ pub enum Capability {
     LiveFork,
     SuspendResume,
     LiveMovement,
+    /// [`MachinesProvider::fork_machine`] copies a running machine's persistent disk, but not
+    /// its memory or processes. Which paths are persistent is provider-defined: a provider whose
+    /// machines boot from an immutable image may copy only its declared data directory, the
+    /// rest being the image both boot from. [`Capability::LiveFork`] is the memory-and-disk form and takes precedence
+    /// when a contract declares both.
+    DiskFork,
+}
+
+/// What the children of one [`MachinesProvider::fork_machine`] inherited from their source.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum ForkFidelity {
+    /// Children resume from the source's memory, processes, and disk at the fork instant.
+    MemoryAndDisk,
+    /// Children boot fresh over a copy of the source's persistent disk (provider-defined; see
+    /// [`Capability::DiskFork`]) taken at one consistent instant. No process or memory state is
+    /// inherited; the caller restarts its workload in each child, for example from durable
+    /// history.
+    DiskOnly,
+}
+
+impl ForkFidelity {
+    /// The fidelity a machine with `capabilities` forks at, or `None` when it cannot be
+    /// forked live at all and the caller must fall back to checkpoint fork or a restart.
+    #[must_use]
+    pub fn for_capabilities(capabilities: &BTreeSet<Capability>) -> Option<Self> {
+        if capabilities.contains(&Capability::LiveFork) {
+            Some(Self::MemoryAndDisk)
+        } else if capabilities.contains(&Capability::DiskFork) {
+            Some(Self::DiskOnly)
+        } else {
+            None
+        }
+    }
 }
 
 /// Capability admission rule.
@@ -295,6 +328,15 @@ pub struct MachineContract {
     pub network_policy_digest: [u8; 32],
     /// Cost and concurrency limits.
     pub budgets: Budgets,
+}
+
+impl MachineContract {
+    /// The fidelity [`MachinesProvider::fork_machine`] offers for a machine under this
+    /// contract; `None` means live fork is unsupported for it.
+    #[must_use]
+    pub fn fork_fidelity(&self) -> Option<ForkFidelity> {
+        ForkFidelity::for_capabilities(&self.capabilities)
+    }
 }
 
 /// Qualification result for one immutable image.
@@ -425,6 +467,13 @@ pub enum MutationOutcome {
     Created(MachineObservation),
     Checkpointed(CheckpointObservation),
     Forked(Vec<MachineObservation>),
+    /// Outcome of [`MachinesProvider::fork_machine`]: the running source, the fidelity the
+    /// children were forked at, and the children in index order.
+    MachineForked {
+        source: MachineId,
+        fidelity: ForkFidelity,
+        children: Vec<MachineObservation>,
+    },
     Suspended(MachineId),
     Woken(MachineId),
     SuspensionPolicySet(MachineId, SuspensionPolicy),
@@ -510,6 +559,75 @@ pub trait MachinesProvider: Send + Sync {
         performance: Performance,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError>;
+    /// Forks a running machine into `count` fresh children without an intermediate
+    /// checkpoint, idempotently under `key`. The call may happen at any point in the source's
+    /// life; nothing has to be prepared in advance.
+    ///
+    /// # Admission
+    ///
+    /// The source must be [`MachineState::Running`] (otherwise [`ProviderError::Conflict`])
+    /// and its contract must declare [`Capability::LiveFork`] or [`Capability::DiskFork`]
+    /// (otherwise [`ProviderError::Unsupported`], which is also this method's default). Check
+    /// [`MachineContract::fork_fidelity`] before calling; on `Unsupported`, fall back to
+    /// [`MachinesProvider::checkpoint`] plus [`MachinesProvider::fork`], or to a restart.
+    /// `count` above [`MAX_FORK_CHILDREN`] is [`ProviderError::Invalid`].
+    ///
+    /// # What a child inherits
+    ///
+    /// - [`ForkFidelity::MemoryAndDisk`] (declared by `LiveFork`): the source's memory,
+    ///   running processes, and disk at one instant. [`ForkFidelity::DiskOnly`] (declared by
+    ///   `DiskFork`): a copy of the source's persistent disk only (see
+    ///   [`Capability::DiskFork`]); the child boots fresh and the caller
+    ///   restarts its workload. The outcome reports which one ran; it always equals the
+    ///   source contract's [`MachineContract::fork_fidelity`].
+    /// - The source's exact [`MachineContract`] (image, capabilities, performance, policies,
+    ///   budgets). `last_checkpoint` is `None`: no checkpoint was taken.
+    /// - Anything in memory or on disk, including credentials and environment. A child that
+    ///   needs its own identity must be re-provisioned after the fork.
+    /// - A provider may fan out by forking earlier children of the same call (for example
+    ///   when a machine can run only one fork at a time). A child forked from an earlier child
+    ///   inherits whatever that child executed after its own fork, so the children are
+    ///   memory-identical only if the workload does not advance while the fork is in progress,
+    ///   for example because it waits for a signal after the fork point. Every child is still
+    ///   reported as a child of `machine`.
+    ///
+    /// # Identity
+    ///
+    /// Children get fresh [`MachineId`]s distinct from the source and from each other, their
+    /// own endpoints, and independent lifetimes. Replaying `key` with the same source and count
+    /// returns the identical outcome; reusing it for another intent is
+    /// [`ProviderError::Conflict`].
+    ///
+    /// # Network
+    ///
+    /// Open network connections are never guaranteed to survive in a child: a child may
+    /// have a different address, and peers see at most one of the copies. Children must treat
+    /// every socket open at the fork instant as broken and reconnect. The source keeps its
+    /// connections, though it may be briefly quiesced while the fork is taken.
+    ///
+    /// # Joining
+    ///
+    /// Destroy children before their source. A provider may refuse to destroy a source while
+    /// any of its live-fork children is not yet [`MachineState::Destroyed`]; it then returns
+    /// [`ProviderError::Conflict`] without side effects, and the call may be retried once the
+    /// children are gone. Providers that allow it leave the children running.
+    ///
+    /// # Partial failure
+    ///
+    /// Forking `count > 1` children is not atomic. A failed or indeterminate attempt may
+    /// leave some children; replay `key` to finish it, or [`MachinesProvider::cancel`] its
+    /// operation to remove them.
+    async fn fork_machine(
+        &self,
+        machine: MachineId,
+        count: NonZeroU32,
+        key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError> {
+        let _ = (machine, count, key);
+        Err(ProviderError::Unsupported(
+            "this Machines provider does not support live fork".into(),
+        ))
+    }
     async fn suspend(
         &self,
         machine: MachineId,
@@ -678,6 +796,35 @@ impl Machine {
             )),
         }
     }
+    /// Forks this running machine into `count` fresh children; see
+    /// [`MachinesProvider::fork_machine`] for the exact semantics.
+    pub async fn fork(
+        &self,
+        count: NonZeroU32,
+        key: IdempotencyKey,
+    ) -> Result<MachineFork, ProviderError> {
+        match self
+            .machines
+            .provider
+            .fork_machine(self.id, count, key)
+            .await?
+        {
+            MutationOutcome::MachineForked {
+                source,
+                fidelity,
+                children,
+            } if source == self.id => Ok(MachineFork {
+                fidelity,
+                children: children
+                    .into_iter()
+                    .map(|value| Machine::new(self.machines.clone(), value.id))
+                    .collect(),
+            }),
+            _ => Err(ProviderError::Rejected(
+                "provider returned the wrong fork outcome".into(),
+            )),
+        }
+    }
     pub async fn suspend(&self, key: IdempotencyKey) -> Result<(), ProviderError> {
         terminal_machine(
             self.machines.provider.suspend(self.id, key).await?,
@@ -720,6 +867,13 @@ impl Machine {
             MutationKind::Destroy,
         )
     }
+}
+
+/// Children of one [`Machine::fork`] and the fidelity they were forked at.
+#[derive(Clone)]
+pub struct MachineFork {
+    pub fidelity: ForkFidelity,
+    pub children: Vec<Machine>,
 }
 
 enum MutationKind {
@@ -806,6 +960,7 @@ enum MemoryIntent {
     Create(CreateMachine),
     Checkpoint(MachineId),
     Fork(CheckpointId, u32, Performance),
+    ForkMachine(MachineId, u32),
     Suspend(MachineId),
     Wake(MachineId),
     Policy(MachineId, SuspensionPolicy),
@@ -826,6 +981,8 @@ struct MemoryState {
     events: BTreeMap<MachineId, Vec<MachineEvent>>,
     replays: BTreeMap<IdempotencyKey, Replay>,
     operations: BTreeMap<OperationId, OperationObservation>,
+    /// Live-fork child to its source.
+    fork_sources: BTreeMap<MachineId, MachineId>,
 }
 
 impl Default for MemoryState {
@@ -837,26 +994,47 @@ impl Default for MemoryState {
             events: BTreeMap::new(),
             replays: BTreeMap::new(),
             operations: BTreeMap::new(),
+            fork_sources: BTreeMap::new(),
         }
     }
 }
 
 /// Deterministic bounded process-local state-machine provider.
-#[derive(Clone, Default)]
+///
+/// It refuses to destroy a live-fork source while any of its children is not destroyed, the
+/// strictest ordering [`MachinesProvider::fork_machine`] allows, so callers tested against it
+/// join correctly on every provider.
+#[derive(Clone)]
 pub struct SimulatedMachines {
     state: Arc<Mutex<MemoryState>>,
+    capabilities: BTreeSet<Capability>,
 }
 
-impl SimulatedMachines {
-    fn all_capabilities() -> BTreeSet<Capability> {
-        BTreeSet::from([
+impl Default for SimulatedMachines {
+    /// Declares every capability.
+    fn default() -> Self {
+        Self::with_capabilities(BTreeSet::from([
             Capability::ElasticCpu,
             Capability::ElasticMemory,
             Capability::LiveCheckpoint,
             Capability::LiveFork,
             Capability::SuspendResume,
             Capability::LiveMovement,
-        ])
+            Capability::DiskFork,
+        ]))
+    }
+}
+
+impl SimulatedMachines {
+    /// Simulates a provider that qualifies images with exactly `capabilities`, for example
+    /// without [`Capability::LiveFork`] to exercise a caller's fallback path. Only admission
+    /// and fork fidelity follow the set; other operations are simulated regardless.
+    #[must_use]
+    pub fn with_capabilities(capabilities: BTreeSet<Capability>) -> Self {
+        Self {
+            state: Arc::default(),
+            capabilities,
+        }
     }
     fn revision() -> [u8; 32] {
         Sha256::digest(b"acyclic-machines-memory-v1").into()
@@ -988,15 +1166,15 @@ impl MachinesProvider for SimulatedMachines {
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         Ok(ImageQualification {
             image,
-            capabilities: Self::all_capabilities(),
+            capabilities: self.capabilities.clone(),
             compatibility_revision: Self::revision(),
         })
     }
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
         let key = request.idempotency_key;
         let intent = MemoryIntent::Create(request.clone());
+        let capabilities = self.capabilities.clone();
         self.apply(key, intent, move |state| {
-            let capabilities = Self::all_capabilities();
             if let CompatibilityPolicy::Require(required) = &request.compatibility
                 && (required.is_empty() || !required.is_subset(&capabilities))
             {
@@ -1187,6 +1365,70 @@ impl MachinesProvider for SimulatedMachines {
         )
         .await
     }
+    async fn fork_machine(
+        &self,
+        machine: MachineId,
+        count: NonZeroU32,
+        key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError> {
+        let count_value = count.get();
+        if count_value > MAX_FORK_CHILDREN {
+            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
+        }
+        self.apply(
+            key,
+            MemoryIntent::ForkMachine(machine, count_value),
+            move |state| {
+                let source = state
+                    .machines
+                    .get(&machine)
+                    .cloned()
+                    .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+                let fidelity = source.contract.fork_fidelity().ok_or_else(|| {
+                    ProviderError::Unsupported("machine contract does not declare live fork".into())
+                })?;
+                if source.state != MachineState::Running {
+                    return Err(ProviderError::Conflict(
+                        "only a running machine can be forked".into(),
+                    ));
+                }
+                let add = usize::try_from(count_value)
+                    .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
+                if state.machines.len().saturating_add(add) > 1_024 {
+                    return Err(ProviderError::Rejected(
+                        "simulation machine limit reached".into(),
+                    ));
+                }
+                let mut children = Vec::with_capacity(add);
+                for index in 0..count_value {
+                    let id = Self::machine(key, index);
+                    let now = tick(state)?;
+                    let value = MachineObservation {
+                        id,
+                        state: MachineState::Running,
+                        contract: source.contract.clone(),
+                        endpoints: vec![Endpoint {
+                            name: "default".into(),
+                            uri: format!("memory://{id}"),
+                        }],
+                        last_checkpoint: None,
+                        created_at_unix_ms: now,
+                        changed_at_unix_ms: now,
+                    };
+                    state.machines.insert(id, value.clone());
+                    state.fork_sources.insert(id, machine);
+                    event(state, id, EventFact::State(MachineState::Running), now)?;
+                    children.push(value);
+                }
+                Ok(MutationOutcome::MachineForked {
+                    source: machine,
+                    fidelity,
+                    children,
+                })
+            },
+        )
+        .await
+    }
     async fn suspend(
         &self,
         machine: MachineId,
@@ -1255,6 +1497,18 @@ impl MachinesProvider for SimulatedMachines {
                 .state;
             if current == MachineState::Destroyed {
                 return Ok(MutationOutcome::MachineDestroyed(machine));
+            }
+            let live_children = state.fork_sources.iter().any(|(child, source)| {
+                *source == machine
+                    && state
+                        .machines
+                        .get(child)
+                        .is_some_and(|value| value.state != MachineState::Destroyed)
+            });
+            if live_children {
+                return Err(ProviderError::Conflict(
+                    "machine has live-fork children; destroy them first".into(),
+                ));
             }
             let now = tick(state)?;
             let value = state
@@ -1509,6 +1763,182 @@ mod tests {
             .unwrap_or_else(|_| unreachable!());
         assert!(machine.inspect().await.is_ok());
         assert!(children[0].inspect().await.is_ok());
+    }
+
+    fn key(suffix: u8) -> IdempotencyKey {
+        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000001{suffix:02x}"))
+            .unwrap_or_else(|_| unreachable!())
+    }
+
+    fn two() -> NonZeroU32 {
+        NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN)
+    }
+
+    #[tokio::test]
+    async fn live_fork_children_inherit_the_contract_and_replay_exactly() {
+        let provider = Arc::new(SimulatedMachines::default());
+        let machines = Machines::new(provider.clone());
+        let parent = machines
+            .create(request(key(1)))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let parent_view = parent.inspect().await.unwrap_or_else(|_| unreachable!());
+        let first = provider.fork_machine(parent.id(), two(), key(2)).await;
+        let Ok(MutationOutcome::MachineForked {
+            source,
+            fidelity,
+            children,
+        }) = first.clone()
+        else {
+            unreachable!("live fork must succeed: {first:?}")
+        };
+        assert_eq!(source, parent.id());
+        assert_eq!(fidelity, ForkFidelity::MemoryAndDisk);
+        assert_eq!(children.len(), 2);
+        let ids = children
+            .iter()
+            .map(|child| child.id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ids.len(), 2);
+        assert!(!ids.contains(&parent.id()));
+        for child in &children {
+            assert_eq!(child.state, MachineState::Running);
+            assert_eq!(child.contract, parent_view.contract);
+            assert_eq!(child.last_checkpoint, None);
+            assert_ne!(child.endpoints, parent_view.endpoints);
+        }
+        assert_eq!(
+            provider.fork_machine(parent.id(), two(), key(2)).await,
+            first
+        );
+        assert!(matches!(
+            provider
+                .fork_machine(parent.id(), NonZeroU32::MIN, key(2))
+                .await,
+            Err(ProviderError::Conflict(_))
+        ));
+        assert_eq!(
+            parent.inspect().await.map(|value| value.state),
+            Ok(MachineState::Running)
+        );
+
+        // Recursive fork from a child, through the customer handle.
+        let child = machines
+            .attach(children.first().map(|value| value.id).unwrap_or_default())
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let grandchildren = child
+            .fork(NonZeroU32::MIN, key(3))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(grandchildren.fidelity, ForkFidelity::MemoryAndDisk);
+        assert_eq!(grandchildren.children.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn live_fork_sources_are_joined_after_their_children() {
+        let provider = SimulatedMachines::default();
+        let Ok(MutationOutcome::Created(parent)) = provider.create(request(key(0x10))).await else {
+            unreachable!()
+        };
+        let Ok(MutationOutcome::MachineForked { children, .. }) =
+            provider.fork_machine(parent.id, two(), key(0x11)).await
+        else {
+            unreachable!()
+        };
+        assert!(matches!(
+            provider.destroy_machine(parent.id, key(0x12)).await,
+            Err(ProviderError::Conflict(_))
+        ));
+        for (index, child) in (0x13_u8..).zip(&children) {
+            assert_eq!(
+                provider.destroy_machine(child.id, key(index)).await,
+                Ok(MutationOutcome::MachineDestroyed(child.id))
+            );
+        }
+        assert_eq!(
+            provider.destroy_machine(parent.id, key(0x12)).await,
+            Ok(MutationOutcome::MachineDestroyed(parent.id))
+        );
+    }
+
+    #[tokio::test]
+    async fn live_fork_requires_a_running_source() {
+        let provider = SimulatedMachines::default();
+        let Ok(MutationOutcome::Created(parent)) = provider.create(request(key(0x20))).await else {
+            unreachable!()
+        };
+        provider
+            .suspend(parent.id, key(0x21))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert!(matches!(
+            provider.fork_machine(parent.id, two(), key(0x22)).await,
+            Err(ProviderError::Conflict(_))
+        ));
+        assert!(matches!(
+            provider
+                .fork_machine(MachineId::new(), two(), key(0x23))
+                .await,
+            Err(ProviderError::NotFound(_))
+        ));
+        let too_many = NonZeroU32::new(MAX_FORK_CHILDREN + 1).unwrap_or(NonZeroU32::MAX);
+        assert!(matches!(
+            provider.fork_machine(parent.id, too_many, key(0x24)).await,
+            Err(ProviderError::Invalid(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn live_fork_fidelity_follows_the_declared_capability() {
+        let disk_only =
+            SimulatedMachines::with_capabilities(BTreeSet::from([Capability::DiskFork]));
+        let Ok(MutationOutcome::Created(parent)) = disk_only.create(request(key(0x30))).await
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            parent.contract.fork_fidelity(),
+            Some(ForkFidelity::DiskOnly)
+        );
+        assert!(matches!(
+            disk_only.fork_machine(parent.id, two(), key(0x31)).await,
+            Ok(MutationOutcome::MachineForked {
+                fidelity: ForkFidelity::DiskOnly,
+                ..
+            })
+        ));
+
+        let none = SimulatedMachines::with_capabilities(BTreeSet::new());
+        let Ok(MutationOutcome::Created(parent)) = none.create(request(key(0x32))).await else {
+            unreachable!()
+        };
+        assert_eq!(parent.contract.fork_fidelity(), None);
+        assert!(matches!(
+            none.fork_machine(parent.id, two(), key(0x33)).await,
+            Err(ProviderError::Unsupported(_))
+        ));
+        // The rejected key stays free for a corrected intent.
+        assert!(none.recover(key(0x33)).await.is_err());
+
+        let mut require = request(key(0x34));
+        require.compatibility =
+            CompatibilityPolicy::Require(BTreeSet::from([Capability::LiveFork]));
+        assert!(matches!(
+            none.create(require).await,
+            Err(ProviderError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn live_fork_takes_precedence_over_disk_fork() {
+        assert_eq!(
+            ForkFidelity::for_capabilities(&BTreeSet::from([
+                Capability::DiskFork,
+                Capability::LiveFork
+            ])),
+            Some(ForkFidelity::MemoryAndDisk)
+        );
     }
 
     #[tokio::test]
