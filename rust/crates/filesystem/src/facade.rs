@@ -2060,7 +2060,11 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             object_cache,
         } = options;
         // The Stream and Objects providers own disjoint directories, so their
-        // recoveries and first-open flushes proceed concurrently.
+        // recoveries and first-open flushes proceed concurrently. Both openers
+        // always run to completion: an abandoned one would keep opening in its
+        // detached task and could take its root after this open had failed,
+        // holding it past every handle's drop. A provider that opened beside a
+        // failed one is therefore dropped before the failure returns.
         let open_stream = async {
             Ok::<_, FsError>(std::sync::Arc::new(match &lifecycle {
                 Some(ownership) => {
@@ -2112,7 +2116,8 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .await
                 .map_err(FsError::LocalStaging)
         };
-        let (stream, objects) = futures::future::try_join(open_stream, open_objects).await?;
+        let (stream, objects) = futures::future::join(open_stream, open_objects).await;
+        let (stream, objects) = (stream?, objects?);
         Ok(Self::new_with_path_index(
             crate::distributed::StreamAuthorityStore::new(stream),
             objects,

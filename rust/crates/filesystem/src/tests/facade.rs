@@ -9008,6 +9008,50 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
     Ok(())
 }
 
+/// A rejected open must not leave a provider opening behind it: once the live
+/// engine drops, its providers belong to the next opener at once.
+#[cfg(feature = "local")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rejected_open_leaves_no_provider_opening_behind_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let options = LocalOptions::new(directory.path());
+    let cancellation = CancellationToken::new();
+    for iteration in 0..200_u32 {
+        let fs = Fs::local(options.clone()).await?;
+        assert!(
+            Fs::collect_local_garbage(
+                options.clone(),
+                8,
+                1_024,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .is_err(),
+            "a live engine excludes garbage collection"
+        );
+        drop(fs);
+        drop(
+            acyclic_objects::LocalObjects::open(
+                directory.path().join("objects"),
+                acyclic_objects::LocalObjectsLimits::default(),
+            )
+            .await
+            .map_err(|error| format!("objects still owned after iteration {iteration}: {error}"))?,
+        );
+        drop(
+            acyclic_stream::LocalStream::open(
+                directory.path().join("stream"),
+                acyclic_stream::LocalStreamLimits::default(),
+            )
+            .await
+            .map_err(|error| format!("stream still owned after iteration {iteration}: {error}"))?,
+        );
+    }
+    Ok(())
+}
+
 #[cfg(feature = "local")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines()
