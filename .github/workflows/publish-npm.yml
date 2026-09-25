@@ -148,7 +148,8 @@ jobs:
     environment: npmjs
     # npm trusted publishing currently requires a GitHub-hosted runner.
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Eight sequential packages may each take up to five minutes to appear in npm.
+    timeout-minutes: 50
     permissions:
       actions: read
       contents: read

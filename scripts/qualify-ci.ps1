@@ -9,34 +9,35 @@ $PSNativeCommandUseErrorActionPreference = $true
 Set-StrictMode -Version Latest
 
 New-Item -ItemType Directory -Force -Path `
-    $env:SDK_ARTIFACT_DIR, $env:TOOLS_DIR | Out-Null
+    $env:SDK_TEMP_DIR, $env:SDK_ARTIFACT_DIR, $env:TOOLS_DIR | Out-Null
 . .\scripts\ensure-bun.ps1
 bun install --frozen-lockfile
 
-# Blacksmith's Windows Server image cannot load ProjectedFSLib.dll. Execute the
-# largest workspace set whose dependency graph is genuinely portable, then test
-# acyclic-fs without native mounting. The all-feature no-run build below still
-# compiles and links every ProjFS path; Linux and macOS execute native mounts.
-cargo test --workspace `
-    --exclude acyclic-fs `
-    --exclude acyclic-conformance `
-    --exclude acyclic-fs-napi `
-    --locked
-cargo test -p acyclic-fs --no-default-features `
-    --features local,memory,native-watch --locked
-cargo test --workspace --all-features --no-run --locked
-cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings
-cargo build -p acyclic-fs-napi --locked
-node scripts/build-product.mjs
-$CargoTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
-node plugin/scripts/package.mjs `
-    --binary (Join-Path $CargoTargetDir 'release\acyclic.exe') `
-    --out (Join-Path $env:SDK_ARTIFACT_DIR 'acyclic-plugin')
-node plugin/scripts/validate-package.mjs `
-    (Join-Path $env:SDK_ARTIFACT_DIR 'acyclic-plugin')
-bun run check
-bun test --parallel=4 typescript/packages
-bun run --filter '@acyclic-labs/fs' test:composition
+# Independent builds run beside the main test build in their own target
+# directories so Cargo's build lock never serializes them; the shared compiler
+# cache still deduplicates identical crates across them.
+function Start-Background([string] $Name, [string] $Command) {
+    $log = Join-Path $env:SDK_TEMP_DIR "background-$Name.log"
+    $script = "`$ErrorActionPreference = 'Stop'; `$PSNativeCommandUseErrorActionPreference = `$true; $Command"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+    $process = Start-Process -FilePath (Get-Process -Id $PID).Path `
+        -ArgumentList '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded `
+        -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+    # Cache the handle now so ExitCode stays readable after the process exits.
+    $null = $process.Handle
+    [pscustomobject]@{ Name = $Name; Process = $process; Log = $log }
+}
+function Complete-Background($Task) {
+    $Task.Process.WaitForExit()
+    Write-Host "::group::$($Task.Name)"
+    foreach ($path in $Task.Log, "$($Task.Log).err") {
+        if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path | Write-Host }
+    }
+    Write-Host '::endgroup::'
+    if ($Task.Process.ExitCode -ne 0) {
+        throw "$($Task.Name) failed with exit code $($Task.Process.ExitCode)"
+    }
+}
 
 $clangDirectories = @()
 if ($env:LLVM_PATH) {
@@ -62,5 +63,43 @@ if (-not $clangDirectory) {
 $env:PATH = "$clangDirectory;$env:PATH"
 $env:CC_aarch64_pc_windows_msvc = Join-Path $clangDirectory 'clang.exe'
 rustup target add aarch64-pc-windows-msvc
-cargo check -p acyclic-fs -p acyclic-fs-napi --all-features `
-    --target aarch64-pc-windows-msvc --locked
+cargo fetch --locked
+
+$CargoTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $PWD 'target' }
+$ReleaseTargetDir = "$CargoTargetDir-release"
+$PluginOutput = Join-Path $env:SDK_ARTIFACT_DIR 'acyclic-plugin'
+$release = Start-Background release @"
+`$env:CARGO_TARGET_DIR = '$ReleaseTargetDir'
+node scripts/build-product.mjs
+node plugin/scripts/package.mjs --binary '$(Join-Path $ReleaseTargetDir 'release\acyclic.exe')' --out '$PluginOutput'
+node plugin/scripts/validate-package.mjs '$PluginOutput'
+"@
+$napi = Start-Background napi `
+    "cargo build -p acyclic-fs-napi --locked --target-dir '$CargoTargetDir-napi'"
+$arm64 = Start-Background aarch64 @"
+cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked --target-dir '$CargoTargetDir-aarch64'
+"@
+$clippy = Start-Background clippy @"
+cargo clippy -p acyclic-plugin --all-targets --all-features --locked --target-dir '$CargoTargetDir-clippy' -- -D warnings
+"@
+
+# The test build links dozens of test executables; LLVM's linker links them far
+# faster than link.exe. Release and binding builds above keep the default
+# linker so their outputs match publication builds.
+$lldLink = Join-Path $clangDirectory 'lld-link.exe'
+if (Test-Path -LiteralPath $lldLink) {
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $lldLink
+}
+
+# The workflow enables the Client-ProjFS optional feature before this lane, so
+# the complete all-feature workspace, including ProjFS-backed acyclic-fs, runs
+# from one build instead of separate portable, no-default, and link-only builds.
+cargo test --workspace --all-features --locked
+bun run check
+bun test --parallel=4 typescript/packages
+bun run --filter '@acyclic-labs/fs' test:composition
+
+Complete-Background $clippy
+Complete-Background $napi
+Complete-Background $arm64
+Complete-Background $release
