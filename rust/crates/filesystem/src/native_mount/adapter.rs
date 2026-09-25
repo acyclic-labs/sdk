@@ -306,8 +306,8 @@ struct GroupedRequest {
     change: GroupedChange,
     admission: Arc<GroupedAdmission>,
     reply: tokio::sync::oneshot::Sender<Result<GroupedOutcome, MountSourceError>>,
-    /// The requester's origin, which its change takes whichever caller
-    /// applies the group.
+    /// The requester's origin, which its change takes whichever caller or
+    /// drain applies the group.
     origin: ViewOrigin,
 }
 
