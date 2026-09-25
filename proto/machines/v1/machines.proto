@@ -329,6 +329,8 @@ message UsageReceipt {
   uint64 dedicated_cpu_ns = 5;
   uint64 private_resident_byte_seconds = 6;
   uint64 durable_private_bytes = 7;
+  reserved 8;
+  reserved "lineage_shared_bytes";
   bytes lineage_receipt_sha256 = 11;
   uint64 egress_bytes = 9;
   bytes receipt = 10;

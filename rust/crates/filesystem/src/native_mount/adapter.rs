@@ -394,7 +394,7 @@ impl Drop for AbandonUnlessClaimed {
 /// Exclusive access to a shared checkout. The retained view lease prevents a
 /// native callback from observing a partial external SDK operation.
 ///
-/// A change to the checkout's view that no exact [`ViewChange`] accounts for
+/// A change to the checkout's view that no exact `ViewChange` accounts for
 /// invalidates every cached lookup before the guard releases the view.
 pub struct SharedCheckoutGuard<'a, A, O> {
     _view: ViewWriteLease,

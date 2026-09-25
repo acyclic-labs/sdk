@@ -271,6 +271,7 @@ impl CheckoutDependencies {
     /// The proof of both this proof's and `other`'s operations over the same
     /// base generation, or `None` when they captured one region in
     /// different states.
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn merged(&self, other: &Self) -> Option<Self> {
         if Arc::ptr_eq(&self.captured, &other.captured) {
             return Some(self.clone());
