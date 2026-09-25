@@ -18,8 +18,33 @@ const MAX_CAPTURED_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
 pub struct PackagedPlugin {
     pub root: PathBuf,
-    pub launcher: PathBuf,
     pub native: PathBuf,
+}
+
+impl PackagedPlugin {
+    /// Runs the package's `acyclic` command through a shell, as the npm-linked
+    /// command does: `bin/acyclic` is the executable on Unix and resolves to
+    /// `acyclic.exe` on Windows.
+    pub fn command(&self, arguments: &[&str]) -> Command {
+        let invocation = format!(
+            "\"{}\" {}",
+            self.root.join("bin").join("acyclic").display(),
+            arguments.join(" ")
+        );
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            let mut shell = command("cmd");
+            shell.raw_arg(format!("/D /S /C \"{invocation}\""));
+            shell
+        }
+        #[cfg(not(windows))]
+        {
+            let mut shell = command("sh");
+            shell.args(["-c", &invocation]);
+            shell
+        }
+    }
 }
 
 pub fn test_tempdir(prefix: &str) -> tempfile::TempDir {
@@ -609,7 +634,6 @@ pub fn package_production_plugin(temporary: &Path) -> PackagedPlugin {
         String::from_utf8_lossy(&installed.stderr)
     );
     PackagedPlugin {
-        launcher: root.join("bin/acyclic.js"),
         native: root.join(if cfg!(windows) {
             "bin/acyclic.exe"
         } else {

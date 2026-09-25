@@ -15,7 +15,7 @@ use std::os::windows::process::CommandExt as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use support::{
-    ACYCLIC, BoundedOutput, RequestFingerprint, ScriptedProvider, ServiceGuard,
+    ACYCLIC, BoundedOutput, PackagedPlugin, RequestFingerprint, ScriptedProvider, ServiceGuard,
     assert_service_absent, command, installed_host_binary, isolated_state, make_read_only,
     make_writable, output_after_provider_admission, output_with_stdin, output_with_stdin_timeout,
     output_with_timeout, package_production_plugin, test_tempdir, write_qualification_receipt,
@@ -25,58 +25,6 @@ use support::{
 // provider will never answer. A long sleep adds no coverage; a short window catches accidental
 // early completion while keeping cleanup qualification fast.
 const STALLED_PROVIDER_OBSERVATION: Duration = Duration::from_millis(250);
-
-#[test]
-#[ignore = "local-only packaged hook latency comparison"]
-fn packaged_non_filesystem_hook_process_cost() {
-    let temporary = test_tempdir("hook-latency-");
-    let package = package_production_plugin(temporary.path());
-    let measure = |program: &Path, arguments: &[&str]| {
-        let mut samples = Vec::with_capacity(12);
-        for index in 0..15 {
-            let mut hook = command(program);
-            hook.args(arguments);
-            let started = Instant::now();
-            let output = output_with_stdin(&mut hook, br#"{"tool_name":"web.run"}"#);
-            let elapsed = started.elapsed();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert_eq!(output.stdout, b"{}");
-            if index >= 3 {
-                samples.push(elapsed);
-            }
-        }
-        samples.sort_unstable();
-        (
-            *samples.get(samples.len() / 2).expect("median sample"),
-            *samples.get(samples.len() * 95 / 100).expect("p95 sample"),
-        )
-    };
-    let native = measure(&package.native, &["__hook", "codex", "PreToolUse"]);
-    let launcher = measure(
-        Path::new("node"),
-        &[
-            package.launcher.to_str().expect("launcher path"),
-            "__hook",
-            "codex",
-            "PreToolUse",
-        ],
-    );
-    println!(
-        "packaged no-op hook median/p95: native={}/{}us Node={}/{}us",
-        native.0.as_micros(),
-        native.1.as_micros(),
-        launcher.0.as_micros(),
-        launcher.1.as_micros()
-    );
-    assert!(
-        native.1 < launcher.1,
-        "native hook did not beat the Node launcher"
-    );
-}
 
 /// Times every hook process end to end (spawn to exit with stdout collected)
 /// against a live service in an isolated state root: a session with a series
@@ -300,7 +248,7 @@ fn hook_failure_allows_the_host_to_continue_with_a_visible_notice() {
 }
 
 #[test]
-fn immutable_packaged_launcher_runs_the_real_service_lifecycle() {
+fn immutable_package_command_runs_the_real_service_lifecycle() {
     let temporary = test_tempdir("immutable-lifecycle-");
     let workspace = temporary.path().join("workspace");
     fs::create_dir(&workspace).expect("workspace");
@@ -352,11 +300,8 @@ fn immutable_packaged_launcher_runs_the_real_service_lifecycle() {
         output_with_stdin_timeout(&mut start, &input("SessionStart"), Duration::from_secs(5));
     let identity = service.assert_hook_service_live();
 
-    let mut agents = command("node");
-    agents
-        .arg(&package.launcher)
-        .arg("agents")
-        .current_dir(&workspace);
+    let mut agents = package.command(&["agents"]);
+    agents.current_dir(&workspace);
     isolated_state(&mut agents, temporary.path());
     let listed = output_with_timeout(&mut agents, Duration::from_secs(5));
 
@@ -398,7 +343,7 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     write_overlay_workflow_source(&workspace);
     let package = package_production_plugin(temporary.path());
 
-    let mut service = install_host(&package.launcher, "codex", &codex, temporary.path());
+    let mut service = install_host(&package, "codex", &codex, temporary.path());
     let provider = ScriptedProvider::start_codex(
         workspace.join("codex-e2e.txt").to_string_lossy().as_ref(),
         "codex-child-isolation.txt",
@@ -421,11 +366,8 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     let child_ran = assert_semantic_provider_exchange(&provider);
     service.assert_hook_service_live();
     assert_overlay_workflow_stayed_in_child(&workspace, "codex-child-isolation.txt");
-    let mut doctor = command("node");
-    doctor
-        .arg(&package.launcher)
-        .arg("doctor")
-        .current_dir(&workspace);
+    let mut doctor = package.command(&["doctor"]);
+    doctor.current_dir(&workspace);
     isolated_state(&mut doctor, temporary.path());
     let doctor = output_with_timeout(&mut doctor, Duration::from_secs(20));
     assert!(!doctor.expired, "doctor exceeded its deadline");
@@ -703,7 +645,7 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
     write_overlay_workflow_source(&workspace);
     let package = package_production_plugin(temporary.path());
 
-    let mut service = install_host(&package.launcher, "claude-code", &claude, temporary.path());
+    let mut service = install_host(&package, "claude-code", &claude, temporary.path());
     let provider = ScriptedProvider::start_claude_lifecycle(
         workspace.join("claude-e2e.txt").to_string_lossy().as_ref(),
         "claude-child-isolation.txt",
@@ -1062,9 +1004,13 @@ fn assert_host_sentinel(name: &str, workspace: &Path, output: &std::process::Out
     );
 }
 
-fn install_host(launcher: &Path, host: &str, host_binary: &Path, home: &Path) -> ServiceGuard {
-    let mut install = command("node");
-    install.arg(launcher).args(["install", host]);
+fn install_host(
+    package: &PackagedPlugin,
+    host: &str,
+    host_binary: &Path,
+    home: &Path,
+) -> ServiceGuard {
+    let mut install = package.command(&["install", host]);
     prepend_binary_directory(&mut install, host_binary);
     isolated_state(&mut install, home);
     if host == "codex" {

@@ -30,9 +30,11 @@ Codex plugin, marketplace assets, and native qualification receipts for tagged
 release binaries. A source-built Cargo binary remains uncertified until that
 exact executable completes the native-mount qualification.
 
-Native hooks invoke the installed Acyclic binary directly; the npm launcher is
-only for shell CLI entry. Acyclic does not add an MCP server or a second command
-implementation to shell-capable hosts. Codex plugins do not inject
+Native hooks and the npm-installed `acyclic` command both run the installed
+Acyclic binary directly: installation verifies it against the release checksum
+once, and no interpreter starts on each run. Install scripts must be enabled.
+Acyclic does not add an MCP server or a second command implementation to
+shell-capable hosts. Codex plugins do not inject
 arbitrary executables into `PATH`, so install the npm package globally when
 humans or agent shell commands need the `acyclic` executable.
 

@@ -69,7 +69,7 @@ function verifyTarget(directory, target = hostTarget()) {
   return resolved;
 }
 
-module.exports = { hostTarget, linuxLibc, resolveTarget, sha256File, verifyTarget };
+module.exports = { hostTarget, linuxLibc, sha256File, verifyTarget };
 
 if (require.main === module) {
   verifyTarget(__dirname, process.argv[2]);

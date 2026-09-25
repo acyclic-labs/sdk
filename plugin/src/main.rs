@@ -9778,7 +9778,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             return Err(io::Error::other("certification receipt exceeds 1 MiB").into());
         }
         let receipt: Value = serde_json::from_slice(&bytes)?;
-        let digest = blake3_file(&env::current_exe()?).map_err(io::Error::other)?;
+        let digest = blake3_file(&current_executable().map_err(io::Error::other)?)
+            .map_err(io::Error::other)?;
         if !valid_platform_receipt(&receipt, &digest) {
             return Err(io::Error::other(
                 "certification receipt does not match this Acyclic executable",
@@ -9921,8 +9922,17 @@ fn default_data_directory() -> PathBuf {
     env::temp_dir().join("acyclic-state-v5")
 }
 
+/// The running executable's own path. macOS reports the path it was started
+/// through, which for the npm-installed command is a link outside the package.
+fn current_executable() -> Result<PathBuf, String> {
+    let executable = env::current_exe().map_err(display)?;
+    #[cfg(unix)]
+    let executable = executable.canonicalize().map_err(display)?;
+    Ok(executable)
+}
+
 fn service_identity(data: &Path) -> Result<String, String> {
-    service_identity_for(data, &env::current_exe().map_err(display)?)
+    service_identity_for(data, &current_executable()?)
 }
 
 /// The identity of an executable's artifact bytes. Hashing tens of megabytes
@@ -10088,7 +10098,7 @@ struct ExecutableDigests {
 }
 
 fn executable_digests() -> Result<ExecutableDigests, String> {
-    executable_digests_for(&env::current_exe().map_err(display)?)
+    executable_digests_for(&current_executable()?)
 }
 
 async fn executable_digests_async() -> Result<ExecutableDigests, String> {
@@ -10261,7 +10271,7 @@ fn doctor_report(
     leases: usize,
     pending_recovery: bool,
 ) -> Result<Value, String> {
-    let executable = env::current_exe().map_err(display)?;
+    let executable = current_executable()?;
     let mut checks = Vec::new();
     let binary_identity_path = executable
         .parent()
@@ -10372,12 +10382,15 @@ fn doctor_report(
             ));
             let hooks = root.join("hooks/hooks.json");
             let mcp = root.join(".mcp.json");
-            let launcher = root.join("bin/acyclic.js");
+            // The npm command links to `bin/acyclic`: the executable itself on
+            // Unix, and on Windows a name that resolves to `acyclic.exe` once
+            // the installer has removed the placeholder.
             let native = root.join(if cfg!(windows) {
                 "bin/acyclic.exe"
             } else {
                 "bin/acyclic"
             });
+            let command_placeholder = cfg!(windows) && root.join("bin/acyclic").exists();
             let hooks_valid = fs::read(&hooks)
                 .ok()
                 .filter(|bytes| bytes.len() <= 1024 * 1024)
@@ -10415,7 +10428,7 @@ fn doctor_report(
                             })
                     })
                 });
-            let command_valid = launcher.is_file() && native.is_file() && !mcp.exists();
+            let command_valid = native.is_file() && !command_placeholder && !mcp.exists();
             checks.push(doctor_check(
                 "hooks",
                 if hooks_valid { "pass" } else { "fail" },
@@ -10425,9 +10438,9 @@ fn doctor_report(
                 "agent-command",
                 if command_valid { "pass" } else { "fail" },
                 if command_valid {
-                    "npm bin available; no MCP bridge exposed to shell-capable Codex"
+                    "npm command runs the native executable; no MCP bridge exposed to shell-capable Codex"
                 } else {
-                    "npm bin is missing or a commandless MCP bridge is exposed"
+                    "npm command does not reach the native executable, or a commandless MCP bridge is exposed"
                 },
             ));
         }
@@ -10872,7 +10885,7 @@ async fn ensure_service(data: &Path) -> Result<(), String> {
         return Ok(());
     }
     let ping = ping_request()?;
-    spawn_service_process(&env::current_exe().map_err(display)?)?;
+    spawn_service_process(&current_executable()?)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let last = loop {
         let last = match send_control_request_once(data, &ping).await {
@@ -11982,7 +11995,7 @@ fn install_host(host: &str, project: bool) -> Result<(), String> {
     if host == "codex" && !project {
         return install_codex_plugin();
     }
-    let executable = env::current_exe().map_err(display)?;
+    let executable = current_executable()?;
     if host == "claude-code" {
         let path = install_claude_hooks(&executable, project)?;
         println!(
@@ -13262,7 +13275,7 @@ fn validate_existing_codex_plugin(installed: &Value) -> Result<(), String> {
 }
 
 fn plugin_root() -> Result<PathBuf, String> {
-    let executable = env::current_exe().map_err(display)?;
+    let executable = current_executable()?;
     let installed = installed_plugin_root()?;
     discover_plugin_root(&executable, &installed)
         .ok_or_else(|| "cannot locate the installed Acyclic plugin root".to_owned())

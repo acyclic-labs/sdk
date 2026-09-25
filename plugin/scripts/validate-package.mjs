@@ -60,6 +60,22 @@ if (existsSync(join(plugin, ".mcp.json"))) {
   fail("shell-capable plugin package must not expose the commandless MCP bridge");
 }
 
+// The `acyclic` command must link to an interpreter-less placeholder that the
+// installer replaces with the native executable; an interpreter line would make
+// Windows package managers wrap the command in that interpreter.
+const packageJson = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
+if (JSON.stringify(packageJson.bin) !== JSON.stringify({ acyclic: "bin/acyclic" })) {
+  fail("the acyclic command must link to bin/acyclic");
+}
+const placeholder = join(plugin, "bin", "acyclic");
+if (!existsSync(placeholder) || !statSync(placeholder).isFile() || statSync(placeholder).size > 4096
+  || readFileSync(placeholder, "utf8").startsWith("#!")) {
+  fail(`invalid acyclic command placeholder: ${placeholder}`);
+}
+for (const installed of ["acyclic.exe", "installed-binary.json", "install-transaction.json"]) {
+  if (existsSync(join(plugin, "bin", installed))) fail(`package contains installed state: bin/${installed}`);
+}
+
 const manifest = JSON.parse(readFileSync(join(plugin, "bin", "platform-binaries.json"), "utf8"));
 if (manifest.version !== 1 || !manifest.targets || typeof manifest.targets !== "object" || Array.isArray(manifest.targets)) {
   fail("unsupported platform binary manifest");
