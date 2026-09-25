@@ -180,28 +180,14 @@ jobs:
           restore-keys: |
             sdk-deps-v8-${{ runner.os }}-${{ runner.arch }}-
 
-      # Windows restores caches and unpacks crates slowly, so it installs the
-      # toolchain and unpacks locked crates in a detached process while the
-      # compiler cache downloads; "Finish Windows Rust setup" joins it.
+      # Windows restores caches and unpacks crates slowly, so the toolchain
+      # install and crate unpacking run detached while the caches below restore.
       - name: Start Windows Rust setup
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $setup = Join-Path $env:RUNNER_TEMP 'rust-setup.ps1'
-          @'
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $true
-          rustup toolchain install 1.94.0 --profile minimal --no-self-update --component clippy --component rustfmt
-          rustup default 1.94.0
-          rustup target add aarch64-pc-windows-msvc --toolchain 1.94.0
-          cargo fetch --locked
-          '@ | Set-Content -LiteralPath $setup
-          $log = Join-Path $env:RUNNER_TEMP 'rust-setup.log'
-          $process = Start-Process -FilePath (Get-Process -Id $PID).Path `
-            -ArgumentList '-NoProfile', '-NonInteractive', '-File', $setup `
-            -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
-          "RUST_SETUP_PID=$($process.Id)" >> $env:GITHUB_ENV
           "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
+          .\scripts\windows-rust-setup.ps1 -Phase start
 
       - name: Install exact Rust toolchain
         if: runner.os != 'Windows'
@@ -268,13 +254,7 @@ jobs:
       - name: Finish Windows Rust setup
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $process = Get-Process -Id $env:RUST_SETUP_PID -ErrorAction SilentlyContinue
-          if ($process) { $process.WaitForExit() }
-          $log = Join-Path $env:RUNNER_TEMP 'rust-setup.log'
-          Get-Content -LiteralPath $log, "$log.err" -ErrorAction SilentlyContinue | Write-Host
-          rustc --version
-          cargo fetch --locked --offline
+        run: .\scripts\windows-rust-setup.ps1 -Phase finish
 
       - name: Enable Windows ProjFS
         if: runner.os == 'Windows'
