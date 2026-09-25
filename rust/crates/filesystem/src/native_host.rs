@@ -1132,9 +1132,25 @@ impl HostRoot {
     }
 
     /// Reads leaf metadata while refusing every intermediate link or reparse point.
+    /// On Windows a path free of reparse points is opened by name in one call
+    /// instead of a handle per component, with the same refusal.
     pub fn symlink_metadata_held(&self, path: &Path) -> io::Result<Metadata> {
         if path.as_os_str().is_empty() {
             return self.directory.dir_metadata();
+        }
+        #[cfg(windows)]
+        {
+            use windows::Wdk::Storage::FileSystem::{
+                FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+            };
+            use windows::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+            if let Some(file) = self.open_by_name(
+                path,
+                FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            )? {
+                return Metadata::from_file(&file.into_std());
+            }
         }
         let mut current = self.directory.try_clone()?;
         let mut components = path.components().peekable();
@@ -1206,25 +1222,50 @@ impl HostRoot {
     /// names the root itself or redirection was refused, which only the held
     /// walk may resolve.
     #[cfg(windows)]
-    #[allow(unsafe_code)]
     fn open_file_by_name(
         &self,
         path: &Path,
         reads: FileReads,
     ) -> io::Result<Option<cap_std::fs::File>> {
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+            NTCREATEFILE_CREATE_OPTIONS,
+        };
+        use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+
+        self.open_by_name(
+            path,
+            FILE_GENERIC_READ,
+            FILE_NON_DIRECTORY_FILE
+                | FILE_OPEN_REPARSE_POINT
+                | match reads {
+                    FileReads::Cursor => FILE_SYNCHRONOUS_IO_NONALERT,
+                    FileReads::Positional => NTCREATEFILE_CREATE_OPTIONS(0),
+                },
+        )
+    }
+
+    /// Opens `path` with `access` and `options` by one `NtCreateFile`
+    /// relative to the held root, which no reparse point may redirect.
+    /// `None` when the path names the root itself or redirection was
+    /// refused, which only the held walk may resolve.
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    fn open_by_name(
+        &self,
+        path: &Path,
+        access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
+        options: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS,
+    ) -> io::Result<Option<cap_std::fs::File>> {
         use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _};
         use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
-        use windows::Wdk::Storage::FileSystem::{
-            FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-            FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
-        };
+        use windows::Wdk::Storage::FileSystem::{FILE_OPEN, NtCreateFile};
         use windows::Win32::Foundation::{
             HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError,
             UNICODE_STRING,
         };
         use windows::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ,
-            FILE_SHARE_WRITE,
+            FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
         };
         use windows::Win32::System::IO::IO_STATUS_BLOCK;
         const REPARSE_POINT_ENCOUNTERED: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
@@ -1252,21 +1293,14 @@ impl HostRoot {
         let status = unsafe {
             NtCreateFile(
                 &raw mut handle,
-                FILE_GENERIC_READ,
+                access,
                 &raw const attributes,
                 &raw mut status_block,
                 None,
                 FILE_ATTRIBUTE_NORMAL,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 FILE_OPEN,
-                FILE_NON_DIRECTORY_FILE
-                    | FILE_OPEN_REPARSE_POINT
-                    | match reads {
-                        FileReads::Cursor => FILE_SYNCHRONOUS_IO_NONALERT,
-                        FileReads::Positional => {
-                            windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0)
-                        }
-                    },
+                options,
                 None,
                 0,
             )
@@ -3744,6 +3778,11 @@ mod windows_clone_tests {
                 .ok_or_else(|| std::io::Error::other("a plain path is answered by name"))?;
             let held = HostStat::from_metadata(&root.symlink_metadata(path)?);
             same(&fast, &held)?;
+            // The held walk's by-name open reads exactly what the walk does.
+            same(
+                &fast,
+                &HostStat::from_metadata(&root.symlink_metadata_held(path)?),
+            )?;
         }
         // Every enumerated name carries exactly the facts its own stat
         // reports, except a reparse point, which only its own stat resolves.
