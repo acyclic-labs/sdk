@@ -320,6 +320,7 @@ jobs:
           export XDG_CONFIG_HOME="$home/.config"
           export XDG_STATE_HOME="$home/.state"
           export PATH="$prefix/bin:$PATH"
+          mkdir -p "$CODEX_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
           codex_version=$(node -p "require('./plugin/tests/hosts/package.json').dependencies['@openai/codex']")
           npm install --global --prefix "$prefix" "$package" "@openai/codex@$codex_version"
           acyclic install codex
