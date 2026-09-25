@@ -94,7 +94,7 @@ case "$lane" in
     binary="${CARGO_TARGET_DIR:-target}/$target/release/acyclic"
     node scripts/verify-release-binary.mjs "$release_target" "$binary"
     expected="$(cargo metadata --locked --no-deps --format-version 1 |
-      jq -r '.packages[] | select(.name == "acyclic-labs-plugin") | "acyclic \(.version)"')"
+      jq -r '.packages[] | select(.name == "acyclic-plugin") | "acyclic \(.version)"')"
     test "$("$binary" --version)" = "$expected"
     ;;
   policy)
@@ -126,8 +126,8 @@ case "$lane" in
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
-    cargo test -p acyclic-labs-plugin --locked
-    cargo clippy -p acyclic-labs-plugin --all-targets --all-features --locked -- -D warnings
+    cargo test -p acyclic-plugin --locked
+    cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings
     head="$(git rev-parse HEAD)"
     allow_webflow=false
     if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then

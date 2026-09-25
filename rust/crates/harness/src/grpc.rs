@@ -1,5 +1,4 @@
-#![deny(unsafe_code)]
-#![doc = include_str!("../README.md")]
+//! gRPC server and client adapter.
 
 use acyclic_harness::{
     Error, wire,
@@ -16,7 +15,7 @@ use tonic::{Request, Response, Status};
 /// Generated tonic client and server surfaces using the canonical Harness messages.
 #[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
 pub mod transport {
-    include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v1.rs"));
+    include!(concat!(env!("OUT_DIR"), "/grpc/acyclic.harness.v1.rs"));
 }
 
 /// Thin tonic service; all admission and replay semantics belong to [`HarnessWireApi`].

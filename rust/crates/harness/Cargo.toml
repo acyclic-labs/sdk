@@ -11,6 +11,9 @@ readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
 
+[package.metadata.docs.rs]
+all-features = true
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 
@@ -18,18 +21,29 @@ crate-type = ["rlib", "cdylib"]
 default = ["host"]
 host = ["dep:acyclic-stream", "dep:bytes", "dep:futures", "dep:tokio"]
 wasm = ["dep:serde-wasm-bindgen", "dep:wasm-bindgen"]
+filesystem = ["host", "dep:acyclic-fs", "acyclic-fs/memory"]
+filesystem-local = ["filesystem", "acyclic-fs/local"]
+grpc = ["host", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
+http = ["host", "dep:axum", "dep:prost-reflect"]
+machines = ["host", "dep:acyclic-machines"]
 
 [dependencies]
-acyclic-stream = { version = "=0.1.1", path = "../stream", default-features = false, optional = true }
+acyclic-stream = { version = "=0.1.2", path = "../stream", default-features = false, optional = true }
+acyclic-fs = { version = "=0.1.2", path = "../filesystem", default-features = false, optional = true }
+acyclic-machines = { version = "=0.1.2", path = "../machines", optional = true }
+axum = { workspace = true, optional = true }
 blake3.workspace = true
 bytes = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 jsonschema.workspace = true
+prost-reflect = { workspace = true, optional = true }
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 serde-wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
@@ -37,6 +51,10 @@ wasm-bindgen = { workspace = true, optional = true }
 [build-dependencies]
 prost-build.workspace = true
 protoc-bin-vendored.workspace = true
+tonic-prost-build = { workspace = true, optional = true }
+
+[dev-dependencies]
+tower.workspace = true
 
 [lints]
 workspace = true

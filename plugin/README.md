@@ -17,10 +17,10 @@ npm install -g @acyclic-labs/plugin
 acyclic install codex
 ```
 
-Rust users can install the executable directly from a source checkout:
+Rust users can install the standalone executable from crates.io:
 
 ```sh
-cargo install --locked --path plugin
+cargo install --locked acyclic-plugin
 acyclic --help
 ```
 

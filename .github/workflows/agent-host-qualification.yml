@@ -109,7 +109,7 @@ jobs:
           if [ "$HOST" = claude ]; then
             test_name=actual_claude_binary_executes_the_scripted_scenario
           fi
-          cargo test -p acyclic-labs-plugin --test e2e "$test_name" -- --ignored --exact --nocapture
+          cargo test -p acyclic-plugin --test e2e "$test_name" -- --ignored --exact --nocapture
 
       - name: Run actual host scenario on Windows
         if: runner.os == 'Windows'
@@ -135,7 +135,7 @@ jobs:
           } else {
             'actual_claude_binary_executes_the_scripted_scenario'
           }
-          cargo test -p acyclic-labs-plugin --test e2e $test -- --ignored --exact --nocapture
+          cargo test -p acyclic-plugin --test e2e $test -- --ignored --exact --nocapture
 
       - name: Retain qualification receipt
         if: always()

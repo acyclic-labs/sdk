@@ -1,11 +1,24 @@
 [workspace]
-# rust/crates/* are the SDK families; plugin is the single product
-# binary and portable agent-plugin package built on acyclic-fs.
-members = ["rust/crates/*", "plugin"]
+# Publishable SDK families, private qualification/binding crates, and the
+# single product binary are listed explicitly so retired crates cannot return.
+members = [
+  "rust/crates/conformance",
+  "rust/crates/filesystem",
+  "rust/crates/filesystem-napi",
+  "rust/crates/filesystem-wasm",
+  "rust/crates/harness",
+  "rust/crates/inference",
+  "rust/crates/machines",
+  "rust/crates/native-runtime",
+  "rust/crates/objects",
+  "rust/crates/proto-codegen",
+  "rust/crates/stream",
+  "plugin",
+]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.94"
 license = "Apache-2.0"

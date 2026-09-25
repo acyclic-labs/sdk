@@ -1,5 +1,4 @@
-#![deny(unsafe_code)]
-#![doc = include_str!("../README.md")]
+//! Versioned filesystem workspace adapter.
 
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Digest, Fs, Generation, GenerationId,

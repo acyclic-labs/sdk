@@ -86,7 +86,7 @@ jobs:
         run: |
           install_root=$(mktemp -d)
           cargo install --locked --path plugin --root "$install_root"
-          expected=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acyclic-labs-plugin") | "acyclic \(.version)"')
+          expected=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acyclic-plugin") | "acyclic \(.version)"')
           test "$("$install_root/bin/acyclic" --version)" = "$expected"
           "$install_root/bin/acyclic" --help
       - name: Build native qualification executable

@@ -279,8 +279,11 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_memory::MemoryProfile;
+    use acyclic_machines::SimulatedMachines;
+    use acyclic_objects::MemoryObjects;
     use acyclic_objects::ReadTarget;
+    use acyclic_stream::MemoryStream;
+    use std::sync::Arc;
 
     #[test]
     fn exported_stream_inventory_matches_the_executable_suite() {
@@ -288,12 +291,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_profile_conforms() -> Result<(), String> {
-        let profile = MemoryProfile::new();
-        filesystem_smoke(&profile.filesystem).await?;
+    async fn family_memory_providers_conform() -> Result<(), String> {
+        let stream_provider = MemoryStream::default();
+        let (objects_provider, filesystem_bucket) = MemoryObjects::with_default_bucket();
+        let filesystem = acyclic_fs::Fs::from_memory_providers(
+            Arc::new(stream_provider.clone()),
+            Arc::new(objects_provider.clone()),
+            filesystem_bucket.clone(),
+        );
+        filesystem_smoke(&filesystem).await?;
 
-        let stream_children = profile
-            .stream
+        let stream_children = stream_provider
             .children(acyclic_stream::ChildrenRequest {
                 parent: None,
                 limit: 8,
@@ -309,10 +317,9 @@ mod tests {
         }) {
             return Err("filesystem did not publish through the profile's public Stream".into());
         }
-        let filesystem_objects = profile
-            .objects
+        let filesystem_objects = objects_provider
             .list(
-                ReadTarget::Bucket(profile.filesystem_bucket.clone()),
+                ReadTarget::Bucket(filesystem_bucket),
                 "fs/v1/".to_owned(),
                 None,
                 true,
@@ -327,9 +334,9 @@ mod tests {
             );
         }
 
-        stream(&profile.stream).await?;
-        objects(&profile.objects).await?;
-        machines(&profile.machines).await?;
+        stream(&stream_provider).await?;
+        objects(&objects_provider).await?;
+        machines(&SimulatedMachines::default()).await?;
         Ok(())
     }
 }

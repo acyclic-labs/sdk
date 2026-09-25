@@ -1660,6 +1660,7 @@ pub struct Transaction<A, O> {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     /// Reuses the workspace transaction compiler against a private checkout
     /// candidate without publishing a second workspace head.
+    #[cfg(feature = "native-mount")]
     pub(crate) fn for_checkout_candidate(
         workspace: &Workspace<A, O>,
         checkout: Checkout<A, O>,
@@ -1672,6 +1673,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         }
     }
 
+    #[cfg(feature = "native-mount")]
     pub(crate) fn into_checkout_candidate(self) -> Checkout<A, O> {
         self.checkout
     }
