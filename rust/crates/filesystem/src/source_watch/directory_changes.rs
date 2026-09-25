@@ -231,7 +231,19 @@ impl Shared {
             }
             let stop = drained.is_err() || self.stopping.load(Ordering::Acquire);
             if stop {
-                // A read still pending must finish before its buffer goes.
+                // A read still pending must finish before its buffer goes. It
+                // may have been issued after the dropping thread cancelled
+                // the one it saw, so it is cancelled here, where the lock
+                // that issued it is held.
+                if reads.pending {
+                    // SAFETY: cancels only this handle's read in flight.
+                    let _ = unsafe {
+                        CancelIoEx(
+                            HANDLE(self.directory.as_raw_handle()),
+                            Some(&raw const *reads.overlapped),
+                        )
+                    };
+                }
                 let _ = self.finish_read(&mut reads, true, &mut Vec::new());
             }
             drop(reads);
