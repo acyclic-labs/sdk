@@ -1893,16 +1893,16 @@ fn collect_paths(
 
 #[cfg(test)]
 mod receipt_tests {
-    use super::{COVERAGE, file_blake3, verify_receipt};
+    use super::{COVERAGE, Failure, file_blake3, verify_receipt};
     use std::ffi::OsString;
 
     #[test]
-    fn verifies_the_release_target_architecture_not_the_verifier_host() {
-        let directory = tempfile::tempdir().unwrap();
+    fn verifies_the_release_target_architecture_not_the_verifier_host() -> Result<(), Failure> {
+        let directory = tempfile::tempdir()?;
         let executable = directory.path().join("acyclic");
         let receipt = directory.path().join("macos-nfs.json");
-        std::fs::write(&executable, b"release executable").unwrap();
-        let digest = file_blake3(&executable).unwrap();
+        std::fs::write(&executable, b"release executable")?;
+        let digest = file_blake3(&executable)?;
         std::fs::write(
             &receipt,
             serde_json::to_vec(&serde_json::json!({
@@ -1927,10 +1927,8 @@ mod receipt_tests {
                     {"name": "crash-detach-recovery", "status": "passed"},
                     {"name": "checkout-and-git-untouched", "status": "passed"}
                 ]
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+            }))?,
+        )?;
         let mut args = vec![
             OsString::from("--verify-receipt"),
             receipt.into_os_string(),
@@ -1943,14 +1941,18 @@ mod receipt_tests {
             OsString::from("--release-arch"),
             OsString::from("aarch64"),
         ];
-        verify_receipt(&args).unwrap();
-        *args.last_mut().unwrap() = OsString::from("x86_64");
-        let error = verify_receipt(&args).unwrap_err();
+        verify_receipt(&args)?;
+        *args.last_mut().ok_or("missing release architecture")? = OsString::from("x86_64");
+        let error = match verify_receipt(&args) {
+            Ok(()) => return Err("mismatched release architecture was accepted".into()),
+            Err(error) => error,
+        };
         assert!(
             error
                 .to_string()
                 .contains("does not match release target x86_64")
         );
+        Ok(())
     }
 }
 
