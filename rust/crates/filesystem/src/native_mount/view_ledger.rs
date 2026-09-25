@@ -189,6 +189,10 @@ pub(super) struct Installed {
     pub(super) names: Vec<(NamespacePath, LogicalName)>,
     /// Paths beneath which names changed in directories at unknown paths.
     pub(super) subtrees: Vec<NamespacePath>,
+    /// Directories whose listing changed while every name in them still
+    /// resolves as it did, as when promotion moves a name's answer from the
+    /// source into the checkout.
+    pub(super) listings: Vec<NamespacePath>,
     /// Whether the effect could not be enumerated at all.
     pub(super) everything: bool,
 }
@@ -264,6 +268,9 @@ impl ViewLedger {
                 }
                 for subtree in &installed.subtrees {
                     self.rebound(subtree, position);
+                }
+                for directory in &installed.listings {
+                    self.directories.record(path_key(directory), position);
                 }
                 if installed.everything {
                     position.record_in(&self.everything);

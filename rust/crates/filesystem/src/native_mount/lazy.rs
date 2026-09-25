@@ -79,7 +79,9 @@ where
 /// The observable effect of promoting `mounted` and the ancestors staged
 /// with it. Promotion keeps every node's identity and projects its source
 /// facts, so a node is recorded only where the lookup the view answers after
-/// installation differs from the one it answered before.
+/// installation differs from the one it answered before. A newly authored
+/// name still changes its directory's listing, which a continuation merges
+/// from the source and the checkout apart.
 async fn promotion_effect<A, O, D, S>(
     lazy: &LazyWorkspace<A, O, D, S>,
     authored: &CheckoutMountSource<A, O>,
@@ -98,7 +100,12 @@ where
     let mut text = path.to_owned();
     loop {
         let after = authored.lookup_in(&candidate.checkout, &prefix).await?;
-        let before = match authored.lookup_in(candidate.base(), &prefix).await? {
+        let base = authored.lookup_in(candidate.base(), &prefix).await?;
+        let parent = prefix.parent();
+        if let (None, Some(_), Some(parent)) = (base, after, &parent) {
+            installed.listings.push(authored.namespace_path(parent)?);
+        }
+        let before = match base {
             Some(lookup) => Some(lookup),
             None => match lazy.inspect_unauthored(&text, None).await {
                 Ok((lookup, _)) => {
@@ -120,7 +127,7 @@ where
                     .map(|lookup| lookup.node.file_id),
             );
         }
-        let Some(parent) = prefix.parent() else {
+        let Some(parent) = parent else {
             return Ok(installed);
         };
         prefix = parent;
@@ -3808,6 +3815,25 @@ mod tests {
 
         std::fs::remove_file(source.path().join("a"))?;
         assert_eq!(size(&a)?, None);
+        Ok(())
+    }
+
+    /// Promoting a name moves its answer from the source into the checkout,
+    /// which a listing merges separately, so a promotion changes its
+    /// directory's listing even where every name still resolves as it did:
+    /// a continuation begun before must not list the name a second time.
+    #[test]
+    fn a_promotion_changes_its_directory_listing() -> Result<(), Box<dyn std::error::Error>> {
+        let source = tempfile::tempdir()?;
+        std::fs::create_dir(source.path().join("d"))?;
+        std::fs::write(source.path().join("d/f"), b"source")?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let view = runtime.block_on(mounted_view(source.path(), "listing-promotion"))?;
+        let (d, f) = (mounted(&["d"]), mounted(&["d", "f"]));
+        view.promote_locked(&d)?;
+        let stamp = view.view_stamp().ok_or("the view has no stamp")?;
+        view.promote_locked(&f)?;
+        assert!(!view.unchanged_since(&d, None, stamp));
         Ok(())
     }
 }
