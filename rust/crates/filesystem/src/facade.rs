@@ -2059,53 +2059,60 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             objects,
             object_cache,
         } = options;
-        let stream = std::sync::Arc::new(match &lifecycle {
-            Some(ownership) => {
-                acyclic_stream::LocalStream::open_with_ownership_anchor(
-                    root.join("stream"),
-                    stream,
-                    ownership.clone(),
-                )
-                .await?
-            }
-            None => acyclic_stream::LocalStream::open(root.join("stream"), stream).await?,
-        });
-        let objects = std::sync::Arc::new(match &lifecycle {
-            Some(ownership) => {
-                acyclic_objects::LocalObjects::open_with_ownership_anchor(
-                    root.join("objects"),
-                    objects,
-                    ownership.clone(),
-                )
-                .await?
-            }
-            None => acyclic_objects::LocalObjects::open(root.join("objects"), objects).await?,
-        });
-        let bucket = match objects
-            .bucket_named("filesystem-objects")
-            .await
-            .map_err(FsError::LocalObjectsBucket)?
-        {
-            Some(bucket) => bucket,
-            None => objects
-                .create_bucket(
-                    "filesystem-objects".to_owned(),
-                    Some("filesystem-objects-v1".to_owned()),
-                )
+        // The Stream and Objects providers own disjoint directories, so their
+        // recoveries and first-open flushes proceed concurrently.
+        let open_stream = async {
+            Ok::<_, FsError>(std::sync::Arc::new(match &lifecycle {
+                Some(ownership) => {
+                    acyclic_stream::LocalStream::open_with_ownership_anchor(
+                        root.join("stream"),
+                        stream,
+                        ownership.clone(),
+                    )
+                    .await?
+                }
+                None => acyclic_stream::LocalStream::open(root.join("stream"), stream).await?,
+            }))
+        };
+        let open_objects = async {
+            let objects = std::sync::Arc::new(match &lifecycle {
+                Some(ownership) => {
+                    acyclic_objects::LocalObjects::open_with_ownership_anchor(
+                        root.join("objects"),
+                        objects,
+                        ownership.clone(),
+                    )
+                    .await?
+                }
+                None => acyclic_objects::LocalObjects::open(root.join("objects"), objects).await?,
+            });
+            let bucket = match objects
+                .bucket_named("filesystem-objects")
                 .await
                 .map_err(FsError::LocalObjectsBucket)?
-                .bucket
-                .ok_or(FsError::LocalObjectsBucket(
-                    acyclic_objects::ObjectsError::Unavailable,
-                ))?,
+            {
+                Some(bucket) => bucket,
+                None => objects
+                    .create_bucket(
+                        "filesystem-objects".to_owned(),
+                        Some("filesystem-objects-v1".to_owned()),
+                    )
+                    .await
+                    .map_err(FsError::LocalObjectsBucket)?
+                    .bucket
+                    .ok_or(FsError::LocalObjectsBucket(
+                        acyclic_objects::ObjectsError::Unavailable,
+                    ))?,
+            };
+            let objects = crate::cache::CachedObjectStore::new(
+                crate::distributed::ProviderObjectStore::new(objects, bucket),
+                object_cache,
+            )?;
+            crate::staged_objects::StagedObjects::open(objects, root.clone())
+                .await
+                .map_err(FsError::LocalStaging)
         };
-        let objects = crate::cache::CachedObjectStore::new(
-            crate::distributed::ProviderObjectStore::new(objects, bucket),
-            object_cache,
-        )?;
-        let objects = crate::staged_objects::StagedObjects::open(objects, root.clone())
-            .await
-            .map_err(FsError::LocalStaging)?;
+        let (stream, objects) = futures::future::try_join(open_stream, open_objects).await?;
         Ok(Self::new_with_path_index(
             crate::distributed::StreamAuthorityStore::new(stream),
             objects,

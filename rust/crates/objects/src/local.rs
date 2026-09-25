@@ -401,10 +401,6 @@ impl LocalObjects {
         let setup_root = root.clone();
         let ownership = acyclic_native_runtime::run_blocking_io(move || {
             fs::create_dir_all(setup_root.join("segments"))?;
-            sync_parent(&setup_root, limits.durability)?;
-            // Settle a possibly unsynced earlier segment family before a
-            // reopened writer can publish a new journal reference beneath it.
-            sync_parent(&setup_root.join("segments"), limits.durability)?;
             let ownership = OpenOptions::new()
                 .create(true)
                 .truncate(false)
@@ -423,7 +419,7 @@ impl LocalObjects {
         .await
         .map_err(|_| LocalObjectsError::Unavailable)??;
 
-        let journal_path = root.join("mutations.log");
+        let recovery_root = root.clone();
         let (records, mut receiver) = mpsc::channel(REPLAY_PIPELINE_RECORDS);
         let recovery = tokio::task::spawn_blocking(move || {
             let mut journal = OpenOptions::new()
@@ -431,8 +427,8 @@ impl LocalObjects {
                 .truncate(false)
                 .read(true)
                 .write(true)
-                .open(journal_path)?;
-            initialize_or_validate_header(&mut journal, limits)?;
+                .open(recovery_root.join("mutations.log"))?;
+            initialize_or_validate_header(&mut journal, &recovery_root, limits)?;
             let operations = decode_replay(&mut journal, limits, &records)?;
             Ok::<_, LocalObjectsError>((journal, operations))
         });
@@ -1383,12 +1379,20 @@ fn replay_effect<T>(result: &Result<T, ObjectsError>) -> Result<(), LocalObjects
     }
 }
 
+/// Initializes or validates the journal header.
+///
+/// Every mutation appends a frame after the header, so a journal shorter than
+/// its header never acknowledged one: a crash tore its creation, and it is
+/// created again. A journal that holds no frame yet has its header flushed and
+/// then `root`, making the store's directory entries durable before the first
+/// frame can be appended; a store that holds a frame opens without a flush.
 fn initialize_or_validate_header(
     journal: &mut File,
+    root: &Path,
     limits: LocalObjectsLimits,
 ) -> Result<(), LocalObjectsError> {
     let length = journal.metadata()?.len();
-    if length == 0 {
+    if length < JOURNAL_HEADER_BYTES {
         let capacity = usize::try_from(JOURNAL_HEADER_BYTES)
             .map_err(|_| LocalObjectsError::Invalid("journal header is too large"))?;
         let mut header = Vec::with_capacity(capacity);
@@ -1397,13 +1401,22 @@ fn initialize_or_validate_header(
         header.extend_from_slice(&limits.maximum_bytes.to_le_bytes());
         header.extend_from_slice(&limits.maximum_journal_operations.to_le_bytes());
         header.extend_from_slice(&limits.maximum_journal_bytes.to_le_bytes());
+        journal.set_len(0)?;
+        journal.seek(SeekFrom::Start(0))?;
         journal.write_all(&header)?;
+    }
+    validate_header(journal, limits)?;
+    if length <= JOURNAL_HEADER_BYTES {
         sync_file(journal, limits.durability)?;
-        return Ok(());
+        sync_parent(root, limits.durability)?;
     }
-    if length < JOURNAL_HEADER_BYTES {
-        return Err(LocalObjectsError::Corrupt);
-    }
+    Ok(())
+}
+
+fn validate_header(
+    journal: &mut File,
+    limits: LocalObjectsLimits,
+) -> Result<(), LocalObjectsError> {
     journal.seek(SeekFrom::Start(0))?;
     let mut magic = [0; JOURNAL_MAGIC.len()];
     journal.read_exact(&mut magic)?;
@@ -3277,6 +3290,37 @@ mod tests {
             provider.collect_garbage(10).await,
             Err(LocalObjectsError::Unavailable)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_journal_torn_before_its_header_completed_is_created_again() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        fs::write(
+            root.path().join("mutations.log"),
+            JOURNAL_MAGIC.get(..3).unwrap_or_else(|| unreachable!()),
+        )
+        .unwrap_or_else(|_| unreachable!());
+        let objects = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        assert!(
+            objects
+                .bucket_named("recreated")
+                .await
+                .unwrap_or_else(|_| unreachable!())
+                .is_none()
+        );
+        drop(objects);
+        assert_eq!(
+            fs::metadata(root.path().join("mutations.log"))
+                .unwrap_or_else(|_| unreachable!())
+                .len(),
+            JOURNAL_HEADER_BYTES
+        );
+        LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
     }
 
     #[tokio::test]

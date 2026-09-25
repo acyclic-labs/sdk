@@ -887,7 +887,6 @@ const CONTEXT_CHILDREN_INDEX_FAMILY: &str = "workspace-context-children-index-v1
 const CONTEXT_CHILD_COUNT_FAMILY: &str = "workspace-context-child-counts-v1";
 const LINEAGE_FAMILY: &str = "lineage";
 const CORE_LOG_FAMILY: &str = "core-state-log-v1";
-const LEGACY_CONTEXT_TRANSACTION_FAMILY: &str = "workspace-context-transactions-v2";
 /// Commits an owner keeps in its log before writing their records back. Tests
 /// checkpoint every few commits so crash tests cover owned checkpoints.
 const OWNED_CHECKPOINT: u64 = if cfg!(test) { 3 } else { 256 };
@@ -1237,18 +1236,13 @@ impl CoreLog {
             broken: false,
         };
         log.residents().clear();
-        let legacy = legacy_context_change(root)?;
-        if bytes.is_empty() && legacy.is_none() {
+        if bytes.is_empty() {
             return Ok(log);
         }
-        let settles_legacy = legacy.is_some();
-        for change in legacy.into_iter().chain(replayable_changes(&bytes)) {
+        for change in replayable_changes(&bytes) {
             log.apply(change);
         }
         log.checkpoint(root)?;
-        if settles_legacy {
-            remove_record(&root.record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16]))?;
-        }
         Ok(log)
     }
 
@@ -1436,61 +1430,6 @@ fn replayable_changes(bytes: &[u8]) -> Vec<Change> {
         changes.push(frame.change);
     }
     changes
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-enum LegacyContextTransactionPhase {
-    Prepared,
-    Committed,
-}
-
-/// Two-phase journal written before the core-state log existed.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct LegacyContextTransaction {
-    version: u16,
-    phase: LegacyContextTransactionPhase,
-    before: BTreeMap<WorkspaceContextId, Option<WorkspaceContext>>,
-    after: BTreeMap<WorkspaceContextId, WorkspaceContext>,
-    #[serde(default)]
-    before_children: BTreeMap<WorkspaceContextId, Option<BTreeSet<WorkspaceContextId>>>,
-    #[serde(default)]
-    after_children: WorkspaceContextChildren,
-}
-
-/// Converts an interrupted legacy transaction into the change that settles
-/// it: a prepared one rolls back, a committed one rolls forward.
-fn legacy_context_change(root: &Namespace) -> Result<Option<Change>, LocalCoreStateStoreError> {
-    let Some(journal) = read_recoverable::<LegacyContextTransaction>(
-        &root.record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16]),
-    )?
-    else {
-        return Ok(None);
-    };
-    if !matches!(journal.version, 1 | 2) {
-        return Err(LocalCoreStateStoreError::ContextTransaction(
-            "unsupported workspace-context transaction version".to_owned(),
-        ));
-    }
-    let mut change = Change::default();
-    match journal.phase {
-        LegacyContextTransactionPhase::Prepared => {
-            for (context_id, record) in journal.before {
-                change.put(context_id, record);
-            }
-            for (parent, descendants) in journal.before_children {
-                change.put_children(parent, descendants)?;
-            }
-        }
-        LegacyContextTransactionPhase::Committed => {
-            for (context_id, record) in journal.after {
-                change.put(context_id, Some(record));
-            }
-            for (parent, descendants) in journal.after_children {
-                change.put_children(parent, Some(descendants))?;
-            }
-        }
-    }
-    Ok(Some(change))
 }
 
 /// Aborts the process at the configured crash point of a crash-atomicity test,
@@ -1879,7 +1818,10 @@ impl Default for NodeMemo {
 }
 
 /// An immutable content-addressed lazy node.
-trait LazyNode: Clone + PartialEq + Serialize + DeserializeOwned + Send + 'static {
+///
+/// Every store implies the canonical empty node (`Default`) without storing
+/// it, so attaching a root writes no node at all.
+trait LazyNode: Clone + Default + PartialEq + Serialize + DeserializeOwned + Send + 'static {
     type Id: Copy + Eq + Hash + Send + 'static;
     const FAMILY: &'static str;
 
@@ -1921,6 +1863,9 @@ impl LocalCoreStateStore {
         &self,
         id: T::Id,
     ) -> Result<Option<T>, LocalCoreStateStoreError> {
+        if T::address(id) == content_address(&T::default())? {
+            return Ok(Some(T::default()));
+        }
         if let Some(value) = T::memo(&self.nodes).get(&id) {
             return Ok(Some(value));
         }
@@ -1940,6 +1885,13 @@ impl LocalCoreStateStore {
         id: T::Id,
         value: T,
     ) -> Result<(), LocalCoreStateStoreError> {
+        if T::address(id) == content_address(&T::default())? {
+            return if value == T::default() {
+                Ok(())
+            } else {
+                Err(LocalCoreStateStoreError::Integrity)
+            };
+        }
         if let Some(existing) = T::memo(&self.nodes).get(&id) {
             return if existing == value {
                 Ok(())
@@ -2050,11 +2002,14 @@ fn verify_content_address<T: Serialize>(
     address: [u8; 32],
     value: &T,
 ) -> Result<(), LocalCoreStateStoreError> {
-    let encoded = serde_json::to_vec(value)?;
-    if blake3::hash(&encoded).as_bytes() != &address {
+    if content_address(value)? != address {
         return Err(LocalCoreStateStoreError::Integrity);
     }
     Ok(())
+}
+
+fn content_address<T: Serialize>(value: &T) -> Result<[u8; 32], LocalCoreStateStoreError> {
+    Ok(*blake3::hash(&serde_json::to_vec(value)?).as_bytes())
 }
 
 #[cfg(test)]
@@ -2230,39 +2185,46 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn lazy_overlay_load_rejects_content_address_mismatch() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let store = LocalCoreStateStore::new(directory.path());
-        let namespace = store.namespace().expect("admitted namespace");
-        let empty = LazyOverlay::default();
-        let encoded = serde_json::to_vec(&empty).expect("serialize overlay");
-        let overlay = LazyOverlayId::from_bytes(*blake3::hash(&encoded).as_bytes());
-        LazyWorkspaceStore::put_lazy_overlay(&store, overlay, empty)
-            .await
-            .expect("persist overlay");
-
-        let paths = namespace.record("lazy-overlays", &overlay.into_bytes());
-        let different = serde_json::json!({
+    /// One non-empty overlay node and its address.
+    fn overlay_node(path: &str) -> (LazyOverlayId, LazyOverlay) {
+        let node: LazyOverlay = serde_json::from_value(serde_json::json!({
             "Node": {
-                "path": "/tampered",
+                "path": path,
                 "priority": 0,
                 "change": "Tombstone",
                 "left": vec![0_u8; 32],
                 "right": vec![0_u8; 32]
             }
-        });
+        }))
+        .expect("overlay node");
+        let id = LazyOverlayId::from_bytes(content_address(&node).expect("overlay address"));
+        (id, node)
+    }
+
+    #[tokio::test]
+    async fn lazy_overlay_load_rejects_content_address_mismatch() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let (overlay, node) = overlay_node("/original");
+        store
+            .put_lazy_overlay(overlay, node)
+            .await
+            .expect("persist overlay");
+        let (_, tampered) = overlay_node("/tampered");
+        let paths = store
+            .namespace()
+            .expect("admitted namespace")
+            .record("lazy-overlays", &overlay.into_bytes())
+            .current;
         std::fs::write(
-            &paths.current,
-            serde_json::to_vec(&different).expect("serialize tampered overlay"),
+            &paths,
+            serde_json::to_vec(&tampered).expect("serialize tampered overlay"),
         )
         .expect("tamper overlay");
         assert!(matches!(
-            LazyWorkspaceStore::load_lazy_overlay(
-                &LocalCoreStateStore::new(directory.path()),
-                overlay
-            )
-            .await,
+            LocalCoreStateStore::new(directory.path())
+                .load_lazy_overlay(overlay)
+                .await,
             Err(LocalCoreStateStoreError::Integrity)
         ));
     }
@@ -2271,60 +2233,66 @@ mod tests {
     async fn immutable_nodes_are_served_from_memory_after_first_use() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let store = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
-        let overlay = LazyOverlay::default();
-        let overlay_id = LazyOverlayId::from_bytes(
-            *blake3::hash(&serde_json::to_vec(&overlay).expect("encode overlay")).as_bytes(),
-        );
-        let shadow = crate::LazyShadow::default();
-        let shadow_id: crate::LazyShadowId = serde_json::from_value(serde_json::json!(
-            blake3::hash(&serde_json::to_vec(&shadow).expect("encode shadow")).as_bytes()
-        ))
-        .expect("shadow id");
+        let (overlay, node) = overlay_node("/memoized");
         store
-            .put_lazy_overlay(overlay_id, overlay.clone())
+            .put_lazy_overlay(overlay, node.clone())
             .await
             .expect("put overlay");
-        store
-            .put_lazy_shadow(shadow_id, shadow.clone())
-            .await
-            .expect("put shadow");
         std::fs::remove_dir_all(directory.path().join("lazy-overlays")).expect("drop overlays");
-        std::fs::remove_dir_all(directory.path().join("lazy-shadows-v1")).expect("drop shadows");
         let clone = store.clone();
         assert_eq!(
             clone
-                .load_lazy_overlay(overlay_id)
+                .load_lazy_overlay(overlay)
                 .await
                 .expect("memoized overlay"),
-            Some(overlay)
+            Some(node)
         );
-        assert_eq!(
-            clone
-                .load_lazy_shadow(shadow_id)
-                .await
-                .expect("memoized shadow"),
-            Some(shadow)
-        );
+        let (_, different) = overlay_node("/different");
         assert!(
             matches!(
-                clone
-                    .put_lazy_overlay(
-                        overlay_id,
-                        serde_json::from_value(serde_json::json!({
-                            "Node": {
-                                "path": "/different",
-                                "priority": 0,
-                                "change": "Tombstone",
-                                "left": vec![0_u8; 32],
-                                "right": vec![0_u8; 32]
-                            }
-                        }))
-                        .expect("different overlay"),
-                    )
-                    .await,
+                clone.put_lazy_overlay(overlay, different).await,
                 Err(LocalCoreStateStoreError::Integrity)
             ),
             "a memoized address still rejects a different value"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_nodes_are_implied_without_being_stored() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let overlay = LazyOverlayId::from_bytes(
+            content_address(&LazyOverlay::default()).expect("empty overlay address"),
+        );
+        let shadow: crate::LazyShadowId = serde_json::from_value(serde_json::json!(
+            content_address(&crate::LazyShadow::default()).expect("empty shadow address")
+        ))
+        .expect("empty shadow id");
+        store
+            .put_lazy_overlay(overlay, LazyOverlay::default())
+            .await
+            .expect("put empty overlay");
+        store
+            .put_lazy_shadow(shadow, crate::LazyShadow::default())
+            .await
+            .expect("put empty shadow");
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("store root")
+                .count(),
+            0,
+            "empty nodes are never written"
+        );
+        assert_eq!(
+            store
+                .load_lazy_overlay(overlay)
+                .await
+                .expect("empty overlay"),
+            Some(LazyOverlay::default())
+        );
+        assert_eq!(
+            store.load_lazy_shadow(shadow).await.expect("empty shadow"),
+            Some(crate::LazyShadow::default())
         );
     }
 
@@ -2541,10 +2509,10 @@ mod tests {
         ] {
             let paths = context_paths(&namespace, context.context_id);
             std::fs::create_dir_all(&paths.directory).expect("context directory");
-            write_journaled(&paths, &context).expect("write legacy context");
+            write_journaled(&paths, &context).expect("write unindexed context");
         }
         std::fs::write(context_paths(&namespace, unrelated_id).current, b"not-json")
-            .expect("corrupt unrelated legacy record");
+            .expect("corrupt unrelated unindexed record");
 
         assert_eq!(
             WorkspaceContextStore::discard_subtree(&store, parent_id, child_id, 1)
@@ -2555,167 +2523,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepared_context_transaction_rolls_back_partial_record_application() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let store = LocalCoreStateStore::new(directory.path());
-        let namespace = store.namespace().expect("admitted namespace");
-        let context_id = WorkspaceContextId::from_bytes([10; 16]);
-        let before = workspace_context(
-            directory.path(),
-            context_id,
-            1,
-            WorkspaceContextState::Active,
-        );
-        let after = workspace_context(
-            directory.path(),
-            context_id,
-            2,
-            WorkspaceContextState::Frozen,
-        );
-        std::fs::create_dir_all(directory.path().join(WORKSPACE_CONTEXT_FAMILY))
-            .expect("context directory");
-        std::fs::create_dir_all(directory.path().join("workspace-context-transactions-v2"))
-            .expect("transaction directory");
-        write_journaled(&context_paths(&namespace, context_id), &before).expect("initial context");
-        write_journaled(
-            &namespace.record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16]),
-            &LegacyContextTransaction {
-                version: 1,
-                phase: LegacyContextTransactionPhase::Prepared,
-                before: [(context_id, Some(before.clone()))].into_iter().collect(),
-                after: [(context_id, after.clone())].into_iter().collect(),
-                before_children: BTreeMap::new(),
-                after_children: WorkspaceContextChildren::new(),
-            },
-        )
-        .expect("prepared transaction");
-        write_journaled(&context_paths(&namespace, context_id), &after)
-            .expect("partial application");
-
-        assert_eq!(
-            WorkspaceContextStore::load(&store, context_id)
-                .await
-                .expect("recover prepared transaction"),
-            Some(before)
-        );
-    }
-
-    #[tokio::test]
-    async fn prepared_context_transaction_rolls_back_child_index_with_record() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let store = LocalCoreStateStore::new(directory.path());
-        let namespace = store.namespace().expect("admitted namespace");
-        let parent_id = WorkspaceContextId::from_bytes([23; 16]);
-        let child_id = WorkspaceContextId::from_bytes([24; 16]);
-        let mut child =
-            workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
-        child.parent_context_id = Some(parent_id);
-        let marker = RecordKey::ChildIndex.paths(&namespace);
-        std::fs::create_dir_all(&marker.directory).expect("index directory");
-        write_journaled(&marker, &1_u16).expect("initialize child index");
-        let journal = LegacyContextTransaction {
-            version: 2,
-            phase: LegacyContextTransactionPhase::Prepared,
-            before: [(child_id, None)].into_iter().collect(),
-            after: [(child_id, child.clone())].into_iter().collect(),
-            before_children: [(parent_id, None)].into_iter().collect(),
-            after_children: [(parent_id, BTreeSet::from([child_id]))]
-                .into_iter()
-                .collect(),
-        };
-        std::fs::create_dir_all(directory.path().join("workspace-context-transactions-v2"))
-            .expect("transaction directory");
-        write_journaled(
-            &namespace.record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16]),
-            &journal,
-        )
-        .expect("prepared transaction");
-        let record = context_paths(&namespace, child_id);
-        let bucket = children_paths(&namespace, parent_id);
-        for directory in [&record.directory, &bucket.directory] {
-            std::fs::create_dir_all(directory).expect("record directory");
-        }
-        write_journaled(&record, &child).expect("partial record application");
-        write_journaled(&bucket, &BTreeSet::from([child_id])).expect("partial bucket application");
-
-        assert_eq!(
-            WorkspaceContextStore::load(&store, child_id)
-                .await
-                .expect("recover prepared transaction"),
-            None
-        );
-        assert_eq!(
-            read_recoverable::<Option<ContextChildren>>(&children_paths(&namespace, parent_id))
-                .expect("read recovered child bucket")
-                .flatten(),
-            None
-        );
-    }
-
-    #[tokio::test]
-    async fn committed_context_transaction_rolls_forward_missing_record_application() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let store = LocalCoreStateStore::new(directory.path());
-        let namespace = store.namespace().expect("admitted namespace");
-        let context_id = WorkspaceContextId::from_bytes([11; 16]);
-        let before = workspace_context(
-            directory.path(),
-            context_id,
-            1,
-            WorkspaceContextState::Active,
-        );
-        let after = workspace_context(
-            directory.path(),
-            context_id,
-            2,
-            WorkspaceContextState::Frozen,
-        );
-        std::fs::create_dir_all(directory.path().join(WORKSPACE_CONTEXT_FAMILY))
-            .expect("context directory");
-        std::fs::create_dir_all(directory.path().join("workspace-context-transactions-v2"))
-            .expect("transaction directory");
-        write_journaled(&context_paths(&namespace, context_id), &before).expect("initial context");
-        write_journaled(
-            &namespace.record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16]),
-            &LegacyContextTransaction {
-                version: 1,
-                phase: LegacyContextTransactionPhase::Committed,
-                before: [(context_id, Some(before))].into_iter().collect(),
-                after: [(context_id, after.clone())].into_iter().collect(),
-                before_children: BTreeMap::new(),
-                after_children: WorkspaceContextChildren::new(),
-            },
-        )
-        .expect("committed transaction");
-
-        assert_eq!(
-            WorkspaceContextStore::load(&store, context_id)
-                .await
-                .expect("recover committed transaction"),
-            Some(after)
-        );
-        assert!(
-            !namespace
-                .record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16])
-                .current
-                .exists(),
-            "settled legacy journal is removed"
-        );
-    }
-
-    #[tokio::test]
     async fn git_compatibility_delete_is_revision_fenced_and_durable() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let store = LocalCoreStateStore::new(directory.path());
-        let namespace = store.namespace().expect("admitted namespace");
-        let old_paths = namespace.record("git-compat", &workspace().into_bytes());
-        std::fs::create_dir_all(&old_paths.directory).expect("legacy state directory");
-        write_journaled(&old_paths, &GitCompatState::new("main", workspace()))
-            .expect("legacy state remains isolated");
         assert!(
             GitCompatStore::load(&store, workspace())
                 .await
-                .expect("new namespace load")
+                .expect("absent Git state")
                 .is_none()
         );
         let mut state = GitCompatState::new("main", workspace());
@@ -2742,7 +2556,6 @@ mod tests {
                 .expect("load deleted Git state")
                 .is_none()
         );
-        assert!(old_paths.current.exists(), "legacy state is left untouched");
     }
 
     #[tokio::test]
@@ -3256,49 +3069,6 @@ mod tests {
                 .await
                 .expect("durable binding"),
             Some(lazy_state(workspace(), 2))
-        );
-    }
-
-    #[tokio::test]
-    async fn legacy_rollback_records_absence_without_deleting_files() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let store = LocalCoreStateStore::new(directory.path());
-        let namespace = store.namespace().expect("admitted namespace");
-        let context = workspace_context(
-            directory.path(),
-            CRASH_CHILD,
-            1,
-            WorkspaceContextState::Active,
-        );
-        let record = RecordKey::Context(CRASH_CHILD).paths(&namespace);
-        std::fs::create_dir_all(&record.directory).expect("context directory");
-        write_journaled(&record, &context).expect("partial legacy application");
-        let journal = namespace.record(LEGACY_CONTEXT_TRANSACTION_FAMILY, &[0; 16]);
-        std::fs::create_dir_all(&journal.directory).expect("journal directory");
-        write_journaled(
-            &journal,
-            &LegacyContextTransaction {
-                version: 1,
-                phase: LegacyContextTransactionPhase::Prepared,
-                before: [(CRASH_CHILD, None)].into_iter().collect(),
-                after: [(CRASH_CHILD, context)].into_iter().collect(),
-                before_children: BTreeMap::new(),
-                after_children: WorkspaceContextChildren::new(),
-            },
-        )
-        .expect("prepared legacy journal");
-        let current = record.current.clone();
-        drop(namespace);
-
-        assert!(
-            WorkspaceContextStore::list(&store)
-                .await
-                .expect("settle legacy journal")
-                .is_empty()
-        );
-        assert_eq!(
-            std::fs::read(&current).expect("rolled-back record stays in place"),
-            b"null"
         );
     }
 
