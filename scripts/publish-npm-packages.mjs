@@ -61,6 +61,9 @@ export async function waitForPublishedExact(name, version, expectedIntegrity, pr
       if (latest === version) return;
     }
     if (now() >= deadline) {
+      if (observedIntegrity === expectedIntegrity && latest !== null) {
+        fail(`${name} latest is ${latest}, not ${version}; repair the dist-tag interactively`);
+      }
       fail(`${name}@${version} did not become visible with exact bytes and latest tag; observed integrity: ${observedIntegrity ?? "not found"}, latest: ${latest ?? "not found"}`);
     }
     await pause(5_000);

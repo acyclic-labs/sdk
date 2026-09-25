@@ -38,12 +38,17 @@ cat >"$work/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "$work/bin/rustup" "$work/bin/cargo"
+cat >"$work/bin/cargo-llvm-cov" <<'EOF'
+#!/usr/bin/env bash
+[[ "$*" == 'llvm-cov --version' ]] && echo 'cargo-llvm-cov 0.9.1'
+exit 0
+EOF
+chmod +x "$work/bin/rustup" "$work/bin/cargo" "$work/bin/cargo-llvm-cov"
 
 invoke() {
   local mode="$1" case_dir="$work/$1"
   mkdir -p "$case_dir/temp" "$case_dir/artifacts" "$case_dir/tools/cargo/bin"
-  cp "$work/bin/cargo" "$case_dir/tools/cargo/bin/cargo-llvm-cov"
+  cp "$work/bin/cargo-llvm-cov" "$case_dir/tools/cargo/bin/cargo-llvm-cov"
   : >"$case_dir/rustup.log"
   FAKE_RUSTUP_MODE="$mode" FAKE_RUSTUP_LOG="$case_dir/rustup.log" \
     SDK_TEMP_DIR="$case_dir/temp" \

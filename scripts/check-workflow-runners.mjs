@@ -39,6 +39,13 @@ for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name)).
   }
 }
 
+// Qualification lanes are scheduled from data rather than workflow YAML.
+for (const lane of JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"))) {
+  if (typeof lane.runner !== "string" || !/^blacksmith-\d+vcpu-[a-z0-9-]+$/.test(lane.runner)) {
+    throw new Error(`qualification lane ${lane.lane} must run on a Blacksmith runner, not ${lane.runner}`);
+  }
+}
+
 const expected = [
   ".github\\workflows\\publish-crate.yml:ubuntu-24.04",
   ".github\\workflows\\publish-npm.yml:ubuntu-24.04",

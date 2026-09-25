@@ -42,6 +42,17 @@ test("publication rejects mismatched bytes and bounded nonvisibility", async () 
     }),
     /did not become visible/,
   );
+  time = 0;
+  await assert.rejects(
+    waitForPublishedExact("package", "0.1.5", "sha512-exact", {
+      readIntegrity: () => "sha512-exact",
+      readLatest: () => "0.1.4",
+      pause: async () => { time = 10; },
+      now: () => time,
+      timeoutMs: 10,
+    }),
+    /repair the dist-tag interactively/,
+  );
 });
 
 test("a duplicate publish response waits for a previously accepted exact archive", async () => {
