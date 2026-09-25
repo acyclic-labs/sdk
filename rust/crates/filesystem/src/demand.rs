@@ -1472,12 +1472,11 @@ pub mod native {
         {
             Some(metadata.nlink())
         }
-        // A Windows directory index records no link count, and a listed
-        // node must be exactly what a lookup reports.
+        // Every Windows stat reads the file record, which counts every
+        // name, so a listed node and a lookup report the same count.
         #[cfg(not(unix))]
         {
-            let _ = metadata;
-            None
+            metadata.number_of_links().map(u64::from)
         }
     }
 

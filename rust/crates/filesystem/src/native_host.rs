@@ -95,6 +95,7 @@ pub struct HostStat {
     last_write_time: u64,
     volume_serial_number: Option<u32>,
     file_index: Option<u64>,
+    number_of_links: Option<u32>,
 }
 
 #[cfg(windows)]
@@ -111,6 +112,7 @@ impl HostStat {
             last_write_time: metadata.last_write_time(),
             volume_serial_number: _WindowsByHandle::volume_serial_number(metadata),
             file_index: _WindowsByHandle::file_index(metadata),
+            number_of_links: _WindowsByHandle::number_of_links(metadata),
         }
     }
 
@@ -137,6 +139,7 @@ impl HostStat {
             last_write_time: unsigned(information.LastWriteTime)?,
             volume_serial_number,
             file_index: Some(unsigned(information.FileId)?),
+            number_of_links: Some(information.NumberOfLinks),
         })
     }
 
@@ -182,6 +185,13 @@ impl HostStat {
     #[must_use]
     pub const fn file_index(&self) -> Option<u64> {
         self.file_index
+    }
+
+    /// How many names the file record has, which the file record keeps
+    /// exact for every one of them.
+    #[must_use]
+    pub const fn number_of_links(&self) -> Option<u32> {
+        self.number_of_links
     }
 
     pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
@@ -3717,6 +3727,8 @@ mod windows_clone_tests {
             assert_eq!(fast.last_write_time(), held.last_write_time());
             assert_eq!(fast.volume_serial_number(), held.volume_serial_number());
             assert_eq!(fast.file_index(), held.file_index());
+            assert_eq!(fast.number_of_links(), held.number_of_links());
+            assert!(fast.number_of_links().is_some());
             assert_eq!(fast.created()?, held.created()?);
             assert_eq!(fast.modified()?, held.modified()?);
             assert_eq!(fast.accessed()?, held.accessed()?);
