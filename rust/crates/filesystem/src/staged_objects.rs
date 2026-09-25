@@ -26,7 +26,9 @@ use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use tokio::sync::Mutex;
+use std::sync::PoisonError;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::RwLock;
 
 // The local provider stores one batch in a bounded segment. Every durable
 // drain batch stays within that segment regardless of source tree size, and a
@@ -39,10 +41,12 @@ const MAXIMUM_RESIDENT_BYTES: u64 = 4 * 1_024 * 1_024;
 const MAXIMUM_SPILL_BYTES: u64 = 1_024 * 1_024 * 1_024;
 
 enum Staged {
-    /// Held in memory; `recency` is this object's key in `Pending::recency`.
+    /// Held in memory. `referenced` records a read since the window last
+    /// considered spilling it; `order` is its key in `Index::order`.
     Resident {
         bytes: Bytes,
-        recency: u64,
+        referenced: AtomicBool,
+        order: u64,
     },
     Spilled {
         offset: u64,
@@ -59,14 +63,46 @@ impl Staged {
     }
 }
 
+/// Where one object is staged, as one read finds it.
+enum Lookup {
+    Absent,
+    Resident(Bytes),
+    Spilled { offset: u64, length: u64 },
+}
+
+/// Serves one resident object without copying its bytes.
+fn resident_read(bytes: Bytes, maximum_bytes: u64, budget: WorkBudget) -> ObjectResult<ObjectRead> {
+    let length = byte_length(&bytes);
+    if length > maximum_bytes {
+        return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
+            observed: length,
+            maximum: maximum_bytes,
+        }));
+    }
+    let work = WorkCounters {
+        object_bytes_read: length,
+        ..WorkCounters::default()
+    };
+    work.verify(budget)
+        .map_err(|error| ObjectFailure::before_work(error.into()))?;
+    Ok(ObjectReceipt {
+        value: ObjectRead {
+            bytes,
+            retention: ObjectReadRetention::Shared,
+        },
+        work,
+    })
+}
+
 #[derive(Default)]
-struct Pending {
+struct Index {
     objects: BTreeMap<ObjectId, Staged>,
-    // Resident identities from least to most recently staged or read. The
-    // window spills from the front, so pages the current candidate keeps
-    // reading stay in memory while superseded ones leave it.
-    recency: BTreeMap<u64, ObjectId>,
-    clock: u64,
+    // Resident identities in admission order, each re-queued once when read
+    // since it was last considered: the window spills from the front, so
+    // pages the current candidate keeps reading stay in memory while
+    // superseded ones leave it.
+    order: BTreeMap<u64, ObjectId>,
+    next_order: u64,
     resident_bytes: u64,
     spilled_objects: usize,
     // Append offset of the spill file; space is reused only once no staged
@@ -74,59 +110,105 @@ struct Pending {
     spill_end: u64,
 }
 
-impl Pending {
-    /// Holds `bytes` in memory as the most recently used object, replacing a
-    /// spilled copy of the same identity.
+impl Index {
+    /// Holds `bytes` in memory as the newest object unless the identity is
+    /// already staged. Returns whether the object was admitted.
+    fn admit_resident(&mut self, object_id: ObjectId, bytes: Bytes) -> bool {
+        if self.objects.contains_key(&object_id) {
+            return false;
+        }
+        self.insert_resident(object_id, bytes);
+        true
+    }
+
     fn insert_resident(&mut self, object_id: ObjectId, bytes: Bytes) {
-        let recency = self.next_recency();
+        let order = self.next_order;
+        self.next_order += 1;
         self.resident_bytes = self.resident_bytes.saturating_add(byte_length(&bytes));
-        self.recency.insert(recency, object_id);
-        if let Some(Staged::Spilled { .. }) = self
-            .objects
-            .insert(object_id, Staged::Resident { bytes, recency })
-        {
+        self.order.insert(order, object_id);
+        if let Some(Staged::Spilled { .. }) = self.objects.insert(
+            object_id,
+            Staged::Resident {
+                bytes,
+                referenced: AtomicBool::new(false),
+                order,
+            },
+        ) {
             self.spilled_objects -= 1;
         }
     }
 
-    /// Marks one resident object as the most recently used.
-    fn touch(&mut self, object_id: ObjectId) {
-        let recency = self.next_recency();
-        if let Some(Staged::Resident {
-            recency: current, ..
-        }) = self.objects.get_mut(&object_id)
-        {
-            self.recency.remove(current);
-            *current = recency;
-            self.recency.insert(recency, object_id);
+    /// Takes the resident objects to spill, oldest first, until the window
+    /// would be half full. An object read since it was last considered is
+    /// re-queued once instead.
+    fn spill_victims(&mut self) -> Vec<(ObjectId, Bytes)> {
+        let mut victims = Vec::new();
+        let mut spilled = 0_u64;
+        while self.resident_bytes.saturating_sub(spilled) > MAXIMUM_RESIDENT_BYTES / 2 {
+            let Some((_, object_id)) = self.order.pop_first() else {
+                break;
+            };
+            let Some(Staged::Resident {
+                bytes,
+                referenced,
+                order,
+            }) = self.objects.get_mut(&object_id)
+            else {
+                continue;
+            };
+            if referenced.swap(false, Ordering::Relaxed) {
+                *order = self.next_order;
+                self.next_order += 1;
+                self.order.insert(*order, object_id);
+                continue;
+            }
+            spilled = spilled.saturating_add(byte_length(bytes));
+            victims.push((object_id, bytes.clone()));
         }
+        victims
+    }
+
+    /// Records victims written at `offset` onward as spilled. Each is still
+    /// resident: only spills and drains move objects, and both hold the
+    /// spill file exclusively.
+    fn mark_spilled(&mut self, victims: &[(ObjectId, Bytes)], mut offset: u64) {
+        for (object_id, bytes) in victims {
+            let length = byte_length(bytes);
+            if let Some(staged) = self.objects.get_mut(object_id) {
+                *staged = Staged::Spilled { offset, length };
+                self.spilled_objects += 1;
+                self.resident_bytes = self.resident_bytes.saturating_sub(length);
+            }
+            offset = offset.saturating_add(length);
+        }
+        self.spill_end = offset;
     }
 
     /// Forgets one object the durable provider has acknowledged.
     fn remove(&mut self, object_id: ObjectId) {
         match self.objects.remove(&object_id) {
-            Some(Staged::Resident { bytes, recency }) => {
-                self.recency.remove(&recency);
+            Some(Staged::Resident { bytes, order, .. }) => {
+                self.order.remove(&order);
                 self.resident_bytes = self.resident_bytes.saturating_sub(byte_length(&bytes));
             }
             Some(Staged::Spilled { .. }) => self.spilled_objects -= 1,
             None => {}
         }
     }
-
-    fn next_recency(&mut self) -> u64 {
-        let recency = self.clock;
-        self.clock = self.clock.wrapping_add(1);
-        recency
-    }
 }
 
 /// One private local object admission buffer. Remote and memory providers keep
 /// their existing direct semantics; only the local filesystem opts into this.
+///
+/// Reads of resident objects share the index and never wait for I/O. The
+/// index is never held across an await; spill-file I/O is ordered by its own
+/// lock, which spilled reads share and which spilling, draining, and
+/// truncating hold exclusively, so no read ever observes a reused offset.
 pub struct StagedObjects<S> {
     inner: S,
     spill: NativeFile,
-    pending: Mutex<Pending>,
+    index: std::sync::RwLock<Index>,
+    spill_io: RwLock<()>,
 }
 
 impl<S> StagedObjects<S> {
@@ -142,7 +224,8 @@ impl<S> StagedObjects<S> {
         Ok(Self {
             inner,
             spill: NativeFile::from_file(spill)?,
-            pending: Mutex::new(Pending::default()),
+            index: std::sync::RwLock::new(Index::default()),
+            spill_io: RwLock::new(()),
         })
     }
 
@@ -150,35 +233,60 @@ impl<S> StagedObjects<S> {
         &self.inner
     }
 
+    fn index(&self) -> std::sync::RwLockReadGuard<'_, Index> {
+        self.index.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn index_mut(&self) -> std::sync::RwLockWriteGuard<'_, Index> {
+        self.index.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Where one object is staged, marking a resident one as read.
+    fn lookup(&self, object_id: ObjectId) -> Lookup {
+        match self.index().objects.get(&object_id) {
+            None => Lookup::Absent,
+            Some(Staged::Resident {
+                bytes, referenced, ..
+            }) => {
+                referenced.store(true, Ordering::Relaxed);
+                Lookup::Resident(bytes.clone())
+            }
+            Some(&Staged::Spilled { offset, length }) => Lookup::Spilled { offset, length },
+        }
+    }
+
     /// Whether `object_id` is known to be staged. Staged pages are the
     /// private working set of unpublished candidates: each is resident or
     /// spilled already, and most are superseded by the next mutation that
     /// reads them, so they bypass the shared decoded cache instead of
     /// evicting published pages from it. An uncertain answer, while another
-    /// operation holds the window, admits as usual; either choice is sound
+    /// operation updates the index, admits as usual; either choice is sound
     /// because the cache is keyed by immutable identity.
     fn is_staged(&self, object_id: ObjectId) -> bool {
-        self.pending
-            .try_lock()
-            .is_ok_and(|pending| pending.objects.contains_key(&object_id))
+        self.index
+            .try_read()
+            .is_ok_and(|index| index.objects.contains_key(&object_id))
     }
 
     /// Moves the least recently used resident objects, down to half the
     /// window, to the end of the spill file with one unsynchronized write.
-    /// Objects are re-indexed only after the write completes, so a failed
-    /// spill leaves staging unchanged.
-    async fn spill_locked(&self, pending: &mut Pending, budget: WorkBudget) -> ObjectResult<()> {
-        let mut victims = Vec::new();
-        let mut spilled = 0_u64;
-        for (&recency, object_id) in &pending.recency {
-            if pending.resident_bytes.saturating_sub(spilled) <= MAXIMUM_RESIDENT_BYTES / 2 {
-                break;
+    /// The caller holds the spill file exclusively. Objects stay resident,
+    /// and readable from memory, until the write completes, so a failed
+    /// spill leaves staging unchanged apart from recency.
+    async fn spill_locked(&self, budget: WorkBudget) -> ObjectResult<()> {
+        let (victims, offset) = {
+            let mut index = self.index_mut();
+            if index.resident_bytes <= MAXIMUM_RESIDENT_BYTES {
+                return Ok(ObjectReceipt {
+                    value: (),
+                    work: WorkCounters::default(),
+                });
             }
-            if let Some(Staged::Resident { bytes, .. }) = pending.objects.get(object_id) {
-                spilled = spilled.saturating_add(byte_length(bytes));
-                victims.push((recency, *object_id, bytes.clone()));
-            }
-        }
+            (index.spill_victims(), index.spill_end)
+        };
+        let spilled = victims.iter().fold(0_u64, |total, (_, bytes)| {
+            total.saturating_add(byte_length(bytes))
+        });
         let work = WorkCounters {
             backend_write_operations: 1,
             object_bytes_written: spilled,
@@ -187,45 +295,47 @@ impl<S> StagedObjects<S> {
             peak_allocation_bytes: spilled,
             ..WorkCounters::default()
         };
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
+        let restore = |index: &mut Index| {
+            for (object_id, _) in &victims {
+                if let Some(Staged::Resident { order, .. }) = index.objects.get(object_id) {
+                    index.order.insert(*order, *object_id);
+                }
+            }
+        };
+        if let Err(error) = work.verify(budget) {
+            restore(&mut self.index_mut());
+            return Err(ObjectFailure::before_work(error.into()));
+        }
         let mut buffer = Vec::new();
-        buffer
+        if buffer
             .try_reserve_exact(usize::try_from(spilled).unwrap_or(usize::MAX))
-            .map_err(|_| {
-                ObjectFailure::before_work(ObjectStoreError::Rejected(
-                    "staged spill allocation failed".to_owned(),
-                ))
-            })?;
-        for (_, _, bytes) in &victims {
+            .is_err()
+        {
+            restore(&mut self.index_mut());
+            return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
+                "staged spill allocation failed".to_owned(),
+            )));
+        }
+        for (_, bytes) in &victims {
             buffer.extend_from_slice(bytes);
         }
-        self.spill
+        if let Err(error) = self
+            .spill
             .write_all_batch_async(vec![OwnedWrite {
-                offset: pending.spill_end,
+                offset,
                 bytes: Bytes::from(buffer),
             }])
             .await
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        for (recency, object_id, bytes) in victims {
-            let length = byte_length(&bytes);
-            pending.recency.remove(&recency);
-            pending.objects.insert(
-                object_id,
-                Staged::Spilled {
-                    offset: pending.spill_end,
-                    length,
-                },
-            );
-            pending.spilled_objects += 1;
-            pending.spill_end = pending.spill_end.saturating_add(length);
-            pending.resident_bytes = pending.resident_bytes.saturating_sub(length);
+        {
+            restore(&mut self.index_mut());
+            return Err(ObjectFailure::new(error.into(), work));
         }
+        self.index_mut().mark_spilled(&victims, offset);
         Ok(ObjectReceipt { value: (), work })
     }
 
     /// Reads spilled objects back in one submission and authenticates each
-    /// against its identity.
+    /// against its identity. The caller holds the spill file.
     async fn read_spilled(
         &self,
         spilled: &[(ObjectId, u64, u64)],
@@ -253,53 +363,50 @@ impl<S> StagedObjects<S> {
 }
 
 impl<S: AsyncObjectStore> StagedObjects<S> {
-    /// Admits `bytes` into the resident window, first spilling the least
-    /// recently used objects when it would overflow, and durably draining
-    /// every spilled object once the spill file reaches its bound.
-    async fn admit_locked(
+    /// Spills the least recently used resident objects once the window
+    /// overflows, and durably drains every spilled object once the spill
+    /// file reaches its bound.
+    async fn relieve_window(
         &self,
-        pending: &mut Pending,
-        object: HashedObject,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        let mut work = WorkCounters::default();
-        if pending.resident_bytes.saturating_add(object.length()) > MAXIMUM_RESIDENT_BYTES {
-            work = self.spill_locked(pending, budget).await?.work;
-            if pending.spill_end > MAXIMUM_SPILL_BYTES {
-                let spilled = pending
-                    .objects
-                    .iter()
-                    .filter(|(_, staged)| matches!(staged, Staged::Spilled { .. }))
-                    .map(|(&object_id, _)| object_id)
-                    .collect::<Vec<_>>();
-                let drained = self
-                    .drain_locked(
-                        pending,
-                        spilled,
-                        work.remaining(budget)
-                            .map_err(|error| ObjectFailure::new(error.into(), work))?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-                work = work
-                    .checked_add(drained.work)
-                    .map_err(|error| ObjectFailure::new(error.into(), work))?;
+        let _spill_file = self.spill_io.write().await;
+        let mut work = self.spill_locked(budget).await?.work;
+        let spilled = {
+            let index = self.index();
+            if index.spill_end <= MAXIMUM_SPILL_BYTES {
+                return Ok(ObjectReceipt { value: (), work });
             }
-        }
-        let (object_id, bytes) = object.into_parts();
-        pending.insert_resident(object_id, bytes);
+            index
+                .objects
+                .iter()
+                .filter(|(_, staged)| matches!(staged, Staged::Spilled { .. }))
+                .map(|(&object_id, _)| object_id)
+                .collect::<Vec<_>>()
+        };
+        let drained = self
+            .drain_locked(
+                spilled,
+                work.remaining(budget)
+                    .map_err(|error| ObjectFailure::new(error.into(), work))?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        work = work
+            .checked_add(drained.work)
+            .map_err(|error| ObjectFailure::new(error.into(), work))?;
         Ok(ObjectReceipt { value: (), work })
     }
 
     /// Durably admits the staged objects among `targets` in segment-bounded
-    /// batches. A batch leaves staging only once the provider acknowledges
-    /// it, so a failed drain keeps the remainder private and retryable. The
-    /// spill file is reused once no staged object remains spilled.
+    /// batches. The caller holds the spill file exclusively. A batch leaves
+    /// staging only once the provider acknowledges it, so a failed drain
+    /// keeps the remainder private and retryable. The spill file is reused
+    /// once no staged object remains spilled.
     async fn drain_locked(
         &self,
-        pending: &mut Pending,
         targets: Vec<ObjectId>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -310,28 +417,33 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             cancellation
                 .check()
                 .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
-            let mut batch_bytes = 0_u64;
             let mut writes = Vec::new();
             let mut spilled = Vec::new();
-            while let Some(&object_id) = targets.peek() {
-                let Some(staged) = pending.objects.get(&object_id) else {
+            {
+                let index = self.index();
+                let mut batch_bytes = 0_u64;
+                while let Some(&object_id) = targets.peek() {
+                    let Some(staged) = index.objects.get(&object_id) else {
+                        targets.next();
+                        continue;
+                    };
+                    let length = staged.length();
+                    if !(writes.is_empty() && spilled.is_empty())
+                        && batch_bytes.saturating_add(length) > MAXIMUM_DRAIN_BYTES
+                    {
+                        break;
+                    }
                     targets.next();
-                    continue;
-                };
-                let length = staged.length();
-                if !(writes.is_empty() && spilled.is_empty())
-                    && batch_bytes.saturating_add(length) > MAXIMUM_DRAIN_BYTES
-                {
-                    break;
-                }
-                targets.next();
-                batch_bytes = batch_bytes.saturating_add(length);
-                match *staged {
-                    Staged::Resident { ref bytes, .. } => writes.push(ObjectWrite {
-                        object_id,
-                        bytes: bytes.clone(),
-                    }),
-                    Staged::Spilled { offset, length } => spilled.push((object_id, offset, length)),
+                    batch_bytes = batch_bytes.saturating_add(length);
+                    match *staged {
+                        Staged::Resident { ref bytes, .. } => writes.push(ObjectWrite {
+                            object_id,
+                            bytes: bytes.clone(),
+                        }),
+                        Staged::Spilled { offset, length } => {
+                            spilled.push((object_id, offset, length));
+                        }
+                    }
                 }
             }
             if writes.is_empty() && spilled.is_empty() {
@@ -373,16 +485,21 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             work = work
                 .checked_add(receipt.work)
                 .map_err(|error| ObjectFailure::new(error.into(), work))?;
+            let mut index = self.index_mut();
             for write in &writes {
-                pending.remove(write.object_id);
+                index.remove(write.object_id);
             }
         }
-        if pending.spilled_objects == 0 && pending.spill_end != 0 {
+        let truncate = {
+            let index = self.index();
+            index.spilled_objects == 0 && index.spill_end != 0
+        };
+        if truncate {
             self.spill
                 .set_len_async(0)
                 .await
                 .map_err(|error| ObjectFailure::new(error.into(), work))?;
-            pending.spill_end = 0;
+            self.index_mut().spill_end = 0;
         }
         Ok(ObjectReceipt { value: (), work })
     }
@@ -459,17 +576,20 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         if object.length() > MAXIMUM_DRAIN_BYTES {
             return self.inner.put_hashed(object, budget, cancellation).await;
         }
-        let mut pending = self.pending.lock().await;
         // The object's hash is its identity: an equal identity already
         // staged holds these exact bytes.
-        if pending.objects.contains_key(&object.object_id()) {
+        let overflowing = {
+            let (object_id, bytes) = object.into_parts();
+            let mut index = self.index_mut();
+            index.admit_resident(object_id, bytes) && index.resident_bytes > MAXIMUM_RESIDENT_BYTES
+        };
+        if !overflowing {
             return Ok(ObjectReceipt {
                 value: (),
                 work: WorkCounters::default(),
             });
         }
-        self.admit_locked(&mut pending, object, budget, cancellation)
-            .await
+        self.relieve_window(budget, cancellation).await
     }
 
     async fn put_many(
@@ -508,17 +628,19 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        let mut pending = self.pending.lock().await;
-        let targets = match scope {
-            PublicationScope::Closure(closure) => closure
-                .iter()
-                .copied()
-                .filter(|object_id| pending.objects.contains_key(object_id))
-                .collect(),
-            PublicationScope::Everything => pending.objects.keys().copied().collect(),
+        let _spill_file = self.spill_io.write().await;
+        let targets = {
+            let index = self.index();
+            match scope {
+                PublicationScope::Closure(closure) => closure
+                    .iter()
+                    .copied()
+                    .filter(|object_id| index.objects.contains_key(object_id))
+                    .collect(),
+                PublicationScope::Everything => index.objects.keys().copied().collect(),
+            }
         };
-        self.drain_locked(&mut pending, targets, budget, cancellation)
-            .await
+        self.drain_locked(targets, budget, cancellation).await
     }
 
     async fn read(
@@ -531,76 +653,69 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        // Holding the window across a spilled read keeps a concurrent drain
-        // from truncating the spill file underneath it.
-        let mut pending = self.pending.lock().await;
-        let Some(staged) = pending.objects.get(&object_id) else {
-            drop(pending);
-            return self
-                .inner
-                .read(object_id, maximum_bytes, budget, cancellation)
-                .await;
-        };
-        let length = staged.length();
-        if length > maximum_bytes {
-            return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
-                observed: length,
-                maximum: maximum_bytes,
-            }));
-        }
-        let (bytes, work) = match *staged {
-            Staged::Resident { ref bytes, .. } => {
-                let work = WorkCounters {
-                    object_bytes_read: length,
-                    ..WorkCounters::default()
-                };
-                work.verify(budget)
-                    .map_err(|error| ObjectFailure::before_work(error.into()))?;
-                let bytes = bytes.clone();
-                pending.touch(object_id);
-                (bytes, work)
+        match self.lookup(object_id) {
+            Lookup::Absent => {
+                self.inner
+                    .read(object_id, maximum_bytes, budget, cancellation)
+                    .await
             }
-            Staged::Spilled { offset, length } => {
-                // A spilled object that is read again is live; it returns to
-                // the resident window as the most recently used.
-                let read = WorkCounters {
+            Lookup::Resident(bytes) => resident_read(bytes, maximum_bytes, budget),
+            Lookup::Spilled { .. } => {
+                // Sharing the spill file keeps a drain from truncating or
+                // reusing it until this read completes.
+                let spill_file = self.spill_io.read().await;
+                let (offset, length) = match self.lookup(object_id) {
+                    Lookup::Spilled { offset, length } => (offset, length),
+                    Lookup::Resident(bytes) => return resident_read(bytes, maximum_bytes, budget),
+                    Lookup::Absent => {
+                        drop(spill_file);
+                        return self
+                            .inner
+                            .read(object_id, maximum_bytes, budget, cancellation)
+                            .await;
+                    }
+                };
+                if length > maximum_bytes {
+                    return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
+                        observed: length,
+                        maximum: maximum_bytes,
+                    }));
+                }
+                let work = WorkCounters {
                     backend_read_operations: 1,
                     object_bytes_read: length,
                     bytes_hashed: length,
                     ..WorkCounters::default()
                 };
-                read.verify(budget)
+                work.verify(budget)
                     .map_err(|error| ObjectFailure::before_work(error.into()))?;
                 let object = self
                     .read_spilled(&[(object_id, offset, length)])
                     .await
-                    .map_err(|error| ObjectFailure::new(error, read))?
+                    .map_err(|error| ObjectFailure::new(error, work))?
                     .pop()
-                    .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, read))?;
-                let (_, bytes) = object.clone().into_parts();
-                let admitted = self
-                    .admit_locked(
-                        &mut pending,
-                        object,
-                        read.remaining(budget)
-                            .map_err(|error| ObjectFailure::new(error.into(), read))?,
-                        cancellation,
+                    .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
+                let (_, bytes) = object.into_parts();
+                // A spilled object read again is live; it returns to the
+                // window when there is room, and otherwise stays spilled.
+                let mut index = self.index_mut();
+                if index.resident_bytes.saturating_add(length) <= MAXIMUM_RESIDENT_BYTES
+                    && matches!(
+                        index.objects.get(&object_id),
+                        Some(&Staged::Spilled { offset: current, .. }) if current == offset
                     )
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(read, std::convert::identity))?;
-                let work = read
-                    .checked_add(admitted.work)
-                    .map_err(|error| ObjectFailure::new(error.into(), read))?;
-                (bytes, work)
+                {
+                    index.insert_resident(object_id, bytes.clone());
+                }
+                Ok(ObjectReceipt {
+                    value: ObjectRead {
+                        bytes,
+                        retention: ObjectReadRetention::Shared,
+                    },
+                    work,
+                })
             }
-        };
-        Ok(ObjectReceipt {
-            value: ObjectRead {
-                bytes,
-                retention: ObjectReadRetention::Shared,
-            },
-            work,
-        })
+        }
     }
 
     async fn read_many(
@@ -621,7 +736,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        if self.pending.lock().await.objects.contains_key(&object_id) {
+        if self.index().objects.contains_key(&object_id) {
             return Ok(ObjectReceipt {
                 value: true,
                 work: WorkCounters::default(),
@@ -841,7 +956,7 @@ mod tests {
                 .await?;
             assert_eq!(&read.value.bytes, bytes);
         }
-        assert_eq!(store.pending.lock().await.spill_end, 0);
+        assert_eq!(store.index().spill_end, 0);
         let identities = objects
             .iter()
             .map(|(object_id, _)| *object_id)
@@ -956,6 +1071,65 @@ mod tests {
             forged.map(|_| ()).map_err(|failure| failure.error),
             Err(ObjectStoreError::DigestMismatch)
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_admissions_reads_and_publication_agree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (store, provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let body_bytes = 64 * 1_024;
+        let objects = (0..4 * usize::try_from(MAXIMUM_RESIDENT_BYTES)? / body_bytes)
+            .map(|index| {
+                HashedObject::new(
+                    ObjectKind::Blob,
+                    Bytes::from(vec![u8::try_from(index % 251).unwrap_or(0); body_bytes]),
+                )
+            })
+            .collect::<Vec<_>>();
+        // Writers race readers of everything admitted so far while the
+        // window spills and one publication drains half the objects.
+        let closure = objects
+            .iter()
+            .step_by(2)
+            .map(HashedObject::object_id)
+            .collect::<Vec<_>>();
+        let (staged, objects, token) = (&store, &objects, &token);
+        let writers = futures::future::try_join_all(objects.chunks(8).map(|chunk| async move {
+            for object in chunk {
+                staged
+                    .put_hashed(object.clone(), WorkBudget::UNBOUNDED, token)
+                    .await?;
+                for earlier in objects.iter().take(8) {
+                    let read = staged
+                        .read(earlier.object_id(), u64::MAX, WorkBudget::UNBOUNDED, token)
+                        .await;
+                    if let Ok(read) = read {
+                        assert_eq!(read.value.bytes, earlier.clone().into_parts().1);
+                    }
+                }
+            }
+            Ok::<_, ObjectFailure>(())
+        }));
+        writers.await?;
+        store
+            .flush_before_publish(
+                PublicationScope::Closure(&closure),
+                WorkBudget::UNBOUNDED,
+                token,
+            )
+            .await?;
+        for object in objects {
+            let read = store
+                .read(object.object_id(), u64::MAX, WorkBudget::UNBOUNDED, token)
+                .await?;
+            assert_eq!(read.value.bytes, object.clone().into_parts().1);
+        }
+        drop(store);
+        drop(provider);
+        assert!(reopen_contains(directory.path(), &closure).await?);
         Ok(())
     }
 }
