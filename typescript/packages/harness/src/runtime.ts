@@ -30,6 +30,14 @@ export class IndeterminateModelTurnError extends Error {
     this.name = "IndeterminateModelTurnError";
   }
 }
+/** The durable host authoritatively finished a selected turn without an answer. */
+export class TerminalModelTurnError extends Error {
+  constructor(readonly operationId: OperationId, readonly outcome: "failed" | "cancelled", message: string) {
+    super(message);
+    this.name = "TerminalModelTurnError";
+  }
+}
+class BatchInputError extends Error {}
 export interface CancelReceipt { readonly requested: boolean; readonly taskId?: RuntimeTaskId; readonly groupId?: GroupId }
 export type Admission<Output> =
   | { readonly kind: "accepted"; readonly task: Task<Output> }
@@ -454,13 +462,19 @@ export class Task<Output> {
       /* A transport failure is reconciled through the authoritative terminal record. */
     }
     const terminal = await this.#driver!.terminalEvent();
-    if (terminal.taskId !== this.taskId || terminal.event.kind !== "settled") {
+    if (terminal.taskId !== this.taskId || terminal.event.kind !== "settled"
+      || !terminal.id || !Number.isSafeInteger(terminal.sequence) || terminal.sequence < 0) {
       throw new Error("durable host returned an invalid terminal event");
     }
     if (streamedTerminal && (streamedTerminal.id !== terminal.id || streamedTerminal.sequence !== terminal.sequence)) {
       throw new Error("durable host task stream disagrees with its terminal event");
     }
-    if (!streamedTerminal && terminal.sequence >= fromSequence) yield terminal;
+    if (!streamedTerminal && lastSequence >= fromSequence && terminal.sequence <= lastSequence) {
+      throw new Error("durable host returned an out-of-order terminal event");
+    }
+    if (!streamedTerminal && terminal.sequence >= fromSequence) {
+      yield terminal;
+    }
   }
   async cancel(): Promise<CancelReceipt> { if (this.#driver) return this.#driver.cancel(); this.controller.abort(new Error("task cancellation requested")); return { requested: true, taskId: this.taskId }; }
 }
@@ -488,7 +502,15 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
       return batch.inputs.map((_input, index) => ({ key: { batchId: batch.id, index }, admission: { kind: "rejected", reason: { code: "unsupported", message } } }));
     }
     const registration = registrationKey(definition);
-    if (definition.implementation.kind === "resumable") await this.#bindBatchInputs(batch);
+    if (definition.implementation.kind === "resumable") {
+      try { await this.#bindBatchInputs(batch); }
+      catch (error) {
+        if (!(error instanceof BatchInputError)) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        return batch.inputs.map((_input, index) => ({ key: { batchId: batch.id, index },
+          admission: { kind: "rejected", reason: { code: "invalid_input", message } } }));
+      }
+    }
     const entries = await Promise.all(batch.inputs.map(async (input, index): Promise<GroupEntry<Output>> => {
       const key = { batchId: batch.id, index };
       const existing = this.#entryKeys.get(`${batch.id}:${index}`);
@@ -573,7 +595,9 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     return entries;
   }
   async #bindBatchInputs<Input>(batch: Batch<Input>): Promise<Uint8Array> {
-    const digest = (await NativeContracts.create()).digestCanonicalJson(batch.inputs);
+    let digest: Uint8Array;
+    try { digest = (await NativeContracts.create()).digestCanonicalJson(batch.inputs); }
+    catch (error) { throw new BatchInputError(error instanceof Error ? error.message : String(error)); }
     const hex = Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
     const pinned = this.#batchDigests.get(batch.id);
     if (pinned !== undefined && pinned !== hex) throw new Error("batch identity belongs to another input list");
@@ -1222,8 +1246,8 @@ export class AgentHarness {
         if (outcome.operationId !== operationId) throw new Error("host returned an unrelated model operation");
         throw new IndeterminateModelTurnError(operationId);
       }
-      if (outcome.kind === "failed") throw new Error(outcome.error.message);
-      if (outcome.kind === "cancelled") throw new Error("durable selected turn was cancelled");
+      if (outcome.kind === "failed") throw new TerminalModelTurnError(operationId, "failed", outcome.error.message);
+      if (outcome.kind === "cancelled") throw new TerminalModelTurnError(operationId, "cancelled", "durable selected turn was cancelled");
       if (outcome.value === null || typeof outcome.value !== "object"
         || typeof outcome.value.text !== "string" || !Array.isArray(outcome.value.receipts)
         || typeof outcome.value.taskId !== "string" || !outcome.value.taskId) {

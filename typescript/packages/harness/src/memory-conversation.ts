@@ -6,7 +6,7 @@ import type {
 } from "./conversation.js";
 import { DEFAULT_LIMITS } from "./conversation.js";
 import { selectModelContext } from "./projection.js";
-import { IndeterminateModelTurnError, type AgentHarness, type ContentBindings, type RunOutput } from "./runtime.js";
+import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type ContentBindings, type RunOutput } from "./runtime.js";
 
 const encoder = new TextEncoder();
 const manifestType = "application/vnd.acyclic.harness.attachments+json";
@@ -229,6 +229,25 @@ export class MemoryConversation {
     }, DEFAULT_LIMITS);
   }
 
+  async #recordTerminalTurn(operationId: OperationId, userId: ConversationMessageId,
+    outcome: "failed" | "cancelled", limits: Limits): Promise<void> {
+    const noticeId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "terminal-notice"));
+    const state = this.conversation();
+    if (state.messages.some(message => message.id === noticeId)) return;
+    const content = await this.stage(`turns/${operationId}/terminal.txt`, encoder.encode(
+      `The preceding model attempt ${outcome}. No assistant answer was published.`), "text/plain", "terminal.txt");
+    const result = await this.stage(`turns/${operationId}/terminal.json`, this.#core.canonicalJsonBytes({
+      state: outcome, operation_id: operationId,
+    }), "application/json", "terminal.json");
+    this.#core.validateFileUnderLimits(content, limits);
+    this.#core.validateFileUnderLimits(result, limits);
+    this.#append(this.#core.deriveOperationId(operationId, "terminal-event"), "terminal", {
+      id: noticeId, sequence: BigInt(state.messages.length + 1), kind: "system", content,
+      attachments: { kind: "inline", items: [] }, reply_to: userId, tool_call_id: null,
+      extensions: { "acyclic.turn.outcome": result },
+    }, limits);
+  }
+
   async #runConversation(
     runtime: AgentHarness, operationId: OperationId, content: FileRef,
     attachments: readonly Attachment[],
@@ -247,9 +266,13 @@ export class MemoryConversation {
         && message.reply_to === unresolved.id)) {
       throw new TypeError("previous conversation turn is unresolved; retry that operation first");
     }
-    if (state.messages.some(message => message.kind === "system" && message.reply_to === userId
-      && Object.hasOwn(message.extensions, "acyclic.turn.outcome"))) {
-      throw new TypeError("conversation turn was explicitly abandoned after an indeterminate model outcome");
+    const outcomeNotice = state.messages.find(message => message.kind === "system" && message.reply_to === userId
+      && Object.hasOwn(message.extensions, "acyclic.turn.outcome"));
+    if (outcomeNotice !== undefined) {
+      const abandonedId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "indeterminate-notice"));
+      throw new TypeError(outcomeNotice.id === abandonedId
+        ? "conversation turn was explicitly abandoned after an indeterminate model outcome"
+        : "conversation turn already has a terminal outcome");
     }
     const existing = state.messages.find(message => message.id === userId);
     if (existing === undefined) {
@@ -308,8 +331,14 @@ export class MemoryConversation {
       if (newSelection) this.#apply(operationId, "context", { kind: "select_model_context", selection });
       let output: RunOutput;
       try { output = await runtime.runSelectedContext(selected, operationId); }
-      catch (error) { throw error instanceof IndeterminateModelTurnError
-        ? error : new IndeterminateModelTurnError(operationId, error); }
+      catch (error) {
+        if (error instanceof TerminalModelTurnError) {
+          await this.#recordTerminalTurn(operationId, userId, error.outcome, limits);
+          throw error;
+        }
+        throw error instanceof IndeterminateModelTurnError
+          ? error : new IndeterminateModelTurnError(operationId, error);
+      }
       if (typeof output.text !== "string") throw new TypeError("assistant output text is invalid");
       stableOutput = structuredClone(output);
       this.#outputs.set(operationId, stableOutput);

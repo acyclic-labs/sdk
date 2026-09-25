@@ -392,6 +392,16 @@ describe("typed agent runtime", () => {
     const disconnectedEvents = [];
     for await (const event of disconnected.events()) disconnectedEvents.push(event.event);
     expect(disconnectedEvents).toEqual([{ kind: "settled", outcome: { kind: "indeterminate", operationId: "operation:remote" } }]);
+    const outOfOrder = Task.fromHost(taskId, {
+      operationId: "operation:remote",
+      async result() { return { kind: "succeeded", value: 7 } as const; },
+      async *events() { yield { id: "event:later", taskId, sequence: 5, event: { kind: "started" } as const }; },
+      async terminalEvent() { return { ...terminal, sequence: 2 }; },
+      async cancel() { return { requested: false, taskId }; },
+    });
+    await expect(async () => {
+      for await (const _event of outOfOrder.events()) { /* consume */ }
+    }).toThrow("out-of-order terminal event");
   });
 
   test("reconciles lost durable admission acknowledgement by stable operation ID", async () => {
@@ -505,6 +515,30 @@ describe("typed agent runtime", () => {
     await expect(group.reconcileBatch(definition, new Batch(batch.id, [1, 3])))
       .rejects.toThrow("another input list");
     expect((await group.join()).entries).toHaveLength(2);
+  });
+
+  test("non-canonical durable batch inputs reject entries before host admission", async () => {
+    const definition = TaskDefinition.resumable<number, number, number>("canonical-input", "1", {
+      state: numberSchema, initial: input => input,
+      async transition(_context, state) { return { kind: "finish", output: state }; },
+    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    let admitted = 0;
+    const host: HarnessRuntimeHost = {
+      policyIdentity: () => null,
+      async admitResumable() { admitted++; throw new Error("must not admit"); },
+      async attach() { throw new Error("unused"); },
+      async reconcileEffect() { return { state: "indeterminate" }; },
+      async send(message) { return { accepted: true, messageId: message.id }; },
+      async *inbox() { yield* []; },
+    };
+    const group = Harness.builder(contracts).host(host).task(definition).build()
+      .group<number>(GroupPolicies.collectAll, "group:canonical" as GroupId);
+    const inputs = [1, undefined] as unknown as number[];
+    const entries = await group.spawnMany(definition, new Batch("batch:invalid-json" as BatchId, inputs));
+    expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected"]);
+    expect(entries.every(entry => entry.admission.kind === "rejected"
+      && entry.admission.reason.code === "invalid_input")).toBeTrue();
+    expect(admitted).toBe(0);
   });
 
   test("rejects host policy drift during attachment and batch reconciliation", async () => {
