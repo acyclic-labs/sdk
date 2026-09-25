@@ -2546,8 +2546,8 @@ mod tests {
             l_start: 0,
             l_len: 0,
             l_pid: 0,
-            l_type: libc::F_WRLCK as libc::c_short,
-            l_whence: libc::SEEK_SET as libc::c_short,
+            l_type: libc::c_short::try_from(libc::F_WRLCK)?,
+            l_whence: libc::c_short::try_from(libc::SEEK_SET)?,
         };
         // SAFETY: `region` outlives the call on the live descriptor.
         assert_eq!(
