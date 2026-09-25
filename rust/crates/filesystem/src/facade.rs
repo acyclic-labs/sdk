@@ -569,24 +569,27 @@ impl Proof {
     /// Absorbs one complete path observation against `base`. The memory is
     /// bounded like the proof; past that bound it restarts empty, which only
     /// repeats walks.
-    fn observe_path(
+    fn observe_paths<'a>(
         &mut self,
         base: ObjectId,
-        path: &NamespacePath,
+        paths: impl IntoIterator<Item = &'a NamespacePath>,
         terminal: bool,
         dependencies: Vec<Dependency>,
         maximum_dependencies: u32,
     ) -> Result<(), DependencyError> {
         self.dependencies
             .extend_observations(dependencies, maximum_dependencies)?;
-        if self.observed_base != Some(base)
-            || self.observed_paths.len()
-                >= usize::try_from(maximum_dependencies).unwrap_or(usize::MAX)
-        {
+        let maximum_paths = usize::try_from(maximum_dependencies).unwrap_or(usize::MAX);
+        if self.observed_base != Some(base) {
             self.observed_base = Some(base);
             self.observed_paths.clear();
         }
-        self.observed_paths.insert((path.clone(), terminal));
+        for path in paths {
+            if self.observed_paths.len() >= maximum_paths {
+                self.observed_paths.clear();
+            }
+            self.observed_paths.insert((path.clone(), terminal));
+        }
         Ok(())
     }
 }
@@ -10600,9 +10603,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let combined = observed.work;
             self.dependencies
                 .proof()
-                .observe_path(
+                .observe_paths(
                     base,
-                    path,
+                    [path],
                     capture_terminal,
                     observed.value.dependencies,
                     self.volume.config.limits.maximum_checkout_dependencies,
@@ -10711,40 +10714,99 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> FsResult<PathBatchLookup> {
         let synchronized = self.synchronize_live(budget, cancellation).await?;
         let prior = synchronized.work;
+        let config = self.volume.config;
+        let objects = &self.volume.fs.inner.objects;
+        let base = self.base_root.file_table;
+        if !self.tracks_observations() {
+            let mut lookup = crate::kernel::lookup_paths_async(
+                objects,
+                &self.root,
+                paths,
+                config,
+                remaining(prior, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(prior, FsError::Path))?;
+            lookup.work = add(prior, lookup.work)?;
+            return Ok(FsReceipt {
+                work: lookup.work,
+                value: lookup,
+            });
+        }
+        // An unchanged checkout resolves every path in the base itself, so
+        // one walk both answers and observes the batch.
+        if self.root == self.base_root {
+            let observed = crate::kernel::observe_paths_async(
+                objects,
+                &self.root,
+                paths,
+                config,
+                remaining(prior, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(prior, FsError::Path))?;
+            let mut lookup = observed.lookup;
+            lookup.work = add(prior, lookup.work)?;
+            self.dependencies
+                .proof()
+                .observe_paths(
+                    base,
+                    paths,
+                    true,
+                    observed.dependencies,
+                    config.limits.maximum_checkout_dependencies,
+                )
+                .map_err(|error| OperationFailure::new(error.into(), lookup.work))?;
+            return Ok(FsReceipt {
+                work: lookup.work,
+                value: lookup,
+            });
+        }
         let mut lookup = crate::kernel::lookup_paths_async(
-            &self.volume.fs.inner.objects,
+            objects,
             &self.root,
             paths,
-            self.volume.config,
+            config,
             remaining(prior, budget)?,
             cancellation,
         )
         .await
         .map_err(|failure| failure.map_with_prior_work(prior, FsError::Path))?;
         lookup.work = add(prior, lookup.work)?;
-        if self.tracks_observations() {
-            let mut work = lookup.work;
-            for path in paths {
-                let observed = crate::kernel::observe_path_async(
-                    &self.volume.fs.inner.objects,
-                    &self.base_root,
-                    path,
-                    self.volume.config,
-                    remaining(work, budget)?,
-                    cancellation,
+        // Observe, in one base walk, only the paths the proof lacks.
+        let unobserved = {
+            let proof = self.dependencies.proof();
+            paths
+                .iter()
+                .filter(|path| !proof.observes_path(base, path, true))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if !unobserved.is_empty() {
+            let work = lookup.work;
+            let observed = crate::kernel::observe_paths_async(
+                objects,
+                &self.base_root,
+                &unobserved,
+                config,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::Path))?;
+            lookup.work = add(work, observed.lookup.work)?;
+            self.dependencies
+                .proof()
+                .observe_paths(
+                    base,
+                    &unobserved,
+                    true,
+                    observed.dependencies,
+                    config.limits.maximum_checkout_dependencies,
                 )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, FsError::Path))?;
-                work = add(work, observed.lookup.work)?;
-                self.dependencies
-                    .proof()
-                    .extend_observations(
-                        observed.dependencies,
-                        self.volume.config.limits.maximum_checkout_dependencies,
-                    )
-                    .map_err(|error| OperationFailure::new(error.into(), work))?;
-            }
-            lookup.work = work;
+                .map_err(|error| OperationFailure::new(error.into(), lookup.work))?;
         }
         Ok(FsReceipt {
             work: lookup.work,

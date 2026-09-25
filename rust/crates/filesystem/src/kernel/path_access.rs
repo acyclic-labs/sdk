@@ -417,6 +417,17 @@ pub struct ObservedPathLookup {
     pub dependencies: Vec<Dependency>,
 }
 
+/// A shared path batch plus the canonical regions observed while resolving
+/// every path in it: exactly the union of what [`observe_path_async`]
+/// captures for each path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservedPathBatch {
+    /// Ordinary batch result.
+    pub lookup: PathBatchLookup,
+    /// Positive namespace edges and terminal records, or exact negative edges.
+    pub dependencies: Vec<Dependency>,
+}
+
 /// One original-order result from a shared no-follow path batch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PathBatchEntry {
@@ -987,6 +998,36 @@ pub async fn lookup_paths_async<S: AsyncObjectStore>(
         store,
         generation,
         PathQueries::Owned(paths),
+        false,
+        config,
+        budget,
+        cancellation,
+    )
+    .await
+    .map(|observed| observed.lookup)
+}
+
+/// Resolves a non-empty no-follow path batch with shared work while
+/// capturing, in the same walk, every region [`observe_path_async`] would
+/// capture for each path.
+///
+/// # Errors
+///
+/// Returns the same bounded, fail-closed outcomes as [`lookup_paths_async`],
+/// plus canonical dependency-state construction failures.
+pub async fn observe_paths_async<S: AsyncObjectStore>(
+    store: &S,
+    generation: &super::GenerationRoot,
+    paths: &[NamespacePath],
+    config: VolumeConfig,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<ObservedPathBatch, PathLookupFailure> {
+    lookup_path_queries_async(
+        store,
+        generation,
+        PathQueries::Owned(paths),
+        true,
         config,
         budget,
         cancellation,
@@ -1014,11 +1055,13 @@ pub async fn lookup_path_refs_async<S: AsyncObjectStore>(
         store,
         generation,
         PathQueries::Borrowed(paths),
+        false,
         config,
         budget,
         cancellation,
     )
     .await
+    .map(|observed| observed.lookup)
 }
 
 /// Synchronously resolves borrowed paths without constructing owned path copies.
@@ -1048,10 +1091,11 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
     paths: PathQueries<'_>,
+    observe: bool,
     config: VolumeConfig,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<PathBatchLookup, PathLookupFailure> {
+) -> Result<ObservedPathBatch, PathLookupFailure> {
     cancellation.check().map_err(|_| {
         OperationFailure::before_work(PathLookupError::Tree(TreeReadError::Cancelled))
     })?;
@@ -1099,6 +1143,17 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
     let mut pending = reserve_fixed::<PendingBinding>(count, &mut allocations, &mut work, budget)?;
     let mut file_ids =
         reserve_fixed::<crate::foundation::FileId>(count, &mut allocations, &mut work, budget)?;
+    // Each path observes at most one edge per component and its terminal.
+    let mut dependencies = reserve_fixed::<Dependency>(
+        if observe {
+            total_components.saturating_add(count)
+        } else {
+            0
+        },
+        &mut allocations,
+        &mut work,
+        budget,
+    )?;
     entries.resize(
         count,
         PathBatchEntry {
@@ -1145,6 +1200,9 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
         if path.is_root() {
             entries[index].record = Some(root_record);
             done[index] = 1;
+            if observe {
+                observe_record(&mut dependencies, root_record, &mut work, budget)?;
+            }
         } else {
             current[index] = Some(root_record);
         }
@@ -1262,7 +1320,36 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
                 clippy::indexing_slicing,
                 reason = "index is drawn from query_indices, whose entries are path_index values sourced from the earlier `0..paths.len()` loop; entries, current, and done are each resized to exactly `count == paths.len()` once and never resized again, so *index is always in bounds for all three"
             )]
-            for (index, binding) in query_indices.iter().zip(looked_up.entries) {
+            for ((index, binding), name) in query_indices
+                .iter()
+                .zip(looked_up.entries)
+                .zip(names.drain(..))
+            {
+                if observe {
+                    // The observed edge keeps the name copied for the query.
+                    let directory_id = current[*index]
+                        .ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?
+                        .file_id;
+                    let expected = match &binding {
+                        Some(binding) => {
+                            let state = capture_directory_name_state(
+                                binding,
+                                remaining(work, budget)?,
+                                WorkCounters::default(),
+                            )
+                            .map_err(|failure| {
+                                failure.map_with_prior_work(work, PathLookupError::Dependency)
+                            })?;
+                            work = add(work, state.work)?;
+                            state.value
+                        }
+                        None => DependencyState::Absent,
+                    };
+                    dependencies.push(Dependency {
+                        region: DependencyRegion::DirectoryName { directory_id, name },
+                        expected,
+                    });
+                }
                 if let Some(binding) = binding {
                     pending.push(PendingBinding {
                         path_index: *index,
@@ -1278,10 +1365,11 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
                     done[*index] = 1;
                 }
             }
-            names.clear();
-            allocations
-                .release(nested_bytes)
-                .map_err(|error| allocation_failure(error, work))?;
+            if !observe {
+                allocations
+                    .release(nested_bytes)
+                    .map_err(|error| allocation_failure(error, work))?;
+            }
         }
         if pending.is_empty() {
             continue;
@@ -1324,6 +1412,9 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
             }
             let next_depth = depth + 1;
             if next_depth == paths.get(binding.path_index).depth() {
+                if observe {
+                    observe_record(&mut dependencies, record, &mut work, budget)?;
+                }
                 entries[binding.path_index] = PathBatchEntry {
                     record: Some(record),
                     parent: current[binding.path_index],
@@ -1343,11 +1434,32 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
         .unwrap_or(u64::MAX)
         .checked_mul(u64::try_from(size_of::<PathBatchEntry>()).unwrap_or(u64::MAX))
         .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work))?;
-    Ok(PathBatchLookup {
-        entries,
-        retained_allocation_bytes,
-        work,
+    Ok(ObservedPathBatch {
+        lookup: PathBatchLookup {
+            entries,
+            retained_allocation_bytes,
+            work,
+        },
+        dependencies,
     })
+}
+
+/// Captures one resolved terminal record as an observation.
+fn observe_record(
+    dependencies: &mut Vec<Dependency>,
+    record: FileRecord,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+) -> Result<(), PathLookupFailure> {
+    let state =
+        capture_file_record_state(record, remaining(*work, budget)?, WorkCounters::default())
+            .map_err(|failure| failure.map_with_prior_work(*work, PathLookupError::Dependency))?;
+    *work = add(*work, state.work)?;
+    dependencies.push(Dependency {
+        region: DependencyRegion::FileRecord(record.file_id),
+        expected: state.value,
+    });
+    Ok(())
 }
 
 fn validate_path(path: &NamespacePath, config: VolumeConfig) -> Result<(), PathLookupFailure> {

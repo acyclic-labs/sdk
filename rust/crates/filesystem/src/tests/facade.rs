@@ -11416,6 +11416,83 @@ fn repeated_lookups_observe_the_base_once_and_still_conflict()
 }
 
 #[test]
+fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Once with an unchanged candidate, whose one walk both answers and
+    // observes, and once with a private change, which observes the base.
+    for (seed, authored) in [(171_u8, false), (181, true)] {
+        let fs = Fs::memory();
+        let cancellation = CancellationToken::new();
+        let volume = poll_ready(fs.create_volume_with_id(
+            VolumeId::from_bytes([seed; 16]),
+            config(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("volume creation blocked")??
+        .value;
+        let mut local = poll_ready(volume.checkout(
+            GenerationSelector::Head,
+            writable_tracking(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("local checkout blocked")??
+        .value;
+        let mut remote = poll_ready(volume.checkout(
+            GenerationSelector::Head,
+            writable_pinned(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("remote checkout blocked")??
+        .value;
+        if authored {
+            poll_ready(local.create_file(
+                path("authored")?,
+                Bytes::from_static(b"local"),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ))
+            .ok_or("local create blocked")??;
+        }
+        let paths = [path("first")?, path("second")?];
+        let batch =
+            poll_ready(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))
+                .ok_or("batch lookup blocked")??;
+        assert!(
+            batch
+                .value
+                .entries
+                .iter()
+                .all(|entry| entry.record.is_none())
+        );
+        let proof = local.dependencies.proof().dependencies.clone();
+        poll_ready(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("repeated batch lookup blocked")??;
+        assert_eq!(local.dependencies.proof().dependencies, proof);
+
+        poll_ready(remote.create_file(
+            path("second")?,
+            Bytes::from_static(b"remote"),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("remote create blocked")??;
+        poll_ready(remote.commit(
+            OperationId::from_bytes([seed.wrapping_add(1); 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("remote commit blocked")??;
+        let rebase = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("rebase blocked")??;
+        assert!(matches!(rebase.value, RebaseDecision::Conflicted { .. }));
+    }
+    Ok(())
+}
+
+#[test]
 fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();

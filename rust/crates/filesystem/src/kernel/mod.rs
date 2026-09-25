@@ -144,9 +144,10 @@ pub use mutation::{FileMutation, Mutation, MutationPlan, MutationPlanError, Muta
 pub use namespace_path::{NamespacePath, NamespacePathError};
 pub(crate) use path_access::observe_path_edges_async;
 pub use path_access::{
-    ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup, PathLookupError,
-    PathLookupFailure, lookup_path, lookup_path_async, lookup_path_refs, lookup_path_refs_async,
-    lookup_paths, lookup_paths_async, observe_path_async,
+    ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup,
+    PathLookupError, PathLookupFailure, lookup_path, lookup_path_async, lookup_path_refs,
+    lookup_path_refs_async, lookup_paths, lookup_paths_async, observe_path_async,
+    observe_paths_async,
 };
 pub(crate) use persistent_diff::{
     DiffError as PersistentDiffError, diff_file_records_async, diff_tree_entries_async,
