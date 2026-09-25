@@ -18,21 +18,24 @@ use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, RawHandle};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::task::{Wake, Waker};
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_HANDLE_EOF, ERROR_IO_PENDING, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+};
 use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_INFO, FILE_SHARE_DELETE,
     FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo, GetFileInformationByHandleEx, ReOpenFile,
-    SetFileAttributesW,
+    ReadFile, SetFileAttributesW, WriteFile,
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle};
+use windows_sys::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS, DeleteProcThreadAttributeList,
-    EXTENDED_STARTUPINFO_PRESENT, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    UpdateProcThreadAttribute,
+    CREATE_NEW_PROCESS_GROUP, CreateEventW, CreateProcessW, DETACHED_PROCESS,
+    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, InitializeProcThreadAttributeList,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, UpdateProcThreadAttribute,
 };
 
 #[derive(Clone, Debug)]
@@ -62,6 +65,179 @@ type ReadOp = ReadAt<Vec<u8>, DriverFile>;
 type WriteOp = WriteAt<Bytes, DriverFile>;
 type ReadFinish = Box<dyn FnOnce(io::Result<Vec<Bytes>>) + Send + 'static>;
 type WriteFinish = Box<dyn FnOnce(io::Result<()>) + Send + 'static>;
+
+thread_local! {
+    /// The event this thread waits on for its in-place overlapped requests.
+    static IN_PLACE_EVENT: Result<OwnedEvent, i32> = OwnedEvent::create();
+}
+
+struct OwnedEvent(HANDLE);
+
+impl OwnedEvent {
+    fn create() -> Result<Self, i32> {
+        // SAFETY: an unnamed manual-reset event with default security.
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if event.is_null() {
+            return Err(io::Error::last_os_error().raw_os_error().unwrap_or(-1));
+        }
+        Ok(Self(event))
+    }
+}
+
+impl Drop for OwnedEvent {
+    fn drop(&mut self) {
+        // SAFETY: this owner created the event and closes it exactly once.
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// Issues one positional request on a handle opened with
+/// `FILE_FLAG_OVERLAPPED` and waits for it on the calling thread. The
+/// request's event carries the low-order bit that keeps its completion off
+/// any port the handle is attached to, so it never reaches the driver. An
+/// overlapped handle has no cursor, so none moves. `Ok(0)` is end of file.
+fn transfer_in_place(
+    file: &impl AsRawHandle,
+    offset: u64,
+    issue: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32,
+) -> io::Result<usize> {
+    IN_PLACE_EVENT.with(|event| {
+        let event = event
+            .as_ref()
+            .map_err(|code| io::Error::from_raw_os_error(*code))?;
+        let handle = file.as_raw_handle();
+        // SAFETY: a zeroed OVERLAPPED is its documented initial state.
+        let mut overlapped: OVERLAPPED = unsafe { zeroed() };
+        let [low, high] = [offset, offset >> 32].map(|half| (half & 0xffff_ffff) as u32);
+        overlapped.Anonymous.Anonymous.Offset = low;
+        overlapped.Anonymous.Anonymous.OffsetHigh = high;
+        overlapped.hEvent = event.0.map_addr(|address| address | 1);
+        let mut transferred = 0_u32;
+        // The request and its wait both complete before `overlapped` and the
+        // caller's buffer leave this frame.
+        if issue(handle, &raw mut overlapped) == 0 {
+            // SAFETY: reads this thread's last error, which the failed
+            // request just set.
+            match unsafe { GetLastError() } {
+                ERROR_IO_PENDING => {}
+                ERROR_HANDLE_EOF => return Ok(0),
+                _ => return Err(io::Error::last_os_error()),
+            }
+        }
+        // SAFETY: the request above was issued with this OVERLAPPED, which
+        // stays live and unmoved until the wait returns.
+        if unsafe { GetOverlappedResult(handle, &raw const overlapped, &raw mut transferred, 1) }
+            == 0
+        {
+            // SAFETY: reads this thread's last error, which the failed wait
+            // just set.
+            if unsafe { GetLastError() } == ERROR_HANDLE_EOF {
+                return Ok(0);
+            }
+            return Err(io::Error::last_os_error());
+        }
+        Ok(transferred as usize)
+    })
+}
+
+/// Issues one device control request on the calling thread and waits for
+/// it, on a synchronous or an overlapped handle alike, exactly as in-place
+/// reads and writes do. Returns the output byte count.
+pub(super) fn control_in_place(
+    file: &impl AsRawHandle,
+    code: u32,
+    input: &[u8],
+    output: &mut [u8],
+) -> io::Result<usize> {
+    let too_large = || io::Error::new(io::ErrorKind::InvalidInput, "control buffer too large");
+    let input_length = u32::try_from(input.len()).map_err(|_| too_large())?;
+    let output_length = u32::try_from(output.len()).map_err(|_| too_large())?;
+    transfer_in_place(file, 0, |handle, overlapped| {
+        // SAFETY: both buffers stay borrowed for the whole request, which
+        // completes before return.
+        unsafe {
+            DeviceIoControl(
+                handle,
+                code,
+                input.as_ptr().cast(),
+                input_length,
+                output.as_mut_ptr().cast(),
+                output_length,
+                std::ptr::null_mut(),
+                overlapped,
+            )
+        }
+    })
+}
+
+/// Reads each range with one positional request on the calling thread,
+/// exactly as the driver would: a range ending past end of file is short.
+pub(super) fn read_batch_in_place(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+    let mut results = Vec::new();
+    results.try_reserve_exact(reads.len())?;
+    for read in reads {
+        let length = u32::try_from(read.length)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "read range too large"))?;
+        let mut buffer = Vec::new();
+        buffer.try_reserve_exact(read.length)?;
+        let count = if length == 0 {
+            0
+        } else {
+            transfer_in_place(file, read.offset, |handle, overlapped| {
+                // SAFETY: the spare capacity holds `length` writable bytes
+                // for the whole request, which completes before return.
+                unsafe {
+                    ReadFile(
+                        handle,
+                        buffer.as_mut_ptr(),
+                        length,
+                        std::ptr::null_mut(),
+                        overlapped,
+                    )
+                }
+            })?
+        };
+        if count > read.length {
+            return Err(io::Error::other("read completion exceeded buffer"));
+        }
+        // SAFETY: the completed read initialized exactly `count` bytes.
+        unsafe { buffer.set_len(count) };
+        results.push(Bytes::from(buffer));
+    }
+    Ok(results)
+}
+
+/// Writes every byte of each range on the calling thread, continuing
+/// after a short write exactly as the driver does.
+pub(super) fn write_batch_in_place(file: &File, writes: &[OwnedWrite]) -> io::Result<()> {
+    for write in writes {
+        let mut offset = write.offset;
+        let mut bytes = &write.bytes[..];
+        while !bytes.is_empty() {
+            let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+            let count = transfer_in_place(file, offset, |handle, overlapped| {
+                // SAFETY: `bytes` stays borrowed for the whole request,
+                // which completes before return.
+                unsafe {
+                    WriteFile(
+                        handle,
+                        bytes.as_ptr(),
+                        length,
+                        std::ptr::null_mut(),
+                        overlapped,
+                    )
+                }
+            })?;
+            if count == 0 {
+                return Err(io::Error::from(io::ErrorKind::WriteZero));
+            }
+            let (_, rest) = bytes.split_at(count.min(bytes.len()));
+            offset += (bytes.len() - rest.len()) as u64;
+            bytes = rest;
+        }
+    }
+    Ok(())
+}
 
 const DRIVER_QUEUE: usize = 1024;
 const INTAKE_QUANTUM: usize = 64;

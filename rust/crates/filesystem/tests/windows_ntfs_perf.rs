@@ -36,10 +36,9 @@ fn percentile(samples: &mut [u128], numerator: usize, denominator: usize) -> u12
         .unwrap_or(0)
 }
 
-/// An NTFS directory index records no link count, and a listed node must be
-/// exactly what a lookup reports, so the Windows source exposes no link
-/// count on either path. Hard links are identified exactly by the file
-/// identity every name of one file shares.
+/// Every Windows source stat reads the file record, which counts every name
+/// exactly, so each name of one file reports the same link count, and the
+/// names are identified exactly by the file identity they share.
 #[tokio::test]
 async fn ntfs_demand_identifies_hard_links_by_file_identity()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -54,7 +53,7 @@ async fn ntfs_demand_identifies_hard_links_by_file_identity()
     )
     .await?;
     let mut identities = Vec::new();
-    for name in ["single", "linked", "alias"] {
+    for (name, links) in [("single", 1), ("linked", 2), ("alias", 2)] {
         let path = host_path_to_namespace(
             std::path::Path::new(name),
             FilesystemProfile::Windows,
@@ -65,7 +64,7 @@ async fn ntfs_demand_identifies_hard_links_by_file_identity()
             .await?
             .value
             .ok_or("source node was absent")?;
-        assert_eq!(node.link_count, None, "{name}");
+        assert_eq!(node.link_count, Some(links), "{name}");
         identities.push(node.file_identity);
     }
     let [single, linked, alias] = identities.as_slice() else {

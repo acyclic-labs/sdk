@@ -462,6 +462,10 @@ pub struct MountDirectoryEntry {
     pub node: MountNode,
     /// Complete authenticated metadata for native stat/enumeration projection.
     pub metadata: FileMetadata,
+    /// The content pin a [`MountFilesystem::lookup_pinned`] of this entry
+    /// issues in the same view, so a projection may answer that lookup from
+    /// the listing.
+    pub pin: Option<MountContentPin>,
 }
 
 /// One independently resumable directory-handle page.

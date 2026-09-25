@@ -1662,7 +1662,7 @@ where
         state: &LazyWorkspaceState,
         path: &str,
         node: SourceNode,
-    ) -> Result<LazyLookup, LazyWorkspaceError> {
+    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
         in_heap(move || async move {
             let basis = InspectBasis {
                 state: Some(state),
@@ -1677,7 +1677,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map(|receipt| receipt.value.lookup)
+            .map(|receipt| (receipt.value.lookup, receipt.value.source))
         })
         .await
     }

@@ -2754,6 +2754,8 @@ where
                         name: native_mount_name(&entry.name)?,
                         node: mount_node(entry.record),
                         metadata: entry.metadata,
+                        // A checkout lookup issues no content pin.
+                        pin: None,
                     })
                 })
                 .collect::<Result<Vec<_>, MountSourceError>>()?;

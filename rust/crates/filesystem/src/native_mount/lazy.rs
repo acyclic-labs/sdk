@@ -245,10 +245,21 @@ enum Resolution {
     Unauthored(LazyLookup, Option<SourceReference>),
 }
 
+/// How a remembered deferral proves the source still names its node. The
+/// source changes outside the view, so the view alone never proves it.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SourceProof {
+    /// A fresh source lookup must name exactly the remembered node.
+    Lookup,
+    /// The caller opens the remembered node at its exact version, which
+    /// fails on any other file, so no lookup is repeated first.
+    Open,
+}
+
 /// A name the view deferred to the source: the authored checkout and the
 /// overlay left it to what the source named, if anything, in one source
-/// view. The source changes outside the view, so it is read afresh on every
-/// use; only the view's deferral is remembered.
+/// view. The source changes outside the view, so every use proves it again
+/// (see [`SourceProof`]); only the view's deferral is remembered.
 #[derive(Clone, Copy)]
 struct Deferral {
     /// Sampled before the name was resolved.
@@ -1066,12 +1077,14 @@ where
 
     /// Resolves `path` through the view: the authored checkout first, then
     /// the lazy workspace, reusing a remembered answer while nothing it
-    /// depends on has changed. The caller holds a source view lease.
+    /// depends on has changed and `proof` shows the source still names it.
+    /// The caller holds a source view lease.
     async fn resolve(
         &self,
         path: &MountPath,
         text: &str,
         owner: std::thread::ThreadId,
+        proof: SourceProof,
     ) -> Result<Resolution, MountSourceError>
     where
         A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -1081,6 +1094,15 @@ where
             if let Some(deferral) = self.resolutions.get(path) {
                 let file_id = deferral.node.map(|node| self.lazy.source_file_id(&node));
                 if self.unchanged_since(path, file_id, deferral.stamp) {
+                    if proof == SourceProof::Open
+                        && deferral.source == self.lazy.source_reference()
+                        && let Some(node) = deferral.node
+                    {
+                        return Ok(Resolution::Unauthored(
+                            LazyLookup::Source(node),
+                            Some(deferral.source),
+                        ));
+                    }
                     match self.lazy.source_lookup(deferral.source, text).await {
                         Ok(node) if node == deferral.node => {
                             return Ok(node.map_or(Resolution::Absent, |node| {
@@ -1141,6 +1163,52 @@ where
             Ok(Resolution::Unauthored(resolved.0, resolved.1))
         })
         .await
+    }
+
+    /// What a lookup reports for an authored `lookup`: a detached
+    /// identity's live state, or the checkout's. Listings report every
+    /// authored entry through this same projection.
+    async fn project_authored(&self, lookup: MountLookup) -> Result<MountLookup, MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        Ok(self.detached_identity(lookup).await?.unwrap_or(lookup))
+    }
+
+    /// What a lookup of `path` reports for an unauthored `lookup` resolved
+    /// in `source`: its projected node and, for source content, the pin
+    /// promising exactly that content. Listings report every unauthored
+    /// entry through this same projection, so a listed entry is exactly
+    /// what a lookup of its path issues, pin included.
+    async fn project_unauthored(
+        &self,
+        path: &str,
+        lookup: LazyLookup,
+        source: Option<SourceReference>,
+    ) -> Result<(MountLookup, Option<MountContentPin>), MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        let pin = match (&lookup, source) {
+            (LazyLookup::Source(node), Some(source))
+                if node.kind == SourceNodeKind::RegularFile =>
+            {
+                Some(source_content_pin(source, node))
+            }
+            _ => None,
+        };
+        let file_id = self
+            .lazy
+            .stable_file_id_for_lookup(path, &lookup)
+            .await
+            .map_err(lazy_error)?;
+        let projected = mount_lookup(lookup, file_id);
+        if let Some(current) = self.detached_identity(projected).await? {
+            return Ok((current, None));
+        }
+        Ok((projected, pin))
     }
 
     fn wait<T: Send, F>(&self, create: impl FnOnce() -> F + Send) -> Result<T, MountSourceError>
@@ -1629,32 +1697,19 @@ where
             // Inspection never extends the durable observation index. A
             // caller that must later reproduce this exact content keeps the
             // returned pin instead.
-            let (lookup, source) = match self.resolve(path, &path_text, owner).await? {
+            match self
+                .resolve(path, &path_text, owner, SourceProof::Lookup)
+                .await?
+            {
                 Resolution::Authored(lookup) => {
-                    let current = self.detached_identity(lookup).await?;
-                    return Ok(Some((current.unwrap_or(lookup), None)));
+                    Ok(Some((self.project_authored(lookup).await?, None)))
                 }
-                Resolution::Absent => return Ok(None),
-                Resolution::Unauthored(lookup, source) => (lookup, source),
-            };
-            let pin = match (&lookup, source) {
-                (LazyLookup::Source(node), Some(source))
-                    if node.kind == SourceNodeKind::RegularFile =>
-                {
-                    Some(source_content_pin(source, node))
-                }
-                _ => None,
-            };
-            let file_id = self
-                .lazy
-                .stable_file_id_for_lookup(&path_text, &lookup)
-                .await
-                .map_err(lazy_error)?;
-            let projected = mount_lookup(lookup, file_id);
-            if let Some(current) = self.detached_identity(projected).await? {
-                return Ok(Some((current, None)));
+                Resolution::Absent => Ok(None),
+                Resolution::Unauthored(lookup, source) => self
+                    .project_unauthored(&path_text, lookup, source)
+                    .await
+                    .map(Some),
             }
-            Ok(Some((projected, pin)))
         })
     }
 
@@ -1670,7 +1725,9 @@ where
             // a file changed outside the view since fails its version proof,
             // and is resolved again from the source.
             for _ in 0..2 {
-                let resolution = self.resolve(path, &path_text, owner).await?;
+                let resolution = self
+                    .resolve(path, &path_text, owner, SourceProof::Open)
+                    .await?;
                 let Resolution::Unauthored(LazyLookup::Source(node), Some(source)) = resolution
                 else {
                     return Ok((lease, resolution, None));
@@ -1870,6 +1927,9 @@ where
             if !self.authored.unchanged_since(path, None, stamp) {
                 return Err(MountSourceError::Stale);
             }
+            // Each listed source entry is resolved exactly as a lookup
+            // resolves it, so a later lookup or read reuses that deferral.
+            let deferrals = self.source_view.is_stable();
             let (page, state) = {
                 let observation = self.authored.shared_checkout().observe(owner).await?;
                 observation.ensure_publication_resolved()?;
@@ -1893,43 +1953,44 @@ where
                 })?;
                 let name = super::adapter::native_mount_name(&entry.name)?;
                 let mounted_child = path.child(name.clone());
-                let lookup = if let Some(node) = entry.source {
-                    let lookup = self
+                let (lookup, pin) = if let Some(node) = entry.source {
+                    let (lookup, source) = self
                         .lazy
                         .inspect_listed(&state, &child, node)
                         .await
                         .map_err(lazy_error)?;
-                    let file_id = self
-                        .lazy
-                        .stable_file_id_for_lookup(&child, &lookup)
-                        .await
-                        .map_err(lazy_error)?;
-                    mount_lookup(lookup, file_id)
+                    if deferrals && let (LazyLookup::Source(node), Some(source)) = (&lookup, source)
+                    {
+                        self.resolutions.remember(
+                            &mounted_child,
+                            Deferral {
+                                stamp,
+                                source,
+                                node: Some(*node),
+                            },
+                        );
+                    }
+                    self.project_unauthored(&child, lookup, source).await?
                 } else if let Some(authored) =
                     self.authored.lookup_async(&mounted_child, owner).await?
                 {
                     if self.removed_identity(&child, authored.node.file_id)? {
                         continue;
                     }
-                    authored
+                    (self.project_authored(authored).await?, None)
                 } else {
-                    let lookup = self
+                    let (lookup, source) = self
                         .lazy
                         .inspect_unauthored(&child, Some(&state))
                         .await
-                        .map_err(lazy_error)?
-                        .0;
-                    let file_id = self
-                        .lazy
-                        .stable_file_id_for_lookup(&child, &lookup)
-                        .await
                         .map_err(lazy_error)?;
-                    mount_lookup(lookup, file_id)
+                    self.project_unauthored(&child, lookup, source).await?
                 };
                 entries.push(MountDirectoryEntry {
                     name,
                     node: lookup.node,
                     metadata: lookup.metadata,
+                    pin,
                 });
             }
             if !self.authored.unchanged_since(path, None, stamp)
@@ -2488,10 +2549,17 @@ where
         }
         let text = self.path(path)?;
         let owner = SourceViewGate::callback_owner();
-        // The lookup that projected this name remembered its resolution,
-        // which answers here while the view proves it current.
+        // The lookup or listing that projected this name remembered its
+        // resolution, which answers here while the view proves it current.
+        // Pinned content is opened at its exact version, which proves the
+        // source; unpinned content follows the source as a lookup does.
+        let proof = if pin.is_some() {
+            SourceProof::Open
+        } else {
+            SourceProof::Lookup
+        };
         let resolved = self.wait(|| async {
-            match self.resolve(path, &text, owner).await? {
+            match self.resolve(path, &text, owner, proof).await? {
                 Resolution::Authored(_) => Ok(None),
                 Resolution::Absent => Err(MountSourceError::NotFound),
                 Resolution::Unauthored(lookup, source) => Ok(Some((lookup, source))),
