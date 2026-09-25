@@ -490,27 +490,45 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
       if (local.some(entry => this.#entryKeys.get(`${batch.id}:${entry.key.index}`)?.registration !== registration)) {
         throw new Error("batch identity belongs to another task definition");
       }
-      return local;
+      if (local.length === batch.inputs.length && local.every(entry => entry.admission.kind !== "indeterminate"
+        && entry.outcome?.kind !== "indeterminate")) return local;
     }
     if (!this.#harness.host?.reconcileBatch) throw new Error("durable batch reconciliation requires a host binding");
+    this.#harness.assertPolicyIdentity();
     const recovered = await this.#harness.host.reconcileBatch(this.id, batch.id, this.#harness);
+    this.#harness.assertPolicyIdentity();
     if (definition.name !== recovered.taskName || definition.revision !== recovered.revision
       || definition.options.implementationDigest !== recovered.implementationDigest
       || definition.implementation.kind !== "resumable") throw new Error("host returned an unregistered batch task implementation");
     const outputSchema = pinnedOutputSchema(definition);
+    if (recovered.entries.length !== batch.inputs.length) throw new Error("host returned an incomplete batch");
     const entries: GroupEntry<Output>[] = [];
+    const seen = new Set<number>();
     for (const entry of recovered.entries) {
-      if (entry.key.batchId !== batch.id || !Number.isSafeInteger(entry.key.index) || entry.key.index < 0) throw new Error("host returned an invalid batch entry identity");
+      if (entry.key.batchId !== batch.id || !Number.isSafeInteger(entry.key.index)
+        || entry.key.index < 0 || entry.key.index >= batch.inputs.length || seen.has(entry.key.index)) {
+        throw new Error("host returned an invalid batch entry identity");
+      }
+      seen.add(entry.key.index);
       const identity = `${batch.id}:${entry.key.index}`;
-      if (this.#entryKeys.has(identity)) throw new Error("host returned a duplicate batch entry identity");
+      const prior = this.#entryKeys.get(identity);
+      if (prior && prior.registration !== registration) throw new Error("batch identity belongs to another task definition");
       const operationId = `${this.id}:${registration}:${batch.id}:${entry.key.index}`;
+      if (entry.admission.kind === "indeterminate" && entry.admission.operationId !== operationId) {
+        throw new Error("host returned an unrelated batch admission");
+      }
       const outcome = entry.outcome === undefined ? undefined : await validateTaskOutcome(entry.outcome, outputSchema);
       const validated: GroupEntry<Output> = entry.admission.kind === "accepted"
         ? { key: entry.key, admission: { kind: "accepted", task: validatedHostTask(entry.admission.task, operationId, outputSchema) }, ...(outcome === undefined ? {} : { outcome }) }
         : { key: entry.key, admission: entry.admission, ...(outcome === undefined ? {} : { outcome }) };
-      this.#entryKeys.set(identity, { index: this.#entries.length, registration });
-      this.#entries.push(validated);
       entries.push(validated);
+    }
+    entries.sort((a, b) => a.key.index - b.key.index);
+    for (const entry of entries) {
+      const identity = `${batch.id}:${entry.key.index}`;
+      const prior = this.#entryKeys.get(identity);
+      if (prior) this.#entries[prior.index] = entry;
+      else { this.#entryKeys.set(identity, { index: this.#entries.length, registration }); this.#entries.push(entry); }
     }
     return entries;
   }
@@ -959,6 +977,8 @@ export class AgentHarness {
   get host(): HarnessRuntimeHost | undefined { return this.components.host; }
   get content(): ContentBindings | undefined { return this.components.content; }
   get limits(): Limits { return this.#contentLimits; }
+  /** Check that a durable operation still uses the policy pinned at construction. */
+  assertPolicyIdentity(): void { this.#assertPolicyIdentity(); }
   #assertPolicyIdentity(): void {
     const policy = this.scope.policyProvider ?? this.components.policy;
     if (!samePolicyIdentity(this.#policyIdentity, validatePolicyIdentity(policy?.identity() ?? null))) {
@@ -1034,6 +1054,7 @@ export class AgentHarness {
     let admission: Admission<unknown>;
     try { admission = await this.host.admitResumable(operationId, definition, parsed, this, parentTaskId); }
     catch { return { kind: "indeterminate", operationId }; }
+    this.#assertPolicyIdentity();
     if (admission.kind !== "accepted") return admission;
     const task = validatedHostTask(admission.task, operationId, pinnedOutputSchema(definition));
     this.running.set(task.id(), task as Task<unknown>);
@@ -1255,7 +1276,9 @@ export class AgentHarness {
       return local;
     }
     if (this.host) {
+      this.#assertPolicyIdentity();
       const attachment = await this.host.attach(id, this);
+      this.#assertPolicyIdentity();
       if (attachment.task.id() !== id) throw new Error("host attached a different task identity");
       const definition = this.#tasks.get(taskKey(attachment.taskName, attachment.revision));
       if (!definition || (requested !== undefined && requested !== definition)

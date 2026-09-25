@@ -438,6 +438,68 @@ describe("typed agent runtime", () => {
     expect((await reconstructed.join()).entries).toHaveLength(2);
   });
 
+  test("rejects incomplete and unrelated host batch replay without retaining it", async () => {
+    const definition = TaskDefinition.resumable<number, number, number>("replay", "1", {
+      state: numberSchema, initial: input => input,
+      async transition(_context, state) { return { kind: "finish", output: state }; },
+    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    const batch = new Batch("batch:replay" as BatchId, [1, 2]);
+    let entries: { key: { batchId: BatchId; index: number }; admission: { kind: "indeterminate"; operationId: string } }[] = [];
+    const host: HarnessRuntimeHost = {
+      policyIdentity: () => null,
+      async reconcileBatch() { return { taskName: "replay", revision: "1", implementationDigest: durableDigest, entries }; },
+      async attach() { throw new Error("unused"); },
+      async reconcileEffect() { return { state: "indeterminate" }; },
+      async send(message) { return { accepted: true, messageId: message.id }; },
+      async *inbox() { yield* []; },
+    };
+    const group = Harness.builder(contracts).host(host).task(definition).build()
+      .group<number>(GroupPolicies.collectAll, "group:replay" as GroupId);
+    const entry = (index: number, operationId = `group:replay:replay@1#${durableDigest}:batch:replay:${index}`) =>
+      ({ key: { batchId: batch.id, index }, admission: { kind: "indeterminate" as const, operationId } });
+    entries = [entry(0)];
+    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("incomplete batch");
+    entries = [entry(0), entry(2)];
+    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("invalid batch entry identity");
+    entries = [entry(0), entry(1, "wrong-operation")];
+    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("unrelated batch admission");
+    entries = [entry(1), entry(0)];
+    expect((await group.reconcileBatch(definition, batch)).map(value => value.key.index)).toEqual([0, 1]);
+    expect((await group.join()).entries).toHaveLength(2);
+  });
+
+  test("rejects host policy drift during attachment and batch reconciliation", async () => {
+    const definition = TaskDefinition.resumable<number, number, number>("drift-replay", "1", {
+      state: numberSchema, initial: input => input,
+      async transition(_context, state) { return { kind: "finish", output: state }; },
+    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    let currentIdentity: ReturnType<HarnessRuntimeHost["policyIdentity"]> = null;
+    const host: HarnessRuntimeHost = {
+      policyIdentity: () => currentIdentity,
+      async attach(id) {
+        currentIdentity = approvalPolicyIdentity;
+        return { task: new Task(id, async () => 1), operationId: "drift-op", taskName: "drift-replay",
+          revision: "1", implementationDigest: durableDigest };
+      },
+      async reconcileBatch(groupId, batchId) {
+        currentIdentity = approvalPolicyIdentity;
+        return { taskName: "drift-replay", revision: "1", implementationDigest: durableDigest,
+          entries: [{ key: { batchId, index: 0 }, admission: { kind: "indeterminate" as const,
+            operationId: `${groupId}:drift-replay@1#${durableDigest}:${batchId}:0` } }] };
+      },
+      async reconcileEffect() { return { state: "indeterminate" }; },
+      async send(message) { return { accepted: true, messageId: message.id }; },
+      async *inbox() { yield* []; },
+    };
+    const runtime = Harness.builder(contracts).host(host).task(definition).build();
+    await expect(runtime.attach(definition, "task:drift" as RuntimeTaskId)).rejects.toThrow("policy implementation changed");
+    currentIdentity = null;
+    const group = runtime.group<number>(GroupPolicies.collectAll, "group:drift" as GroupId);
+    await expect(group.reconcileBatch(definition, new Batch("batch:drift" as BatchId, [1])))
+      .rejects.toThrow("policy implementation changed");
+    expect((await group.join()).entries).toHaveLength(0);
+  });
+
   test("records valid batch admissions even when another input is invalid", async () => {
     const definition = TaskDefinition.resumable<number, number, number>("validate-input", "1", {
       state: numberSchema,
