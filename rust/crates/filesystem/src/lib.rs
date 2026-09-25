@@ -151,12 +151,12 @@ pub use distributed::{ProviderObjectStore, StreamAuthorityStore};
 pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, ContentStager, DetachedFile, DirectoryBindingChange,
-    DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities,
-    FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError, FsReceipt, FsResult,
-    GenerationDiff, LiveMutationOutcome, MergeConflict, MergePreparation, NamedAttributeWriteMode,
-    PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile,
-    ResolvedFileRangeReadRequest, StagedContent, Volume,
+    CheckoutCommitOutcome, ContentChange, ContentStager, ContentTimes, DetachedFile,
+    DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
+    EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
+    FsReceipt, FsResult, GenerationDiff, LiveMutationOutcome, MergeConflict, MergePreparation,
+    NamedAttributeWriteMode, PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry,
+    ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest, StagedContent, Volume,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{

@@ -11016,3 +11016,155 @@ fn require_nfc_volume_rejects_non_normalized_names() -> Result<(), Box<dyn std::
     .ok_or("nfc create blocked")??;
     Ok(())
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([131; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let timed = path("timed")?;
+    let untimed = path("untimed")?;
+    let mut seed = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed checkout blocked")??
+    .value;
+    let file_id = poll_ready(seed.create_file(
+        timed.clone(),
+        Bytes::from(vec![b'a'; 128]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed create blocked")??
+    .value;
+    poll_ready(seed.create_file(
+        untimed.clone(),
+        Bytes::from(vec![b'b'; 128]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("untimed create blocked")??;
+    let times = FileMetadata {
+        modified_ns: MetadataField::Value(1),
+        accessed_ns: MetadataField::Value(2),
+        changed_ns: MetadataField::Value(3),
+        ..FileMetadata::default()
+    };
+    poll_ready(seed.set_metadata_by_id(file_id, times, WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("seed metadata blocked")??;
+    poll_ready(seed.commit(
+        OperationId::from_bytes([132; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed commit blocked")??;
+
+    let mut stamped = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("stamped checkout blocked")??
+    .value;
+    let mut separate = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("separate checkout blocked")??
+    .value;
+    poll_ready(stamped.change_content_by_id(
+        file_id,
+        ContentChange::Write {
+            offset: 4,
+            bytes: Bytes::from_static(b"STAMP"),
+        },
+        ContentTimes::Stamp(99),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("stamped write blocked")??;
+    poll_ready(separate.write_file_by_id(
+        file_id,
+        4,
+        Bytes::from_static(b"STAMP"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("separate write blocked")??;
+    let mut expected =
+        poll_ready(separate.read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("separate metadata read blocked")??
+            .value;
+    assert_eq!(expected, times, "a preserving write leaves metadata intact");
+    assert!(expected.stamp_content_change(99));
+    poll_ready(separate.set_metadata_by_id(
+        file_id,
+        expected,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("separate stamp blocked")??;
+    assert_eq!(stamped.root(), separate.root());
+    let metadata =
+        poll_ready(stamped.read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("stamped metadata read blocked")??
+            .value;
+    assert_eq!(metadata.modified_ns, MetadataField::Value(99));
+    assert_eq!(metadata.changed_ns, MetadataField::Value(99));
+    assert_eq!(metadata.accessed_ns, MetadataField::Value(2));
+
+    // The change and its stamp are one mutation: a change that fails stamps nothing.
+    let before = stamped.root().clone();
+    assert!(
+        poll_ready(stamped.change_content_by_id(
+            file_id,
+            ContentChange::CloneFrom {
+                source: FileId::from_bytes([200; 16]),
+                source_offset: 0,
+                offset: 0,
+                length: 1,
+            },
+            ContentTimes::Stamp(100),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("failing stamped clone blocked")?
+        .is_err()
+    );
+    assert_eq!(stamped.root(), &before);
+
+    // A profile that represents no content times keeps its metadata object.
+    let untimed_before =
+        poll_ready(stamped.read_metadata(&untimed, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("untimed metadata read blocked")??
+            .value;
+    poll_ready(stamped.change_content(
+        untimed.clone(),
+        ContentChange::Resize { logical_bytes: 7 },
+        ContentTimes::Stamp(101),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("untimed resize blocked")??;
+    let untimed_after =
+        poll_ready(stamped.read_metadata(&untimed, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("untimed metadata reread blocked")??
+            .value;
+    assert_eq!(untimed_after, untimed_before);
+    Ok(())
+}

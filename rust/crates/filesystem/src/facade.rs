@@ -807,6 +807,221 @@ pub struct FileCloneRequest {
     pub length: u64,
 }
 
+/// One regular-file content change. `F` addresses files: an exact
+/// [`NamespacePath`] or a stable [`FileId`], for the changed file and for any
+/// clone source alike.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ContentChange<F> {
+    /// Replaces one range with caller bytes, preserving sparse untouched
+    /// ranges. Empty bytes only validate that the file is regular.
+    Write {
+        /// Inclusive logical offset.
+        offset: u64,
+        /// Replacement bytes.
+        bytes: Bytes,
+    },
+    /// Changes logical length while preserving sparse semantics.
+    Resize {
+        /// New logical byte length.
+        logical_bytes: u64,
+    },
+    /// Replaces one range with a hole or physically allocated zeros.
+    ZeroRange {
+        /// Replaced logical range.
+        range: ByteRange,
+        /// Preserve physical allocation instead of punching a hole.
+        allocated: bool,
+        /// Whether the replacement may extend logical file length.
+        extend: bool,
+    },
+    /// Allocates sparse holes while preserving all existing content.
+    Preallocate {
+        /// Allocated logical range.
+        range: ByteRange,
+        /// Preserve logical file length.
+        keep_size: bool,
+    },
+    /// Clones one range of another regular file by immutable extent
+    /// reference, without reading bytes.
+    CloneFrom {
+        /// Existing source regular file.
+        source: F,
+        /// Inclusive source byte offset.
+        source_offset: u64,
+        /// Inclusive byte offset in the changed file.
+        offset: u64,
+        /// Positive logical byte count.
+        length: u64,
+    },
+}
+
+/// Whether a content change also records its time in the changed file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContentTimes {
+    /// Leaves the file's metadata unchanged.
+    Preserve,
+    /// Sets every represented modification and status-change time to this
+    /// instant, in signed Unix-epoch nanoseconds, within the same mutation
+    /// as the change itself.
+    Stamp(i64),
+}
+
+/// One content change with its bytes already staged, addressed by `F`.
+enum ContentOperation<F> {
+    ValidateRegular,
+    Write {
+        offset: u64,
+        length: u64,
+        content: ObjectId,
+    },
+    Resize {
+        logical_bytes: u64,
+    },
+    ZeroRange {
+        range: ByteRange,
+        allocated: bool,
+        extend: bool,
+    },
+    Preallocate {
+        range: ByteRange,
+        keep_size: bool,
+    },
+    CloneFrom {
+        source: F,
+        source_offset: u64,
+        offset: u64,
+        length: u64,
+    },
+    SetMetadata {
+        metadata: ObjectId,
+    },
+}
+
+/// How a content change names the file whose current metadata it stamps.
+enum ContentAddress<'a> {
+    Path(&'a NamespacePath),
+    File(FileId),
+}
+
+/// A way to address the regular file one content change applies to.
+trait ContentFile: Clone {
+    fn address(&self) -> ContentAddress<'_>;
+    fn mutation(self, operation: ContentOperation<Self>) -> Mutation;
+}
+
+impl ContentFile for NamespacePath {
+    fn address(&self) -> ContentAddress<'_> {
+        ContentAddress::Path(self)
+    }
+
+    fn mutation(self, operation: ContentOperation<Self>) -> Mutation {
+        let path = self;
+        match operation {
+            ContentOperation::ValidateRegular => Mutation::ValidateRegular { path },
+            ContentOperation::Write {
+                offset,
+                length,
+                content,
+            } => Mutation::Write {
+                path,
+                offset,
+                length,
+                content,
+                content_offset: 0,
+            },
+            ContentOperation::Resize { logical_bytes } => Mutation::Resize {
+                path,
+                logical_bytes,
+            },
+            ContentOperation::ZeroRange {
+                range,
+                allocated,
+                extend,
+            } => Mutation::ZeroRange {
+                path,
+                offset: range.offset,
+                length: range.length,
+                allocated,
+                extend,
+            },
+            ContentOperation::Preallocate { range, keep_size } => Mutation::Preallocate {
+                path,
+                offset: range.offset,
+                length: range.length,
+                keep_size,
+            },
+            ContentOperation::CloneFrom {
+                source,
+                source_offset,
+                offset,
+                length,
+            } => Mutation::CloneRange {
+                source,
+                source_offset,
+                destination: path,
+                destination_offset: offset,
+                length,
+            },
+            ContentOperation::SetMetadata { metadata } => Mutation::SetMetadata { path, metadata },
+        }
+    }
+}
+
+impl ContentFile for FileId {
+    fn address(&self) -> ContentAddress<'_> {
+        ContentAddress::File(*self)
+    }
+
+    fn mutation(self, operation: ContentOperation<Self>) -> Mutation {
+        let file_id = self;
+        let mutation = match operation {
+            ContentOperation::CloneFrom {
+                source,
+                source_offset,
+                offset,
+                length,
+            } => {
+                return Mutation::CloneFileRange {
+                    source_file_id: source,
+                    source_offset,
+                    destination_file_id: file_id,
+                    destination_offset: offset,
+                    length,
+                };
+            }
+            ContentOperation::ValidateRegular => FileMutation::ValidateRegular,
+            ContentOperation::Write {
+                offset,
+                length,
+                content,
+            } => FileMutation::Write {
+                offset,
+                length,
+                content,
+                content_offset: 0,
+            },
+            ContentOperation::Resize { logical_bytes } => FileMutation::Resize { logical_bytes },
+            ContentOperation::ZeroRange {
+                range,
+                allocated,
+                extend,
+            } => FileMutation::ZeroRange {
+                offset: range.offset,
+                length: range.length,
+                allocated,
+                extend,
+            },
+            ContentOperation::Preallocate { range, keep_size } => FileMutation::Preallocate {
+                offset: range.offset,
+                length: range.length,
+                keep_size,
+            },
+            ContentOperation::SetMetadata { metadata } => FileMutation::SetMetadata { metadata },
+        };
+        Mutation::File { file_id, mutation }
+    }
+}
+
 /// One caller-authored filesystem operation compiled into a single sparse,
 /// atomic checkout transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -8100,40 +8315,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if bytes.is_empty() {
-            return self
-                .mutate(
-                    vec![Mutation::ValidateRegular { path }],
-                    budget,
-                    cancellation,
-                )
-                .await;
-        }
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            > self.volume.config.limits.maximum_read_bytes
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let blob = self.stage_blob(bytes, budget, cancellation).await?;
-        let mut work = blob.work;
-        let mutation = self
-            .mutate(
-                vec![Mutation::Write {
-                    path,
-                    offset,
-                    length: blob.value.logical_bytes,
-                    content: blob.value.root,
-                    content_offset: 0,
-                }],
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, mutation.work)?;
-        Ok(FsReceipt { value: (), work })
+        self.change_content(
+            path,
+            ContentChange::Write { offset, bytes },
+            ContentTimes::Preserve,
+            budget,
+            cancellation,
+        )
+        .await
     }
 
     /// Captures one regular file as an ephemeral path-independent open view.
@@ -8834,6 +9023,136 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(FsReceipt { value: (), work })
     }
 
+    /// Applies one content change to the regular file at `path`, stamping
+    /// its content-change times in the same mutation when `times` asks to.
+    ///
+    /// # Errors
+    ///
+    /// Returns measured path, blob, metadata, mutation, storage,
+    /// cancellation, allocation, or bounded-work failures. The candidate
+    /// changes only if the change and its time stamp both apply.
+    pub async fn change_content(
+        &mut self,
+        path: NamespacePath,
+        change: ContentChange<NamespacePath>,
+        times: ContentTimes,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<()> {
+        self.change_content_of(path, change, times, budget, cancellation)
+            .await
+    }
+
+    /// Applies one content change to a regular file by stable identity,
+    /// stamping its content-change times in the same mutation when `times`
+    /// asks to. Authenticated absence never scans the namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns measured blob, metadata, mutation, storage, cancellation,
+    /// allocation, or bounded-work failures. The candidate changes only if
+    /// the change and its time stamp both apply.
+    pub async fn change_content_by_id(
+        &mut self,
+        file_id: FileId,
+        change: ContentChange<FileId>,
+        times: ContentTimes,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<()> {
+        self.change_content_of(file_id, change, times, budget, cancellation)
+            .await
+    }
+
+    async fn change_content_of<F: ContentFile>(
+        &mut self,
+        file: F,
+        change: ContentChange<F>,
+        times: ContentTimes,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<()> {
+        let mut work = WorkCounters::default();
+        let operation = match change {
+            ContentChange::Write { bytes, .. } if bytes.is_empty() => {
+                ContentOperation::ValidateRegular
+            }
+            ContentChange::Write { offset, bytes } => {
+                if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                    > self.volume.config.limits.maximum_read_bytes
+                {
+                    return Err(OperationFailure::before_work(FsError::FileRead(
+                        FileRangeReadError::InvalidRange,
+                    )));
+                }
+                let blob = self.stage_blob(bytes, budget, cancellation).await?;
+                work = blob.work;
+                ContentOperation::Write {
+                    offset,
+                    length: blob.value.logical_bytes,
+                    content: blob.value.root,
+                }
+            }
+            ContentChange::Resize { logical_bytes } => ContentOperation::Resize { logical_bytes },
+            ContentChange::ZeroRange {
+                range,
+                allocated,
+                extend,
+            } => ContentOperation::ZeroRange {
+                range,
+                allocated,
+                extend,
+            },
+            ContentChange::Preallocate { range, keep_size } => {
+                ContentOperation::Preallocate { range, keep_size }
+            }
+            ContentChange::CloneFrom {
+                source,
+                source_offset,
+                offset,
+                length,
+            } => ContentOperation::CloneFrom {
+                source,
+                source_offset,
+                offset,
+                length,
+            },
+        };
+        let mut operations = vec![file.clone().mutation(operation)];
+        if let ContentTimes::Stamp(at_ns) = times {
+            let current = match file.address() {
+                ContentAddress::Path(path) => {
+                    self.read_metadata(path, remaining(work, budget)?, cancellation)
+                        .await
+                }
+                ContentAddress::File(file_id) => {
+                    self.read_metadata_by_id(file_id, remaining(work, budget)?, cancellation)
+                        .await
+                }
+            }
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add(work, current.work)?;
+            let mut metadata = current.value;
+            if metadata.stamp_content_change(at_ns) {
+                let encoded = encode_file_metadata(metadata)
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
+                let (metadata, stored) = self
+                    .volume
+                    .fs
+                    .put_encoded(ObjectKind::Metadata, encoded, work, budget, cancellation)
+                    .await?;
+                work = stored;
+                operations.push(file.mutation(ContentOperation::SetMetadata { metadata }));
+            }
+        }
+        let mutation = self
+            .mutate(operations, remaining(work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        work = add(work, mutation.work)?;
+        Ok(FsReceipt { value: (), work })
+    }
+
     /// Replaces one range of an attached regular file by stable identity.
     ///
     /// # Errors
@@ -8848,45 +9167,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if bytes.is_empty() {
-            return self
-                .mutate(
-                    vec![Mutation::File {
-                        file_id,
-                        mutation: FileMutation::ValidateRegular,
-                    }],
-                    budget,
-                    cancellation,
-                )
-                .await;
-        }
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            > self.volume.config.limits.maximum_read_bytes
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let blob = self.stage_blob(bytes, budget, cancellation).await?;
-        let mut work = blob.work;
-        let mutation = self
-            .mutate(
-                vec![Mutation::File {
-                    file_id,
-                    mutation: FileMutation::Write {
-                        offset,
-                        length: blob.value.logical_bytes,
-                        content: blob.value.root,
-                        content_offset: 0,
-                    },
-                }],
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, mutation.work)?;
-        Ok(FsReceipt { value: (), work })
+        self.change_content_by_id(
+            file_id,
+            ContentChange::Write { offset, bytes },
+            ContentTimes::Preserve,
+            budget,
+            cancellation,
+        )
+        .await
     }
 
     /// Replaces complete canonical metadata by stable identity.
@@ -8989,11 +9277,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::File {
-                file_id,
-                mutation: FileMutation::Resize { logical_bytes },
-            }],
+        self.change_content_by_id(
+            file_id,
+            ContentChange::Resize { logical_bytes },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9014,16 +9301,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::File {
-                file_id,
-                mutation: FileMutation::ZeroRange {
-                    offset: range.offset,
-                    length: range.length,
-                    allocated,
-                    extend,
-                },
-            }],
+        self.change_content_by_id(
+            file_id,
+            ContentChange::ZeroRange {
+                range,
+                allocated,
+                extend,
+            },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9043,15 +9328,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::File {
-                file_id,
-                mutation: FileMutation::Preallocate {
-                    offset: range.offset,
-                    length: range.length,
-                    keep_size,
-                },
-            }],
+        self.change_content_by_id(
+            file_id,
+            ContentChange::Preallocate { range, keep_size },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9074,14 +9354,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::CloneFileRange {
-                source_file_id,
+        self.change_content_by_id(
+            destination_file_id,
+            ContentChange::CloneFrom {
+                source: source_file_id,
                 source_offset,
-                destination_file_id,
-                destination_offset,
+                offset: destination_offset,
                 length,
-            }],
+            },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9252,11 +9533,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::Resize {
-                path,
-                logical_bytes,
-            }],
+        self.change_content(
+            path,
+            ContentChange::Resize { logical_bytes },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9277,14 +9557,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::ZeroRange {
-                path,
-                offset: range.offset,
-                length: range.length,
+        self.change_content(
+            path,
+            ContentChange::ZeroRange {
+                range,
                 allocated,
                 extend,
-            }],
+            },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9309,13 +9589,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::Preallocate {
-                path,
-                offset: range.offset,
-                length: range.length,
-                keep_size,
-            }],
+        self.change_content(
+            path,
+            ContentChange::Preallocate { range, keep_size },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )
@@ -9333,14 +9610,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        self.mutate(
-            vec![Mutation::CloneRange {
+        self.change_content(
+            request.destination,
+            ContentChange::CloneFrom {
                 source: request.source,
                 source_offset: request.source_offset,
-                destination: request.destination,
-                destination_offset: request.destination_offset,
+                offset: request.destination_offset,
                 length: request.length,
-            }],
+            },
+            ContentTimes::Preserve,
             budget,
             cancellation,
         )

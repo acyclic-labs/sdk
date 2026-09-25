@@ -19,8 +19,8 @@ use crate::native_capture::{
 };
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
-    Checkout, DetachedFile, FileId, FsError, NamedAttributeWriteMode, NativeRootIdentity, ObjectId,
-    OperationFailure, OperationId, VolumeId, WorkBudget,
+    Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, NamedAttributeWriteMode,
+    NativeRootIdentity, ObjectId, OperationFailure, OperationId, VolumeId, WorkBudget,
 };
 use bytes::Bytes;
 use std::future::Future;
@@ -216,7 +216,7 @@ impl<A, O> DetachedMountState<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        if stamp_content_change(&mut self.metadata)? {
+        if self.metadata.stamp_content_change(content_change_time()?) {
             self.file
                 .set_attributes(self.metadata, None, boundary_budget(), cancellation)
                 .await
@@ -474,29 +474,58 @@ impl<A, O> SharedCheckoutState<A, O> {
         result
     }
 
-    /// Stamps a file's modification and status-change times, as a native
-    /// write, truncation, or allocation does, then publishes the change like
+    /// Applies one content change by stable identity and stamps its
+    /// modification and status-change times in the same mutation, as a
+    /// native write, truncation, or allocation does, then publishes it like
     /// any mutation. Times a profile does not represent stay unavailable.
-    pub(super) async fn publish_after_content_change(
+    pub(super) async fn change_content_by_id(
         &mut self,
         file_id: FileId,
+        change: ContentChange<FileId>,
         cancellation: &CancellationToken,
     ) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let mut metadata = self
-            .read_metadata_by_id(file_id, boundary_budget(), cancellation)
+        self.checkout
+            .change_content_by_id(
+                file_id,
+                change,
+                ContentTimes::Stamp(content_change_time()?),
+                boundary_budget(),
+                cancellation,
+            )
             .await
-            .map_err(engine_error)?
-            .value;
-        if stamp_content_change(&mut metadata)? {
-            self.set_metadata_by_id(file_id, metadata, boundary_budget(), cancellation)
-                .await
-                .map_err(engine_error)?;
-        }
+            .map_err(engine_error)?;
         self.publish_after_mutation(ViewChange::Node(file_id), cancellation)
+            .await
+    }
+
+    /// Applies one content change at an exact path with its time stamp as
+    /// one mutation, exactly as [`Self::change_content_by_id`] does.
+    pub(super) async fn change_content(
+        &mut self,
+        path: NamespacePath,
+        change: ContentChange<NamespacePath>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let node = self.node_at(&path, cancellation).await?;
+        self.checkout
+            .change_content(
+                path,
+                change,
+                ContentTimes::Stamp(content_change_time()?),
+                boundary_budget(),
+                cancellation,
+            )
+            .await
+            .map_err(engine_error)?;
+        self.publish_after_mutation(ViewChange::Node(node), cancellation)
             .await
     }
 
@@ -968,6 +997,24 @@ impl<A, O> CheckoutAttachedFile<A, O> {
     }
 }
 
+impl<A, O> CheckoutAttachedFile<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    /// Applies one content change to this file with its time stamp as one
+    /// mutation.
+    fn change_content(&self, change: ContentChange<FileId>) -> Result<(), MountSourceError> {
+        self.runtime.wait(|| async {
+            let mut checkout = self.checkout.lock().await;
+            checkout.ensure_publication_resolved()?;
+            checkout
+                .change_content_by_id(self.file_id, change, &self.cancellation)
+                .await
+        })
+    }
+}
+
 impl<A, O> MountOpenFile for CheckoutAttachedFile<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -1058,42 +1105,11 @@ where
     }
 
     fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            checkout
-                .write_file_by_id(
-                    self.file_id,
-                    offset,
-                    bytes,
-                    boundary_budget(),
-                    &self.cancellation,
-                )
-                .await
-                .map_err(engine_error)?;
-            checkout
-                .publish_after_content_change(self.file_id, &self.cancellation)
-                .await
-        })
+        self.change_content(ContentChange::Write { offset, bytes })
     }
 
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            checkout
-                .resize_file_by_id(
-                    self.file_id,
-                    logical_bytes,
-                    boundary_budget(),
-                    &self.cancellation,
-                )
-                .await
-                .map_err(engine_error)?;
-            checkout
-                .publish_after_content_change(self.file_id, &self.cancellation)
-                .await
-        })
+        self.change_content(ContentChange::Resize { logical_bytes })
     }
 
     fn allocate_range(
@@ -1102,52 +1118,7 @@ where
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            let range = ByteRange { offset, length };
-            match operation {
-                MountRangeAllocation::PunchHole => {
-                    checkout
-                        .zero_file_range_by_id(
-                            self.file_id,
-                            range,
-                            false,
-                            false,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-                MountRangeAllocation::ZeroRange { extend } => {
-                    checkout
-                        .zero_file_range_by_id(
-                            self.file_id,
-                            range,
-                            true,
-                            extend,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-                MountRangeAllocation::Preallocate { keep_size } => {
-                    checkout
-                        .preallocate_file_by_id(
-                            self.file_id,
-                            range,
-                            keep_size,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-            }
-            .map_err(engine_error)?;
-            checkout
-                .publish_after_content_change(self.file_id, &self.cancellation)
-                .await
-        })
+        self.change_content(range_allocation(ByteRange { offset, length }, operation))
     }
 
     fn set_attributes(
@@ -1991,6 +1962,28 @@ fn profile_name(profile: FilesystemProfile) -> &'static str {
     }
 }
 
+impl<A, O> CheckoutMountSource<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    /// Applies one content change at `path` with its time stamp as one
+    /// mutation.
+    fn change_content(
+        &self,
+        path: NamespacePath,
+        change: ContentChange<NamespacePath>,
+    ) -> Result<(), MountSourceError> {
+        self.runtime.wait(|| async {
+            let mut checkout = self.checkout.lock().await;
+            checkout.ensure_publication_resolved()?;
+            checkout
+                .change_content(path, change, &self.cancellation)
+                .await
+        })
+    }
+}
+
 impl<A, O> MountFilesystem for CheckoutMountSource<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -2608,34 +2601,12 @@ where
         bytes: Bytes,
     ) -> Result<(), MountSourceError> {
         let path = self.path(path)?;
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            let node = checkout.node_at(&path, &self.cancellation).await?;
-            checkout
-                .write_file(path, offset, bytes, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(engine_error)?;
-            checkout
-                .publish_after_content_change(node, &self.cancellation)
-                .await
-        })
+        self.change_content(path, ContentChange::Write { offset, bytes })
     }
 
     fn resize(&self, path: &MountPath, logical_bytes: u64) -> Result<(), MountSourceError> {
         let path = self.path(path)?;
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            let node = checkout.node_at(&path, &self.cancellation).await?;
-            checkout
-                .resize_file(path, logical_bytes, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(engine_error)?;
-            checkout
-                .publish_after_content_change(node, &self.cancellation)
-                .await
-        })
+        self.change_content(path, ContentChange::Resize { logical_bytes })
     }
 
     fn allocate_range(
@@ -2646,52 +2617,10 @@ where
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
         let path = self.path(path)?;
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            let node = checkout.node_at(&path, &self.cancellation).await?;
-            match operation {
-                MountRangeAllocation::PunchHole => {
-                    checkout
-                        .zero_file_range(
-                            path,
-                            ByteRange { offset, length },
-                            false,
-                            false,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-                MountRangeAllocation::ZeroRange { extend } => {
-                    checkout
-                        .zero_file_range(
-                            path,
-                            ByteRange { offset, length },
-                            true,
-                            extend,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-                MountRangeAllocation::Preallocate { keep_size } => {
-                    checkout
-                        .preallocate_file(
-                            path,
-                            ByteRange { offset, length },
-                            keep_size,
-                            boundary_budget(),
-                            &self.cancellation,
-                        )
-                        .await
-                }
-            }
-            .map_err(engine_error)?;
-            checkout
-                .publish_after_content_change(node, &self.cancellation)
-                .await
-        })
+        self.change_content(
+            path,
+            range_allocation(ByteRange { offset, length }, operation),
+        )
     }
 
     fn clone_range(
@@ -2704,28 +2633,15 @@ where
     ) -> Result<(), MountSourceError> {
         let source = self.path(source)?;
         let destination = self.path(destination)?;
-        self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            let node = checkout.node_at(&destination, &self.cancellation).await?;
-            checkout
-                .clone_file_range(
-                    crate::FileCloneRequest {
-                        source,
-                        source_offset,
-                        destination: destination.clone(),
-                        destination_offset,
-                        length,
-                    },
-                    boundary_budget(),
-                    &self.cancellation,
-                )
-                .await
-                .map_err(engine_error)?;
-            checkout
-                .publish_after_content_change(node, &self.cancellation)
-                .await
-        })
+        self.change_content(
+            destination,
+            ContentChange::CloneFrom {
+                source,
+                source_offset,
+                offset: destination_offset,
+                length,
+            },
+        )
     }
 
     fn clone_range_by_id(
@@ -2740,19 +2656,16 @@ where
             let mut checkout = self.checkout.lock().await;
             checkout.ensure_publication_resolved()?;
             checkout
-                .clone_file_range_by_id(
-                    source_file_id,
-                    source_offset,
+                .change_content_by_id(
                     destination_file_id,
-                    destination_offset,
-                    length,
-                    boundary_budget(),
+                    ContentChange::CloneFrom {
+                        source: source_file_id,
+                        source_offset,
+                        offset: destination_offset,
+                        length,
+                    },
                     &self.cancellation,
                 )
-                .await
-                .map_err(engine_error)?;
-            checkout
-                .publish_after_content_change(destination_file_id, &self.cancellation)
                 .await
         })
     }
@@ -2959,20 +2872,32 @@ fn mount_node(record: FileRecord) -> MountNode {
 
 /// Sets every modification and status-change time the metadata represents
 /// to now, and returns whether it represents either.
-fn stamp_content_change(metadata: &mut FileMetadata) -> Result<bool, MountSourceError> {
-    let now = std::time::SystemTime::now()
+/// The current instant as a content-change time, in signed Unix-epoch nanoseconds.
+fn content_change_time() -> Result<i64, MountSourceError> {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .and_then(|since| i64::try_from(since.as_nanos()).ok())
-        .ok_or_else(|| MountSourceError::Engine("the clock is outside file time".to_owned()))?;
-    let mut stamped = false;
-    for time in [&mut metadata.modified_ns, &mut metadata.changed_ns] {
-        if let crate::kernel::MetadataField::Value(time) = time {
-            *time = now;
-            stamped = true;
+        .ok_or_else(|| MountSourceError::Engine("the clock is outside file time".to_owned()))
+}
+
+/// The content change one native range allocation requests.
+fn range_allocation<F>(range: ByteRange, operation: MountRangeAllocation) -> ContentChange<F> {
+    match operation {
+        MountRangeAllocation::PunchHole => ContentChange::ZeroRange {
+            range,
+            allocated: false,
+            extend: false,
+        },
+        MountRangeAllocation::ZeroRange { extend } => ContentChange::ZeroRange {
+            range,
+            allocated: true,
+            extend,
+        },
+        MountRangeAllocation::Preallocate { keep_size } => {
+            ContentChange::Preallocate { range, keep_size }
         }
     }
-    Ok(stamped)
 }
 
 fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
