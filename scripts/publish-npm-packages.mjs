@@ -67,6 +67,14 @@ export async function waitForPublishedExact(name, version, expectedIntegrity, pr
   }
 }
 
+export async function verifyPublicationAttempt(publication, name, version, expectedIntegrity, probes = {}) {
+  const output = `${publication.stdout ?? ""}\n${publication.stderr ?? ""}`;
+  if (publication.status !== 0 && !/cannot publish over (?:the )?previously published versions?/i.test(output)) {
+    fail(`npm publication failed for ${name}@${version}: ${output}`);
+  }
+  await waitForPublishedExact(name, version, expectedIntegrity, probes);
+}
+
 async function main() {
   const [artifactArgument, sourceSha, releaseVersion] = process.argv.slice(2);
   if (!artifactArgument || !/^[0-9a-f]{40}$/.test(sourceSha ?? "") || !/^\d+\.\d+\.\d+(?:[+-][0-9A-Za-z.-]+)?$/.test(releaseVersion ?? "")) {
@@ -102,9 +110,10 @@ async function main() {
       continue;
     }
 
-    const publication = run("npm", ["publish", archive, "--access", "public", "--tag", "latest", "--provenance"], { stdio: "inherit" });
-    if (publication.status !== 0) fail(`npm publication failed for ${item.name}@${releaseVersion}`);
-    await waitForPublishedExact(item.name, releaseVersion, expectedIntegrity);
+    const publication = run("npm", ["publish", archive, "--access", "public", "--tag", "latest", "--provenance"]);
+    process.stdout.write(publication.stdout ?? "");
+    process.stderr.write(publication.stderr ?? "");
+    await verifyPublicationAttempt(publication, item.name, releaseVersion, expectedIntegrity);
     console.log(`Published and verified: ${item.name}@${releaseVersion}`);
   }
 }
