@@ -1905,7 +1905,18 @@ fn collect_paths(
 #[cfg(test)]
 mod receipt_tests {
     use super::{COVERAGE, Failure, file_blake3, verify_receipt};
+    use serde_json::Value;
     use std::ffi::OsString;
+
+    fn receipt_array<'a>(
+        document: &'a mut Value,
+        name: &str,
+    ) -> Result<&'a mut Vec<Value>, Failure> {
+        document
+            .get_mut(name)
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| format!("missing {name} array").into())
+    }
 
     #[test]
     fn verifies_the_release_target_architecture_not_the_verifier_host() -> Result<(), Failure> {
@@ -1951,33 +1962,28 @@ mod receipt_tests {
             OsString::from("aarch64"),
         ];
         verify_receipt(&args)?;
-        document["coverage"]
-            .as_array_mut()
-            .ok_or("coverage")?
-            .reverse();
-        document["coverage"]
-            .as_array_mut()
-            .ok_or("coverage")?
-            .push(serde_json::json!("future-coverage"));
-        document["cases"].as_array_mut().ok_or("cases")?.reverse();
-        document["cases"]
-            .as_array_mut()
-            .ok_or("cases")?
+        receipt_array(&mut document, "coverage")?.reverse();
+        receipt_array(&mut document, "coverage")?.push(serde_json::json!("future-coverage"));
+        receipt_array(&mut document, "cases")?.reverse();
+        receipt_array(&mut document, "cases")?
             .push(serde_json::json!({"name":"future-case","status":"passed","reason":null}));
         std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
         verify_receipt(&args)?;
         let valid_extension = document.clone();
-        document["coverage"]
-            .as_array_mut()
-            .ok_or("coverage")?
-            .push(serde_json::json!("future-coverage"));
+        receipt_array(&mut document, "coverage")?.push(serde_json::json!("future-coverage"));
         std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
         assert!(verify_receipt(&args).is_err());
         document = valid_extension;
-        document["cases"][3]["status"] = serde_json::json!("failed");
+        *receipt_array(&mut document, "cases")?
+            .last_mut()
+            .and_then(|case| case.get_mut("status"))
+            .ok_or("future case status")? = serde_json::json!("failed");
         std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
         assert!(verify_receipt(&args).is_err());
-        document["cases"][3]["status"] = serde_json::json!("passed");
+        *receipt_array(&mut document, "cases")?
+            .last_mut()
+            .and_then(|case| case.get_mut("status"))
+            .ok_or("future case status")? = serde_json::json!("passed");
         std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
         *args.last_mut().ok_or("missing release architecture")? = OsString::from("x86_64");
         let error = match verify_receipt(&args) {
