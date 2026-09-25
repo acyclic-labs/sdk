@@ -15,7 +15,9 @@ else
 fi
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 archive="$work/acyclic-harness.tgz"
-wasm_output="$work/generated-wasm"
+# TypeScript resolves the Rust-generated declarations from the package tree.
+# Build there once, then stage those exact bytes into the archive below.
+wasm_output="$root/typescript/packages/harness/generated/wasm"
 bun_archive="$archive"
 bun_archive_url="$archive"
 bun_wasm_output="$wasm_output"
