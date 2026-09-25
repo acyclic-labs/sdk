@@ -10,8 +10,11 @@
 //! The kernel keeps entries, attributes, and data without expiry. Changes
 //! made through this mount reach it as it makes them; an invalidator thread
 //! drops exactly the kernel items that every other change to the source
-//! superseded, as the source reports them.
+//! superseded, as the source reports them. A small file's content reaches
+//! the kernel with its first read-only open rather than page by page
+//! ([`PAGE_STORE_LIMIT`]).
 
+use super::view_ledger::ViewOriginScope;
 use super::{
     MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest,
@@ -33,7 +36,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{
-    Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
+    Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard,
+    RwLockWriteGuard, Weak,
 };
 use std::time::{Duration, SystemTime};
 
@@ -105,6 +109,17 @@ static ROOT_PATH: MountPath = MountPath::root();
 /// kernel applies mounted mutations itself, and the invalidator drops what
 /// every other change to the source superseded.
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Largest file a first read-only open hands the kernel whole, as the
+/// default FUSE readahead window bounds a first read's fetch.
+///
+/// Every page the kernel reads from the daemon marks the inode's cached
+/// access time stale unless the whole superblock is read-only
+/// (`fuse_invalidate_atime`, even under `noatime`), and `stat` always asks
+/// for it: a file read once would cost one `GETATTR` round trip at its next
+/// `stat`. Pages stored with the open (`FUSE_NOTIFY_STORE`) are never read,
+/// so they spare both that round trip and the `READ` itself. Larger files
+/// are read on demand as before.
+const PAGE_STORE_LIMIT: u64 = 128 * 1024;
 /// Negative entries tracked per directory. Invalidation must reach every
 /// negative entry the kernel may hold, so past this bound a directory answers
 /// further absent names without a cache lifetime.
@@ -294,11 +309,16 @@ impl InodeEntry {
             && self.current_facts(source).is_some()
     }
 
-    /// Records the version a new handle opens and reports whether pages the
-    /// kernel retained from earlier handles were admitted under it.
-    fn admit_cached_content(&mut self, lookup: &MountLookup) -> bool {
+    /// Records the version a new handle opens and reports what the kernel
+    /// may hold of the file's pages: none, when no handle opened it before,
+    /// or pages earlier handles left under the same or another version.
+    fn admit_cached_content(&mut self, lookup: &MountLookup) -> CachedContent {
         let opened = ContentVersion::of(lookup);
-        self.cached_content.replace(opened) == Some(opened)
+        match self.cached_content.replace(opened) {
+            None => CachedContent::Absent,
+            Some(cached) if cached == opened => CachedContent::Current,
+            Some(_) => CachedContent::Superseded,
+        }
     }
 
     /// Records that the kernel may hold `name` as a negative entry derived
@@ -342,6 +362,19 @@ impl ContentVersion {
     }
 }
 
+/// What the kernel may hold of one file's pages as a new handle opens it.
+///
+/// Pages reach the kernel only through open handles, so a file no handle
+/// opened before has none: the kernel inode is as new as the projection's.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CachedContent {
+    Absent,
+    /// Pages admitted under the version the handle opens.
+    Current,
+    /// Pages admitted under another version.
+    Superseded,
+}
+
 /// One kernel cache item a session can drop.
 #[derive(Debug, Eq, PartialEq)]
 enum KernelCacheItem {
@@ -355,6 +388,87 @@ struct FileHandle {
     inode: u64,
     open_file: Arc<dyn MountOpenFile>,
     operation: Arc<Mutex<()>>,
+    dirty: bool,
+    /// The file whose content this handle claims, when it may change it.
+    claim: Option<crate::FileId>,
+}
+
+/// Whether an open with `flags` may change the file's content.
+fn changes_content(flags: i32) -> bool {
+    flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_TRUNC != 0
+}
+
+/// Page stores in flight, and the claims that exclude them, per file.
+///
+/// A store reads a file's content and hands it to the kernel page cache
+/// outside every lock, so it must never land over content this mount
+/// changed meanwhile: a store begins only while nothing claims the file's
+/// content, and a claim is granted only once the file's store has landed.
+/// Changes around the mount are checked as a store lands, and the
+/// revalidation barrier waits for every store read before its target.
+#[derive(Default)]
+struct PageStores {
+    /// Position each store's content was read after, by file.
+    in_flight: HashMap<crate::FileId, ViewStamp>,
+    /// Handles that may change each file's content, and callbacks changing
+    /// it now.
+    claims: HashMap<crate::FileId, u64>,
+}
+
+impl PageStores {
+    fn may_begin(&self, file_id: crate::FileId) -> bool {
+        !self.in_flight.contains_key(&file_id) && !self.claims.contains_key(&file_id)
+    }
+
+    fn begin(&mut self, file_id: crate::FileId, stamp: ViewStamp) {
+        debug_assert!(self.may_begin(file_id));
+        self.in_flight.insert(file_id, stamp);
+    }
+
+    fn land(&mut self, file_id: crate::FileId) {
+        self.in_flight.remove(&file_id);
+    }
+
+    /// Adds a claim on `file_id`, whose store must already have landed.
+    fn claim(&mut self, file_id: crate::FileId) {
+        debug_assert!(!self.in_flight.contains_key(&file_id));
+        *self.claims.entry(file_id).or_default() += 1;
+    }
+
+    fn release(&mut self, file_id: crate::FileId) {
+        if let Some(claims) = self.claims.get_mut(&file_id) {
+            *claims -= 1;
+            if *claims == 0 {
+                self.claims.remove(&file_id);
+            }
+        }
+    }
+
+    /// Whether a store in flight read its content before `target`.
+    fn precede(&self, target: ViewStamp) -> bool {
+        self.in_flight.values().any(|stamp| *stamp < target)
+    }
+}
+
+/// A store of one file's whole content that an open began, which the open
+/// completes before it replies.
+struct PageStore {
+    inode: u64,
+    file_id: crate::FileId,
+    path: MountPath,
+    stamp: ViewStamp,
+    length: u32,
+    open_file: Arc<dyn MountOpenFile>,
+}
+
+/// One handle a callback opened, for the projection to admit.
+struct OpenedFile<'a> {
+    path: &'a MountPath,
+    lookup: &'a MountLookup,
+    /// Position `lookup` was read after.
+    stamp: Option<ViewStamp>,
+    flags: i32,
+    open_file: Arc<dyn MountOpenFile>,
     dirty: bool,
 }
 
@@ -469,6 +583,7 @@ struct ProjectionState {
     files: HashMap<u64, FileHandle>,
     streams: DirectoryStreams,
     invalidation: InvalidationQueue,
+    page_stores: PageStores,
 }
 
 impl ProjectionState {
@@ -777,49 +892,69 @@ impl ProjectionState {
         })
     }
 
-    /// Kernel flags for a new handle on `inode` that opened `lookup` through
-    /// `path` after `stamp`.
+    /// Admits a new handle on `inode`, returning it with its kernel flags
+    /// and the page store its open completes, if any.
     ///
     /// Pages retained from earlier handles are kept only while the file opens
     /// with the [`ContentVersion`] they were admitted under and the kernel may
-    /// keep what it opens. Closing a handle is a publication boundary only
-    /// when it may write and the source publishes on close; every other close
-    /// needs no FLUSH round trip.
-    fn file_open_flags(
+    /// keep what it opens. A read-only open of a small file the kernel holds
+    /// no pages of hands it the whole content instead ([`PAGE_STORE_LIMIT`]).
+    /// A handle that may change the content claims it ([`PageStores`]); the
+    /// caller already holds a claim, so no store of the file is in flight.
+    /// Closing a handle is a publication boundary only when it may write and
+    /// the source publishes on close; every other close needs no FLUSH round
+    /// trip.
+    fn admit_file_handle(
         &mut self,
         source: &dyn MountFilesystem,
         inode: u64,
-        path: &MountPath,
-        lookup: &MountLookup,
-        stamp: Option<ViewStamp>,
-        flags: i32,
-    ) -> FopenFlags {
-        let admitted = self.admissible(source, path, Some(lookup.node.file_id), stamp);
-        let retains_content = self.by_inode.get_mut(&inode).is_some_and(|entry| {
-            hold(&mut entry.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
-            entry.admit_cached_content(lookup) && admitted
-        });
-        let flushes_on_close =
-            flags & libc::O_ACCMODE != libc::O_RDONLY && source.flush_on_handle_close();
-        let mut open_flags = FopenFlags::empty();
-        open_flags.set(FopenFlags::FOPEN_KEEP_CACHE, retains_content);
-        open_flags.set(FopenFlags::FOPEN_NOFLUSH, !flushes_on_close);
-        open_flags
-    }
-
-    fn insert_file_handle(
-        &mut self,
-        inode: u64,
-        open_file: Arc<dyn MountOpenFile>,
-        dirty: bool,
-    ) -> Result<u64, i32> {
+        opened: OpenedFile<'_>,
+    ) -> Result<(u64, FopenFlags, Option<PageStore>), i32> {
+        let OpenedFile {
+            path,
+            lookup,
+            stamp,
+            flags,
+            open_file,
+            dirty,
+        } = opened;
+        let file_id = lookup.node.file_id;
         let handle = self.next_handle;
         if self.files.contains_key(&handle) {
             return Err(libc::EMFILE);
         }
         self.files.try_reserve(1).map_err(|_| libc::ENOMEM)?;
+        let admitted = self.admissible(source, path, Some(file_id), stamp);
         let entry = self.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
         entry.open_handles = entry.open_handles.saturating_add(1);
+        hold(&mut entry.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
+        let cached = entry.admit_cached_content(lookup);
+        let claim = changes_content(flags).then_some(file_id);
+        let store = match (stamp, u32::try_from(lookup.node.logical_bytes)) {
+            (Some(stamp), Ok(length))
+                if admitted
+                    && cached == CachedContent::Absent
+                    && claim.is_none()
+                    && flags & libc::O_DIRECT == 0
+                    && length != 0
+                    && u64::from(length) <= PAGE_STORE_LIMIT
+                    && self.page_stores.may_begin(file_id) =>
+            {
+                self.page_stores.begin(file_id, stamp);
+                Some(PageStore {
+                    inode,
+                    file_id,
+                    path: path.clone(),
+                    stamp,
+                    length,
+                    open_file: Arc::clone(&open_file),
+                })
+            }
+            _ => None,
+        };
+        if let Some(file_id) = claim {
+            self.page_stores.claim(file_id);
+        }
         self.next_handle = self.next_handle.saturating_add(1).max(1);
         self.files.insert(
             handle,
@@ -828,9 +963,18 @@ impl ProjectionState {
                 open_file,
                 operation: Arc::new(Mutex::new(())),
                 dirty,
+                claim,
             },
         );
-        Ok(handle)
+        let flushes_on_close =
+            flags & libc::O_ACCMODE != libc::O_RDONLY && source.flush_on_handle_close();
+        let mut open_flags = FopenFlags::empty();
+        open_flags.set(
+            FopenFlags::FOPEN_KEEP_CACHE,
+            admitted && cached == CachedContent::Current,
+        );
+        open_flags.set(FopenFlags::FOPEN_NOFLUSH, !flushes_on_close);
+        Ok((handle, open_flags, store))
     }
 
     fn discard_file_handle(&mut self, inode: u64, handle: u64) -> Result<(), i32> {
@@ -850,6 +994,9 @@ impl ProjectionState {
             return Err(libc::EIO);
         }
         entry.open_handles -= 1;
+        if let Some(file_id) = file.claim {
+            self.page_stores.release(file_id);
+        }
         if entry.bindings.is_empty()
             && entry.lookup_references == 0
             && entry.open_handles == 0
@@ -1360,9 +1507,16 @@ struct ProjectionCore {
     names: RwLock<()>,
     /// Signals invalidation work and its completion.
     invalidation: Condvar,
+    /// Signals that a page store landed.
+    page_stored: Condvar,
     stopping: AtomicBool,
     /// Attributes this session's own changes, which its kernel applied.
     origin: ViewOrigin,
+    /// Set once, before the session serves its first request.
+    notifier: OnceLock<Notifier>,
+    /// Every request a callback served, by operation.
+    #[cfg(test)]
+    requests: Mutex<Vec<&'static str>>,
 }
 
 impl ProjectionCore {
@@ -1388,6 +1542,51 @@ impl ProjectionCore {
         if deferred {
             self.invalidation.notify_all();
         }
+    }
+
+    /// Begins serving one kernel request: every view change it causes is
+    /// this session's own until the returned scope drops.
+    fn request(&self, operation: &'static str) -> ViewOriginScope {
+        #[cfg(test)]
+        self.requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(operation);
+        #[cfg(not(test))]
+        let _ = operation;
+        self.origin.enter()
+    }
+
+    /// Claims `file_id`'s content for a change through this mount, once its
+    /// page store in flight, if any, has landed.
+    fn claim_content(&self, file_id: crate::FileId) -> Result<ContentClaim<'_>, i32> {
+        let mut state = self.state()?;
+        while state.page_stores.in_flight.contains_key(&file_id) {
+            state = self.page_stored.wait(state).map_err(|_| libc::EIO)?;
+        }
+        state.page_stores.claim(file_id);
+        Ok(ContentClaim {
+            core: self,
+            file_id,
+        })
+    }
+}
+
+/// A claim on one file's content held while a callback changes it or
+/// admits a handle that may; see [`PageStores`].
+struct ContentClaim<'a> {
+    core: &'a ProjectionCore,
+    file_id: crate::FileId,
+}
+
+impl Drop for ContentClaim<'_> {
+    fn drop(&mut self) {
+        self.core
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .page_stores
+            .release(self.file_id);
     }
 }
 
@@ -1589,7 +1788,7 @@ impl FuseSession {
                 }))
                 .collect::<Vec<_>>()
         };
-        drop_kernel_caches(&self.notifier()?, items).map_err(NativeMountError::Driver)
+        drop_kernel_caches(self.notifier()?, items).map_err(NativeMountError::Driver)
     }
 
     /// Waits until the kernel no longer holds anything superseded by a change
@@ -1600,21 +1799,42 @@ impl FuseSession {
     /// observe one through the mount immediately afterwards.
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
         let stopped = || NativeMountError::Driver("session is stopped".to_owned());
+        let poisoned = |_| NativeMountError::Driver("FUSE projection state is poisoned".to_owned());
         let mut state = self.lock_state()?;
         let target = state.invalidation.notified;
-        while state.invalidation.processed < target || !state.invalidation.deferred.is_empty() {
+        // A page store read before the target may land after the invalidator
+        // dropped what it superseded; it defers that drop again as it lands.
+        loop {
             if self.core.stopping.load(Ordering::Acquire) {
                 return Err(stopped());
             }
-            state = self.core.invalidation.wait(state).map_err(|_| {
-                NativeMountError::Driver("FUSE projection state is poisoned".to_owned())
-            })?;
+            state = if state.invalidation.processed < target
+                || !state.invalidation.deferred.is_empty()
+            {
+                self.core.invalidation.wait(state).map_err(poisoned)?
+            } else if target.is_some_and(|target| state.page_stores.precede(target)) {
+                self.core.page_stored.wait(state).map_err(poisoned)?
+            } else {
+                break;
+            };
         }
         state
             .invalidation
             .failure
             .take()
             .map_or(Ok(()), |error| Err(NativeMountError::Driver(error)))
+    }
+
+    /// Takes the operation of every request served so far.
+    #[cfg(test)]
+    pub(super) fn take_requests(&self) -> Vec<&'static str> {
+        std::mem::take(
+            &mut *self
+                .core
+                .requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     fn lock_state(&self) -> Result<MutexGuard<'_, ProjectionState>, NativeMountError> {
@@ -1624,10 +1844,10 @@ impl FuseSession {
             .map_err(|_| NativeMountError::Driver("FUSE projection state is poisoned".to_owned()))
     }
 
-    fn notifier(&self) -> Result<Notifier, NativeMountError> {
+    fn notifier(&self) -> Result<&Notifier, NativeMountError> {
         self.session
             .as_ref()
-            .map(BackgroundSession::notifier)
+            .and(self.core.notifier.get())
             .ok_or_else(|| NativeMountError::Driver("session is stopped".to_owned()))
     }
 
@@ -1668,23 +1888,25 @@ impl FuseSession {
             files: HashMap::new(),
             streams: DirectoryStreams::default(),
             invalidation: InvalidationQueue::default(),
+            page_stores: PageStores::default(),
         };
         let core = Arc::new(ProjectionCore {
             source,
             state: Mutex::new(state),
             names: RwLock::new(()),
             invalidation: Condvar::new(),
+            page_stored: Condvar::new(),
             stopping: AtomicBool::new(false),
             origin: ViewOrigin::new(),
+            notifier: OnceLock::new(),
+            #[cfg(test)]
+            requests: Mutex::new(Vec::new()),
         });
         let observer: Weak<ProjectionCore> = Arc::downgrade(&core);
         core.source.observe_view(observer);
         // Even with `noatime`, a writable mount pays one GETATTR per file
-        // after the kernel reads its pages from the daemon: every page read
-        // marks the cached access time stale unless the whole superblock is
-        // read-only (`fuse_invalidate_atime`), and `stat` always asks for it.
-        // Pages the kernel retains serve later reads without that cost, and
-        // the daemon answers the GETATTR from its current facts.
+        // after the kernel reads its pages from the daemon; small files'
+        // pages arrive with their first open instead (`PAGE_STORE_LIMIT`).
         let mut options = vec![
             MountOption::FSName("acyclic-fs".to_owned()),
             MountOption::DefaultPermissions,
@@ -1704,9 +1926,14 @@ impl FuseSession {
             core: Arc::clone(&core),
             skips_opendir: false,
         };
-        let session = fuser::spawn_mount(filesystem, &request.destination, &config)
+        let session = fuser::Session::new(filesystem, &request.destination, &config)
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+        // Callbacks store pages through the notifier from the first request.
         let notifier = session.notifier();
+        let _ = core.notifier.set(notifier.clone());
+        let session = session
+            .spawn()
+            .map_err(|error| NativeMountError::Driver(error.to_string()))?;
         let invalidating = Arc::clone(&core);
         let invalidator = std::thread::Builder::new()
             .name("acyclic-fs-fuse-invalidate".to_owned())
@@ -1911,6 +2138,10 @@ impl FuseProjection {
             (state.node_facts(source, inode, handle)?, open_file)
         };
         let current = resolve_node(source, facts)?;
+        let _claim = changes
+            .size
+            .map(|_| self.core.claim_content(current.lookup.node.file_id))
+            .transpose()?;
         let resolved = if changes.is_empty() {
             current
         } else {
@@ -2123,6 +2354,9 @@ impl FuseProjection {
                 source.binding_epoch(),
             )
         };
+        let _claim = changes_content(flags)
+            .then(|| self.core.claim_content(file_id))
+            .transpose()?;
         let open_file = source.open_file(&path).map_err(errno)?;
         // The inode may have outlived its path binding. Check the attached
         // file before O_TRUNC can mutate a replacement at that path.
@@ -2167,9 +2401,61 @@ impl FuseProjection {
         if let Some(binding) = entry.binding_mut(&path) {
             binding.verified = stamp;
         }
-        let open_flags = state.file_open_flags(source, inode, &path, &refreshed, stamp, flags);
-        let handle = state.insert_file_handle(inode, open_file, truncated)?;
-        Ok((handle, open_flags))
+        let (handle, open_flags, store) = state.admit_file_handle(
+            source,
+            inode,
+            OpenedFile {
+                path: &path,
+                lookup: &refreshed,
+                stamp,
+                flags,
+                open_file,
+                dirty: truncated,
+            },
+        )?;
+        drop(state);
+        Ok((handle, self.store_pages(store, open_flags)))
+    }
+
+    /// Completes `store`, if any, for an open replying with `open_flags`.
+    ///
+    /// The whole content reaches the kernel page cache before the open
+    /// replies, and the open keeps it only while no change around the mount
+    /// superseded it since it was read. A superseded store is dropped again
+    /// as the invalidator would have, and any failure leaves the kernel to
+    /// read the file on demand.
+    fn store_pages(&self, store: Option<PageStore>, mut open_flags: FopenFlags) -> FopenFlags {
+        let Some(store) = store else {
+            return open_flags;
+        };
+        let stored = self.core.notifier.get().is_some_and(|notifier| {
+            store
+                .open_file
+                .read_up_to(0, store.length)
+                .is_ok_and(|bytes| notifier.store(INodeNo(store.inode), 0, &bytes).is_ok())
+        });
+        let mut state = self
+            .core
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.page_stores.land(store.file_id);
+        let admitted = state.admissible(
+            self.source(),
+            &store.path,
+            Some(store.file_id),
+            Some(store.stamp),
+        );
+        if !admitted {
+            state
+                .invalidation
+                .deferred
+                .push(KernelCacheItem::Inode(store.inode));
+        }
+        self.core.page_stored.notify_all();
+        self.core.release(state);
+        open_flags.set(FopenFlags::FOPEN_KEEP_CACHE, stored && admitted);
+        open_flags
     }
 
     fn create_file(
@@ -2189,7 +2475,12 @@ impl FuseProjection {
         };
         let path = &child.spelled;
         let stamp = source.view_stamp();
-        let (lookup, open_file, dirty) =
+        let claim = |file_id| {
+            changes_content(flags)
+                .then(|| self.core.claim_content(file_id))
+                .transpose()
+        };
+        let (lookup, open_file, dirty, _claim) =
             if let Some(existing) = source.lookup(path).map_err(errno)? {
                 {
                     if flags & libc::O_EXCL != 0 {
@@ -2198,34 +2489,49 @@ impl FuseProjection {
                     if existing.node.kind != MountNodeKind::Regular {
                         return Err(libc::EISDIR);
                     }
+                    let claimed = claim(existing.node.file_id)?;
                     let open_file = source.open_file(path).map_err(errno)?;
                     let opened = open_file.lookup().map_err(errno)?;
                     if opened.node.file_id != existing.node.file_id {
                         return Err(libc::ESTALE);
                     }
                     if flags & libc::O_TRUNC == 0 {
-                        (opened, open_file, false)
+                        (opened, open_file, false, claimed)
                     } else {
                         open_file.resize(0).map_err(errno)?;
-                        (open_file.lookup().map_err(errno)?, open_file, true)
+                        (open_file.lookup().map_err(errno)?, open_file, true, claimed)
                     }
                 }
             } else {
                 let metadata = create_metadata(request, mode, S_IFREG);
                 let created = source.create_file(path, metadata).map_err(errno)?;
-                (created, source.open_file(path).map_err(errno)?, true)
+                let claimed = claim(created.node.file_id)?;
+                (
+                    created,
+                    source.open_file(path).map_err(errno)?,
+                    true,
+                    claimed,
+                )
             };
         let mut state = self.core.state()?;
         let inode = state.intern(child.key().clone(), &lookup, stamp, true)?;
         let created = state.attr(inode, &lookup).and_then(|attr| {
-            let open_flags =
-                state.file_open_flags(source, inode, child.key(), &lookup, stamp, flags);
-            let handle = state.insert_file_handle(inode, open_file, dirty)?;
-            Ok((attr, handle, open_flags))
+            let opened = OpenedFile {
+                path: child.key(),
+                lookup: &lookup,
+                stamp,
+                flags,
+                open_file,
+                dirty,
+            };
+            let (handle, open_flags, store) = state.admit_file_handle(source, inode, opened)?;
+            Ok((attr, handle, open_flags, store))
         });
-        let (attr, handle, open_flags) =
+        let (attr, handle, open_flags, store) =
             created.inspect_err(|_| state.release_lookup_reference(inode, 1))?;
         let ttl = state.admit_entry(source, inode, &child, stamp);
+        drop(state);
+        let open_flags = self.store_pages(store, open_flags);
         Ok((Entry { attr, ttl }, handle, open_flags))
     }
 
@@ -2704,7 +3010,7 @@ impl Filesystem for FuseProjection {
 
     fn lookup(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("lookup");
         respond!(reply, self.lookup_entry(parent.0, name), |entry| entry
             .reply(reply));
     }
@@ -2717,7 +3023,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyAttr,
     ) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("getattr");
         respond!(
             reply,
             self.node_attributes(inode.0, fh.map(|handle| handle.0)),
@@ -2727,6 +3033,7 @@ impl Filesystem for FuseProjection {
 
     fn forget(&self, request: &Request, inode: INodeNo, nlookup: u64) {
         let _ = request;
+        let _request = self.core.request("forget");
         if let Ok(mut state) = self.core.state.lock() {
             state.release_lookup_reference(inode.0, nlookup);
         }
@@ -2734,7 +3041,7 @@ impl Filesystem for FuseProjection {
 
     fn readlink(&self, request: &Request, inode: INodeNo, reply: ReplyData) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("readlink");
         respond!(reply, self.read_link(inode.0), |target| reply.data(&target));
     }
 
@@ -2758,7 +3065,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyAttr,
     ) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("setattr");
         if bkuptime.is_some() {
             return reply.error(Errno::from_i32(libc::EOPNOTSUPP));
         }
@@ -2789,7 +3096,7 @@ impl Filesystem for FuseProjection {
         umask: u32,
         reply: ReplyEntry,
     ) {
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("mkdir");
         let metadata = create_metadata(request, mode & !umask, S_IFDIR);
         respond!(
             reply,
@@ -2810,7 +3117,7 @@ impl Filesystem for FuseProjection {
         rdev: u32,
         reply: ReplyEntry,
     ) {
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("mknod");
         let (kind, device) = match mode & S_IFMT {
             S_IFIFO => (MountNodeKind::Fifo, None),
             S_IFSOCK => (MountNodeKind::Socket, None),
@@ -2839,7 +3146,7 @@ impl Filesystem for FuseProjection {
         target: &Path,
         reply: ReplyEntry,
     ) {
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("symlink");
         let metadata = create_metadata(request, 0o777, S_IFLNK);
         let target = Bytes::copy_from_slice(target.as_os_str().as_bytes());
         respond!(
@@ -2853,13 +3160,13 @@ impl Filesystem for FuseProjection {
 
     fn unlink(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("unlink");
         respond!(reply, self.remove_name(parent.0, name), |()| reply.ok());
     }
 
     fn rmdir(&self, request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("rmdir");
         respond!(reply, self.remove_name(parent.0, name), |()| reply.ok());
     }
 
@@ -2874,7 +3181,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("rename");
         respond!(
             reply,
             self.rename_name(parent.0, name, new_parent.0, new_name, flags.bits()),
@@ -2891,7 +3198,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyEntry,
     ) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("link");
         respond!(
             reply,
             self.link_name(inode.0, new_parent.0, new_name),
@@ -2901,7 +3208,7 @@ impl Filesystem for FuseProjection {
 
     fn open(&self, request: &Request, inode: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("open");
         respond!(reply, self.open_node(inode.0, flags.0), |(
             handle,
             flags,
@@ -2922,7 +3229,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyData,
     ) {
         let _ = (request, flags, lock_owner);
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("read");
         respond!(
             reply,
             self.read_handle(inode.0, fh.0, offset, size),
@@ -2946,7 +3253,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyWrite,
     ) {
         let _ = (request, write_flags, flags, lock_owner);
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("write");
         respond!(
             reply,
             self.write_handle(inode.0, fh.0, offset, data),
@@ -2965,7 +3272,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, datasync);
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("fsync");
         respond!(reply, self.flush_handle(inode.0, fh.0, true, false), |()| {
             reply.ok();
         });
@@ -2980,7 +3287,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, lock_owner);
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("flush");
         respond!(
             reply,
             self.flush_handle(inode.0, fh.0, false, false),
@@ -3002,7 +3309,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, flags, lock_owner, flush);
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("release");
         respond!(reply, self.flush_handle(inode.0, fh.0, false, true), |()| {
             reply.ok();
         });
@@ -3010,6 +3317,7 @@ impl Filesystem for FuseProjection {
 
     fn opendir(&self, request: &Request, inode: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let _ = (request, inode, flags);
+        let _request = self.core.request("opendir");
         // `ENOSYS` tells the kernel to list every directory without opening
         // it from now on, with its listing cached.
         if self.skips_opendir {
@@ -3030,7 +3338,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyDirectory,
     ) {
         let _ = (request, fh);
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("readdir");
         self.list_directory(inode.0, offset, reply);
     }
 
@@ -3043,7 +3351,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyDirectoryPlus,
     ) {
         let _ = (request, fh);
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("readdirplus");
         self.list_directory(inode.0, offset, reply);
     }
 
@@ -3056,6 +3364,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, inode, fh, flags);
+        let _request = self.core.request("releasedir");
         reply.ok();
     }
 
@@ -3068,7 +3377,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = (request, inode, fh, datasync);
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("fsyncdir");
         // Directory fsync is an explicit durability boundary too; never hold
         // the state lock across SDK publication.
         respond!(reply, self.source().flush().map_err(errno), |()| reply.ok());
@@ -3086,7 +3395,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("setxattr");
         respond!(
             reply,
             self.write_named_attribute(inode.0, name, value, flags, position),
@@ -3103,7 +3412,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyXattr,
     ) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("getxattr");
         respond!(reply, self.read_named_attribute(inode.0, name), |value| {
             reply_xattr(reply, &value, size);
         });
@@ -3111,7 +3420,7 @@ impl Filesystem for FuseProjection {
 
     fn listxattr(&self, request: &Request, inode: INodeNo, size: u32, reply: ReplyXattr) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("listxattr");
         respond!(reply, self.list_named_attributes(inode.0), |encoded| {
             reply_xattr(reply, &encoded, size);
         });
@@ -3119,7 +3428,7 @@ impl Filesystem for FuseProjection {
 
     fn removexattr(&self, request: &Request, inode: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("removexattr");
         respond!(reply, self.remove_named_attribute(inode.0, name), |()| {
             reply.ok();
         });
@@ -3137,7 +3446,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyEmpty,
     ) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("fallocate");
         respond!(
             reply,
             self.allocate(inode.0, fh.0, offset, length, mode),
@@ -3155,7 +3464,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyLseek,
     ) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("lseek");
         respond!(reply, self.seek(inode.0, fh.0, offset, whence), |found| {
             reply.offset(found);
         });
@@ -3176,7 +3485,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyWrite,
     ) {
         let _ = request;
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("copy_file_range");
         respond!(
             reply,
             self.copy_range(
@@ -3204,7 +3513,7 @@ impl Filesystem for FuseProjection {
         flags: i32,
         reply: ReplyCreate,
     ) {
-        let _origin = self.core.origin.enter();
+        let _request = self.core.request("create");
         respond!(
             reply,
             self.create_file(request, parent.0, name, mode & !umask, flags),
@@ -3361,10 +3670,11 @@ mod tests {
         MountSourceError, MountViewLease, ViewObserver,
     };
     use super::{
-        InodeEntry, KernelCacheItem, MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY, MountFilesystem,
-        MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath, MountSeekTarget,
-        ROOT_INODE, ViewStamp, admit_open, cached_projected_lookup, intern_projected,
-        replace_root_lookup, stale_kernel_items,
+        CachedContent, InodeEntry, KernelCacheItem, MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY,
+        MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath,
+        MountSeekTarget, PAGE_STORE_LIMIT, PageStores, ROOT_INODE, ViewStamp, admit_open,
+        cached_projected_lookup, changes_content, intern_projected, replace_root_lookup,
+        stale_kernel_items,
     };
     use crate::FileId;
     use crate::kernel::{FileMetadata, MetadataField};
@@ -3418,14 +3728,24 @@ mod tests {
         let mut touched = admitted;
         touched.metadata.modified_ns = MetadataField::Value(7);
 
-        assert!(
-            !entry.admit_cached_content(&admitted),
+        assert_eq!(
+            entry.admit_cached_content(&admitted),
+            CachedContent::Absent,
             "nothing is cached yet"
         );
-        assert!(entry.admit_cached_content(&admitted));
-        assert!(!entry.admit_cached_content(&resized));
-        assert!(!entry.admit_cached_content(&touched));
-        assert!(entry.admit_cached_content(&touched));
+        assert_eq!(
+            entry.admit_cached_content(&admitted),
+            CachedContent::Current
+        );
+        assert_eq!(
+            entry.admit_cached_content(&resized),
+            CachedContent::Superseded
+        );
+        assert_eq!(
+            entry.admit_cached_content(&touched),
+            CachedContent::Superseded
+        );
+        assert_eq!(entry.admit_cached_content(&touched), CachedContent::Current);
     }
 
     #[test]
@@ -3521,6 +3841,43 @@ mod tests {
             Some((2, lookup, stamp))
         );
         assert_eq!(by_inode[&2].lookup_references, 1);
+    }
+
+    #[test]
+    fn page_stores_and_content_claims_exclude_each_other() {
+        let [before, target, after] = positions();
+        let (stored, claimed) = (FileId::new(), FileId::new());
+        let mut stores = PageStores::default();
+        assert!(stores.may_begin(stored));
+        stores.begin(stored, before);
+        assert!(!stores.may_begin(stored), "one store per file at a time");
+        assert!(stores.precede(target), "the barrier waits for older reads");
+        assert!(!stores.precede(before));
+
+        stores.claim(claimed);
+        stores.claim(claimed);
+        assert!(!stores.may_begin(claimed));
+        stores.release(claimed);
+        assert!(!stores.may_begin(claimed), "every claim must be released");
+        stores.release(claimed);
+        assert!(stores.may_begin(claimed));
+
+        stores.land(stored);
+        assert!(!stores.precede(target));
+        stores.begin(stored, after);
+        assert!(!stores.precede(target), "a newer read supersedes nothing");
+        stores.land(stored);
+        stores.claim(stored);
+        assert!(!stores.may_begin(stored));
+    }
+
+    #[test]
+    fn only_content_changing_opens_claim() {
+        assert!(!changes_content(libc::O_RDONLY));
+        assert!(!changes_content(libc::O_RDONLY | libc::O_DIRECT));
+        assert!(changes_content(libc::O_WRONLY));
+        assert!(changes_content(libc::O_RDWR));
+        assert!(changes_content(libc::O_RDONLY | libc::O_TRUNC));
     }
 
     #[test]
@@ -3927,6 +4284,74 @@ mod tests {
             );
             std::thread::yield_now();
         }
+        assert!(session.stop()?);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a live Linux FUSE mount"]
+    fn linux_kernel_caches_answer_unchanged_files_until_they_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mounted_source, around) = shared_sources()?;
+        let mounted_source = Arc::new(mounted_source);
+        let small = name("small");
+        around.create_file(&small, FileMetadata::default())?;
+        around.write_range(&small, 0, Bytes::from_static(b"first"))?;
+        let large = name("large");
+        let large_bytes = (0..PAGE_STORE_LIMIT + 1)
+            .map(|index| u8::try_from(index % 251).unwrap_or_default())
+            .collect::<Vec<_>>();
+        around.create_file(&large, FileMetadata::default())?;
+        around.write_range(&large, 0, Bytes::from(large_bytes.clone()))?;
+        let temporary = tempfile::tempdir()?;
+        let mut session = mount(
+            Arc::clone(&mounted_source) as Arc<dyn MountFilesystem>,
+            mounted_source.volume_id()?,
+            temporary.path(),
+        )?;
+        let mounted = temporary.path().join("small");
+        // Every request but a close, which the kernel sends asynchronously.
+        let requests = |session: &crate::NativeMountSession| {
+            let mut requests = session.take_fuse_requests();
+            requests.retain(|operation| *operation != "release");
+            requests
+        };
+        assert_eq!(std::fs::metadata(&mounted)?.len(), 5);
+        requests(&session);
+
+        // The first open hands the kernel the whole file: nothing is read
+        // page by page, so nothing marks the access time stale either.
+        assert_eq!(std::fs::read(&mounted)?, b"first");
+        assert_eq!(requests(&session), ["open"]);
+        for _ in 0..3 {
+            assert_eq!(std::fs::metadata(&mounted)?.len(), 5);
+        }
+        assert_eq!(requests(&session), Vec::<&str>::new());
+        assert_eq!(std::fs::read(&mounted)?, b"first");
+        assert_eq!(requests(&session), ["open"], "retained pages serve reads");
+
+        // Same length, same (unavailable) times: only invalidation can tell.
+        around.write_range(&small, 0, Bytes::from_static(b"other"))?;
+        session.revalidate()?;
+        assert_eq!(std::fs::metadata(&mounted)?.len(), 5);
+        assert_ne!(
+            requests(&session),
+            Vec::<&str>::new(),
+            "a change is fetched"
+        );
+        assert_eq!(std::fs::read(&mounted)?, b"other");
+        assert!(requests(&session).contains(&"open"));
+        assert_eq!(std::fs::metadata(&mounted)?.len(), 5);
+        assert_eq!(requests(&session), Vec::<&str>::new());
+
+        // A change through the mount reaches every later open and stat.
+        std::fs::write(&mounted, b"third!")?;
+        assert_eq!(std::fs::metadata(&mounted)?.len(), 6);
+        assert_eq!(std::fs::read(&mounted)?, b"third!");
+
+        // A file past the store limit is read on demand, exactly.
+        assert_eq!(std::fs::read(temporary.path().join("large"))?, large_bytes);
+        assert!(requests(&session).contains(&"read"));
         assert!(session.stop()?);
         Ok(())
     }

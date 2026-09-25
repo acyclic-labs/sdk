@@ -1180,6 +1180,15 @@ impl NativeMountSession {
         }
     }
 
+    /// Takes the operation of every request the FUSE session served so far.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn take_fuse_requests(&self) -> Vec<&'static str> {
+        match &self.driver {
+            Some(DriverSession::Fuse(session)) => session.take_requests(),
+            None => Vec::new(),
+        }
+    }
+
     /// Detaches the kernel namespace and ends the driver session; returns
     /// whether a live session was actually stopped.
     ///
