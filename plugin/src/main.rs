@@ -2851,7 +2851,7 @@ impl ControlPlane {
             return Err("root turn identity is already bound to a subagent".to_owned());
         }
         self.remember_root_turn(turn_id);
-        self.persist()?;
+        self.persist_unflushed()?;
         Ok(json!({"suppressOutput": true}))
     }
 
@@ -3685,7 +3685,9 @@ impl ControlPlane {
             }
         }
         self.state.leases.remove(&tool_use_id);
-        self.persist()
+        // The operation is already closed in the store; a lost close leaves
+        // the expired lease a service crash here would, which recovery closes.
+        self.persist_unflushed()
             .map_err(|error| format!("cannot persist the closed tool lease: {error}"))?;
         if let Some(error) = sync_error {
             let quarantine_error = self
@@ -3851,9 +3853,15 @@ impl ControlPlane {
                 .get_mut(&agent_id)
                 .ok_or_else(|| "subagent route disappeared during stop".to_owned())?
                 .lifecycle = RouteLifecycle::Frozen;
-            self.persist()?;
             candidate = (route.parent_agent_id != self.state.root_agent_id)
                 .then_some(route.parent_agent_id);
+            // Finishing an ancestor's stop unmounts and freezes it durably, so
+            // only the last freeze may be left unflushed.
+            if candidate.is_some() {
+                self.persist()?;
+            } else {
+                self.persist_unflushed()?;
+            }
         }
         Ok(())
     }
@@ -4135,6 +4143,8 @@ impl ControlPlane {
                 .ok_or_else(|| "pending spawn disappeared before mount intent".to_owned())?;
             prepared.roots.clone_from(&route_roots);
             prepared.lifecycle = PendingSpawnLifecycle::Mounting;
+            // Flushed: a mount can leave placeholders behind across a power
+            // loss, which recovery accepts only after this mark.
             self.persist()?;
         }
         let mut roots = Vec::with_capacity(route_roots.len());
@@ -4178,7 +4188,10 @@ impl ControlPlane {
             .find(|candidate| candidate.fork_key == fork_key)
             .ok_or_else(|| "pending spawn disappeared after mount".to_owned())?
             .lifecycle = PendingSpawnLifecycle::Prepared;
-        self.persist()
+        // Nothing durable follows before SubagentStart flushes the route; a
+        // lost mark leaves the flushed mount mark, from which recovery mounts
+        // again.
+        self.persist_unflushed()
     }
 
     fn pending_active_root(&self, pending: &PendingSpawn) -> Result<WorkspaceRootId, String> {
@@ -5460,7 +5473,13 @@ impl ControlPlane {
     }
 
     fn persist(&self) -> Result<(), String> {
-        save_state(&self.data, &self.state)
+        save_state(&self.data, &self.state, Survives::PowerLoss)
+    }
+
+    /// Saves a transition that is the last effect of its operation; see
+    /// [`Survives::ServiceCrash`].
+    fn persist_unflushed(&self) -> Result<(), String> {
+        save_state(&self.data, &self.state, Survives::ServiceCrash)
     }
 
     async fn shutdown(mut self) -> Result<(), String> {
@@ -6360,11 +6379,25 @@ const MAXIMUM_ADAPTER_PENDING: usize = 4_096;
 const MAXIMUM_ADAPTER_LEASES: usize = 16_384;
 const MAXIMUM_ADAPTER_DISCARDS: usize = 4_096;
 
-/// Adapter state alternates between two self-validating slots, each rewritten
-/// in place under a single flush. A save only ever overwrites the slot that
-/// does not hold the newest completed save, so a torn write can damage nothing
-/// but itself and loading always yields the last completed save.
-const ADAPTER_STATE_SLOTS: [&str; 2] = ["adapter-state.a", "adapter-state.b"];
+/// Adapter state is saved into self-validating slots rewritten in place.
+/// Flushed saves alternate between two slots, and a save only ever overwrites
+/// the slot that does not hold the newest flushed save, so a torn write can
+/// damage nothing but itself. Unflushed saves go to a third slot that loading
+/// prefers only while it is intact and newer, so losing one to a power loss
+/// leaves the last flushed save.
+const ADAPTER_STATE_SLOTS: [&str; 3] = ["adapter-state.a", "adapter-state.b", "adapter-state.v"];
+
+/// The failures an adapter-state transition must survive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Survives {
+    /// Written without a flush. Only a transition that no later durable effect
+    /// depends on may be saved this way: losing it to a power loss leaves the
+    /// state a service crash just before it leaves, which recovery handles,
+    /// and the next flushed save, a whole snapshot, makes it durable anyway.
+    ServiceCrash,
+    /// Flushed before the caller continues.
+    PowerLoss,
+}
 const ADAPTER_STATE_MAGIC: [u8; 8] = *b"ACYSTAT1";
 /// Magic, little-endian generation, then the digest of generation and payload.
 const ADAPTER_STATE_HEADER_BYTES: usize = 8 + 8 + 32;
@@ -6425,27 +6458,35 @@ fn read_state_slot(path: &Path) -> Result<StateSlot, String> {
     })
 }
 
-/// Reads both slots as `[newest completed save, slot the next save overwrites]`.
-fn ordered_state_slots(data: &Path) -> Result<[(&'static str, StateSlot); 2], String> {
-    let [first, second] =
+/// Reads every slot as `[newest flushed save, slot the next flushed save
+/// overwrites, unflushed save]`.
+fn ordered_state_slots(data: &Path) -> Result<[(&'static str, StateSlot); 3], String> {
+    let [first, second, unflushed] =
         ADAPTER_STATE_SLOTS.map(|name| read_state_slot(&data.join(name)).map(|slot| (name, slot)));
-    let (first, second) = (first?, second?);
+    let (first, second, unflushed) = (first?, second?, unflushed?);
     Ok(if second.1.generation() > first.1.generation() {
-        [second, first]
+        [second, first, unflushed]
     } else {
-        [first, second]
+        [first, second, unflushed]
     })
 }
 
 fn load_state(data: &Path) -> Result<AdapterState, String> {
-    match ordered_state_slots(data)? {
-        [(_, StateSlot::Saved { payload, .. }), _] => {
+    let [(_, flushed), (_, other), (_, unflushed)] = ordered_state_slots(data)?;
+    let newest = if unflushed.generation() > flushed.generation() {
+        unflushed
+    } else {
+        flushed
+    };
+    match (newest, other) {
+        (StateSlot::Saved { payload, .. }, _) => {
             let state = serde_json::from_slice(&payload).map_err(display)?;
             validate_state_version(&state)?;
             validate_state_bounds(&state)?;
             Ok(state)
         }
-        [(_, StateSlot::Missing), (_, StateSlot::Missing)] => Ok(AdapterState {
+        // No flushed save was ever made, and no unflushed one survives.
+        (StateSlot::Missing, StateSlot::Missing) => Ok(AdapterState {
             version: ADAPTER_STATE_VERSION,
             ..AdapterState::default()
         }),
@@ -6453,7 +6494,7 @@ fn load_state(data: &Path) -> Result<AdapterState, String> {
     }
 }
 
-fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
+fn save_state(data: &Path, state: &AdapterState, survives: Survives) -> Result<(), String> {
     validate_state_version(state)?;
     validate_state_bounds(state)?;
     let mut serialized = BoundedJsonBuffer::new();
@@ -6463,11 +6504,17 @@ fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
         .ok_or_else(|| {
             format!("adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound")
         })?;
-    let [(_, newest), (target_name, target)] = ordered_state_slots(data)?;
-    let generation = newest
+    let [(_, flushed), older, unflushed] = ordered_state_slots(data)?;
+    let generation = flushed
         .generation()
+        .max(older.1.generation())
+        .max(unflushed.1.generation())
         .map_or(Some(1), |generation| generation.checked_add(1))
         .ok_or("adapter state generation is exhausted")?;
+    let (target_name, target) = match survives {
+        Survives::ServiceCrash => unflushed,
+        Survives::PowerLoss => older,
+    };
     let mut bytes = Vec::with_capacity(ADAPTER_STATE_HEADER_BYTES + serialized.bytes.len());
     bytes.extend_from_slice(&ADAPTER_STATE_MAGIC);
     bytes.extend_from_slice(&generation.to_le_bytes());
@@ -6481,9 +6528,11 @@ fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
         .map_err(display)?;
     file.write_all(&bytes).map_err(display)?;
     file.set_len(bytes.len() as u64).map_err(display)?;
-    sync_file(&file, Durability::Full).map_err(display)?;
-    if matches!(target, StateSlot::Missing) {
-        sync_parent(data, Durability::Full).map_err(display)?;
+    if survives == Survives::PowerLoss {
+        sync_file(&file, Durability::Full).map_err(display)?;
+        if matches!(target, StateSlot::Missing) {
+            sync_parent(data, Durability::Full).map_err(display)?;
+        }
     }
     Ok(())
 }
@@ -7917,7 +7966,7 @@ impl ServiceControl {
         }
         if deactivate {
             terminal_state.active = false;
-            save_state(&directory, &terminal_state)?;
+            save_state(&directory, &terminal_state, Survives::ServiceCrash)?;
         }
         Ok(())
     }
@@ -8492,7 +8541,11 @@ impl SessionHandle {
                                     Ok(()) => {
                                         if deactivate {
                                             terminal_state.active = false;
-                                            save_state(&directory, &terminal_state)
+                                            save_state(
+                                                &directory,
+                                                &terminal_state,
+                                                Survives::ServiceCrash,
+                                            )
                                         } else {
                                             Ok(())
                                         }
@@ -14441,11 +14494,11 @@ mod tests {
         for binding in conflicting.roots.values_mut() {
             binding.source_identity = [9; 16];
         }
-        save_state(&older, &conflicting).expect("conflicting state");
+        save_state(&older, &conflicting, Survives::PowerLoss).expect("conflicting state");
         std::thread::sleep(std::time::Duration::from_millis(20));
         let mut current = load_state(&newer).expect("newer state");
         current.active = true;
-        save_state(&newer, &current).expect("refresh newer state");
+        save_state(&newer, &current, Survives::PowerLoss).expect("refresh newer state");
 
         let resumed = ServiceControl::open(state)
             .await
@@ -19305,7 +19358,7 @@ mod tests {
         state.root_session_id = "x"
             .repeat(usize::try_from(MAXIMUM_ADAPTER_STATE_BYTES).expect("state bound fits usize"));
         assert!(
-            save_state(temporary.path(), &state)
+            save_state(temporary.path(), &state, Survives::PowerLoss)
                 .expect_err("oversized state persistence must fail")
                 .contains("byte bound")
         );
@@ -19355,7 +19408,7 @@ mod tests {
         let loaded = || load_state(data).map(|state| state.root_session_id);
         assert_eq!(loaded(), Ok(String::new()));
         for name in ["first", "second", "third", "fourth"] {
-            save_state(data, &named(name)).expect("adapter state save");
+            save_state(data, &named(name), Survives::PowerLoss).expect("adapter state save");
             assert_eq!(loaded().as_deref(), Ok(name));
         }
         let target = data.join(ADAPTER_STATE_SLOTS[0]);
@@ -19375,7 +19428,8 @@ mod tests {
         for torn in prefixes.into_iter().chain([flipped, stale_tail]) {
             fs::write(&target, torn).expect("torn slot");
             assert_eq!(loaded().as_deref(), Ok("third"));
-            save_state(data, &named("fifth")).expect("save over the torn slot");
+            save_state(data, &named("fifth"), Survives::PowerLoss)
+                .expect("save over the torn slot");
             assert_eq!(loaded().as_deref(), Ok("fifth"));
         }
         for slot in ADAPTER_STATE_SLOTS {
@@ -19385,6 +19439,54 @@ mod tests {
             loaded().is_err(),
             "state without a completed save must fail closed"
         );
+    }
+
+    #[test]
+    fn unflushed_adapter_saves_never_touch_the_newest_flushed_save() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path();
+        let named = |name: &str| AdapterState {
+            version: ADAPTER_STATE_VERSION,
+            root_session_id: name.to_owned(),
+            ..AdapterState::default()
+        };
+        let loaded = || load_state(data).map(|state| state.root_session_id);
+        let flushed_slots = || {
+            ADAPTER_STATE_SLOTS[..2]
+                .iter()
+                .map(|slot| fs::read(data.join(slot)).ok())
+                .collect::<Vec<_>>()
+        };
+        let unflushed = data.join(ADAPTER_STATE_SLOTS[2]);
+
+        // Losing every unflushed save before the first flushed one leaves the
+        // state before any save.
+        save_state(data, &named("volatile"), Survives::ServiceCrash).expect("unflushed save");
+        assert_eq!(loaded().as_deref(), Ok("volatile"));
+        fs::write(&unflushed, b"lost").expect("lose unflushed save");
+        assert_eq!(loaded(), Ok(String::new()));
+
+        save_state(data, &named("first"), Survives::PowerLoss).expect("flushed save");
+        let durable = flushed_slots();
+        for name in ["second", "third", "fourth"] {
+            save_state(data, &named(name), Survives::ServiceCrash).expect("unflushed save");
+            assert_eq!(loaded().as_deref(), Ok(name));
+            assert_eq!(flushed_slots(), durable);
+        }
+        fs::write(&unflushed, b"lost").expect("lose unflushed save");
+        assert_eq!(loaded().as_deref(), Ok("first"));
+
+        save_state(data, &named("fifth"), Survives::ServiceCrash).expect("unflushed save");
+        save_state(data, &named("sixth"), Survives::PowerLoss).expect("flushed save");
+        assert_eq!(
+            loaded().as_deref(),
+            Ok("sixth"),
+            "a later flushed save wins"
+        );
+        save_state(data, &named("seventh"), Survives::ServiceCrash).expect("unflushed save");
+        let intact = fs::read(&unflushed).expect("unflushed slot");
+        fs::write(&unflushed, &intact[..intact.len() - 1]).expect("tear unflushed save");
+        assert_eq!(loaded().as_deref(), Ok("sixth"));
     }
 
     #[test]
