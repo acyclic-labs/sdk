@@ -2660,10 +2660,7 @@ impl MultiRootPublicationStore for MemoryMultiRootPublicationStore {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::{
-        Digest, Fs, LocalCoreStateStore, MemoryWorkspaceContextStore, TransactionCommit,
-        WorkspaceContextRoot,
-    };
+    use crate::{Digest, Fs, MemoryWorkspaceContextStore, TransactionCommit, WorkspaceContextRoot};
     use std::path::PathBuf;
 
     #[derive(Debug, Error)]
@@ -3030,6 +3027,7 @@ mod tests {
         Ok::<(), Box<dyn std::error::Error>>(())
     }
 
+    #[cfg(feature = "local")]
     #[tokio::test]
     async fn local_store_restart_resumes_committed_publication_without_republishing_roots()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -3039,7 +3037,7 @@ mod tests {
         *first_publisher.pause_once.lock().expect("pause lock") =
             Some(WorkspaceRootId::from_bytes([2; 16]));
         let first = MultiRootPublicationCoordinator::new(
-            LocalCoreStateStore::new(directory.path()),
+            crate::LocalCoreStateStore::new(directory.path()),
             first_publisher,
             Allow,
         );
@@ -3053,7 +3051,7 @@ mod tests {
         drop(first);
 
         let reopened = MultiRootPublicationCoordinator::new(
-            LocalCoreStateStore::new(directory.path()),
+            crate::LocalCoreStateStore::new(directory.path()),
             Publisher::default(),
             Allow,
         );

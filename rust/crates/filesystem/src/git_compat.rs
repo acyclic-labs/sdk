@@ -6337,6 +6337,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "local")]
     #[tokio::test]
     async fn incremental_capture_applies_only_changed_eligible_paths() {
         let fs = Fs::memory();

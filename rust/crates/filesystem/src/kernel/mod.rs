@@ -187,13 +187,19 @@ pub use retention::{
     decode_workspace_deleted, encode_retention_created, encode_workspace_deleted,
     retention_authority_id,
 };
+#[cfg(all(
+    feature = "local",
+    feature = "native-watch",
+    not(target_arch = "wasm32")
+))]
+pub(crate) use source_state::decode_source_volume;
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub(crate) use source_state::source_authority_id;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) use source_state::{
     DurableSourceMode, DurableSourceState, SourceFact, SourceInvalidation, decode_source_fact,
     encode_source_fact,
 };
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-pub(crate) use source_state::{decode_source_volume, source_authority_id};
 pub use transfer::{
     GenerationTransferBatch, GenerationTransferError, GenerationTransferResult, TransferCursor,
     authenticate_generation_export_manifest_async, build_generation_export_manifest_async,

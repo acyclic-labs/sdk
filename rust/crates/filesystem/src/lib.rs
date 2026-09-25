@@ -73,6 +73,7 @@ pub mod core_state;
 pub mod demand;
 #[cfg(feature = "distributed")]
 pub mod distributed;
+#[cfg(feature = "distributed")]
 mod distributed_fs;
 pub mod facade;
 pub mod foundation;
@@ -148,6 +149,7 @@ pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 #[cfg(feature = "distributed")]
 pub use distributed::{ProviderObjectStore, StreamAuthorityStore};
+#[cfg(feature = "distributed")]
 pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
@@ -289,8 +291,10 @@ pub use operation_window::{
     MemoryOperationWindowStore, OperationLease, OperationLeaseId, OperationReconcileLimits,
     OperationWindowCoordinator, OperationWindowError, OperationWindowFinish, OperationWindowLease,
     OperationWindowPhase, OperationWindowReconcile, OperationWindowSnapshot, OperationWindowStore,
-    StreamOperationWindowStore, StreamOperationWindowStoreError, WorkspaceOperationFinish,
+    WorkspaceOperationFinish,
 };
+#[cfg(feature = "distributed")]
+pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
 pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };

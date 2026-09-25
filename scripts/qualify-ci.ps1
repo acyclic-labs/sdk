@@ -80,7 +80,9 @@ $arm64 = Start-Background aarch64 @"
 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked --target-dir '$CargoTargetDir-aarch64'
 "@
 $clippy = Start-Background clippy @"
-cargo clippy -p acyclic-plugin --all-targets --all-features --locked --target-dir '$CargoTargetDir-clippy' -- -D warnings
+`$env:CARGO_TARGET_DIR = '$CargoTargetDir-clippy'
+cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings
+node scripts/clippy-feature-sets.mjs
 "@
 
 # The test build links dozens of test executables; LLVM's linker links them far

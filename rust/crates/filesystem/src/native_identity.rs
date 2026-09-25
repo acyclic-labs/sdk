@@ -26,6 +26,7 @@ impl NativeRootIdentity {
     /// following its final component or opening it for reading. It accepts
     /// exactly the directories a held root may be opened from, so comparing
     /// the result with a held root's identity revalidates that root cheaply.
+    #[cfg(feature = "native-watch")]
     pub(crate) fn of_root_path(path: &std::path::Path) -> std::io::Result<Self> {
         native_root_path_identity(path)
     }
@@ -110,7 +111,7 @@ fn native_root_identity(file: &std::fs::File) -> std::io::Result<NativeRootIdent
     native_metadata_identity(&cap_std::fs::Metadata::from_file(file)?)
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(all(feature = "native-watch", any(unix, windows)))]
 fn not_a_real_directory() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
@@ -118,7 +119,7 @@ fn not_a_real_directory() -> std::io::Error {
     )
 }
 
-#[cfg(unix)]
+#[cfg(all(feature = "native-watch", unix))]
 fn native_root_path_identity(path: &std::path::Path) -> std::io::Result<NativeRootIdentity> {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::symlink_metadata(path)?;
@@ -131,7 +132,7 @@ fn native_root_path_identity(path: &std::path::Path) -> std::io::Result<NativeRo
     })
 }
 
-#[cfg(windows)]
+#[cfg(all(feature = "native-watch", windows))]
 fn native_root_path_identity(path: &std::path::Path) -> std::io::Result<NativeRootIdentity> {
     use cap_std::fs::MetadataExt as _;
     use std::os::windows::fs::OpenOptionsExt;
@@ -151,7 +152,7 @@ fn native_root_path_identity(path: &std::path::Path) -> std::io::Result<NativeRo
     native_metadata_identity(&metadata)
 }
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(all(feature = "native-watch", not(any(unix, windows))))]
 fn native_root_path_identity(_: &std::path::Path) -> std::io::Result<NativeRootIdentity> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,

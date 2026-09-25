@@ -49,7 +49,11 @@ use crate::kernel::{
     tree_mutation,
 };
 pub use crate::kernel::{LiveMutationOutcome, MergeConflict};
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "local",
+    feature = "native-watch",
+    not(target_arch = "wasm32")
+))]
 use crate::kernel::{decode_source_volume, source_authority_id};
 use crate::model::{
     AccessMode, CaseSensitivity, CheckoutMode, CheckoutModeError, ConcurrencyMode, ConsistencyMode,
@@ -475,6 +479,7 @@ impl<A, O> Fs<A, O> {
     }
 }
 
+#[cfg(feature = "distributed")]
 impl<P, O> Fs<crate::StreamAuthorityStore<P>, O> {
     /// Opens the SDK operation-window store on the exact Stream provider used
     /// by generation authority. This co-location is what makes lease fencing

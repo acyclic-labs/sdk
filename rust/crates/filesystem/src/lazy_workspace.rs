@@ -1829,7 +1829,10 @@ where
         }
     }
 
-    #[cfg(any(feature = "native-mount", test))]
+    #[cfg(any(
+        feature = "native-mount",
+        all(test, feature = "native-watch", not(target_arch = "wasm32"))
+    ))]
     pub(crate) async fn stable_file_id_for_lookup(
         &self,
         path: &str,

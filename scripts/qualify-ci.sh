@@ -274,6 +274,7 @@ case "$lane" in
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    node scripts/clippy-feature-sets.mjs
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     archive="$TOOLS_DIR/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz"
     if [[ ! -f "$archive" ]]; then

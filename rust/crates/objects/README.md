@@ -9,8 +9,10 @@ cargo add acyclic-objects
 The default `grpc` feature exposes the authenticated remote client. Enable `local` for the durable embedded provider. The memory provider is for deterministic local tests, not persistence. For a private-CA HTTPS endpoint, use `Client::connect_with_ca_certificate` and pass the caller-supplied PEM certificate; do not disable TLS verification.
 
 ```rust,no_run
+# #[cfg(feature = "grpc")]
 use acyclic_objects::Client;
 
+# #[cfg(feature = "grpc")]
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let ca_pem = std::fs::read("trusted-ca.pem")?;
 let client = Client::connect_with_ca_certificate(
