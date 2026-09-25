@@ -31,6 +31,7 @@ mod persistent_btree;
 mod persistent_diff;
 mod persistent_io;
 mod persistent_pagination;
+mod persistent_point;
 mod probe;
 mod publication;
 mod range;

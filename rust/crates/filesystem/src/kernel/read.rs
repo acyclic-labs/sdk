@@ -1,18 +1,13 @@
 //! Sparse authenticated reads with exact implementation-work receipts.
 
-use super::frontier;
 use super::persistent_batch;
+use super::persistent_point;
 use super::tree_mutation::TreeFormat;
-use super::{
-    CanonicalDecodeError, DecodeLimits, LogicalName, TreeEntry, TreePage, decode_tree_page,
-};
+use super::{CanonicalDecodeError, DecodeLimits, LogicalName, TreeEntry};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
-use crate::storage::{
-    ObjectId, ObjectKind, ObjectRead, ObjectReceipt, ObjectStore, ObjectStoreError,
-};
-use std::collections::HashSet;
+use crate::storage::{ObjectId, ObjectStoreError};
 use thiserror::Error;
 
 /// Exact lookup result and work evidence.
@@ -120,19 +115,25 @@ fn map_batch_error(error: persistent_batch::Error) -> TreeReadError {
 /// Fails on wrong object classes, corrupt pages, cycles, excessive height,
 /// backend failures, or a work budget that would be exceeded. The function
 /// never enumerates unrelated leaf entries or reads file bodies.
-pub fn lookup_tree_entry<S: ObjectStore>(
+pub fn lookup_tree_entry<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
     name: &LogicalName,
     limits: DecodeLimits,
     budget: WorkBudget,
 ) -> Result<TreeLookup, TreeReadFailure> {
-    let mut machine = LookupMachine::new(root, name, limits, budget)?;
-    frontier::drive_sync(store, &mut machine)
+    crate::async_storage::poll_immediate(lookup_tree_entry_async(
+        store,
+        root,
+        name,
+        limits,
+        budget,
+        &CancellationToken::new(),
+    ))
 }
 
-/// Asynchronous tree lookup driven by the same semantic machine as the native
-/// synchronous fast path.
+/// Asynchronously looks up one exact name, sharing every page another
+/// reader of `store` already decoded.
 ///
 /// # Errors
 ///
@@ -146,215 +147,17 @@ pub async fn lookup_tree_entry_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<TreeLookup, TreeReadFailure> {
-    let mut machine = LookupMachine::new(root, name, limits, budget)?;
-    frontier::drive_async(store, &mut machine, cancellation).await
-}
-
-struct LookupMachine<'a> {
-    name: &'a LogicalName,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    page: ObjectId,
-    expected_lower: Option<LogicalName>,
-    expected_upper: Option<LogicalName>,
-    visited: HashSet<ObjectId>,
-    work: WorkCounters,
-}
-
-impl<'a> LookupMachine<'a> {
-    fn new(
-        root: ObjectId,
-        name: &'a LogicalName,
-        limits: DecodeLimits,
-        budget: WorkBudget,
-    ) -> Result<Self, TreeReadFailure> {
-        if root.kind != ObjectKind::TreePage {
-            return Err(tree_failed(
-                TreeReadError::WrongRootKind,
-                WorkCounters::default(),
-            ));
-        }
-        if !limits.page_limits_valid(1) {
-            return Err(tree_failed(
-                TreeReadError::InvalidHeightLimit,
-                WorkCounters::default(),
-            ));
-        }
-
-        Ok(Self {
-            name,
-            limits,
-            budget,
-            page: root,
-            expected_lower: None,
-            expected_upper: None,
-            visited: HashSet::new(),
-            work: WorkCounters::default(),
+    persistent_point::lookup_async::<S, TreeFormat>(store, root, name, limits, budget, cancellation)
+        .await
+        .map(|receipt| TreeLookup {
+            entry: receipt.value,
+            work: receipt.work,
         })
-    }
-
-    fn prepare_read(&mut self) -> Result<frontier::ReadRequest, TreeReadFailure> {
-        if self.visited.len() >= usize::from(self.limits.maximum_page_height) {
-            return Err(tree_failed(TreeReadError::HeightExceeded, self.work));
-        }
-        if !self.visited.insert(self.page) {
-            return Err(tree_failed(TreeReadError::Cycle, self.work));
-        }
-        let semantic = WorkCounters {
-            page_reads: 1,
-            ..WorkCounters::default()
-        };
-        let prospective = self
-            .work
-            .checked_add(semantic)
-            .map_err(|error| tree_failed(TreeReadError::Work(error), self.work))?;
-        let remaining = prospective
-            .remaining(self.budget)
-            .map_err(|error| tree_failed(TreeReadError::Work(error), self.work))?;
-        Ok(frontier::ReadRequest {
-            page: self.page,
-            maximum_bytes: self.limits.maximum_page_object_bytes(),
-            remaining,
-            prospective,
-        })
-    }
-
-    fn accept(
-        &mut self,
-        prospective: WorkCounters,
-        receipt: &ObjectReceipt<ObjectRead>,
-    ) -> Result<Option<TreeLookup>, TreeReadFailure> {
-        self.work = prospective
-            .checked_add(receipt.work)
-            .map_err(|error| tree_failed(TreeReadError::Work(error), prospective))?;
-        self.work
-            .verify(self.budget)
-            .map_err(|error| tree_failed(TreeReadError::Work(error), self.work))?;
-
-        match decode_tree_page(&receipt.value, self.limits)
-            .map_err(|error| tree_failed(TreeReadError::Decode(error), self.work))?
-        {
-            TreePage::Leaf(entries) => {
-                validate_leaf_bounds(
-                    &entries,
-                    self.expected_lower.as_ref(),
-                    self.expected_upper.as_ref(),
-                )
-                .map_err(|error| tree_failed(error, self.work))?;
-                let entry = entries
-                    .binary_search_by(|entry| entry.name.cmp(self.name))
-                    .ok()
-                    .and_then(|index| entries.get(index).cloned());
-                Ok(Some(TreeLookup {
-                    entry,
-                    work: self.work,
-                }))
-            }
-            TreePage::Internal(children) => {
-                validate_internal_bounds(
-                    &children,
-                    self.expected_lower.as_ref(),
-                    self.expected_upper.as_ref(),
-                )
-                .map_err(|error| tree_failed(error, self.work))?;
-                let child_index = children.partition_point(|child| child.first_name <= *self.name);
-                let selected = child_index.saturating_sub(1);
-                let child = children
-                    .get(selected)
-                    .ok_or_else(|| tree_failed(TreeReadError::InvalidRouting, self.work))?
-                    .clone();
-                self.expected_lower = Some(child.first_name);
-                self.expected_upper = children
-                    .get(selected + 1)
-                    .map(|next| next.first_name.clone())
-                    .or(self.expected_upper.take());
-                self.page = child.page;
-                Ok(None)
-            }
-        }
-    }
-}
-
-impl frontier::Machine for LookupMachine<'_> {
-    type Output = TreeLookup;
-    type Failure = TreeReadFailure;
-
-    fn complete(&mut self) -> Result<Option<Self::Output>, Self::Failure> {
-        Ok(None)
-    }
-
-    fn prepare_read(&mut self) -> Result<frontier::ReadRequest, Self::Failure> {
-        LookupMachine::prepare_read(self)
-    }
-
-    fn accept(
-        &mut self,
-        prospective: WorkCounters,
-        receipt: &ObjectReceipt<ObjectRead>,
-    ) -> Result<Option<Self::Output>, Self::Failure> {
-        LookupMachine::accept(self, prospective, receipt)
-    }
-
-    fn storage_failure(
-        &self,
-        prospective: WorkCounters,
-        failure: crate::storage::ObjectFailure,
-    ) -> Self::Failure {
-        match prospective.checked_add(*failure.work) {
-            Ok(spent) => tree_failed(TreeReadError::Storage(failure.error), spent),
-            Err(error) => tree_failed(TreeReadError::Work(error), prospective),
-        }
-    }
-
-    fn cancelled(&self) -> Self::Failure {
-        tree_failed(TreeReadError::Cancelled, self.work)
-    }
+        .map_err(map_batch_failure)
 }
 
 /// Sparse authenticated tree failure retaining exact spent work.
 pub type TreeReadFailure = OperationFailure<TreeReadError>;
-
-fn tree_failed(error: TreeReadError, work: WorkCounters) -> TreeReadFailure {
-    OperationFailure::new(error, work)
-}
-
-fn validate_leaf_bounds(
-    entries: &[TreeEntry],
-    lower: Option<&LogicalName>,
-    upper: Option<&LogicalName>,
-) -> Result<(), TreeReadError> {
-    if let Some(lower) = lower
-        && entries.first().map(|entry| &entry.name) != Some(lower)
-    {
-        return Err(TreeReadError::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && entries.last().is_some_and(|entry| entry.name >= *upper)
-    {
-        return Err(TreeReadError::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
-fn validate_internal_bounds(
-    children: &[super::TreeChild],
-    lower: Option<&LogicalName>,
-    upper: Option<&LogicalName>,
-) -> Result<(), TreeReadError> {
-    if let Some(lower) = lower
-        && children.first().map(|child| &child.first_name) != Some(lower)
-    {
-        return Err(TreeReadError::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && children
-            .last()
-            .is_some_and(|child| child.first_name >= *upper)
-    {
-        return Err(TreeReadError::ChildBoundsMismatch);
-    }
-    Ok(())
-}
 
 /// Sparse authenticated tree-read failures.
 #[derive(Debug, Error)]
