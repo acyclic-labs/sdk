@@ -14,7 +14,7 @@ use crate::storage::{
     PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
 };
 use crate::streams_record::StreamsDurableRecord;
-use crate::{AsyncAuthorityStore, AsyncObjectStore};
+use crate::{AsyncAuthorityStore, AsyncObjectStore, WorkspaceForkCommit, WorkspaceForkOutcome};
 use acyclic_objects::{
     Condition, GetRequest, ObjectsError, ObjectsProvider, PutRequest, ReadTarget, wire,
 };
@@ -322,7 +322,238 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     }
 }
 
+impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+    /// Builds the one commit that creates a forked workspace's retention
+    /// authority with its record and the destination authority. Answers
+    /// whether the destination's creation record is in it too: it is unless
+    /// the destination forks its source's lineage, because a commit changes
+    /// each path once and the creation record extends that forked lineage.
+    async fn workspace_fork_request(
+        &self,
+        fork: &WorkspaceForkCommit,
+    ) -> Result<
+        (acyclic_stream::CommitRequest, bool, WorkCounters),
+        OperationFailure<AuthorityStoreError>,
+    > {
+        let mut request = acyclic_stream::CommitRequest {
+            conditions: Vec::new(),
+            mutations: Vec::new(),
+            idempotency_key: workspace_fork_key(fork.destination, fork.creation.operation_id)
+                .map_err(OperationFailure::before_work)?,
+        };
+        let (mut records, mut bytes) =
+            first_record_commit(&mut request, fork.retention, &fork.retained)
+                .map_err(OperationFailure::before_work)?;
+        let mut work = WorkCounters::default();
+        let creation_included = match fork.lineage {
+            Some(source) if source.lineage == crate::GenerationFork::PublishedPrefix => {
+                let (source_lineage, forked_at) = self
+                    .resolve_source_fork_point(source.authority, source.generation)
+                    .await?;
+                work = authority_read_work(3);
+                let forked = fork_generation_commit_request(
+                    ForkDestinationPaths {
+                        root: authority_path(fork.destination)
+                            .map_err(OperationFailure::before_work)?,
+                        records: records_path(fork.destination)
+                            .map_err(OperationFailure::before_work)?,
+                        epochs: epochs_path(fork.destination)
+                            .map_err(OperationFailure::before_work)?,
+                        locator: generation_path(fork.destination, source.generation)
+                            .map_err(OperationFailure::before_work)?,
+                        lineage: lineage_path(fork.destination)
+                            .map_err(OperationFailure::before_work)?,
+                        gate: publication_gate_path(fork.destination)
+                            .map_err(OperationFailure::before_work)?,
+                    },
+                    source_lineage,
+                    forked_at,
+                    fork.creation.operation_id,
+                )?;
+                request.conditions.extend(forked.conditions);
+                request.mutations.extend(forked.mutations);
+                records = records.saturating_add(4);
+                bytes = bytes.saturating_add(96);
+                false
+            }
+            Some(_) | None => {
+                let (more_records, more_bytes) =
+                    first_record_commit(&mut request, fork.destination, &fork.creation)
+                        .map_err(OperationFailure::before_work)?;
+                records = records.saturating_add(more_records);
+                bytes = bytes.saturating_add(more_bytes);
+                true
+            }
+        };
+        work = work
+            .checked_add(authority_write_work(records, bytes))
+            .map_err(|error| OperationFailure::before_work(error.into()))?;
+        Ok((request, creation_included, work))
+    }
+}
+
+/// Adds to `request` everything that creates `authority` with `commit` as
+/// its first record: the authority's genesis paths and, for a record that
+/// publishes a generation, that generation's lineage entry and locator, as
+/// a creation followed by an append would leave them. Returns the authority
+/// records and payload bytes it appends.
+fn first_record_commit(
+    request: &mut acyclic_stream::CommitRequest,
+    authority: AuthorityId,
+    commit: &ProposedCommit,
+) -> Result<(u64, u64), AuthorityStoreError> {
+    use acyclic_stream::CommitCondition::Absent;
+    use acyclic_stream::CommitMutation::Append;
+    let epoch = Epoch::GENESIS;
+    let sequence = Sequence::new(1);
+    let previous = Head::genesis(epoch);
+    let durable = DurableCommit {
+        epoch,
+        sequence,
+        operation_id: commit.operation_id,
+        fingerprint: commit.fingerprint,
+        previous_digest: previous.digest,
+        digest: authority_commit_digest(
+            authority,
+            epoch,
+            sequence,
+            commit.operation_id,
+            commit.fingerprint,
+            previous.digest,
+            &commit.payload,
+        ),
+        payload: commit.payload.clone(),
+    };
+    let encoded = StreamsDurableRecord::encode(&durable, STREAM_RECORD_LIMIT)
+        .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
+    let mut appended_records = 1_u64;
+    let mut appended_bytes = u64::try_from(durable.payload.len()).unwrap_or(u64::MAX);
+    let root = authority_path(authority)?;
+    let records = records_path(authority)?;
+    let epochs = epochs_path(authority)?;
+    let gate = publication_gate_path(authority)?;
+    for path in [&root, &records, &epochs, &gate] {
+        request.conditions.push(Absent { path: path.clone() });
+    }
+    request.mutations.push(Append {
+        path: root,
+        records: vec![Bytes::from_static(AUTHORITY_MARKER)],
+    });
+    if let Some(generation) = generation_from_payload(authority, sequence, &durable.payload)? {
+        let lineage = lineage_path(authority)?;
+        let locator = generation_path(authority, generation)?;
+        let lineage_record = encode_lineage_generation(generation);
+        let locator_record = encode_lineage_tail(1);
+        appended_records = appended_records.saturating_add(2);
+        appended_bytes = appended_bytes.saturating_add(
+            u64::try_from(lineage_record.len().saturating_add(locator_record.len()))
+                .unwrap_or(u64::MAX),
+        );
+        request.conditions.push(Absent {
+            path: lineage.clone(),
+        });
+        request.conditions.push(Absent {
+            path: locator.clone(),
+        });
+        request.mutations.push(Append {
+            path: lineage,
+            records: vec![lineage_record],
+        });
+        request.mutations.push(Append {
+            path: locator,
+            records: vec![locator_record],
+        });
+    }
+    request.mutations.push(Append {
+        path: records,
+        records: vec![encode_epoch(GENESIS_DOMAIN, epoch), encoded],
+    });
+    request.mutations.push(Append {
+        path: epochs,
+        records: vec![encode_epoch(EPOCH_DOMAIN, epoch)],
+    });
+    request.mutations.push(Append {
+        path: gate,
+        records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
+    });
+    Ok((appended_records, appended_bytes))
+}
+
+fn workspace_fork_key(
+    destination: AuthorityId,
+    operation_id: OperationId,
+) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
+    let mut identity = [0; 32];
+    identity[..16].copy_from_slice(&destination.into_bytes());
+    identity[16..].copy_from_slice(&operation_id.into_bytes());
+    stream_key(b"workspace-fork", &identity)
+}
+
 impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityStore<P> {
+    /// One durable commit creates the whole fork, except that a fork of its
+    /// source's published lineage appends its creation record in a second
+    /// commit, as ordinary publication does. Anything that stops the first
+    /// commit from applying as a whole, such as an authority an earlier
+    /// attempt or another writer created, or a retry whose lineage changed,
+    /// resolves through the idempotent single-authority steps instead.
+    async fn commit_workspace_fork(
+        &self,
+        fork: WorkspaceForkCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<WorkspaceForkOutcome> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let (request, creation_included, work) = self.workspace_fork_request(&fork).await?;
+        admit_authority(work, budget)?;
+        let applied = match self.provider.commit(request).await {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => true,
+            Ok(acyclic_stream::CommitOutcome::Conflict(_))
+            | Err(acyclic_stream::StreamError::IdempotencyMismatch) => false,
+            Err(error) => return Err(OperationFailure::new(map_stream_error(error), work)),
+        };
+        if applied && creation_included {
+            return authority_success(WorkspaceForkOutcome::Committed, work, budget);
+        }
+        let remaining = work
+            .remaining(budget)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let completed = if applied {
+            let created = crate::async_storage::append_first_record(
+                self,
+                fork.destination,
+                fork.creation,
+                WorkCounters::default(),
+                remaining,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            AuthorityReceipt {
+                value: if created.value {
+                    WorkspaceForkOutcome::Committed
+                } else {
+                    WorkspaceForkOutcome::CreationRejected
+                },
+                work: created.work,
+            }
+        } else {
+            crate::async_storage::commit_workspace_fork_in_steps(
+                self,
+                fork,
+                remaining,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?
+        };
+        let work = work
+            .checked_add(completed.work)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        authority_success(completed.value, work, budget)
+    }
+
     fn supports_generation_lineage_prefix(&self) -> bool {
         true
     }

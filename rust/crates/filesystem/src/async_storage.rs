@@ -4,7 +4,7 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, Epoch, GenerationId, Head, OperationId, ProposedCommit, Sequence,
 };
-use crate::performance::WorkBudget;
+use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     AppendOutcome, AuthorityResult, AuthorityStore, CreateAuthorityOutcome, FenceOutcome,
     GuardedAppend, ObjectId, ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore, ObjectWrite,
@@ -136,6 +136,190 @@ pub struct GenerationForkSource {
     pub lineage: GenerationFork,
 }
 
+/// A new workspace's complete authority state: its own authority, holding
+/// its creation record, and the retention authority that keeps its source
+/// generation alive while the workspace may depend on it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceForkCommit {
+    /// Source lineage the destination authority starts from, on backends
+    /// that keep generation lineage; `None` starts it empty.
+    pub lineage: Option<GenerationForkSource>,
+    /// The new workspace's authority.
+    pub destination: AuthorityId,
+    /// Its creation record, the destination's first commit.
+    pub creation: ProposedCommit,
+    /// The authority retaining the source generation for the new workspace.
+    pub retention: AuthorityId,
+    /// The retention record, the retention authority's first commit.
+    pub retained: ProposedCommit,
+}
+
+/// How one workspace fork's authority state resolved.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceForkOutcome {
+    /// Both authorities hold exactly the requested first records, now or
+    /// from an earlier attempt.
+    Committed,
+    /// The retention authority already holds a different first record.
+    RetentionConflict,
+    /// The destination authority already holds a different first record.
+    CreationRejected,
+}
+
+/// Largest first record a fork compares when resolving a retry.
+const MAXIMUM_FIRST_RECORD_BYTES: u64 = 4 * 1024;
+
+/// Commits a workspace fork as ordered single-authority steps: the retention
+/// record first, so the source generation is retained before any workspace
+/// can depend on it, then the destination authority and its creation record.
+/// Every step is idempotent, so a retry after a crash at any step, or after
+/// a combined commit, completes exactly the missing steps.
+pub(crate) async fn commit_workspace_fork_in_steps<S: AsyncAuthorityStore + ?Sized>(
+    store: &S,
+    fork: WorkspaceForkCommit,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> AuthorityResult<WorkspaceForkOutcome> {
+    let WorkspaceForkCommit {
+        lineage,
+        destination,
+        creation,
+        retention,
+        retained,
+    } = fork;
+    let retained = append_first_record(
+        store,
+        retention,
+        retained,
+        WorkCounters::default(),
+        budget,
+        cancellation,
+    )
+    .await?;
+    let mut work = retained.work;
+    if !retained.value {
+        return Ok(crate::storage::AuthorityReceipt {
+            value: WorkspaceForkOutcome::RetentionConflict,
+            work,
+        });
+    }
+    let remaining = remaining_authority(work, budget)?;
+    let created = match lineage {
+        Some(source) => {
+            store
+                .fork_generation_authority(
+                    source,
+                    destination,
+                    creation.operation_id,
+                    remaining,
+                    cancellation,
+                )
+                .await
+        }
+        None => {
+            store
+                .create_authority(destination, Epoch::GENESIS, remaining, cancellation)
+                .await
+        }
+    }
+    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+    work = add_authority(work, created.work)?;
+    let created =
+        append_first_record(store, destination, creation, work, budget, cancellation).await?;
+    Ok(crate::storage::AuthorityReceipt {
+        value: if created.value {
+            WorkspaceForkOutcome::Committed
+        } else {
+            WorkspaceForkOutcome::CreationRejected
+        },
+        work: created.work,
+    })
+}
+
+/// Makes `commit` the first record of `authority`, creating the authority
+/// if needed. Answers whether the authority's first record is exactly that
+/// commit, including one an earlier attempt or a combined commit wrote under
+/// another retry identity. The receipt's work includes `prior`.
+pub(crate) async fn append_first_record<S: AsyncAuthorityStore + ?Sized>(
+    store: &S,
+    authority: AuthorityId,
+    commit: ProposedCommit,
+    prior: WorkCounters,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> AuthorityResult<bool> {
+    let created = store
+        .create_authority(
+            authority,
+            Epoch::GENESIS,
+            remaining_authority(prior, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
+    let mut work = add_authority(prior, created.work)?;
+    let head = match created.value {
+        CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
+    };
+    let identity = (commit.operation_id, commit.fingerprint);
+    let appended = store
+        .compare_and_append(
+            authority,
+            head.epoch,
+            Head::genesis(head.epoch),
+            commit,
+            remaining_authority(work, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+    work = add_authority(work, appended.work)?;
+    let matches = match appended.value {
+        AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => true,
+        AppendOutcome::Conflict { .. } => {
+            let first = store
+                .replay(
+                    authority,
+                    Sequence::GENESIS,
+                    ReplayLimit {
+                        records: 1,
+                        payload_bytes: MAXIMUM_FIRST_RECORD_BYTES,
+                    },
+                    remaining_authority(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add_authority(work, first.work)?;
+            first.value.first().is_some_and(|record| {
+                record.sequence == Sequence::new(1)
+                    && (record.operation_id, record.fingerprint) == identity
+            })
+        }
+        AppendOutcome::Fenced { .. } | AppendOutcome::IdempotencyConflict { .. } => false,
+    };
+    Ok(crate::storage::AuthorityReceipt {
+        value: matches,
+        work,
+    })
+}
+
+fn remaining_authority(
+    work: WorkCounters,
+    budget: WorkBudget,
+) -> Result<WorkBudget, crate::storage::AuthorityFailure> {
+    work.remaining(budget)
+        .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), work))
+}
+
+fn add_authority(
+    work: WorkCounters,
+    more: WorkCounters,
+) -> Result<WorkCounters, crate::storage::AuthorityFailure> {
+    work.checked_add(more)
+        .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), work))
+}
+
 /// Nonblocking authority-store contract. Futures are sendable on native
 /// targets and may remain JavaScript-thread-affine in browsers.
 pub trait AsyncAuthorityStore: StorageProvider {
@@ -212,6 +396,20 @@ pub trait AsyncAuthorityStore: StorageProvider {
             )
             .await
         }
+    }
+
+    /// Durably creates a forked workspace's authority state: the retention
+    /// authority with its record and the destination authority with its
+    /// creation record. Backends that can commit several authorities
+    /// atomically do so in one durable commit; the default applies ordered,
+    /// idempotent single-authority steps.
+    fn commit_workspace_fork(
+        &self,
+        fork: WorkspaceForkCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<WorkspaceForkOutcome>> + StorageFuture {
+        commit_workspace_fork_in_steps(self, fork, budget, cancellation)
     }
 
     /// Atomically acquires the exclusive publication gate at an exact head.
