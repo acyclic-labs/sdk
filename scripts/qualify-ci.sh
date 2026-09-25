@@ -189,6 +189,8 @@ case "$lane" in
   linux)
     bash scripts/test-ensure-rust-target.sh
     source scripts/ensure-bun.sh
+    wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
+    export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
     # Package validation runs with --offline; populate every locked crate even
     # when the Blacksmith dependency cache is cold.

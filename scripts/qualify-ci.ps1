@@ -68,6 +68,20 @@ cargo fetch --locked
 $CargoTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $PWD 'target' }
 $ReleaseTargetDir = "$CargoTargetDir-release"
 $PluginOutput = Join-Path $env:SDK_ARTIFACT_DIR 'acyclic-plugin'
+$wasmBindgenRoot = Join-Path $env:TOOLS_DIR 'cargo'
+$wasmBindgenBin = Join-Path $wasmBindgenRoot 'bin\wasm-bindgen.exe'
+if (-not (Test-Path -LiteralPath $wasmBindgenBin) -or
+    (& $wasmBindgenBin --version) -ne 'wasm-bindgen 0.2.117') {
+    cargo install --locked wasm-bindgen-cli --version 0.2.117 --root $wasmBindgenRoot
+}
+if ((& $wasmBindgenBin --version) -ne 'wasm-bindgen 0.2.117') {
+    throw 'The WASM build requires wasm-bindgen 0.2.117.'
+}
+$env:PATH = "$(Split-Path -Parent $wasmBindgenBin);$env:PATH"
+# The WASM build in `bun run check` uses sccache and rustc. Keep it out of the
+# concurrent native Cargo build window: on Windows the competing process load
+# can prevent sccache from spawning rustc at all.
+bun run check
 $release = Start-Background release @"
 `$env:CARGO_TARGET_DIR = '$ReleaseTargetDir'
 node scripts/build-product.mjs
@@ -97,7 +111,6 @@ if (Test-Path -LiteralPath $lldLink) {
 # the complete all-feature workspace, including ProjFS-backed acyclic-fs, runs
 # from one build instead of separate portable, no-default, and link-only builds.
 cargo test --workspace --all-features --locked
-bun run check
 bun test --parallel=4 typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition
 
