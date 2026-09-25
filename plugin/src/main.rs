@@ -358,11 +358,13 @@ impl LocalMount {
         Ok(())
     }
 
+    /// Publishes every route, then detaches them all, so a publication
+    /// failure leaves every route mounted and publishing again.
     async fn unmount(&self) -> Result<(), String> {
-        for mount in self.routes.values() {
-            mount.unmount().await.map_err(display)?;
-        }
-        Ok(())
+        self.sync().await?;
+        // Each route's own unmount is exactly this publication followed by
+        // its detach; publishing once per route is enough.
+        self.abandon()
     }
 
     fn abandon(&self) -> Result<(), String> {
@@ -4291,7 +4293,7 @@ impl ControlPlane {
         let pending = pending.clone();
         self.persist()?;
         if let Some(mount) = self.pending_mounts.get(&pending.fork_key) {
-            mount.unmount().await.map_err(display)?;
+            mount.unmount().await?;
             self.pending_mounts.remove(&pending.fork_key);
         }
         if let Ok(context) = self
@@ -5048,8 +5050,7 @@ impl ControlPlane {
             return Err("injected mount teardown failure".to_owned());
         }
         if let Some(mount) = self.mounts.get(agent_id) {
-            mount.sync().await.map_err(display)?;
-            mount.unmount().await.map_err(display)?;
+            mount.unmount().await?;
             self.mounts.remove(agent_id);
         }
         Ok(())
@@ -5619,11 +5620,6 @@ impl ControlPlane {
                         });
                     }
                     continue;
-                }
-                if let Err(error) = mount.sync().await {
-                    first_error.get_or_insert_with(|| {
-                        format!("cannot synchronize agent '{agent_id}' during shutdown: {error}")
-                    });
                 }
                 if let Err(error) = mount.unmount().await {
                     first_error.get_or_insert_with(|| {
