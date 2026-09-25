@@ -47,15 +47,14 @@ use std::io::{self, BufRead, Read, Seek, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 #[cfg(any(test, not(target_os = "linux")))]
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use acyclic_native_runtime::{Durability, RenameMode, durable_rename, sync_file, sync_parent};
 use control_protocol::{ControlEnvelope, ControlLedger, LedgerDecision};
 use fs2::FileExt as _;
-#[cfg(target_os = "linux")]
-use notify::Watcher as _;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -6998,7 +6997,6 @@ fn public_tools(commandless: bool) -> Value {
 
 const MAXIMUM_CONTROL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_CONCURRENT_CONTROL_REQUESTS: usize = 64;
-#[cfg(any(test, not(target_os = "linux")))]
 const CONTROL_RESPONSE_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const CONTROL_PROBE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 const CONTROL_HOOK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -7162,10 +7160,28 @@ async fn start_control_endpoint(
     }
 }
 
+/// Suffix of an exchange that its client is still building.
+#[cfg(target_os = "linux")]
+const LINUX_EXCHANGE_UNPUBLISHED: &str = ".new";
+#[cfg(target_os = "linux")]
+const LINUX_EXCHANGE_REQUEST: &str = "request";
+#[cfg(target_os = "linux")]
+const LINUX_EXCHANGE_CLAIMED: &str = "processing";
+#[cfg(target_os = "linux")]
+const LINUX_EXCHANGE_RESPONSE: &str = "response";
+
+/// The mailbox of the Linux control transport, for hosts whose sandbox denies
+/// connecting to a Unix socket but allows the runtime directory. Each request
+/// is an exchange directory in it. The client builds the exchange under a name
+/// ending in [`LINUX_EXCHANGE_UNPUBLISHED`], holding the request and a FIFO for
+/// the response, then publishes it with one rename into the mailbox, which the
+/// service watches. The service claims a published exchange by renaming its
+/// request, writes the newline-terminated response into the FIFO and removes
+/// the exchange; a client removes only an exchange that it gives up on.
 #[cfg(target_os = "linux")]
 fn linux_control_mailbox_path(data: &Path) -> PathBuf {
     unix_control_runtime_directory().join(format!(
-        "service-{}.mailbox",
+        "service-{}.inbox",
         short_hash(data.as_os_str().as_encoded_bytes())
     ))
 }
@@ -7190,6 +7206,23 @@ fn prepare_linux_control_mailbox(data: &Path) -> Result<PathBuf, String> {
 }
 
 #[cfg(target_os = "linux")]
+fn open_linux_directory(
+    directory: impl rustix::fd::AsFd,
+    name: impl rustix::path::Arg,
+) -> io::Result<rustix::fd::OwnedFd> {
+    rustix::fs::openat(
+        directory,
+        name,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(errno_to_io)
+}
+
+#[cfg(target_os = "linux")]
 async fn serve_linux_control_mailbox(
     mailbox: PathBuf,
     control: Arc<impl ConcurrentControlRequestDispatcher + 'static>,
@@ -7197,48 +7230,50 @@ async fn serve_linux_control_mailbox(
     shutdown_sender: watch::Sender<bool>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let notification = Arc::new(tokio::sync::Notify::new());
-    let watcher_notification = Arc::clone(&notification);
-    let (watch_error, mut watch_errors) = watch::channel(None::<String>);
-    let mut watcher = notify::recommended_watcher(move |event| match event {
-        Ok(_) => watcher_notification.notify_one(),
-        Err(error) => {
-            let _ = watch_error.send(Some(display(error)));
-        }
-    })
-    .map_err(display)?;
-    watcher
-        .watch(&mailbox, notify::RecursiveMode::Recursive)
-        .map_err(display)?;
-    let mailbox_directory = Arc::new(
-        rustix::fs::open(
+    let mailbox_directory =
+        Arc::new(open_linux_directory(rustix::fs::CWD, &mailbox).map_err(display)?);
+    // Watching before the first scan means that every exchange is either found
+    // by that scan or published later, which wakes another scan.
+    let published = rustix::fs::inotify::init(
+        rustix::fs::inotify::CreateFlags::CLOEXEC | rustix::fs::inotify::CreateFlags::NONBLOCK,
+    )
+    .and_then(|published| {
+        rustix::fs::inotify::add_watch(
+            &published,
             &mailbox,
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(display)?,
-    );
+            rustix::fs::inotify::WatchFlags::MOVED_TO
+                | rustix::fs::inotify::WatchFlags::ONLYDIR
+                | rustix::fs::inotify::WatchFlags::DONT_FOLLOW,
+        )?;
+        Ok(published)
+    })
+    .map_err(errno_to_io)
+    .and_then(tokio::io::unix::AsyncFd::new)
+    .map_err(display)?;
 
     let mut requests = tokio::task::JoinSet::new();
     let mut result = loop {
-        claim_linux_mailbox_requests(&mailbox_directory, &control, &ledger, &mut requests).await?;
+        if let Err(error) =
+            claim_linux_mailbox_requests(&mailbox_directory, &control, &ledger, &mut requests)
+        {
+            break Err(error);
+        }
         tokio::select! {
-            () = notification.notified() => {}
-            completed = requests.join_next(), if !requests.is_empty() => {
-                match completed {
-                    Some(Ok(_)) | None => {}
-                    Some(Err(error)) => break Err(format!("Acyclic mailbox request task failed: {error}")),
-                }
+            ready = published.readable() => {
+                let mut ready = match ready {
+                    Ok(ready) => ready,
+                    Err(error) => break Err(display(error)),
+                };
+                // Events only wake the next scan, which finds every published
+                // exchange, including any whose event an overflow dropped.
+                let mut events = [0_u8; 4096];
+                while let Ok(Ok(_)) = ready.try_io(|published| {
+                    rustix::io::read(published.get_ref(), &mut events).map_err(errno_to_io)
+                }) {}
             }
-            changed = watch_errors.changed() => {
-                if changed.is_err() {
-                    break Err("Acyclic mailbox watcher stopped".to_owned());
-                }
-                if let Some(error) = watch_errors.borrow().clone() {
-                    break Err(error);
+            completed = requests.join_next(), if !requests.is_empty() => {
+                if let Some(Err(error)) = completed {
+                    break Err(format!("Acyclic mailbox request task failed: {error}"));
                 }
             }
             changed = shutdown.changed() => {
@@ -7250,106 +7285,101 @@ async fn serve_linux_control_mailbox(
     };
     let _ = shutdown_sender.send(true);
     while let Some(completed) = requests.join_next().await {
-        if result.is_ok() {
-            result = match completed {
-                Ok(_) => Ok(()),
-                Err(error) => Err(format!("Acyclic mailbox request task failed: {error}")),
-            };
+        if let (Ok(()), Err(error)) = (&result, completed) {
+            result = Err(format!("Acyclic mailbox request task failed: {error}"));
         }
     }
     result
 }
 
+/// Claims every published exchange, up to the concurrency bound. The mailbox
+/// is private and holds only exchanges in flight, so it is scanned in place.
 #[cfg(target_os = "linux")]
-async fn claim_linux_mailbox_requests(
+fn claim_linux_mailbox_requests(
     mailbox_directory: &Arc<rustix::fd::OwnedFd>,
     control: &Arc<impl ConcurrentControlRequestDispatcher + 'static>,
     ledger: &Arc<ControlLedger>,
-    requests: &mut tokio::task::JoinSet<Result<(), String>>,
+    requests: &mut tokio::task::JoinSet<()>,
 ) -> Result<(), String> {
-    let directory = Arc::clone(mailbox_directory);
-    let entries = tokio::task::spawn_blocking(move || {
-        use std::os::unix::ffi::OsStringExt as _;
+    use std::os::unix::ffi::OsStrExt as _;
 
-        let mut entries = Vec::new();
-        let directory = rustix::fs::Dir::read_from(&*directory).map_err(display)?;
-        for entry in directory {
-            let entry = entry.map_err(display)?;
-            let name = entry.file_name().to_bytes();
-            if name != b"." && name != b".." && entry.file_type().is_dir() {
-                entries.push(std::ffi::OsString::from_vec(name.to_vec()));
-            }
-        }
-        entries.sort();
-        Ok::<_, String>(entries)
-    })
-    .await
-    .map_err(display)??;
-    for name in entries {
+    let entries = rustix::fs::Dir::read_from(&**mailbox_directory).map_err(display)?;
+    for entry in entries {
         if requests.len() >= MAXIMUM_CONCURRENT_CONTROL_REQUESTS {
             break;
         }
-        let exchange = match rustix::fs::openat(
-            &**mailbox_directory,
-            &name,
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        ) {
-            Ok(exchange) => Arc::new(exchange),
-            Err(_) => continue,
-        };
-        match rustix::fs::renameat(&*exchange, "request", &*exchange, "processing") {
-            Ok(()) => {}
-            Err(_) => continue,
+        let entry = entry.map_err(display)?;
+        let name = entry.file_name().to_bytes();
+        if name.starts_with(b".")
+            || name.ends_with(LINUX_EXCHANGE_UNPUBLISHED.as_bytes())
+            || !entry.file_type().is_dir()
+        {
+            continue;
         }
+        let name = std::ffi::OsStr::from_bytes(name).to_owned();
+        let Ok(exchange) = open_linux_directory(&**mailbox_directory, &name) else {
+            continue;
+        };
+        if rustix::fs::renameat(
+            &exchange,
+            LINUX_EXCHANGE_REQUEST,
+            &exchange,
+            LINUX_EXCHANGE_CLAIMED,
+        )
+        .is_err()
+        {
+            continue;
+        }
+        let exchange = LinuxMailboxExchange {
+            mailbox: Arc::clone(mailbox_directory),
+            exchange: Some(exchange),
+            name,
+        };
         let control = Arc::clone(control);
         let ledger = Arc::clone(ledger);
-        requests
-            .spawn(async move { handle_linux_mailbox_request(exchange, control, ledger).await });
+        requests.spawn(handle_linux_mailbox_request(exchange, control, ledger));
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
 async fn handle_linux_mailbox_request(
-    exchange: Arc<rustix::fd::OwnedFd>,
+    exchange: LinuxMailboxExchange,
     control: Arc<impl ConcurrentControlRequestDispatcher>,
     ledger: Arc<ControlLedger>,
-) -> Result<(), String> {
-    let response = match read_linux_control_file_at(&exchange, "processing") {
-        Ok(request) if request.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => {
-            match serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request) {
-                Ok(envelope) => dispatch_control_envelope(&control, &ledger, envelope).await,
-                Err(error) => invalid_control_request_response(&request, &error),
+) {
+    if let Some(directory) = &exchange.exchange {
+        let mut response = match read_linux_control_file_at(directory, LINUX_EXCHANGE_CLAIMED) {
+            Ok(request) if request.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => {
+                match serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request) {
+                    Ok(envelope) => dispatch_control_envelope(&control, &ledger, envelope).await,
+                    Err(error) => invalid_control_request_response(&request, &error),
+                }
             }
+            Ok(_) => {
+                uncorrelated_control_response("Acyclic control request exceeds the 4 MiB bound")
+            }
+            Err(error) => uncorrelated_control_response(&display(error)),
+        };
+        response.push(b'\n');
+        // A client that gave up holds no reader, so opening fails at once.
+        let sender = rustix::fs::openat(
+            directory,
+            LINUX_EXCHANGE_RESPONSE,
+            rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(errno_to_io)
+        .and_then(tokio::net::unix::pipe::Sender::from_owned_fd);
+        if let Ok(mut sender) = sender {
+            let _ = tokio::time::timeout(CONTROL_RESPONSE_DRAIN_GRACE, sender.write_all(&response))
+                .await;
         }
-        Ok(_) => uncorrelated_control_response("Acyclic control request exceeds the 4 MiB bound"),
-        Err(error) => uncorrelated_control_response(&display(error)),
-    };
-    let Ok(response_file) = rustix::fs::openat(
-        &*exchange,
-        "response.pending",
-        rustix::fs::OFlags::WRONLY
-            | rustix::fs::OFlags::CREATE
-            | rustix::fs::OFlags::EXCL
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::NONBLOCK
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-    ) else {
-        return Ok(());
-    };
-    if std::fs::File::from(response_file)
-        .write_all(&response)
-        .is_err()
-    {
-        return Ok(());
     }
-    let _ = rustix::fs::renameat(&*exchange, "response.pending", &*exchange, "response");
-    Ok(())
+    exchange.remove();
 }
 
 /// Exchange files are bounded and live in a private runtime directory, so
@@ -7384,32 +7414,29 @@ fn read_linux_control_file_at(directory: &rustix::fd::OwnedFd, name: &str) -> io
     Ok(request)
 }
 
+/// One exchange directory in a Linux mailbox; see
+/// [`linux_control_mailbox_path`].
 #[cfg(target_os = "linux")]
-#[derive(Clone)]
 struct LinuxMailboxExchange {
     mailbox: Arc<rustix::fd::OwnedFd>,
-    exchange: Option<Arc<rustix::fd::OwnedFd>>,
-    name: String,
+    exchange: Option<rustix::fd::OwnedFd>,
+    name: std::ffi::OsString,
 }
 
 #[cfg(target_os = "linux")]
-fn remove_linux_mailbox_exchange(exchange: &LinuxMailboxExchange) {
-    if let Some(directory) = &exchange.exchange {
-        for name in [
-            "request.pending",
-            "request",
-            "processing",
-            "response.pending",
-            "response",
-        ] {
-            let _ = rustix::fs::unlinkat(&**directory, name, rustix::fs::AtFlags::empty());
+impl LinuxMailboxExchange {
+    fn remove(&self) {
+        if let Some(directory) = &self.exchange {
+            for name in [
+                LINUX_EXCHANGE_REQUEST,
+                LINUX_EXCHANGE_CLAIMED,
+                LINUX_EXCHANGE_RESPONSE,
+            ] {
+                let _ = rustix::fs::unlinkat(directory, name, rustix::fs::AtFlags::empty());
+            }
         }
+        let _ = rustix::fs::unlinkat(&*self.mailbox, &self.name, rustix::fs::AtFlags::REMOVEDIR);
     }
-    let _ = rustix::fs::unlinkat(
-        &*exchange.mailbox,
-        &exchange.name,
-        rustix::fs::AtFlags::REMOVEDIR,
-    );
 }
 
 #[cfg(target_os = "linux")]
@@ -11434,9 +11461,6 @@ async fn send_linux_mailbox_request(
 
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let mailbox = linux_control_mailbox_path(data);
-    let deadline = tokio::time::Instant::now() + maximum_wait;
-    let cleanup = Arc::new(Mutex::new(None::<LinuxMailboxExchange>));
-    let cleanup_after_request = Arc::clone(&cleanup);
     let nonce = format!(
         "{}:{}:{}",
         std::process::id(),
@@ -11446,74 +11470,64 @@ async fn send_linux_mailbox_request(
             .as_nanos(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
-    let exchange_name = short_hash(nonce.as_bytes());
-    let result = tokio::time::timeout_at(deadline, async {
-        let mailbox_directory = Arc::new(
-            rustix::fs::open(
-                &mailbox,
-                rustix::fs::OFlags::RDONLY
-                    | rustix::fs::OFlags::DIRECTORY
-                    | rustix::fs::OFlags::NOFOLLOW
-                    | rustix::fs::OFlags::CLOEXEC,
-                rustix::fs::Mode::empty(),
-            )
-            .map_err(|error| {
-                ControlRequestError::Unavailable(format!("Acyclic service is not running: {error}"))
-            })?,
-        );
-        let metadata = rustix::fs::fstat(&*mailbox_directory)
-            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-        if !rustix::fs::FileType::from_raw_mode(metadata.st_mode).is_dir()
-            || metadata.st_mode & 0o777 != 0o700
-        {
-            return Err(ControlRequestError::Unavailable(
-                "Acyclic service mailbox is not a private directory".to_owned(),
-            ));
-        }
-        rustix::fs::mkdirat(
-            &*mailbox_directory,
-            &exchange_name,
-            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR | rustix::fs::Mode::XUSR,
-        )
-        .map_err(|error| {
+    let name = short_hash(nonce.as_bytes());
+    let unpublished = format!("{name}{LINUX_EXCHANGE_UNPUBLISHED}");
+    let mailbox_directory = Arc::new(open_linux_directory(rustix::fs::CWD, &mailbox).map_err(
+        |error| {
+            ControlRequestError::Unavailable(format!("Acyclic service is not running: {error}"))
+        },
+    )?);
+    let metadata = rustix::fs::fstat(&*mailbox_directory)
+        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+    if metadata.st_mode & 0o777 != 0o700 {
+        return Err(ControlRequestError::Unavailable(
+            "Acyclic service mailbox is not a private directory".to_owned(),
+        ));
+    }
+    rustix::fs::mkdirat(&*mailbox_directory, &unpublished, rustix::fs::Mode::RWXU).map_err(
+        |error| {
             ControlRequestError::Unavailable(format!(
                 "cannot create Acyclic control exchange: {error}"
             ))
-        })?;
-        if let Ok(mut slot) = cleanup.lock() {
-            *slot = Some(LinuxMailboxExchange {
-                mailbox: Arc::clone(&mailbox_directory),
-                exchange: None,
-                name: exchange_name.clone(),
-            });
-        }
-        let exchange_directory = Arc::new(
-            rustix::fs::openat(
-                &*mailbox_directory,
-                &exchange_name,
-                rustix::fs::OFlags::RDONLY
-                    | rustix::fs::OFlags::DIRECTORY
-                    | rustix::fs::OFlags::NOFOLLOW
-                    | rustix::fs::OFlags::CLOEXEC,
-                rustix::fs::Mode::empty(),
-            )
-            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?,
-        );
-        if let Ok(mut slot) = cleanup.lock() {
-            *slot = Some(LinuxMailboxExchange {
-                mailbox: Arc::clone(&mailbox_directory),
-                exchange: Some(Arc::clone(&exchange_directory)),
-                name: exchange_name.clone(),
-            });
-        }
+        },
+    )?;
+    let mut exchange = LinuxMailboxExchange {
+        mailbox: Arc::clone(&mailbox_directory),
+        exchange: None,
+        name: unpublished.clone().into(),
+    };
+    let result = tokio::time::timeout(maximum_wait, async {
+        let directory = open_linux_directory(&*mailbox_directory, &unpublished)
+            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+        let directory = &*exchange.exchange.insert(directory);
+        rustix::fs::mkfifoat(
+            directory,
+            LINUX_EXCHANGE_RESPONSE,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
+        // Holding the write end as well means the response ends at its
+        // newline, never at an end of file before the service opens it.
+        let mut response_pipe = rustix::fs::openat(
+            directory,
+            LINUX_EXCHANGE_RESPONSE,
+            rustix::fs::OFlags::RDWR
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(errno_to_io)
+        .and_then(tokio::net::unix::pipe::Receiver::from_owned_fd)
+        .map(|pipe| BufReader::new(pipe).take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64))
+        .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
         let request_file = rustix::fs::openat(
-            &*exchange_directory,
-            "request.pending",
+            directory,
+            LINUX_EXCHANGE_REQUEST,
             rustix::fs::OFlags::WRONLY
                 | rustix::fs::OFlags::CREATE
                 | rustix::fs::OFlags::EXCL
                 | rustix::fs::OFlags::NOFOLLOW
-                | rustix::fs::OFlags::NONBLOCK
                 | rustix::fs::OFlags::CLOEXEC,
             rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
         )
@@ -11522,67 +11536,36 @@ async fn send_linux_mailbox_request(
             .write_all(encoded)
             .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
         rustix::fs::renameat(
-            &*exchange_directory,
-            "request.pending",
-            &*exchange_directory,
-            "request",
+            &*mailbox_directory,
+            &unpublished,
+            &*mailbox_directory,
+            &name,
         )
         .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-        // The service publishes its response by renaming it into the exchange.
-        // Each check for the response follows the watch, so none is missed.
-        let published = rustix::fs::inotify::init(
-            rustix::fs::inotify::CreateFlags::CLOEXEC | rustix::fs::inotify::CreateFlags::NONBLOCK,
-        )
-        .and_then(|published| {
-            rustix::fs::inotify::add_watch(
-                &published,
-                mailbox.join(&exchange_name),
-                rustix::fs::inotify::WatchFlags::MOVED_TO
-                    | rustix::fs::inotify::WatchFlags::ONLYDIR
-                    | rustix::fs::inotify::WatchFlags::DONT_FOLLOW,
-            )?;
-            Ok(published)
-        })
-        .map_err(errno_to_io)
-        .and_then(tokio::io::unix::AsyncFd::new)
-        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-        let response = loop {
-            match read_linux_control_file_at(&exchange_directory, "response") {
-                Ok(response) if response.len() <= MAXIMUM_CONTROL_MESSAGE_BYTES => break response,
-                Ok(_) => {
-                    return Err(ControlRequestError::Indeterminate(
-                        "Acyclic control response exceeds the 4 MiB bound".to_owned(),
-                    ));
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    let mut ready = published
-                        .readable()
-                        .await
-                        .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
-                    let mut events = [0_u8; 4096];
-                    while let Ok(Ok(_)) = ready.try_io(|published| {
-                        rustix::io::read(published.get_ref(), &mut events).map_err(errno_to_io)
-                    }) {}
-                }
-                Err(error) => return Err(ControlRequestError::Indeterminate(error.to_string())),
-            }
-        };
+        exchange.name = name.into();
+        let mut response = Vec::new();
+        response_pipe
+            .read_until(b'\n', &mut response)
+            .await
+            .map_err(|error| ControlRequestError::Indeterminate(error.to_string()))?;
+        if response.len() > MAXIMUM_CONTROL_MESSAGE_BYTES || response.pop() != Some(b'\n') {
+            return Err(ControlRequestError::Indeterminate(
+                "invalid response from Acyclic service".to_owned(),
+            ));
+        }
         decode_control_response(&response, request_id)
     })
-    .await;
-    let exchange = cleanup_after_request
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take());
-    if let Some(exchange) = exchange {
-        remove_linux_mailbox_exchange(&exchange);
-    }
-    match result {
-        Ok(result) => result,
-        Err(_) => Err(ControlRequestError::Indeterminate(
+    .await
+    .unwrap_or_else(|_| {
+        Err(ControlRequestError::Indeterminate(
             "Acyclic service did not answer before the filesystem control deadline".to_owned(),
-        )),
+        ))
+    });
+    // The service removes every exchange that it answers.
+    if result.is_err() {
+        exchange.remove();
     }
+    result
 }
 
 fn decode_control_response(
@@ -17377,6 +17360,13 @@ mod tests {
         assert!(
             started.elapsed() < std::time::Duration::from_secs(1),
             "mailbox ignored its caller deadline"
+        );
+        assert!(
+            fs::read_dir(linux_control_mailbox_path(&data))
+                .expect("mailbox")
+                .next()
+                .is_none(),
+            "a client that gives up must remove its exchange"
         );
     }
 
