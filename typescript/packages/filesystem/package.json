@@ -43,10 +43,10 @@
   "scripts": {
     "build:proto": "cd ../../.. && bun x buf format --diff --exit-code --path proto/filesystem/v2 && bun x buf lint && bun run generate",
     "clean": "bun -e \"import { rmSync } from 'node:fs'; for (const path of ['dist', 'tsconfig.tsbuildinfo']) rmSync(path, { recursive: true, force: true })\"",
-    "build": "bun x tsc -p tsconfig.json",
+    "build": "bun run build:wasm && bun x tsc -p tsconfig.json",
     "build:clean": "bun run clean && bun run build",
     "build:wasm": "bun scripts/build-wasm.mjs",
-    "check": "bun x tsc -p tsconfig.json --noEmit",
+    "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
     "test": "bun run build && bun run test:composition && bun run test:s3",
     "test:composition": "bun test/node-memory.mjs",
     "test:s3": "bun test test/hosted-s3.test.mjs",

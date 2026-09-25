@@ -15,7 +15,7 @@
   "scripts": {
     "build:wasm": "bun ../../../scripts/build-harness-wasm.mjs",
     "build": "bun run build:wasm && bun x tsc -p tsconfig.json",
-    "check": "bun x tsc -p tsconfig.json --noEmit",
+    "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
     "check:types": "bun x tsc -p tsconfig.type-tests.json",
     "test": "bun run build && bun test test"
   },
