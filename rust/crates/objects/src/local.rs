@@ -231,7 +231,9 @@ enum Maintenance {
 struct MaintenanceWork {
     _body_io: tokio::sync::OwnedRwLockWriteGuard<()>,
     _mutation: tokio::sync::OwnedMutexGuard<()>,
-    maintenance: Maintenance,
+    compact: bool,
+    /// Segment reclamation's candidate bound, when segments are reclaimed.
+    maximum_candidates: Option<u64>,
     semantic: MemoryObjects,
     live_bodies: BTreeSet<LocalBodyReference>,
     // Keep persistence last so root ownership is published only after the operation guards drop.
@@ -240,20 +242,9 @@ struct MaintenanceWork {
 
 impl MaintenanceWork {
     fn run(&self) -> Result<LocalObjectsGarbageCollection, LocalObjectsError> {
-        let compact = {
-            let journal = self
-                .persistence
-                .journal
-                .lock()
-                .map_err(|_| LocalObjectsError::Unavailable)?;
-            match self.maintenance {
-                Maintenance::CompactIfDue => journal.compaction_due(),
-                Maintenance::CollectGarbage { .. } => journal.inline_bytes != 0,
-            }
-        };
         let mut report = LocalObjectsGarbageCollection::default();
         let mut live_bodies = self.live_bodies.clone();
-        if compact {
+        if self.compact {
             let compaction = self.persistence.compact_journal(&self.live_bodies)?;
             self.semantic.relocate_local_bodies(&compaction.relocations);
             live_bodies = live_bodies
@@ -270,7 +261,7 @@ impl MaintenanceWork {
                 .collect();
             report.journal_bytes_reclaimed = compaction.bytes_reclaimed;
         }
-        if let Maintenance::CollectGarbage { maximum_candidates } = self.maintenance {
+        if let Some(maximum_candidates) = self.maximum_candidates {
             let physical = self
                 .persistence
                 .collect_garbage(&live_bodies, maximum_candidates)?;
@@ -719,11 +710,31 @@ impl LocalObjects {
         let mutation = Arc::clone(&self.mutation).lock_owned().await;
         self.check_available()
             .map_err(|_| LocalObjectsError::Unavailable)?;
+        let compact = {
+            let journal = self
+                .persistence
+                .journal
+                .lock()
+                .map_err(|_| LocalObjectsError::Unavailable)?;
+            match maintenance {
+                Maintenance::CompactIfDue => journal.compaction_due(),
+                Maintenance::CollectGarbage { .. } => journal.inline_bytes != 0,
+            }
+        };
+        let maximum_candidates = match maintenance {
+            // A writer that raced another's compaction finds nothing left to do.
+            Maintenance::CompactIfDue if !compact => {
+                return Ok(LocalObjectsGarbageCollection::default());
+            }
+            Maintenance::CompactIfDue => None,
+            Maintenance::CollectGarbage { maximum_candidates } => Some(maximum_candidates),
+        };
         let live_bodies = self.semantic.local_body_references().await;
         let work = MaintenanceWork {
             _body_io: body_io,
             _mutation: mutation,
-            maintenance,
+            compact,
+            maximum_candidates,
             semantic: self.semantic.clone(),
             live_bodies,
             persistence: Arc::clone(&self.persistence),
@@ -1119,10 +1130,7 @@ impl ObjectsProvider for LocalObjects {
             }
         }
         if pending.is_empty() {
-            return outcomes
-                .into_iter()
-                .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
-                .collect();
+            return settle_puts(outcomes, &[], &ObjectsError::Unavailable);
         }
         // Bodies above the inline bound share one segment with one physical copy per
         // digest; every other body rides in the batch frame itself.
@@ -1139,13 +1147,7 @@ impl ObjectsProvider for LocalObjects {
                     .get(*index)
                     .is_none_or(|(_, body): &([u8; 32], bytes::Bytes)| body != &request.body)
                 {
-                    for (index, _, _) in pending {
-                        outcomes[index] = Some(Err(ObjectsError::Unavailable));
-                    }
-                    return outcomes
-                        .into_iter()
-                        .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
-                        .collect();
+                    return settle_puts(outcomes, &pending, &ObjectsError::Unavailable);
                 }
                 *index
             } else {
@@ -1162,13 +1164,7 @@ impl ObjectsProvider for LocalObjects {
             match self.persist_segment(unique_bodies).await {
                 Ok(segment) => Some(segment),
                 Err(error) => {
-                    for (index, _, _) in pending {
-                        outcomes[index] = Some(Err(error.clone()));
-                    }
-                    return outcomes
-                        .into_iter()
-                        .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
-                        .collect();
+                    return settle_puts(outcomes, &pending, &error);
                 }
             }
         };
@@ -1183,13 +1179,7 @@ impl ObjectsProvider for LocalObjects {
             })
             .collect::<Option<Vec<_>>>();
         let Some(placements) = placements else {
-            for (index, _, _) in pending {
-                outcomes[index] = Some(Err(ObjectsError::Unavailable));
-            }
-            return outcomes
-                .into_iter()
-                .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
-                .collect();
+            return settle_puts(outcomes, &pending, &ObjectsError::Unavailable);
         };
         let mut inline = Vec::new();
         let records = pending
@@ -1210,13 +1200,7 @@ impl ObjectsProvider for LocalObjects {
         ) {
             Ok(offsets) => offsets,
             Err(error) => {
-                for (index, _, _) in pending {
-                    outcomes[index] = Some(Err(error.clone()));
-                }
-                return outcomes
-                    .into_iter()
-                    .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
-                    .collect();
+                return settle_puts(outcomes, &pending, &error);
             }
         };
         // The append returned exactly one offset per inline body, in record order.
@@ -1244,10 +1228,7 @@ impl ObjectsProvider for LocalObjects {
                     .await,
             );
         }
-        outcomes
-            .into_iter()
-            .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
-            .collect()
+        settle_puts(outcomes, &[], &ObjectsError::Unavailable)
     }
 
     async fn get(&self, request: GetRequest) -> Result<BufferedObject, ObjectsError> {
@@ -1571,6 +1552,25 @@ impl LocalObjects {
 
 fn mutation(idempotency_key: Option<String>) -> Option<wire::MutationIdentity> {
     idempotency_key.map(|idempotency_key| wire::MutationIdentity { idempotency_key })
+}
+
+/// Fails every `failed` batch entry with `error` and returns every outcome in request order.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "every pending index comes from enumerate() over the requests that sized outcomes"
+)]
+fn settle_puts(
+    mut outcomes: Vec<Option<Result<wire::ObjectVersion, ObjectsError>>>,
+    failed: &[(usize, PutRequest, [u8; 32])],
+    error: &ObjectsError,
+) -> Vec<Result<wire::ObjectVersion, ObjectsError>> {
+    for (index, _, _) in failed {
+        outcomes[*index] = Some(Err(error.clone()));
+    }
+    outcomes
+        .into_iter()
+        .map(|outcome| outcome.unwrap_or(Err(ObjectsError::Unavailable)))
+        .collect()
 }
 
 fn put_record(request: &PutRequest, digest: &[u8; 32], body: stored_body::Location) -> PutRecord {
