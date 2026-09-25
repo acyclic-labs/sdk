@@ -9,12 +9,15 @@
 
 use crate::FileId;
 use crate::kernel::NamespacePath;
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{PoisonError, RwLock};
 
 static VIEW_CHANGES: AtomicU64 = AtomicU64::new(0);
 
-const LEDGER_SLOTS: u64 = 8_192;
+/// Distinct keys one change map tracks before it folds them into its floor.
+const MAXIMUM_TRACKED_KEYS: usize = 1 << 16;
 
 /// One position in the process-wide order of mount view changes.
 ///
@@ -82,25 +85,25 @@ pub(super) enum ViewChange<'a> {
 
 /// Change positions of one checkout's view.
 ///
-/// Slots are hashed, so distinct keys may share one; a shared slot can only
-/// invalidate more than necessary, never less.
+/// Keys are 64-bit hashes, so distinct keys share a position only through a
+/// hash collision; a shared position can only invalidate more than
+/// necessary, never less.
 pub(super) struct ViewLedger {
     latest: AtomicU64,
     everything: AtomicU64,
-    bindings: Box<[AtomicU64]>,
-    directories: Box<[AtomicU64]>,
-    nodes: Box<[AtomicU64]>,
+    bindings: ChangeMap,
+    directories: ChangeMap,
+    nodes: ChangeMap,
 }
 
 impl ViewLedger {
     pub(super) fn new() -> Self {
-        let slots = || (0..LEDGER_SLOTS).map(|_| AtomicU64::new(0)).collect();
         Self {
             latest: AtomicU64::new(0),
             everything: AtomicU64::new(0),
-            bindings: slots(),
-            directories: slots(),
-            nodes: slots(),
+            bindings: ChangeMap::default(),
+            directories: ChangeMap::default(),
+            nodes: ChangeMap::default(),
         }
     }
 
@@ -135,7 +138,7 @@ impl ViewLedger {
             }
             ViewChange::Promoted(path, file_id) => {
                 for key in PathKeys::new(path) {
-                    position.record_in(self.slot(&self.directories, key));
+                    self.directories.record(key, position);
                 }
                 self.node_changed(*file_id, position);
             }
@@ -156,13 +159,19 @@ impl ViewLedger {
     ) -> bool {
         let mut terminal = None;
         stamp.precedes_none_of(&self.everything)
-            && PathKeys::new(path).all(|key| {
-                terminal = Some(key);
-                stamp.precedes_none_of(self.slot(&self.bindings, key))
+            && self.bindings.unchanged_since(stamp, |unchanged| {
+                PathKeys::new(path).all(|key| {
+                    terminal = Some(key);
+                    unchanged(key)
+                })
             })
-            && terminal.is_none_or(|key| stamp.precedes_none_of(self.slot(&self.directories, key)))
+            && terminal.is_none_or(|key| {
+                self.directories
+                    .unchanged_since(stamp, |unchanged| unchanged(key))
+            })
             && file_id.is_none_or(|file_id| {
-                stamp.precedes_none_of(self.slot(&self.nodes, key_of(&file_id)))
+                self.nodes
+                    .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id)))
             })
     }
 
@@ -175,24 +184,60 @@ impl ViewLedger {
             parent = name.replace(key);
         }
         if let Some(name) = name {
-            position.record_in(self.slot(&self.bindings, name));
+            self.bindings.record(name, position);
         }
         if let Some(parent) = parent {
-            position.record_in(self.slot(&self.directories, parent));
+            self.directories.record(parent, position);
         }
     }
 
     fn node_changed(&self, file_id: FileId, position: ViewStamp) {
-        position.record_in(self.slot(&self.nodes, key_of(&file_id)));
+        self.nodes.record(key_of(&file_id), position);
+    }
+}
+
+/// The latest change recorded against each key. A key that was never
+/// recorded, or whose record was folded away, reads as the floor.
+#[derive(Default)]
+struct ChangeMap(RwLock<ChangePositions>);
+
+#[derive(Default)]
+struct ChangePositions {
+    floor: u64,
+    latest: HashMap<u64, u64>,
+}
+
+impl ChangeMap {
+    fn record(&self, key: u64, position: ViewStamp) {
+        let mut positions = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        if positions.latest.len() >= MAXIMUM_TRACKED_KEYS && !positions.latest.contains_key(&key) {
+            // Every folded key reads as the floor, which is no earlier than
+            // anything it recorded: folding only invalidates more.
+            let positions = &mut *positions;
+            positions.floor = positions
+                .latest
+                .drain()
+                .fold(positions.floor, |floor, (_, at)| floor.max(at));
+        }
+        let latest = positions.latest.entry(key).or_insert(0);
+        *latest = (*latest).max(position.0);
     }
 
-    /// A key's slot. `everything` stands in for an unaddressable slot: it
-    /// only ever over-invalidates.
-    fn slot<'a>(&'a self, slots: &'a [AtomicU64], key: u64) -> &'a AtomicU64 {
-        usize::try_from(key % LEDGER_SLOTS)
-            .ok()
-            .and_then(|index| slots.get(index))
-            .unwrap_or(&self.everything)
+    /// Runs `check` with a test of whether one key recorded nothing after
+    /// `stamp`, under one read of the map.
+    fn unchanged_since(
+        &self,
+        stamp: ViewStamp,
+        check: impl FnOnce(&dyn Fn(u64) -> bool) -> bool,
+    ) -> bool {
+        let positions = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        check(&|key| {
+            positions
+                .latest
+                .get(&key)
+                .map_or(positions.floor, |at| (*at).max(positions.floor))
+                <= stamp.0
+        })
     }
 }
 
@@ -233,4 +278,65 @@ fn key_of(value: &impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAXIMUM_TRACKED_KEYS, ViewChange, ViewLedger};
+    use crate::FileId;
+    use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
+    use crate::model::VolumeLimits;
+
+    fn path(names: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {
+        let limits = VolumeLimits::default();
+        let components = names
+            .iter()
+            .map(|name| {
+                LogicalName::new(
+                    NameEncoding::Utf8,
+                    name.as_bytes().to_vec(),
+                    limits.maximum_component_bytes,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(NamespacePath::new(components, limits)?)
+    }
+
+    #[test]
+    fn unrelated_changes_never_invalidate_a_lookup() -> Result<(), Box<dyn std::error::Error>> {
+        let ledger = ViewLedger::new();
+        let watched = path(&["corpus", "file"])?;
+        let file_id = FileId::new();
+        let stamp = ledger.stamp();
+        // Far more distinct names than any fixed slot table could separate.
+        for index in 0..20_000 {
+            let created = path(&["writes", &format!("file-{index}")])?;
+            ledger.record(&ViewChange::Bound(&created));
+            ledger.record(&ViewChange::Node(FileId::new()));
+        }
+        assert!(ledger.unchanged_since(&watched, Some(file_id), stamp));
+        assert!(ledger.unchanged_since(&path(&["corpus"])?, None, stamp));
+        assert!(!ledger.unchanged_since(&path(&["writes"])?, None, stamp));
+        ledger.record(&ViewChange::Node(file_id));
+        assert!(!ledger.unchanged_since(&watched, Some(file_id), stamp));
+        Ok(())
+    }
+
+    #[test]
+    fn folded_keys_invalidate_only_older_lookups() -> Result<(), Box<dyn std::error::Error>> {
+        let ledger = ViewLedger::new();
+        let watched = path(&["watched"])?;
+        let before = ledger.stamp();
+        for _ in 0..=MAXIMUM_TRACKED_KEYS {
+            ledger.record(&ViewChange::Node(FileId::new()));
+        }
+        let after = ledger.stamp();
+        let untouched = FileId::new();
+        assert!(
+            !ledger.unchanged_since(&watched, Some(untouched), before),
+            "a folded map may not vouch for lookups older than what it folded"
+        );
+        assert!(ledger.unchanged_since(&watched, Some(untouched), after));
+        Ok(())
+    }
 }
