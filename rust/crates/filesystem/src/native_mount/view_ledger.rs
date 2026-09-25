@@ -6,15 +6,26 @@
 //! lookup and may reuse the result only while nothing that lookup depended on
 //! has recorded a later position. Positions only grow and are never reused,
 //! so a stale cache entry cannot validate again.
+//!
+//! Observers learn of every recorded position together with the
+//! [`ViewOrigin`] that made the change, so a driver can tell changes it made
+//! itself (which its kernel already applied) from changes made around it.
 
 use crate::FileId;
 use crate::kernel::NamespacePath;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 
 static VIEW_CHANGES: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(target_os = "linux", test))] // Only the FUSE driver attributes its changes.
+static NEXT_ORIGIN: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    static CURRENT_ORIGIN: Cell<ViewOrigin> = const { Cell::new(ViewOrigin::UNATTRIBUTED) };
+}
 
 /// Distinct keys one change map tracks before it folds them into its floor.
 const MAXIMUM_TRACKED_KEYS: usize = 1 << 16;
@@ -29,6 +40,10 @@ const MAXIMUM_TRACKED_KEYS: usize = 1 << 16;
 pub struct ViewStamp(u64);
 
 impl ViewStamp {
+    /// Precedes every change: facts of unknown age are at least this old.
+    #[cfg(target_os = "linux")]
+    pub(super) const ORIGIN: Self = Self(0);
+
     /// A stamp at or after every change recorded anywhere so far.
     pub(super) fn current() -> Self {
         Self(VIEW_CHANGES.load(Ordering::Acquire))
@@ -40,9 +55,11 @@ impl ViewStamp {
     }
 
     /// Records one change in a slot, at a position after every stamp
-    /// sampled before it.
-    pub(super) fn record(slot: &AtomicU64) {
-        Self::next().record_in(slot);
+    /// sampled before it, and returns that position.
+    pub(super) fn record(slot: &AtomicU64) -> Self {
+        let position = Self::next();
+        position.record_in(slot);
+        position
     }
 
     /// Whether a slot recorded no change after this stamp was sampled.
@@ -56,6 +73,87 @@ impl ViewStamp {
 
     fn record_in(self, slot: &AtomicU64) {
         slot.fetch_max(self.0, Ordering::AcqRel);
+    }
+}
+
+/// Who made a view change: one mount session's callbacks, or anyone else.
+///
+/// Changes recorded on a thread take the origin that thread entered, so a
+/// driver that enters its own origin around every callback can tell its own
+/// changes, which its kernel applied as it made them, from all others.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ViewOrigin(u64);
+
+impl ViewOrigin {
+    /// Changes made outside every driver callback.
+    const UNATTRIBUTED: Self = Self(0);
+
+    /// A fresh origin, distinct from every other.
+    #[cfg(any(target_os = "linux", test))]
+    pub(super) fn new() -> Self {
+        Self(NEXT_ORIGIN.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Attributes every change this thread records to `self` until the
+    /// returned scope drops.
+    #[cfg(any(target_os = "linux", test))]
+    pub(super) fn enter(self) -> ViewOriginScope {
+        ViewOriginScope(CURRENT_ORIGIN.replace(self))
+    }
+
+    fn current() -> Self {
+        CURRENT_ORIGIN.get()
+    }
+}
+
+/// Restores the thread's previous origin when dropped.
+#[cfg(any(target_os = "linux", test))]
+pub(super) struct ViewOriginScope(ViewOrigin);
+
+#[cfg(any(target_os = "linux", test))]
+impl Drop for ViewOriginScope {
+    fn drop(&mut self) {
+        CURRENT_ORIGIN.set(self.0);
+    }
+}
+
+/// Learns of every change a source records.
+///
+/// Called while the recorder still holds the exclusive view it changed, so
+/// an observer must only note the position and return: anything that waits
+/// on the view, or on work that does, deadlocks.
+pub trait ViewObserver: Send + Sync {
+    /// One change was recorded at `position` by `origin`.
+    fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
+}
+
+/// The observers of one source of view changes.
+#[derive(Default)]
+pub(super) struct ViewObservers(Mutex<Vec<Weak<dyn ViewObserver>>>);
+
+impl ViewObservers {
+    pub(super) fn add(&self, observer: Weak<dyn ViewObserver>) {
+        let mut observers = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        observers.retain(|observer| observer.strong_count() != 0);
+        observers.push(observer);
+    }
+
+    /// Every observer still alive.
+    pub(super) fn live(&self) -> Vec<Arc<dyn ViewObserver>> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect()
+    }
+
+    /// Tells every observer of one change this thread just recorded.
+    pub(super) fn notify(&self, position: ViewStamp) {
+        let origin = ViewOrigin::current();
+        for observer in self.live() {
+            observer.view_changed(position, origin);
+        }
     }
 }
 
@@ -94,6 +192,7 @@ pub(super) struct ViewLedger {
     bindings: ChangeMap,
     directories: ChangeMap,
     nodes: ChangeMap,
+    observers: ViewObservers,
 }
 
 impl ViewLedger {
@@ -104,7 +203,13 @@ impl ViewLedger {
             bindings: ChangeMap::default(),
             directories: ChangeMap::default(),
             nodes: ChangeMap::default(),
+            observers: ViewObservers::default(),
         }
+    }
+
+    /// Tells `observer` of every change recorded from now on.
+    pub(super) fn observe(&self, observer: Weak<dyn ViewObserver>) {
+        self.observers.add(observer);
     }
 
     /// A stamp at or after every change this ledger has recorded.
@@ -145,6 +250,7 @@ impl ViewLedger {
             ViewChange::Everything => position.record_in(&self.everything),
         }
         position.record_in(&self.latest);
+        self.observers.notify(position);
     }
 
     /// Whether a lookup of `path` that resolved to `file_id` (or to nothing)
@@ -282,10 +388,11 @@ fn key_of(value: &impl Hash) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAXIMUM_TRACKED_KEYS, ViewChange, ViewLedger};
+    use super::{MAXIMUM_TRACKED_KEYS, ViewChange, ViewLedger, ViewOrigin, ViewStamp};
     use crate::FileId;
     use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
     use crate::model::VolumeLimits;
+    use std::sync::{Arc, Mutex};
 
     fn path(names: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {
         let limits = VolumeLimits::default();
@@ -337,6 +444,47 @@ mod tests {
             "a folded map may not vouch for lookups older than what it folded"
         );
         assert!(ledger.unchanged_since(&watched, Some(untouched), after));
+        Ok(())
+    }
+
+    #[test]
+    fn observers_learn_each_change_with_its_origin() -> Result<(), Box<dyn std::error::Error>> {
+        #[derive(Default)]
+        struct Recorded(Mutex<Vec<(ViewStamp, ViewOrigin)>>);
+
+        impl super::ViewObserver for Recorded {
+            fn view_changed(&self, position: ViewStamp, origin: ViewOrigin) {
+                if let Ok(mut recorded) = self.0.lock() {
+                    recorded.push((position, origin));
+                }
+            }
+        }
+
+        let ledger = ViewLedger::new();
+        let recorded = Arc::new(Recorded::default());
+        let observer: std::sync::Weak<Recorded> = Arc::downgrade(&recorded);
+        ledger.observe(observer);
+        let origin = ViewOrigin::new();
+        ledger.record(&ViewChange::Everything);
+        {
+            let _scope = origin.enter();
+            ledger.record(&ViewChange::Everything);
+        }
+        ledger.record(&ViewChange::Everything);
+        let recorded = recorded.0.lock().map_err(|_| "poisoned")?.clone();
+        let origins = recorded
+            .iter()
+            .map(|(_, origin)| *origin)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            origins,
+            [ViewOrigin::UNATTRIBUTED, origin, ViewOrigin::UNATTRIBUTED]
+        );
+        assert!(recorded.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(
+            recorded.last().map(|(position, _)| *position),
+            Some(ledger.stamp())
+        );
         Ok(())
     }
 }

@@ -6,7 +6,8 @@ use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    MountViewLease, NativeMountError, capture_root_identity, capture_subtree, seal_checkout,
+    MountViewLease, NativeMountError, ViewObserver, capture_root_identity, capture_subtree,
+    seal_checkout,
 };
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
@@ -2005,6 +2006,10 @@ where
             .view_gate
             .is_stable()
             .then(|| self.checkout.ledger.stamp())
+    }
+
+    fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
+        self.checkout.ledger.observe(observer);
     }
 
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {

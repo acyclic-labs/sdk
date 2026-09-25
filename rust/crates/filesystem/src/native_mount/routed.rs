@@ -7,10 +7,12 @@
 //! adding or removing a checkout becomes a map mutation instead of a
 //! `mount_native`/unmount cycle.
 
+use super::view_ledger::ViewObservers;
 use super::{
     MountAttributePage, MountAttributeWriteMode, MountContentPin, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease, ViewStamp,
+    MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError, MountViewLease,
+    ViewObserver, ViewStamp,
 };
 use crate::FileId;
 use crate::kernel::FileMetadata;
@@ -21,7 +23,7 @@ use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock, Weak};
 
 static ROUTE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -227,6 +229,8 @@ pub struct RoutedMountSource {
     revision: AtomicI64,
     /// Position of the latest route change in the order of view changes.
     routes_changed: AtomicU64,
+    /// Observers of this router, registered on every route it gains.
+    observers: ViewObservers,
 }
 
 impl RoutedMountSource {
@@ -237,6 +241,7 @@ impl RoutedMountSource {
             view_gate: Arc::new(RouteViewGate::default()),
             revision: AtomicI64::new(1),
             routes_changed: AtomicU64::new(0),
+            observers: ViewObservers::default(),
             routes: RwLock::new(BTreeMap::new()),
             file_id_index: RwLock::new(HashMap::new()),
             root_id: FileId::new(),
@@ -264,6 +269,9 @@ impl RoutedMountSource {
         let mut routes = self.routes.write().unwrap_or_else(PoisonError::into_inner);
         if routes.contains_key(&name) {
             return Err(MountSourceError::AlreadyExists);
+        }
+        for observer in self.observers.live() {
+            source.observe_view(Arc::downgrade(&observer));
         }
         routes.insert(name, Route { source, tag });
         self.bump_revision();
@@ -378,7 +386,8 @@ impl RoutedMountSource {
 
     fn bump_revision(&self) {
         self.revision.fetch_add(1, Ordering::AcqRel);
-        ViewStamp::record(&self.routes_changed);
+        self.observers
+            .notify(ViewStamp::record(&self.routes_changed));
     }
 
     fn coherent_epoch_by(
@@ -572,6 +581,18 @@ impl MountFilesystem for RoutedMountSource {
             .try_fold(ViewStamp::of(&self.routes_changed), |latest, route| {
                 route.source.view_stamp().map(|stamp| latest.max(stamp))
             })
+    }
+
+    fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
+        for route in self
+            .routes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+        {
+            route.source.observe_view(Weak::clone(&observer));
+        }
+        self.observers.add(observer);
     }
 
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
