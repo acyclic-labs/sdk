@@ -75,6 +75,7 @@ pub use checkpoint::{
 };
 #[cfg(feature = "s3-http")]
 pub(crate) use closure::prove_blob_closure_async;
+pub(crate) use closure::prove_record_closure_async;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
     prove_generation_closure_async,

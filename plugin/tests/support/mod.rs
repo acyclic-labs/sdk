@@ -139,10 +139,12 @@ impl ServiceGuard {
 
     pub fn assert_timeout_cleanup(mut self, process_tree: ProcessTree) {
         self.attach_process_tree(process_tree);
-        let marker = service_data(&self.home).join("service.identity");
-        let identity = fs::read_to_string(&marker).expect("timed-out host started hook service");
-        assert!(!identity.is_empty(), "timed-out hook service identity");
-        self.identity = Some(identity);
+        let status = self.status().expect("timed-out host service status");
+        let identity = status
+            .get("markerIdentity")
+            .and_then(Value::as_str)
+            .expect("timed-out host started hook service");
+        self.identity = Some(identity.to_owned());
         if let Err(error) = self.cleanup() {
             panic!("timed-out host service was not cleaned: {error}");
         }

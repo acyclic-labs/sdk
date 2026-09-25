@@ -34,10 +34,24 @@ pub(crate) struct CapabilitySet {
     pub(crate) bounded_frames: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Makes a service run on this thread speak another protocol, as a
+    /// service built from another release would.
+    pub(crate) static TEST_PROTOCOL_MAJOR: std::cell::Cell<Option<u32>> =
+        const { std::cell::Cell::new(None) };
+}
+
 impl ProtocolOffer {
     pub(crate) fn current() -> Self {
+        #[cfg(test)]
+        let major = TEST_PROTOCOL_MAJOR
+            .with(std::cell::Cell::get)
+            .unwrap_or(CONTROL_PROTOCOL_MAJOR);
+        #[cfg(not(test))]
+        let major = CONTROL_PROTOCOL_MAJOR;
         Self {
-            major: CONTROL_PROTOCOL_MAJOR,
+            major,
             schema_digest: *blake3::hash(CONTROL_SCHEMA).as_bytes(),
             capabilities: CapabilitySet {
                 exact_negotiation: true,

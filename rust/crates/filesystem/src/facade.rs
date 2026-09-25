@@ -64,9 +64,9 @@ use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
 use crate::storage::{
-    AppendOutcome, AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome,
-    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest,
-    ObjectReadRetention, ObjectStoreError, PublicationPermit, ReplayLimit,
+    AppendOutcome, AuthorityStoreError, ByteRange, FenceOutcome, HashedObject,
+    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest, ObjectReadRetention,
+    ObjectStoreError, PublicationPermit, ReplayLimit,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_native_runtime::OwnershipAnchor;
@@ -828,9 +828,12 @@ struct VolumeCreation {
     operation_id: Option<OperationId>,
 }
 
-#[derive(Clone, Copy)]
+/// A generation whose complete closure was just proven.
+#[derive(Clone)]
 struct VerifiedForkSource {
     generation_root: ObjectId,
+    /// Every object reachable from `generation_root`.
+    closure: Vec<ObjectId>,
 }
 
 /// Durable local authority backend with nonblocking native storage dispatch.
@@ -2774,7 +2777,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 
     /// Builds and stores the forked generation root for a new workspace, then
-    /// proves and returns its complete reachable closure and accrued work.
+    /// proves its complete reachable closure. Returns the fork root with that
+    /// closure, the source root, and accrued work.
     async fn materialize_forked_generation_root(
         &self,
         source: &crate::Generation<A, O>,
@@ -2782,7 +2786,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         config: VolumeConfig,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> Result<(ObjectId, VerifiedForkSource, WorkCounters), crate::workspace::WorkspaceError>
+    ) -> Result<(VerifiedForkSource, ObjectId, WorkCounters), crate::workspace::WorkspaceError>
     {
         let source_object = ObjectId {
             kind: ObjectKind::GenerationRoot,
@@ -2830,10 +2834,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .map_err(crate::workspace::WorkspaceError::engine)?;
         let work = add(work, proof.work).map_err(crate::workspace::WorkspaceError::engine)?;
         Ok((
-            generation_root,
             VerifiedForkSource {
-                generation_root: source_object,
+                generation_root,
+                closure: proof.objects,
             },
+            source_object,
             work,
         ))
     }
@@ -2841,8 +2846,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Creates a new workspace at one exact immutable source generation while
     /// sharing the complete file table and every unchanged content object.
     ///
-    /// Only one small generation root and one creation fact are new. The source
-    /// and destination then publish independently.
+    /// Only one small generation root and one creation fact are new. The fork
+    /// makes the staged part of its own closure durable, then records the
+    /// source's retention and the workspace's creation through one authority
+    /// commit, so a crash leaves either no workspace or the complete one. The
+    /// source and destination then publish independently.
     pub(crate) async fn fork_workspace_measured(
         &self,
         destination: crate::WorkspaceName,
@@ -2851,83 +2859,88 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<crate::Workspace<A, O>>, crate::workspace::WorkspaceError> {
+        use crate::workspace::WorkspaceError;
         if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner) {
-            return Err(crate::workspace::WorkspaceError::ForeignGeneration);
+            return Err(WorkspaceError::ForeignGeneration);
         }
-        cancellation
-            .check()
-            .map_err(crate::workspace::WorkspaceError::from)?;
+        cancellation.check().map_err(WorkspaceError::from)?;
         let destination_id =
             crate::WorkspaceId::derive(self.inner.workspace_namespace, &destination);
-        let config = source.workspace.volume.config;
-        let (generation_root, verified_source, mut work) =
-            Box::pin(self.materialize_forked_generation_root(
-                source,
-                destination_id,
-                config,
-                budget,
-                cancellation,
-            ))
-            .await?;
-        let retained = Box::pin(self.retain_verified_workspace_generation_measured(
-            &source.workspace.volume,
-            verified_source,
-            RetentionKind::ForkBase,
-            hex::encode(destination_id.into_bytes()),
-            remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
-            cancellation,
-        ))
-        .await?;
-        work = add(work, retained).map_err(crate::workspace::WorkspaceError::engine)?;
-        if self.inner.authority.supports_generation_lineage_prefix() {
-            let head = Box::pin(source.workspace.head_measured(
-                remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
-                cancellation,
-            ))
-            .await?;
-            work = add(work, head.work).map_err(crate::workspace::WorkspaceError::engine)?;
-            let lineage = if head.value.id == source.id {
-                crate::GenerationFork::PublishedPrefix
-            } else {
-                crate::GenerationFork::Independent
-            };
-            let forked = Box::pin(self.inner.authority.fork_generation_authority(
-                crate::GenerationForkSource {
-                    authority: volume_authority_id(source.workspace.volume.id),
-                    generation: source.id,
-                    lineage,
-                },
-                volume_authority_id(destination_id.volume_id()),
-                idempotency_key.operation_id(),
-                remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
-                cancellation,
-            ))
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-            work = add(work, forked.work).map_err(crate::workspace::WorkspaceError::engine)?;
-        }
-        let volume = Box::pin(self.publish_volume_creation(
-            VolumeCreation {
-                volume_id: destination_id.volume_id(),
-                config,
-                generation_root,
-                operation_id: Some(idempotency_key.operation_id()),
-            },
-            work,
+        let volume_id = destination_id.volume_id();
+        let source_volume = &source.workspace.volume;
+        let config = source_volume.config;
+        let (fork_root, source_root, mut work) = Box::pin(self.materialize_forked_generation_root(
+            source,
+            destination_id,
+            config,
             budget,
             cancellation,
         ))
-        .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        work = volume.work;
-        let volume = volume.value;
-        let resolved = Box::pin(volume.resolve_head_generation(
-            remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+        .await?;
+        let (lineage, lineage_work) = Box::pin(self.fork_lineage(
+            source,
+            remaining(work, budget).map_err(WorkspaceError::engine)?,
+            cancellation,
+        ))
+        .await?;
+        work = add(work, lineage_work).map_err(WorkspaceError::engine)?;
+        let (retention, retained, creation, encoding) = fork_records(
+            source_volume,
+            source_root,
+            destination_id,
+            fork_root.generation_root,
+            idempotency_key.operation_id(),
+        )
+        .map_err(WorkspaceError::engine)?;
+        work = add(work, encoding).map_err(WorkspaceError::engine)?;
+        // Every object the new workspace reaches is durable before any
+        // authority names it; objects nothing in the fork reaches stay staged.
+        let drained = self
+            .inner
+            .objects
+            .flush_before_publish(
+                crate::PublicationScope::Closure(&fork_root.closure),
+                remaining(work, budget).map_err(WorkspaceError::engine)?,
+                cancellation,
+            )
+            .await
+            .map_err(WorkspaceError::engine)?;
+        work = add(work, drained.work).map_err(WorkspaceError::engine)?;
+        let committed = Box::pin(self.inner.authority.commit_workspace_fork(
+            crate::WorkspaceForkCommit {
+                lineage,
+                destination: volume_authority_id(volume_id),
+                creation,
+                retention,
+                retained,
+            },
+            remaining(work, budget).map_err(WorkspaceError::engine)?,
             cancellation,
         ))
         .await
-        .map_err(crate::workspace::WorkspaceError::engine)?;
-        work = add(work, resolved.2).map_err(crate::workspace::WorkspaceError::engine)?;
+        .map_err(WorkspaceError::engine)?;
+        work = add(work, committed.work).map_err(WorkspaceError::engine)?;
+        match committed.value {
+            crate::WorkspaceForkOutcome::Committed => {}
+            crate::WorkspaceForkOutcome::RetentionConflict => {
+                return Err(WorkspaceError::RetentionConflict);
+            }
+            crate::WorkspaceForkOutcome::CreationRejected => {
+                return Err(WorkspaceError::engine(FsError::CreationRejected));
+            }
+        }
+        let volume = Volume {
+            fs: self.clone(),
+            id: volume_id,
+            config,
+        };
+        let resolved = Box::pin(volume.resolve_head_generation(
+            remaining(work, budget).map_err(WorkspaceError::engine)?,
+            cancellation,
+        ))
+        .await
+        .map_err(WorkspaceError::engine)?;
+        work = add(work, resolved.2).map_err(WorkspaceError::engine)?;
         Ok(OperationReceipt {
             value: crate::Workspace {
                 name: destination,
@@ -2938,6 +2951,64 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             },
             work,
         })
+    }
+
+    /// The source lineage a fork's authority starts from: the published
+    /// prefix when the source generation is its workspace's head, else an
+    /// independent lineage. `None` on backends that keep no lineage.
+    async fn fork_lineage(
+        &self,
+        source: &crate::Generation<A, O>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<(Option<crate::GenerationForkSource>, WorkCounters), crate::workspace::WorkspaceError>
+    {
+        if !self.inner.authority.supports_generation_lineage_prefix() {
+            return Ok((None, WorkCounters::default()));
+        }
+        let head = Box::pin(source.workspace.head_measured(budget, cancellation)).await?;
+        Ok((
+            Some(crate::GenerationForkSource {
+                authority: volume_authority_id(source.workspace.volume.id),
+                generation: source.id,
+                lineage: if head.value.id == source.id {
+                    crate::GenerationFork::PublishedPrefix
+                } else {
+                    crate::GenerationFork::Independent
+                },
+            }),
+            head.work,
+        ))
+    }
+
+    /// Makes every object `records` reach durable, so a record another
+    /// durable store keeps, such as a removed identity a lazy workspace still
+    /// resolves, never outlives its content across a crash.
+    pub(crate) async fn make_records_durable(
+        &self,
+        config: VolumeConfig,
+        records: &[FileRecord],
+        cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        let (closure, work) = crate::kernel::prove_record_closure_async(
+            &self.inner.objects,
+            records,
+            closure_limits(config),
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| FsError::from(failure.error))?;
+        self.inner
+            .objects
+            .flush_before_publish(
+                crate::PublicationScope::Closure(&closure),
+                remaining(work, WorkBudget::UNBOUNDED).map_err(|failure| failure.error)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| FsError::from(failure.error))?;
+        Ok(())
     }
 
     pub(crate) async fn retain_workspace_generation(
@@ -2966,7 +3037,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         self.retain_verified_workspace_generation(
             volume,
-            VerifiedForkSource { generation_root },
+            VerifiedForkSource {
+                generation_root,
+                closure: proof.objects,
+            },
             kind,
             label,
             &cancellation,
@@ -3003,18 +3077,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, crate::workspace::WorkspaceError> {
-        let generation_root = source.generation_root;
+        let VerifiedForkSource {
+            generation_root,
+            closure,
+        } = source;
         let authority_id = retention_authority_id(volume.id, kind, &label);
-        let created = self
-            .inner
-            .authority
-            .create_authority(authority_id, Epoch::GENESIS, budget, cancellation)
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        let mut work = created.work;
-        let active_head = match created.value {
-            CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
-        };
         let payload = encode_retention_created(&RetentionCreated {
             volume_id: volume.id,
             kind,
@@ -3025,38 +3092,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .map_err(crate::workspace::WorkspaceError::engine)?;
         let operation_id = OperationId::from_bytes(authority_id.into_bytes());
         let (commit, _) = creation_commit(operation_id, payload);
+        // The retained closure is durable before the record names it; other
+        // staged objects stay private.
         let drained = self
             .inner
             .objects
             .flush_before_publish(
-                crate::PublicationScope::Everything,
-                remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+                crate::PublicationScope::Closure(&closure),
+                budget,
                 cancellation,
             )
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
-        work = add(work, drained.work).map_err(crate::workspace::WorkspaceError::engine)?;
-        let appended = self
+        let mut work = drained.work;
+        let created = self
             .inner
             .authority
-            .compare_and_append(
+            .create_authority_with_first_record(
                 authority_id,
-                active_head.epoch,
-                Head::genesis(active_head.epoch),
                 commit,
                 remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
                 cancellation,
             )
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
-        work = add(work, appended.work).map_err(crate::workspace::WorkspaceError::engine)?;
-        match appended.value {
-            AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => Ok(work),
-            AppendOutcome::Conflict { .. }
-            | AppendOutcome::Fenced { .. }
-            | AppendOutcome::IdempotencyConflict { .. } => {
-                Err(crate::workspace::WorkspaceError::RetentionConflict)
-            }
+        work = add(work, created.work).map_err(crate::workspace::WorkspaceError::engine)?;
+        if created.value {
+            Ok(work)
+        } else {
+            Err(crate::workspace::WorkspaceError::RetentionConflict)
         }
     }
 
@@ -4026,6 +4090,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 generation_root,
                 operation_id,
             },
+            &proof.objects,
             work,
             budget,
             cancellation,
@@ -4218,6 +4283,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 generation_root: manifest.generation_root,
                 operation_id: Some(operation_id),
             },
+            &manifest.objects,
             work,
             budget,
             cancellation,
@@ -4225,9 +4291,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await
     }
 
+    /// Durably creates a volume's authority with its creation record, once
+    /// every object in `closure`, the initial generation's closure, is
+    /// durable.
     async fn publish_volume_creation(
         &self,
         creation: VolumeCreation,
+        closure: &[ObjectId],
         mut work: WorkCounters,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -4238,22 +4308,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             generation_root,
             operation_id,
         } = creation;
-        let authority_id = volume_authority_id(volume_id);
-        let created = self
-            .inner
-            .authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = add(work, created.work)?;
-        let active_head = match created.value {
-            CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
-        };
         let event = encode_volume_created(VolumeCreated {
             volume_id,
             config,
@@ -4275,42 +4329,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .inner
             .objects
             .flush_before_publish(
-                crate::PublicationScope::Everything,
+                crate::PublicationScope::Closure(closure),
                 remaining(work, budget)?,
                 cancellation,
             )
             .await
             .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
         work = add(work, drained.work)?;
-        let appended = self
+        let created = self
             .inner
             .authority
-            .compare_and_append(
-                authority_id,
-                active_head.epoch,
-                Head::genesis(active_head.epoch),
+            .create_authority_with_first_record(
+                volume_authority_id(volume_id),
                 commit,
                 remaining(work, budget)?,
                 cancellation,
             )
             .await
             .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = add(work, appended.work)?;
-        match appended.value {
-            AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => Ok(FsReceipt {
-                value: Volume {
-                    fs: self.clone(),
-                    id: volume_id,
-                    config,
-                },
-                work,
-            }),
-            AppendOutcome::Conflict { .. }
-            | AppendOutcome::Fenced { .. }
-            | AppendOutcome::IdempotencyConflict { .. } => {
-                Err(OperationFailure::new(FsError::CreationRejected, work))
-            }
+        work = add(work, created.work)?;
+        if !created.value {
+            return Err(OperationFailure::new(FsError::CreationRejected, work));
         }
+        Ok(FsReceipt {
+            value: Volume {
+                fs: self.clone(),
+                id: volume_id,
+                config,
+            },
+            work,
+        })
     }
 
     async fn read_creation(
@@ -13242,6 +13290,51 @@ fn identity_hash_work(domain: &[u8]) -> WorkCounters {
         bytes_hashed: u64::try_from(domain.len()).unwrap_or(u64::MAX) + 16,
         ..WorkCounters::default()
     }
+}
+
+/// A fork's two first records: the retention of its source generation, under
+/// the returned retention authority, and the new workspace's creation.
+fn fork_records<A, O>(
+    source: &Volume<A, O>,
+    source_root: ObjectId,
+    destination: crate::WorkspaceId,
+    fork_root: ObjectId,
+    operation_id: OperationId,
+) -> Result<
+    (
+        crate::AuthorityId,
+        ProposedCommit,
+        ProposedCommit,
+        WorkCounters,
+    ),
+    FsError,
+> {
+    let label = hex::encode(destination.into_bytes());
+    let retention = retention_authority_id(source.id, RetentionKind::ForkBase, &label);
+    let (retained, retained_work) = creation_commit(
+        OperationId::from_bytes(retention.into_bytes()),
+        encode_retention_created(&RetentionCreated {
+            volume_id: source.id,
+            kind: RetentionKind::ForkBase,
+            label,
+            generation_root: source_root,
+            config: source.config,
+        })?,
+    );
+    let (creation, creation_work) = creation_commit(
+        operation_id,
+        encode_volume_created(VolumeCreated {
+            volume_id: destination.volume_id(),
+            config: source.config,
+            initial_generation_root: fork_root,
+        })?,
+    );
+    Ok((
+        retention,
+        retained,
+        creation,
+        retained_work.checked_add(creation_work)?,
+    ))
 }
 
 fn creation_commit(operation_id: OperationId, payload: Vec<u8>) -> (ProposedCommit, WorkCounters) {
