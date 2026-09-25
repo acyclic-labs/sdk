@@ -3,6 +3,20 @@
 //! Drivers project one canonical SDK checkout. They own kernel handles and
 //! callback cursors only; filesystem truth, COW state, and publication remain
 //! in `acyclic-fs`.
+//!
+//! # macOS
+//!
+//! The macOS mount is an `NFSv4` filesystem that only the kernel's NFS client
+//! can reach, over a local socket in a private directory. Where NFS defines
+//! behavior, it differs from APFS:
+//!
+//! - Cached names and attributes are revalidated at every open and within
+//!   one second otherwise, so a change made around the mount becomes visible
+//!   no later than that.
+//! - Advisory locks exclude other processes, but the NFS client keys every
+//!   lock by process: two descriptors that one process opened never exclude
+//!   each other with `flock`, whereas APFS gives each open file description
+//!   its own `flock`. `fcntl` record locks are per process on both.
 
 use crate::kernel::FileMetadata;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
