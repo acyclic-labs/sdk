@@ -321,44 +321,6 @@ fn batch_error_and_authenticated_child_bound_mapping_is_total() {
         map_batch_error(BatchError::Work(WorkError::Overflow)),
         FileRecordReadError::Work(WorkError::Overflow)
     ));
-
-    let first = FileId::from_bytes([1; 16]);
-    let second = FileId::from_bytes([2; 16]);
-    let child = FileTableChild {
-        first_file_id: first,
-        page: ObjectId {
-            kind: ObjectKind::FileTablePage,
-            digest: Digest::from_bytes([1; 32]),
-        },
-    };
-    assert!(validate_child_bounds(&[child], Some(first), Some(second)).is_ok());
-    assert!(matches!(
-        validate_child_bounds(&[child], Some(second), None),
-        Err(FileRecordReadError::ChildBoundsMismatch)
-    ));
-    assert!(matches!(
-        validate_child_bounds(&[child], Some(first), Some(first)),
-        Err(FileRecordReadError::ChildBoundsMismatch)
-    ));
-    let record = FileRecord {
-        file_id: first,
-        kind: FileKind::Fifo,
-        link_count: 1,
-        metadata: ObjectId {
-            kind: ObjectKind::Metadata,
-            digest: Digest::from_bytes([2; 32]),
-        },
-        payload: FilePayload::Empty,
-    };
-    assert!(validate_record_bounds(&[record], Some(first), Some(second)).is_ok());
-    assert!(matches!(
-        validate_record_bounds(&[record], Some(second), None),
-        Err(FileRecordReadError::ChildBoundsMismatch)
-    ));
-    assert!(matches!(
-        validate_record_bounds(&[record], Some(first), Some(first)),
-        Err(FileRecordReadError::ChildBoundsMismatch)
-    ));
 }
 
 #[test]

@@ -198,6 +198,18 @@ impl CheckoutDependencies {
         self.captured = Arc::default();
     }
 
+    /// Whether an observation of `region` is already part of the proof.
+    /// Observing it again against the same or a safely rebased base adds
+    /// exactly the dependency the proof already holds.
+    pub(crate) fn observes(&self, region: &DependencyRegion) -> bool {
+        self.captured.get(region).is_some_and(|state| {
+            matches!(
+                state.usage,
+                DependencyUse::Observation | DependencyUse::ObservationAndMutation
+            )
+        })
+    }
+
     pub(crate) fn clear_mutations(&mut self) {
         Arc::make_mut(&mut self.captured).retain(|_, state| match state.usage {
             DependencyUse::Observation => true,

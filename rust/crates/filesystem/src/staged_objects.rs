@@ -10,8 +10,9 @@
 //! durable provider. Publication durably drains exactly the staged part of
 //! the closure it makes reachable; objects no published closure needs, such
 //! as pages later mutations superseded, stay private and vanish with the
-//! engine. Only a spill file past its bound is drained wholesale, which is
-//! always safe because durability is a superset of staging.
+//! engine. A spill file past its bound is drained a bounded step at a time
+//! by the admissions that grow it, as housekeeping outside their own work,
+//! which is always safe because durability is a superset of staging.
 
 use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue, PublicationScope,
@@ -26,8 +27,8 @@ use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::PoisonError;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{OnceLock, PoisonError};
 use tokio::sync::RwLock;
 
 // The local provider stores one batch in a bounded segment. Every durable
@@ -36,17 +37,22 @@ use tokio::sync::RwLock;
 const MAXIMUM_DRAIN_BYTES: u64 = 4 * 1_024 * 1_024;
 // Staged bytes held in memory before the window spills to the private file.
 const MAXIMUM_RESIDENT_BYTES: u64 = 4 * 1_024 * 1_024;
-// Spill file length past which every spilled object is drained durably, so
-// private staging stays bounded however long publication is deferred.
+// Spill file length past which each spill also drains one segment-bounded
+// batch of spilled objects durably. A spill moves at most half the resident
+// window and a drain step up to a whole segment, so the spill shrinks to
+// empty, and its file is reused, however long publication is deferred.
 const MAXIMUM_SPILL_BYTES: u64 = 1_024 * 1_024 * 1_024;
 
 enum Staged {
     /// Held in memory. `referenced` records a read since the window last
-    /// considered spilling it; `order` is its key in `Index::order`.
+    /// considered spilling it; `order` is its key in `Index::order`;
+    /// `decoded` holds its first decoded representation, which lives and
+    /// leaves with the resident bytes.
     Resident {
         bytes: Bytes,
         referenced: AtomicBool,
         order: u64,
+        decoded: OnceLock<(DecodedCacheKey, DecodedCacheValue)>,
     },
     Spilled {
         offset: u64,
@@ -132,6 +138,7 @@ impl Index {
                 bytes,
                 referenced: AtomicBool::new(false),
                 order,
+                decoded: OnceLock::new(),
             },
         ) {
             self.spilled_objects -= 1;
@@ -152,6 +159,7 @@ impl Index {
                 bytes,
                 referenced,
                 order,
+                ..
             }) = self.objects.get_mut(&object_id)
             else {
                 continue;
@@ -255,19 +263,6 @@ impl<S> StagedObjects<S> {
         }
     }
 
-    /// Whether `object_id` is known to be staged. Staged pages are the
-    /// private working set of unpublished candidates: each is resident or
-    /// spilled already, and most are superseded by the next mutation that
-    /// reads them, so they bypass the shared decoded cache instead of
-    /// evicting published pages from it. An uncertain answer, while another
-    /// operation updates the index, admits as usual; either choice is sound
-    /// because the cache is keyed by immutable identity.
-    fn is_staged(&self, object_id: ObjectId) -> bool {
-        self.index
-            .try_read()
-            .is_ok_and(|index| index.objects.contains_key(&object_id))
-    }
-
     /// Moves the least recently used resident objects, down to half the
     /// window, to the end of the spill file with one unsynchronized write.
     /// The caller holds the spill file exclusively. Objects stay resident,
@@ -364,40 +359,44 @@ impl<S> StagedObjects<S> {
 
 impl<S: AsyncObjectStore> StagedObjects<S> {
     /// Spills the least recently used resident objects once the window
-    /// overflows, and durably drains every spilled object once the spill
-    /// file reaches its bound.
-    async fn relieve_window(
-        &self,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+    /// overflows and, while the spill file is past its bound, drains one
+    /// batch of spilled objects durably.
+    ///
+    /// Only the spill belongs to the admission: it is what keeps staging's
+    /// memory bounded. The drain step is housekeeping any admission could
+    /// have done, so it runs under its own bounded work, is not charged to
+    /// the caller, and never fails the admission; a failed step leaves its
+    /// objects staged for the next step or publication.
+    async fn relieve_window(&self, budget: WorkBudget) -> ObjectResult<()> {
         let _spill_file = self.spill_io.write().await;
-        let mut work = self.spill_locked(budget).await?.work;
-        let spilled = {
+        let spilled = self.spill_locked(budget).await?;
+        let targets = {
             let index = self.index();
             if index.spill_end <= MAXIMUM_SPILL_BYTES {
-                return Ok(ObjectReceipt { value: (), work });
+                return Ok(spilled);
             }
+            let mut batch_bytes = 0_u64;
             index
                 .objects
                 .iter()
-                .filter(|(_, staged)| matches!(staged, Staged::Spilled { .. }))
-                .map(|(&object_id, _)| object_id)
+                .filter_map(|(&object_id, staged)| match *staged {
+                    Staged::Spilled { length, .. } => Some((object_id, length)),
+                    Staged::Resident { .. } => None,
+                })
+                .take_while(|&(_, length)| {
+                    let first = batch_bytes == 0;
+                    batch_bytes = batch_bytes.saturating_add(length);
+                    first || batch_bytes <= MAXIMUM_DRAIN_BYTES
+                })
+                .map(|(object_id, _)| object_id)
                 .collect::<Vec<_>>()
         };
-        let drained = self
-            .drain_locked(
-                spilled,
-                work.remaining(budget)
-                    .map_err(|error| ObjectFailure::new(error.into(), work))?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = work
-            .checked_add(drained.work)
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        Ok(ObjectReceipt { value: (), work })
+        // One segment-bounded batch bounds the step's work; a fresh token
+        // keeps the caller's cancellation from abandoning it midway.
+        let _step = self
+            .drain_locked(targets, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await;
+        Ok(spilled)
     }
 
     /// Durably admits the staged objects among `targets` in segment-bounded
@@ -506,14 +505,24 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
 }
 
 impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
+    /// Staged pages are the private working set of unpublished candidates,
+    /// and most are superseded by the next mutation that reads them. Rather
+    /// than churn the shared decoded cache and evict published pages, a
+    /// resident page keeps its own decoded representation, which leaves with
+    /// it; a spilled page is decoded afresh. The cache is keyed by immutable
+    /// identity and decoder, so every answer is sound.
     fn decoded_cache_get(
         &self,
         key: DecodedCacheKey,
     ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        if self.is_staged(key.object_id) {
-            return Ok(None);
+        match self.index().objects.get(&key.object_id) {
+            Some(Staged::Resident { decoded, .. }) => Ok(decoded
+                .get()
+                .filter(|(cached, _)| *cached == key)
+                .map(|(_, value)| value.clone())),
+            Some(Staged::Spilled { .. }) => Ok(None),
+            None => self.inner.decoded_cache_get(key),
         }
-        self.inner.decoded_cache_get(key)
     }
 
     fn decoded_cache_admit(
@@ -521,10 +530,18 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         key: DecodedCacheKey,
         value: DecodedCacheValue,
     ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        if self.is_staged(key.object_id) {
-            return Ok(DecodedCacheAdmission::Uncached(value));
+        match self.index().objects.get(&key.object_id) {
+            Some(Staged::Resident { decoded, .. }) => {
+                let (cached, shared) = decoded.get_or_init(|| (key, value.clone()));
+                Ok(if *cached == key {
+                    DecodedCacheAdmission::Shared(shared.clone())
+                } else {
+                    DecodedCacheAdmission::Uncached(value)
+                })
+            }
+            Some(Staged::Spilled { .. }) => Ok(DecodedCacheAdmission::Uncached(value)),
+            None => self.inner.decoded_cache_admit(key, value),
         }
-        self.inner.decoded_cache_admit(key, value)
     }
 
     async fn put(
@@ -589,7 +606,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
                 work: WorkCounters::default(),
             });
         }
-        self.relieve_window(budget, cancellation).await
+        self.relieve_window(budget).await
     }
 
     async fn put_many(
@@ -784,6 +801,7 @@ fn byte_length(bytes: &Bytes) -> u64 {
 mod tests {
     use super::*;
     use crate::distributed::ProviderObjectStore;
+    use crate::kernel::DecodeLimits;
     use crate::storage::{ObjectKind, object_digest};
     use acyclic_objects::ObjectsProvider as _;
     use std::sync::Arc;
@@ -968,6 +986,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_spill_past_its_bound_drains_without_charging_or_failing_admissions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (store, provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let body_bytes = 256 * 1_024;
+        let window = usize::try_from(MAXIMUM_RESIDENT_BYTES)? / body_bytes;
+        let objects = (0..8 * window)
+            .map(|index| {
+                blob(Bytes::from(vec![
+                    u8::try_from(index % 251).unwrap_or(0);
+                    body_bytes
+                ]))
+            })
+            .collect::<Vec<_>>();
+        let (early, late) = objects.split_at(3 * window);
+        for (object_id, bytes) in early {
+            store
+                .put(*object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token)
+                .await?;
+        }
+        assert!(store.index().spilled_objects > 0);
+        // Stand in for a spill file that has grown past its bound.
+        store.index_mut().spill_end += MAXIMUM_SPILL_BYTES;
+
+        // An admission may spend exactly its own spill: one backend write.
+        let mut admission = WorkBudget::UNBOUNDED;
+        admission.backend_write_operations = 1;
+        for (object_id, bytes) in late {
+            let receipt = store
+                .put(*object_id, bytes.clone(), admission, &token)
+                .await?;
+            assert!(receipt.work.backend_write_operations <= 1);
+        }
+        let durable = {
+            let mut durable = 0;
+            for (object_id, _) in early {
+                if store
+                    .inner()
+                    .contains(*object_id, WorkBudget::UNBOUNDED, &token)
+                    .await?
+                    .value
+                {
+                    durable += 1;
+                }
+            }
+            durable
+        };
+        assert!(durable > 0, "the drain steps made spilled objects durable");
+        assert!(
+            store.index().spill_end <= MAXIMUM_SPILL_BYTES,
+            "the steps emptied and reused the spill file"
+        );
+        for (object_id, bytes) in &objects {
+            let read = store
+                .read(*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token)
+                .await?;
+            assert_eq!(&read.value.bytes, bytes);
+        }
+        drop(store);
+        drop(provider);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn publication_drains_exactly_its_closure_and_keeps_the_rest_private()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
@@ -1047,17 +1130,28 @@ mod tests {
             .put_hashed(object.clone(), WorkBudget::UNBOUNDED, &token)
             .await?;
         assert_eq!(admitted.work.bytes_hashed, 0);
-        assert!(
-            store.is_staged(object.object_id()),
-            "a staged page bypasses the shared decoded cache"
-        );
+        // A resident page keeps its own decoded representation, which leaves
+        // with it once publication makes the page durable.
+        let key = DecodedCacheKey::new::<u32>(object.object_id(), DecodeLimits::default());
+        let decoded = DecodedCacheValue {
+            value: Arc::new(7_u32),
+            logical_bytes: 4,
+        };
+        assert!(store.decoded_cache_get(key)?.is_none());
+        assert!(matches!(
+            store.decoded_cache_admit(key, decoded)?,
+            DecodedCacheAdmission::Shared(_)
+        ));
+        let cached = store
+            .decoded_cache_get(key)?
+            .ok_or("resident page lost its decoding")?;
+        assert_eq!(cached.value.downcast_ref::<u32>(), Some(&7));
+        let other = DecodedCacheKey::new::<u64>(object.object_id(), DecodeLimits::default());
+        assert!(store.decoded_cache_get(other)?.is_none());
         store
             .flush_before_publish(PublicationScope::Everything, WorkBudget::UNBOUNDED, &token)
             .await?;
-        assert!(
-            !store.is_staged(object.object_id()),
-            "a durable page is cached like any published page"
-        );
+        assert!(store.decoded_cache_get(key)?.is_none());
         let (object_id, _) = object.into_parts();
         let forged = store
             .put(

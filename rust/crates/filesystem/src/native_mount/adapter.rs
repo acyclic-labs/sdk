@@ -220,10 +220,12 @@ struct DetachedMountState<A, O> {
 }
 
 impl<A, O> DetachedMountState<A, O> {
-    /// Stamps a content change's times, as every native write does, then
-    /// records the change.
-    async fn record_content_change(
+    /// Applies one content change with its time stamp, as every native
+    /// write does, as one detached record transition, then records it: the
+    /// change and its record happen together or not at all.
+    async fn change_content(
         &mut self,
+        change: ContentChange<std::convert::Infallible>,
         ledger: &ViewLedger,
         cancellation: &CancellationToken,
     ) -> Result<(), MountSourceError>
@@ -231,12 +233,15 @@ impl<A, O> DetachedMountState<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        if self.metadata.stamp_content_change(content_change_time()?) {
-            self.file
-                .set_attributes(self.metadata, None, boundary_budget(), cancellation)
-                .await
-                .map_err(engine_error)?;
-        }
+        let mut metadata = self.metadata;
+        let stamped = metadata
+            .stamp_content_change(content_change_time()?)
+            .then_some(metadata);
+        self.file
+            .change_content(change, stamped, boundary_budget(), cancellation)
+            .await
+            .map_err(engine_error)?;
+        self.metadata = metadata;
         self.record_change(ledger)
     }
 
@@ -283,19 +288,107 @@ pub struct SharedCheckout<A, O> {
     revision: Arc<AtomicU64>,
     ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
-    grouped: StdMutex<Vec<GroupedRequest>>,
+    grouped: StdMutex<GroupedQueue>,
 }
 
 /// Most queued changes one hold of the checkout applies as one mutation.
 const MAXIMUM_GROUPED_CHANGES: usize = 64;
 
+/// Changes waiting for group commit, and whether a drain is running.
+#[derive(Default)]
+struct GroupedQueue {
+    requests: std::collections::VecDeque<GroupedRequest>,
+    draining: bool,
+}
+
 /// One change waiting for group commit, and where its own result goes.
 struct GroupedRequest {
     change: GroupedChange,
+    admission: Arc<GroupedAdmission>,
     reply: tokio::sync::oneshot::Sender<Result<GroupedOutcome, MountSourceError>>,
-    /// The requester's origin, which its change takes whichever caller
-    /// applies the group.
+    /// The requester's origin, which its change takes whichever caller or
+    /// drain applies the group.
     origin: ViewOrigin,
+}
+
+/// Whether a queued change was claimed for application or abandoned by its
+/// caller first. Exactly one of the two ever happens.
+struct GroupedAdmission(AtomicU8);
+
+const GROUPED_QUEUED: u8 = 0;
+const GROUPED_CLAIMED: u8 = 1;
+const GROUPED_ABANDONED: u8 = 2;
+
+impl GroupedAdmission {
+    fn claim(&self) -> bool {
+        self.0
+            .compare_exchange(
+                GROUPED_QUEUED,
+                GROUPED_CLAIMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+}
+
+/// A future polled in place by its caller that, if the caller drops it
+/// unfinished, continues on its own task: no caller's deadline can stop it
+/// midway.
+struct RunToCompletion {
+    future: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl RunToCompletion {
+    fn new(future: impl std::future::Future<Output = ()> + Send + 'static) -> Self {
+        Self {
+            future: Some(Box::pin(future)),
+            runtime: tokio::runtime::Handle::current(),
+        }
+    }
+}
+
+impl std::future::Future for RunToCompletion {
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        let Some(future) = self.future.as_mut() else {
+            return std::task::Poll::Ready(());
+        };
+        let polled = future.as_mut().poll(context);
+        if polled.is_ready() {
+            self.future = None;
+        }
+        polled
+    }
+}
+
+impl Drop for RunToCompletion {
+    fn drop(&mut self) {
+        if let Some(future) = self.future.take() {
+            drop(self.runtime.spawn(future));
+        }
+    }
+}
+
+/// Abandons a still-queued change when its caller stops waiting, so a
+/// change whose caller saw it fail can never apply later. A change already
+/// claimed is being applied and completes regardless.
+struct AbandonUnlessClaimed(Arc<GroupedAdmission>);
+
+impl Drop for AbandonUnlessClaimed {
+    fn drop(&mut self) {
+        let _ = self.0.0.compare_exchange(
+            GROUPED_QUEUED,
+            GROUPED_ABANDONED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
 }
 
 /// Exclusive access to a shared checkout. The retained view lease prevents a
@@ -354,55 +447,87 @@ impl<A, O> SharedCheckout<A, O> {
             revision,
             ledger,
             view_gate: Arc::new(ViewGate::new()),
-            grouped: StdMutex::new(Vec::new()),
+            grouped: StdMutex::new(GroupedQueue::default()),
         }
     }
 
-    /// Applies one change by group commit. Changes queued while another
-    /// caller holds the checkout are applied together by whichever queued
-    /// caller next acquires it, as one mutation per hold, in queue order;
-    /// each caller receives exactly its own change's result.
+    /// Applies one change by group commit. Changes queued while the checkout
+    /// is busy are applied together, as one mutation per hold and in queue
+    /// order, by a drain that runs detached from every caller, so no
+    /// caller's deadline can interrupt a group; each caller receives exactly
+    /// its own change's result.
     ///
     /// Queued changes are concurrent: none was issued after another's result
-    /// returned, so applying them in queue order is linearizable.
+    /// returned, so applying them in queue order is linearizable. A caller
+    /// that stops waiting before its change is claimed abandons it, and an
+    /// abandoned change never applies.
     pub(super) async fn apply_grouped(
-        &self,
+        self: &Arc<Self>,
         change: GroupedChange,
         cancellation: &CancellationToken,
     ) -> Result<GroupedOutcome, MountSourceError>
     where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
     {
-        let (reply, mut outcome) = tokio::sync::oneshot::channel();
-        self.grouped
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(GroupedRequest {
+        let (reply, outcome) = tokio::sync::oneshot::channel();
+        let admission = Arc::new(GroupedAdmission(AtomicU8::new(GROUPED_QUEUED)));
+        let _abandon = AbandonUnlessClaimed(Arc::clone(&admission));
+        let start_drain = {
+            let mut queue = self
+                .grouped
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            queue.requests.push_back(GroupedRequest {
                 change,
+                admission,
                 reply,
                 origin: ViewOrigin::current(),
             });
+            !std::mem::replace(&mut queue.draining, true)
+        };
+        if start_drain {
+            let checkout = Arc::clone(self);
+            let cancellation = cancellation.clone();
+            // The caller that starts the drain runs it in place, saving a
+            // hand-off to another thread; if the caller stops waiting, the
+            // drain moves to its own task and still runs to completion.
+            RunToCompletion::new(async move { checkout.drain_grouped(&cancellation).await }).await;
+        }
+        outcome.await.map_err(|_| MountSourceError::Stale)?
+    }
+
+    /// Applies queued changes, one group per hold of the checkout, until the
+    /// queue is empty. Abandoned changes are discarded unapplied.
+    async fn drain_grouped(&self, cancellation: &CancellationToken)
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
         loop {
-            tokio::select! {
-                biased;
-                result = &mut outcome => {
-                    return result.map_err(|_| MountSourceError::Stale)?;
-                }
-                mut checkout = self.lock() => {
-                    let requests = {
-                        let mut queue = self
-                            .grouped
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let count = queue.len().min(MAXIMUM_GROUPED_CHANGES);
-                        queue.drain(..count).collect::<Vec<_>>()
-                    };
-                    if !requests.is_empty() {
-                        checkout.apply_grouped_requests(requests, cancellation).await;
+            let mut checkout = self.lock().await;
+            let requests = {
+                let mut queue = self
+                    .grouped
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut claimed = Vec::new();
+                while claimed.len() < MAXIMUM_GROUPED_CHANGES
+                    && let Some(request) = queue.requests.pop_front()
+                {
+                    if request.admission.claim() {
+                        claimed.push(request);
                     }
                 }
-            }
+                if claimed.is_empty() {
+                    queue.draining = false;
+                    return;
+                }
+                claimed
+            };
+            checkout
+                .apply_grouped_requests(requests, cancellation)
+                .await;
         }
     }
 
@@ -1063,6 +1188,26 @@ impl<A, O> CheckoutDetachedFile<A, O> {
     }
 }
 
+impl<A, O> CheckoutDetachedFile<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    /// Applies one content change to this detached file with its time
+    /// stamp as one record transition, and records it.
+    fn change_content(
+        &self,
+        change: ContentChange<std::convert::Infallible>,
+    ) -> Result<(), MountSourceError> {
+        self.runtime.wait(|| async {
+            let mut state = self.state.lock().await;
+            state
+                .change_content(change, &self.ledger, &self.cancellation)
+                .await
+        })
+    }
+}
+
 impl<A, O> MountOpenFile for CheckoutDetachedFile<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -1136,33 +1281,11 @@ where
     }
 
     fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut state = self.state.lock().await;
-            state
-                .file
-                .write_range(offset, bytes, boundary_budget(), &self.cancellation)
-                .await
-                .map(|_| ())
-                .map_err(engine_error)?;
-            state
-                .record_content_change(&self.ledger, &self.cancellation)
-                .await
-        })
+        self.change_content(ContentChange::Write { offset, bytes })
     }
 
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut state = self.state.lock().await;
-            state
-                .file
-                .resize(logical_bytes, boundary_budget(), &self.cancellation)
-                .await
-                .map(|_| ())
-                .map_err(engine_error)?;
-            state
-                .record_content_change(&self.ledger, &self.cancellation)
-                .await
-        })
+        self.change_content(ContentChange::Resize { logical_bytes })
     }
 
     fn allocate_range(
@@ -1171,35 +1294,7 @@ where
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut state = self.state.lock().await;
-            let range = ByteRange { offset, length };
-            match operation {
-                MountRangeAllocation::PunchHole => {
-                    state
-                        .file
-                        .zero_range(range, false, false, boundary_budget(), &self.cancellation)
-                        .await
-                }
-                MountRangeAllocation::ZeroRange { extend } => {
-                    state
-                        .file
-                        .zero_range(range, true, extend, boundary_budget(), &self.cancellation)
-                        .await
-                }
-                MountRangeAllocation::Preallocate { keep_size } => {
-                    state
-                        .file
-                        .preallocate(range, keep_size, boundary_budget(), &self.cancellation)
-                        .await
-                }
-            }
-            .map(|_| ())
-            .map_err(engine_error)?;
-            state
-                .record_content_change(&self.ledger, &self.cancellation)
-                .await
-        })
+        self.change_content(range_allocation(ByteRange { offset, length }, operation))
     }
 
     fn set_attributes(
@@ -3481,6 +3576,139 @@ mod tests {
         Ok(())
     }
 
+    /// Objects in memory, refusing metadata while `refuse_metadata` is set.
+    #[derive(Default)]
+    struct MetadataRefusingObjects {
+        inner: crate::memory::MemoryObjectStore,
+        refuse_metadata: AtomicBool,
+    }
+
+    impl MetadataRefusingObjects {
+        fn admit(&self, object_id: ObjectId) -> Result<(), crate::storage::ObjectFailure> {
+            if object_id.kind == crate::storage::ObjectKind::Metadata
+                && self.refuse_metadata.load(Ordering::Acquire)
+            {
+                return Err(crate::storage::ObjectFailure::before_work(
+                    crate::storage::ObjectStoreError::Corrupt,
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    impl crate::storage::ObjectStore for MetadataRefusingObjects {
+        fn put(
+            &self,
+            object_id: ObjectId,
+            bytes: Bytes,
+            budget: WorkBudget,
+        ) -> crate::storage::ObjectResult<()> {
+            self.admit(object_id)?;
+            crate::storage::ObjectStore::put(&self.inner, object_id, bytes, budget)
+        }
+
+        fn put_many(
+            &self,
+            writes: &[crate::storage::ObjectWrite],
+            budget: WorkBudget,
+        ) -> crate::storage::ObjectResult<()> {
+            for write in writes {
+                self.admit(write.object_id)?;
+            }
+            crate::storage::ObjectStore::put_many(&self.inner, writes, budget)
+        }
+
+        fn read(
+            &self,
+            object_id: ObjectId,
+            maximum_bytes: u64,
+            budget: WorkBudget,
+        ) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
+            crate::storage::ObjectStore::read(&self.inner, object_id, maximum_bytes, budget)
+        }
+
+        fn read_many(
+            &self,
+            requests: &[crate::storage::ObjectReadRequest],
+            budget: WorkBudget,
+        ) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
+            crate::storage::ObjectStore::read_many(&self.inner, requests, budget)
+        }
+
+        fn contains(
+            &self,
+            object_id: ObjectId,
+            budget: WorkBudget,
+        ) -> crate::storage::ObjectResult<bool> {
+            crate::storage::ObjectStore::contains(&self.inner, object_id, budget)
+        }
+    }
+
+    impl crate::async_storage::ImmediateObjectStore for MetadataRefusingObjects {}
+
+    #[test]
+    fn a_detached_write_that_cannot_stamp_changes_nothing() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let objects = Arc::new(MetadataRefusingObjects::default());
+        let fs = Fs::new(
+            crate::memory::MemoryAuthorityStore::default(),
+            Arc::clone(&objects),
+            crate::EmbeddedCapabilities::MEMORY,
+        );
+        let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let checkout = runtime.block_on(async {
+            let cancellation = CancellationToken::new();
+            let volume = fs
+                .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value;
+            volume
+                .checkout(
+                    GenerationSelector::Head,
+                    CheckoutMode {
+                        access: AccessMode::ReadWrite,
+                        consistency: ConsistencyMode::Pinned,
+                        mutations: MutationMode::PrivateOverlay,
+                    },
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map(|receipt| receipt.value)
+        })?;
+        let source = CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?;
+        let path = native_test_path("stamped.bin");
+        let timed = FileMetadata {
+            modified_ns: crate::kernel::MetadataField::Value(1),
+            changed_ns: crate::kernel::MetadataField::Value(1),
+            ..metadata()
+        };
+        source.create_file(&path, timed)?;
+        source.write_range(&path, 0, Bytes::from_static(b"before"))?;
+        let detached = source.detach_file(&path)?;
+        let before = detached.lookup()?;
+
+        objects.refuse_metadata.store(true, Ordering::Release);
+        assert!(
+            detached
+                .write_range(0, Bytes::from_static(b"after!"))
+                .is_err()
+        );
+        assert!(detached.resize(64).is_err());
+        objects.refuse_metadata.store(false, Ordering::Release);
+
+        // Content and stamp are one transition: neither happened, so no
+        // cached fact about the file went stale without being invalidated.
+        assert_eq!(detached.lookup()?, before);
+        assert_eq!(detached.read_range(0, 6)?.as_ref(), b"before");
+        detached.write_range(0, Bytes::from_static(b"after!"))?;
+        let after = detached.lookup()?;
+        assert_eq!(detached.read_range(0, 6)?.as_ref(), b"after!");
+        assert_ne!(after.metadata, before.metadata);
+        Ok(())
+    }
+
     type MemorySource = CheckoutMountSource<
         crate::facade::MemoryAuthorityBackend,
         crate::facade::MemoryObjectBackend,
@@ -3777,11 +4005,13 @@ mod tests {
             .grouped
             .lock()
             .map_err(|_| "poisoned queue")?
-            .push(GroupedRequest {
+            .requests
+            .push_back(GroupedRequest {
                 change: GroupedChange::CreateFile {
                     path: source.path(&native_test_path("queued"))?,
                     metadata: metadata(),
                 },
+                admission: Arc::new(GroupedAdmission(AtomicU8::new(GROUPED_QUEUED))),
                 reply,
                 origin: requester,
             });
@@ -3810,6 +4040,86 @@ mod tests {
             Ok(acquired)
         });
         assert_eq!(acquired?, 4_096);
+        Ok(())
+    }
+
+    #[test]
+    fn an_abandoned_grouped_change_never_applies() -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let abandoned = native_test_path("abandoned.bin");
+        let kept = native_test_path("kept.bin");
+        let create = |path: &MountPath| -> Result<GroupedChange, MountSourceError> {
+            Ok(GroupedChange::CreateFile {
+                path: source.path(path)?,
+                metadata: metadata(),
+            })
+        };
+        let (abandoned_change, kept_change) = (create(&abandoned)?, create(&kept)?);
+        source.runtime.block_on(|| async {
+            // While another holder keeps the checkout, one caller queues its
+            // change and gives up waiting, as a callback deadline does.
+            let held = source.checkout.lock().await;
+            let gave_up = tokio::time::timeout(
+                Duration::from_millis(20),
+                source
+                    .checkout
+                    .apply_grouped(abandoned_change, &source.cancellation),
+            )
+            .await;
+            assert!(gave_up.is_err(), "the checkout was held");
+            drop(held);
+            source
+                .checkout
+                .apply_grouped(kept_change, &source.cancellation)
+                .await
+        })?;
+        assert!(source.lookup(&kept)?.is_some());
+        assert!(
+            source.lookup(&abandoned)?.is_none(),
+            "a change its caller saw fail applied later"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_drain_outlives_the_caller_that_started_it() -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let abandoned = native_test_path("drainer.bin");
+        let kept = native_test_path("waiter.bin");
+        let create = |path: &MountPath| -> Result<GroupedChange, MountSourceError> {
+            Ok(GroupedChange::CreateFile {
+                path: source.path(path)?,
+                metadata: metadata(),
+            })
+        };
+        let (abandoned_change, kept_change) = (create(&abandoned)?, create(&kept)?);
+        source.runtime.block_on(|| async {
+            let held = source.checkout.lock().await;
+            // The first caller starts the drain in place, which waits for
+            // the held checkout; a second caller queues behind it.
+            let mut drainer = Box::pin(
+                source
+                    .checkout
+                    .apply_grouped(abandoned_change, &source.cancellation),
+            );
+            assert!(futures::poll!(drainer.as_mut()).is_pending());
+            let checkout = Arc::clone(&source.checkout);
+            let cancellation = source.cancellation.clone();
+            let waiter =
+                tokio::spawn(
+                    async move { checkout.apply_grouped(kept_change, &cancellation).await },
+                );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            // The drainer's caller gives up; the drain continues without it.
+            drop(drainer);
+            drop(held);
+            tokio::time::timeout(Duration::from_secs(5), waiter)
+                .await
+                .map_err(|_| MountSourceError::Stale)?
+                .map_err(|_| MountSourceError::Stale)?
+        })?;
+        assert!(source.lookup(&kept)?.is_some());
+        assert!(source.lookup(&abandoned)?.is_none());
         Ok(())
     }
 

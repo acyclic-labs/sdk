@@ -525,19 +525,111 @@ pub struct Checkout<A, O> {
 /// borrow excludes every mutation of the owning checkout. A private candidate
 /// copies the proof and never shares it.
 struct DependencyLedger {
-    proof: Arc<Mutex<CheckoutDependencies>>,
+    proof: Arc<Mutex<Proof>>,
     observing: bool,
+}
+
+/// One checkout's tracking proof, with the base paths whose complete
+/// observation it already holds.
+///
+/// A path observation's regions are only known by walking the base, so the
+/// proof remembers which walks it absorbed: repeating one against the same
+/// base adds nothing. The memory names its base file table and is forgotten
+/// with every proof it describes, so it can never claim an observation the
+/// proof lacks. Like the dependencies, it is shared between clones until one
+/// of them changes it, so copying a proof for a transaction costs nothing.
+#[derive(Clone)]
+struct Proof {
+    dependencies: CheckoutDependencies,
+    observed_base: Option<ObjectId>,
+    /// Each observed path, and whether its terminal record was observed.
+    observed_paths: Arc<BTreeMap<NamespacePath, bool>>,
+}
+
+impl Proof {
+    fn new(dependencies: CheckoutDependencies) -> Self {
+        Self {
+            dependencies,
+            observed_base: None,
+            observed_paths: Arc::default(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.dependencies.clear();
+        self.observed_paths = Arc::default();
+    }
+
+    /// Whether observing `path` against `base`, with its terminal when
+    /// `terminal` is set, would add nothing to the proof.
+    fn observes_path(&self, base: ObjectId, path: &NamespacePath, terminal: bool) -> bool {
+        self.observed_base == Some(base)
+            && self
+                .observed_paths
+                .get(path)
+                .is_some_and(|observed_terminal| *observed_terminal || !terminal)
+    }
+
+    /// Absorbs one complete path observation against `base`. The memory is
+    /// bounded like the proof; past that bound it restarts empty, which only
+    /// repeats walks.
+    fn observe_paths<'a>(
+        &mut self,
+        base: ObjectId,
+        paths: impl IntoIterator<Item = &'a NamespacePath>,
+        terminal: bool,
+        dependencies: Vec<Dependency>,
+        maximum_dependencies: u32,
+    ) -> Result<(), DependencyError> {
+        self.dependencies
+            .extend_observations(dependencies, maximum_dependencies)?;
+        let maximum_paths = usize::try_from(maximum_dependencies).unwrap_or(usize::MAX);
+        if self.observed_base != Some(base) {
+            self.observed_base = Some(base);
+            self.observed_paths = Arc::default();
+        }
+        for path in paths {
+            if self.observes_path(base, path, terminal) {
+                continue;
+            }
+            let observed = Arc::make_mut(&mut self.observed_paths);
+            if observed.len() >= maximum_paths {
+                observed.clear();
+            }
+            let entry = observed.entry(path.clone()).or_insert(terminal);
+            *entry |= terminal;
+        }
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for Proof {
+    type Target = CheckoutDependencies;
+
+    fn deref(&self) -> &Self::Target {
+        &self.dependencies
+    }
+}
+
+impl std::ops::DerefMut for Proof {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.dependencies
+    }
 }
 
 impl DependencyLedger {
     fn new(dependencies: CheckoutDependencies) -> Self {
+        Self::sharing(Proof::new(dependencies))
+    }
+
+    fn sharing(proof: Proof) -> Self {
         Self {
-            proof: Arc::new(Mutex::new(dependencies)),
+            proof: Arc::new(Mutex::new(proof)),
             observing: false,
         }
     }
 
-    fn proof(&self) -> MutexGuard<'_, CheckoutDependencies> {
+    fn proof(&self) -> MutexGuard<'_, Proof> {
         self.proof.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -550,7 +642,7 @@ impl DependencyLedger {
     }
 
     fn independent(&self) -> Self {
-        Self::new(self.proof().clone())
+        Self::sharing(self.proof().clone())
     }
 }
 
@@ -4785,7 +4877,48 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ContentStager<A, O> {
     }
 }
 
+impl<A, O> PinnedReader<A, O> {
+    /// Exact immutable generation identity this reader is pinned to.
+    #[must_use]
+    pub const fn generation_id(&self) -> GenerationId {
+        GenerationId::new(self.generation_root.digest)
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
+    /// Looks up file records by stable identity, reading each distinct
+    /// file-table frontier once for the whole batch, so one reader answers
+    /// a directory page's identity questions together.
+    ///
+    /// # Errors
+    ///
+    /// Returns measured batch-bound, authentication, cancellation, storage,
+    /// allocation, or bounded-work failures.
+    pub async fn file_records_by_id(
+        &self,
+        file_ids: &[FileId],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Option<FileRecord>>> {
+        let lookup = lookup_file_records_async(
+            &self.volume.fs.inner.objects,
+            self.root.file_table,
+            file_ids,
+            self.volume.config.limits.maximum_paths_per_batch,
+            decode_limits(self.volume.config),
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| {
+            OperationFailure::new(FsError::FileRecord(failure.error), *failure.work)
+        })?;
+        Ok(FsReceipt {
+            value: lookup.records,
+            work: lookup.work,
+        })
+    }
+
     async fn resolve_file_records(
         &self,
         paths: &[NamespacePath],
@@ -5901,7 +6034,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             },
         )
         .map_err(|error| OperationFailure::new(FsError::Rebase(RebaseError::Probe(error)), work))?;
-        let dependencies = self.dependencies.proof().clone();
+        let dependencies = self.dependencies.proof().dependencies.clone();
         let classification = classify_rebase_async(
             &probe,
             base,
@@ -9250,12 +9383,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// successful predecessors returns: when the combined mutation fails,
     /// every compiled change is retried alone in order, so one change's
     /// failure never fails another. A change that fails leaves only harmless
-    /// unreferenced staged objects.
+    /// unreferenced staged objects. `budget` bounds each change; the combined
+    /// mutation is bounded by the budgets of the changes it applies.
     ///
     /// # Errors
     ///
-    /// Fails as a whole only once spent work leaves nothing of `budget` or
-    /// overflows; every other failure belongs to its change.
+    /// Fails as a whole only if the group's summed work overflows; every
+    /// other failure, including an exhausted budget, belongs to its change.
     pub async fn apply_group(
         &mut self,
         changes: Vec<GroupedChange>,
@@ -9267,12 +9401,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let mut compiled = Vec::with_capacity(changes.len());
         for change in changes {
             let receipt = self
-                .compile_grouped(
-                    change,
-                    &mut staged_metadata,
-                    remaining(work, budget)?,
-                    cancellation,
-                )
+                .compile_grouped(change, &mut staged_metadata, budget, cancellation)
                 .await;
             compiled.push(match receipt {
                 Ok(receipt) => {
@@ -9285,14 +9414,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 }
             });
         }
-        if compiled.iter().filter(|change| change.is_ok()).count() > 1 {
+        let applicable = compiled.iter().filter(|change| change.is_ok()).count();
+        if applicable > 1 {
             let operations = compiled
                 .iter()
                 .flatten()
                 .flat_map(|(operations, _)| operations.iter().cloned())
                 .collect();
             match self
-                .mutate(operations, remaining(work, budget)?, cancellation)
+                .mutate(operations, group_budget(budget, applicable), cancellation)
                 .await
             {
                 Ok(mutation) => {
@@ -9310,10 +9440,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         for change in compiled {
             let applied = match change {
                 Ok((operations, outcome)) => {
-                    match self
-                        .mutate(operations, remaining(work, budget)?, cancellation)
-                        .await
-                    {
+                    match self.mutate(operations, budget, cancellation).await {
                         Ok(mutation) => {
                             work = add(work, mutation.work)?;
                             Ok(outcome)
@@ -10498,6 +10625,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             } else {
                 None
             };
+            let base = self.base_root.file_table;
+            if let Some(candidate) = candidate
+                && self
+                    .dependencies
+                    .proof()
+                    .observes_path(base, path, capture_terminal)
+            {
+                return Ok(FsReceipt {
+                    work: candidate.work,
+                    value: candidate,
+                });
+            }
             let prior = candidate
                 .as_ref()
                 .map_or(WorkCounters::default(), |value| value.work);
@@ -10514,7 +10653,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let combined = observed.work;
             self.dependencies
                 .proof()
-                .extend_observations(
+                .observe_paths(
+                    base,
+                    [path],
+                    capture_terminal,
                     observed.value.dependencies,
                     self.volume.config.limits.maximum_checkout_dependencies,
                 )
@@ -10622,40 +10764,99 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> FsResult<PathBatchLookup> {
         let synchronized = self.synchronize_live(budget, cancellation).await?;
         let prior = synchronized.work;
+        let config = self.volume.config;
+        let objects = &self.volume.fs.inner.objects;
+        let base = self.base_root.file_table;
+        if !self.tracks_observations() {
+            let mut lookup = crate::kernel::lookup_paths_async(
+                objects,
+                &self.root,
+                paths,
+                config,
+                remaining(prior, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(prior, FsError::Path))?;
+            lookup.work = add(prior, lookup.work)?;
+            return Ok(FsReceipt {
+                work: lookup.work,
+                value: lookup,
+            });
+        }
+        // An unchanged checkout resolves every path in the base itself, so
+        // one walk both answers and observes the batch.
+        if self.root == self.base_root {
+            let observed = crate::kernel::observe_paths_async(
+                objects,
+                &self.root,
+                paths,
+                config,
+                remaining(prior, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(prior, FsError::Path))?;
+            let mut lookup = observed.lookup;
+            lookup.work = add(prior, lookup.work)?;
+            self.dependencies
+                .proof()
+                .observe_paths(
+                    base,
+                    paths,
+                    true,
+                    observed.dependencies,
+                    config.limits.maximum_checkout_dependencies,
+                )
+                .map_err(|error| OperationFailure::new(error.into(), lookup.work))?;
+            return Ok(FsReceipt {
+                work: lookup.work,
+                value: lookup,
+            });
+        }
         let mut lookup = crate::kernel::lookup_paths_async(
-            &self.volume.fs.inner.objects,
+            objects,
             &self.root,
             paths,
-            self.volume.config,
+            config,
             remaining(prior, budget)?,
             cancellation,
         )
         .await
         .map_err(|failure| failure.map_with_prior_work(prior, FsError::Path))?;
         lookup.work = add(prior, lookup.work)?;
-        if self.tracks_observations() {
-            let mut work = lookup.work;
-            for path in paths {
-                let observed = crate::kernel::observe_path_async(
-                    &self.volume.fs.inner.objects,
-                    &self.base_root,
-                    path,
-                    self.volume.config,
-                    remaining(work, budget)?,
-                    cancellation,
+        // Observe, in one base walk, only the paths the proof lacks.
+        let unobserved = {
+            let proof = self.dependencies.proof();
+            paths
+                .iter()
+                .filter(|path| !proof.observes_path(base, path, true))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if !unobserved.is_empty() {
+            let work = lookup.work;
+            let observed = crate::kernel::observe_paths_async(
+                objects,
+                &self.base_root,
+                &unobserved,
+                config,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::Path))?;
+            lookup.work = add(work, observed.lookup.work)?;
+            self.dependencies
+                .proof()
+                .observe_paths(
+                    base,
+                    &unobserved,
+                    true,
+                    observed.dependencies,
+                    config.limits.maximum_checkout_dependencies,
                 )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, FsError::Path))?;
-                work = add(work, observed.lookup.work)?;
-                self.dependencies
-                    .proof()
-                    .extend_observations(
-                        observed.dependencies,
-                        self.volume.config.limits.maximum_checkout_dependencies,
-                    )
-                    .map_err(|error| OperationFailure::new(error.into(), work))?;
-            }
-            lookup.work = work;
+                .map_err(|error| OperationFailure::new(error.into(), lookup.work))?;
         }
         Ok(FsReceipt {
             work: lookup.work,
@@ -11587,6 +11788,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, OperationFailure<FsError>> {
+        let file_ids = {
+            let proof = self.dependencies.proof();
+            file_ids
+                .iter()
+                .copied()
+                .filter(|file_id| !proof.observes(&DependencyRegion::Metadata(*file_id)))
+                .collect::<Vec<_>>()
+        };
         if file_ids.is_empty() {
             return Ok(work);
         }
@@ -11594,7 +11803,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let records = lookup_file_records_async(
             &self.volume.fs.inner.objects,
             self.base_root.file_table,
-            file_ids,
+            &file_ids,
             maximum,
             decode_limits(self.volume.config),
             remaining(work, budget)?,
@@ -12223,153 +12432,105 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         })
     }
 
-    /// Writes caller bytes into the detached sparse file.
+    /// Applies one content change and, when `metadata` is given, replaces
+    /// the complete metadata in the same detached record transition: the
+    /// visible record changes only if both succeed. A detached file has no
+    /// other file to clone from, so that change cannot be expressed.
     ///
     /// # Errors
     ///
-    /// Returns typed range, blob, mutation, storage, cancellation, allocation,
-    /// or bounded-work failures.
-    pub async fn write_range(
+    /// Returns measured blob, encoding, mutation, storage, cancellation,
+    /// allocation, or bounded-work failures.
+    pub async fn change_content(
         &mut self,
-        offset: u64,
-        bytes: Bytes,
+        change: ContentChange<std::convert::Infallible>,
+        metadata: Option<FileMetadata>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        if bytes.is_empty() {
-            return Ok(FsReceipt {
-                value: (),
-                work: WorkCounters::default(),
-            });
-        }
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-            > self.volume.config.limits.maximum_read_bytes
-        {
-            return Err(OperationFailure::before_work(FsError::FileRead(
-                FileRangeReadError::InvalidRange,
-            )));
-        }
-        let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let mut source = std::io::Cursor::new(bytes);
-        let blob = stage_content_for_volume(
-            &self.volume,
-            &mut source,
-            maximum_blob_bytes,
-            budget,
-            cancellation,
-        )
-        .await?;
-        let mut work = blob.work;
-        let mutation = self
-            .mutate_regular(
-                RegularMutation::Write {
+        let mut work = WorkCounters::default();
+        let mutation = match change {
+            ContentChange::Write { bytes, .. } if bytes.is_empty() => None,
+            ContentChange::Write { offset, bytes } => {
+                if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                    > self.volume.config.limits.maximum_read_bytes
+                {
+                    return Err(OperationFailure::before_work(FsError::FileRead(
+                        FileRangeReadError::InvalidRange,
+                    )));
+                }
+                let maximum_blob_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                let mut source = std::io::Cursor::new(bytes);
+                let blob = stage_content_for_volume(
+                    &self.volume,
+                    &mut source,
+                    maximum_blob_bytes,
+                    budget,
+                    cancellation,
+                )
+                .await?;
+                work = blob.work;
+                Some(RegularMutation::Write {
                     offset,
                     length: blob.value.logical_bytes,
                     content: blob.value.root,
                     content_offset: 0,
-                },
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, mutation.work)?;
-        Ok(FsReceipt { value: (), work })
-    }
-
-    /// Changes detached logical file length.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed mutation, storage, cancellation, allocation, or work failures.
-    pub async fn resize(
-        &mut self,
-        logical_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        self.mutate_regular(
-            RegularMutation::Resize { logical_bytes },
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    /// Replaces one detached range with a hole or allocated zeros.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed mutation, storage, cancellation, allocation, or work failures.
-    pub async fn zero_range(
-        &mut self,
-        range: ByteRange,
-        allocated: bool,
-        extend: bool,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        self.mutate_regular(
-            RegularMutation::ZeroRange {
+                })
+            }
+            ContentChange::Resize { logical_bytes } => {
+                Some(RegularMutation::Resize { logical_bytes })
+            }
+            ContentChange::ZeroRange {
+                range,
+                allocated,
+                extend,
+            } => Some(RegularMutation::ZeroRange {
                 offset: range.offset,
                 length: range.length,
                 allocated,
                 extend,
-            },
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    /// Allocates detached sparse holes while preserving content.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed unsupported keep-size, mutation, storage, cancellation,
-    /// allocation, or work failures.
-    pub async fn preallocate(
-        &mut self,
-        range: ByteRange,
-        keep_size: bool,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        self.mutate_regular(
-            RegularMutation::Preallocate {
+            }),
+            ContentChange::Preallocate { range, keep_size } => Some(RegularMutation::Preallocate {
                 offset: range.offset,
                 length: range.length,
                 keep_size,
-            },
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    async fn mutate_regular(
-        &mut self,
-        mutation: RegularMutation,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        let receipt = apply_regular_mutation_async(
-            &self.volume.fs.inner.objects,
-            self.record.payload,
-            mutation,
-            self.volume.config,
-            budget,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| {
-            OperationFailure::new(FsError::DetachedMutation(failure.error), *failure.work)
-        })?;
-        self.record.payload = receipt.payload;
-        Ok(FsReceipt {
-            value: (),
-            work: receipt.work,
-        })
+            }),
+            ContentChange::CloneFrom { source, .. } => match source {},
+        };
+        let payload = match mutation {
+            Some(mutation) => {
+                let receipt = apply_regular_mutation_async(
+                    &self.volume.fs.inner.objects,
+                    self.record.payload,
+                    mutation,
+                    self.volume.config,
+                    remaining(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, FsError::DetachedMutation))?;
+                work = add(work, receipt.work)?;
+                receipt.payload
+            }
+            None => self.record.payload,
+        };
+        let metadata_id = match metadata {
+            Some(metadata) => {
+                let encoded = encode_file_metadata(metadata)
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
+                let (metadata_id, stored) = self
+                    .volume
+                    .fs
+                    .put_encoded(ObjectKind::Metadata, encoded, work, budget, cancellation)
+                    .await?;
+                work = stored;
+                metadata_id
+            }
+            None => self.record.metadata,
+        };
+        self.record.payload = payload;
+        self.record.metadata = metadata_id;
+        Ok(FsReceipt { value: (), work })
     }
 }
 
@@ -12987,6 +13148,16 @@ fn probe_limits(config: VolumeConfig) -> ProbeLimits {
         maximum_content_payload_bytes: config.limits.maximum_read_bytes,
         maximum_directory_entries: config.limits.maximum_directory_page_entries,
     }
+}
+
+/// The combined bound of `count` changes each bounded by `budget`.
+fn group_budget(budget: WorkBudget, count: usize) -> WorkBudget {
+    let count = u64::try_from(count).unwrap_or(u64::MAX);
+    let mut total = (1..count).fold(budget, |total, _| {
+        total.checked_add(budget).unwrap_or(WorkBudget::UNBOUNDED)
+    });
+    total.peak_allocation_bytes = budget.peak_allocation_bytes.saturating_mul(count);
+    total
 }
 
 fn empty_metadata() -> FileMetadata {

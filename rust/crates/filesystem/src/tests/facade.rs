@@ -204,7 +204,7 @@ fn checkout_state<A, O>(checkout: &Checkout<A, O>) -> CheckoutState {
         root: checkout.root.clone(),
         authority_head: checkout.authority_head,
         prepared_merge_parent: checkout.prepared_merge_parent,
-        dependencies: checkout.dependencies.proof().clone(),
+        dependencies: checkout.dependencies.proof().dependencies.clone(),
         mode: checkout.mode,
     }
 }
@@ -1644,32 +1644,48 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     ));
     assert_eq!(detached_attributes.value.entries.len(), 1);
     assert_eq!(detached_attributes.value.entries[0].name, attribute);
-    through_every_detached_cut!(detached.write_range(
-        256,
-        Bytes::from_static(b"detached atomic retry"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    through_every_detached_cut!(detached.zero_range(
-        ByteRange {
-            offset: 512,
-            length: 32,
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::Write {
+            offset: 256,
+            bytes: Bytes::from_static(b"detached atomic retry")
         },
-        true,
-        false,
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_detached_cut!(detached.preallocate(
-        ByteRange {
-            offset: 768,
-            length: 32,
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::ZeroRange {
+            range: ByteRange {
+                offset: 512,
+                length: 32,
+            },
+            allocated: true,
+            extend: false
         },
-        false,
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_detached_cut!(detached.resize(2_048, WorkBudget::UNBOUNDED, &cancellation,));
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::Preallocate {
+            range: ByteRange {
+                offset: 768,
+                length: 32,
+            },
+            keep_size: false
+        },
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ));
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::Resize {
+            logical_bytes: 2_048
+        },
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ));
     through_every_detached_cut!(detached.remove_named_attribute(
         attribute.clone(),
         WorkBudget::UNBOUNDED,
@@ -3014,32 +3030,49 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
         .ok_or("lookup blocked")??;
     assert!(absent.value.record.is_none());
 
-    poll_ready(detached.write_range(
-        0,
-        Bytes::from_static(b"open"),
+    poll_ready(detached.change_content(
+        ContentChange::Write {
+            offset: 0,
+            bytes: Bytes::from_static(b"open"),
+        },
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("detached write blocked")??;
-    poll_ready(detached.write_range(4, Bytes::new(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("detached empty write blocked")??;
-    poll_ready(detached.preallocate(
-        ByteRange {
-            offset: 128,
-            length: 64,
+    poll_ready(detached.change_content(
+        ContentChange::Write {
+            offset: 4,
+            bytes: Bytes::new(),
         },
-        false,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("detached empty write blocked")??;
+    poll_ready(detached.change_content(
+        ContentChange::Preallocate {
+            range: ByteRange {
+                offset: 128,
+                length: 64,
+            },
+            keep_size: false,
+        },
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("detached preallocation blocked")??;
-    poll_ready(detached.zero_range(
-        ByteRange {
-            offset: 64,
-            length: 16,
+    poll_ready(detached.change_content(
+        ContentChange::ZeroRange {
+            range: ByteRange {
+                offset: 64,
+                length: 16,
+            },
+            allocated: false,
+            extend: false,
         },
-        false,
-        false,
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -3055,8 +3088,13 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
     .ok_or("detached read blocked")??;
     assert_eq!(&read.value.bytes[..4], b"open");
     assert_eq!(&read.value.bytes[64..80], &[0; 16]);
-    poll_ready(detached.resize(192, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("detached resize blocked")??;
+    poll_ready(detached.change_content(
+        ContentChange::Resize { logical_bytes: 192 },
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("detached resize blocked")??;
     assert_eq!(detached.logical_bytes(), 192);
     poll_ready(detached.remove_named_attribute(
         attribute.clone(),
@@ -6629,9 +6667,12 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         FsError::FileRead(FileRangeReadError::InvalidRange)
     ));
     assert_eq!(*detached_read_failure.work, WorkCounters::default());
-    let detached_failure = poll_ready(detached.write_range(
-        0,
-        Bytes::from_static(b"12345"),
+    let detached_failure = poll_ready(detached.change_content(
+        ContentChange::Write {
+            offset: 0,
+            bytes: Bytes::from_static(b"12345"),
+        },
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -7665,9 +7706,12 @@ fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
         "cancelled detached read"
     );
     cancelled!(
-        detached.write_range(
-            0,
-            Bytes::from_static(b"x"),
+        detached.change_content(
+            ContentChange::Write {
+                offset: 0,
+                bytes: Bytes::from_static(b"x")
+            },
+            None,
             WorkBudget::UNBOUNDED,
             &cancelled_token,
         ),
@@ -11284,5 +11328,284 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
     .ok_or("read blocked")??
     .value;
     assert_eq!(read.bytes.as_ref(), b"TWOa");
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn repeated_lookups_observe_the_base_once_and_still_conflict()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([151; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut local = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_tracking(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("local checkout blocked")??
+    .value;
+    let mut remote = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote checkout blocked")??
+    .value;
+    poll_ready(local.create_file(
+        path("authored")?,
+        Bytes::from_static(b"local"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("local create blocked")??;
+
+    let observed = path("observed")?;
+    let first = poll_ready(local.lookup_no_follow_with_metadata(
+        &observed,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("first lookup blocked")??;
+    assert!(first.value.is_none());
+    let proof = local.dependencies.proof().dependencies.clone();
+    let second = poll_ready(local.lookup_no_follow_with_metadata(
+        &observed,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("second lookup blocked")??;
+    assert!(second.value.is_none());
+    assert_eq!(
+        local.dependencies.proof().dependencies,
+        proof,
+        "repeating an observation leaves the proof unchanged"
+    );
+    assert!(
+        second.work.page_reads < first.work.page_reads,
+        "the repeated lookup walks only the candidate"
+    );
+
+    // The observation absorbed once still fences a racing binding.
+    poll_ready(remote.create_file(
+        observed,
+        Bytes::from_static(b"remote"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote create blocked")??;
+    poll_ready(remote.commit(
+        OperationId::from_bytes([152; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote commit blocked")??;
+    let rebase = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("rebase blocked")??;
+    assert!(matches!(rebase.value, RebaseDecision::Conflicted { .. }));
+    Ok(())
+}
+
+#[test]
+fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Once with an unchanged candidate, whose one walk both answers and
+    // observes, and once with a private change, which observes the base.
+    for (seed, authored) in [(171_u8, false), (181, true)] {
+        let fs = Fs::memory();
+        let cancellation = CancellationToken::new();
+        let volume = poll_ready(fs.create_volume_with_id(
+            VolumeId::from_bytes([seed; 16]),
+            config(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("volume creation blocked")??
+        .value;
+        let mut local = poll_ready(volume.checkout(
+            GenerationSelector::Head,
+            writable_tracking(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("local checkout blocked")??
+        .value;
+        let mut remote = poll_ready(volume.checkout(
+            GenerationSelector::Head,
+            writable_pinned(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("remote checkout blocked")??
+        .value;
+        if authored {
+            poll_ready(local.create_file(
+                path("authored")?,
+                Bytes::from_static(b"local"),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ))
+            .ok_or("local create blocked")??;
+        }
+        let paths = [path("first")?, path("second")?];
+        let batch =
+            poll_ready(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))
+                .ok_or("batch lookup blocked")??;
+        assert!(
+            batch
+                .value
+                .entries
+                .iter()
+                .all(|entry| entry.record.is_none())
+        );
+        let proof = local.dependencies.proof().dependencies.clone();
+        poll_ready(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("repeated batch lookup blocked")??;
+        assert_eq!(local.dependencies.proof().dependencies, proof);
+
+        poll_ready(remote.create_file(
+            path("second")?,
+            Bytes::from_static(b"remote"),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("remote create blocked")??;
+        poll_ready(remote.commit(
+            OperationId::from_bytes([seed.wrapping_add(1); 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("remote commit blocked")??;
+        let rebase = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("rebase blocked")??;
+        assert!(matches!(rebase.value, RebaseDecision::Conflicted { .. }));
+    }
+    Ok(())
+}
+
+#[test]
+fn one_reader_answers_a_batch_of_identities() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([191; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut writer = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    let mut identities = Vec::new();
+    for name in ["a", "b"] {
+        poll_ready(writer.create_file(
+            path(name)?,
+            Bytes::from_static(b"x"),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("create blocked")??;
+        let record =
+            poll_ready(writer.lookup_no_follow(&path(name)?, WorkBudget::UNBOUNDED, &cancellation))
+                .ok_or("lookup blocked")??
+                .value
+                .record
+                .ok_or("created file missing")?;
+        identities.push(record);
+    }
+    let absent = FileId::from_bytes([192; 16]);
+    let reader = writer.pinned_reader()?;
+    assert_eq!(reader.generation_id(), writer.generation_id());
+    let records = poll_ready(reader.file_records_by_id(
+        &[identities[1].file_id, absent, identities[0].file_id],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("identity batch blocked")??;
+    assert_eq!(
+        records.value,
+        vec![Some(identities[1]), None, Some(identities[0])]
+    );
+    Ok(())
+}
+
+#[test]
+fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([161; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut checkout = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    let mut files = Vec::new();
+    for (index, name) in ["one", "two", "three", "four"].into_iter().enumerate() {
+        let file_id = poll_ready(checkout.create_file(
+            path(name)?,
+            Bytes::from(vec![u8::try_from(index)?; 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("seed create blocked")??
+        .value;
+        files.push(file_id);
+    }
+    let write = |file_id: FileId, fill: u8| GroupedChange::Content {
+        file_id,
+        change: ContentChange::Write {
+            offset: 0,
+            bytes: Bytes::from(vec![fill; 4_096]),
+        },
+        times: ContentTimes::Preserve,
+    };
+    let single = poll_ready(checkout.apply_group(
+        vec![write(files[0], 1)],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("single group blocked")??;
+    assert!(single.value.iter().all(Result::is_ok));
+    // Enough for any one change, far from enough for three sharing it.
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.bytes_hashed = single.work.bytes_hashed * 3 / 2;
+    let group = poll_ready(checkout.apply_group(
+        vec![write(files[1], 2), write(files[2], 3), write(files[3], 4)],
+        budget,
+        &cancellation,
+    ))
+    .ok_or("group blocked")??;
+    assert!(
+        group.value.iter().all(Result::is_ok),
+        "a change failed on its neighbours' work: {:?}",
+        group.value
+    );
+    assert!(group.work.bytes_hashed > budget.bytes_hashed);
     Ok(())
 }
