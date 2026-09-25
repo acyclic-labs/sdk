@@ -230,6 +230,10 @@ case "$lane" in
     ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
+    # The host clippy run cannot see code that only the browser build
+    # compiles or omits, so lint each browser build as it ships.
+    cargo clippy -p acyclic-fs-wasm --target wasm32-unknown-unknown       --all-targets --all-features --locked -- -D warnings
+    cargo clippy -p acyclic-harness --no-default-features --features wasm       --target wasm32-unknown-unknown --locked -- -D warnings
     if ! command -v wasm-bindgen-test-runner >/dev/null; then
       cargo install --locked wasm-bindgen-cli --version 0.2.117 --root "$TOOLS_DIR/cargo"
     fi

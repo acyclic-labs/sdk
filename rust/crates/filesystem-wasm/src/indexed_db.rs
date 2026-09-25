@@ -651,6 +651,39 @@ impl IndexedDbAuthorityStore {
         Ok(())
     }
 
+    /// Reads the authority's head, which must exist.
+    async fn read_head(
+        transaction: &Transaction<'_>,
+        key: &str,
+        cancellation: &CancellationToken,
+        work: WorkCounters,
+    ) -> Result<Head, AuthorityFailure> {
+        let heads = transaction
+            .object_store(AUTHORITY_HEADS)
+            .map_err(|error| Self::backend(error, work))?;
+        let encoded = Self::get_fixed(&heads, key, HEAD_BYTES, cancellation, work)
+            .await?
+            .ok_or_else(|| Self::failure(AuthorityStoreError::Missing, work))?;
+        decode_head(&encoded).map_err(|error| Self::corrupt(error, work))
+    }
+
+    /// Reads the authority's publication gate, which every authority is
+    /// created with.
+    async fn read_gate(
+        transaction: &Transaction<'_>,
+        key: &str,
+        cancellation: &CancellationToken,
+        work: WorkCounters,
+    ) -> Result<PublicationGateRecord, AuthorityFailure> {
+        let gates = transaction
+            .object_store(AUTHORITY_GATES)
+            .map_err(|error| Self::backend(error, work))?;
+        let encoded = Self::get_fixed(&gates, key, GATE_BYTES, cancellation, work)
+            .await?
+            .ok_or_else(|| Self::corrupt("authority has no publication gate", work))?;
+        decode_publication_gate(&encoded).map_err(|error| Self::corrupt(error, work))
+    }
+
     async fn resolve_existing_operation(
         &self,
         transaction: &Transaction<'_>,
@@ -1189,19 +1222,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         if let Some(encoded) = existing {
             let head =
                 decode_head(&encoded).map_err(|error| Self::corrupt(error, read_admission))?;
-            let gates = transaction
-                .object_store(AUTHORITY_GATES)
-                .map_err(|error| Self::backend(error, read_admission))?;
-            // Every authority is created together with its publication gate.
-            if Self::get_fixed(&gates, &key, GATE_BYTES, cancellation, read_admission)
-                .await?
-                .is_none()
-            {
-                return Err(Self::corrupt(
-                    "authority has no publication gate",
-                    read_admission,
-                ));
-            }
+            Self::read_gate(&transaction, &key, cancellation, read_admission).await?;
             return Ok(AuthorityReceipt {
                 value: CreateAuthorityOutcome::Existing(head),
                 work: read_admission,
@@ -1251,16 +1272,13 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .transaction(AUTHORITY_HEADS)
             .build()
             .map_err(|error| Self::backend(error, work))?;
-        let key = authority_key(authority_id);
-        let encoded = {
-            let heads = transaction
-                .object_store(AUTHORITY_HEADS)
-                .map_err(|error| Self::backend(error, work))?;
-            Self::get_fixed(&heads, &key, HEAD_BYTES, cancellation, work)
-                .await?
-                .ok_or_else(|| Self::failure(AuthorityStoreError::Missing, work))?
-        };
-        let value = decode_head(&encoded).map_err(|error| Self::corrupt(error, work))?;
+        let value = Self::read_head(
+            &transaction,
+            &authority_key(authority_id),
+            cancellation,
+            work,
+        )
+        .await?;
         Ok(AuthorityReceipt { value, work })
     }
 
@@ -1326,21 +1344,8 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .with_options(strict_transaction_options())
             .build()
             .map_err(|error| Self::backend(error, work))?;
-        let actual = {
-            let heads = transaction
-                .object_store(AUTHORITY_HEADS)
-                .map_err(|error| Self::backend(error, work))?;
-            let encoded = Self::get_fixed(
-                &heads,
-                &authority_key(authority_id),
-                HEAD_BYTES,
-                cancellation,
-                work,
-            )
-            .await?
-            .ok_or_else(|| Self::failure(AuthorityStoreError::Missing, work))?;
-            decode_head(&encoded).map_err(|error| Self::corrupt(error, work))?
-        };
+        let key = authority_key(authority_id);
+        let actual = Self::read_head(&transaction, &key, cancellation, work).await?;
         if epoch != actual.epoch {
             return Ok(AuthorityReceipt {
                 value: AppendOutcome::Fenced {
@@ -1368,26 +1373,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 work,
             });
         }
-        let gate = {
-            let gates = transaction
-                .object_store(AUTHORITY_GATES)
-                .map_err(|error| Self::backend(error, work))?;
-            let encoded = Self::get_fixed(
-                &gates,
-                &authority_key(authority_id),
-                GATE_BYTES,
-                cancellation,
-                work,
-            )
-            .await?
-            .ok_or_else(|| {
-                Self::failure(
-                    AuthorityStoreError::Corrupt("publication gate is missing".to_owned()),
-                    work,
-                )
-            })?;
-            decode_publication_gate(&encoded).map_err(|error| Self::corrupt(error, work))?
-        };
+        let gate = Self::read_gate(&transaction, &key, cancellation, work).await?;
         let admitted = match permit {
             PublicationPermit::Reservation {
                 operation_id,
@@ -1444,29 +1430,8 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .build()
             .map_err(|error| Self::backend(error, read_work))?;
         let key = authority_key(authority_id);
-        let actual = {
-            let heads = transaction
-                .object_store(AUTHORITY_HEADS)
-                .map_err(|error| Self::backend(error, read_work))?;
-            let encoded = Self::get_fixed(&heads, &key, HEAD_BYTES, cancellation, read_work)
-                .await?
-                .ok_or_else(|| Self::failure(AuthorityStoreError::Missing, read_work))?;
-            decode_head(&encoded).map_err(|error| Self::corrupt(error, read_work))?
-        };
-        let gate = {
-            let gates = transaction
-                .object_store(AUTHORITY_GATES)
-                .map_err(|error| Self::backend(error, read_work))?;
-            let encoded = Self::get_fixed(&gates, &key, GATE_BYTES, cancellation, read_work)
-                .await?
-                .ok_or_else(|| {
-                    Self::failure(
-                        AuthorityStoreError::Corrupt("publication gate is missing".to_owned()),
-                        read_work,
-                    )
-                })?;
-            decode_publication_gate(&encoded).map_err(|error| Self::corrupt(error, read_work))?
-        };
+        let actual = Self::read_head(&transaction, &key, cancellation, read_work).await?;
+        let gate = Self::read_gate(&transaction, &key, cancellation, read_work).await?;
         if actual != expected || gate.active.is_some_and(|active| active != operation_id) {
             return Ok(AuthorityReceipt {
                 value: ReservationOutcome::Conflict { actual },
@@ -1538,19 +1503,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .build()
             .map_err(|error| Self::backend(error, read_work))?;
         let key = authority_key(reservation.authority_id);
-        let gates = transaction
-            .object_store(AUTHORITY_GATES)
-            .map_err(|error| Self::backend(error, read_work))?;
-        let encoded = Self::get_fixed(&gates, &key, GATE_BYTES, cancellation, read_work)
-            .await?
-            .ok_or_else(|| {
-                Self::failure(
-                    AuthorityStoreError::Corrupt("publication gate is missing".to_owned()),
-                    read_work,
-                )
-            })?;
-        let gate =
-            decode_publication_gate(&encoded).map_err(|error| Self::corrupt(error, read_work))?;
+        let gate = Self::read_gate(&transaction, &key, cancellation, read_work).await?;
         if gate.released == Some((reservation.operation_id, reservation.gate_tail)) {
             return Ok(AuthorityReceipt {
                 value: (),
@@ -1581,6 +1534,9 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .checked_add(authority_fixed_write_work(GATE_BYTES, 1))
             .map_err(|error| Self::failure(error.into(), read_work))?;
         Self::admit(write_work, budget)?;
+        let gates = transaction
+            .object_store(AUTHORITY_GATES)
+            .map_err(|error| Self::backend(error, write_work))?;
         Self::put_fixed(&gates, &key, &encoded, cancellation, write_work).await?;
         transaction
             .commit()
@@ -1692,21 +1648,13 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .transaction([AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS])
             .build()
             .map_err(|error| Self::backend(error, head_work))?;
-        {
-            let heads = transaction
-                .object_store(AUTHORITY_HEADS)
-                .map_err(|error| Self::backend(error, head_work))?;
-            let encoded = Self::get_fixed(
-                &heads,
-                &authority_key(authority_id),
-                HEAD_BYTES,
-                cancellation,
-                head_work,
-            )
-            .await?
-            .ok_or_else(|| Self::failure(AuthorityStoreError::Missing, head_work))?;
-            decode_head(&encoded).map_err(|error| Self::corrupt(error, head_work))?;
-        }
+        Self::read_head(
+            &transaction,
+            &authority_key(authority_id),
+            cancellation,
+            head_work,
+        )
+        .await?;
         let operation_admission = head_work
             .checked_add(authority_fixed_read_work(OPERATION_BYTES))
             .map_err(|error| Self::failure(error.into(), head_work))?;
@@ -2453,35 +2401,30 @@ mod tests {
         .await
         .map_err(js_error)?;
         assert!(matches!(committed.value, AppendOutcome::Committed(_)));
-        AsyncAuthorityStore::release_publication(
-            &store,
-            reservation,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(js_error)?;
-        AsyncAuthorityStore::release_publication(
-            &store,
-            reservation,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(js_error)?;
+        release(&store, reservation, &cancellation)
+            .await
+            .map_err(js_error)?;
+        release(&store, reservation, &cancellation)
+            .await
+            .map_err(js_error)?;
         let mut forged = reservation;
         forged.operation_id = OperationId::from_bytes([99; 16]);
-        assert!(
-            AsyncAuthorityStore::release_publication(
-                &store,
-                forged,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .is_err()
-        );
+        assert!(release(&store, forged, &cancellation).await.is_err());
         Ok(())
+    }
+
+    async fn release(
+        store: &IndexedDbAuthorityStore,
+        reservation: PublicationReservation,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<()> {
+        AsyncAuthorityStore::release_publication(
+            store,
+            reservation,
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await
     }
 
     #[wasm_bindgen_test]

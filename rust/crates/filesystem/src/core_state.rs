@@ -9,8 +9,8 @@
 //! lineage, lease, and Git-compatibility databases.
 
 use crate::workspace_context::{
-    WorkspaceContextChildren, context_children, discard_context_subtree,
-    plan_context_subtree_discard, update_context_children,
+    WorkspaceContextChildren, discard_context_subtree, plan_context_subtree_discard,
+    update_context_children,
 };
 use crate::{
     GitCompatState, GitCompatStore, LazyOverlay, LazyOverlayId, LazyWorkspaceState,
@@ -1109,6 +1109,17 @@ impl Change {
         self.put(parent, count);
         Ok(())
     }
+}
+
+/// Direct children of every context in `records`.
+fn context_children(
+    records: impl IntoIterator<Item = WorkspaceContext>,
+) -> WorkspaceContextChildren {
+    let mut children = WorkspaceContextChildren::new();
+    for record in records {
+        update_context_children(&mut children, None, Some(&record));
+    }
+    children
 }
 
 /// Installs the child index derived from every context.

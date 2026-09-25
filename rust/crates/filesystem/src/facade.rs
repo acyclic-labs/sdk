@@ -3160,6 +3160,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn workspace_join_changes(
         &self,
         base: GenerationId,

@@ -83,8 +83,8 @@ impl WasmReducer {
 
     /// Applies one canonical Protobuf command and returns a Protobuf response.
     #[wasm_bindgen(js_name = applyWire)]
-    pub fn apply_wire(&mut self, command: Vec<u8>) -> Result<Vec<u8>, JsValue> {
-        let (authority, command) = decode_command(&command).map_err(js_error)?;
+    pub fn apply_wire(&mut self, command: &[u8]) -> Result<Vec<u8>, JsValue> {
+        let (authority, command) = decode_command(command).map_err(js_error)?;
         if &authority != self.reducer.authority() {
             return Err(JsValue::from_str(
                 "command authority does not match reducer",
@@ -164,6 +164,6 @@ fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-fn js_error(error: crate::Error) -> JsValue {
+fn js_error(error: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&error.to_string())
 }
