@@ -107,20 +107,12 @@ struct ProjectedEntry {
     symlink_target: Option<bytes::Bytes>,
 }
 
-#[derive(Clone)]
-struct RenamedHydrationFile {
-    file: Arc<dyn super::MountOpenFile>,
-    destination: MountPath,
-}
-
 struct Runtime {
     source: Arc<dyn MountFilesystem>,
     root: PathBuf,
     metadata_root: Arc<HostRoot>,
     writable: bool,
     enumerations: Mutex<HashMap<u128, Arc<Mutex<EnumState>>>>,
-    renamed_hydration_files: Arc<Mutex<HashMap<u128, RenamedHydrationFile>>>,
-    renamed_paths: Arc<Mutex<HashMap<u128, Option<MountPath>>>>,
     metadata_baselines: Arc<Mutex<HashMap<u128, OpenMetadataState>>>,
     projection: Arc<Mutex<ProjectionCache>>,
     /// Source epochs under which every absence `ProjFS` holds in its negative
@@ -534,8 +526,6 @@ impl ProjFsSession {
             metadata_root,
             writable: request.writable,
             enumerations: Mutex::new(HashMap::new()),
-            renamed_hydration_files: Arc::new(Mutex::new(HashMap::new())),
-            renamed_paths: Arc::new(Mutex::new(HashMap::new())),
             metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
             projection: Arc::new(Mutex::new(ProjectionCache::default())),
             negative_paths,
@@ -1936,16 +1926,14 @@ unsafe extern "system" fn file_data(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    let renamed_file = lock_recover(&runtime.renamed_hydration_files)
-        .get(&file_id(data))
-        .map(|renamed| Arc::clone(&renamed.file));
     let pin = placeholder_pin(data);
     // Immutable hydration reads take the source's own read gate. Keeping them
     // off the mutation callback queue lets concurrent compiler reads proceed.
-    let read = |offset, length| match (&renamed_file, pin) {
-        (Some(file), _) => file.read_range(offset, length),
-        (None, Some(pin)) => runtime.source.read_pinned(&path, pin, offset, length),
-        (None, None) => runtime.source.read_range(&path, offset, length),
+    // A placeholder is hydrated before any rename or link, so its projected
+    // path always names the content it promised.
+    let read = |offset, length| match pin {
+        Some(pin) => runtime.source.read_pinned(&path, pin, offset, length),
+        None => runtime.source.read_range(&path, offset, length),
     };
     let chunk = length.min(HYDRATION_CHUNK_BYTES);
     let buffer = PrjAllocateAlignedBuffer(data.NamespaceVirtualizationContext, chunk as usize);
@@ -2137,18 +2125,15 @@ unsafe extern "system" fn notification(
     let metadata_baselines = Arc::clone(&runtime.metadata_baselines);
     let projection = Arc::clone(&runtime.projection);
     let metadata_probes = Arc::clone(&runtime.metadata_probes);
-    let renamed_hydration_files = Arc::clone(&runtime.renamed_hydration_files);
-    let renamed_paths = Arc::clone(&runtime.renamed_paths);
     let metadata_root = Arc::clone(&runtime.metadata_root);
     let post_operation_failure = Arc::clone(&runtime.post_operation_failure);
     let operation_failures = Arc::clone(&post_operation_failure);
     let failure_path = path.clone();
     let retry_path = Arc::new(Mutex::new(None));
     let operation_retry_path = Arc::clone(&retry_path);
+    // ProjFS reports every notification at the file's current name, also for
+    // a handle that renamed it, so no per-handle name is remembered.
     let operation = move || {
-        let path = lock_recover(renamed_hydration_files.as_ref())
-            .get(&file_id)
-            .map_or_else(|| path.clone(), |renamed| renamed.destination.clone());
         if path.components().is_empty()
             && (notification == PRJ_NOTIFICATION_FILE_OPENED
                 || notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION)
@@ -2156,20 +2141,6 @@ unsafe extern "system" fn notification(
             return Ok(());
         }
         if notification == PRJ_NOTIFICATION_FILE_OPENED {
-            {
-                let mut files = lock_recover(renamed_hydration_files.as_ref());
-                if !files.contains_key(&file_id) {
-                    let pending = files
-                        .iter()
-                        .find_map(|(pending_id, renamed)| {
-                            (renamed.destination == path).then_some(*pending_id)
-                        })
-                        .and_then(|pending_id| files.remove(&pending_id));
-                    if let Some(renamed) = pending {
-                        files.insert(file_id, renamed);
-                    }
-                }
-            }
             let baseline = probe_host_windows_metadata(
                 metadata_root.as_ref(),
                 &path,
@@ -2190,42 +2161,30 @@ unsafe extern "system" fn notification(
         {
             let close = close_metadata_handle(metadata_baselines.as_ref(), file_id);
             let final_close = matches!(close, MetadataClose::Final(_));
-            let renamed_path = lock_recover(renamed_paths.as_ref()).get(&file_id).cloned();
-            let capture_path = renamed_path.clone().unwrap_or_else(|| Some(path.clone()));
-            if final_close {
-                lock_recover(renamed_hydration_files.as_ref()).remove(&file_id);
-                lock_recover(renamed_paths.as_ref()).remove(&file_id);
-            }
-            let result = if let Some(path) = capture_path.as_ref() {
-                if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
-                    && renamed_path.is_none()
-                {
-                    lock_recover(operation_failures.as_ref())
-                        .pending_captures
-                        .remove(path);
-                    *lock_recover(operation_retry_path.as_ref()) = Some(path.clone());
-                    match source.lookup(path)? {
-                        Some(_) => {
-                            let _invalidate = InvalidateOnDrop(projection.as_ref());
-                            source.remove(path, None)
-                        }
-                        None => Ok(()),
+            let result = if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED {
+                // The delete removed exactly this name; other links remain.
+                lock_recover(operation_failures.as_ref())
+                    .pending_captures
+                    .remove(&path);
+                *lock_recover(operation_retry_path.as_ref()) = Some(path.clone());
+                match source.lookup(&path)? {
+                    Some(_) => {
+                        let _invalidate = InvalidateOnDrop(projection.as_ref());
+                        source.remove(&path, None)
                     }
-                } else {
-                    defer_host_capture(operation_failures.as_ref(), path.clone());
-                    Ok(())
+                    None => Ok(()),
                 }
             } else {
+                defer_host_capture(operation_failures.as_ref(), path.clone());
                 Ok(())
             };
             if result.is_ok()
                 && !final_close
                 && notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
-                && let Some(path) = capture_path.as_ref()
             {
                 let baseline = probe_host_windows_metadata(
                     metadata_root.as_ref(),
-                    path,
+                    &path,
                     metadata_probes.as_ref(),
                 )?;
                 refresh_metadata_baseline(metadata_baselines.as_ref(), file_id, baseline);
@@ -2236,12 +2195,7 @@ unsafe extern "system" fn notification(
                 MetadataClose::Pending => return Ok(()),
                 MetadataClose::Final(baseline) => baseline,
             };
-            let capture_path = lock_recover(renamed_paths.as_ref())
-                .remove(&file_id)
-                .unwrap_or_else(|| Some(path.clone()));
-            let Some(capture_path) = capture_path else {
-                return Ok(());
-            };
+            let capture_path = path;
             *lock_recover(operation_retry_path.as_ref()) = Some(capture_path.clone());
             let host = probe_host_windows_metadata(
                 metadata_root.as_ref(),
@@ -2330,11 +2284,6 @@ unsafe extern "system" fn notification(
                 Err(error) => Err(error),
             }
         } else if notification == PRJ_NOTIFICATION_FILE_RENAMED {
-            let renamed_path = if destination_is_external {
-                None
-            } else {
-                destination.clone()
-            };
             let _invalidate = InvalidateOnDrop(projection.as_ref());
             let result = handle_rename_source(
                 source.as_ref(),
@@ -2342,17 +2291,16 @@ unsafe extern "system" fn notification(
                 source_is_external,
                 destination_is_external,
                 is_directory,
-                destination,
-                file_id,
-                renamed_hydration_files.as_ref(),
+                destination.clone(),
                 operation_failures.as_ref(),
             );
-            if result.is_ok() {
-                if !source_is_external && let Some(destination) = renamed_path.as_ref() {
-                    lock_recover(operation_failures.as_ref())
-                        .rename_pending_captures(&path, destination);
-                }
-                lock_recover(renamed_paths.as_ref()).insert(file_id, renamed_path);
+            if result.is_ok()
+                && !source_is_external
+                && !destination_is_external
+                && let Some(destination) = destination.as_ref()
+            {
+                lock_recover(operation_failures.as_ref())
+                    .rename_pending_captures(&path, destination);
             }
             result
         } else {
@@ -2431,10 +2379,6 @@ fn keep_file_notifications(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "rename admission facts are supplied independently by the ProjFS callback"
-)]
 fn handle_rename_source(
     source_fs: &dyn MountFilesystem,
     source: &MountPath,
@@ -2442,15 +2386,11 @@ fn handle_rename_source(
     destination_is_external: bool,
     is_directory: bool,
     destination: Option<MountPath>,
-    file_id: u128,
-    renamed_hydration_files: &Mutex<HashMap<u128, RenamedHydrationFile>>,
     post_operation_failures: &Mutex<PostOperationFailures>,
 ) -> Result<(), MountSourceError> {
     if source_is_external {
         let destination = destination
             .ok_or_else(|| MountSourceError::Invalid("rename destination is invalid".to_owned()))?;
-        lock_recover(renamed_hydration_files)
-            .retain(|_, renamed| renamed.destination != destination);
         if is_directory {
             lock_recover(post_operation_failures).queue_subtree(
                 &destination,
@@ -2484,25 +2424,8 @@ fn handle_rename_source(
         }
         return Ok(());
     }
-    let open_file = (!is_directory)
-        .then(|| source_fs.open_file(source))
-        .transpose()?;
-    // ProjFS rejects renaming projected placeholder directories before the
-    // provider callback. Only files require an identity bridge here.
     source_fs.rename(source, &destination, true)?;
-    source_fs.flush()?;
-    if let Some(open_file) = open_file {
-        let mut files = lock_recover(renamed_hydration_files);
-        files.retain(|_, renamed| renamed.destination != destination);
-        files.insert(
-            file_id,
-            RenamedHydrationFile {
-                file: open_file,
-                destination,
-            },
-        );
-    }
-    Ok(())
+    source_fs.flush()
 }
 
 unsafe fn copy_optional_wide(pointer: PCWSTR) -> Option<Option<HSTRING>> {
@@ -2709,6 +2632,35 @@ mod tests {
         // publish this write. A later physical view must quarantine the old
         // epoch rather than pretending that the late write joined the SDK.
         assert_eq!(source.read_range(&seed, 0, 4)?, b"seed"[..]);
+        session.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn write_through_a_handle_opened_before_a_rename_lands_at_the_new_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let seed = windows_path("seed.txt");
+        source.create_file(&seed, FileMetadata::default())?;
+        source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
+        let (_root, destination, mut session) = mount_source(&source)?;
+        // ProjFS notifies the provider only of other processes' I/O. One
+        // handle stays open across the rename and writes afterwards.
+        let script = "$seed = Join-Path $env:ACYCLIC_FS_TEST_ROOT 'seed.txt';
+            $moved = Join-Path $env:ACYCLIC_FS_TEST_ROOT 'moved.txt';
+            $h = [IO.File]::Open($seed, 'Open', 'ReadWrite', 'ReadWrite,Delete');
+            [IO.File]::Move($seed, $moved);
+            $h.Seek(0, 'End') | Out-Null; $h.WriteByte(33); $h.Close()";
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("ACYCLIC_FS_TEST_ROOT", &destination)
+            .output()?;
+        assert!(output.status.success(), "external edit failed: {output:?}");
+        session.flush_callbacks()?;
+        assert!(source.lookup(&seed)?.is_none());
+        let moved = windows_path("moved.txt");
+        assert_eq!(source.read_range(&moved, 0, 5)?.as_ref(), b"seed!");
         session.stop()?;
         Ok(())
     }
