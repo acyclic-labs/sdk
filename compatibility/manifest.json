@@ -1,6 +1,6 @@
 {
   "$schema": "schemas/compatibility.schema.json",
-  "status": "released",
+  "status": "candidate",
   "umbrellaVersion": "0.1.3",
   "families": {
     "harness": {
