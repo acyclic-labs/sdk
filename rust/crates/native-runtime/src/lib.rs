@@ -1396,27 +1396,26 @@ impl<T> Future for BlockingIoTask<T> {
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         assert!(!this.terminated, "host I/O task polled after completion");
-        if inline_blocking_allowed()
-            && let Some(job) = this.pending.take()
-        {
+        if let Some(job) = this.pending.take_if(|_| inline_blocking_allowed()) {
             // The job records its result before returning; there is no
-            // observer to wake yet.
+            // observer to wake yet, and no worker is needed.
             let _ = job.run();
-        }
-        let workers = match blocking_workers() {
-            Ok(workers) => workers,
-            Err(error) => {
-                this.terminated = true;
-                return Poll::Ready(Err(error));
+        } else if this.pending.is_some() {
+            let workers = match blocking_workers() {
+                Ok(workers) => workers,
+                Err(error) => {
+                    this.terminated = true;
+                    return Poll::Ready(Err(error));
+                }
+            };
+            match poll_submission_with(workers, &mut this.pending, &mut this.waiter, context) {
+                Poll::Ready(Err(error)) => {
+                    this.terminated = true;
+                    return Poll::Ready(Err(error));
+                }
+                Poll::Ready(Ok(())) => {}
+                Poll::Pending => return Poll::Pending,
             }
-        };
-        match poll_submission_with(workers, &mut this.pending, &mut this.waiter, context) {
-            Poll::Ready(Err(error)) => {
-                this.terminated = true;
-                return Poll::Ready(Err(error));
-            }
-            Poll::Ready(Ok(())) => {}
-            Poll::Pending => return Poll::Pending,
         }
         let mut state = this
             .state

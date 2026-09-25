@@ -561,6 +561,10 @@ pub mod native {
     struct NativeDemandInner {
         path: PathBuf,
         root: HostRoot,
+        /// Whether host I/O beneath the root may block a native callback
+        /// thread: only on a local filesystem, which cannot stall it past
+        /// the callback's timeout.
+        inline: bool,
         identity: [u8; 16],
         epoch: AtomicU64,
         profile: FilesystemProfile,
@@ -750,6 +754,7 @@ pub mod native {
             Ok(Self {
                 inner: Arc::new(NativeDemandInner {
                     path,
+                    inline: root.is_local(),
                     root,
                     identity: reference.identity,
                     epoch: AtomicU64::new(reference.epoch),
@@ -783,9 +788,11 @@ pub mod native {
             if cancellation.is_cancelled() {
                 return Err(OperationFailure::before_work(DemandError::Cancelled));
             }
-            // A native callback thread blocks only its own request: run the
-            // job there rather than hop to a pooled worker and back.
-            if acyclic_native_runtime::inline_blocking_allowed() {
+            // A native callback thread blocks only its own request: run a
+            // local job there rather than hop to a pooled worker and back.
+            // A remote one stays on a worker, where the callback's timeout
+            // still bounds it.
+            if self.inner.inline && acyclic_native_runtime::inline_blocking_allowed() {
                 return job(self.clone(), cancellation.clone());
             }
             let permit = tokio::select! {

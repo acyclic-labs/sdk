@@ -787,6 +787,14 @@ impl HostRoot {
         self.identity
     }
 
+    /// Whether this root's filesystem is local. A network or user-space
+    /// filesystem can stall a request indefinitely, so only local host I/O
+    /// may block a native callback thread that must answer within its
+    /// timeout. A filesystem that cannot be classified counts as remote.
+    pub(crate) fn is_local(&self) -> bool {
+        filesystem_is_local(&self.directory)
+    }
+
     /// The held root directory's handle, for volume queries that must be
     /// bound to exactly this root.
     #[cfg(windows)]
@@ -2328,6 +2336,86 @@ fn bind_unix_socket_in(parent: &Dir, name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
+/// Network, clustered, and user-space filesystems, by `statfs(2)` magic.
+#[cfg(target_os = "linux")]
+const REMOTE_FILESYSTEMS: [u64; 12] = [
+    0x6969,      // NFS
+    0x517b,      // SMB
+    0xff53_4d42, // CIFS
+    0xfe53_4d42, // SMB2
+    0x5346_414f, // AFS
+    0x00c3_6400, // Ceph
+    0x6573_5546, // FUSE
+    0x0102_1997, // 9P
+    0x564c,      // NCP
+    0x7375_7245, // Coda
+    0x0bd0_0bd0, // Lustre
+    0x4750_4653, // GPFS
+];
+
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+fn filesystem_is_local(directory: &Dir) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
+    if unsafe { libc::fstatfs(directory.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    // SAFETY: `fstatfs` succeeded and initialized the struct.
+    let kind = unsafe { stats.assume_init() }.f_type;
+    // libc models `f_type` as signed for glibc and unsigned for musl.
+    u64::try_from(kind).is_ok_and(|kind| !REMOTE_FILESYSTEMS.contains(&kind))
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn filesystem_is_local(directory: &Dir) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
+    if unsafe { libc::fstatfs(directory.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    // SAFETY: `fstatfs` succeeded and initialized the struct.
+    let flags = unsafe { stats.assume_init() }.f_flags;
+    u32::try_from(libc::MNT_LOCAL).is_ok_and(|local| flags & local != 0)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn filesystem_is_local(directory: &Dir) -> bool {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Wdk::Storage::FileSystem::{
+        FileFsDeviceInformation, NtQueryVolumeInformationFile,
+    };
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
+    /// The characteristic of a volume on a network redirector.
+    const FILE_REMOTE_DEVICE: u32 = 0x10;
+    // `FILE_FS_DEVICE_INFORMATION`: the device type, then characteristics.
+    let mut device = [0_u32; 2];
+    let mut status = IO_STATUS_BLOCK::default();
+    // SAFETY: the handle is live for the call, and the buffer is exactly one
+    // `FILE_FS_DEVICE_INFORMATION` of the length passed.
+    let queried = unsafe {
+        NtQueryVolumeInformationFile(
+            HANDLE(directory.as_raw_handle()),
+            &raw mut status,
+            device.as_mut_ptr().cast(),
+            8,
+            FileFsDeviceInformation,
+        )
+    };
+    let [_, characteristics] = device;
+    queried.is_ok() && characteristics & FILE_REMOTE_DEVICE == 0
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn filesystem_is_local(_directory: &Dir) -> bool {
+    false
+}
+
 /// Deallocates an already-zero range of a host file.
 ///
 /// APFS materializes the zero tail created by `ftruncate` as soon as any byte
@@ -2987,6 +3075,17 @@ mod tests {
     use super::HostRoot;
     use std::io::Read;
     use std::path::Path;
+
+    /// Only a local root may serve host I/O inline on a native callback
+    /// thread; every other stays bounded by the callback's timeout.
+    #[test]
+    fn a_local_root_is_classified_local() -> std::io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        assert!(HostRoot::open(temporary.path())?.is_local());
+        #[cfg(target_os = "linux")]
+        assert!(super::REMOTE_FILESYSTEMS.contains(&0x6969));
+        Ok(())
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
