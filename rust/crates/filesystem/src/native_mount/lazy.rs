@@ -13,7 +13,9 @@ use super::{
     MountSourceError, MountViewLease, ViewObserver, capture_root_identity,
 };
 use crate::LazySeekTarget;
-use crate::demand::{DemandFile, DemandSource, SourceNode, SourceNodeKind, SourceReference};
+use crate::demand::{
+    DemandError, DemandFile, DemandSource, SourceNode, SourceNodeKind, SourceReference,
+};
 use crate::kernel::{
     FileKind, FileMetadata, FileMutation, FilePayload, FileRecord, MetadataField, Mutation,
 };
@@ -23,13 +25,14 @@ use crate::{
     LazyWorkspace, LazyWorkspaceError, LazyWorkspaceStore, NativeRootIdentity, WorkspaceMetadata,
 };
 use bytes::Bytes;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 const MAXIMUM_PROMOTION_BYTES: u64 = u64::MAX;
 const MAXIMUM_LAZY_DIRECTORY_CURSORS: usize = 1_024;
+const MAXIMUM_REMEMBERED_RESOLUTIONS: usize = 65_536;
 const MAXIMUM_PROMOTION_RETRIES: usize = 3;
 
 async fn stage_mount_promotion<A, O, D, S>(
@@ -192,6 +195,79 @@ impl<T> CursorTable<T> {
     }
 }
 
+/// Source identities last proven absent from the authored checkout, each
+/// with the checkout revision of that proof. Staging an identity changes the
+/// revision, so a proof holds exactly while the revision does; shared by
+/// every handle so reopening an unchanged file proves nothing again.
+type UnstagedIdentities = Arc<UnstagedTable>;
+
+#[derive(Default)]
+struct UnstagedTable(Mutex<HashMap<FileId, u64>>);
+
+impl UnstagedTable {
+    fn checked_at(&self, file_id: FileId, revision: u64) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&file_id)
+            == Some(&revision)
+    }
+
+    fn remember(&self, file_id: FileId, revision: u64) {
+        let mut checked = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if checked.len() >= MAXIMUM_REMEMBERED_RESOLUTIONS {
+            checked.clear();
+        }
+        checked.insert(file_id, revision);
+    }
+}
+
+/// How the view answers a name the authored checkout lacks: the source node
+/// that answers it, or nothing.
+type Unauthored = Option<(SourceReference, SourceNode)>;
+
+/// One name resolved through the view.
+enum Resolution {
+    /// The authored checkout answers the name.
+    Authored(MountLookup),
+    /// Nothing answers the name.
+    Absent,
+    /// The lazy workspace answers the name the authored checkout lacks.
+    Unauthored(LazyLookup, Option<SourceReference>),
+}
+
+/// Names the authored checkout lacked, remembered with the view stamp they
+/// were resolved after. An answer is reused only while the view records no
+/// change to the name's binding, its parent directories, or its node, so it
+/// can never be stale with respect to the view.
+#[derive(Default)]
+struct Resolutions(Mutex<HashMap<MountPath, (ViewStamp, Unauthored)>>);
+
+impl Resolutions {
+    fn get(&self, path: &MountPath) -> Option<(ViewStamp, Unauthored)> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(path)
+            .copied()
+    }
+
+    fn remember(&self, path: &MountPath, stamp: ViewStamp, answer: Unauthored) {
+        let mut entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if entries.len() >= MAXIMUM_REMEMBERED_RESOLUTIONS {
+            entries.clear();
+        }
+        entries.insert(path.clone(), (stamp, answer));
+    }
+
+    fn forget(&self, path: &MountPath) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(path);
+    }
+}
+
 #[derive(Default)]
 struct MountedRemovals {
     paths: BTreeMap<String, FileId>,
@@ -233,6 +309,8 @@ pub struct LazyMountSource<A, O, D, S> {
     authored: Arc<CheckoutMountSource<A, O>>,
     root: String,
     runtime: Arc<CallbackRuntime>,
+    resolutions: Resolutions,
+    unstaged: UnstagedIdentities,
     cursors: CursorTable<(ViewStamp, LazyDirectoryCursor)>,
     source_view: Arc<SourceViewGate>,
     removals: Mutex<MountedRemovals>,
@@ -258,6 +336,8 @@ where
             authored,
             root,
             runtime: Arc::new(CallbackRuntime::create()?),
+            resolutions: Resolutions::default(),
+            unstaged: Arc::default(),
             cursors: CursorTable::new(MAXIMUM_LAZY_DIRECTORY_CURSORS),
             source_view: Arc::new(SourceViewGate::new()),
             removals: Mutex::new(MountedRemovals::default()),
@@ -940,6 +1020,59 @@ where
         Ok(())
     }
 
+    /// Resolves `path` through the view: the authored checkout first, then
+    /// the lazy workspace, reusing a remembered answer while nothing it
+    /// depends on has changed. The caller holds a source view lease.
+    async fn resolve(
+        &self,
+        path: &MountPath,
+        text: &str,
+        owner: std::thread::ThreadId,
+    ) -> Result<Resolution, MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        if let Some((stamp, answer)) = self.resolutions.get(path) {
+            let file_id = answer.map(|(_, node)| self.lazy.source_file_id(&node));
+            if self.unchanged_since(path, file_id, stamp) {
+                return Ok(match answer {
+                    None => Resolution::Absent,
+                    Some((source, node)) => {
+                        Resolution::Unauthored(LazyLookup::Source(node), Some(source))
+                    }
+                });
+            }
+        }
+        // Sampled first: a change to anything read below records a later
+        // position, so a remembered answer can never validate over it.
+        let stamp = self.view_stamp();
+        if let Some(lookup) = self.authored.lookup_async(path, owner).await? {
+            if self.removed_identity(text, lookup.node.file_id)? {
+                return Ok(Resolution::Absent);
+            }
+            return Ok(Resolution::Authored(lookup));
+        }
+        if self.is_removed(text)? {
+            return Ok(Resolution::Absent);
+        }
+        let resolved = match self.lazy.inspect_unauthored(text, None).await {
+            Ok(resolved) => resolved,
+            Err(LazyWorkspaceError::NotFound) => {
+                if let Some(stamp) = stamp {
+                    self.resolutions.remember(path, stamp, None);
+                }
+                return Ok(Resolution::Absent);
+            }
+            Err(error) => return Err(lazy_error(error)),
+        };
+        if let (Some(stamp), (LazyLookup::Source(node), Some(source))) = (stamp, &resolved) {
+            self.resolutions
+                .remember(path, stamp, Some((*source, *node)));
+        }
+        Ok(Resolution::Unauthored(resolved.0, resolved.1))
+    }
+
     fn wait<T: Send, F>(&self, create: impl FnOnce() -> F + Send) -> Result<T, MountSourceError>
     where
         F: std::future::Future<Output = Result<T, MountSourceError>>,
@@ -980,7 +1113,7 @@ struct LazyOpenFile<A, O, D, S> {
     detached: DetachedIdentities<A, O>,
     open_sources: OpenIdentityHandles,
     promoted: Mutex<Option<Arc<dyn MountOpenFile>>>,
-    checked_authored_revision: AtomicU64,
+    unstaged: UnstagedIdentities,
 }
 
 struct ViewBoundOpenFile<A, O> {
@@ -1167,16 +1300,15 @@ where
             return Ok(Some(Arc::clone(file)));
         }
         let revision = self.authored.shared_checkout().revision();
-        if self.checked_authored_revision.load(Ordering::Acquire) == revision {
+        if self.unstaged.checked_at(self.expected_source, revision) {
             return Ok(None);
         }
         let file = self.authored.attached_file_by_id(self.expected_source)?;
-        self.checked_authored_revision
-            .store(revision, Ordering::Release);
         if let Some(file) = file {
             *promoted = Some(Arc::clone(&file));
             return Ok(Some(file));
         }
+        self.unstaged.remember(self.expected_source, revision);
         Ok(None)
     }
 
@@ -1420,23 +1552,16 @@ where
             // Newly authored objects are visible before the operation barrier has
             // published them into the lazy view. This is required for NFS CREATE
             // compounds, which immediately GETATTR the returned filehandle.
-            if let Some(lookup) = self.authored.lookup_async(path, owner).await? {
-                if self.removed_identity(&path_text, lookup.node.file_id)? {
-                    return Ok(None);
-                }
-                let current = self.detached_identity(lookup).await?;
-                return Ok(Some((current.unwrap_or(lookup), None)));
-            }
-            if self.is_removed(&path_text)? {
-                return Ok(None);
-            }
             // Inspection never extends the durable observation index. A
             // caller that must later reproduce this exact content keeps the
             // returned pin instead.
-            let (lookup, source) = match self.lazy.inspect_unauthored(&path_text, None).await {
-                Ok(resolved) => resolved,
-                Err(LazyWorkspaceError::NotFound) => return Ok(None),
-                Err(error) => return Err(lazy_error(error)),
+            let (lookup, source) = match self.resolve(path, &path_text, owner).await? {
+                Resolution::Authored(lookup) => {
+                    let current = self.detached_identity(lookup).await?;
+                    return Ok(Some((current.unwrap_or(lookup), None)));
+                }
+                Resolution::Absent => return Ok(None),
+                Resolution::Unauthored(lookup, source) => (lookup, source),
             };
             let pin = match (&lookup, source) {
                 (LazyLookup::Source(node), Some(source))
@@ -1460,32 +1585,51 @@ where
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        let lease = self.view_lease(None)?;
+        let path_text = self.path(path)?;
+        let owner = SourceViewGate::callback_owner();
         // A create returns an open handle before the operation barrier publishes the authored
         // generation. Consult the authored checkout first so that the just-created file can be
         // written through that handle instead of falling through to the still-unaware lazy view.
-        let path_text = self.path(path)?;
-        if let Some(authored) = self.authored.lookup(path)? {
-            if self.removed_identity(&path_text, authored.node.file_id)? {
-                return Err(MountSourceError::NotFound);
+        let (lease, resolution, source_file) = self.wait(|| async {
+            let lease = self.source_view.read_for_callback(owner, None).await?;
+            // A remembered source node proves the view, not the source file:
+            // a file changed outside the view since fails its version proof,
+            // and is resolved again from the source.
+            for _ in 0..2 {
+                let resolution = self.resolve(path, &path_text, owner).await?;
+                let Resolution::Unauthored(LazyLookup::Source(node), Some(source)) = resolution
+                else {
+                    return Ok((lease, resolution, None));
+                };
+                if node.kind != SourceNodeKind::RegularFile {
+                    return Ok((lease, resolution, None));
+                }
+                match self.lazy.open_source_file(&path_text, source, node).await {
+                    Ok(file) => return Ok((lease, resolution, Some(file))),
+                    Err(LazyWorkspaceError::Demand(
+                        DemandError::StaleVersion | DemandError::Absent,
+                    )) => self.resolutions.forget(path),
+                    Err(error) => return Err(lazy_error(error)),
+                }
             }
-            if let Some(file) = self.detached_by_id(authored.node.file_id)? {
-                return self.bind_open_file(file, Some(authored.node.file_id), lease.generation);
-            }
-            return self.authored.open_file(path).and_then(|file| {
-                self.bind_open_file(file, Some(authored.node.file_id), lease.generation)
-            });
-        }
-        if self.is_removed(&path_text)? {
-            return Err(MountSourceError::NotFound);
-        }
-        let lookup_path = path_text.clone();
-        let (lookup, source) = self.wait(|| async move {
-            self.lazy
-                .inspect_unauthored(&lookup_path, None)
-                .await
-                .map_err(lazy_error)
+            Err(MountSourceError::Stale)
         })?;
+        let (lookup, source) = match resolution {
+            Resolution::Absent => return Err(MountSourceError::NotFound),
+            Resolution::Authored(authored) => {
+                if let Some(file) = self.detached_by_id(authored.node.file_id)? {
+                    return self.bind_open_file(
+                        file,
+                        Some(authored.node.file_id),
+                        lease.generation,
+                    );
+                }
+                return self.authored.open_file(path).and_then(|file| {
+                    self.bind_open_file(file, Some(authored.node.file_id), lease.generation)
+                });
+            }
+            Resolution::Unauthored(lookup, source) => (lookup, source),
+        };
         let source_generation = lease.generation;
         match lookup {
             LazyLookup::Authored {
@@ -1515,13 +1659,7 @@ where
                 })
             }
             LazyLookup::Source(node) if node.kind == SourceNodeKind::RegularFile => {
-                let source = source.ok_or(MountSourceError::Stale)?;
-                let source_file = self.wait(|| async {
-                    self.lazy
-                        .open_source_file(&path_text, source, node)
-                        .await
-                        .map_err(lazy_error)
-                })?;
+                let source_file = source.and(source_file).ok_or(MountSourceError::Stale)?;
                 let expected_source = self.lazy.source_file_id(&node);
                 let file: Arc<dyn MountOpenFile> = Arc::new(LazyOpenFile {
                     lazy: Arc::clone(&self.lazy),
@@ -1537,9 +1675,7 @@ where
                     detached: Arc::clone(&self.detached),
                     open_sources: Arc::clone(&self.open_sources),
                     promoted: Mutex::new(None),
-                    // The handle has not yet checked this checkout revision.
-                    // A peer alias may already have staged this file ID.
-                    checked_authored_revision: AtomicU64::new(0),
+                    unstaged: Arc::clone(&self.unstaged),
                 });
                 self.open_sources
                     .lock()
@@ -2944,6 +3080,100 @@ mod tests {
         view.recover_pending_mount_change(crate::PublicationPermit::Unrestricted)
             .await?;
         assert!(lazy.mount_removal_publication().await?.is_none());
+        Ok(())
+    }
+
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn remembered_resolutions_follow_every_change_to_the_view()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::native::NativeDemandSource;
+        use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, VolumeLimits};
+        use crate::native_mount::{MountPublication, SharedCheckout};
+        use crate::{Fs, MemoryLazyWorkspaceStore};
+
+        let source_root = tempfile::tempdir()?;
+        std::fs::write(source_root.path().join("a"), b"source")?;
+        let demand = Arc::new(
+            NativeDemandSource::open(
+                source_root.path(),
+                FilesystemProfile::Portable,
+                VolumeLimits::default(),
+            )
+            .await?,
+        );
+        let fs = Fs::memory();
+        let lazy = Arc::new(
+            LazyWorkspace::attach(
+                &fs,
+                "mounted-resolutions",
+                demand,
+                MemoryLazyWorkspaceStore::default(),
+            )
+            .await?,
+        );
+        let checkout = lazy
+            .workspace()
+            .engine_checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        let config = checkout.volume_config();
+        let authored = Arc::new(CheckoutMountSource::new(
+            Arc::new(SharedCheckout::with_publication(
+                checkout,
+                MountPublication::Manual,
+            )),
+            config,
+        )?);
+        let view = LazyMountSource::new(Arc::clone(&lazy), authored, "/".to_owned())?;
+        let mount_path = |name: &str| {
+            let bytes = if cfg!(windows) {
+                name.encode_utf16().flat_map(u16::to_le_bytes).collect()
+            } else {
+                name.as_bytes().to_vec()
+            };
+            MountPath::root().child(bytes)
+        };
+        let (a, b) = (mount_path("a"), mount_path("b"));
+
+        // Remembered answers: a source node, and an absence.
+        let source = view.lookup(&a)?.ok_or("source file absent")?;
+        assert_eq!(view.lookup(&a)?, Some(source));
+        assert_eq!(view.lookup(&b)?, None);
+        assert_eq!(view.lookup(&b)?, None);
+
+        // A create through the view replaces the remembered absence.
+        let created = view.create_file(&b, FileMetadata::default())?;
+        assert_eq!(
+            view.lookup(&b)?.map(|lookup| lookup.node.file_id),
+            Some(created.node.file_id)
+        );
+
+        // A write through a handle promotes the file; its answer follows.
+        view.open_file(&a)?
+            .write_range(0, Bytes::from_static(b"authored-longer"))?;
+        assert_eq!(
+            view.lookup(&a)?.map(|lookup| lookup.node.logical_bytes),
+            Some(15)
+        );
+
+        // A removal replaces the remembered answer with an absence.
+        view.remove(&a, None)?;
+        assert_eq!(view.lookup(&a)?, None);
+        assert!(matches!(
+            view.open_file(&a),
+            Err(MountSourceError::NotFound)
+        ));
+
+        // A source file changed outside the view since it was remembered is
+        // opened at its current version, never served stale.
+        std::fs::write(source_root.path().join("c"), b"first")?;
+        let c = mount_path("c");
+        assert!(view.lookup(&c)?.is_some());
+        std::fs::write(source_root.path().join("c"), b"second!")?;
+        assert_eq!(view.open_file(&c)?.read_range(0, 7)?.as_ref(), b"second!");
         Ok(())
     }
 
