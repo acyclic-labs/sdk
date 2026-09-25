@@ -26,8 +26,8 @@ use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::PoisonError;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{OnceLock, PoisonError};
 use tokio::sync::RwLock;
 
 // The local provider stores one batch in a bounded segment. Every durable
@@ -42,11 +42,14 @@ const MAXIMUM_SPILL_BYTES: u64 = 1_024 * 1_024 * 1_024;
 
 enum Staged {
     /// Held in memory. `referenced` records a read since the window last
-    /// considered spilling it; `order` is its key in `Index::order`.
+    /// considered spilling it; `order` is its key in `Index::order`;
+    /// `decoded` holds its first decoded representation, which lives and
+    /// leaves with the resident bytes.
     Resident {
         bytes: Bytes,
         referenced: AtomicBool,
         order: u64,
+        decoded: OnceLock<(DecodedCacheKey, DecodedCacheValue)>,
     },
     Spilled {
         offset: u64,
@@ -132,6 +135,7 @@ impl Index {
                 bytes,
                 referenced: AtomicBool::new(false),
                 order,
+                decoded: OnceLock::new(),
             },
         ) {
             self.spilled_objects -= 1;
@@ -152,6 +156,7 @@ impl Index {
                 bytes,
                 referenced,
                 order,
+                ..
             }) = self.objects.get_mut(&object_id)
             else {
                 continue;
@@ -253,19 +258,6 @@ impl<S> StagedObjects<S> {
             }
             Some(&Staged::Spilled { offset, length }) => Lookup::Spilled { offset, length },
         }
-    }
-
-    /// Whether `object_id` is known to be staged. Staged pages are the
-    /// private working set of unpublished candidates: each is resident or
-    /// spilled already, and most are superseded by the next mutation that
-    /// reads them, so they bypass the shared decoded cache instead of
-    /// evicting published pages from it. An uncertain answer, while another
-    /// operation updates the index, admits as usual; either choice is sound
-    /// because the cache is keyed by immutable identity.
-    fn is_staged(&self, object_id: ObjectId) -> bool {
-        self.index
-            .try_read()
-            .is_ok_and(|index| index.objects.contains_key(&object_id))
     }
 
     /// Moves the least recently used resident objects, down to half the
@@ -506,14 +498,24 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
 }
 
 impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
+    /// Staged pages are the private working set of unpublished candidates,
+    /// and most are superseded by the next mutation that reads them. Rather
+    /// than churn the shared decoded cache and evict published pages, a
+    /// resident page keeps its own decoded representation, which leaves with
+    /// it; a spilled page is decoded afresh. The cache is keyed by immutable
+    /// identity and decoder, so every answer is sound.
     fn decoded_cache_get(
         &self,
         key: DecodedCacheKey,
     ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        if self.is_staged(key.object_id) {
-            return Ok(None);
+        match self.index().objects.get(&key.object_id) {
+            Some(Staged::Resident { decoded, .. }) => Ok(decoded
+                .get()
+                .filter(|(cached, _)| *cached == key)
+                .map(|(_, value)| value.clone())),
+            Some(Staged::Spilled { .. }) => Ok(None),
+            None => self.inner.decoded_cache_get(key),
         }
-        self.inner.decoded_cache_get(key)
     }
 
     fn decoded_cache_admit(
@@ -521,10 +523,18 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         key: DecodedCacheKey,
         value: DecodedCacheValue,
     ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        if self.is_staged(key.object_id) {
-            return Ok(DecodedCacheAdmission::Uncached(value));
+        match self.index().objects.get(&key.object_id) {
+            Some(Staged::Resident { decoded, .. }) => {
+                let (cached, shared) = decoded.get_or_init(|| (key, value.clone()));
+                Ok(if *cached == key {
+                    DecodedCacheAdmission::Shared(shared.clone())
+                } else {
+                    DecodedCacheAdmission::Uncached(value)
+                })
+            }
+            Some(Staged::Spilled { .. }) => Ok(DecodedCacheAdmission::Uncached(value)),
+            None => self.inner.decoded_cache_admit(key, value),
         }
-        self.inner.decoded_cache_admit(key, value)
     }
 
     async fn put(
@@ -784,6 +794,7 @@ fn byte_length(bytes: &Bytes) -> u64 {
 mod tests {
     use super::*;
     use crate::distributed::ProviderObjectStore;
+    use crate::kernel::DecodeLimits;
     use crate::storage::{ObjectKind, object_digest};
     use acyclic_objects::ObjectsProvider as _;
     use std::sync::Arc;
@@ -1047,17 +1058,28 @@ mod tests {
             .put_hashed(object.clone(), WorkBudget::UNBOUNDED, &token)
             .await?;
         assert_eq!(admitted.work.bytes_hashed, 0);
-        assert!(
-            store.is_staged(object.object_id()),
-            "a staged page bypasses the shared decoded cache"
-        );
+        // A resident page keeps its own decoded representation, which leaves
+        // with it once publication makes the page durable.
+        let key = DecodedCacheKey::new::<u32>(object.object_id(), DecodeLimits::default());
+        let decoded = DecodedCacheValue {
+            value: Arc::new(7_u32),
+            logical_bytes: 4,
+        };
+        assert!(store.decoded_cache_get(key)?.is_none());
+        assert!(matches!(
+            store.decoded_cache_admit(key, decoded)?,
+            DecodedCacheAdmission::Shared(_)
+        ));
+        let cached = store
+            .decoded_cache_get(key)?
+            .ok_or("resident page lost its decoding")?;
+        assert_eq!(cached.value.downcast_ref::<u32>(), Some(&7));
+        let other = DecodedCacheKey::new::<u64>(object.object_id(), DecodeLimits::default());
+        assert!(store.decoded_cache_get(other)?.is_none());
         store
             .flush_before_publish(PublicationScope::Everything, WorkBudget::UNBOUNDED, &token)
             .await?;
-        assert!(
-            !store.is_staged(object.object_id()),
-            "a durable page is cached like any published page"
-        );
+        assert!(store.decoded_cache_get(key)?.is_none());
         let (object_id, _) = object.into_parts();
         let forged = store
             .put(
