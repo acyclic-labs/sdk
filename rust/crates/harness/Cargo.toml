@@ -29,9 +29,9 @@ machines = ["host", "dep:acyclic-machines"]
 models = ["host", "dep:reqwest"]
 
 [dependencies]
-acyclic-stream = { version = "=0.1.4", path = "../stream", default-features = false, optional = true }
-acyclic-fs = { version = "=0.1.4", path = "../filesystem", default-features = false, optional = true }
-acyclic-machines = { version = "=0.1.4", path = "../machines", optional = true }
+acyclic-stream = { version = "=0.1.5", path = "../stream", default-features = false, optional = true }
+acyclic-fs = { version = "=0.1.5", path = "../filesystem", default-features = false, optional = true }
+acyclic-machines = { version = "=0.1.5", path = "../machines", optional = true }
 axum = { workspace = true, optional = true }
 blake3.workspace = true
 bytes = { workspace = true, optional = true }

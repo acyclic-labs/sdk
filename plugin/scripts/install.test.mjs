@@ -183,9 +183,10 @@ test("launcher is read-only after installation", () => {
     if (process.platform !== "win32") {
       for (const name of readdirSync(value.bin)) {
         const path = join(value.bin, name);
-        chmodSync(path, statSync(path).isDirectory() ? 0o555 : 0o444);
+        chmodSync(path, statSync(path).mode & 0o555);
       }
       chmodSync(value.bin, 0o555);
+      assert.equal(statSync(value.installed).mode & 0o111, 0o111);
     }
     const launched = spawnSync(process.execPath, [join(value.bin, "acyclic.js"), "--version"], {
       encoding: "utf8",

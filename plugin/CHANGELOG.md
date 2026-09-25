@@ -1,5 +1,10 @@
 # @acyclic-labs/plugin changelog
 
+## 0.1.5 - 2026-09-25
+
+- Preserves executable permissions while testing a read-only installation,
+  allowing the packaged launcher to complete release qualification.
+
 ## 0.1.4 - 2026-09-25
 
 - Restores executable modes for every Linux and macOS release binary and
