@@ -2173,15 +2173,12 @@ async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), B
         let main = fs.open_workspace("repo").await?;
         let source = main.head().await?;
         assert_eq!(source.id(), source_id);
-        match fs.open_workspace("agent").await {
-            Ok(agent) => {
-                assert_eq!(agent.head().await?.id(), forked_head);
-                assert_eq!(
-                    agent.read("/base.txt", 16).await?,
-                    Bytes::from_static(b"base")
-                );
-            }
-            Err(_) => {}
+        if let Ok(agent) = fs.open_workspace("agent").await {
+            assert_eq!(agent.head().await?.id(), forked_head);
+            assert_eq!(
+                agent.read("/base.txt", 16).await?,
+                Bytes::from_static(b"base")
+            );
         }
         let retried = main
             .fork("agent", ForkOptions::from_generation(source, key))
