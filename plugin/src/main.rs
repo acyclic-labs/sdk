@@ -10718,7 +10718,7 @@ fn request_service_stop(data: &Path, instance_id: &str, drain_id: &str) -> Resul
 struct StopRequests {
     request: PathBuf,
     arrived: Arc<tokio::sync::Notify>,
-    _watcher: notify::RecommendedWatcher,
+    _watcher: acyclic_fs::watch::NativeEventWatcher,
 }
 
 impl StopRequests {
@@ -10736,8 +10736,11 @@ impl StopRequests {
         let arrived = Arc::new(tokio::sync::Notify::new());
         let notification = Arc::clone(&arrived);
         // Any event, or a watcher error, only prompts another look.
-        let mut watcher =
-            notify::recommended_watcher(move |_| notification.notify_one()).map_err(display)?;
+        let mut watcher = <acyclic_fs::watch::NativeEventWatcher as notify::Watcher>::new(
+            move |_| notification.notify_one(),
+            notify::Config::default(),
+        )
+        .map_err(display)?;
         notify::Watcher::watch(
             &mut watcher,
             &directory,
