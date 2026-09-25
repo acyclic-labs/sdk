@@ -534,6 +534,24 @@ pub fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
     write_all_at_impl(file, offset, bytes)
 }
 
+/// Issues one device control request on `file` and waits for it on the
+/// calling thread, whether the handle is synchronous or overlapped; an
+/// overlapped handle's completion never reaches a port it is attached to.
+/// Returns the output byte count.
+///
+/// # Errors
+///
+/// Returns the request's error, including a short output buffer.
+#[cfg(windows)]
+pub fn device_control_in_place(
+    file: &impl std::os::windows::io::AsRawHandle,
+    code: u32,
+    input: &[u8],
+    output: &mut [u8],
+) -> io::Result<usize> {
+    windows::control_in_place(file, code, input, output)
+}
+
 /// Applies the exact native Windows file-attribute bitset.
 #[cfg(windows)]
 pub fn set_file_attributes(path: &Path, attributes: u32) -> io::Result<()> {
@@ -1072,6 +1090,59 @@ impl NativeJob {
         }
     }
 
+    /// Whether this job may run on a thread that admits inline blocking:
+    /// a positional read or write on an overlapped Windows handle, which the
+    /// thread can issue and wait for itself without the driver.
+    #[cfg(windows)]
+    const fn runs_in_place(&self) -> bool {
+        matches!(
+            self,
+            Self::Read {
+                overlapped: true,
+                ..
+            } | Self::Unit {
+                overlapped: true,
+                operation: NativeUnitOperation::Write(_),
+                ..
+            }
+        )
+    }
+
+    /// Runs a job [`Self::runs_in_place`] admits on the calling thread,
+    /// completing its fence exactly as the driver's completion would.
+    #[cfg(windows)]
+    fn run_in_place(self) -> Option<Waker> {
+        match self {
+            Self::Read {
+                file,
+                reads,
+                overlapped: true,
+                tail,
+                uncertain,
+                state,
+                completion,
+            } => FileCompletion::new(state, completion, uncertain, tail)
+                .for_file(Arc::clone(&file))
+                .finish(windows::read_batch_in_place(&file, &reads)),
+            Self::Unit {
+                file,
+                operation: NativeUnitOperation::Write(writes),
+                overlapped: true,
+                tail,
+                uncertain,
+                state,
+                completion,
+            } => {
+                let finish = FileCompletion::new(state, completion, uncertain, tail)
+                    .for_file(Arc::clone(&file));
+                let result = validate_write_batch(&writes)
+                    .and_then(|()| windows::write_batch_in_place(&file, &writes));
+                finish.finish(result)
+            }
+            job => job.run(),
+        }
+    }
+
     fn run(self) -> Option<Waker> {
         match self {
             Self::Read {
@@ -1358,6 +1429,14 @@ impl<T> Future for NativeCompletion<T> {
             return Poll::Ready(Err(io::Error::other(
                 "prior native I/O completion on this file is uncertain",
             )));
+        }
+        // A thread that admits inline blocking serves an overlapped handle's
+        // positional I/O itself; the job records its result and fence.
+        #[cfg(windows)]
+        if inline_blocking_allowed()
+            && let Some(job) = this.pending.take_if(|job| job.runs_in_place())
+        {
+            let _ = job.run_in_place();
         }
         match poll_submission(&mut this.pending, &mut this.waiter, context) {
             Poll::Ready(Err(error)) => {
@@ -1714,21 +1793,24 @@ pub struct RangeReader<'a> {
     remaining: u64,
 }
 
-/// Bounded asynchronous positional source backed by the native completion path.
+/// Bounded asynchronous positional source for one range of a native file,
+/// read through the file's own ordered operations.
 pub struct AsyncRangeReader {
-    file: NativeFile,
+    file: Arc<NativeFile>,
     offset: u64,
     remaining: u64,
 }
 
 impl AsyncRangeReader {
-    /// Creates a source for at most `length` bytes starting at `offset`.
-    pub fn new(file: File, offset: u64, length: u64) -> io::Result<Self> {
-        Ok(Self {
-            file: NativeFile::from_file(file)?,
+    /// Creates a source for at most `length` bytes of `file` starting at
+    /// `offset`.
+    #[must_use]
+    pub const fn new(file: Arc<NativeFile>, offset: u64, length: u64) -> Self {
+        Self {
+            file,
             offset,
             remaining: length,
-        })
+        }
     }
 
     /// Reads the next bounded chunk without blocking the caller's executor.
@@ -2679,6 +2761,70 @@ mod tests {
         assert_eq!(actual.get(..3), Some(b"one".as_slice()));
         assert_eq!(actual.get(7..13), Some(b"native".as_slice()));
         assert_eq!(actual.get(20..23), Some(b"two".as_slice()));
+        Ok(())
+    }
+
+    /// An inline thread serves an overlapped handle's positional I/O in
+    /// place with exactly the driver's results, before and after the
+    /// driver has attached that handle, and neither moves the other.
+    #[cfg(windows)]
+    #[test]
+    #[allow(unsafe_code)]
+    fn inline_overlapped_io_matches_the_driver() -> io::Result<()> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
+        let temporary = tempfile::tempdir()?;
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .custom_flags(FILE_FLAG_OVERLAPPED)
+            .open(temporary.path().join("in-place"))?;
+        // SAFETY: the handle was just opened overlapped, is attached to no
+        // port, and is transferred once.
+        let native = unsafe { NativeFile::from_overlapped_file_unchecked(file)? };
+        let reads = || {
+            [(5, 8), (1, 3), (0, 0), (12, 4), (30, 4)]
+                .map(|(offset, length)| OwnedRead { offset, length })
+                .to_vec()
+        };
+        let expected = [
+            Bytes::from_static(b"fgh\0\0xy"),
+            Bytes::from_static(b"bcd"),
+            Bytes::new(),
+            Bytes::new(),
+            Bytes::new(),
+        ];
+        let write = |offset, bytes| {
+            complete_write(native.write_all_batch_async(vec![OwnedWrite { offset, bytes }]))
+        };
+        {
+            let _inline = InlineBlocking::enter();
+            write(0, Bytes::from_static(b"abcdefgh"))?;
+            write(10, Bytes::from_static(b"xy"))?;
+            assert_eq!(complete_read(native.read_batch_async(reads()))?, expected);
+        }
+        // The driver attaches the handle and sees exactly the same file.
+        assert_eq!(complete_read(native.read_batch_async(reads()))?, expected);
+        write(0, Bytes::from_static(b"A"))?;
+        {
+            // In-place requests on an attached handle post nothing to its port.
+            let _inline = InlineBlocking::enter();
+            write(1, Bytes::from_static(b"B"))?;
+            let read = complete_read(native.read_batch_async(vec![OwnedRead {
+                offset: 0,
+                length: 3,
+            }]))?;
+            assert_eq!(read, [Bytes::from_static(b"ABc")]);
+        }
+        assert_eq!(
+            complete_read(native.read_batch_async(vec![OwnedRead {
+                offset: 0,
+                length: 3,
+            }]))?,
+            [Bytes::from_static(b"ABc")]
+        );
         Ok(())
     }
 

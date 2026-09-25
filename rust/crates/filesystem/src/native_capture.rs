@@ -3135,7 +3135,6 @@ async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         source_root,
         &prepared.host_path,
         &prepared.snapshot,
-        None,
         maximum_extent_spans,
         receipt.work,
         budget,
@@ -3192,7 +3191,6 @@ async fn finish_prepared_regular_batch<A: AsyncAuthorityStore, O: AsyncObjectSto
                 source_root,
                 &host_path,
                 &snapshot,
-                None,
                 maximum_extent_spans,
                 WorkCounters::default(),
                 WorkBudget::UNBOUNDED,
@@ -3334,19 +3332,16 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     source_root: &HostRoot,
     host_path: &Path,
     snapshot: &HostSnapshot,
-    opened_file: Option<cap_std::fs::File>,
     maximum_extent_spans: u32,
     prior_work: WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<StagedRegularBody, OperationFailure<CaptureError>> {
-    let file = if let Some(file) = opened_file {
-        file
-    } else {
-        source_root
-            .open_file(host_path)
-            .map_err(|error| OperationFailure::new(error.into(), prior_work))?
-    };
+    // Read only at offsets: on Windows the handle's I/O then runs in place
+    // on a callback thread instead of reopening the file for every read.
+    let file = source_root
+        .open_file_positional(host_path)
+        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
     let metadata = file
         .metadata()
         .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
@@ -3596,18 +3591,23 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, prior_work))?;
     let mut work = WorkCounters::default();
     let mut bytes = 0_u64;
+    // One native file serves every range, reading through a duplicate of
+    // the positional handle; the caller keeps the original for metadata.
+    let native = file
+        .try_clone()
+        .map(cap_std::fs::File::into_std)
+        .and_then(native_positional_file)
+        .map(std::sync::Arc::new)
+        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
     for range in ranges {
         let accumulated = prior_work
             .checked_add(work)
             .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
-        let native = file
-            .try_clone()
-            .map(cap_std::fs::File::into_std)
-            .map_err(|error| OperationFailure::new(error.into(), accumulated))?;
-        let mut bounded = NativeRangeSource(
-            acyclic_native_runtime::AsyncRangeReader::new(native, range.offset, range.length)
-                .map_err(|error| OperationFailure::new(error.into(), accumulated))?,
-        );
+        let mut bounded = NativeRangeSource(acyclic_native_runtime::AsyncRangeReader::new(
+            std::sync::Arc::clone(&native),
+            range.offset,
+            range.length,
+        ));
         let remaining = accumulated
             .remaining(budget)
             .map_err(|error| OperationFailure::new(CaptureError::Work(error), accumulated))?;
@@ -3638,6 +3638,28 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         work,
         bytes,
     })
+}
+
+/// The native file a handle from [`HostRoot::open_file_positional`] reads
+/// through.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn native_positional_file(
+    file: std::fs::File,
+) -> std::io::Result<acyclic_native_runtime::NativeFile> {
+    // SAFETY: a positional handle is opened overlapped; this fresh file
+    // object is attached to no port, and this sole duplicate carries all of
+    // its I/O.
+    unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file) }
+}
+
+/// The native file a handle from [`HostRoot::open_file_positional`] reads
+/// through.
+#[cfg(not(windows))]
+fn native_positional_file(
+    file: std::fs::File,
+) -> std::io::Result<acyclic_native_runtime::NativeFile> {
+    acyclic_native_runtime::NativeFile::from_file(file)
 }
 
 struct NativeRangeSource(acyclic_native_runtime::AsyncRangeReader);

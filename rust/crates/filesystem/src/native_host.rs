@@ -501,6 +501,14 @@ fn stat_at(
     }
 }
 
+/// How an opened file will be read: through its cursor, or only at
+/// explicit offsets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FileReads {
+    Cursor,
+    Positional,
+}
+
 /// A held directory capability whose relative operations cannot escape through
 /// path traversal or an intermediate symbolic link/reparse point.
 pub struct HostRoot {
@@ -1139,14 +1147,33 @@ impl HostRoot {
     }
 
     pub fn open_file(&self, path: &Path) -> io::Result<cap_std::fs::File> {
+        self.open_file_for(path, FileReads::Cursor)
+    }
+
+    /// Opens `path` for positional reads only, as [`Self::open_file`] does
+    /// otherwise. On Windows the handle is overlapped: it has no cursor, and
+    /// the native runtime serves its positional I/O in place on a thread
+    /// that admits inline blocking instead of reopening the file per call.
+    pub fn open_file_positional(&self, path: &Path) -> io::Result<cap_std::fs::File> {
+        self.open_file_for(path, FileReads::Positional)
+    }
+
+    fn open_file_for(&self, path: &Path, reads: FileReads) -> io::Result<cap_std::fs::File> {
         #[cfg(windows)]
-        if let Some(file) = self.open_file_by_name(path)? {
+        if let Some(file) = self.open_file_by_name(path, reads)? {
             return Ok(file);
         }
         let mut options = OpenOptions::new();
         options
             .read(true)
             ._cap_fs_ext_follow(cap_primitives::fs::FollowSymlinks::No);
+        #[cfg(windows)]
+        if reads == FileReads::Positional {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.custom_flags(windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED.0);
+        }
+        #[cfg(not(windows))]
+        let _ = reads;
         #[cfg(target_os = "linux")]
         {
             use cap_std::fs::OpenOptionsExt as _;
@@ -1170,7 +1197,11 @@ impl HostRoot {
     /// walk may resolve.
     #[cfg(windows)]
     #[allow(unsafe_code)]
-    fn open_file_by_name(&self, path: &Path) -> io::Result<Option<cap_std::fs::File>> {
+    fn open_file_by_name(
+        &self,
+        path: &Path,
+        reads: FileReads,
+    ) -> io::Result<Option<cap_std::fs::File>> {
         use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _};
         use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
         use windows::Wdk::Storage::FileSystem::{
@@ -1218,7 +1249,14 @@ impl HostRoot {
                 FILE_ATTRIBUTE_NORMAL,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 FILE_OPEN,
-                FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+                FILE_NON_DIRECTORY_FILE
+                    | FILE_OPEN_REPARSE_POINT
+                    | match reads {
+                        FileReads::Cursor => FILE_SYNCHRONOUS_IO_NONALERT,
+                        FileReads::Positional => {
+                            windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0)
+                        }
+                    },
                 None,
                 0,
             )
@@ -2865,9 +2903,7 @@ fn query_allocated_data_ranges(
     maximum_ranges: u32,
 ) -> io::Result<Vec<HostDataRange>> {
     use std::mem::size_of;
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, HANDLE};
-    use windows::Win32::System::IO::DeviceIoControl;
+    use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA};
     use windows::Win32::System::Ioctl::{
         FILE_ALLOCATED_RANGE_BUFFER, FSCTL_QUERY_ALLOCATED_RANGES,
     };
@@ -2888,34 +2924,32 @@ fn query_allocated_data_ranges(
         Length: i64::try_from(length)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file length exceeds i64"))?,
     };
-    let input_bytes = u32::try_from(size_of::<FILE_ALLOCATED_RANGE_BUFFER>())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "input size overflow"))?;
-    let mut returned: u32;
-    loop {
-        let output_bytes =
-            u32::try_from(output.len() * size_of::<FILE_ALLOCATED_RANGE_BUFFER>())
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "output size overflow"))?;
-        returned = 0;
-        // SAFETY: every pointer addresses a live, correctly sized value/buffer
-        // for the synchronous call; the borrowed file remains open throughout.
-        let result = unsafe {
-            DeviceIoControl(
-                HANDLE(file.as_raw_handle()),
-                FSCTL_QUERY_ALLOCATED_RANGES,
-                Some(std::ptr::from_ref(&query).cast()),
-                input_bytes,
-                Some(output.as_mut_ptr().cast()),
-                output_bytes,
-                Some(&raw mut returned),
-                None,
-            )
+    // SAFETY: the query is plain data, viewed as exactly its own bytes.
+    let input = unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(&query).cast::<u8>(),
+            size_of::<FILE_ALLOCATED_RANGE_BUFFER>(),
+        )
+    };
+    let returned = loop {
+        let output_bytes = output.len() * size_of::<FILE_ALLOCATED_RANGE_BUFFER>();
+        // SAFETY: the ranges are plain data; the view spans exactly the
+        // vector's initialized elements and is the only borrow of them.
+        let output_view = unsafe {
+            std::slice::from_raw_parts_mut(output.as_mut_ptr().cast::<u8>(), output_bytes)
         };
+        let result = acyclic_native_runtime::device_control_in_place(
+            file,
+            FSCTL_QUERY_ALLOCATED_RANGES,
+            input,
+            output_view,
+        );
         match result {
-            Ok(()) => break,
+            Ok(returned) => break returned,
             Err(error)
-                if error.code() == windows::core::HRESULT::from_win32(ERROR_MORE_DATA.0)
-                    || error.code()
-                        == windows::core::HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0) =>
+                if [ERROR_MORE_DATA, ERROR_INSUFFICIENT_BUFFER]
+                    .iter()
+                    .any(|code| error.raw_os_error() == i32::try_from(code.0).ok()) =>
             {
                 if output.len() == max_capacity {
                     return Err(io::Error::new(
@@ -2928,11 +2962,10 @@ fn query_allocated_data_ranges(
                     FILE_ALLOCATED_RANGE_BUFFER::default(),
                 );
             }
-            Err(error) => return Err(io::Error::other(error.to_string())),
+            Err(error) => return Err(error),
         }
-    }
-    let count = usize::try_from(returned)
-        .ok()
+    };
+    let count = Some(returned)
         .filter(|bytes| bytes % size_of::<FILE_ALLOCATED_RANGE_BUFFER>() == 0)
         .map(|bytes| bytes / size_of::<FILE_ALLOCATED_RANGE_BUFFER>())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid range response"))?;
@@ -3771,7 +3804,7 @@ mod windows_clone_tests {
         let root = HostRoot::open(temporary.path())?;
         for path in [Path::new("directory/file"), Path::new("DIRECTORY/FILE")] {
             let mut opened = root
-                .open_file_by_name(path)?
+                .open_file_by_name(path, super::FileReads::Cursor)?
                 .ok_or_else(|| std::io::Error::other("a plain path is opened by name"))?;
             let held = root.symlink_metadata(path)?;
             let metadata = opened.metadata()?;
@@ -3783,8 +3816,14 @@ mod windows_clone_tests {
             opened.read_to_end(&mut read)?;
             assert_eq!(read, b"payload");
         }
-        assert!(root.open_file_by_name(Path::new(""))?.is_none());
-        assert!(root.open_file_by_name(Path::new("directory")).is_err());
+        assert!(
+            root.open_file_by_name(Path::new(""), super::FileReads::Cursor)?
+                .is_none()
+        );
+        assert!(
+            root.open_file_by_name(Path::new("directory"), super::FileReads::Cursor)
+                .is_err()
+        );
         assert_eq!(
             root.open_file(Path::new("directory/missing"))
                 .map_err(|error| error.kind())
@@ -3796,7 +3835,10 @@ mod windows_clone_tests {
             temporary.path().join("directory"),
             temporary.path().join("link"),
         ) {
-            Ok(()) => assert!(root.open_file_by_name(Path::new("link/file"))?.is_none()),
+            Ok(()) => assert!(
+                root.open_file_by_name(Path::new("link/file"), super::FileReads::Cursor)?
+                    .is_none()
+            ),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
             Err(error) => return Err(error),
         }
