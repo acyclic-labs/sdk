@@ -5518,9 +5518,13 @@ impl ControlPlane {
             return Err("injected adapter-state flush failure".to_owned());
         }
         let data = self.data.clone();
-        tokio::task::spawn_blocking(move || flush_state_slot(&data, ADAPTER_STATE_SLOTS[2]))
-            .await
-            .map_err(display)??;
+        let mut slots = self.slots;
+        self.slots = tokio::task::spawn_blocking(move || {
+            slots.flush_unflushed(&data)?;
+            Ok::<_, String>(slots)
+        })
+        .await
+        .map_err(display)??;
         self.unflushed = false;
         Ok(())
     }
@@ -6531,8 +6535,9 @@ struct StateSlots {
     /// Such a slot is never the newest flushed save, so it stays the target
     /// until a flushed save completes in it.
     flushed: [Option<u64>; 2],
-    /// Whether each flushed slot's directory entry is durable.
-    durable_entry: [bool; 2],
+    /// Whether each slot's directory entry is durable. The unflushed slot's
+    /// is known only once this process flushed it.
+    durable_entry: [bool; 3],
     /// The highest generation read or ever written, whether or not the write
     /// completed, so every save is newer than anything any slot can hold.
     last_generation: u64,
@@ -6549,6 +6554,7 @@ impl StateSlots {
             durable_entry: [
                 !matches!(slots[0], StateSlot::Missing),
                 !matches!(slots[1], StateSlot::Missing),
+                false,
             ],
             last_generation: slots
                 .iter()
@@ -6562,6 +6568,21 @@ impl StateSlots {
     /// The flushed slot holding the newest flushed save.
     fn newest_flushed(&self) -> usize {
         usize::from(self.flushed[1] > self.flushed[0])
+    }
+
+    /// Makes the unflushed slot's save durable, with its directory entry
+    /// until that is.
+    fn flush_unflushed(&mut self, data: &Path) -> Result<(), String> {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(data.join(ADAPTER_STATE_SLOTS[2]))
+            .map_err(display)?;
+        sync_file(&file, Durability::Full).map_err(display)?;
+        if !self.durable_entry[2] {
+            sync_parent(data, Durability::Full).map_err(display)?;
+            self.durable_entry[2] = true;
+        }
+        Ok(())
     }
 
     fn save(
@@ -6626,7 +6647,7 @@ impl StateSlots {
 }
 
 fn load_state(data: &Path) -> Result<(AdapterState, StateSlots), String> {
-    let (slots, [first, second, unflushed]) = StateSlots::read(data)?;
+    let (mut slots, [first, second, unflushed]) = StateSlots::read(data)?;
     let (flushed, other) = if slots.newest_flushed() == 1 {
         (second, first)
     } else {
@@ -6635,7 +6656,7 @@ fn load_state(data: &Path) -> Result<(AdapterState, StateSlots), String> {
     let newest = if unflushed.generation() > flushed.generation() {
         // A process that exited before flushing its last save leaves it only
         // in memory; nothing may act on it before it is durable.
-        flush_state_slot(data, ADAPTER_STATE_SLOTS[2])?;
+        slots.flush_unflushed(data)?;
         unflushed
     } else {
         flushed
@@ -6667,16 +6688,6 @@ fn load_saved_state(data: &Path) -> Result<AdapterState, String> {
 #[cfg(test)]
 fn save_state(data: &Path, state: &AdapterState, survives: Survives) -> Result<(), String> {
     StateSlots::read(data)?.0.save(data, state, survives)
-}
-
-/// Makes an unflushed save durable.
-fn flush_state_slot(data: &Path, name: &str) -> Result<(), String> {
-    let file = fs::OpenOptions::new()
-        .write(true)
-        .open(data.join(name))
-        .map_err(display)?;
-    sync_file(&file, Durability::Full).map_err(display)?;
-    sync_parent(data, Durability::Full).map_err(display)
 }
 
 /// When the session last completed a save, for newest-first recovery order.
@@ -19511,6 +19522,29 @@ mod tests {
         let intact = fs::read(&unflushed).expect("unflushed slot");
         fs::write(&unflushed, &intact[..intact.len() - 1]).expect("tear unflushed save");
         assert_eq!(loaded().as_deref(), Ok("sixth"));
+    }
+
+    #[test]
+    fn the_unflushed_slot_entry_is_flushed_until_known_durable() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path();
+        let state = AdapterState {
+            version: ADAPTER_STATE_VERSION,
+            root_session_id: "session".to_owned(),
+            ..AdapterState::default()
+        };
+        let (_, mut slots) = load_state(data).expect("fresh state");
+        slots
+            .save(data, &state, Survives::ServiceCrash)
+            .expect("unflushed save");
+        assert!(!slots.durable_entry[2], "a created entry is not durable");
+        slots.flush_unflushed(data).expect("first flush");
+        assert!(slots.durable_entry[2], "the first flush syncs the entry");
+        // Another process cannot tell whether the entry was synced, so it
+        // syncs it with its first flush, which loading performs here.
+        assert!(!StateSlots::read(data).expect("slots").0.durable_entry[2]);
+        let (_, reloaded) = load_state(data).expect("reloaded state");
+        assert!(reloaded.durable_entry[2]);
     }
 
     #[test]
