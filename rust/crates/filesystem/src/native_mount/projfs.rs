@@ -40,12 +40,11 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_FILE_OVERWRITTEN, PRJ_NOTIFY_FILE_RENAMED, PRJ_NOTIFY_HARDLINK_CREATED,
     PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK,
     PRJ_NOTIFY_TYPES, PRJ_PLACEHOLDER_INFO, PRJ_PLACEHOLDER_VERSION_INFO,
-    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_DIRTY_DATA, PRJ_UPDATE_ALLOW_DIRTY_METADATA,
-    PRJ_UPDATE_ALLOW_READ_ONLY, PRJ_UPDATE_ALLOW_TOMBSTONE, PrjAllocateAlignedBuffer,
-    PrjClearNegativePathCache, PrjDeleteFile, PrjFileNameCompare, PrjFileNameMatch,
-    PrjFillDirEntryBuffer, PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer,
-    PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
-    PrjUpdateFileIfNeeded, PrjWriteFileData, PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
+    PRJ_STARTVIRTUALIZING_OPTIONS, PrjAllocateAlignedBuffer, PrjClearNegativePathCache,
+    PrjDeleteFile, PrjFileNameCompare, PrjFileNameMatch, PrjFillDirEntryBuffer,
+    PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder,
+    PrjStartVirtualizing, PrjStopVirtualizing, PrjWriteFileData, PrjWritePlaceholderInfo,
+    PrjWritePlaceholderInfo2,
 };
 use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
 
@@ -86,6 +85,8 @@ const NOTIFICATION_ROOT: [u16; 1] = [0];
 const HYDRATION_CHUNK_BYTES: u32 = 1 << 20;
 /// Bounds the provider's memo of read-only close bindings.
 const MAXIMUM_CACHED_BINDINGS: usize = 16_384;
+/// Bounds the absences `ProjFS` may cache before all are forgotten.
+const MAXIMUM_CACHED_ABSENCES: usize = 1_024;
 /// Bounds the directory entries memoized across all cached directories.
 const MAXIMUM_CACHED_DIRECTORY_ENTRIES: usize = 65_536;
 /// Marks a placeholder whose `ContentID` carries a [`MountContentPin`].
@@ -103,6 +104,10 @@ struct EnumState {
 struct ProjectedEntry {
     // ProjFS compares NUL-terminated UTF-16 names, not SDK byte cursors.
     name: Vec<u16>,
+    /// The entry's exact path component and node, which a cached listing
+    /// stays current only as long as the source proves unchanged.
+    component: Vec<u8>,
+    file_id: FileId,
     info: PRJ_FILE_BASIC_INFO,
     symlink_target: Option<bytes::Bytes>,
 }
@@ -115,9 +120,10 @@ struct Runtime {
     enumerations: Mutex<HashMap<u128, Arc<Mutex<EnumState>>>>,
     metadata_baselines: Arc<Mutex<HashMap<u128, OpenMetadataState>>>,
     projection: Arc<Mutex<ProjectionCache>>,
-    /// Source epochs under which every absence `ProjFS` holds in its negative
-    /// path cache was reported; `None` once that cache must be cleared.
-    negative_paths: Option<Mutex<Option<SourceEpochs>>>,
+    /// Every absence `ProjFS` holds in its negative path cache, with the
+    /// basis its lookup began in; `None` when this source cannot version an
+    /// absence, so none is cached.
+    negative_paths: Option<Mutex<NegativePaths>>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
     post_operation_failure: Arc<Mutex<PostOperationFailures>>,
     callbacks: CallbackGate,
@@ -366,112 +372,127 @@ fn defer_host_capture(failure: &Mutex<PostOperationFailures>, path: MountPath) {
     lock_recover(failure).queue_capture(path, "host capture pending".to_owned());
 }
 
-/// One coherent source view: stable, with its binding epoch and the stamp
-/// of its latest change known. Any change to the source yields another view.
+/// The source view one read began in. It is sampled before the read, so any
+/// later change to what the read depended on is recorded after it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SourceEpochs {
-    view: ViewStamp,
+struct ReadBasis {
+    stamp: ViewStamp,
     binding: u64,
 }
 
-fn source_epochs(source: &dyn MountFilesystem) -> Option<SourceEpochs> {
-    if !source.view_is_stable() {
-        return None;
+impl ReadBasis {
+    /// `None` while the view is moving or for a source that cannot version it.
+    fn sample(source: &dyn MountFilesystem) -> Option<Self> {
+        if !source.view_is_stable() {
+            return None;
+        }
+        Some(Self {
+            stamp: source.view_stamp()?,
+            binding: source.binding_epoch()?,
+        })
     }
-    Some(SourceEpochs {
-        view: source.view_stamp()?,
-        binding: source.binding_epoch()?,
-    })
+
+    /// Whether a read that found `file_id` (`None`: nothing) at `path` still
+    /// describes the source: no rebind, and nothing it depended on changed.
+    fn still_describes(
+        self,
+        source: &dyn MountFilesystem,
+        path: &MountPath,
+        file_id: Option<FileId>,
+    ) -> bool {
+        source.binding_epoch() == Some(self.binding)
+            && source.unchanged_since(path, file_id, self.stamp)
+    }
+}
+
+struct CachedDirectory {
+    basis: ReadBasis,
+    entries: Arc<[ProjectedEntry]>,
 }
 
 /// Source facts the provider memoizes between callbacks.
 ///
-/// Each fact is valid only in the source view it was read in, and only
-/// until the provider itself next mutates the source: every such mutation
-/// completes before [`Self::invalidate`] advances `generation`. A reader
-/// samples `generation` before consulting the source and may remember its
-/// result only while the generation is unchanged, so nothing read before a
-/// concurrent provider mutation finished is ever retained.
+/// Each fact keeps the basis it was read in and is reused only while the
+/// source proves that nothing it depended on has changed since. A change the
+/// provider itself makes is a source change like any other, so no fact needs
+/// to be dropped by hand.
+#[derive(Default)]
 struct ProjectionCache {
-    /// `None` once the counter is exhausted; nothing is cached after that.
-    generation: Option<u64>,
     bindings: HashMap<MountPath, ReadOnlyBinding>,
-    /// The single view every entry of `directories` was enumerated in.
-    directories_epochs: Option<SourceEpochs>,
-    directories: HashMap<MountPath, Arc<[ProjectedEntry]>>,
+    directories: HashMap<MountPath, CachedDirectory>,
     directory_entries: usize,
 }
 
-impl Default for ProjectionCache {
-    fn default() -> Self {
-        Self {
-            generation: Some(0),
-            bindings: HashMap::new(),
-            directories_epochs: None,
-            directories: HashMap::new(),
-            directory_entries: 0,
-        }
-    }
-}
-
 impl ProjectionCache {
-    fn invalidate(&mut self) {
-        self.generation = self.generation.and_then(|value| value.checked_add(1));
+    fn clear(&mut self) {
         self.bindings.clear();
-        self.clear_directories();
-    }
-
-    fn clear_directories(&mut self) {
-        self.directories_epochs = None;
         self.directories.clear();
         self.directory_entries = 0;
     }
 
-    fn directory(&self, path: &MountPath, epochs: SourceEpochs) -> Option<Arc<[ProjectedEntry]>> {
-        (self.directories_epochs == Some(epochs))
-            .then(|| self.directories.get(path).cloned())
-            .flatten()
+    /// A cached listing of `path` that still describes the source: its
+    /// membership and attributes, and every listed node, are unchanged.
+    fn directory(
+        &mut self,
+        source: &dyn MountFilesystem,
+        path: &MountPath,
+    ) -> Option<Arc<[ProjectedEntry]>> {
+        let cached = self.directories.get(path)?;
+        let current = cached.basis.still_describes(source, path, None)
+            && cached.entries.iter().all(|entry| {
+                cached.basis.still_describes(
+                    source,
+                    &path.child(entry.component.clone()),
+                    Some(entry.file_id),
+                )
+            });
+        if current {
+            return Some(Arc::clone(&cached.entries));
+        }
+        if let Some(stale) = self.directories.remove(path) {
+            self.directory_entries -= stale.entries.len();
+        }
+        None
     }
 
     fn remember_directory(
         &mut self,
-        generation: Option<u64>,
-        epochs: SourceEpochs,
+        basis: ReadBasis,
         path: MountPath,
         entries: Arc<[ProjectedEntry]>,
     ) {
-        if generation.is_none()
-            || self.generation != generation
-            || entries.len() > MAXIMUM_CACHED_DIRECTORY_ENTRIES
-        {
+        if entries.len() > MAXIMUM_CACHED_DIRECTORY_ENTRIES {
             return;
         }
-        if self.directories_epochs != Some(epochs)
-            || self.directory_entries + entries.len() > MAXIMUM_CACHED_DIRECTORY_ENTRIES
-        {
-            self.clear_directories();
-            self.directories_epochs = Some(epochs);
+        if self.directory_entries + entries.len() > MAXIMUM_CACHED_DIRECTORY_ENTRIES {
+            self.directories.clear();
+            self.directory_entries = 0;
         }
         self.directory_entries += entries.len();
-        if let Some(replaced) = self.directories.insert(path, entries) {
-            self.directory_entries -= replaced.len();
+        if let Some(replaced) = self
+            .directories
+            .insert(path, CachedDirectory { basis, entries })
+        {
+            self.directory_entries -= replaced.entries.len();
         }
     }
 
-    fn remember_binding(
-        &mut self,
-        generation: Option<u64>,
-        path: MountPath,
-        binding: ReadOnlyBinding,
-    ) {
-        if generation.is_none() || self.generation != generation {
-            return;
-        }
+    fn remember_binding(&mut self, path: MountPath, binding: ReadOnlyBinding) {
         if self.bindings.len() >= MAXIMUM_CACHED_BINDINGS {
             self.bindings.clear();
         }
         self.bindings.insert(path, binding);
     }
+}
+
+/// The absences `ProjFS` caches for this provider. `ProjFS` can only forget
+/// all of them at once, so the set is cleared as soon as any member may no
+/// longer be absent.
+#[derive(Default)]
+struct NegativePaths {
+    absent: Vec<(MountPath, ReadBasis)>,
+    /// A stamp at which every member was proven still absent.
+    proven: Option<ViewStamp>,
 }
 
 fn has_pending_capture(failure: &Mutex<PostOperationFailures>, path: &MountPath) -> bool {
@@ -519,7 +540,9 @@ impl ProjFsSession {
 
         // An absence can be cached only by a source that versions its view;
         // any later change of that view clears the cache before new lookups.
-        let negative_paths = source.view_stamp().map(|_| Mutex::new(None));
+        let negative_paths = source
+            .view_stamp()
+            .map(|_| Mutex::new(NegativePaths::default()));
         let mut runtime = Box::new(Runtime {
             source,
             root: request.destination.clone(),
@@ -626,8 +649,6 @@ impl ProjFsSession {
         let root = runtime.root.clone();
         let host_root = Arc::clone(&runtime.metadata_root);
         let probes = Arc::clone(&runtime.metadata_probes);
-        let projection = Arc::clone(&runtime.projection);
-        let context = self.context;
         runtime
             .callbacks
             .drain()
@@ -639,8 +660,6 @@ impl ProjFsSession {
                 if paths.is_empty() {
                     return Ok(());
                 }
-                // Capture mutates the source whether or not it completes.
-                let _invalidate = InvalidateOnDrop(projection.as_ref());
                 // Host capture reads through this projection. Suppress only
                 // those provider-owned metadata probes; external opens retain
                 // their per-handle baselines.
@@ -686,13 +705,9 @@ impl ProjFsSession {
                 for subtree in subtrees {
                     source.capture_host_subtree(&root, &subtree)?;
                 }
-                source.capture_host_paths(&root, &exact)?;
-                if let Some(context) = context {
-                    for (path, _) in paths {
-                        normalize_cache_path(context, source.as_ref(), path)?;
-                    }
-                }
-                Ok(())
+                // A captured file stays as the host wrote it: its local bytes
+                // already are the source's, so nothing is re-projected.
+                source.capture_host_paths(&root, &exact)
             },
         )
     }
@@ -710,7 +725,9 @@ impl ProjFsSession {
             .split('/')
             .filter(|component| !component.is_empty())
             .collect::<PathBuf>();
-        lock_recover(runtime.projection.as_ref()).invalidate();
+        // The change is outside the source's own record of changes, so no
+        // memoized fact can prove itself current.
+        lock_recover(runtime.projection.as_ref()).clear();
         forget_negative_paths(runtime, context)?;
         if relative.as_os_str().is_empty() {
             return Ok(());
@@ -733,11 +750,12 @@ impl ProjFsSession {
         }
     }
 
-    /// Forgets `ProjFS`'s cached absences after the source view advanced,
-    /// so paths the new view adds become visible.
+    /// Forgets every absence `ProjFS` caches that the advanced source view
+    /// may have filled, so paths the new view adds become visible.
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
         let (runtime, context) = self.live()?;
-        forget_negative_paths(runtime, context)
+        prune_negative_paths(runtime, context)
+            .map_err(|code| driver_error(&windows::core::Error::from_hresult(code)))
     }
 
     fn live(&self) -> Result<(&Runtime, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT), NativeMountError> {
@@ -748,8 +766,7 @@ impl ProjFsSession {
     }
 }
 
-/// Clears `ProjFS`'s negative path cache and records that no absence is
-/// cached, so the next placeholder callback re-establishes the view.
+/// Clears `ProjFS`'s negative path cache and every recorded absence.
 fn forget_negative_paths(
     runtime: &Runtime,
     context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
@@ -757,62 +774,70 @@ fn forget_negative_paths(
     let Some(negative_paths) = runtime.negative_paths.as_ref() else {
         return Ok(());
     };
-    let mut view = lock_recover(negative_paths);
+    let mut negative = lock_recover(negative_paths);
     // SAFETY: the context belongs to this live mounted runtime.
     unsafe { PrjClearNegativePathCache(context, None) }.map_err(|error| driver_error(&error))?;
-    *view = None;
+    *negative = NegativePaths::default();
     Ok(())
 }
 
-/// How one placeholder lookup may report an absence.
-enum AbsenceReport {
-    /// `ProjFS` caches no absences for this source.
-    Uncached,
-    /// Cacheable only if the source is still in this view after the lookup.
-    CachedIn(Option<SourceEpochs>),
-}
-
-impl AbsenceReport {
-    /// `ProjFS` caches `FILE_NOT_FOUND` as a negative path. An absence seen
-    /// while the view was moving belongs to no current view, so it is
-    /// reported as the equally absent but uncached `PATH_NOT_FOUND`.
-    fn report(&self, epochs_after: Option<SourceEpochs>) -> HRESULT {
-        match self {
-            Self::CachedIn(epochs) if epochs.is_none() || *epochs != epochs_after => {
-                HR_PATH_NOT_FOUND
-            }
-            Self::Uncached | Self::CachedIn(_) => HR_FILE_NOT_FOUND,
-        }
-    }
-}
-
-/// Admits the current source view for new cached absences, first clearing
-/// every absence `ProjFS` cached under an earlier view.
-fn admit_negative_paths(
+/// Keeps `ProjFS`'s cached absences exact: once any of them may have been
+/// filled, all are forgotten. Nothing is checked while the source records
+/// no change at all.
+fn prune_negative_paths(
     runtime: &Runtime,
     context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
-) -> Result<AbsenceReport, HRESULT> {
+) -> Result<(), HRESULT> {
     let Some(negative_paths) = runtime.negative_paths.as_ref() else {
-        return Ok(AbsenceReport::Uncached);
+        return Ok(());
     };
-    let current = source_epochs(runtime.source.as_ref());
-    let mut cached = lock_recover(negative_paths);
-    if *cached != current || current.is_none() {
+    let source = runtime.source.as_ref();
+    let mut negative = lock_recover(negative_paths);
+    let now = source.view_stamp();
+    if now.is_some() && now == negative.proven {
+        return Ok(());
+    }
+    if !negative
+        .absent
+        .iter()
+        .all(|(path, basis)| basis.still_describes(source, path, None))
+    {
         // SAFETY: the context belongs to this live mounted runtime.
         unsafe { PrjClearNegativePathCache(context, None) }.map_err(|error| error.code())?;
-        *cached = current;
+        negative.absent.clear();
     }
-    Ok(AbsenceReport::CachedIn(current))
+    negative.proven = now;
+    Ok(())
 }
 
-/// Invalidates the provider's memo when a source mutation ends, however it
-/// ends.
-struct InvalidateOnDrop<'a>(&'a Mutex<ProjectionCache>);
-
-impl Drop for InvalidateOnDrop<'_> {
-    fn drop(&mut self) {
-        lock_recover(self.0).invalidate();
+/// Reports one placeholder lookup's absence. `ProjFS` caches
+/// `FILE_NOT_FOUND` as a negative path, so that is reported only for an
+/// absence proven to hold now and recorded for pruning; any other absence is
+/// the equally absent but uncached `PATH_NOT_FOUND`.
+fn report_absence(
+    runtime: &Runtime,
+    context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    path: MountPath,
+    basis: Option<ReadBasis>,
+) -> HRESULT {
+    let Some(negative_paths) = runtime.negative_paths.as_ref() else {
+        return HR_FILE_NOT_FOUND;
+    };
+    let Some(basis) =
+        basis.filter(|basis| basis.still_describes(runtime.source.as_ref(), &path, None))
+    else {
+        return HR_PATH_NOT_FOUND;
+    };
+    let mut negative = lock_recover(negative_paths);
+    if negative.absent.len() >= MAXIMUM_CACHED_ABSENCES {
+        // SAFETY: the context belongs to this live mounted runtime.
+        if unsafe { PrjClearNegativePathCache(context, None) }.is_err() {
+            return HR_PATH_NOT_FOUND;
+        }
+        negative.absent.clear();
     }
+    negative.absent.push((path, basis));
+    HR_FILE_NOT_FOUND
 }
 
 /// Reports one typed source failure as its distinct Win32 status. Only the
@@ -860,71 +885,6 @@ fn placeholder_pin(data: &PRJ_CALLBACK_DATA) -> Option<MountContentPin> {
         .first_chunk()
         .copied()
         .map(MountContentPin)
-}
-
-fn normalize_cache_path(
-    context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
-    source: &dyn MountFilesystem,
-    path: &MountPath,
-) -> Result<(), MountSourceError> {
-    let relative = host_relative_path(path)?;
-    let relative = HSTRING::from(relative.as_os_str());
-    let update_flags = PRJ_UPDATE_ALLOW_DIRTY_METADATA
-        | PRJ_UPDATE_ALLOW_DIRTY_DATA
-        | PRJ_UPDATE_ALLOW_TOMBSTONE
-        | PRJ_UPDATE_ALLOW_READ_ONLY;
-    let Some((node, pin)) = source.lookup_pinned(path)? else {
-        // SAFETY: the relative UTF-16 name remains live for this synchronous
-        // call and the context belongs to this mounted runtime.
-        let result = unsafe {
-            PrjDeleteFile(
-                context,
-                PCWSTR::from_raw(relative.as_ptr()),
-                Some(update_flags),
-                None,
-            )
-        };
-        return match result {
-            Ok(()) => Ok(()),
-            Err(error)
-                if error.code() == HR_FILE_NOT_FOUND || error.code() == HR_PATH_NOT_FOUND =>
-            {
-                Ok(())
-            }
-            Err(error) => Err(MountSourceError::Engine(driver_error(&error).to_string())),
-        };
-    };
-    if matches!(
-        node.node.kind,
-        MountNodeKind::Directory | MountNodeKind::SymbolicLink
-    ) {
-        // ProjFS cannot normalize a non-empty directory, and its update API
-        // cannot carry extended symlink information. Their exact state is
-        // already captured; retaining the cache entry is harmless.
-        return Ok(());
-    }
-    let placeholder = placeholder_info(&node, pin).ok_or_else(|| {
-        MountSourceError::Unsupported("node cannot be represented by ProjFS".to_owned())
-    })?;
-    // SAFETY: every pointer refers to stack/owned data that remains live for
-    // this synchronous call and the context belongs to this mounted runtime.
-    let result = unsafe {
-        PrjUpdateFileIfNeeded(
-            context,
-            PCWSTR::from_raw(relative.as_ptr()),
-            &raw const placeholder,
-            u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX),
-            Some(update_flags),
-            None,
-        )
-    };
-    match result {
-        Ok(()) => Ok(()),
-        Err(error) if error.code() == HR_FILE_NOT_FOUND || error.code() == HR_PATH_NOT_FOUND => {
-            Ok(())
-        }
-        Err(error) => Err(MountSourceError::Engine(driver_error(&error).to_string())),
-    }
 }
 
 fn reject_stale_projection(destination: &std::path::Path) -> Result<(), NativeMountError> {
@@ -1283,7 +1243,7 @@ struct HostWindowsMetadata {
 struct ReadOnlyBinding {
     host: HostWindowsMetadata,
     file_id: FileId,
-    epochs: SourceEpochs,
+    basis: ReadBasis,
 }
 
 #[derive(Clone, Copy)]
@@ -1629,7 +1589,7 @@ unsafe extern "system" fn start_directory(
     };
     // A listing of a newer view must not coexist with absences cached under
     // an older one, or a listed name could fail to open.
-    if let Err(error) = admit_negative_paths(runtime, data.NamespaceVirtualizationContext) {
+    if let Err(error) = prune_negative_paths(runtime, data.NamespaceVirtualizationContext) {
         return error;
     }
     lock_recover(&runtime.enumerations).insert(
@@ -1647,25 +1607,20 @@ unsafe extern "system" fn start_directory(
 }
 
 /// Returns one directory's projected entries, sharing a snapshot across
-/// enumerations for as long as the source view it was read in is current.
+/// enumerations for as long as the source proves it current.
 fn directory_entries(
     runtime: &Runtime,
     path: &MountPath,
 ) -> Result<Arc<[ProjectedEntry]>, HRESULT> {
     let source = runtime.source.as_ref();
-    let epochs = source_epochs(source);
-    let generation = {
-        let projection = lock_recover(runtime.projection.as_ref());
-        if let Some(entries) = epochs.and_then(|epochs| projection.directory(path, epochs)) {
-            return Ok(entries);
-        }
-        projection.generation
-    };
+    if let Some(entries) = lock_recover(runtime.projection.as_ref()).directory(source, path) {
+        return Ok(entries);
+    }
+    let basis = ReadBasis::sample(source);
     let entries = Arc::<[ProjectedEntry]>::from(directory_snapshot(source, path)?);
-    if let Some(epochs) = epochs {
+    if let Some(basis) = basis {
         lock_recover(runtime.projection.as_ref()).remember_directory(
-            generation,
-            epochs,
+            basis,
             path.clone(),
             Arc::clone(&entries),
         );
@@ -1710,6 +1665,8 @@ fn directory_snapshot(
             };
             entries.push(ProjectedEntry {
                 name,
+                component: entry.name,
+                file_id: entry.node.file_id,
                 info,
                 symlink_target,
             });
@@ -1867,14 +1824,15 @@ unsafe extern "system" fn placeholder(callback_data: *const PRJ_CALLBACK_DATA) -
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    let absence = match admit_negative_paths(runtime, data.NamespaceVirtualizationContext) {
-        Ok(absence) => absence,
-        Err(error) => return error,
-    };
+    let context = data.NamespaceVirtualizationContext;
+    if let Err(error) = prune_negative_paths(runtime, context) {
+        return error;
+    }
+    let basis = ReadBasis::sample(runtime.source.as_ref());
     let (node, pin) = match runtime.source.lookup_pinned(&path) {
         Ok(Some(found)) => found,
         Ok(None) | Err(MountSourceError::NotFound) => {
-            return absence.report(source_epochs(runtime.source.as_ref()));
+            return report_absence(runtime, context, path, basis);
         }
         Err(error) => return source_hresult(&error),
     };
@@ -2141,6 +2099,11 @@ unsafe extern "system" fn notification(
             return Ok(());
         }
         if notification == PRJ_NOTIFICATION_FILE_OPENED {
+            if has_pending_capture(operation_failures.as_ref(), &path) {
+                // A boundary will capture this path's final state; its close
+                // needs no baseline to compare against.
+                return Ok(());
+            }
             let baseline = probe_host_windows_metadata(
                 metadata_root.as_ref(),
                 &path,
@@ -2168,10 +2131,7 @@ unsafe extern "system" fn notification(
                     .remove(&path);
                 *lock_recover(operation_retry_path.as_ref()) = Some(path.clone());
                 match source.lookup(&path)? {
-                    Some(_) => {
-                        let _invalidate = InvalidateOnDrop(projection.as_ref());
-                        source.remove(&path, None)
-                    }
+                    Some(_) => source.remove(&path, None),
                     None => Ok(()),
                 }
             } else {
@@ -2195,85 +2155,81 @@ unsafe extern "system" fn notification(
                 MetadataClose::Pending => return Ok(()),
                 MetadataClose::Final(baseline) => baseline,
             };
+            if has_pending_capture(operation_failures.as_ref(), &path) {
+                // The next boundary captures this path's final host state,
+                // metadata included, after this close.
+                return Ok(());
+            }
             let capture_path = path;
+            let Some(baseline) = baseline else {
+                // Opened while a capture was pending, which a boundary has
+                // since taken: capture again so no edit through this handle
+                // after that boundary is missed.
+                defer_host_capture(operation_failures.as_ref(), capture_path);
+                return Ok(());
+            };
             *lock_recover(operation_retry_path.as_ref()) = Some(capture_path.clone());
             let host = probe_host_windows_metadata(
                 metadata_root.as_ref(),
                 &capture_path,
                 metadata_probes.as_ref(),
             )?;
-            if let Some(baseline) = baseline {
-                if baseline.identity != host.identity
-                    || baseline.links != host.links
-                    || baseline.size != host.size
-                {
-                    lock_recover(projection.as_ref())
-                        .bindings
-                        .remove(&capture_path);
-                    defer_host_capture(operation_failures.as_ref(), capture_path);
-                    return Ok(());
-                }
-                let (cached_binding, cache_generation) = {
-                    let projection = lock_recover(projection.as_ref());
-                    (
-                        projection.bindings.get(&capture_path).copied(),
-                        projection.generation,
-                    )
-                };
-                if !metadata_changed_since_open(baseline, host)
-                    && !has_pending_capture(operation_failures.as_ref(), &capture_path)
-                    && let Some(binding) = cached_binding
-                    && cache_generation.is_some()
-                    && binding.host == host
-                    && host.links == Some(1)
-                    && let Ok(_view_lease) = source.acquire_view_lease()
-                    && source.binding_epoch() == Some(binding.epochs.binding)
-                    && source.unchanged_since(
-                        &capture_path,
-                        Some(binding.file_id),
-                        binding.epochs.view,
-                    )
-                    && lock_recover(projection.as_ref()).generation == cache_generation
-                {
-                    return Ok(());
-                }
+            if baseline.identity != host.identity
+                || baseline.links != host.links
+                || baseline.size != host.size
+            {
+                lock_recover(projection.as_ref())
+                    .bindings
+                    .remove(&capture_path);
+                defer_host_capture(operation_failures.as_ref(), capture_path);
+                return Ok(());
             }
-            let epochs_before = source_epochs(source.as_ref());
-            let cache_generation = lock_recover(projection.as_ref()).generation;
+            let cached_binding = lock_recover(projection.as_ref())
+                .bindings
+                .get(&capture_path)
+                .copied();
+            if !metadata_changed_since_open(baseline, host)
+                && !has_pending_capture(operation_failures.as_ref(), &capture_path)
+                && let Some(binding) = cached_binding
+                && binding.host == host
+                && host.links == Some(1)
+                && let Ok(_view_lease) = source.acquire_view_lease()
+                && binding.basis.still_describes(
+                    source.as_ref(),
+                    &capture_path,
+                    Some(binding.file_id),
+                )
+            {
+                return Ok(());
+            }
+            let basis = ReadBasis::sample(source.as_ref());
             let lookup = source.lookup(&capture_path);
             match lookup {
-                Ok(Some(lookup)) => match baseline {
-                    Some(baseline) if metadata_changed_since_open(baseline, host) => {
-                        let _invalidate = InvalidateOnDrop(projection.as_ref());
-                        capture_changed_windows_metadata(
-                            source.as_ref(),
-                            &capture_path,
-                            lookup.metadata,
-                            baseline,
-                            host,
-                        )
+                Ok(Some(lookup)) if metadata_changed_since_open(baseline, host) => {
+                    capture_changed_windows_metadata(
+                        source.as_ref(),
+                        &capture_path,
+                        lookup.metadata,
+                        baseline,
+                        host,
+                    )
+                }
+                Ok(Some(lookup)) => {
+                    if let Some(basis) = basis
+                        && !has_pending_capture(operation_failures.as_ref(), &capture_path)
+                        && host.links == Some(1)
+                    {
+                        lock_recover(projection.as_ref()).remember_binding(
+                            capture_path,
+                            ReadOnlyBinding {
+                                host,
+                                file_id: lookup.node.file_id,
+                                basis,
+                            },
+                        );
                     }
-                    Some(_) => {
-                        if let Some(epochs) = epochs_before
-                            && source.view_is_stable()
-                            && source.binding_epoch() == Some(epochs.binding)
-                            && !has_pending_capture(operation_failures.as_ref(), &capture_path)
-                            && host.links == Some(1)
-                        {
-                            lock_recover(projection.as_ref()).remember_binding(
-                                cache_generation,
-                                capture_path,
-                                ReadOnlyBinding {
-                                    host,
-                                    file_id: lookup.node.file_id,
-                                    epochs,
-                                },
-                            );
-                        }
-                        Ok(())
-                    }
-                    None => Ok(()),
-                },
+                    Ok(())
+                }
                 Ok(None) => {
                     lock_recover(projection.as_ref())
                         .bindings
@@ -2284,7 +2240,6 @@ unsafe extern "system" fn notification(
                 Err(error) => Err(error),
             }
         } else if notification == PRJ_NOTIFICATION_FILE_RENAMED {
-            let _invalidate = InvalidateOnDrop(projection.as_ref());
             let result = handle_rename_source(
                 source.as_ref(),
                 &path,
@@ -2460,10 +2415,10 @@ fn callbacks() -> PRJ_CALLBACKS {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::{
-        CONTENT_PIN_PROVIDER, CallbackGate, PostOperationFailures, ProjectedEntry, ProjectionCache,
-        ReadOnlyBinding, SourceEpochs, ViewStamp, finish_cleanup, flush_callback_gate,
-        placeholder_info, placeholder_pin, record_post_operation_failure,
-        recover_cache_only_destination, remove_authenticated_destination, source_hresult,
+        CONTENT_PIN_PROVIDER, CallbackGate, PostOperationFailures, ProjectionCache, ReadBasis,
+        finish_cleanup, flush_callback_gate, placeholder_info, placeholder_pin,
+        record_post_operation_failure, recover_cache_only_destination,
+        remove_authenticated_destination, source_hresult,
     };
     use crate::kernel::FileMetadata;
     use crate::model::{
@@ -2483,7 +2438,7 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::{Arc, Barrier, Mutex};
     use windows::Win32::Storage::ProjectedFileSystem::{
-        PRJ_CALLBACK_DATA, PRJ_FILE_BASIC_INFO, PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
+        PRJ_CALLBACK_DATA, PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
         PRJ_NOTIFICATION_PRE_DELETE, PRJ_VIRTUALIZATION_INSTANCE_INFO,
         PrjGetVirtualizationInstanceInfo, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing,
         PrjStopVirtualizing,
@@ -2632,6 +2587,59 @@ mod tests {
         // publish this write. A later physical view must quarantine the old
         // epoch rather than pretending that the late write joined the SDK.
         assert_eq!(source.read_range(&seed, 0, 4)?, b"seed"[..]);
+        session.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn metadata_edit_after_a_boundary_through_a_handle_opened_before_it_is_captured()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let (root, destination, mut session) = mount_source(&source)?;
+        let file = destination.join("late.txt");
+        std::fs::write(root.path().join("seed"), b"late")?;
+        // ProjFS notifies the provider only of other processes' I/O.
+        let copied = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "copy /Y seed projection\\late.txt > nul"])
+            .current_dir(root.path())
+            .status()?;
+        assert!(copied.success());
+        // The file is still awaiting capture when this handle opens; the
+        // boundary below captures it, and only then is its time rewritten.
+        let script = "$ErrorActionPreference = 'Stop'; Add-Type -Namespace Probe -Name Kernel -MemberDefinition \
+            '[DllImport(\"kernel32.dll\")] public static extern bool SetFileTime(\
+            Microsoft.Win32.SafeHandles.SafeFileHandle h, IntPtr c, IntPtr a, ref long w);'; \
+            $h = [IO.File]::Open($env:ACYCLIC_FS_TEST_FILE, 'Open', 'ReadWrite', 'ReadWrite,Delete'); \
+            New-Item -ItemType File $env:ACYCLIC_FS_TEST_READY | Out-Null; \
+            while (-not (Test-Path $env:ACYCLIC_FS_TEST_GO)) { Start-Sleep -Milliseconds 10 }; \
+            $w = [DateTimeOffset]::FromUnixTimeSeconds(978307200).UtcDateTime.ToFileTimeUtc(); \
+            if (-not [Probe.Kernel]::SetFileTime($h.SafeFileHandle, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$w)) { exit 2 }; \
+            $h.Close()";
+        let ready = root.path().join("ready");
+        let go = root.path().join("go");
+        let mut editor = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("ACYCLIC_FS_TEST_FILE", &file)
+            .env("ACYCLIC_FS_TEST_READY", &ready)
+            .env("ACYCLIC_FS_TEST_GO", &go)
+            .spawn()?;
+        while !ready.exists() {
+            assert!(editor.try_wait()?.is_none(), "editor exited early");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        session.flush_callbacks()?;
+        std::fs::write(&go, b"")?;
+        assert!(editor.wait()?.success(), "metadata edit failed");
+        session.flush_callbacks()?;
+        let captured = source
+            .lookup(&windows_path("late.txt"))?
+            .ok_or("late.txt was not captured")?;
+        assert_eq!(
+            captured.metadata.modified_ns,
+            crate::kernel::MetadataField::Value(978_307_200_000_000_000),
+            "the edit made after the boundary was lost"
+        );
         session.stop()?;
         Ok(())
     }
@@ -2876,68 +2884,44 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn projection_cache_retains_only_results_of_the_current_view_and_generation() {
-        let path = windows_path("directory");
-        let entries = Arc::<[ProjectedEntry]>::from(vec![ProjectedEntry {
-            name: vec![u16::from(b'a'), 0],
-            info: PRJ_FILE_BASIC_INFO::default(),
-            symlink_target: None,
-        }]);
-        let first = SourceEpochs {
-            view: ViewStamp::current(),
-            binding: 1,
-        };
-        let next = SourceEpochs {
-            binding: 2,
-            ..first
+    #[tokio::test]
+    async fn cached_listing_is_reused_until_a_change_it_depends_on()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let directory = windows_path("directory");
+        let listed = directory.child(windows_name("listed.txt"));
+        let elsewhere = windows_path("elsewhere.txt");
+        source.create_directory(&directory, FileMetadata::default())?;
+        source.create_file(&listed, FileMetadata::default())?;
+        source.create_file(&elsewhere, FileMetadata::default())?;
+        let snapshot = |cache: &mut ProjectionCache| -> Result<(), Box<dyn std::error::Error>> {
+            let basis = ReadBasis::sample(source.as_ref()).ok_or("unversioned source")?;
+            let entries = super::directory_snapshot(source.as_ref(), &directory)
+                .map_err(|code| format!("snapshot failed: {code:?}"))?;
+            cache.remember_directory(basis, directory.clone(), Arc::from(entries));
+            Ok(())
         };
         let mut cache = ProjectionCache::default();
+        snapshot(&mut cache)?;
+        assert!(cache.directory(source.as_ref(), &directory).is_some());
 
-        let generation = cache.generation;
-        cache.remember_directory(generation, first, path.clone(), Arc::clone(&entries));
-        assert!(cache.directory(&path, first).is_some());
-        assert!(cache.directory(&path, next).is_none());
+        // A change the listing does not depend on keeps it.
+        source.write_range(&elsewhere, 0, Bytes::from_static(b"other"))?;
+        assert!(cache.directory(source.as_ref(), &directory).is_some());
 
-        // A snapshot read before a provider mutation finished is never kept.
-        let stale_generation = cache.generation;
-        cache.invalidate();
-        assert!(cache.directory(&path, first).is_none());
-        cache.remember_directory(stale_generation, first, path.clone(), Arc::clone(&entries));
-        assert!(cache.directory(&path, first).is_none());
-        let binding = ReadOnlyBinding {
-            host: super::HostWindowsMetadata {
-                identity: crate::NativeRootIdentity::from_bytes([1; 16]),
-                links: Some(1),
-                size: 0,
-                attributes: 0,
-                created: 0,
-                modified: 0,
-            },
-            file_id: crate::FileId::new(),
-            epochs: first,
-        };
-        cache.remember_binding(stale_generation, path.clone(), binding);
-        assert!(cache.bindings.is_empty());
+        // A listed node's change drops it: its size is projected.
+        source.write_range(&listed, 0, Bytes::from_static(b"grown"))?;
+        assert!(cache.directory(source.as_ref(), &directory).is_none());
 
-        // Remembering in a newer view drops every snapshot of the older one.
-        let generation = cache.generation;
-        cache.remember_directory(generation, first, path.clone(), Arc::clone(&entries));
-        cache.remember_directory(
-            generation,
-            next,
-            windows_path("other"),
-            Arc::clone(&entries),
-        );
-        assert!(cache.directory(&path, first).is_none());
-        assert!(cache.directory(&windows_path("other"), next).is_some());
-        assert_eq!(cache.directory_entries, 1);
-
-        // An exhausted generation disables caching for good.
-        cache.generation = Some(u64::MAX);
-        cache.invalidate();
-        cache.remember_directory(cache.generation, next, path.clone(), entries);
-        assert!(cache.directory(&path, next).is_none());
+        // So does a change of membership.
+        snapshot(&mut cache)?;
+        source.create_file(
+            &directory.child(windows_name("added.txt")),
+            FileMetadata::default(),
+        )?;
+        assert!(cache.directory(source.as_ref(), &directory).is_none());
+        assert_eq!(cache.directory_entries, 0);
+        Ok(())
     }
 
     #[test]
