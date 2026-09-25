@@ -2005,6 +2005,83 @@ async fn assert_fork_state_exact(
     Ok(created.is_some())
 }
 
+/// Whether the destination's creation record is found by the operation
+/// that made it, as operation observation looks it up.
+async fn creation_operation(
+    stream: &Arc<acyclic_stream::MemoryStream>,
+    destination: WorkspaceId,
+    key: IdempotencyKey,
+) -> Result<bool, Box<dyn Error>> {
+    use crate::AsyncAuthorityStore as _;
+    let found = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream))
+        .find_operation(
+            crate::kernel::volume_authority_id(destination.volume_id()),
+            key.operation_id(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+    Ok(found
+        .value
+        .is_some_and(|commit| commit.sequence == crate::foundation::Sequence::new(1)))
+}
+
+#[tokio::test]
+async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
+-> Result<(), Box<dyn Error>> {
+    let mut uninterrupted_commits = None;
+    for cut in [ForkCut::Before, ForkCut::AfterCommit] {
+        for fail_at in 1.. {
+            let stream = Arc::new(acyclic_stream::MemoryStream::default());
+            let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
+            let (objects, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+            let fs: CutFs = Fs::new(
+                crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
+                crate::distributed::ProviderObjectStore::new(Arc::new(objects), bucket),
+                crate::EmbeddedCapabilities::MEMORY,
+            );
+            cutting.arm(fail_at, cut);
+            let attempt = fs.create_workspace("repo").await;
+            let fired = cutting.disarm();
+            let committed = cutting.commits();
+            let volume = fs.workspace_id("repo")?.volume_id();
+            let created =
+                first_fork_record(&stream, crate::kernel::volume_authority_id(volume)).await?;
+            if let Some(created) = &created {
+                assert_eq!(
+                    crate::kernel::decode_volume_created(&created.payload, 4 * 1024)?.volume_id,
+                    volume
+                );
+            }
+            if !fired {
+                attempt?;
+                assert!(created.is_some());
+                uninterrupted_commits.get_or_insert(committed);
+                break;
+            }
+            assert!(
+                attempt.is_err(),
+                "a fault at call {fail_at} was not reported"
+            );
+            // An interruption leaves no volume or the complete one.
+            let opened = fs.open_workspace("repo").await;
+            assert_eq!(opened.is_ok(), created.is_some());
+            let retried = fs.create_workspace("repo").await?;
+            retried.write_text("/after.txt", "after").await?;
+            assert_eq!(
+                fs.open_workspace("repo")
+                    .await?
+                    .read("/after.txt", 16)
+                    .await?,
+                Bytes::from_static(b"after")
+            );
+        }
+    }
+    assert_eq!(uninterrupted_commits, Some(1));
+    Ok(())
+}
+
 /// Forks one generation through every provider cut, before calls and after
 /// commits, checking the durable state after each interruption and that a
 /// retry with the same key completes the same workspace. Returns the commits
@@ -2041,6 +2118,7 @@ async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn E
             if !fired {
                 attempt?;
                 assert!(complete);
+                assert!(creation_operation(&stream, destination, key).await?);
                 uninterrupted_commits.get_or_insert(committed);
                 break;
             }
@@ -2064,6 +2142,10 @@ async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn E
                 .fork("agent", ForkOptions::from_generation(source.clone(), key))
                 .await?;
             assert_eq!(again.head().await?.id(), retried.head().await?.id());
+            assert!(
+                creation_operation(&stream, destination, key).await?,
+                "the fork's creation is not found by its operation"
+            );
         }
     }
     uninterrupted_commits.ok_or_else(|| "the fork never completed".into())

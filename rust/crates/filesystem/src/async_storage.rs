@@ -398,6 +398,28 @@ pub trait AsyncAuthorityStore: StorageProvider {
         }
     }
 
+    /// Durably creates an authority whose first record is `commit`, or
+    /// confirms that it already exists with exactly that first record.
+    /// Answers whether its first record is `commit`. Backends that can
+    /// create an authority and append to it atomically do so in one durable
+    /// commit; the default creates the authority, then appends.
+    fn create_authority_with_first_record(
+        &self,
+        authority: AuthorityId,
+        commit: ProposedCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<bool>> + StorageFuture {
+        append_first_record(
+            self,
+            authority,
+            commit,
+            WorkCounters::default(),
+            budget,
+            cancellation,
+        )
+    }
+
     /// Durably creates a forked workspace's authority state: the retention
     /// authority with its record and the destination authority with its
     /// creation record. Backends that can commit several authorities

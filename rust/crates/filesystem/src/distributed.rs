@@ -341,6 +341,8 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             idempotency_key: workspace_fork_key(fork.destination, fork.creation.operation_id)
                 .map_err(OperationFailure::before_work)?,
         };
+        let creation_key = operation_key(fork.destination, fork.creation.operation_id)
+            .map_err(OperationFailure::before_work)?;
         let (mut records, mut bytes) =
             first_record_commit(&mut request, fork.retention, &fork.retained)
                 .map_err(OperationFailure::before_work)?;
@@ -382,6 +384,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                         .map_err(OperationFailure::before_work)?;
                 records = records.saturating_add(more_records);
                 bytes = bytes.saturating_add(more_bytes);
+                // The creation commits here, under its own retry identity,
+                // so the operation is found like any appended one.
+                request.idempotency_key = creation_key;
                 true
             }
         };
@@ -490,6 +495,72 @@ fn workspace_fork_key(
 }
 
 impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityStore<P> {
+    /// One durable commit creates the authority with its first record. An
+    /// authority that already exists, from an earlier attempt or another
+    /// writer, resolves through the ordinary idempotent append instead.
+    async fn create_authority_with_first_record(
+        &self,
+        authority: AuthorityId,
+        commit: ProposedCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<bool> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        // The commit carries the operation's own retry identity, so the
+        // operation is found like any appended one.
+        let mut request = acyclic_stream::CommitRequest {
+            conditions: Vec::new(),
+            mutations: Vec::new(),
+            idempotency_key: operation_key(authority, commit.operation_id)
+                .map_err(OperationFailure::before_work)?,
+        };
+        let (records, bytes) = first_record_commit(&mut request, authority, &commit)
+            .map_err(OperationFailure::before_work)?;
+        let mut work = authority_write_work(records, bytes);
+        admit_authority(work, budget)?;
+        match self.provider.commit(request).await {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => {
+                return authority_success(true, work, budget);
+            }
+            // The operation identity already named another request.
+            Err(acyclic_stream::StreamError::IdempotencyMismatch) => {
+                return authority_success(false, work, budget);
+            }
+            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => {}
+            Err(error) => return Err(OperationFailure::new(map_stream_error(error), work)),
+        }
+        // The authority exists: it is this creation exactly when its first
+        // record is this commit. The identity now retains the conflict, so
+        // no append under it is attempted.
+        work = work
+            .checked_add(authority_read_work(2))
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        admit_authority(work, budget)?;
+        let records =
+            records_path(authority).map_err(|error| OperationFailure::new(error, work))?;
+        let first = match self.provider.tail(records.clone()).await {
+            Ok(tail) if tail >= 2 => Some(
+                read_one(self.provider.as_ref(), records, 1)
+                    .await
+                    .and_then(|record| decode_durable(authority, &record.value))
+                    .map_err(|error| OperationFailure::new(error, work))?,
+            ),
+            Ok(_) | Err(acyclic_stream::StreamError::NotFound) => None,
+            Err(error) => return Err(OperationFailure::new(map_stream_error(error), work)),
+        };
+        authority_success(
+            first.is_some_and(|first| {
+                first.sequence == Sequence::new(1)
+                    && first.operation_id == commit.operation_id
+                    && first.fingerprint == commit.fingerprint
+            }),
+            work,
+            budget,
+        )
+    }
+
     /// One durable commit creates the whole fork, except that a fork of its
     /// source's published lineage appends its creation record in a second
     /// commit, as ordinary publication does. Anything that stops the first
@@ -1905,10 +1976,16 @@ fn durable_from_operation_envelope(
         if append.path != records {
             continue;
         }
-        let [record] = append.records.as_slice() else {
-            return Err(AuthorityStoreError::Corrupt(
-                "operation appended an invalid authority record count".to_owned(),
-            ));
+        // An operation that created its authority appends the genesis
+        // record before its own.
+        let record = match append.records.as_slice() {
+            [record] => record,
+            [genesis, record] if decode_epoch(&genesis.value, GENESIS_DOMAIN).is_ok() => record,
+            _ => {
+                return Err(AuthorityStoreError::Corrupt(
+                    "operation appended an invalid authority record count".to_owned(),
+                ));
+            }
         };
         let durable = decode_durable(authority_id, &record.value)?;
         if durable.operation_id != operation_id || retained.replace(durable).is_some() {

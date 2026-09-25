@@ -64,9 +64,9 @@ use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
 use crate::storage::{
-    AppendOutcome, AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome,
-    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest,
-    ObjectReadRetention, ObjectStoreError, PublicationPermit, ReplayLimit,
+    AppendOutcome, AuthorityStoreError, ByteRange, FenceOutcome, HashedObject,
+    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest, ObjectReadRetention,
+    ObjectStoreError, PublicationPermit, ReplayLimit,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_native_runtime::OwnershipAnchor;
@@ -3082,16 +3082,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             closure,
         } = source;
         let authority_id = retention_authority_id(volume.id, kind, &label);
-        let created = self
-            .inner
-            .authority
-            .create_authority(authority_id, Epoch::GENESIS, budget, cancellation)
-            .await
-            .map_err(crate::workspace::WorkspaceError::engine)?;
-        let mut work = created.work;
-        let active_head = match created.value {
-            CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
-        };
         let payload = encode_retention_created(&RetentionCreated {
             volume_id: volume.id,
             kind,
@@ -3109,33 +3099,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .objects
             .flush_before_publish(
                 crate::PublicationScope::Closure(&closure),
-                remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
+                budget,
                 cancellation,
             )
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
-        work = add(work, drained.work).map_err(crate::workspace::WorkspaceError::engine)?;
-        let appended = self
+        let mut work = drained.work;
+        let created = self
             .inner
             .authority
-            .compare_and_append(
+            .create_authority_with_first_record(
                 authority_id,
-                active_head.epoch,
-                Head::genesis(active_head.epoch),
                 commit,
                 remaining(work, budget).map_err(crate::workspace::WorkspaceError::engine)?,
                 cancellation,
             )
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
-        work = add(work, appended.work).map_err(crate::workspace::WorkspaceError::engine)?;
-        match appended.value {
-            AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => Ok(work),
-            AppendOutcome::Conflict { .. }
-            | AppendOutcome::Fenced { .. }
-            | AppendOutcome::IdempotencyConflict { .. } => {
-                Err(crate::workspace::WorkspaceError::RetentionConflict)
-            }
+        work = add(work, created.work).map_err(crate::workspace::WorkspaceError::engine)?;
+        if created.value {
+            Ok(work)
+        } else {
+            Err(crate::workspace::WorkspaceError::RetentionConflict)
         }
     }
 
@@ -4105,6 +4090,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 generation_root,
                 operation_id,
             },
+            &proof.objects,
             work,
             budget,
             cancellation,
@@ -4297,6 +4283,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 generation_root: manifest.generation_root,
                 operation_id: Some(operation_id),
             },
+            &manifest.objects,
             work,
             budget,
             cancellation,
@@ -4304,9 +4291,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await
     }
 
+    /// Durably creates a volume's authority with its creation record, once
+    /// every object in `closure`, the initial generation's closure, is
+    /// durable.
     async fn publish_volume_creation(
         &self,
         creation: VolumeCreation,
+        closure: &[ObjectId],
         mut work: WorkCounters,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -4317,22 +4308,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             generation_root,
             operation_id,
         } = creation;
-        let authority_id = volume_authority_id(volume_id);
-        let created = self
-            .inner
-            .authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = add(work, created.work)?;
-        let active_head = match created.value {
-            CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
-        };
         let event = encode_volume_created(VolumeCreated {
             volume_id,
             config,
@@ -4354,42 +4329,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .inner
             .objects
             .flush_before_publish(
-                crate::PublicationScope::Everything,
+                crate::PublicationScope::Closure(closure),
                 remaining(work, budget)?,
                 cancellation,
             )
             .await
             .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
         work = add(work, drained.work)?;
-        let appended = self
+        let created = self
             .inner
             .authority
-            .compare_and_append(
-                authority_id,
-                active_head.epoch,
-                Head::genesis(active_head.epoch),
+            .create_authority_with_first_record(
+                volume_authority_id(volume_id),
                 commit,
                 remaining(work, budget)?,
                 cancellation,
             )
             .await
             .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = add(work, appended.work)?;
-        match appended.value {
-            AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => Ok(FsReceipt {
-                value: Volume {
-                    fs: self.clone(),
-                    id: volume_id,
-                    config,
-                },
-                work,
-            }),
-            AppendOutcome::Conflict { .. }
-            | AppendOutcome::Fenced { .. }
-            | AppendOutcome::IdempotencyConflict { .. } => {
-                Err(OperationFailure::new(FsError::CreationRejected, work))
-            }
+        work = add(work, created.work)?;
+        if !created.value {
+            return Err(OperationFailure::new(FsError::CreationRejected, work));
         }
+        Ok(FsReceipt {
+            value: Volume {
+                fs: self.clone(),
+                id: volume_id,
+                config,
+            },
+            work,
+        })
     }
 
     async fn read_creation(
