@@ -366,6 +366,14 @@ where
         authored: Arc<CheckoutMountSource<A, O>>,
         root: String,
     ) -> Result<Self, super::NativeMountError> {
+        // Source names resolve exactly while a folding checkout would resolve
+        // authored names by case; one namespace cannot do both.
+        if authored.folds_names() {
+            return Err(super::NativeMountError::ProfileUnavailable {
+                profile: "case-folding",
+                platform: "a lazy source projection",
+            });
+        }
         Ok(Self {
             lazy,
             authored,
