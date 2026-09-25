@@ -130,6 +130,10 @@ for (const [target, entry] of Object.entries(manifest.targets)) {
   if (entry.path !== expectedPath) fail(`invalid binary path for ${target}`);
   const binary = join(plugin, "bin", target, expectedName);
   if (!existsSync(binary)) fail(`missing binary for ${target}`);
+  if (process.platform !== "win32" && !target.startsWith("win32-")
+    && (statSync(binary).mode & 0o111) !== 0o111) {
+    fail(`binary is not executable for ${target}`);
+  }
   const actual = sha256File(binary);
   if (actual !== entry.sha256) fail(`binary checksum mismatch for ${target}`);
   const verified = spawnSync(process.execPath, [join(plugin, "bin", "verify.js"), target], {

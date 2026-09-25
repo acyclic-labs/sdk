@@ -1,6 +1,6 @@
 {
   "name": "@acyclic-labs/fs",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "license": "Apache-2.0",
   "description": "Versioned workspaces for browser, memory, hosted, and native providers",
   "keywords": ["filesystem", "storage", "workspaces"],

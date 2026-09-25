@@ -1,5 +1,17 @@
 # @acyclic-labs/sdk changelog
 
+## 0.1.5 - 2026-09-25
+
+- Aligns the umbrella SDK with the qualified 0.1.5 package family.
+
+## 0.1.4 - 2026-09-25
+
+- Aligns the umbrella SDK with the qualified 0.1.4 package family.
+
+## 0.1.3 - 2026-09-25
+
+- Pins all six family packages to the coordinated 0.1.3 SDK release.
+
 ## 0.1.2 - 2026-09-25
 
 - Pins the six family packages to the coordinated 0.1.2 SDK release.

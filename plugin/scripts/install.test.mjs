@@ -209,9 +209,12 @@ test("running the installed command leaves the package unchanged", () => {
     assert.equal(installed.status, 0, installed.stderr);
     const before = treeSnapshot(value.root);
     if (process.platform !== "win32") {
-      // Read-only, but still executable.
-      for (const name of readdirSync(value.bin)) chmodSync(join(value.bin, name), 0o555);
+      for (const name of readdirSync(value.bin)) {
+        const path = join(value.bin, name);
+        chmodSync(path, statSync(path).mode & 0o555);
+      }
       chmodSync(value.bin, 0o555);
+      assert.equal(statSync(value.installed).mode & 0o111, 0o111);
     }
     const launched = spawnSync(value.installed, ["--version"], { encoding: "utf8" });
     assert.equal(launched.status, 0, launched.stderr);

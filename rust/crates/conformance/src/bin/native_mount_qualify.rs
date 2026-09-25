@@ -1,5 +1,6 @@
 //! Real-kernel native-mount qualification with a machine-readable receipt.
 
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
@@ -63,6 +64,7 @@ struct Report {
 struct ReceiptCase {
     name: String,
     status: String,
+    reason: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -216,11 +218,7 @@ fn verify_receipt(args: &[std::ffi::OsString]) -> Result<(), Failure> {
     }
     if report.schema != "acyclic-native-mount-qualification-v2"
         || report.os != expected_os
-        || !report
-            .coverage
-            .iter()
-            .map(String::as_str)
-            .eq(COVERAGE.iter().copied())
+        || !receipt_coverage_is_complete(&report.coverage)
         || report.required_kind.as_deref() != Some(required_kind.as_str())
         || report.release_version.as_deref() != Some(release_version.as_str())
         || report.executable_blake3.as_deref() != Some(digest.as_str())
@@ -231,20 +229,33 @@ fn verify_receipt(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         || report.capability.provider_process_io_observable != provider_process_io_observable
         || report.capability.session_isolation != "SharedProcess"
         || report.capability.unavailable_reason.is_some()
-        || report.cases.len() != 3
-        || !report
-            .cases
-            .iter()
-            .zip([
-                "real-mount-mutation-matrix",
-                "crash-detach-recovery",
-                "checkout-and-git-untouched",
-            ])
-            .all(|(case, name)| case.name == name && case.status == "passed")
+        || !receipt_cases_are_complete(&report.cases)
     {
         return Err("native mount receipt does not match the release artifact".into());
     }
     Ok(())
+}
+
+fn receipt_coverage_is_complete(coverage: &[String]) -> bool {
+    let observed = coverage.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    observed.len() == coverage.len() && COVERAGE.iter().all(|required| observed.contains(required))
+}
+
+fn receipt_cases_are_complete(cases: &[ReceiptCase]) -> bool {
+    const REQUIRED: &[&str] = &[
+        "real-mount-mutation-matrix",
+        "crash-detach-recovery",
+        "checkout-and-git-untouched",
+    ];
+    let observed = cases
+        .iter()
+        .map(|case| case.name.as_str())
+        .collect::<BTreeSet<_>>();
+    observed.len() == cases.len()
+        && REQUIRED.iter().all(|required| observed.contains(required))
+        && cases
+            .iter()
+            .all(|case| case.status == "passed" && case.reason.is_null())
 }
 
 fn required_path(
@@ -1894,7 +1905,18 @@ fn collect_paths(
 #[cfg(test)]
 mod receipt_tests {
     use super::{COVERAGE, Failure, file_blake3, verify_receipt};
+    use serde_json::Value;
     use std::ffi::OsString;
+
+    fn receipt_array<'a>(
+        document: &'a mut Value,
+        name: &str,
+    ) -> Result<&'a mut Vec<Value>, Failure> {
+        document
+            .get_mut(name)
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| format!("missing {name} array").into())
+    }
 
     #[test]
     fn verifies_the_release_target_architecture_not_the_verifier_host() -> Result<(), Failure> {
@@ -1903,45 +1925,74 @@ mod receipt_tests {
         let receipt = directory.path().join("macos-nfs.json");
         std::fs::write(&executable, b"release executable")?;
         let digest = file_blake3(&executable)?;
-        std::fs::write(
-            &receipt,
-            serde_json::to_vec(&serde_json::json!({
-                "schema": "acyclic-native-mount-qualification-v2",
-                "os": "macos",
-                "arch": "aarch64",
-                "coverage": COVERAGE,
-                "capability": {
-                    "kind": "macos-nfs",
-                    "available": true,
-                    "writable": true,
-                    "provider_process_io_observable": true,
-                    "session_isolation": "SharedProcess",
-                    "unavailable_reason": null
-                },
-                "required_kind": "macos-nfs",
-                "release_version": "0.1.2",
-                "executable_blake3": digest,
-                "passed": true,
-                "cases": [
-                    {"name": "real-mount-mutation-matrix", "status": "passed"},
-                    {"name": "crash-detach-recovery", "status": "passed"},
-                    {"name": "checkout-and-git-untouched", "status": "passed"}
-                ]
-            }))?,
-        )?;
+        let mut document = serde_json::json!({
+            "schema": "acyclic-native-mount-qualification-v2",
+            "os": "macos",
+            "arch": "aarch64",
+            "coverage": COVERAGE,
+            "capability": {
+                "kind": "macos-nfs",
+                "available": true,
+                "writable": true,
+                "provider_process_io_observable": true,
+                "session_isolation": "SharedProcess",
+                "unavailable_reason": null
+            },
+            "required_kind": "macos-nfs",
+            "release_version": "0.1.5",
+            "executable_blake3": digest,
+            "passed": true,
+            "cases": [
+                {"name": "real-mount-mutation-matrix", "status": "passed", "reason": null},
+                {"name": "crash-detach-recovery", "status": "passed", "reason": null},
+                {"name": "checkout-and-git-untouched", "status": "passed", "reason": null}
+            ]
+        });
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
         let mut args = vec![
             OsString::from("--verify-receipt"),
-            receipt.into_os_string(),
+            receipt.clone().into_os_string(),
             OsString::from("--release-executable"),
             executable.into_os_string(),
             OsString::from("--require-kind"),
             OsString::from("macos-nfs"),
             OsString::from("--release-version"),
-            OsString::from("0.1.2"),
+            OsString::from("0.1.5"),
             OsString::from("--release-arch"),
             OsString::from("aarch64"),
         ];
         verify_receipt(&args)?;
+        receipt_array(&mut document, "coverage")?.reverse();
+        receipt_array(&mut document, "coverage")?.push(serde_json::json!("future-coverage"));
+        receipt_array(&mut document, "cases")?.reverse();
+        receipt_array(&mut document, "cases")?
+            .push(serde_json::json!({"name":"future-case","status":"passed","reason":null}));
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+        verify_receipt(&args)?;
+        let valid_extension = document.clone();
+        receipt_array(&mut document, "coverage")?.push(serde_json::json!("future-coverage"));
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+        assert!(verify_receipt(&args).is_err());
+        document = valid_extension;
+        let duplicate_case = receipt_array(&mut document, "cases")?
+            .last()
+            .cloned()
+            .ok_or("missing future case")?;
+        receipt_array(&mut document, "cases")?.push(duplicate_case);
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+        assert!(verify_receipt(&args).is_err());
+        receipt_array(&mut document, "cases")?.pop();
+        *receipt_array(&mut document, "cases")?
+            .last_mut()
+            .and_then(|case| case.get_mut("status"))
+            .ok_or("future case status")? = serde_json::json!("failed");
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
+        assert!(verify_receipt(&args).is_err());
+        *receipt_array(&mut document, "cases")?
+            .last_mut()
+            .and_then(|case| case.get_mut("status"))
+            .ok_or("future case status")? = serde_json::json!("passed");
+        std::fs::write(&receipt, serde_json::to_vec(&document)?)?;
         *args.last_mut().ok_or("missing release architecture")? = OsString::from("x86_64");
         let error = match verify_receipt(&args) {
             Ok(()) => return Err("mismatched release architecture was accepted".into()),

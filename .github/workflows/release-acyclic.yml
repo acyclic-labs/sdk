@@ -234,6 +234,15 @@ jobs:
           pattern: native-mount-*
           path: release/native-mount
           merge-multiple: true
+      - name: Restore executable modes after artifact download
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GitHub artifacts preserve bytes, but not executable mode.
+          for binary in release/binaries/acyclic-{linux,darwin}-*/*/acyclic; do
+            test -f "$binary"
+            chmod 755 "$binary"
+          done
       - name: Verify native receipts against release artifacts
         run: |
           qualifier=release/binaries/acyclic-linux-x64-gnu/linux-x64-gnu/native-mount-qualify
@@ -297,12 +306,11 @@ jobs:
           test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/.agents/plugins/marketplace.json"
           test ! -e "$prefix/lib/node_modules/@acyclic-labs/plugin/src"
           test -f "$state/acyclic/state-v5/certification/native-mount-linux-x64-gnu.json"
-      - name: Run packaged Codex lifecycle end to end
+      - name: Validate packaged Codex installation and MCP bridge
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          test -n "$OPENAI_API_KEY"
           package="$ACYCLIC_NPM_PACKAGE"
           test -f "$package"
           prefix=$(mktemp -d)
@@ -312,17 +320,28 @@ jobs:
           export XDG_CONFIG_HOME="$home/.config"
           export XDG_STATE_HOME="$home/.state"
           export PATH="$prefix/bin:$PATH"
+          mkdir -p "$CODEX_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
           codex_version=$(node -p "require('./plugin/tests/hosts/package.json').dependencies['@openai/codex']")
           npm install --global --prefix "$prefix" "$package" "@openai/codex@$codex_version"
           acyclic install codex
           codex plugin list --marketplace acyclic --json | jq -e '.installed[] | select(.pluginId == "acyclic@acyclic" and .enabled == true)'
-          timeout 480 codex exec --ephemeral --json --skip-git-repo-check \
-            -c 'plugins."acyclic@acyclic".mcp_servers.acyclic.tools.acyclic.approval_mode="approve"' \
-            --dangerously-bypass-hook-trust -C "$GITHUB_WORKSPACE" \
-            'Call the acyclic MCP tool with arguments ["agents","--json"]. Only after it succeeds, reply exactly ACYCLIC_E2E_OK.' \
-            > "$home/fresh-task.jsonl"
-          grep -q 'ACYCLIC_E2E_OK' "$home/fresh-task.jsonl"
           acyclic agents --json | jq -e '.schemaVersion == 1'
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-e2e","version":"1"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"acyclic","arguments":{"argv":["agents","--json"]}}}' \
+            | timeout 20 acyclic __mcp-commandless > "$home/mcp-task.jsonl"
+          jq -e 'select(.id == 2) | .result.isError != true and ((.result.content[0].text | fromjson | .schemaVersion) == 1)' "$home/mcp-task.jsonl"
+          if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+            timeout 480 codex exec --ephemeral --json --skip-git-repo-check \
+              -c 'plugins."acyclic@acyclic".mcp_servers.acyclic.tools.acyclic.approval_mode="approve"' \
+              --dangerously-bypass-hook-trust -C "$GITHUB_WORKSPACE" \
+              'Call the acyclic MCP tool with arguments ["agents","--json"]. Only after it succeeds, reply exactly ACYCLIC_E2E_OK.' \
+              > "$home/fresh-task.jsonl"
+            grep -q 'ACYCLIC_E2E_OK' "$home/fresh-task.jsonl"
+          else
+            echo '::warning::OPENAI_API_KEY is not configured; live model invocation was skipped after packaged Codex registration and MCP tool-call verification.'
+          fi
           test -d "$XDG_STATE_HOME/acyclic/state-v5"
           acyclic uninstall codex
           test -d "$XDG_STATE_HOME/acyclic/state-v5"

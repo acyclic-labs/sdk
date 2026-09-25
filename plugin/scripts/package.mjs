@@ -3,6 +3,7 @@
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import {
+  chmodSync,
   copyFileSync,
   cpSync,
   existsSync,
@@ -101,6 +102,7 @@ for (const [platformTarget, binary] of args.binary.map(targetPath)) {
   const target = join(plugin, "bin", platformTarget, executable);
   mkdirSync(dirname(target), { recursive: true });
   copyFileSync(binary, target);
+  if (!platformTarget.startsWith("win32-")) chmodSync(target, 0o755);
   const entry = {
     path: `${platformTarget}/${executable}`,
     sha256: sha256File(target),

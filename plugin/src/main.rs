@@ -10287,7 +10287,9 @@ fn valid_platform_receipt(receipt: &Value, executable_blake3: &str) -> bool {
         "create-read-write",
         "atomic-save",
         "rename-delete",
+        "rename-before-hydration",
         "nested-paths",
+        "large-directory-paging",
         "concurrent-handles",
         "watchers",
         "crash-detach-recovery",
@@ -10341,11 +10343,14 @@ fn valid_platform_receipt(receipt: &Value, executable_blake3: &str) -> bool {
     }
     let coverage = receipt.get("coverage").and_then(Value::as_array);
     if coverage.is_none_or(|values| {
-        values.len() != COVERAGE.len()
-            || values
-                .iter()
-                .zip(COVERAGE)
-                .any(|(value, expected)| value.as_str() != Some(*expected))
+        let observed = values
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<BTreeSet<_>>>();
+        observed.is_none_or(|observed| {
+            observed.len() != values.len()
+                || COVERAGE.iter().any(|expected| !observed.contains(expected))
+        })
     }) {
         return false;
     }
@@ -10380,10 +10385,14 @@ fn valid_platform_receipt(receipt: &Value, executable_blake3: &str) -> bool {
         .get("cases")
         .and_then(Value::as_array)
         .is_some_and(|cases| {
-            cases.len() == CASES.len()
-                && cases.iter().zip(CASES).all(|(case, expected)| {
-                    case.get("name").and_then(Value::as_str) == Some(*expected)
-                        && case.get("status").and_then(Value::as_str) == Some("passed")
+            let observed = cases
+                .iter()
+                .filter_map(|case| case.get("name").and_then(Value::as_str))
+                .collect::<BTreeSet<_>>();
+            observed.len() == cases.len()
+                && CASES.iter().all(|expected| observed.contains(expected))
+                && cases.iter().all(|case| {
+                    case.get("status").and_then(Value::as_str) == Some("passed")
                         && case.get("reason").is_some_and(Value::is_null)
                 })
         })
@@ -19847,7 +19856,8 @@ mod tests {
             "os":env::consts::OS,
             "arch":env::consts::ARCH,
             "coverage":[
-                "create-read-write","atomic-save","rename-delete","nested-paths",
+                "create-read-write","atomic-save","rename-delete","rename-before-hydration",
+                "nested-paths","large-directory-paging",
                 "concurrent-handles","watchers","crash-detach-recovery",
                 "mount-restoration","hard-links","symbolic-links-reparse-points",
                 "metadata","case-behavior","escape-attempts",
@@ -19870,6 +19880,34 @@ mod tests {
         });
         assert!(valid_platform_receipt(&canonical, "exact-digest"));
         assert!(!valid_platform_receipt(&canonical, "other-digest"));
+        let mut expanded = canonical.clone();
+        expanded["coverage"]
+            .as_array_mut()
+            .expect("coverage")
+            .push(json!("future-coverage"));
+        expanded["cases"]
+            .as_array_mut()
+            .expect("cases")
+            .push(json!({
+                "name":"future-case","status":"passed","elapsed_ms":1,"reason":null
+            }));
+        assert!(valid_platform_receipt(&expanded, "exact-digest"));
+        let mut duplicate_case = expanded.clone();
+        duplicate_case["cases"]
+            .as_array_mut()
+            .expect("cases")
+            .push(json!({
+                "name":"future-case","status":"passed","elapsed_ms":1,"reason":null
+            }));
+        assert!(!valid_platform_receipt(&duplicate_case, "exact-digest"));
+        expanded["cases"][3]["status"] = json!("failed");
+        assert!(!valid_platform_receipt(&expanded, "exact-digest"));
+        let mut missing_coverage = canonical.clone();
+        missing_coverage["coverage"]
+            .as_array_mut()
+            .expect("coverage")
+            .pop();
+        assert!(!valid_platform_receipt(&missing_coverage, "exact-digest"));
         let mut incomplete = canonical.clone();
         incomplete["cases"].as_array_mut().expect("cases").pop();
         assert!(!valid_platform_receipt(&incomplete, "exact-digest"));
