@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Read, Seek, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
@@ -2851,7 +2851,7 @@ impl ControlPlane {
             return Err("root turn identity is already bound to a subagent".to_owned());
         }
         self.remember_root_turn(turn_id);
-        self.persist()?;
+        self.persist_unflushed()?;
         Ok(json!({"suppressOutput": true}))
     }
 
@@ -3685,7 +3685,9 @@ impl ControlPlane {
             }
         }
         self.state.leases.remove(&tool_use_id);
-        self.persist()
+        // The operation is already closed in the store; a lost close leaves
+        // the expired lease a service crash here would, which recovery closes.
+        self.persist_unflushed()
             .map_err(|error| format!("cannot persist the closed tool lease: {error}"))?;
         if let Some(error) = sync_error {
             let quarantine_error = self
@@ -3851,9 +3853,15 @@ impl ControlPlane {
                 .get_mut(&agent_id)
                 .ok_or_else(|| "subagent route disappeared during stop".to_owned())?
                 .lifecycle = RouteLifecycle::Frozen;
-            self.persist()?;
             candidate = (route.parent_agent_id != self.state.root_agent_id)
                 .then_some(route.parent_agent_id);
+            // Finishing an ancestor's stop unmounts and freezes it durably, so
+            // only the last freeze may be left unflushed.
+            if candidate.is_some() {
+                self.persist()?;
+            } else {
+                self.persist_unflushed()?;
+            }
         }
         Ok(())
     }
@@ -4135,6 +4143,8 @@ impl ControlPlane {
                 .ok_or_else(|| "pending spawn disappeared before mount intent".to_owned())?;
             prepared.roots.clone_from(&route_roots);
             prepared.lifecycle = PendingSpawnLifecycle::Mounting;
+            // Flushed: a mount can leave placeholders behind across a power
+            // loss, which recovery accepts only after this mark.
             self.persist()?;
         }
         let mut roots = Vec::with_capacity(route_roots.len());
@@ -4178,7 +4188,10 @@ impl ControlPlane {
             .find(|candidate| candidate.fork_key == fork_key)
             .ok_or_else(|| "pending spawn disappeared after mount".to_owned())?
             .lifecycle = PendingSpawnLifecycle::Prepared;
-        self.persist()
+        // Nothing durable follows before SubagentStart flushes the route; a
+        // lost mark leaves the flushed mount mark, from which recovery mounts
+        // again.
+        self.persist_unflushed()
     }
 
     fn pending_active_root(&self, pending: &PendingSpawn) -> Result<WorkspaceRootId, String> {
@@ -5460,7 +5473,13 @@ impl ControlPlane {
     }
 
     fn persist(&self) -> Result<(), String> {
-        save_state(&self.data, &self.state)
+        save_state(&self.data, &self.state, Survives::PowerLoss)
+    }
+
+    /// Saves a transition that is the last effect of its operation; see
+    /// [`Survives::ServiceCrash`].
+    fn persist_unflushed(&self) -> Result<(), String> {
+        save_state(&self.data, &self.state, Survives::ServiceCrash)
     }
 
     async fn shutdown(mut self) -> Result<(), String> {
@@ -6360,11 +6379,25 @@ const MAXIMUM_ADAPTER_PENDING: usize = 4_096;
 const MAXIMUM_ADAPTER_LEASES: usize = 16_384;
 const MAXIMUM_ADAPTER_DISCARDS: usize = 4_096;
 
-/// Adapter state alternates between two self-validating slots, each rewritten
-/// in place under a single flush. A save only ever overwrites the slot that
-/// does not hold the newest completed save, so a torn write can damage nothing
-/// but itself and loading always yields the last completed save.
-const ADAPTER_STATE_SLOTS: [&str; 2] = ["adapter-state.a", "adapter-state.b"];
+/// Adapter state is saved into self-validating slots rewritten in place.
+/// Flushed saves alternate between two slots, and a save only ever overwrites
+/// the slot that does not hold the newest flushed save, so a torn write can
+/// damage nothing but itself. Unflushed saves go to a third slot that loading
+/// prefers only while it is intact and newer, so losing one to a power loss
+/// leaves the last flushed save.
+const ADAPTER_STATE_SLOTS: [&str; 3] = ["adapter-state.a", "adapter-state.b", "adapter-state.v"];
+
+/// The failures an adapter-state transition must survive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Survives {
+    /// Written without a flush. Only a transition that no later durable effect
+    /// depends on may be saved this way: losing it to a power loss leaves the
+    /// state a service crash just before it leaves, which recovery handles,
+    /// and the next flushed save, a whole snapshot, makes it durable anyway.
+    ServiceCrash,
+    /// Flushed before the caller continues.
+    PowerLoss,
+}
 const ADAPTER_STATE_MAGIC: [u8; 8] = *b"ACYSTAT1";
 /// Magic, little-endian generation, then the digest of generation and payload.
 const ADAPTER_STATE_HEADER_BYTES: usize = 8 + 8 + 32;
@@ -6425,27 +6458,35 @@ fn read_state_slot(path: &Path) -> Result<StateSlot, String> {
     })
 }
 
-/// Reads both slots as `[newest completed save, slot the next save overwrites]`.
-fn ordered_state_slots(data: &Path) -> Result<[(&'static str, StateSlot); 2], String> {
-    let [first, second] =
+/// Reads every slot as `[newest flushed save, slot the next flushed save
+/// overwrites, unflushed save]`.
+fn ordered_state_slots(data: &Path) -> Result<[(&'static str, StateSlot); 3], String> {
+    let [first, second, unflushed] =
         ADAPTER_STATE_SLOTS.map(|name| read_state_slot(&data.join(name)).map(|slot| (name, slot)));
-    let (first, second) = (first?, second?);
+    let (first, second, unflushed) = (first?, second?, unflushed?);
     Ok(if second.1.generation() > first.1.generation() {
-        [second, first]
+        [second, first, unflushed]
     } else {
-        [first, second]
+        [first, second, unflushed]
     })
 }
 
 fn load_state(data: &Path) -> Result<AdapterState, String> {
-    match ordered_state_slots(data)? {
-        [(_, StateSlot::Saved { payload, .. }), _] => {
+    let [(_, flushed), (_, other), (_, unflushed)] = ordered_state_slots(data)?;
+    let newest = if unflushed.generation() > flushed.generation() {
+        unflushed
+    } else {
+        flushed
+    };
+    match (newest, other) {
+        (StateSlot::Saved { payload, .. }, _) => {
             let state = serde_json::from_slice(&payload).map_err(display)?;
             validate_state_version(&state)?;
             validate_state_bounds(&state)?;
             Ok(state)
         }
-        [(_, StateSlot::Missing), (_, StateSlot::Missing)] => Ok(AdapterState {
+        // No flushed save was ever made, and no unflushed one survives.
+        (StateSlot::Missing, StateSlot::Missing) => Ok(AdapterState {
             version: ADAPTER_STATE_VERSION,
             ..AdapterState::default()
         }),
@@ -6453,7 +6494,7 @@ fn load_state(data: &Path) -> Result<AdapterState, String> {
     }
 }
 
-fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
+fn save_state(data: &Path, state: &AdapterState, survives: Survives) -> Result<(), String> {
     validate_state_version(state)?;
     validate_state_bounds(state)?;
     let mut serialized = BoundedJsonBuffer::new();
@@ -6463,11 +6504,17 @@ fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
         .ok_or_else(|| {
             format!("adapter state exceeds the {MAXIMUM_ADAPTER_STATE_BYTES} byte bound")
         })?;
-    let [(_, newest), (target_name, target)] = ordered_state_slots(data)?;
-    let generation = newest
+    let [(_, flushed), older, unflushed] = ordered_state_slots(data)?;
+    let generation = flushed
         .generation()
+        .max(older.1.generation())
+        .max(unflushed.1.generation())
         .map_or(Some(1), |generation| generation.checked_add(1))
         .ok_or("adapter state generation is exhausted")?;
+    let (target_name, target) = match survives {
+        Survives::ServiceCrash => unflushed,
+        Survives::PowerLoss => older,
+    };
     let mut bytes = Vec::with_capacity(ADAPTER_STATE_HEADER_BYTES + serialized.bytes.len());
     bytes.extend_from_slice(&ADAPTER_STATE_MAGIC);
     bytes.extend_from_slice(&generation.to_le_bytes());
@@ -6481,9 +6528,11 @@ fn save_state(data: &Path, state: &AdapterState) -> Result<(), String> {
         .map_err(display)?;
     file.write_all(&bytes).map_err(display)?;
     file.set_len(bytes.len() as u64).map_err(display)?;
-    sync_file(&file, Durability::Full).map_err(display)?;
-    if matches!(target, StateSlot::Missing) {
-        sync_parent(data, Durability::Full).map_err(display)?;
+    if survives == Survives::PowerLoss {
+        sync_file(&file, Durability::Full).map_err(display)?;
+        if matches!(target, StateSlot::Missing) {
+            sync_parent(data, Durability::Full).map_err(display)?;
+        }
     }
     Ok(())
 }
@@ -7627,7 +7676,7 @@ impl ServiceResources {
         let fs = LocalFs::local(LocalOptions::new(data.join("filesystem")))
             .await
             .map_err(display)?;
-        let binary_identity = service_identity()?;
+        let binary_identity = service_identity(&data)?;
         let resources = Self {
             store: LocalCoreStateStore::open_owned(data.join("core-state")).map_err(display)?,
             shared_roots: SharedRootRegistry::default(),
@@ -7917,7 +7966,7 @@ impl ServiceControl {
         }
         if deactivate {
             terminal_state.active = false;
-            save_state(&directory, &terminal_state)?;
+            save_state(&directory, &terminal_state, Survives::ServiceCrash)?;
         }
         Ok(())
     }
@@ -8492,7 +8541,11 @@ impl SessionHandle {
                                     Ok(()) => {
                                         if deactivate {
                                             terminal_state.active = false;
-                                            save_state(&directory, &terminal_state)
+                                            save_state(
+                                                &directory,
+                                                &terminal_state,
+                                                Survives::ServiceCrash,
+                                            )
                                         } else {
                                             Ok(())
                                         }
@@ -9533,6 +9586,10 @@ fn hook_invocation() -> Option<(String, String)> {
 }
 
 fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut arguments = env::args().skip(1);
+    if arguments.next().as_deref() == Some("__hook") {
+        return run_native_hook(&arguments.collect::<Vec<_>>());
+    }
     if is_foreground_cli_invocation() {
         let result = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -9561,6 +9618,79 @@ fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+/// Answers a native hook. A hook that stays inside this process returns
+/// before any runtime, path resolution or state directory is touched.
+fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let [host, event] = arguments else {
+        return Err(io::Error::other("acyclic __hook requires a host and event").into());
+    };
+    if !matches!(
+        host.as_str(),
+        "codex" | "claude-code" | "copilot" | "cursor"
+    ) {
+        return Err(io::Error::other("unsupported native hook host").into());
+    }
+    let mut input = Vec::new();
+    io::stdin()
+        .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
+        .read_to_end(&mut input)?;
+    if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
+        return Err(io::Error::other("native hook input exceeds the 4 MiB bound").into());
+    }
+    let input: Value = serde_json::from_slice(&input)?;
+    if native_hook_is_process_local_noop(host, event, &input) {
+        serde_json::to_writer(io::stdout().lock(), &json!({}))?;
+        return Ok(());
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(send_native_hook(host, event, input))
+}
+
+/// Sends one native hook to the service and prints its response.
+async fn send_native_hook(
+    host: &str,
+    event: &str,
+    input: Value,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let cwd = env::current_dir()?.canonicalize()?;
+    let data = default_data_directory();
+    let request = ControlRequest {
+        version: 1,
+        command: ControlCommand::Hook,
+        cwd,
+        argv: Vec::new(),
+        name: format!("{host}:{event}"),
+        arguments: input,
+    };
+    let envelope = ControlEnvelope::new(request);
+    let response = if matches!(event, "SessionStart" | "sessionStart") {
+        // Session boundaries are the one cheap, deterministic place to advance
+        // an idle service to the installed binary. Tool hooks stay on the direct
+        // single-round-trip path, and a service with live mounts remains intact.
+        ensure_service(&data).await.map_err(io::Error::other)?;
+        send_control_envelope(&data, &envelope)
+            .await
+            .map_err(|error| io::Error::other(error.to_string()))?
+    } else {
+        match send_control_envelope_once(&data, &envelope).await {
+            Ok(response) => response,
+            // An unavailable service never received the envelope, so this
+            // is the only retransmission, and no deadline applies to it.
+            Err(ControlRequestError::Unavailable(_)) => {
+                ensure_service(&data).await.map_err(io::Error::other)?;
+                send_control_envelope(&data, &envelope)
+                    .await
+                    .map_err(|error| io::Error::other(error.to_string()))?
+            }
+            Err(error) => return Err(io::Error::other(error.to_string()).into()),
+        }
+    };
+    serde_json::to_writer(io::stdout().lock(), &response)?;
+    Ok(())
+}
+
 fn is_foreground_cli_invocation() -> bool {
     let mut arguments = env::args_os().skip(1);
     let mut command = arguments.next();
@@ -9576,7 +9706,6 @@ fn is_foreground_cli_invocation() -> bool {
                     | "agents"
                     | "doctor"
                     | "discard"
-                    | "__hook"
                     | "install"
                     | "uninstall"
                     | "__service-drain"
@@ -9705,64 +9834,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     if arguments
         .first()
-        .is_some_and(|argument| argument == "__hook")
-    {
-        let [_, host, event] = arguments.as_slice() else {
-            return Err(io::Error::other("acyclic __hook requires a host and event").into());
-        };
-        if !matches!(
-            host.as_str(),
-            "codex" | "claude-code" | "copilot" | "cursor"
-        ) {
-            return Err(io::Error::other("unsupported native hook host").into());
-        }
-        let mut input = Vec::new();
-        io::stdin()
-            .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
-            .read_to_end(&mut input)?;
-        if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
-            return Err(io::Error::other("native hook input exceeds the 4 MiB bound").into());
-        }
-        let input: Value = serde_json::from_slice(&input)?;
-        if native_hook_is_process_local_noop(host, event, &input) {
-            serde_json::to_writer(io::stdout().lock(), &json!({}))?;
-            return Ok(());
-        }
-        let data = default_data_directory();
-        let request = ControlRequest {
-            version: 1,
-            command: ControlCommand::Hook,
-            cwd,
-            argv: Vec::new(),
-            name: format!("{host}:{event}"),
-            arguments: input,
-        };
-        let envelope = ControlEnvelope::new(request);
-        let response = if matches!(event.as_str(), "SessionStart" | "sessionStart") {
-            // Session boundaries are the one cheap, deterministic place to advance
-            // an idle service to the installed binary. Tool hooks stay on the direct
-            // single-round-trip path, and a service with live mounts remains intact.
-            ensure_service(&data).await.map_err(io::Error::other)?;
-            send_control_envelope(&data, &envelope)
-                .await
-                .map_err(|error| io::Error::other(error.to_string()))?
-        } else {
-            match send_control_envelope_once(&data, &envelope).await {
-                Ok(response) => response,
-                Err(ControlRequestError::Unavailable(_)) => {
-                    ensure_service(&data).await.map_err(io::Error::other)?;
-                    send_control_envelope(&data, &envelope)
-                        .await
-                        .map_err(|error| io::Error::other(error.to_string()))?
-                }
-                Err(error) => return Err(io::Error::other(error.to_string()).into()),
-            }
-        };
-        serde_json::to_writer(io::stdout().lock(), &response)?;
-        return Ok(());
-    }
-    if arguments
-        .first()
         .is_some_and(|argument| argument == "install")
     {
         return install_command(arguments.get(1..).unwrap_or_default())
@@ -9850,12 +9921,142 @@ fn default_data_directory() -> PathBuf {
     env::temp_dir().join("acyclic-state-v5")
 }
 
-fn service_identity() -> Result<String, String> {
-    service_identity_for(&env::current_exe().map_err(display)?)
+fn service_identity(data: &Path) -> Result<String, String> {
+    service_identity_for(data, &env::current_exe().map_err(display)?)
 }
 
-fn service_identity_for(executable: &Path) -> Result<String, String> {
-    Ok(service_identity_from_digest(&blake3_file(executable)?))
+/// The identity of an executable's artifact bytes. Hashing tens of megabytes
+/// on every session start is avoidable: the identity is cached under the
+/// file's fingerprint, which every rewrite or replacement of the file changes.
+fn service_identity_for(data: &Path, executable: &Path) -> Result<String, String> {
+    let cache = data.join("executable-identity");
+    let file = fs::File::open(executable).map_err(display)?;
+    let (fingerprint, changed) = executable_fingerprint(&file)?;
+    if let Some(identity) = fs::read(&cache)
+        .ok()
+        .and_then(|cached| cached_identity(&cached, &fingerprint))
+    {
+        return Ok(identity);
+    }
+    let mut hasher = blake3::Hasher::new();
+    read_executable(&file, |bytes| {
+        hasher.update(bytes);
+    })?;
+    let identity = service_identity_from_digest(&hasher.finalize().to_hex());
+    // Cache only a hash of bytes that did not change while they were read and
+    // whose last change is older than any timestamp granularity: a later write
+    // in the same clock tick could otherwise keep the fingerprint (the racy
+    // timestamp problem Git's index solves the same way). A cache that cannot
+    // be written, or is lost, only costs the next caller one hash.
+    let settled = std::time::SystemTime::now()
+        .duration_since(changed)
+        .is_ok_and(|age| age > SETTLED_EXECUTABLE_AGE);
+    if settled && executable_fingerprint(&file)?.0 == fingerprint {
+        let staged = data.join(format!("executable-identity.{}", std::process::id()));
+        let entry = format!("{}\n{identity}", hex::encode(fingerprint));
+        if fs::write(&staged, entry)
+            .and_then(|()| fs::rename(&staged, &cache))
+            .is_err()
+        {
+            let _ = fs::remove_file(&staged);
+        }
+    }
+    Ok(identity)
+}
+
+fn cached_identity(cached: &[u8], fingerprint: &[u8; 32]) -> Option<String> {
+    let (cached_fingerprint, identity) = std::str::from_utf8(cached).ok()?.split_once('\n')?;
+    (cached_fingerprint == hex::encode(fingerprint)
+        && identity.len() == 64
+        && identity
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+    .then(|| identity.to_owned())
+}
+
+/// An executable changed longer ago than this has timestamps that any later
+/// write must advance.
+const SETTLED_EXECUTABLE_AGE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Digest of the file's identity, size, and modification and change times,
+/// with the change time. The change time cannot be set by callers, so no write
+/// can preserve it.
+#[cfg(unix)]
+fn executable_fingerprint(file: &fs::File) -> Result<([u8; 32], std::time::SystemTime), String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = file.metadata().map_err(display)?;
+    let mut hasher = blake3::Hasher::new();
+    for field in [
+        metadata.dev(),
+        metadata.ino(),
+        metadata.size(),
+        metadata.mtime().cast_unsigned(),
+        metadata.mtime_nsec().cast_unsigned(),
+        metadata.ctime().cast_unsigned(),
+        metadata.ctime_nsec().cast_unsigned(),
+    ] {
+        hasher.update(&field.to_le_bytes());
+    }
+    let changed = std::time::UNIX_EPOCH
+        .checked_add(std::time::Duration::new(
+            metadata.ctime().try_into().unwrap_or_default(),
+            metadata.ctime_nsec().try_into().unwrap_or_default(),
+        ))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    Ok((*hasher.finalize().as_bytes(), changed))
+}
+
+/// Digest of the file's volume and identity, size, and write and change
+/// times, with the change time. The change time cannot be set by callers, so
+/// no write can preserve it.
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "GetFileInformationByHandleEx fills fixed-size structures for a live handle"
+)]
+fn executable_fingerprint(file: &fs::File) -> Result<([u8; 32], std::time::SystemTime), String> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_BASIC_INFO, FILE_ID_INFO, FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx,
+    };
+    fn query<T>(file: &fs::File, class: i32) -> Result<T, String> {
+        let mut information = std::mem::MaybeUninit::<T>::zeroed();
+        let size = u32::try_from(std::mem::size_of::<T>()).map_err(display)?;
+        // SAFETY: the handle is live for the call and the buffer is exactly
+        // `size` writable bytes of the structure this class returns.
+        if unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                class,
+                information.as_mut_ptr().cast(),
+                size,
+            )
+        } == 0
+        {
+            return Err(display(io::Error::last_os_error()));
+        }
+        // SAFETY: the call succeeded, so it initialized the structure.
+        Ok(unsafe { information.assume_init() })
+    }
+    let identity = query::<FILE_ID_INFO>(file, FileIdInfo)?;
+    let basic = query::<FILE_BASIC_INFO>(file, FileBasicInfo)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&identity.VolumeSerialNumber.to_le_bytes());
+    hasher.update(&identity.FileId.Identifier);
+    hasher.update(&file.metadata().map_err(display)?.len().to_le_bytes());
+    for time in [basic.CreationTime, basic.LastWriteTime, basic.ChangeTime] {
+        hasher.update(&time.to_le_bytes());
+    }
+    // FILETIME counts 100 ns intervals from 1601; Unix time starts 11,644,473,600 s later.
+    let changed = u64::try_from(basic.ChangeTime)
+        .ok()
+        .and_then(|ticks| ticks.checked_sub(116_444_736_000_000_000))
+        .and_then(|ticks| {
+            std::time::UNIX_EPOCH
+                .checked_add(std::time::Duration::from_nanos(ticks.saturating_mul(100)))
+        })
+        .unwrap_or(std::time::UNIX_EPOCH);
+    Ok((*hasher.finalize().as_bytes(), changed))
 }
 
 fn service_identity_from_digest(digest: &str) -> String {
@@ -9864,8 +10065,8 @@ fn service_identity_from_digest(digest: &str) -> String {
         .to_string()
 }
 
-fn read_executable(executable: &Path, mut update: impl FnMut(&[u8])) -> Result<(), String> {
-    let mut file = fs::File::open(executable).map_err(display)?;
+fn read_executable(mut file: &fs::File, mut update: impl FnMut(&[u8])) -> Result<(), String> {
+    file.rewind().map_err(display)?;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer).map_err(display)?;
@@ -9902,7 +10103,7 @@ fn executable_digests_for(executable: &Path) -> Result<ExecutableDigests, String
     // identical clients to continuously drain and replace each other's service.
     let mut sha256 = Sha256::new();
     let mut blake3 = blake3::Hasher::new();
-    read_executable(executable, |chunk| {
+    read_executable(&fs::File::open(executable).map_err(display)?, |chunk| {
         sha256.update(chunk);
         blake3.update(chunk);
     })?;
@@ -9917,7 +10118,7 @@ fn executable_digests_for(executable: &Path) -> Result<ExecutableDigests, String
 
 fn blake3_file(path: &Path) -> Result<String, String> {
     let mut hasher = blake3::Hasher::new();
-    read_executable(path, |bytes| {
+    read_executable(&fs::File::open(path).map_err(display)?, |bytes| {
         hasher.update(bytes);
     })?;
     Ok(hasher.finalize().to_hex().to_string())
@@ -10666,7 +10867,7 @@ fn clear_obsolete_runtime_state(data: &Path) -> Result<(), String> {
 
 async fn ensure_service(data: &Path) -> Result<(), String> {
     fs::create_dir_all(data).map_err(display)?;
-    let identity = service_identity()?;
+    let identity = service_identity(data)?;
     if service_is_ready_for_identity(data, &identity).await? {
         return Ok(());
     }
@@ -10707,7 +10908,7 @@ fn ping_request() -> Result<ControlRequest, String> {
 }
 
 async fn send_cli_control_request(data: &Path, request: &ControlRequest) -> Result<Value, String> {
-    let identity = service_identity()?;
+    let identity = service_identity(data)?;
     // Sandboxed hosts may expose the already-running local endpoint while denying the client's
     // direct view of per-user state. Probe that endpoint before attempting a filesystem-backed
     // cold start. The published marker is an instance nonce, not a binary compatibility identity.
@@ -14309,11 +14510,11 @@ mod tests {
         for binding in conflicting.roots.values_mut() {
             binding.source_identity = [9; 16];
         }
-        save_state(&older, &conflicting).expect("conflicting state");
+        save_state(&older, &conflicting, Survives::PowerLoss).expect("conflicting state");
         std::thread::sleep(std::time::Duration::from_millis(20));
         let mut current = load_state(&newer).expect("newer state");
         current.active = true;
-        save_state(&newer, &current).expect("refresh newer state");
+        save_state(&newer, &current, Survives::PowerLoss).expect("refresh newer state");
 
         let resumed = ServiceControl::open(state)
             .await
@@ -15249,27 +15450,72 @@ mod tests {
     #[test]
     fn service_identity_follows_artifact_bytes_not_launcher_path() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let launcher = temporary.path().join("launcher");
-        let plugin_cache = temporary.path().join("plugin-cache");
+        let data = temporary.path();
+        let launcher = data.join("launcher");
+        let plugin_cache = data.join("plugin-cache");
         fs::write(&launcher, b"same signed artifact").expect("launcher artifact");
         fs::write(&plugin_cache, b"same signed artifact").expect("cached artifact");
+        let identity = |path: &Path| service_identity_for(data, path).expect("identity");
 
+        assert_eq!(identity(&launcher), identity(&plugin_cache));
         assert_eq!(
-            service_identity_for(&launcher).expect("launcher identity"),
-            service_identity_for(&plugin_cache).expect("cached identity")
-        );
-        assert_eq!(
-            service_identity_for(&launcher).expect("launcher identity"),
+            identity(&launcher),
             executable_digests_for(&launcher)
                 .expect("full launcher digests")
                 .service_identity
         );
 
         fs::write(&plugin_cache, b"replacement artifact").expect("replacement artifact");
-        assert_ne!(
-            service_identity_for(&launcher).expect("launcher identity"),
-            service_identity_for(&plugin_cache).expect("replacement identity")
+        assert_ne!(identity(&launcher), identity(&plugin_cache));
+    }
+
+    #[test]
+    fn cached_service_identity_is_keyed_by_the_file_fingerprint() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path();
+        let executable = data.join("acyclic");
+        fs::write(&executable, b"first artifact").expect("artifact");
+        let identity = service_identity_for(data, &executable).expect("identity");
+        let cache = data.join("executable-identity");
+        assert!(
+            !cache.exists(),
+            "a just-written executable could change again within its timestamp tick"
         );
+        std::thread::sleep(SETTLED_EXECUTABLE_AGE + std::time::Duration::from_millis(100));
+        assert_eq!(
+            service_identity_for(data, &executable).expect("settled identity"),
+            identity
+        );
+        let entry = fs::read_to_string(&cache).expect("cached identity");
+        assert!(entry.ends_with(&identity));
+
+        // A hit returns the cached value without hashing the bytes again.
+        let (fingerprint, _) = entry.split_once('\n').expect("cache entry");
+        let marker = "0".repeat(64);
+        fs::write(&cache, format!("{fingerprint}\n{marker}")).expect("marked cache");
+        assert_eq!(
+            service_identity_for(data, &executable).expect("cached identity"),
+            marker
+        );
+
+        // Any rewrite changes the fingerprint, even to bytes of equal length.
+        fs::write(&executable, b"other artifact").expect("rewritten artifact");
+        let rewritten = service_identity_for(data, &executable).expect("rewritten identity");
+        assert_ne!(rewritten, marker);
+        assert_eq!(
+            rewritten,
+            executable_digests_for(&executable)
+                .expect("rewritten digests")
+                .service_identity
+        );
+
+        for torn in [b"".as_slice(), b"torn", entry.as_bytes().split_at(70).0] {
+            fs::write(&cache, torn).expect("torn cache");
+            assert_eq!(
+                service_identity_for(data, &executable).expect("identity despite torn cache"),
+                rewritten
+            );
+        }
     }
 
     #[test]
@@ -19128,7 +19374,7 @@ mod tests {
         state.root_session_id = "x"
             .repeat(usize::try_from(MAXIMUM_ADAPTER_STATE_BYTES).expect("state bound fits usize"));
         assert!(
-            save_state(temporary.path(), &state)
+            save_state(temporary.path(), &state, Survives::PowerLoss)
                 .expect_err("oversized state persistence must fail")
                 .contains("byte bound")
         );
@@ -19178,7 +19424,7 @@ mod tests {
         let loaded = || load_state(data).map(|state| state.root_session_id);
         assert_eq!(loaded(), Ok(String::new()));
         for name in ["first", "second", "third", "fourth"] {
-            save_state(data, &named(name)).expect("adapter state save");
+            save_state(data, &named(name), Survives::PowerLoss).expect("adapter state save");
             assert_eq!(loaded().as_deref(), Ok(name));
         }
         let target = data.join(ADAPTER_STATE_SLOTS[0]);
@@ -19198,7 +19444,8 @@ mod tests {
         for torn in prefixes.into_iter().chain([flipped, stale_tail]) {
             fs::write(&target, torn).expect("torn slot");
             assert_eq!(loaded().as_deref(), Ok("third"));
-            save_state(data, &named("fifth")).expect("save over the torn slot");
+            save_state(data, &named("fifth"), Survives::PowerLoss)
+                .expect("save over the torn slot");
             assert_eq!(loaded().as_deref(), Ok("fifth"));
         }
         for slot in ADAPTER_STATE_SLOTS {
@@ -19208,6 +19455,54 @@ mod tests {
             loaded().is_err(),
             "state without a completed save must fail closed"
         );
+    }
+
+    #[test]
+    fn unflushed_adapter_saves_never_touch_the_newest_flushed_save() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path();
+        let named = |name: &str| AdapterState {
+            version: ADAPTER_STATE_VERSION,
+            root_session_id: name.to_owned(),
+            ..AdapterState::default()
+        };
+        let loaded = || load_state(data).map(|state| state.root_session_id);
+        let flushed_slots = || {
+            ADAPTER_STATE_SLOTS[..2]
+                .iter()
+                .map(|slot| fs::read(data.join(slot)).ok())
+                .collect::<Vec<_>>()
+        };
+        let unflushed = data.join(ADAPTER_STATE_SLOTS[2]);
+
+        // Losing every unflushed save before the first flushed one leaves the
+        // state before any save.
+        save_state(data, &named("volatile"), Survives::ServiceCrash).expect("unflushed save");
+        assert_eq!(loaded().as_deref(), Ok("volatile"));
+        fs::write(&unflushed, b"lost").expect("lose unflushed save");
+        assert_eq!(loaded(), Ok(String::new()));
+
+        save_state(data, &named("first"), Survives::PowerLoss).expect("flushed save");
+        let durable = flushed_slots();
+        for name in ["second", "third", "fourth"] {
+            save_state(data, &named(name), Survives::ServiceCrash).expect("unflushed save");
+            assert_eq!(loaded().as_deref(), Ok(name));
+            assert_eq!(flushed_slots(), durable);
+        }
+        fs::write(&unflushed, b"lost").expect("lose unflushed save");
+        assert_eq!(loaded().as_deref(), Ok("first"));
+
+        save_state(data, &named("fifth"), Survives::ServiceCrash).expect("unflushed save");
+        save_state(data, &named("sixth"), Survives::PowerLoss).expect("flushed save");
+        assert_eq!(
+            loaded().as_deref(),
+            Ok("sixth"),
+            "a later flushed save wins"
+        );
+        save_state(data, &named("seventh"), Survives::ServiceCrash).expect("unflushed save");
+        let intact = fs::read(&unflushed).expect("unflushed slot");
+        fs::write(&unflushed, &intact[..intact.len() - 1]).expect("tear unflushed save");
+        assert_eq!(loaded().as_deref(), Ok("sixth"));
     }
 
     #[test]

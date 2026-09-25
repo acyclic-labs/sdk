@@ -2,15 +2,22 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::{self, Read as _, Seek as _};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
-pub(crate) const CONTROL_PROTOCOL_MAJOR: u32 = 3;
-const CONTROL_SCHEMA: &[u8] = br#"{"envelope":{"operation":"uuid-v7","protocol":{"capabilities":{"atMostOnceOperations":true,"boundedFrames":true,"exactNegotiation":true},"major":3,"schemaDigest":"blake3-32"},"request":"ControlRequest-v1","requestId":"ascii-id"},"response":{"error":"string?","ok":"bool","requestId":"ascii-id","result":"json?","version":2}}"#;
+pub(crate) const CONTROL_PROTOCOL_MAJOR: u32 = 4;
+const CONTROL_SCHEMA: &[u8] = br#"{"envelope":{"operation":"uuid-v4","protocol":{"capabilities":{"atMostOnceOperations":true,"boundedFrames":true,"exactNegotiation":true},"major":4,"schemaDigest":"blake3-32"},"request":"ControlRequest-v1","requestId":"ascii-id"},"operations":{"retransmitWithinSeconds":300},"response":{"error":"string?","ok":"bool","requestId":"ascii-id","result":"json?","version":2}}"#;
 const MAXIMUM_ID_BYTES: usize = 128;
+
+/// A client may retransmit an operation only within this window after its
+/// first transmission that may have been delivered. The Acyclic client never
+/// retransmits after such a transmission at all: it retries only a transmission
+/// that provably never reached the service.
+const RETRANSMIT_WINDOW: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -78,25 +85,23 @@ impl RequestId {
 }
 
 /// Identifies one logical operation across every transmission of its
-/// envelope. A `UUIDv7` is unique without any coordination (74 random bits within
-/// each millisecond) and ordered by issue time, which is all the ledger needs
-/// to bound its replay window.
+/// envelope: 122 random bits, unique without any coordination.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub(crate) struct OperationId(uuid::Uuid);
 
 impl OperationId {
     fn fresh() -> Self {
-        Self(uuid::Uuid::now_v7())
+        Self(uuid::Uuid::new_v4())
     }
 
     fn validate(self) -> Result<(), String> {
-        if self.0.get_version() == Some(uuid::Version::SortRand)
+        if self.0.get_version() == Some(uuid::Version::Random)
             && self.0.get_variant() == uuid::Variant::RFC4122
         {
             Ok(())
         } else {
-            Err("Acyclic operation identity must be a UUIDv7".to_owned())
+            Err("Acyclic operation identity must be a random UUID".to_owned())
         }
     }
 }
@@ -127,16 +132,34 @@ impl<T> ControlEnvelope<T> {
     }
 }
 
-/// Newest terminal outcomes kept for replay; older ones fall below the horizon.
-const RETAINED_OUTCOMES: usize = 1_024;
+/// The ledger remembers every outcome for at least the retransmit window,
+/// measured on the monotonic clock from its completion, which follows every
+/// transmission that could have delivered it. Admission therefore depends on
+/// neither wall-clock time nor other clients' traffic: an unknown operation
+/// never ran.
+const OUTCOME_RETENTION: Duration = RETRANSMIT_WINDOW;
+/// Memory bound on remembered operations, over 200 per second sustained for
+/// the whole window. Reaching it refuses new work rather than forgetting.
+const MAXIMUM_OPERATIONS: usize = 65_536;
+/// Responses beyond this budget are released oldest first; their operations
+/// stay remembered, so a retry is refused rather than executed.
 const RETAINED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
-const MAXIMUM_STARTED_OPERATIONS: usize = 16_384;
-const MAXIMUM_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+const MAXIMUM_JOURNAL_BYTES: u64 = 128 * 1024 * 1024;
 const JOURNAL_REWRITE_SLACK: u64 = 1024 * 1024;
 /// The journal alternates between two slots. Compaction rewrites the inactive
 /// slot and publishes it by writing its generation frame last, so the active
 /// slot only ever changes by appending past its end.
-const JOURNAL_SLOTS: [&str; 2] = ["control-ledger-v4.a", "control-ledger-v4.b"];
+const JOURNAL_SLOTS: [&str; 2] = ["control-ledger-v5.a", "control-ledger-v5.b"];
+/// State of earlier releases, which no current binary reads.
+const OBSOLETE_STATE: [&str; 7] = [
+    "control-ledger-v3.json",
+    "control-ledger-v3.next",
+    "control-client-v2.json",
+    "control-client-v2.next",
+    "control-client-v2.lock",
+    "control-ledger-v4.a",
+    "control-ledger-v4.b",
+];
 /// Little-endian record length, then the digest of the record.
 const FRAME_HEADER_BYTES: usize = 8 + 32;
 const GENERATION_FRAME_BYTES: usize = FRAME_HEADER_BYTES + 1 + 8;
@@ -149,7 +172,6 @@ const GENERATION_FRAME_BYTES: usize = FRAME_HEADER_BYTES + 1 + 8;
 #[derive(Clone, Copy)]
 enum Record<'a> {
     Generation(u64),
-    Horizon(OperationId),
     Begin {
         operation: OperationId,
         request_digest: [u8; 32],
@@ -158,6 +180,8 @@ enum Record<'a> {
         operation: OperationId,
         response: &'a [u8],
     },
+    /// Completed, with a response the ledger no longer retains.
+    Settle(OperationId),
 }
 
 impl<'a> Record<'a> {
@@ -168,15 +192,11 @@ impl<'a> Record<'a> {
                 record.push(0);
                 record.extend_from_slice(&generation.to_le_bytes());
             }
-            Self::Horizon(operation) => {
-                record.push(1);
-                record.extend_from_slice(operation.0.as_bytes());
-            }
             Self::Begin {
                 operation,
                 request_digest,
             } => {
-                record.push(2);
+                record.push(1);
                 record.extend_from_slice(operation.0.as_bytes());
                 record.extend_from_slice(request_digest);
             }
@@ -184,9 +204,13 @@ impl<'a> Record<'a> {
                 operation,
                 response,
             } => {
-                record.push(3);
+                record.push(2);
                 record.extend_from_slice(operation.0.as_bytes());
                 record.extend_from_slice(response);
+            }
+            Self::Settle(operation) => {
+                record.push(3);
+                record.extend_from_slice(operation.0.as_bytes());
             }
         }
         frames.extend_from_slice(&(record.len() as u64).to_le_bytes());
@@ -202,15 +226,15 @@ impl<'a> Record<'a> {
             .unzip();
         match (kind, operation, rest) {
             (0, _, _) => Some(Self::Generation(u64::from_le_bytes(body.try_into().ok()?))),
-            (1, Some(operation), Some([])) => Some(Self::Horizon(operation)),
-            (2, Some(operation), Some(request_digest)) => Some(Self::Begin {
+            (1, Some(operation), Some(request_digest)) => Some(Self::Begin {
                 operation,
                 request_digest: request_digest.try_into().ok()?,
             }),
-            (3, Some(operation), Some(response)) => Some(Self::Complete {
+            (2, Some(operation), Some(response)) => Some(Self::Complete {
                 operation,
                 response,
             }),
+            (3, Some(operation), Some([])) => Some(Self::Settle(operation)),
             _ => None,
         }
     }
@@ -218,7 +242,7 @@ impl<'a> Record<'a> {
 
 fn record_digest(record: &[u8]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"acyclic-control-ledger-v4\0");
+    hasher.update(b"acyclic-control-ledger-v5\0");
     hasher.update(record);
     *hasher.finalize().as_bytes()
 }
@@ -243,6 +267,8 @@ enum Outcome {
         request_digest: [u8; 32],
         response: Vec<u8>,
     },
+    /// Completed, but its response was released to bound memory.
+    Settled { request_digest: [u8; 32] },
     /// Began before a service crash, so its effects are unknown.
     Interrupted { request_digest: [u8; 32] },
 }
@@ -250,28 +276,29 @@ enum Outcome {
 impl Outcome {
     const fn request_digest(&self) -> &[u8; 32] {
         match self {
-            Self::Completed { request_digest, .. } | Self::Interrupted { request_digest } => {
-                request_digest
-            }
+            Self::Completed { request_digest, .. }
+            | Self::Settled { request_digest }
+            | Self::Interrupted { request_digest } => request_digest,
         }
     }
 }
 
-/// Every operation that ever began is started, retained as an outcome, or at
-/// or below the horizon. An unknown operation above the horizon therefore
-/// never ran, and an unknown one at or below it may have.
+/// Every operation that began and could still be retransmitted is started or
+/// retained as an outcome, so an unknown operation never ran.
 #[derive(Default)]
 struct LedgerState {
-    horizon: Option<OperationId>,
     started: BTreeMap<OperationId, [u8; 32]>,
     outcomes: BTreeMap<OperationId, Outcome>,
+    /// Outcomes in the order they were retained, with the instant they were.
+    retained: VecDeque<(Instant, OperationId)>,
+    /// Outcomes still holding a response, oldest first.
+    responses: VecDeque<OperationId>,
     response_bytes: usize,
 }
 
 impl LedgerState {
-    fn replay(&mut self, record: Record<'_>) -> Result<(), String> {
+    fn replay(&mut self, record: Record<'_>, now: Instant) -> Result<(), String> {
         match record {
-            Record::Horizon(operation) => self.horizon = self.horizon.max(Some(operation)),
             Record::Begin {
                 operation,
                 request_digest,
@@ -284,17 +311,19 @@ impl LedgerState {
                 operation,
                 response,
             } => {
-                let request_digest = self
-                    .started
-                    .remove(&operation)
-                    .ok_or("Acyclic control journal completes an operation it never began")?;
+                let request_digest = self.finish(operation)?;
                 self.retain(
                     operation,
                     Outcome::Completed {
                         request_digest,
                         response: response.to_vec(),
                     },
+                    now,
                 );
+            }
+            Record::Settle(operation) => {
+                let request_digest = self.finish(operation)?;
+                self.retain(operation, Outcome::Settled { request_digest }, now);
             }
             Record::Generation(_) | Record::Begin { .. } => {
                 return Err("Acyclic control journal is inconsistent".to_owned());
@@ -303,55 +332,85 @@ impl LedgerState {
         Ok(())
     }
 
-    /// Records a terminal outcome, evicting the oldest ones below the horizon
-    /// once the retained window is full.
-    fn retain(&mut self, operation: OperationId, outcome: Outcome) {
+    fn finish(&mut self, operation: OperationId) -> Result<[u8; 32], String> {
+        self.started
+            .remove(&operation)
+            .ok_or_else(|| "Acyclic control journal completes an operation it never began".into())
+    }
+
+    fn retain(&mut self, operation: OperationId, outcome: Outcome, now: Instant) {
         if let Outcome::Completed { response, .. } = &outcome {
             self.response_bytes += response.len();
+            self.responses.push_back(operation);
         }
         self.outcomes.insert(operation, outcome);
-        while self.outcomes.len() > RETAINED_OUTCOMES
-            || self.response_bytes > RETAINED_RESPONSE_BYTES
-        {
-            let Some((evicted, outcome)) = self.outcomes.pop_first() else {
+        self.retained.push_back((now, operation));
+        while self.response_bytes > RETAINED_RESPONSE_BYTES {
+            let Some(oldest) = self.responses.pop_front() else {
                 break;
             };
-            if let Outcome::Completed { response, .. } = outcome {
+            if let Some(outcome) = self.outcomes.get_mut(&oldest)
+                && let Outcome::Completed {
+                    request_digest,
+                    response,
+                } = outcome
+            {
+                self.response_bytes -= response.len();
+                let request_digest = *request_digest;
+                *outcome = Outcome::Settled { request_digest };
+            }
+        }
+    }
+
+    /// Forgets outcomes that no retransmission can reach any more.
+    fn expire(&mut self, now: Instant) {
+        while let Some(&(retained, operation)) = self.retained.front()
+            && now.saturating_duration_since(retained) >= OUTCOME_RETENTION
+        {
+            self.retained.pop_front();
+            if let Some(Outcome::Completed { response, .. }) = self.outcomes.remove(&operation) {
                 self.response_bytes -= response.len();
             }
-            self.horizon = self.horizon.max(Some(evicted));
+        }
+        // Both queues are in completion order, so every response whose outcome
+        // has gone sits at the front.
+        while let Some(operation) = self.responses.front()
+            && !matches!(
+                self.outcomes.get(operation),
+                Some(Outcome::Completed { .. })
+            )
+        {
+            self.responses.pop_front();
         }
     }
 
     fn snapshot(&self, generation: u64) -> Vec<u8> {
         let mut frames = Vec::new();
         Record::Generation(generation).encode_into(&mut frames);
-        if let Some(horizon) = self.horizon {
-            Record::Horizon(horizon).encode_into(&mut frames);
-        }
-        let started = self
-            .started
-            .iter()
-            .map(|(operation, request_digest)| (operation, request_digest, None));
-        let outcomes = self.outcomes.iter().map(|(operation, outcome)| {
-            let response = match outcome {
-                Outcome::Completed { response, .. } => Some(response.as_slice()),
-                Outcome::Interrupted { .. } => None,
-            };
-            (operation, outcome.request_digest(), response)
-        });
-        for (&operation, &request_digest, response) in started.chain(outcomes) {
+        for (&operation, &request_digest) in &self.started {
             Record::Begin {
                 operation,
                 request_digest,
             }
             .encode_into(&mut frames);
-            if let Some(response) = response {
-                Record::Complete {
-                    operation,
+        }
+        for (_, operation) in &self.retained {
+            let Some(outcome) = self.outcomes.get(operation) else {
+                continue;
+            };
+            Record::Begin {
+                operation: *operation,
+                request_digest: *outcome.request_digest(),
+            }
+            .encode_into(&mut frames);
+            match outcome {
+                Outcome::Completed { response, .. } => Record::Complete {
+                    operation: *operation,
                     response,
                 }
-                .encode_into(&mut frames);
+                .encode_into(&mut frames),
+                Outcome::Settled { .. } => Record::Settle(*operation).encode_into(&mut frames),
+                Outcome::Interrupted { .. } => {}
             }
         }
         frames
@@ -457,6 +516,11 @@ pub(crate) struct ControlLedger {
 
 impl ControlLedger {
     pub(crate) fn open(data: &Path) -> Result<Self, String> {
+        for name in OBSOLETE_STATE {
+            // Nothing reads these files, so one an old client still holds open
+            // is simply removed by a later start.
+            let _ = fs::remove_file(data.join(name));
+        }
         let [first, second] = JOURNAL_SLOTS.map(|name| {
             fs::OpenOptions::new()
                 .create(true)
@@ -473,16 +537,19 @@ impl ControlLedger {
             slots.swap(0, 1);
         }
         let generation = first.max(second);
+        // Retention restarts when the service does: outcomes are only ever
+        // remembered longer than their window, never shorter.
+        let now = Instant::now();
         let mut state = LedgerState::default();
         if generation.is_some() {
             let [active, _] = &slots;
             let bytes = read_slot(active)?;
             for record in decode_frames(&bytes).skip(1) {
-                state.replay(record)?;
+                state.replay(record, now)?;
             }
         }
         for (operation, request_digest) in std::mem::take(&mut state.started) {
-            state.retain(operation, Outcome::Interrupted { request_digest });
+            state.retain(operation, Outcome::Interrupted { request_digest }, now);
         }
         let mut journal = Journal {
             slots,
@@ -500,6 +567,14 @@ impl ControlLedger {
         &self,
         envelope: &ControlEnvelope<T>,
     ) -> Result<LedgerDecision, String> {
+        self.begin_at(envelope, Instant::now())
+    }
+
+    fn begin_at<T: Serialize>(
+        &self,
+        envelope: &ControlEnvelope<T>,
+        now: Instant,
+    ) -> Result<LedgerDecision, String> {
         envelope.validate()?;
         let request = serde_json::to_vec(&envelope.request).map_err(|error| error.to_string())?;
         let mut digest = blake3::Hasher::new();
@@ -510,6 +585,7 @@ impl ControlLedger {
         let operation = envelope.operation;
         let mut guard = self.lock()?;
         let (state, journal) = &mut *guard;
+        state.expire(now);
         let known = match (
             state.started.get(&operation),
             state.outcomes.get(&operation),
@@ -528,21 +604,20 @@ impl ControlLedger {
                 Some(Outcome::Completed { response, .. }) => serde_json::from_slice(response)
                     .map(LedgerDecision::Completed)
                     .map_err(|error| error.to_string()),
+                Some(Outcome::Settled { .. }) => Err(
+                    "Acyclic operation completed but its response is no longer retained; it will not be replayed"
+                        .to_owned(),
+                ),
                 Some(Outcome::Interrupted { .. }) | None => Err(
                     "Acyclic operation outcome is indeterminate; it will not be replayed"
                         .to_owned(),
                 ),
             };
         }
-        if state.horizon >= Some(operation) {
+        if state.started.len() + state.outcomes.len() >= MAXIMUM_OPERATIONS {
             return Err(
-                "Acyclic operation outcome is indeterminate or outside the retained replay window; it will not be replayed"
+                "Acyclic control replay ledger is full; retry after recent operations age out"
                     .to_owned(),
-            );
-        }
-        if state.started.len() >= MAXIMUM_STARTED_OPERATIONS {
-            return Err(
-                "Acyclic control replay ledger has too many concurrent operations".to_owned(),
             );
         }
         journal.append(&Record::Begin {
@@ -557,6 +632,15 @@ impl ControlLedger {
         &self,
         envelope: &ControlEnvelope<T>,
         response: &Value,
+    ) -> Result<(), String> {
+        self.complete_at(envelope, response, Instant::now())
+    }
+
+    fn complete_at<T>(
+        &self,
+        envelope: &ControlEnvelope<T>,
+        response: &Value,
+        now: Instant,
     ) -> Result<(), String> {
         let response = serde_json::to_vec(response).map_err(|error| error.to_string())?;
         let operation = envelope.operation;
@@ -577,7 +661,9 @@ impl ControlLedger {
                 request_digest,
                 response,
             },
+            now,
         );
+        state.expire(now);
         if journal.end >= journal.rewrite_at {
             // A failed compaction leaves the active slot complete and
             // authoritative; the next completion retries it.
@@ -616,20 +702,26 @@ fn validate_id(kind: &str, value: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn begin(ledger: &ControlLedger, envelope: &ControlEnvelope<&str>) -> Result<bool, String> {
-        ledger.begin(envelope).map(|decision| match decision {
-            LedgerDecision::Execute => true,
-            LedgerDecision::Completed(response) => {
-                assert_eq!(response, serde_json::json!({"ok": envelope.request}));
-                false
-            }
-        })
+    fn begin(
+        ledger: &ControlLedger,
+        envelope: &ControlEnvelope<&str>,
+        now: Instant,
+    ) -> Result<bool, String> {
+        ledger
+            .begin_at(envelope, now)
+            .map(|decision| match decision {
+                LedgerDecision::Execute => true,
+                LedgerDecision::Completed(response) => {
+                    assert_eq!(response, serde_json::json!({"ok": envelope.request}));
+                    false
+                }
+            })
     }
 
-    fn run(ledger: &ControlLedger, envelope: &ControlEnvelope<&str>) {
-        assert!(begin(ledger, envelope).expect("begin operation"));
+    fn run(ledger: &ControlLedger, envelope: &ControlEnvelope<&str>, now: Instant) {
+        assert!(begin(ledger, envelope, now).expect("begin operation"));
         ledger
-            .complete(envelope, &serde_json::json!({"ok": envelope.request}))
+            .complete_at(envelope, &serde_json::json!({"ok": envelope.request}), now)
             .expect("complete operation");
     }
 
@@ -644,52 +736,64 @@ mod tests {
     }
 
     #[test]
-    fn exact_offer_and_time_ordered_operations_are_required() {
+    fn exact_offer_and_random_operations_are_required() {
         let envelope = ControlEnvelope::new("request");
         envelope.validate().expect("current envelope");
         assert_eq!(
             hex::encode(ProtocolOffer::current().schema_digest),
-            "cbd3b7cb3c07dcd17a7f1091b43b945b8d057a541e5933f1175ad05ee1ccd4f6"
+            "d53c8cc7a3519cd3d3c61dd4ba712f71eac7dd572d8bdc5789abb23d35a428e2"
         );
 
         let mut incompatible = envelope.clone();
         incompatible.protocol.major += 1;
         assert!(incompatible.validate().is_err());
 
-        let mut unordered = envelope;
-        unordered.operation = OperationId(uuid::Uuid::new_v4());
-        assert!(unordered.validate().is_err());
+        let mut predictable = envelope;
+        predictable.operation = OperationId(uuid::Uuid::now_v7());
+        assert!(predictable.validate().is_err());
     }
 
     #[test]
-    fn operations_are_unique_and_ordered_without_client_state() {
-        let operations = (0..100_000)
-            .map(|_| OperationId::fresh())
-            .collect::<Vec<_>>();
-        assert!(operations.windows(2).all(|pair| pair[0] < pair[1]));
+    fn opening_removes_state_of_earlier_releases() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        for name in OBSOLETE_STATE {
+            fs::write(temporary.path().join(name), b"obsolete").expect("obsolete state");
+        }
+        let unrelated = temporary.path().join("adapter-state.a");
+        fs::write(&unrelated, b"kept").expect("unrelated state");
+        drop(ControlLedger::open(temporary.path()).expect("ledger"));
+        assert!(
+            OBSOLETE_STATE
+                .iter()
+                .all(|name| !temporary.path().join(name).exists())
+        );
+        assert_eq!(fs::read(unrelated).expect("unrelated state"), b"kept");
     }
 
     #[test]
     fn completed_operations_replay_across_restarts_and_identities_bind_one_request() {
         let temporary = tempfile::tempdir().expect("temporary directory");
+        let now = Instant::now();
         let ledger = ControlLedger::open(temporary.path()).expect("ledger");
         let completed = ControlEnvelope::new("completed");
-        run(&ledger, &completed);
-        assert_eq!(begin(&ledger, &completed), Ok(false));
+        run(&ledger, &completed, now);
+        assert_eq!(begin(&ledger, &completed, now), Ok(false));
         drop(ledger);
 
-        // A restarted service replays the outcome and still admits operations
-        // issued by clients that started after it.
         let reopened = ControlLedger::open(temporary.path()).expect("reopen ledger");
-        assert_eq!(begin(&reopened, &completed), Ok(false));
+        assert_eq!(begin(&reopened, &completed, Instant::now()), Ok(false));
         let mut reused = completed.clone();
         reused.request_id = RequestId::fresh();
         assert!(
-            begin(&reopened, &reused)
+            begin(&reopened, &reused, Instant::now())
                 .expect_err("an operation cannot identify a later transmission")
                 .contains("different request")
         );
-        run(&reopened, &ControlEnvelope::new("after restart"));
+        run(
+            &reopened,
+            &ControlEnvelope::new("after restart"),
+            Instant::now(),
+        );
     }
 
     #[test]
@@ -697,9 +801,9 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let ledger = ControlLedger::open(temporary.path()).expect("ledger");
         let started = ControlEnvelope::new("started");
-        assert_eq!(begin(&ledger, &started), Ok(true));
+        assert_eq!(begin(&ledger, &started, Instant::now()), Ok(true));
         assert!(
-            begin(&ledger, &started)
+            begin(&ledger, &started, Instant::now())
                 .expect_err("in-flight work must not run twice")
                 .contains("indeterminate")
         );
@@ -707,7 +811,7 @@ mod tests {
         for _ in 0..2 {
             let reopened = ControlLedger::open(temporary.path()).expect("reopen ledger");
             assert!(
-                begin(&reopened, &started)
+                begin(&reopened, &started, Instant::now())
                     .expect_err("interrupted work must not replay")
                     .contains("indeterminate")
             );
@@ -721,11 +825,12 @@ mod tests {
     #[test]
     fn a_torn_journal_tail_is_ignored_and_overwritten() {
         let temporary = tempfile::tempdir().expect("temporary directory");
+        let now = Instant::now();
         let ledger = ControlLedger::open(temporary.path()).expect("ledger");
         let kept = ControlEnvelope::new("kept");
-        run(&ledger, &kept);
+        run(&ledger, &kept, now);
         let torn = ControlEnvelope::new("torn");
-        run(&ledger, &torn);
+        run(&ledger, &torn, now);
         drop(ledger);
 
         let slot = active_slot(temporary.path());
@@ -738,17 +843,18 @@ mod tests {
             let tail_intact = damaged.starts_with(&journal);
             fs::write(&slot, damaged).expect("damage journal tail");
             let reopened = ControlLedger::open(temporary.path()).expect("reopen torn journal");
-            assert_eq!(begin(&reopened, &kept), Ok(false));
+            let now = Instant::now();
+            assert_eq!(begin(&reopened, &kept, now), Ok(false));
             if tail_intact {
-                assert_eq!(begin(&reopened, &torn), Ok(false));
+                assert_eq!(begin(&reopened, &torn, now), Ok(false));
             } else {
                 assert!(
-                    begin(&reopened, &torn)
+                    begin(&reopened, &torn, now)
                         .expect_err("a torn completion leaves its operation indeterminate")
                         .contains("indeterminate")
                 );
             }
-            run(&reopened, &ControlEnvelope::new("after tear"));
+            run(&reopened, &ControlEnvelope::new("after tear"), now);
             drop(reopened);
             fs::write(&slot, &journal).expect("restore journal");
             for name in JOURNAL_SLOTS {
@@ -763,30 +869,52 @@ mod tests {
             fs::write(temporary.path().join(name), b"torn").expect("tear every slot");
         }
         let fresh = ControlLedger::open(temporary.path()).expect("slots without a snapshot");
-        run(&fresh, &ControlEnvelope::new("fresh"));
+        run(&fresh, &ControlEnvelope::new("fresh"), Instant::now());
     }
 
     #[test]
-    fn replay_window_and_journal_stay_bounded() {
+    fn admission_is_independent_of_traffic_and_retention_is_bounded_by_time() {
         let temporary = tempfile::tempdir().expect("temporary directory");
+        let now = Instant::now();
         let ledger = ControlLedger::open(temporary.path()).expect("ledger");
-        let evicted = ControlEnvelope::new("evicted");
-        run(&ledger, &evicted);
+        let stalled = ControlEnvelope::new("stalled");
+        run(&ledger, &stalled, now);
         let interrupted = ControlEnvelope::new("interrupted");
-        assert_eq!(begin(&ledger, &interrupted), Ok(true));
-        for _ in 0..3 * RETAINED_OUTCOMES {
-            run(&ledger, &ControlEnvelope::new("filler"));
-        }
-        let retained = ControlEnvelope::new("retained");
-        run(&ledger, &retained);
+        assert_eq!(begin(&ledger, &interrupted, now), Ok(true));
         for _ in 0..20_000 {
             let envelope = ControlEnvelope::new("x");
-            assert_eq!(begin(&ledger, &envelope), Ok(true));
+            assert_eq!(begin(&ledger, &envelope, now), Ok(true));
             ledger
-                .complete(&envelope, &Value::Null)
-                .expect("complete filler");
+                .complete_at(&envelope, &Value::Null, now)
+                .expect("complete other traffic");
         }
+        let late = now + OUTCOME_RETENTION - Duration::from_millis(1);
+        assert_eq!(
+            begin(&ledger, &stalled, late),
+            Ok(false),
+            "other clients' traffic must not evict an outcome inside its window"
+        );
         drop(ledger);
+
+        let reopened = ControlLedger::open(temporary.path()).expect("reopen ledger");
+        let now = Instant::now();
+        assert_eq!(begin(&reopened, &stalled, now), Ok(false));
+        assert!(
+            begin(&reopened, &interrupted, now)
+                .expect_err("interrupted work stays unresolved")
+                .contains("indeterminate")
+        );
+        let expired = now + OUTCOME_RETENTION;
+        run(&reopened, &ControlEnvelope::new("after window"), expired);
+        {
+            let guard = reopened.lock().expect("ledger state");
+            assert_eq!(
+                guard.0.outcomes.len(),
+                1,
+                "outcomes past their window are forgotten"
+            );
+        }
+        drop(reopened);
         let journal_bytes = JOURNAL_SLOTS
             .map(|name| {
                 fs::metadata(temporary.path().join(name))
@@ -797,21 +925,52 @@ mod tests {
             .max()
             .expect("slot sizes");
         assert!(
-            journal_bytes < 3 * JOURNAL_REWRITE_SLACK,
+            journal_bytes < 16 * JOURNAL_REWRITE_SLACK,
             "journal grew to {journal_bytes} bytes"
         );
+    }
 
-        let reopened = ControlLedger::open(temporary.path()).expect("reopen ledger");
+    #[test]
+    fn capacity_and_response_bounds_refuse_rather_than_forget() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let now = Instant::now();
+        let ledger = ControlLedger::open(temporary.path()).expect("ledger");
+        let released = ControlEnvelope::new("released");
+        run(&ledger, &released, now);
+        let large = Value::String("x".repeat(RETAINED_RESPONSE_BYTES / 4));
+        for _ in 0..5 {
+            let envelope = ControlEnvelope::new("large");
+            assert_eq!(begin(&ledger, &envelope, now), Ok(true));
+            ledger
+                .complete_at(&envelope, &large, now)
+                .expect("complete large response");
+        }
         assert!(
-            begin(&reopened, &evicted)
-                .expect_err("an evicted operation must not run again")
-                .contains("outside the retained replay window")
+            begin(&ledger, &released, now)
+                .expect_err("a released response must not re-execute")
+                .contains("no longer retained")
         );
+
+        {
+            let mut guard = ledger.lock().expect("ledger state");
+            let (state, _) = &mut *guard;
+            while state.started.len() + state.outcomes.len() < MAXIMUM_OPERATIONS {
+                state.started.insert(OperationId::fresh(), [0; 32]);
+            }
+        }
         assert!(
-            begin(&reopened, &interrupted)
-                .expect_err("an in-flight operation stays unresolved while work continues")
-                .contains("indeterminate")
+            begin(&ledger, &ControlEnvelope::new("full"), now)
+                .expect_err("a full ledger refuses new work")
+                .contains("full")
         );
-        run(&reopened, &ControlEnvelope::new("fresh"));
+        assert_eq!(
+            begin(
+                &ledger,
+                &ControlEnvelope::new("after window"),
+                now + OUTCOME_RETENTION
+            ),
+            Ok(true),
+            "outcomes past their window free their capacity"
+        );
     }
 }
