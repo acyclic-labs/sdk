@@ -10,8 +10,9 @@
 //! durable provider. Publication durably drains exactly the staged part of
 //! the closure it makes reachable; objects no published closure needs, such
 //! as pages later mutations superseded, stay private and vanish with the
-//! engine. Only a spill file past its bound is drained wholesale, which is
-//! always safe because durability is a superset of staging.
+//! engine. A spill file past its bound is drained a bounded step at a time
+//! by the admissions that grow it, as housekeeping outside their own work,
+//! which is always safe because durability is a superset of staging.
 
 use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue, PublicationScope,
@@ -36,8 +37,10 @@ use tokio::sync::RwLock;
 const MAXIMUM_DRAIN_BYTES: u64 = 4 * 1_024 * 1_024;
 // Staged bytes held in memory before the window spills to the private file.
 const MAXIMUM_RESIDENT_BYTES: u64 = 4 * 1_024 * 1_024;
-// Spill file length past which every spilled object is drained durably, so
-// private staging stays bounded however long publication is deferred.
+// Spill file length past which each spill also drains one segment-bounded
+// batch of spilled objects durably. A spill moves at most half the resident
+// window and a drain step up to a whole segment, so the spill shrinks to
+// empty, and its file is reused, however long publication is deferred.
 const MAXIMUM_SPILL_BYTES: u64 = 1_024 * 1_024 * 1_024;
 
 enum Staged {
@@ -356,40 +359,44 @@ impl<S> StagedObjects<S> {
 
 impl<S: AsyncObjectStore> StagedObjects<S> {
     /// Spills the least recently used resident objects once the window
-    /// overflows, and durably drains every spilled object once the spill
-    /// file reaches its bound.
-    async fn relieve_window(
-        &self,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+    /// overflows and, while the spill file is past its bound, drains one
+    /// batch of spilled objects durably.
+    ///
+    /// Only the spill belongs to the admission: it is what keeps staging's
+    /// memory bounded. The drain step is housekeeping any admission could
+    /// have done, so it runs under its own bounded work, is not charged to
+    /// the caller, and never fails the admission; a failed step leaves its
+    /// objects staged for the next step or publication.
+    async fn relieve_window(&self, budget: WorkBudget) -> ObjectResult<()> {
         let _spill_file = self.spill_io.write().await;
-        let mut work = self.spill_locked(budget).await?.work;
-        let spilled = {
+        let spilled = self.spill_locked(budget).await?;
+        let targets = {
             let index = self.index();
             if index.spill_end <= MAXIMUM_SPILL_BYTES {
-                return Ok(ObjectReceipt { value: (), work });
+                return Ok(spilled);
             }
+            let mut batch_bytes = 0_u64;
             index
                 .objects
                 .iter()
-                .filter(|(_, staged)| matches!(staged, Staged::Spilled { .. }))
-                .map(|(&object_id, _)| object_id)
+                .filter_map(|(&object_id, staged)| match *staged {
+                    Staged::Spilled { length, .. } => Some((object_id, length)),
+                    Staged::Resident { .. } => None,
+                })
+                .take_while(|&(_, length)| {
+                    let first = batch_bytes == 0;
+                    batch_bytes = batch_bytes.saturating_add(length);
+                    first || batch_bytes <= MAXIMUM_DRAIN_BYTES
+                })
+                .map(|(object_id, _)| object_id)
                 .collect::<Vec<_>>()
         };
-        let drained = self
-            .drain_locked(
-                spilled,
-                work.remaining(budget)
-                    .map_err(|error| ObjectFailure::new(error.into(), work))?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = work
-            .checked_add(drained.work)
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        Ok(ObjectReceipt { value: (), work })
+        // One segment-bounded batch bounds the step's work; a fresh token
+        // keeps the caller's cancellation from abandoning it midway.
+        let _step = self
+            .drain_locked(targets, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await;
+        Ok(spilled)
     }
 
     /// Durably admits the staged objects among `targets` in segment-bounded
@@ -599,7 +606,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
                 work: WorkCounters::default(),
             });
         }
-        self.relieve_window(budget, cancellation).await
+        self.relieve_window(budget).await
     }
 
     async fn put_many(
@@ -975,6 +982,71 @@ mod tests {
         drop(store);
         drop(provider);
         assert!(reopen_contains(directory.path(), &identities).await?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_spill_past_its_bound_drains_without_charging_or_failing_admissions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let (store, provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let body_bytes = 256 * 1_024;
+        let window = usize::try_from(MAXIMUM_RESIDENT_BYTES)? / body_bytes;
+        let objects = (0..8 * window)
+            .map(|index| {
+                blob(Bytes::from(vec![
+                    u8::try_from(index % 251).unwrap_or(0);
+                    body_bytes
+                ]))
+            })
+            .collect::<Vec<_>>();
+        let (early, late) = objects.split_at(3 * window);
+        for (object_id, bytes) in early {
+            store
+                .put(*object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token)
+                .await?;
+        }
+        assert!(store.index().spilled_objects > 0);
+        // Stand in for a spill file that has grown past its bound.
+        store.index_mut().spill_end += MAXIMUM_SPILL_BYTES;
+
+        // An admission may spend exactly its own spill: one backend write.
+        let mut admission = WorkBudget::UNBOUNDED;
+        admission.backend_write_operations = 1;
+        for (object_id, bytes) in late {
+            let receipt = store
+                .put(*object_id, bytes.clone(), admission, &token)
+                .await?;
+            assert!(receipt.work.backend_write_operations <= 1);
+        }
+        let durable = {
+            let mut durable = 0;
+            for (object_id, _) in early {
+                if store
+                    .inner()
+                    .contains(*object_id, WorkBudget::UNBOUNDED, &token)
+                    .await?
+                    .value
+                {
+                    durable += 1;
+                }
+            }
+            durable
+        };
+        assert!(durable > 0, "the drain steps made spilled objects durable");
+        assert!(
+            store.index().spill_end <= MAXIMUM_SPILL_BYTES,
+            "the steps emptied and reused the spill file"
+        );
+        for (object_id, bytes) in &objects {
+            let read = store
+                .read(*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token)
+                .await?;
+            assert_eq!(&read.value.bytes, bytes);
+        }
+        drop(store);
+        drop(provider);
         Ok(())
     }
 
