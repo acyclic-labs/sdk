@@ -1,5 +1,4 @@
-#![deny(unsafe_code)]
-#![doc = include_str!("../README.md")]
+//! Replaceable machines provider adapter.
 
 use acyclic_harness::{
     Error, IdempotencyKey, OperationId, Result,

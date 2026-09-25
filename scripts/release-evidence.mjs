@@ -136,7 +136,7 @@ function createSbom(outputArgument, sourceSha, version) {
   for (const item of cargoRoots) {
     relationships.push({ spdxElementId: "SPDXRef-DOCUMENT", relationshipType: "DESCRIBES", relatedSpdxElement: rustIds.get(item.id) });
   }
-  const pluginCargo = cargoRoots.find(item => item.name === "acyclic-labs-plugin");
+  const pluginCargo = cargoRoots.find(item => item.name === "acyclic-plugin");
   if (!pluginCargo || !npmIds.has("@acyclic-labs/plugin")) fail("plugin release surface is missing");
   relationships.push({ spdxElementId: npmIds.get("@acyclic-labs/plugin"), relationshipType: "CONTAINS", relatedSpdxElement: rustIds.get(pluginCargo.id) });
   for (const item of cargoPackages) {

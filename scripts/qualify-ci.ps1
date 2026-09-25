@@ -19,16 +19,14 @@ bun install --frozen-lockfile
 # compiles and links every ProjFS path; Linux and macOS execute native mounts.
 cargo test --workspace `
     --exclude acyclic-fs `
-    --exclude acyclic-memory `
     --exclude acyclic-conformance `
-    --exclude acyclic-sdk `
     --exclude acyclic-fs-napi `
     --locked
 cargo test -p acyclic-fs --no-default-features `
     --features local,memory,native-watch --locked
 cargo test --workspace --all-features --no-run --locked
-cargo test -p acyclic-labs-plugin --locked
-cargo clippy -p acyclic-labs-plugin --all-targets --all-features --locked -- -D warnings
+cargo test -p acyclic-plugin --locked
+cargo clippy -p acyclic-plugin --all-targets --all-features --locked -- -D warnings
 cargo build -p acyclic-fs-napi --locked
 node scripts/build-product.mjs
 $CargoTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }

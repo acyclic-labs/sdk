@@ -16,12 +16,11 @@ dependencies = [
 
 [[package]]
 name = "acyclic-conformance"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-machines",
- "acyclic-memory",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
@@ -42,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-fs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -94,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-fs-napi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "acyclic-fs",
  "bytes",
@@ -108,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-fs-wasm"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "acyclic-fs",
  "acyclic-objects",
@@ -131,79 +130,36 @@ dependencies = [
 
 [[package]]
 name = "acyclic-harness"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
+ "acyclic-fs",
+ "acyclic-machines",
  "acyclic-stream",
+ "axum",
  "blake3",
  "bytes",
  "futures",
  "jsonschema",
  "prost",
  "prost-build",
+ "prost-reflect",
  "protoc-bin-vendored",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
  "thiserror",
  "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tower",
  "uuid",
  "wasm-bindgen",
 ]
 
 [[package]]
-name = "acyclic-harness-filesystem"
-version = "0.1.1"
-dependencies = [
- "acyclic-fs",
- "acyclic-harness",
- "blake3",
- "bytes",
- "serde",
- "tokio",
-]
-
-[[package]]
-name = "acyclic-harness-grpc"
-version = "0.1.1"
-dependencies = [
- "acyclic-harness",
- "futures",
- "protoc-bin-vendored",
- "tokio",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
-]
-
-[[package]]
-name = "acyclic-harness-http"
-version = "0.1.1"
-dependencies = [
- "acyclic-harness",
- "axum",
- "bytes",
- "futures",
- "prost",
- "prost-reflect",
- "serde_json",
- "tokio",
- "tower",
-]
-
-[[package]]
-name = "acyclic-harness-machines"
-version = "0.1.1"
-dependencies = [
- "acyclic-harness",
- "acyclic-machines",
- "blake3",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "acyclic-inference"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "prost",
  "prost-types",
@@ -219,32 +175,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-labs-plugin"
-version = "0.1.1"
-dependencies = [
- "acyclic-fs",
- "acyclic-native-runtime",
- "base64 0.22.1",
- "blake3",
- "bytes",
- "fs2",
- "hex",
- "libc",
- "notify",
- "rustix",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
- "toml_edit 0.22.27",
- "uuid",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "acyclic-machines"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "futures",
@@ -265,21 +197,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-memory"
-version = "0.1.1"
-dependencies = [
- "acyclic-fs",
- "acyclic-machines",
- "acyclic-objects",
- "acyclic-stream",
- "bytes",
- "futures",
- "tokio",
-]
-
-[[package]]
 name = "acyclic-native-runtime"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "compio-buf",
@@ -292,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "acyclic-objects"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "acyclic-native-runtime",
  "async-trait",
@@ -316,25 +235,32 @@ dependencies = [
 ]
 
 [[package]]
-name = "acyclic-sdk"
-version = "0.1.1"
+name = "acyclic-plugin"
+version = "0.1.2"
 dependencies = [
  "acyclic-fs",
- "acyclic-harness",
- "acyclic-harness-filesystem",
- "acyclic-harness-grpc",
- "acyclic-harness-http",
- "acyclic-harness-machines",
- "acyclic-inference",
- "acyclic-machines",
- "acyclic-memory",
- "acyclic-objects",
- "acyclic-stream",
+ "acyclic-native-runtime",
+ "base64 0.22.1",
+ "blake3",
+ "bytes",
+ "fs2",
+ "hex",
+ "libc",
+ "notify",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "toml_edit 0.22.27",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "acyclic-stream"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "acyclic-native-runtime",
  "async-trait",
@@ -3227,7 +3153,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sdk-proto-codegen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "prost",
  "protoc-gen-prost",

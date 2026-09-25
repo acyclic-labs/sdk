@@ -84,7 +84,7 @@ qualification evidence.
 Build and test the local Acyclic workspace product without an account:
 
 ```sh
-cargo test -p acyclic-labs-plugin
+cargo test -p acyclic-plugin
 ```
 
 The one product binary lives in `plugin`. It auto-starts one per-user

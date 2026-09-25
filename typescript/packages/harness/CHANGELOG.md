@@ -1,5 +1,9 @@
 # @acyclic-labs/harness changelog
 
+## 0.1.2 - 2026-09-25
+
+- Aligns the client runtime and transport adapters with the 0.1.2 SDK release.
+
 ## 0.1.1 - 2026-09-24
 
 - First coordinated SDK release of the framework-neutral agent-runtime client.
