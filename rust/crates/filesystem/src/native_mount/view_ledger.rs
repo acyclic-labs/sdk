@@ -20,7 +20,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 
 static VIEW_CHANGES: AtomicU64 = AtomicU64::new(0);
-#[cfg(any(target_os = "linux", test))] // Only the FUSE driver attributes its changes.
+// Only the Linux and macOS drivers attribute their changes.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 static NEXT_ORIGIN: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
@@ -89,28 +90,26 @@ impl ViewOrigin {
     const UNATTRIBUTED: Self = Self(0);
 
     /// A fresh origin, distinct from every other.
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", target_os = "macos", test))]
     pub(super) fn new() -> Self {
         Self(NEXT_ORIGIN.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Attributes every change this thread records to `self` until the
     /// returned scope drops.
-    #[cfg(any(target_os = "linux", test))]
     pub(super) fn enter(self) -> ViewOriginScope {
         ViewOriginScope(CURRENT_ORIGIN.replace(self))
     }
 
-    fn current() -> Self {
+    /// The origin this thread's changes take now.
+    pub(super) fn current() -> Self {
         CURRENT_ORIGIN.get()
     }
 }
 
 /// Restores the thread's previous origin when dropped.
-#[cfg(any(target_os = "linux", test))]
 pub(super) struct ViewOriginScope(ViewOrigin);
 
-#[cfg(any(target_os = "linux", test))]
 impl Drop for ViewOriginScope {
     fn drop(&mut self) {
         CURRENT_ORIGIN.set(self.0);

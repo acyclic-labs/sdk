@@ -25,6 +25,7 @@ typedef struct {
     struct dfuse_inode_table_s  *inode_table;  /* dynamic inode table */
     atomic_uint_fast64_t namespace_change; /* READDIR continuation revision */
     atomic_uint_fast64_t fresh_change;     /* counter behind unlabeled change values */
+    int durable_writes;        /* FUSE_CAP_DURABLE_WRITES was negotiated */
     uint8_t write_verifier[8]; /* unique per mount, including in-process remounts */
 } darwinfuse_config_t;
 
@@ -105,6 +106,9 @@ void nfs4_server_set_multithreaded(darwinfuse_server_t *srv, int num_threads);
  * Should be called after ops->init() returns.
  */
 void nfs4_server_set_private_data(darwinfuse_server_t *srv, void *private_data);
+
+/* Record whether init() negotiated FUSE_CAP_DURABLE_WRITES. */
+void nfs4_server_set_durable_writes(darwinfuse_server_t *srv, int durable);
 
 /* Invalidate outstanding READDIR cookie verifiers after an external change. */
 void nfs4_server_mark_namespace_changed(darwinfuse_server_t *srv);

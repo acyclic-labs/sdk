@@ -869,6 +869,12 @@ void nfs4_server_set_multithreaded(darwinfuse_server_t *srv, int num_threads)
     DFUSE_LOG("Multi-threaded mode enabled (%d threads)", num_threads);
 }
 
+void nfs4_server_set_durable_writes(darwinfuse_server_t *srv, int durable)
+{
+    if (!srv) return;
+    srv->config.durable_writes = durable;
+}
+
 void nfs4_server_set_private_data(darwinfuse_server_t *srv, void *private_data)
 {
     if (!srv) return;

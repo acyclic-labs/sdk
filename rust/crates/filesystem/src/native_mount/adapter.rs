@@ -6,8 +6,8 @@ use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    MountViewLease, NativeMountError, ViewObserver, capture_root_identity, capture_subtree,
-    seal_checkout,
+    MountViewLease, NativeMountError, ViewObserver, ViewOrigin, capture_root_identity,
+    capture_subtree, seal_checkout,
 };
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
@@ -293,6 +293,9 @@ const MAXIMUM_GROUPED_CHANGES: usize = 64;
 struct GroupedRequest {
     change: GroupedChange,
     reply: tokio::sync::oneshot::Sender<Result<GroupedOutcome, MountSourceError>>,
+    /// The requester's origin, which its change takes whichever caller
+    /// applies the group.
+    origin: ViewOrigin,
 }
 
 /// Exclusive access to a shared checkout. The retained view lease prevents a
@@ -375,7 +378,11 @@ impl<A, O> SharedCheckout<A, O> {
         self.grouped
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(GroupedRequest { change, reply });
+            .push(GroupedRequest {
+                change,
+                reply,
+                origin: ViewOrigin::current(),
+            });
         loop {
             tokio::select! {
                 biased;
@@ -800,6 +807,10 @@ impl<A, O> SharedCheckoutState<A, O> {
             }
             return;
         }
+        let origins = requests
+            .iter()
+            .map(|request| request.origin)
+            .collect::<Vec<_>>();
         let (changes, replies): (Vec<_>, Vec<_>) = requests
             .into_iter()
             .map(|request| (request.change, request.reply))
@@ -826,9 +837,10 @@ impl<A, O> SharedCheckoutState<A, O> {
             }
         };
         let mut changed = false;
-        for (result, view) in results.iter().zip(&views) {
+        for ((result, view), origin) in results.iter().zip(&views).zip(origins) {
             if result.is_ok() {
                 changed = true;
+                let _origin = origin.enter();
                 match view {
                     GroupedView::Bound(path) => self.record(&ViewChange::Bound(path)),
                     GroupedView::Node(file_id) => self.record(&ViewChange::Node(*file_id)),
@@ -1941,6 +1953,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
+        let base = checkout.private_candidate();
         let decision = checkout
             .rebase_head(
                 self.limits.maximum_checkout_dependencies,
@@ -1951,9 +1964,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .map_err(engine_error)?;
         match decision.value {
             RebaseDecision::Safe { .. } => {
-                self.checkout.view_gate.begin_transition();
-                checkout.record(&ViewChange::Everything);
-                self.checkout.view_gate.finish_transition();
+                self.record_advance(&mut checkout, &base).await;
                 Ok(())
             }
             RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
@@ -1969,14 +1980,50 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
+        let base = checkout.private_candidate();
         checkout
             .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
             .await
             .map_err(engine_error)?;
-        self.checkout.view_gate.begin_transition();
-        checkout.record(&ViewChange::Everything);
-        self.checkout.view_gate.finish_transition();
+        self.record_advance(&mut checkout, &base).await;
         Ok(())
+    }
+
+    /// Records exactly what advancing the checkout from `base` changed in
+    /// the view, as a binding transition; an advance that changed nothing,
+    /// such as one to an unmoved head, records nothing, so drivers keep
+    /// every cache and a revalidation barrier has nothing to wait for.
+    async fn record_advance(
+        &self,
+        checkout: &mut SharedCheckoutGuard<'_, A, O>,
+        base: &Checkout<A, O>,
+    ) where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        if checkout.root().file_table == base.root().file_table {
+            return;
+        }
+        // Names that changed in directories at unknown paths are covered
+        // by the whole checkout, whichever root a composing source mounts.
+        let installed = match NamespacePath::new(Vec::new(), self.limits) {
+            Ok(root) => {
+                Box::pin(installed_changes(
+                    base,
+                    checkout,
+                    InstallScope::Subtree(&root),
+                    &self.cancellation,
+                ))
+                .await
+            }
+            Err(_) => Installed {
+                everything: true,
+                ..Installed::default()
+            },
+        };
+        self.checkout.view_gate.begin_transition();
+        checkout.record(&ViewChange::Installed(&installed));
+        self.checkout.view_gate.finish_transition();
     }
 
     fn path(&self, path: &MountPath) -> Result<NamespacePath, MountSourceError> {
@@ -2370,6 +2417,14 @@ where
 {
     fn supports_posix_named_attributes(&self) -> bool {
         self.profile == FilesystemProfile::Posix
+    }
+
+    fn flush_publishes(&self) -> bool {
+        // The policy is fixed at construction; an unreadable answer keeps
+        // the conservative default.
+        self.runtime
+            .wait(|| async { Ok(self.checkout.publishes_at_native_boundary().await) })
+            .unwrap_or(true)
     }
 
     fn view_stamp(&self) -> Option<ViewStamp> {
@@ -3697,6 +3752,48 @@ mod tests {
         shared_sources_with_publication(profile, MountPublication::CloseAndSync)
     }
 
+    #[test]
+    fn a_grouped_change_takes_its_requesters_origin() -> Result<(), Box<dyn std::error::Error>> {
+        struct Origins(StdMutex<Vec<ViewOrigin>>);
+        impl ViewObserver for Origins {
+            fn view_changed(&self, _position: ViewStamp, origin: ViewOrigin) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(origin);
+            }
+        }
+
+        let source = source(FilesystemProfile::Portable)?;
+        let observer = Arc::new(Origins(StdMutex::new(Vec::new())));
+        let weak: Weak<dyn ViewObserver> = Arc::<Origins>::downgrade(&observer);
+        source.observe_view(weak);
+        let (requester, applier) = (ViewOrigin::new(), ViewOrigin::new());
+        // A request queued under one origin, then applied in the group of a
+        // caller under another.
+        let (reply, _outcome) = tokio::sync::oneshot::channel();
+        source
+            .checkout
+            .grouped
+            .lock()
+            .map_err(|_| "poisoned queue")?
+            .push(GroupedRequest {
+                change: GroupedChange::CreateFile {
+                    path: source.path(&native_test_path("queued"))?,
+                    metadata: metadata(),
+                },
+                reply,
+                origin: requester,
+            });
+        {
+            let _applier = applier.enter();
+            source.create_file(&native_test_path("applied"), metadata())?;
+        }
+        let origins = observer.0.lock().map_err(|_| "poisoned origins")?.clone();
+        assert_eq!(origins.get(..2), Some(&[requester, applier][..]));
+        Ok(())
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn in_place_callback_outlasts_its_callers_cooperative_budget()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -4004,16 +4101,45 @@ mod tests {
     }
 
     #[test]
-    fn a_rebind_invalidates_every_lookup() -> Result<(), Box<dyn std::error::Error>> {
+    fn an_advance_records_exactly_what_it_changed() -> Result<(), Box<dyn std::error::Error>> {
         let (reader, writer) = tracking_sources(FilesystemProfile::Portable)?;
-        let (published, untouched) = (native_test_path("published"), native_test_path("untouched"));
-        writer.create_file(&published, metadata())?;
-        writer.sync()?;
-        let stamp = reader.view_stamp().ok_or("checkout has no view stamp")?;
-        assert!(reader.unchanged_since(&untouched, None, stamp));
-        reader.runtime.block_on(|| reader.refresh_async())?;
-        assert!(!reader.unchanged_since(&untouched, None, stamp));
-        assert!(!reader.unchanged_since(&MountPath::root(), None, stamp));
+        let untouched = native_test_path("untouched");
+        let advances: [&dyn Fn() -> Result<(), MountSourceError>; 2] = [
+            &|| reader.runtime.block_on(|| reader.refresh_async()),
+            &|| reader.runtime.block_on(|| reader.advance_to_head_async()),
+        ];
+        for (round, advance) in advances.into_iter().enumerate() {
+            let (published, written) = (
+                native_test_path(&format!("published-{round}")),
+                native_test_path(&format!("written-{round}")),
+            );
+            let written_id = writer.create_file(&written, metadata())?.node.file_id;
+            writer.sync()?;
+            advance()?;
+
+            let stamp = reader.view_stamp().ok_or("checkout has no view stamp")?;
+            advance()?;
+            assert_eq!(
+                reader.view_stamp(),
+                Some(stamp),
+                "an advance to an unmoved head records nothing"
+            );
+
+            let root = reader
+                .lookup(&MountPath::root())?
+                .map(|lookup| lookup.node.file_id);
+            writer.create_file(&published, metadata())?;
+            writer.write_range(&written, 0, Bytes::from_static(b"changed"))?;
+            writer.sync()?;
+            advance()?;
+            assert!(!reader.unchanged_since(&published, None, stamp));
+            assert!(!reader.unchanged_since(&written, Some(written_id), stamp));
+            assert!(!reader.unchanged_since(&MountPath::root(), root, stamp));
+            assert!(
+                reader.unchanged_since(&untouched, None, stamp),
+                "a name the advance left alone stays cached"
+            );
+        }
         Ok(())
     }
 

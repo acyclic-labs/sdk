@@ -97,6 +97,15 @@ struct fuse_context {
 #define FUSE_CAP_FLOCK_LOCKS     (1 << 10)
 #define FUSE_CAP_IOCTL_DIR       (1 << 11)
 
+/* DarwinFUSE: a write is as durable once the write callback returns as
+ * fsync would make it (fsync publishes nothing more), so WRITE replies are
+ * stable and the NFS client never needs to COMMIT. */
+#define FUSE_CAP_DURABLE_WRITES  (1 << 20)
+
+/* DarwinFUSE: whole seconds the NFS client caches attributes and names
+ * (actimeo); a change made around the mount reaches it once they expire. */
+#define DARWINFUSE_ATTRIBUTE_TIMEOUT 1
+
 #ifdef __APPLE__
 /* macFUSE-specific capability flags */
 #define FUSE_CAP_ALLOCATE          (1 << 27)

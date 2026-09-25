@@ -12,7 +12,9 @@
 //!
 //! - Cached names and attributes are revalidated at every open and within
 //!   one second otherwise, so a change made around the mount becomes visible
-//!   no later than that.
+//!   no later than that; [`NativeMountSession::revalidate`] waits it out.
+//!   Positive `access(2)` answers are cached for up to a minute, but the
+//!   server checks access again at every open.
 //! - Advisory locks exclude other processes, but the NFS client keys every
 //!   lock by process: two descriptors that one process opened never exclude
 //!   each other with `flock`, whereas APFS gives each open file description
@@ -581,6 +583,13 @@ pub trait MountFilesystem: Send + Sync + 'static {
         true
     }
 
+    /// Whether [`Self::flush`] can publish anything. When it cannot, as
+    /// under manual publication, every acknowledged mutation is already as
+    /// durable as a native durability request (`fsync`) would make it.
+    fn flush_publishes(&self) -> bool {
+        true
+    }
+
     /// Whether a lookup may observe one coherent source view right now.
     /// Drivers must retry or fail stale while this is false.
     fn view_is_stable(&self) -> bool {
@@ -1121,13 +1130,19 @@ impl NativeMountSession {
     /// Brings kernel caches in line with a changed source view.
     ///
     /// A mount owner that rebinds or advances its source calls this before
-    /// exposing the new view, even when the advance failed part way. Linux
-    /// FUSE retains entries, attributes, and file data until invalidated and
-    /// drops what every change made around the mount superseded as the
-    /// source reports it; this waits until every change reported so far has
-    /// reached the kernel. Windows `ProjFS` forgets the absences it caches
-    /// without expiry. macOS attribute caches expire on their own. Unchanged
-    /// views make this a no-op.
+    /// exposing the new view, even when the advance failed part way. Once it
+    /// returns, no access through the mount observes a name, attribute, or
+    /// file content that a change made around the mount before the call
+    /// superseded. Linux FUSE retains entries, attributes, and file data
+    /// until invalidated and drops what every change made around the mount
+    /// superseded as the source reports it; this waits until every change
+    /// reported so far has reached the kernel. Windows `ProjFS` forgets the
+    /// absences it caches without expiry. The macOS NFS client cannot be
+    /// told to drop anything, so this waits until everything it cached
+    /// before such a change has expired (at most the one-second attribute
+    /// timeout plus a reply-delivery allowance; see the module docs for the
+    /// `access(2)` exception). Views that only the mount itself changed
+    /// make this a no-op.
     ///
     /// # Errors
     ///
@@ -1139,9 +1154,10 @@ impl NativeMountSession {
             #[cfg(target_os = "windows")]
             Some(DriverSession::ProjFs(session)) => session.revalidate(),
             #[cfg(target_os = "macos")]
-            Some(DriverSession::DarwinMount(_)) => Ok(()),
+            Some(DriverSession::DarwinMount(session)) => session.revalidate(),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
             Some(DriverSession::Unsupported) => Ok(()),
+
             None => Err(NativeMountError::Driver("session is stopped".to_owned())),
         }
     }

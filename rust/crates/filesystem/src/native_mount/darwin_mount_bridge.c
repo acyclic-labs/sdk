@@ -54,6 +54,7 @@ extern int acyclic_fs_darwin_mount_truncate(uintptr_t context, const char *path,
                                       int64_t length);
 extern int acyclic_fs_darwin_mount_flush(uintptr_t context, uint64_t handle);
 extern int acyclic_fs_darwin_mount_fsync(uintptr_t context);
+extern int acyclic_fs_darwin_mount_durable_writes(uintptr_t context);
 extern int acyclic_fs_darwin_mount_opendir(uintptr_t context, const char *path, uint64_t *handle);
 extern int acyclic_fs_darwin_mount_readdir(uintptr_t context, const char *path, void *buffer,
                                      fuse_fill_dir_t filler, int64_t offset, uint64_t handle);
@@ -316,6 +317,10 @@ static void *bridge_init(struct fuse_conn_info *connection) {
   if ((connection->capable & FUSE_CAP_EXPORT_SUPPORT) != 0) {
     connection->want |= FUSE_CAP_EXPORT_SUPPORT;
   }
+  if ((connection->capable & FUSE_CAP_DURABLE_WRITES) != 0 &&
+      acyclic_fs_darwin_mount_durable_writes(current_context())) {
+    connection->want |= FUSE_CAP_DURABLE_WRITES;
+  }
   return fuse_get_context()->private_data;
 }
 
@@ -432,6 +437,10 @@ int acyclic_fs_darwin_mount_invalidate(struct acyclic_fs_darwin_mount_session *s
   }
   pthread_mutex_unlock(&session->mutex);
   return status;
+}
+
+unsigned acyclic_fs_darwin_mount_attribute_timeout(void) {
+  return DARWINFUSE_ATTRIBUTE_TIMEOUT;
 }
 
 void acyclic_fs_darwin_mount_interrupt(struct acyclic_fs_darwin_mount_session *session) {

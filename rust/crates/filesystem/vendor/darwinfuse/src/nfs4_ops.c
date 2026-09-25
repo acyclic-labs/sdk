@@ -2233,7 +2233,7 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
             if (created_namedattr)
                 change_after = namespace_changed(config);
             encode_change_info(rep, 0, change_before, change_after);
-            xdr_encode_uint32(rep, 0x00000004);
+            xdr_encode_uint32(rep, OPEN4_RESULT_FLAGS);
             xdr_encode_uint32(rep, 0);
             xdr_encode_uint32(rep, OPEN_DELEGATE_NONE);
             return NFS4_OK;
@@ -2297,7 +2297,7 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
                     xdr_encode_uint32(rep, sid.seqid);
                     xdr_encode_opaque_fixed(rep, sid.other, 12);
                     encode_change_info(rep, 0, change_before, change_after);
-                    xdr_encode_uint32(rep, 0x00000004);  /* OPEN4_RESULT_CONFIRM */
+                    xdr_encode_uint32(rep, OPEN4_RESULT_FLAGS);
                     xdr_encode_uint32(rep, 0);    /* attrset bitmap (empty) */
                     xdr_encode_uint32(rep, OPEN_DELEGATE_NONE);
                     return NFS4_OK;
@@ -2389,8 +2389,7 @@ static uint32_t handle_open(const darwinfuse_config_t *config,
     else
         encode_change_info(rep, 0, change_before, change_after);
 
-    /* rflags: OPEN4_RESULT_CONFIRM (need open_confirm for v4.0) */
-    xdr_encode_uint32(rep, 0x00000004);
+    xdr_encode_uint32(rep, OPEN4_RESULT_FLAGS);
 
     /* attrset bitmap (empty) */
     xdr_encode_uint32(rep, 0);
@@ -2652,6 +2651,27 @@ static uint32_t sync_file(const darwinfuse_config_t *config,
     return errno_to_nfs4(config->ops->fsync(path, 0, fi));
 }
 
+/*
+ * Whether a completed WRITE must still sync to reach the stability the
+ * client asked for.  Writes that are durable once they return never do.
+ */
+static int write_needs_sync(const darwinfuse_config_t *config, uint32_t stable)
+{
+    return stable != UNSTABLE4 && !config->durable_writes;
+}
+
+/*
+ * The stability a completed WRITE reached (RFC 7530 s16.36): FILE_SYNC4
+ * when it synced or writes are durable once they return, so the client
+ * never needs a COMMIT for it.
+ */
+static uint32_t write_committed(const darwinfuse_config_t *config,
+                                uint32_t stable)
+{
+    return stable != UNSTABLE4 || config->durable_writes
+        ? FILE_SYNC4 : UNSTABLE4;
+}
+
 static int sync_test_success(const char *path, int data_only,
                              struct fuse_file_info *fi)
 {
@@ -2766,7 +2786,7 @@ static uint32_t handle_write(const darwinfuse_config_t *config,
                                new_val, new_size, 0);
         free(new_val);
         uint32_t sync_status = NFS4_OK;
-        if (rc == 0 && stable != UNSTABLE4) {
+        if (rc == 0 && write_needs_sync(config, stable)) {
             struct fuse_file_info fi;
             memset(&fi, 0, sizeof(fi));
             sync_status = sync_file(config, file_path, &fi);
@@ -2780,7 +2800,7 @@ static uint32_t handle_write(const darwinfuse_config_t *config,
             return sync_status;
 
         xdr_encode_uint32(rep, data_len_raw);
-        xdr_encode_uint32(rep, stable == UNSTABLE4 ? UNSTABLE4 : FILE_SYNC4);
+        xdr_encode_uint32(rep, write_committed(config, stable));
         encode_write_verifier(config, rep);
         return NFS4_OK;
     }
@@ -2805,14 +2825,15 @@ static uint32_t handle_write(const darwinfuse_config_t *config,
     }
 
     uint32_t sync_status = NFS4_OK;
-    if (stable != UNSTABLE4)
+    if (write_needs_sync(config, stable))
         sync_status = sync_file(config, path, &fi);
     free(path);
     if (sync_status != NFS4_OK)
         return sync_status;
 
     xdr_encode_uint32(rep, (uint32_t)n);
-    xdr_encode_uint32(rep, stable == UNSTABLE4 ? UNSTABLE4 : FILE_SYNC4);
+    xdr_encode_uint32(rep, write_committed(config, stable));
+
     encode_write_verifier(config, rep);
 
     return NFS4_OK;
@@ -2926,7 +2947,89 @@ int nfs4_test_sync_acknowledgement(void)
     return (int)status;
 }
 
+/* A write that is durable once it returns is reported FILE_SYNC4 without a
+ * sync, so the client never commits it; otherwise an unstable write stays
+ * unstable and a stable one syncs. */
+static unsigned durable_test_syncs;
+
+static int durable_test_fsync(const char *path, int data_only,
+                              struct fuse_file_info *fi)
+{
+    (void)path;
+    (void)data_only;
+    (void)fi;
+    durable_test_syncs++;
+    return 0;
+}
+
+static uint32_t durable_test_committed(const darwinfuse_config_t *config,
+                                       nfs4_conn_state_t *conn,
+                                       nfs4_request_ctx_t *ctx,
+                                       uint32_t stable)
+{
+    uint8_t request_bytes[40];
+    uint8_t reply_bytes[16];
+    uint8_t stateid[12] = {0};
+    xdr_buf_t request, reply;
+    xdr_init(&request, request_bytes, sizeof(request_bytes));
+    xdr_encode_uint32(&request, 0);
+    xdr_encode_opaque_fixed(&request, stateid, sizeof(stateid));
+    xdr_encode_uint64(&request, 0);
+    xdr_encode_uint32(&request, stable);
+    xdr_encode_opaque(&request, "abc", 3);
+    xdr_reset(&request);
+    xdr_init(&reply, reply_bytes, sizeof(reply_bytes));
+    if (handle_write(config, conn, ctx, &request, &reply) != NFS4_OK)
+        return UINT32_MAX;
+    xdr_reset(&reply);
+    if (xdr_decode_uint32(&reply) != 3)
+        return UINT32_MAX;
+    return xdr_decode_uint32(&reply);
+}
+
+int nfs4_test_durable_writes(void)
+{
+    struct fuse_operations ops;
+    darwinfuse_config_t config;
+    nfs4_request_ctx_t ctx;
+    nfs4_conn_state_t conn;
+    memset(&ops, 0, sizeof(ops));
+    memset(&config, 0, sizeof(config));
+    memset(&ctx, 0, sizeof(ctx));
+    memset(&conn, 0, sizeof(conn));
+    pthread_mutex_init(&conn.lock, NULL);
+    ops.write = sync_test_write;
+    ops.fsync = durable_test_fsync;
+    config.ops = &ops;
+    config.inode_table = dfuse_itable_create();
+    if (!config.inode_table)
+        return 1;
+    dfuse_ino_t ino = dfuse_itable_get_or_create(config.inode_table,
+                                                 "/sync-test");
+    fh_set_ino(ctx.current_fh, &ctx.current_fh_len, ino);
+    durable_test_syncs = 0;
+
+    int status = 0;
+    if (durable_test_committed(&config, &conn, &ctx, UNSTABLE4) != UNSTABLE4 ||
+        durable_test_syncs != 0)
+        status = 2;
+    else if (durable_test_committed(&config, &conn, &ctx, FILE_SYNC4) != FILE_SYNC4 ||
+             durable_test_syncs != 1)
+        status = 3;
+    else {
+        config.durable_writes = 1;
+        if (durable_test_committed(&config, &conn, &ctx, UNSTABLE4) != FILE_SYNC4 ||
+            durable_test_committed(&config, &conn, &ctx, FILE_SYNC4) != FILE_SYNC4 ||
+            durable_test_syncs != 1)
+            status = 4;
+    }
+    pthread_mutex_destroy(&conn.lock);
+    dfuse_itable_destroy(config.inode_table);
+    return status;
+}
+
 /* READ answers from the reply buffer itself: a short read reports EOF
+
  * without an attribute callback, and a full one asks for the size. */
 static const char read_test_content[] = "0123456789";
 static unsigned read_test_attribute_calls;

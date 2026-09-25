@@ -869,14 +869,26 @@ where
         O: AsyncObjectStore,
     {
         let _writer = self.source_view.write().await;
+        // A binding to its source's current epoch reads the same after a
+        // rebind: the authored advance then records exactly what it changed,
+        // and nothing at all when head did not move.
+        if self.lazy.binding().await.is_ok() {
+            let result = self.authored.advance_to_head_async().await;
+            self.cursors.clear();
+            return result;
+        }
         self.source_view.begin_transition();
         let result = async {
             self.authored.advance_to_head_async().await?;
             self.lazy.rebind_source().await.map_err(lazy_error)?;
+            // Every unauthored node may read differently from the new epoch.
+            self.authored
+                .record_projection_change(&ViewChange::Everything);
             self.cursors.clear();
             Ok(())
         }
         .await;
+
         if result.is_ok() {
             self.source_view.finish_transition();
         }
@@ -1551,6 +1563,10 @@ where
 
     fn flush_on_handle_close(&self) -> bool {
         false
+    }
+
+    fn flush_publishes(&self) -> bool {
+        self.authored.flush_publishes()
     }
 
     fn view_is_stable(&self) -> bool {
@@ -2811,32 +2827,49 @@ mod tests {
         Ok(())
     }
 
+    /// Every view change a source reports.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn removing_a_source_only_file_supersedes_its_cached_lookups()
-    -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Default)]
+    struct Recorded(Mutex<Vec<ViewStamp>>);
+
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    impl ViewObserver for Recorded {
+        fn view_changed(&self, position: ViewStamp, _origin: crate::native_mount::ViewOrigin) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(position);
+        }
+    }
+
+    /// A lazy view over a fresh native source holding `source-only`, which
+    /// reports its changes to the returned record.
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[allow(clippy::type_complexity)]
+    async fn recorded_view(
+        source_root: &Path,
+    ) -> Result<
+        (
+            Arc<crate::demand::native::NativeDemandSource>,
+            LazyMountSource<
+                crate::facade::MemoryAuthorityBackend,
+                crate::facade::MemoryObjectBackend,
+                crate::demand::native::NativeDemandSource,
+                crate::MemoryLazyWorkspaceStore,
+            >,
+            Arc<Recorded>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
         use crate::demand::native::NativeDemandSource;
         use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, VolumeLimits};
-        use crate::native_mount::{MountPublication, SharedCheckout, ViewOrigin};
+        use crate::native_mount::{MountPublication, SharedCheckout};
         use crate::{Fs, MemoryLazyWorkspaceStore};
 
-        #[derive(Default)]
-        struct Recorded(Mutex<Vec<ViewStamp>>);
-
-        impl ViewObserver for Recorded {
-            fn view_changed(&self, position: ViewStamp, _origin: ViewOrigin) {
-                self.0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(position);
-            }
-        }
-
-        let source_root = tempfile::tempdir()?;
-        std::fs::write(source_root.path().join("source-only"), b"source")?;
+        std::fs::write(source_root.join("source-only"), b"source")?;
         let demand = Arc::new(
             NativeDemandSource::open(
-                source_root.path(),
+                source_root,
                 FilesystemProfile::Portable,
                 VolumeLimits::default(),
             )
@@ -2846,8 +2879,8 @@ mod tests {
         let lazy = Arc::new(
             LazyWorkspace::attach(
                 &fs,
-                "removed-source-only",
-                demand,
+                "recorded",
+                Arc::clone(&demand),
                 MemoryLazyWorkspaceStore::default(),
             )
             .await?,
@@ -2867,10 +2900,47 @@ mod tests {
             )),
             config,
         )?);
-        let view = LazyMountSource::new(Arc::clone(&lazy), authored, "/".to_owned())?;
+        let view = LazyMountSource::new(lazy, authored, "/".to_owned())?;
         let recorded = Arc::new(Recorded::default());
         let observer: Weak<Recorded> = Arc::downgrade(&recorded);
         view.observe_view(observer);
+        Ok((demand, view, recorded))
+    }
+
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_advance_records_only_a_moved_head_or_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source_root = tempfile::tempdir()?;
+        let (demand, view, recorded) = recorded_view(source_root.path()).await?;
+        let changes = || recorded.0.lock().map(|positions| positions.len());
+        let binding = view.binding_epoch();
+
+        view.advance_to_head_async().await?;
+        assert_eq!(changes().map_err(|_| "poisoned observer")?, 0);
+        assert_eq!(
+            view.binding_epoch(),
+            binding,
+            "an advance that moved nothing keeps every binding"
+        );
+
+        demand.invalidate();
+        view.advance_to_head_async().await?;
+        assert!(
+            changes().map_err(|_| "poisoned observer")? > 0,
+            "a rebind to a new source epoch changes the view"
+        );
+        assert_ne!(view.binding_epoch(), binding);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn removing_a_source_only_file_supersedes_its_cached_lookups()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source_root = tempfile::tempdir()?;
+        let (_, view, recorded) = recorded_view(source_root.path()).await?;
+
         let path = MountPath::root().child(if cfg!(windows) {
             "source-only"
                 .encode_utf16()

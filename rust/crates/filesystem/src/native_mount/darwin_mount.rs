@@ -8,7 +8,8 @@
 use super::{
     DriverStartFailure, MountAttributeWriteMode, MountDirectoryEntry, MountFilesystem, MountLookup,
     MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, NativeMountError, NativeMountRequest, ViewStamp, metadata_or, system_time_ns,
+    MountSourceError, NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp,
+    metadata_or, system_time_ns,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
@@ -22,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -40,6 +41,10 @@ const DISKUTIL_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(4);
 const MOUNT_LOOP_EXIT_TIMEOUT: Duration = Duration::from_secs(4);
 const DISKUTIL_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2);
 const DIRECT_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(3);
+/// How soon after its callback returns a reply is assumed to reach the NFS
+/// client (see [`DarwinMountContext::revalidate`]).
+const REPLY_DELIVERY_SLACK: Duration = Duration::from_millis(100);
+const CALLBACK_DRAIN_POLL: Duration = Duration::from_millis(1);
 mod mode {
     pub(super) const IFMT: u32 = libc::S_IFMT as u32;
     pub(super) const IFIFO: u32 = libc::S_IFIFO as u32;
@@ -104,6 +109,7 @@ unsafe extern "C" {
     ) -> c_int;
     fn acyclic_fs_darwin_mount_interrupt(session: *mut c_void);
     fn acyclic_fs_darwin_mount_invalidate(session: *mut c_void, path: *const c_char) -> c_int;
+    fn acyclic_fs_darwin_mount_attribute_timeout() -> u32;
     fn acyclic_fs_darwin_mount_fill_directory(
         buffer: *mut c_void,
         filler: DirectoryFiller,
@@ -115,7 +121,9 @@ unsafe extern "C" {
 
 struct FileHandle {
     file_id: FileId,
-    file: Arc<dyn MountOpenFile>,
+    /// Bound to the source file on first use: an open that is only closed,
+    /// as a read served from the kernel's cache is, never opens the source.
+    file: Option<Arc<dyn MountOpenFile>>,
     observation: Arc<Mutex<FileObservation>>,
     /// Ledger sequence of the latest mutation through this handle; zero
     /// until one completes.
@@ -123,13 +131,23 @@ struct FileHandle {
 }
 
 struct FileObservation {
-    stamp: Option<ViewStamp>,
+    stamp: Option<CacheStamp>,
     lookup: MountLookup,
+}
+
+/// When this mount sampled the source's view, before observing facts that
+/// a later callback may reuse: the source's stamp, and how many changes the
+/// source did not record the mount had been told of by then (see
+/// [`DarwinMountContext::forget_view`]). Ordered by age.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct CacheStamp {
+    forgotten: u64,
+    view: ViewStamp,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct CacheEpochs {
-    view: ViewStamp,
+    view: CacheStamp,
     binding: u64,
 }
 
@@ -174,14 +192,14 @@ impl DirectoryHandle {
 
     /// Whether buffered pages still describe the directory: its binding is
     /// the same and nothing has changed its listing since they were read.
-    fn is_current(&self, source: &dyn MountFilesystem) -> bool {
+    fn is_current(&self, context: &DarwinMountContext) -> bool {
         match self.epochs {
             Some(epochs) => {
-                source.view_is_stable()
-                    && source.binding_epoch() == Some(epochs.binding)
-                    && source.unchanged_since(&self.path, None, epochs.view)
+                context.source.view_is_stable()
+                    && context.source.binding_epoch() == Some(epochs.binding)
+                    && context.unchanged_since(&self.path, None, epochs.view)
             }
-            None => cache_epochs(source).is_none(),
+            None => context.cache_epochs().is_none(),
         }
     }
 
@@ -198,6 +216,8 @@ struct DarwinMountContext {
     next_handle: AtomicU64,
     next_inode: AtomicU64,
     inodes: Mutex<HashMap<FileId, u64>>,
+    /// Changes the source did not record that this mount was told of.
+    forgotten: AtomicU64,
     lookups: Mutex<LookupCache>,
     files: RwLock<HashMap<u64, FileHandle>>,
     directories: Mutex<HashMap<u64, Arc<Mutex<DirectoryHandle>>>>,
@@ -205,6 +225,106 @@ struct DarwinMountContext {
     namespace_revision: AtomicU64,
     ledger: FlushLedger,
     changes: ChangeLabels,
+    /// Attributes every change this mount's callbacks make to the mount.
+    origin: ViewOrigin,
+    callbacks: CallbackGate,
+    around: AroundChanges,
+}
+
+/// Native callbacks in flight, in two generations, so a barrier can wait
+/// for every callback that began before it without holding up later ones.
+struct CallbackGate {
+    generation: AtomicU64,
+    /// Callbacks in flight that entered in an even or odd generation.
+    even: AtomicU64,
+    odd: AtomicU64,
+    /// Serializes barriers, so each drains a generation before the next
+    /// one reuses its slot.
+    draining: Mutex<()>,
+}
+
+/// One callback's place in its generation, left when dropped.
+struct CallbackPass<'a>(&'a AtomicU64);
+
+impl CallbackGate {
+    const fn new() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            even: AtomicU64::new(0),
+            odd: AtomicU64::new(0),
+            draining: Mutex::new(()),
+        }
+    }
+
+    fn slot(&self, generation: u64) -> &AtomicU64 {
+        if generation.is_multiple_of(2) {
+            &self.even
+        } else {
+            &self.odd
+        }
+    }
+
+    fn enter(&self) -> CallbackPass<'_> {
+        loop {
+            let generation = self.generation.load(Ordering::SeqCst);
+            let active = self.slot(generation);
+            active.fetch_add(1, Ordering::SeqCst);
+            // A barrier that began in between may already have found this
+            // slot idle; join the generation after it instead.
+            if self.generation.load(Ordering::SeqCst) == generation {
+                return CallbackPass(active);
+            }
+            active.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Returns once every callback that entered before this call has left.
+    fn drain(&self) {
+        let _draining = self.draining.lock().unwrap_or_else(PoisonError::into_inner);
+        let active = self.slot(self.generation.fetch_add(1, Ordering::SeqCst));
+        while active.load(Ordering::SeqCst) != 0 {
+            std::thread::sleep(CALLBACK_DRAIN_POLL);
+        }
+    }
+}
+
+impl Drop for CallbackPass<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Changes made around the mount, which the NFS client learns of only when
+/// its cached attributes expire.
+struct AroundChanges {
+    /// Changes another origin reported, plus views forgotten.
+    made: AtomicU64,
+    /// `made` as of the latest barrier that waited them out.
+    settled: AtomicU64,
+}
+
+impl ViewObserver for DarwinMountContext {
+    fn view_changed(&self, _position: ViewStamp, origin: ViewOrigin) {
+        // The client learns of this mount's own changes from their replies.
+        if origin != self.origin {
+            self.around.made.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+}
+
+/// Uptime excluding sleep: the clock the NFS client stamps cached
+/// attributes with (`microuptime`).
+fn uptime() -> Duration {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid, writable timespec; the clock always exists.
+    unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &raw mut now) };
+    Duration::new(
+        u64::try_from(now.tv_sec).unwrap_or(0),
+        u32::try_from(now.tv_nsec).unwrap_or(0),
+    )
 }
 
 /// Orders completed native mutations against source flushes.
@@ -273,7 +393,7 @@ struct ChangeLabels {
 struct IssuedLabel {
     label: u64,
     /// Sampled before the attributes the label was issued for.
-    stamp: ViewStamp,
+    stamp: CacheStamp,
     binding: Option<u64>,
 }
 
@@ -285,26 +405,30 @@ impl ChangeLabels {
         }
     }
 
-    /// The label for `file_id`'s attributes as observed at `path` after
-    /// `stamp` was sampled; a source without stamps gets a fresh label every
-    /// time, so its cached state is never trusted past a revalidation.
+    /// The label for `file_id`'s attributes, observed after `stamp` was
+    /// sampled under source binding `binding`; `unchanged` tells whether
+    /// nothing they depend on changed since a stamp. A source without stamps
+    /// gets a fresh label every time, so its cached state is never trusted
+    /// past a revalidation.
     fn label(
         &self,
-        source: &dyn MountFilesystem,
-        path: &MountPath,
         file_id: FileId,
-        stamp: Option<ViewStamp>,
+        stamp: Option<CacheStamp>,
+        binding: Option<u64>,
+        unchanged: impl FnOnce(CacheStamp) -> bool,
     ) -> u64 {
         let Some(stamp) = stamp else {
             return self.fresh();
         };
-        let binding = source.binding_epoch();
         // Labels only ever move to fresh values, so a panicked holder
         // cannot leave one that repeats.
         let mut labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
+        // The issued label names these attributes only if nothing changed
+        // since the older of the two observations, so attributes observed
+        // before a change never take a label issued after it.
         if let Some(issued) = labels.get(&file_id)
             && issued.binding == binding
-            && source.unchanged_since(path, Some(file_id), issued.stamp)
+            && unchanged(issued.stamp.min(stamp))
         {
             return issued.label;
         }
@@ -323,15 +447,6 @@ impl ChangeLabels {
         label
     }
 
-    /// Every object's next label is fresh: its cached state may be stale in
-    /// a way the source did not record.
-    fn forget(&self) {
-        self.labels
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
-    }
-
     fn fresh(&self) -> u64 {
         self.next.fetch_add(1, Ordering::Relaxed)
     }
@@ -339,17 +454,7 @@ impl ChangeLabels {
 
 /// Lookups, each with the stamp it was resolved after.
 struct LookupCache {
-    entries: HashMap<MountPath, (Option<MountLookup>, ViewStamp)>,
-}
-
-fn cache_epochs(source: &dyn MountFilesystem) -> Option<CacheEpochs> {
-    if !source.view_is_stable() {
-        return None;
-    }
-    Some(CacheEpochs {
-        view: source.view_stamp()?,
-        binding: source.binding_epoch()?,
-    })
+    entries: HashMap<MountPath, (Option<MountLookup>, CacheStamp)>,
 }
 
 impl DarwinMountContext {
@@ -367,6 +472,7 @@ impl DarwinMountContext {
             next_handle: AtomicU64::new(1),
             next_inode: AtomicU64::new(ROOT_INODE + 1),
             inodes: Mutex::new(HashMap::from([(root_file_id, ROOT_INODE)])),
+            forgotten: AtomicU64::new(0),
             lookups: Mutex::new(LookupCache {
                 entries: HashMap::new(),
             }),
@@ -376,7 +482,21 @@ impl DarwinMountContext {
             namespace_revision: AtomicU64::new(0),
             ledger: FlushLedger::new(),
             changes: ChangeLabels::new(),
+            origin: ViewOrigin::new(),
+            callbacks: CallbackGate::new(),
+            around: AroundChanges {
+                made: AtomicU64::new(0),
+                settled: AtomicU64::new(0),
+            },
         }
+    }
+
+    /// Shares this context, told of every change to its source's view.
+    fn observing_source(self) -> Arc<Self> {
+        let context = Arc::new(self);
+        let observer: Weak<dyn ViewObserver> = Arc::<Self>::downgrade(&context);
+        context.source.observe_view(observer);
+        context
     }
 
     fn allocate_handle(&self) -> Result<u64, i32> {
@@ -389,6 +509,88 @@ impl DarwinMountContext {
 
     fn namespace_changed(&self) {
         self.namespace_revision.fetch_add(1, Ordering::Release);
+    }
+
+    /// Samples the view before observing facts a later callback may reuse;
+    /// `None` when the source cannot invalidate exactly.
+    fn cache_stamp(&self) -> Option<CacheStamp> {
+        let forgotten = self.forgotten.load(Ordering::Acquire);
+        Some(CacheStamp {
+            forgotten,
+            view: self.source.view_stamp()?,
+        })
+    }
+
+    /// Whether facts about `path`, which resolved to `file_id` (`None`: to
+    /// nothing), observed after `stamp` still describe the view.
+    fn unchanged_since(
+        &self,
+        path: &MountPath,
+        file_id: Option<FileId>,
+        stamp: CacheStamp,
+    ) -> bool {
+        stamp.forgotten == self.forgotten.load(Ordering::Acquire)
+            && self.source.unchanged_since(path, file_id, stamp.view)
+    }
+
+    fn cache_epochs(&self) -> Option<CacheEpochs> {
+        if !self.source.view_is_stable() {
+            return None;
+        }
+        Some(CacheEpochs {
+            view: self.cache_stamp()?,
+            binding: self.source.binding_epoch()?,
+        })
+    }
+
+    /// Stops trusting every fact this mount observed so far, because a
+    /// change the source did not record may have superseded any of them:
+    /// cached lookups, handle observations, and directory pages all fail
+    /// validation, and every object's next change attribute is fresh, so
+    /// the client discards what it cached at its next revalidation.
+    fn forget_view(&self) {
+        self.forgotten.fetch_add(1, Ordering::AcqRel);
+        self.namespace_changed();
+        self.lookups
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .clear();
+        self.around.made.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Waits until the NFS client holds nothing that a change made around
+    /// the mount before this call superseded. Changes made through the mount
+    /// need no wait: the client learns of them from their replies.
+    ///
+    /// Without delegations, which a local-socket mount cannot take, the
+    /// server cannot recall what the client cached. The client trusts
+    /// cached attributes, names, and directory pages until the attribute
+    /// timeout expires, measured in whole seconds of uptime from when each
+    /// reply arrived, and then revalidates them against change attributes,
+    /// which every such change moved (see [`ChangeLabels`]). Every callback
+    /// that began before this call is waited out; the replies they sent
+    /// are assumed to arrive within [`REPLY_DELIVERY_SLACK`], so all expire
+    /// by the uptime second one timeout after that. The wait is at most the
+    /// timeout plus the slack and averages half a second less.
+    fn revalidate(&self) {
+        let made = self.around.made.load(Ordering::Acquire);
+        if self.around.settled.load(Ordering::Acquire) >= made {
+            return;
+        }
+        self.callbacks.drain();
+        let arrived_by = uptime() + REPLY_DELIVERY_SLACK;
+        // SAFETY: the bridge reports a constant.
+        let timeout = u64::from(unsafe { acyclic_fs_darwin_mount_attribute_timeout() });
+        let expired = Duration::from_secs(arrived_by.as_secs() + timeout);
+        loop {
+            let now = uptime();
+            if now >= expired {
+                break;
+            }
+            std::thread::sleep(expired - now);
+        }
+        self.around.settled.fetch_max(made, Ordering::AcqRel);
     }
 
     fn inode(&self, file_id: FileId) -> Result<u64, i32> {
@@ -408,11 +610,11 @@ impl DarwinMountContext {
     fn lookup(&self, path: &MountPath) -> Result<MountLookup, i32> {
         // Sampled first: a change to anything the lookup reads records a
         // later position, so its result can never validate over the change.
-        let stamp = self.source.view_stamp();
+        let stamp = self.cache_stamp();
         if stamp.is_some() {
             let cache = self.lookups.lock().map_err(|_| libc::EIO)?;
             if let Some((cached, cached_stamp)) = cache.entries.get(path).copied()
-                && self.source.unchanged_since(
+                && self.unchanged_since(
                     path,
                     cached.map(|lookup| lookup.node.file_id),
                     cached_stamp,
@@ -433,7 +635,7 @@ impl DarwinMountContext {
         path: &MountPath,
         lookup: Option<MountLookup>,
     ) -> Result<(), i32> {
-        let Some(stamp) = self.source.view_stamp() else {
+        let Some(stamp) = self.cache_stamp() else {
             return Ok(());
         };
         self.remember_lookup(path, lookup, stamp)?;
@@ -444,7 +646,7 @@ impl DarwinMountContext {
         &self,
         path: &MountPath,
         lookup: Option<MountLookup>,
-        stamp: ViewStamp,
+        stamp: CacheStamp,
     ) -> Result<(), i32> {
         let mut lookups = self.lookups.lock().map_err(|_| libc::EIO)?;
         if lookups.entries.len() >= MAXIMUM_LOOKUP_CACHE_ENTRIES {
@@ -455,14 +657,21 @@ impl DarwinMountContext {
         Ok(())
     }
 
+    /// Opens a handle on the regular file at `path`. The source file is
+    /// bound on first use (see [`Self::bind`]).
     fn open(&self, path: &MountPath, state: InitialHandleState) -> Result<u64, i32> {
         let written = match state {
             InitialHandleState::Clean => 0,
             InitialHandleState::Written => self.ledger.latest(),
         };
-        let file = self.source.open_file(path).map_err(|error| errno(&error))?;
-        let stamp = self.source.view_stamp();
-        let lookup = file.lookup().map_err(|error| errno(&error))?;
+        // Sampled first, so a change after it cannot validate the lookup.
+        let stamp = self.cache_stamp();
+        let lookup = self.lookup(path)?;
+        match lookup.node.kind {
+            MountNodeKind::Regular => {}
+            MountNodeKind::Directory => return Err(libc::EISDIR),
+            _ => return Err(libc::EINVAL),
+        }
         let handle = self.allocate_handle()?;
         let mut files = self.files.write().map_err(|_| libc::EIO)?;
         files.try_reserve(1).map_err(|_| libc::ENOMEM)?;
@@ -470,12 +679,77 @@ impl DarwinMountContext {
             handle,
             FileHandle {
                 file_id: lookup.node.file_id,
-                file,
+                file: None,
                 observation: Arc::new(Mutex::new(FileObservation { stamp, lookup })),
                 written: Arc::new(AtomicU64::new(written)),
             },
         );
         Ok(handle)
+    }
+
+    /// The source file behind `handle`, opened at `path` on first use.
+    ///
+    /// A handle names one file identity. Until a callback needs its source
+    /// file, `path` (the kernel's current name for the handle's object) still
+    /// names that identity unless something outside this mount removed or
+    /// replaced it, which fails the handle as a stale NFS handle; a removal
+    /// or replacement through this mount detaches its file first (see [`Self::unlink`]).
+    fn bind(&self, path: &MountPath, handle: u64) -> Result<Arc<dyn MountOpenFile>, i32> {
+        let file_id = {
+            let files = self.files.read().map_err(|_| libc::EIO)?;
+            let entry = files.get(&handle).ok_or(libc::ESTALE)?;
+            if let Some(file) = &entry.file {
+                return Ok(Arc::clone(file));
+            }
+            entry.file_id
+        };
+        let file = self.source.open_file(path).map_err(|error| errno(&error))?;
+        if file.lookup().map_err(|error| errno(&error))?.node.file_id != file_id {
+            return Err(libc::ESTALE);
+        }
+        let mut files = self.files.write().map_err(|_| libc::EIO)?;
+        let entry = files.get_mut(&handle).ok_or(libc::ESTALE)?;
+        Ok(Arc::clone(entry.file.get_or_insert(file)))
+    }
+
+    /// Runs `unlink`, which removes `path`, the name `lookup` resolved.
+    /// When that is the last name of a regular file with open handles, the
+    /// file is detached first and, once the name is gone, those handles use
+    /// it, so an unlinked open file stays readable and writable.
+    fn unlink(
+        &self,
+        path: &MountPath,
+        lookup: MountLookup,
+        unlink: impl FnOnce() -> Result<(), MountSourceError>,
+    ) -> Result<(), i32> {
+        let file_id = lookup.node.file_id;
+        let has_open = lookup.node.kind == MountNodeKind::Regular
+            && lookup.node.link_count == 1
+            && self
+                .files
+                .read()
+                .map_err(|_| libc::EIO)?
+                .values()
+                .any(|entry| entry.file_id == file_id);
+        let detached = self.mutate(|| {
+            let detached = has_open
+                .then(|| self.source.detach_file(path))
+                .transpose()?;
+            unlink()?;
+            Ok(detached)
+        })?;
+        if let Some(detached) = detached {
+            for entry in self
+                .files
+                .write()
+                .map_err(|_| libc::EIO)?
+                .values_mut()
+                .filter(|entry| entry.file_id == file_id)
+            {
+                entry.file = Some(Arc::clone(&detached));
+            }
+        }
+        Ok(())
     }
 
     /// The open handle's file and written marker, or a path-bound file
@@ -488,10 +762,11 @@ impl DarwinMountContext {
                 written: None,
             });
         }
+        let file = self.bind(path, handle)?;
         let files = self.files.read().map_err(|_| libc::EIO)?;
         let entry = files.get(&handle).ok_or(libc::ESTALE)?;
         Ok(FileTarget {
-            file: Arc::clone(&entry.file),
+            file,
             written: Some(Arc::clone(&entry.written)),
         })
     }
@@ -529,51 +804,40 @@ impl DarwinMountContext {
         result
     }
 
-    fn file_with_lookup(
-        &self,
-        path: &MountPath,
-        handle: u64,
-    ) -> Result<(Arc<dyn MountOpenFile>, MountLookup), i32> {
+    /// The attributes of `handle`'s file, or of the file at `path` when
+    /// `handle` is zero.
+    fn lookup_handle(&self, path: &MountPath, handle: u64) -> Result<MountLookup, i32> {
         if handle == 0 {
-            let file = self.source.open_file(path).map_err(|error| errno(&error))?;
-            let lookup = file.lookup().map_err(|error| errno(&error))?;
-            return Ok((file, lookup));
+            return self.lookup(path);
         }
-        let (file, observation) = {
+        let observation = {
             let files = self.files.read().map_err(|_| libc::EIO)?;
-            let entry = files.get(&handle).ok_or(libc::ESTALE)?;
-            (Arc::clone(&entry.file), Arc::clone(&entry.observation))
+            Arc::clone(&files.get(&handle).ok_or(libc::ESTALE)?.observation)
         };
         {
             let observation = observation.lock().map_err(|_| libc::EIO)?;
             if observation.stamp.is_some_and(|stamp| {
-                self.source
-                    .unchanged_since(path, Some(observation.lookup.node.file_id), stamp)
+                self.unchanged_since(path, Some(observation.lookup.node.file_id), stamp)
             }) {
-                return Ok((file, observation.lookup));
+                return Ok(observation.lookup);
             }
         }
-        let stamp = self.source.view_stamp();
-        let lookup = file.lookup().map_err(|error| errno(&error))?;
+        let stamp = self.cache_stamp();
+        let lookup = self
+            .bind(path, handle)?
+            .lookup()
+            .map_err(|error| errno(&error))?;
         if stamp.is_some() {
             let mut observation = observation.lock().map_err(|_| libc::EIO)?;
             observation.stamp = stamp;
             observation.lookup = lookup;
         }
-        Ok((file, lookup))
-    }
-
-    fn lookup_handle(&self, path: &MountPath, handle: u64) -> Result<MountLookup, i32> {
-        if handle == 0 {
-            return self.lookup(path);
-        }
-        self.file_with_lookup(path, handle)
-            .map(|(_, lookup)| lookup)
+        Ok(lookup)
     }
 
     fn attributes(&self, path: &MountPath, handle: u64) -> Result<NativeStat, i32> {
         // Sampled before observing: a change after it cannot keep the label.
-        let stamp = self.source.view_stamp();
+        let stamp = self.cache_stamp();
         let lookup = self.lookup_handle(path, handle)?;
         self.attributes_from_lookup(path, lookup, stamp)
     }
@@ -583,7 +847,7 @@ impl DarwinMountContext {
         &self,
         path: &MountPath,
         lookup: MountLookup,
-        stamp: Option<ViewStamp>,
+        stamp: Option<CacheStamp>,
     ) -> Result<NativeStat, i32> {
         let node = lookup.node;
         let file_kind = match node.kind {
@@ -630,8 +894,19 @@ impl DarwinMountContext {
             flags: u32::try_from(metadata_or(lookup.metadata.posix_flags, 0)).unwrap_or(u32::MAX),
             change: self
                 .changes
-                .label(self.source.as_ref(), path, node.file_id, stamp),
+                .label(node.file_id, stamp, self.source.binding_epoch(), |stamp| {
+                    self.unchanged_since(path, Some(node.file_id), stamp)
+                }),
         })
+    }
+
+    /// Whether the node at `path` may carry named attributes. A node's
+    /// metadata records its named attributes; without that record it has
+    /// none, which every source reads the same way, so the probes the macOS
+    /// client makes on each new file (provenance, Finder info) need no
+    /// source call.
+    fn may_have_named_attributes(&self, path: &MountPath) -> Result<bool, i32> {
+        Ok(self.lookup(path)?.metadata.named_attributes != MetadataField::Unavailable)
     }
 
     fn admit_write(&self) -> Result<(), i32> {
@@ -719,6 +994,13 @@ struct DriverSessionResources {
     driver_session: usize,
 }
 
+impl DriverSessionResources {
+    fn context(&self) -> &DarwinMountContext {
+        // SAFETY: the context outlives every owner of these resources.
+        unsafe { &*(self.source_context as *const DarwinMountContext) }
+    }
+}
+
 impl Drop for DriverSessionResources {
     fn drop(&mut self) {
         // SAFETY: the last owner has released these exact allocations, and
@@ -766,12 +1048,14 @@ impl DarwinMountSession {
             .and_then(|parent| parent.metadata().ok())
             .ok_or_else(|| NativeMountError::Driver("mount parent is unavailable".to_owned()))?;
         let supports_named_attributes = source.supports_posix_named_attributes();
-        let context = Arc::new(DarwinMountContext::new(
+        let context = DarwinMountContext::new(
             source,
             request.writable,
             &destination_metadata,
             root.node.file_id,
-        ));
+        )
+        .observing_source();
+
         let destination = request.destination.clone();
         let destination_c = path_cstring(&destination).map_err(driver_errno)?;
         let options = mount_options(request.writable, supports_named_attributes);
@@ -884,15 +1168,14 @@ impl DarwinMountSession {
     }
 
     /// Marks one mount-relative path (leading `/` optional) changed by a
-    /// projection change such as a removed route. NFS offers no
-    /// server-initiated invalidation without delegations: the client drops
-    /// its cached names, attributes, and data at its next revalidation,
-    /// which the one-second attribute timeout bounds, and every open
-    /// revalidates immediately.
+    /// projection change the source did not record, such as a removed
+    /// route. NFS offers no server-initiated invalidation without
+    /// delegations: this forgets everything the mount cached about the view
+    /// (the change may reach beyond `path`), so the client drops its cached
+    /// names, attributes, and data at its next revalidation, which
+    /// [`Self::revalidate`] waits for and every open makes immediately.
     pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
-        let resources = self.resources.as_ref().ok_or_else(|| {
-            NativeMountError::Driver("Darwin mount session has stopped".to_owned())
-        })?;
+        let resources = self.resources()?;
         let mut bytes = Vec::with_capacity(path.len() + 1);
         if path.first() != Some(&b'/') {
             bytes.push(b'/');
@@ -900,14 +1183,12 @@ impl DarwinMountSession {
         bytes.extend_from_slice(path);
         let path = CString::new(bytes)
             .map_err(|_| NativeMountError::Driver("path contains NUL".to_owned()))?;
-        // SAFETY: `driver_session` is the live bridge session this struct
-        // owns until teardown, and `path` is a NUL-terminated string.
         // Reject continuation snapshots before the external invalidation can
         // overlap a directory read, and make the client's next revalidation
         // discard what it cached.
-        let context = unsafe { &*(resources.source_context as *const DarwinMountContext) };
-        context.namespace_changed();
-        context.changes.forget();
+        resources.context().forget_view();
+        // SAFETY: `driver_session` is the live bridge session this struct
+        // owns until teardown, and `path` is a NUL-terminated string.
         let status = unsafe {
             acyclic_fs_darwin_mount_invalidate(
                 resources.driver_session as *mut c_void,
@@ -921,6 +1202,18 @@ impl DarwinMountSession {
                 "invalidate returned {status}"
             )))
         }
+    }
+
+    /// See [`DarwinMountContext::revalidate`].
+    pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
+        self.resources()?.context().revalidate();
+        Ok(())
+    }
+
+    fn resources(&self) -> Result<&DriverSessionResources, NativeMountError> {
+        self.resources
+            .as_deref()
+            .ok_or_else(|| NativeMountError::Driver("Darwin mount session has stopped".to_owned()))
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -1178,20 +1471,35 @@ fn context(address: usize) -> Result<&'static DarwinMountContext, i32> {
     Ok(unsafe { &*(address as *const DarwinMountContext) })
 }
 
-fn ffi_status(operation: impl FnOnce() -> Result<c_int, i32>) -> c_int {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
-        Ok(Ok(value)) => value,
-        Ok(Err(error)) => -error,
-        Err(_) => -libc::EIO,
-    }
+/// Runs one native callback on the context at `address`. Every change it
+/// makes is this mount's own, which the client learns of from the reply,
+/// and it completes before any barrier that began after it (see
+/// [`DarwinMountContext::revalidate`]). A panic fails it with `EIO`.
+fn callback<T>(
+    address: usize,
+    operation: impl FnOnce(&'static DarwinMountContext) -> Result<T, i32>,
+) -> Result<T, i32> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let context = context(address)?;
+        let _callback = context.callbacks.enter();
+        let _origin = context.origin.enter();
+        operation(context)
+    }))
+    .unwrap_or(Err(libc::EIO))
 }
 
-fn ffi_offset(operation: impl FnOnce() -> Result<i64, i32>) -> i64 {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
-        Ok(Ok(value)) => value,
-        Ok(Err(error)) => -i64::from(error),
-        Err(_) => -i64::from(libc::EIO),
-    }
+fn ffi_status(
+    address: usize,
+    operation: impl FnOnce(&'static DarwinMountContext) -> Result<c_int, i32>,
+) -> c_int {
+    callback(address, operation).unwrap_or_else(|error| -error)
+}
+
+fn ffi_offset(
+    address: usize,
+    operation: impl FnOnce(&'static DarwinMountContext) -> Result<i64, i32>,
+) -> i64 {
+    callback(address, operation).unwrap_or_else(|error| -i64::from(error))
 }
 
 #[unsafe(no_mangle)]
@@ -1201,8 +1509,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
     handle: u64,
     result: *mut NativeStat,
 ) -> c_int {
-    ffi_status(|| {
-        let attributes = context(address)?.attributes(&mount_path(path)?, handle)?;
+    ffi_status(address, |context| {
+        let attributes = context.attributes(&mount_path(path)?, handle)?;
         unsafe { result.write(attributes) };
         Ok(0)
     })
@@ -1215,8 +1523,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_open(
     flags: c_int,
     handle: *mut u64,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         if flags & libc::O_ACCMODE != libc::O_RDONLY {
             context.admit_write()?;
         }
@@ -1235,8 +1542,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_create(
     _flags: c_int,
     handle: *mut u64,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         let path = mount_path(path)?;
         let lookup = context.mutate(|| {
             context
@@ -1256,11 +1562,11 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_release(
     _path: *const c_char,
     handle: u64,
 ) -> c_int {
-    ffi_status(|| {
+    ffi_status(address, |context| {
         if handle == 0 {
             return Ok(0);
         }
-        context(address)?
+        context
             .files
             .write()
             .map_err(|_| libc::EIO)?
@@ -1279,10 +1585,9 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_read(
     length: usize,
     offset: i64,
 ) -> c_int {
-    ffi_status(|| {
+    ffi_status(address, |context| {
         let requested_length = bounded_length(length)?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
-        let context = context(address)?;
         let bytes = context
             .file_or_open(&mount_path(path)?, handle)?
             .read_up_to(offset, requested_length)
@@ -1304,11 +1609,11 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_write(
     length: usize,
     offset: i64,
 ) -> c_int {
-    ffi_status(|| {
+    ffi_status(address, |context| {
         let length = bounded_length(length)?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let bytes = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), length as usize) };
-        context(address)?.mutate_file(&mount_path(path)?, handle, |file| {
+        context.mutate_file(&mount_path(path)?, handle, |file| {
             file.write_range(offset, Bytes::copy_from_slice(bytes))
         })?;
         c_int::try_from(length).map_err(|_| libc::EOVERFLOW)
@@ -1322,9 +1627,9 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
     handle: u64,
     length: i64,
 ) -> c_int {
-    ffi_status(|| {
+    ffi_status(address, |context| {
         let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
-        context(address)?.mutate_file(&mount_path(path)?, handle, |file| file.resize(length))?;
+        context.mutate_file(&mount_path(path)?, handle, |file| file.resize(length))?;
         Ok(0)
     })
 }
@@ -1333,8 +1638,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
 /// whose close is a publication boundary.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_flush(address: usize, handle: u64) -> c_int {
-    ffi_status(|| {
-        context(address)?.flush_on_close(handle)?;
+    ffi_status(address, |context| {
+        context.flush_on_close(handle)?;
         Ok(0)
     })
 }
@@ -1344,9 +1649,19 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_flush(address: usize, handle: u64) 
 /// every acknowledged mutation is published once this returns.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
-    ffi_status(|| {
-        context(address)?.sync()?;
+    ffi_status(address, |context| {
+        context.sync()?;
         Ok(0)
+    })
+}
+
+/// Whether every acknowledged write is already as durable as `fsync` would
+/// make it, because the source's flush publishes nothing: WRITE replies are
+/// then stable and the client never needs to COMMIT.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn acyclic_fs_darwin_mount_durable_writes(address: usize) -> c_int {
+    ffi_status(address, |context| {
+        Ok(c_int::from(!context.source.flush_publishes()))
     })
 }
 
@@ -1356,11 +1671,11 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
     path: *const c_char,
     handle: *mut u64,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         let path = mount_path(path)?;
         let binding_epoch = context.source.binding_epoch();
-        let epochs = cache_epochs(context.source.as_ref());
+        let epochs = context.cache_epochs();
+
         let _binding_lease = context
             .source
             .acquire_binding_lease(binding_epoch)
@@ -1369,7 +1684,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
             return Err(libc::ENOTDIR);
         }
         let directory = DirectoryHandle::new(path, binding_epoch, epochs);
-        if directory.can_reuse_pages() && !directory.is_current(context.source.as_ref()) {
+        if directory.can_reuse_pages() && !directory.is_current(context) {
             return Err(libc::ESTALE);
         }
         let allocated = context.allocate_handle()?;
@@ -1390,8 +1705,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
     offset: i64,
     handle: u64,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         let directory = context
             .directories
             .lock()
@@ -1404,7 +1718,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             .source
             .acquire_binding_lease(directory.binding_epoch)
             .map_err(|error| errno(&error))?;
-        if !directory.is_current(context.source.as_ref()) {
+        if !directory.is_current(context) {
             return Err(libc::ESTALE);
         }
         if offset < 0 {
@@ -1426,7 +1740,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
                 && checkpoint.revision == context.namespace_revision.load(Ordering::Acquire)
                 && checkpoint.handle.emitted == offset
                 && checkpoint.handle.binding_epoch == directory.binding_epoch
-                && checkpoint.handle.is_current(context.source.as_ref())
+                && checkpoint.handle.is_current(context)
             {
                 *directory = checkpoint.handle.clone();
             }
@@ -1512,7 +1826,7 @@ fn finish_directory_page(
     // A mutation can happen after the last page read, while the native filler
     // copies entries into its buffer. Returning ESTALE discards that buffer
     // rather than exposing a listing assembled from different view epochs.
-    if directory.can_reuse_pages() && !directory.is_current(context.source.as_ref()) {
+    if directory.can_reuse_pages() && !directory.is_current(context) {
         return Err(libc::ESTALE);
     }
     if checkpoint {
@@ -1544,7 +1858,7 @@ fn ensure_directory_page(
     context: &DarwinMountContext,
     directory: &mut DirectoryHandle,
 ) -> Result<(), i32> {
-    if directory.can_reuse_pages() && !directory.is_current(context.source.as_ref()) {
+    if directory.can_reuse_pages() && !directory.is_current(context) {
         return Err(libc::ESTALE);
     }
     if directory.entries.is_empty() && !directory.exhausted {
@@ -1559,7 +1873,7 @@ fn ensure_directory_page(
                 DIRECTORY_PAGE_SIZE,
             )
             .map_err(|error| errno(&error))?;
-        if directory.can_reuse_pages() && !directory.is_current(context.source.as_ref()) {
+        if directory.can_reuse_pages() && !directory.is_current(context) {
             return Err(libc::ESTALE);
         }
         if page.entries.is_empty() && page.next_cursor.is_some() {
@@ -1607,8 +1921,8 @@ fn checkpoint_directory(
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_releasedir(address: usize, handle: u64) -> c_int {
-    ffi_status(|| {
-        context(address)?
+    ffi_status(address, |context| {
+        context
             .directories
             .lock()
             .map_err(|_| libc::EIO)?
@@ -1626,8 +1940,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
     uid: u32,
     gid: u32,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         let path = mount_path(path)?;
         context.mutate(|| {
             context
@@ -1645,8 +1958,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
     path: *const c_char,
     directory: c_int,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         let path = mount_path(path)?;
         let lookup = context.lookup(&path)?;
         if (directory != 0) != (lookup.node.kind == MountNodeKind::Directory) {
@@ -1656,33 +1968,10 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
                 libc::ENOTDIR
             });
         }
-        let has_open = lookup.node.kind == MountNodeKind::Regular
-            && lookup.node.link_count == 1
-            && context
-                .files
-                .read()
-                .map_err(|_| libc::EIO)?
-                .values()
-                .any(|entry| entry.file_id == lookup.node.file_id);
-        let detached = context.mutate(|| {
-            let detached = has_open
-                .then(|| context.source.detach_file(&path))
-                .transpose()?;
-            context.source.remove(&path, Some(lookup.node.file_id))?;
-            Ok(detached)
+        context.unlink(&path, lookup, || {
+            context.source.remove(&path, Some(lookup.node.file_id))
         })?;
         context.namespace_changed();
-        if let Some(detached) = detached {
-            for entry in context
-                .files
-                .write()
-                .map_err(|_| libc::EIO)?
-                .values_mut()
-                .filter(|entry| entry.file_id == lookup.node.file_id)
-            {
-                entry.file = Arc::clone(&detached);
-            }
-        }
         Ok(0)
     })
 }
@@ -1694,18 +1983,21 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
     destination: *const c_char,
     flags: u32,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         if flags & !RENAME_NOREPLACE != 0 {
             return Err(libc::EOPNOTSUPP);
         }
         let (source, destination) = (mount_path(source)?, mount_path(destination)?);
-        context.mutate(|| {
-            context
-                .source
-                .rename(&source, &destination, flags & RENAME_NOREPLACE == 0)
-        })?;
+        let replace = flags & RENAME_NOREPLACE == 0;
+        let rename = || context.source.rename(&source, &destination, replace);
+        // Replacing the destination unlinks it.
+        match replace.then(|| context.lookup(&destination)) {
+            Some(Ok(replaced)) => context.unlink(&destination, replaced, rename)?,
+            None | Some(Err(libc::ENOENT)) => context.mutate(rename)?,
+            Some(Err(error)) => return Err(error),
+        }
         context.namespace_changed();
+
         Ok(0)
     })
 }
@@ -1716,8 +2008,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_link(
     source: *const c_char,
     destination: *const c_char,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         let (source, destination) = (mount_path(source)?, mount_path(destination)?);
         context.mutate(|| context.source.hard_link(&source, &destination))?;
         context.namespace_changed();
@@ -1733,8 +2024,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
     uid: u32,
     gid: u32,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         let target = unsafe { CStr::from_ptr(target) }.to_bytes();
         let destination = mount_path(destination)?;
         context.mutate(|| {
@@ -1756,11 +2046,11 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
     buffer: *mut c_char,
     length: usize,
 ) -> c_int {
-    ffi_status(|| {
+    ffi_status(address, |context| {
         if length == 0 {
             return Err(libc::ERANGE);
         }
-        let target = context(address)?
+        let target = context
             .source
             .read_link(&mount_path(path)?)
             .map_err(|error| errno(&error))?;
@@ -1784,8 +2074,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
     uid: u32,
     gid: u32,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         let kind = match mode & mode::IFMT {
             mode::IFIFO => MountNodeKind::Fifo,
             mode::IFSOCK => MountNodeKind::Socket,
@@ -1819,8 +2108,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_chmod(
     mode: u32,
     handle: u64,
 ) -> c_int {
-    ffi_status(|| {
-        context(address)?.mutate_metadata(&mount_path(path)?, handle, |metadata| {
+    ffi_status(address, |context| {
+        context.mutate_metadata(&mount_path(path)?, handle, |metadata| {
             let kind = metadata_or(metadata.posix_mode, 0) & mode::IFMT;
             metadata.posix_mode = MetadataField::Value(kind | (mode & 0o7777));
             Ok(())
@@ -1837,8 +2126,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_chown(
     gid: u32,
     handle: u64,
 ) -> c_int {
-    ffi_status(|| {
-        context(address)?.mutate_metadata(&mount_path(path)?, handle, |metadata| {
+    ffi_status(address, |context| {
+        context.mutate_metadata(&mount_path(path)?, handle, |metadata| {
             if uid != u32::MAX {
                 metadata.posix_uid = MetadataField::Value(uid);
             }
@@ -1858,9 +2147,9 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_utimens(
     times: *const NativeTimes,
     handle: u64,
 ) -> c_int {
-    ffi_status(|| {
+    ffi_status(address, |context| {
         let times = unsafe { times.as_ref() }.ok_or(libc::EINVAL)?;
-        context(address)?.mutate_metadata(&mount_path(path)?, handle, |metadata| {
+        context.mutate_metadata(&mount_path(path)?, handle, |metadata| {
             update_time(
                 &mut metadata.accessed_ns,
                 times.accessed_seconds,
@@ -1885,10 +2174,14 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
     value: *mut c_char,
     length: usize,
 ) -> c_int {
-    ffi_status(|| {
-        let bytes = context(address)?
+    ffi_status(address, |context| {
+        let path = mount_path(path)?;
+        if !context.may_have_named_attributes(&path)? {
+            return Err(libc::ENOATTR);
+        }
+        let bytes = context
             .source
-            .read_attribute(&mount_path(path)?, c_bytes(name)?)
+            .read_attribute(&path, c_bytes(name)?)
             .map_err(|error| errno(&error))?
             .ok_or(libc::ENOATTR)?;
         copy_variable_result(&bytes, value, length)
@@ -1904,8 +2197,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
     length: usize,
     flags: c_int,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         if length > MAXIMUM_CALLBACK_BYTES {
             return Err(libc::E2BIG);
         }
@@ -1933,9 +2225,11 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
     list: *mut c_char,
     length: usize,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         let path = mount_path(path)?;
+        if !context.may_have_named_attributes(&path)? {
+            return copy_variable_result(&[], list, length);
+        }
         let mut cursor = None;
         let mut encoded = Vec::new();
         loop {
@@ -1974,8 +2268,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
     path: *const c_char,
     name: *const c_char,
 ) -> c_int {
-    ffi_status(|| {
-        let context = context(address)?;
+    ffi_status(address, |context| {
         let (path, name) = (mount_path(path)?, c_bytes(name)?);
         context.mutate(|| context.source.remove_attribute(&path, name))?;
         Ok(0)
@@ -1990,14 +2283,13 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_lseek(
     offset: i64,
     whence: c_int,
 ) -> i64 {
-    ffi_offset(|| {
+    ffi_offset(address, |context| {
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let target = match whence {
             libc::SEEK_DATA => MountSeekTarget::Data,
             libc::SEEK_HOLE => MountSeekTarget::Hole,
             _ => return Err(libc::EINVAL),
         };
-        let context = context(address)?;
         let result = context
             .file_or_open(&mount_path(path)?, handle)?
             .seek(offset, target)
@@ -2016,7 +2308,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
     offset: i64,
     length: i64,
 ) -> c_int {
-    ffi_status(|| {
+    ffi_status(address, |context| {
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
         let (operation, permitted_flags) = if mode & FALLOC_FL_PUNCH_HOLE != 0 {
@@ -2042,7 +2334,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
         if mode & !permitted_flags != 0 {
             return Err(libc::EOPNOTSUPP);
         }
-        context(address)?.mutate_file(&mount_path(path)?, handle, |file| {
+        context.mutate_file(&mount_path(path)?, handle, |file| {
             file.allocate_range(offset, length, operation)
         })?;
         Ok(0)
@@ -2061,11 +2353,10 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_copy_file_range(
     length: usize,
     flags: c_int,
 ) -> i64 {
-    ffi_offset(|| {
+    ffi_offset(address, |context| {
         if flags != 0 {
             return Err(libc::EINVAL);
         }
-        let context = context(address)?;
         let source_offset = u64::try_from(source_offset).map_err(|_| libc::EINVAL)?;
         let destination_offset = u64::try_from(destination_offset).map_err(|_| libc::EINVAL)?;
         let length = u64::try_from(length).map_err(|_| libc::EOVERFLOW)?;
@@ -2220,6 +2511,7 @@ mod tests {
 
     unsafe extern "C" {
         fn nfs4_test_read_reply() -> c_int;
+        fn nfs4_test_durable_writes() -> c_int;
         fn nfs4_test_change_attribute() -> c_int;
         fn nfs4_test_access_rights() -> c_int;
         fn nfs4_test_verify_attributes() -> c_int;
@@ -2408,7 +2700,7 @@ mod tests {
         );
 
         let first_label = label(&first)?;
-        context.changes.forget();
+        context.forget_view();
         assert!(
             label(&first)? > first_label,
             "an invalidation relabels everything"
@@ -2417,10 +2709,177 @@ mod tests {
         let unstamped = ChangeLabels::new();
         let file_id = source.lookup(&first)?.ok_or("file absent")?.node.file_id;
         assert_ne!(
-            unstamped.label(source.as_ref(), &first, file_id, None),
-            unstamped.label(source.as_ref(), &first, file_id, None),
+            unstamped.label(file_id, None, None, |_| true),
+            unstamped.label(file_id, None, None, |_| true),
             "a source without stamps never repeats a label"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn attributes_observed_before_a_change_never_take_a_later_label() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let path = MountPath::root().child(b"raced".to_vec());
+        let file_id = source
+            .create_file(&path, FileMetadata::default())?
+            .node
+            .file_id;
+        let binding = source.binding_epoch();
+        let unchanged = |stamp| context.unchanged_since(&path, Some(file_id), stamp);
+        let before = context.cache_stamp().ok_or("checkout has no view stamp")?;
+        source.write_range(&path, 0, Bytes::from_static(b"changed"))?;
+        let after = context.cache_stamp().ok_or("checkout has no view stamp")?;
+
+        let current = context
+            .changes
+            .label(file_id, Some(after), binding, unchanged);
+        assert_eq!(
+            context
+                .changes
+                .label(file_id, Some(after), binding, unchanged),
+            current,
+            "attributes observed after the change share its label"
+        );
+        assert!(
+            context
+                .changes
+                .label(file_id, Some(before), binding, unchanged)
+                > current,
+            "attributes observed before it get a label of their own"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn forgetting_the_view_rereads_what_the_source_did_not_record() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let path = MountPath::root().child(b"unrecorded".to_vec());
+        source.create_file(&path, FileMetadata::default())?;
+        let handle = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        let size = |handle| {
+            context
+                .attributes(&path, handle)
+                .map(|attributes| attributes.logical_bytes)
+                .map_err(os)
+        };
+        assert_eq!((size(0)?, size(handle)?), (0, 0));
+        let label = context.attributes(&path, 0).map_err(os)?.change;
+
+        // Stand in for a change the source reports to nobody: seed the
+        // caches with a size the source no longer has.
+        let stale = |lookup: &mut MountLookup| lookup.node.logical_bytes = 7;
+        context
+            .lookups
+            .lock()
+            .map_err(|_| "poisoned lookups")?
+            .entries
+            .values_mut()
+            .filter_map(|(lookup, _)| lookup.as_mut())
+            .for_each(stale);
+        let files = context.files.read().map_err(|_| "poisoned handles")?;
+        stale(
+            &mut files
+                .get(&handle)
+                .ok_or("handle absent")?
+                .observation
+                .lock()
+                .map_err(|_| "poisoned observation")?
+                .lookup,
+        );
+        drop(files);
+        assert_eq!((size(0)?, size(handle)?), (7, 7), "the caches were seeded");
+
+        context.forget_view();
+        assert_eq!(
+            (size(0)?, size(handle)?),
+            (0, 0),
+            "neither the lookup cache nor a handle serves a forgotten fact"
+        );
+        let relabeled = context.attributes(&path, 0).map_err(os)?.change;
+        assert!(
+            relabeled > label,
+            "the reread attributes take a fresh label"
+        );
+        assert_eq!(
+            context.attributes(&path, handle).map_err(os)?.change,
+            relabeled,
+            "which then holds for the unchanged object"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn revalidation_waits_out_the_attribute_timeout_for_changes_around_the_mount() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let context = context.observing_source();
+        // SAFETY: the bridge reports a constant.
+        let timeout = u64::from(unsafe { acyclic_fs_darwin_mount_attribute_timeout() });
+        let barrier = || {
+            let began = uptime();
+            context.revalidate();
+            (began, uptime())
+        };
+        let (began, ended) = barrier();
+        assert!(ended - began < REPLY_DELIVERY_SLACK, "an unchanged view");
+
+        // SAFETY: the name is NUL-terminated and `context` outlives the call.
+        let status = unsafe {
+            acyclic_fs_darwin_mount_mkdir(
+                Arc::as_ptr(&context) as usize,
+                c"/own".as_ptr(),
+                0o755,
+                0,
+                0,
+            )
+        };
+        assert_eq!(status, 0);
+        let (began, ended) = barrier();
+        assert!(
+            ended - began < REPLY_DELIVERY_SLACK,
+            "the client learns of the mount's own changes from their replies"
+        );
+
+        let waits_out_the_timeout = || {
+            let (began, ended) = barrier();
+            assert!(
+                ended.as_secs() >= (began + REPLY_DELIVERY_SLACK).as_secs() + timeout,
+                "every attribute cached before the barrier expired"
+            );
+            let (began, ended) = barrier();
+            assert!(ended - began < REPLY_DELIVERY_SLACK, "once per change");
+        };
+        source.create_file(
+            &MountPath::root().child(b"around".to_vec()),
+            FileMetadata::default(),
+        )?;
+        waits_out_the_timeout();
+        context.forget_view();
+        waits_out_the_timeout();
+        Ok(())
+    }
+
+    #[test]
+    fn a_barrier_waits_only_for_callbacks_that_began_before_it() -> TestResult {
+        let gate = Arc::new(CallbackGate::new());
+        let earlier = gate.enter();
+        let (drained, finished) = std::sync::mpsc::channel();
+        let barrier = std::thread::spawn({
+            let gate = Arc::clone(&gate);
+            move || {
+                gate.drain();
+                let _ = drained.send(());
+            }
+        });
+        assert!(
+            finished.recv_timeout(Duration::from_millis(50)).is_err(),
+            "an earlier callback holds the barrier"
+        );
+        let later = gate.enter();
+        drop(earlier);
+        finished.recv_timeout(Duration::from_secs(5))?;
+        drop(later);
+        barrier.join().map_err(|_| "barrier panicked")?;
         Ok(())
     }
 
@@ -2429,6 +2888,144 @@ mod tests {
     fn nfs_read_answers_short_reads_as_eof_in_place() {
         // SAFETY: the test hook owns all callback state.
         assert_eq!(unsafe { nfs4_test_read_reply() }, 0);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn nfs_durable_writes_are_stable_without_a_sync() {
+        // SAFETY: the test hook owns all callback state.
+        assert_eq!(unsafe { nfs4_test_durable_writes() }, 0);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn only_a_publishing_source_leaves_writes_unstable() -> TestResult {
+        for (publication, durable) in [
+            (MountPublication::Manual, 1),
+            (MountPublication::CloseAndSync, 0),
+        ] {
+            let (_, context) = checkout_context(publication)?;
+            // SAFETY: `context` outlives the call it is passed to.
+            let answer = unsafe {
+                acyclic_fs_darwin_mount_durable_writes(std::ptr::from_ref(&context) as usize)
+            };
+            assert_eq!(answer, durable, "{publication:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handles_open_their_source_file_only_when_used() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let path = MountPath::root().child(b"deferred".to_vec());
+        let created = source.create_file(&path, FileMetadata::default())?;
+        source.write_range(&path, 0, Bytes::from_static(b"kept"))?;
+        let bound = |handle: u64| -> Result<bool, Box<dyn std::error::Error>> {
+            let files = context.files.read().map_err(|_| "poisoned handles")?;
+            Ok(files.get(&handle).ok_or("handle absent")?.file.is_some())
+        };
+
+        let closed_unused = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        assert!(!bound(closed_unused)?, "an open binds nothing");
+        assert_eq!(
+            context
+                .lookup_handle(&path, closed_unused)
+                .map_err(os)?
+                .node
+                .file_id,
+            created.node.file_id,
+            "attributes need no source file"
+        );
+        assert!(!bound(closed_unused)?);
+
+        let read = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        let bytes = context
+            .file_or_open(&path, read)
+            .map_err(os)?
+            .read_up_to(0, 16)?;
+        assert_eq!(bytes.as_ref(), b"kept");
+        assert!(bound(read)?, "the first read binds the source file");
+
+        // A replacement outside this mount leaves an unbound handle stale,
+        // as an NFS handle on a removed object is.
+        let stale = context.open(&path, InitialHandleState::Clean).map_err(os)?;
+        source.remove(&path, Some(created.node.file_id))?;
+        source.create_file(&path, FileMetadata::default())?;
+        assert_eq!(context.file_or_open(&path, stale).err(), Some(libc::ESTALE));
+        Ok(())
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn renaming_over_an_open_file_keeps_it_for_its_handles() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let (replaced, replacement) = (
+            MountPath::root().child(b"replaced".to_vec()),
+            MountPath::root().child(b"replacement".to_vec()),
+        );
+        let original = source.create_file(&replaced, FileMetadata::default())?;
+        source.write_range(&replaced, 0, Bytes::from_static(b"original"))?;
+        source.create_file(&replacement, FileMetadata::default())?;
+        let handle = context
+            .open(&replaced, InitialHandleState::Clean)
+            .map_err(os)?;
+        let rename_over = |from: &CStr| {
+            // SAFETY: both names are NUL-terminated and `context` outlives the call.
+            unsafe {
+                acyclic_fs_darwin_mount_rename(
+                    std::ptr::from_ref(&context) as usize,
+                    from.as_ptr(),
+                    c"/replaced".as_ptr(),
+                    0,
+                )
+            }
+        };
+        assert_eq!(rename_over(c"/missing"), -libc::ENOENT);
+        assert!(
+            context
+                .files
+                .read()
+                .map_err(|_| "poisoned handles")?
+                .get(&handle)
+                .ok_or("handle absent")?
+                .file
+                .is_none(),
+            "a failed rename leaves the handle as it was"
+        );
+        assert_eq!(rename_over(c"/replacement"), 0);
+        let file = context.file_or_open(&replaced, handle).map_err(os)?;
+        assert_eq!(file.lookup()?.node.file_id, original.node.file_id);
+        assert_eq!(file.read_up_to(0, 16)?.as_ref(), b"original");
+        Ok(())
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn named_attribute_probes_need_no_source_call_without_attributes() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let path = MountPath::root().child(b"plain".to_vec());
+        source.create_file(&path, FileMetadata::default())?;
+        assert!(!context.may_have_named_attributes(&path).map_err(os)?);
+        // SAFETY: the names are NUL-terminated and `context` outlives the call.
+        let probe = || unsafe {
+            acyclic_fs_darwin_mount_getxattr(
+                std::ptr::from_ref(&context) as usize,
+                c"/plain".as_ptr(),
+                c"com.apple.provenance".as_ptr(),
+                ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(probe(), -libc::ENOATTR);
+        source.write_attribute(
+            &path,
+            b"com.apple.provenance",
+            Bytes::from_static(b"origin"),
+            MountAttributeWriteMode::Upsert,
+        )?;
+        assert!(context.may_have_named_attributes(&path).map_err(os)?);
+        assert_eq!(probe(), 6, "a present attribute is read from the source");
+        Ok(())
     }
 
     #[test]
@@ -2495,8 +3092,15 @@ mod tests {
     }
 
     /// Mounts a fresh checkout for one live macOS test.
-    fn live_mount()
-    -> Result<(tempfile::TempDir, crate::NativeMountSession), Box<dyn std::error::Error>> {
+    #[allow(clippy::type_complexity)]
+    fn live_mount() -> Result<
+        (
+            tempfile::TempDir,
+            Arc<MemorySource>,
+            crate::NativeMountSession,
+        ),
+        Box<dyn std::error::Error>,
+    > {
         let (source, _) = checkout_context(MountPublication::Manual)?;
         let temporary = tempfile::tempdir()?;
         let mount = crate::mount_native(
@@ -2506,9 +3110,9 @@ mod tests {
                 destination: temporary.path().to_path_buf(),
                 writable: true,
             },
-            source as Arc<dyn MountFilesystem>,
+            Arc::clone(&source) as Arc<dyn MountFilesystem>,
         )?;
-        Ok((temporary, mount))
+        Ok((temporary, source, mount))
     }
 
     /// The local socket a live mount's server listens on, from the mount
@@ -2543,11 +3147,59 @@ mod tests {
 
     #[test]
     #[ignore = "requires a live macOS NFS mount"]
+    fn macos_revalidation_shows_changes_made_around_the_mount() -> TestResult {
+        let (temporary, source, mut mount) = live_mount()?;
+        let (changed, created) = (
+            temporary.path().join("changed"),
+            temporary.path().join("created"),
+        );
+        let names = || -> std::io::Result<Vec<_>> {
+            std::fs::read_dir(temporary.path())?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect()
+        };
+        // Cache the file's attributes, the listing, and the absent name.
+        std::fs::write(&changed, b"old")?;
+        assert_eq!(std::fs::metadata(&changed)?.len(), 3);
+        assert_eq!(names()?, ["changed"]);
+        assert_eq!(
+            std::fs::metadata(&created).err().map(|error| error.kind()),
+            Some(std::io::ErrorKind::NotFound)
+        );
+        let began = Instant::now();
+        mount.revalidate()?;
+        assert!(
+            began.elapsed() < REPLY_DELIVERY_SLACK,
+            "the mount's own changes need no wait"
+        );
+
+        source.write_range(
+            &MountPath::root().child(b"changed".to_vec()),
+            0,
+            Bytes::from_static(b"newer"),
+        )?;
+        source.create_file(
+            &MountPath::root().child(b"created".to_vec()),
+            FileMetadata::default(),
+        )?;
+        mount.revalidate()?;
+        assert_eq!(std::fs::metadata(&changed)?.len(), 5);
+        assert!(created.is_file(), "the absent name is looked up again");
+        let mut listed = names()?;
+        listed.sort();
+        assert_eq!(listed, ["changed", "created"]);
+        assert_eq!(std::fs::read(&changed)?, b"newer");
+        assert!(mount.stop()?);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a live macOS NFS mount"]
     fn macos_server_answers_only_the_kernel() -> TestResult {
         use std::io::{Read as _, Write as _};
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-        let (temporary, mut mount) = live_mount()?;
+        let (temporary, _, mut mount) = live_mount()?;
         let socket = mount_socket(temporary.path())?;
         let directory = std::fs::metadata(socket.parent().ok_or("socket has no directory")?)?;
         assert_eq!(directory.permissions().mode() & 0o777, 0o700);
@@ -2583,7 +3235,7 @@ mod tests {
     fn macos_locks_exclude_other_processes() -> TestResult {
         use std::os::fd::AsRawFd as _;
 
-        let (temporary, mut mount) = live_mount()?;
+        let (temporary, _, mut mount) = live_mount()?;
         let path = temporary.path().join("locked");
         std::fs::write(&path, b"")?;
         // The NFS client keys locks by process, so another process contends.
@@ -2636,7 +3288,7 @@ mod tests {
     fn macos_mode_bits_deny_access() -> TestResult {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let (temporary, mut mount) = live_mount()?;
+        let (temporary, _, mut mount) = live_mount()?;
         let path = temporary.path().join("read-only");
         std::fs::write(&path, b"kept")?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444))?;
@@ -2672,7 +3324,7 @@ mod tests {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let root = MountPath::root();
         let mut directory =
-            DirectoryHandle::new(root, source.binding_epoch(), cache_epochs(source.as_ref()));
+            DirectoryHandle::new(root, source.binding_epoch(), context.cache_epochs());
         ensure_directory_page(&context, &mut directory)
             .map_err(std::io::Error::from_raw_os_error)?;
         source.create_file(
@@ -2692,10 +3344,10 @@ mod tests {
 
     #[test]
     fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestResult {
-        let (source, _context) = checkout_context(MountPublication::Manual)?;
+        let (source, context) = checkout_context(MountPublication::Manual)?;
         let nested = MountPath::root().child(b"nested".to_vec());
         source.create_directory(&nested, FileMetadata::default())?;
-        let epochs = cache_epochs(source.as_ref()).ok_or("checkout has no view stamp")?;
+        let epochs = context.cache_epochs().ok_or("checkout has no view stamp")?;
         let root = DirectoryHandle::new(MountPath::root(), Some(epochs.binding), Some(epochs));
         let directory = DirectoryHandle::new(nested.clone(), Some(epochs.binding), Some(epochs));
         let rebound = DirectoryHandle::new(
@@ -2706,22 +3358,31 @@ mod tests {
                 ..epochs
             }),
         );
-        assert!(root.is_current(source.as_ref()));
-        assert!(directory.is_current(source.as_ref()));
-        assert!(!rebound.is_current(source.as_ref()));
+        assert!(root.is_current(&context));
+        assert!(directory.is_current(&context));
+        assert!(!rebound.is_current(&context));
         assert!(directory.can_reuse_pages());
 
         source.create_file(
             &MountPath::root().child(b"sibling".to_vec()),
             FileMetadata::default(),
         )?;
-        assert!(!root.is_current(source.as_ref()));
-        assert!(directory.is_current(source.as_ref()));
+        assert!(!root.is_current(&context));
+        assert!(directory.is_current(&context));
         source.create_file(&nested.child(b"child".to_vec()), FileMetadata::default())?;
-        assert!(!directory.is_current(source.as_ref()));
+        assert!(!directory.is_current(&context));
+
+        let unrecorded =
+            DirectoryHandle::new(nested, source.binding_epoch(), context.cache_epochs());
+        assert!(unrecorded.is_current(&context));
+        context.forget_view();
+        assert!(
+            !unrecorded.is_current(&context),
+            "a forgotten view invalidates every page"
+        );
 
         let epochless = DirectoryHandle::new(MountPath::root(), None, None);
-        assert!(!epochless.is_current(source.as_ref()));
+        assert!(!epochless.is_current(&context));
         assert!(!epochless.can_reuse_pages());
         Ok(())
     }

@@ -215,9 +215,9 @@ static int parse_args(int argc, char *argv[], parsed_args_t *out)
 /* ---- Mount via mount_nfs ---- */
 
 /*
- * Mount the server's local socket.  actimeo=1 matches libfuse's default
- * one-second attribute and entry timeouts; the change attribute makes every
- * revalidation exact.  NFSv4.0 callbacks need an IP address, so a local
+ * Mount the server's local socket.  The attribute timeout matches libfuse's
+ * default one-second attribute and entry timeouts; the change attribute
+ * makes every revalidation exact.  NFSv4.0 callbacks need an IP address, so a local
  * socket mount takes none (nocallback): the server never delegates.
  */
 static int do_mount_nfs(const char *socket_path, const char *mount_point,
@@ -225,9 +225,9 @@ static int do_mount_nfs(const char *socket_path, const char *mount_point,
 {
     char opts[512];
     int len = snprintf(opts, sizeof(opts),
-        "vers=4,nocallback,actimeo=1,noacl,"
+        "vers=4,nocallback,actimeo=%d,noacl,"
         "rsize=262144,wsize=262144,"
-        "soft,intr,retrycnt=0");
+        "soft,intr,retrycnt=0", DARWINFUSE_ATTRIBUTE_TIMEOUT);
     char server[128];
     if (snprintf(server, sizeof(server), "<%s>:/", socket_path) >= (int)sizeof(server)) {
         DFUSE_ERR("Socket path is too long: %s", socket_path);
@@ -473,8 +473,10 @@ int fuse_loop(struct fuse *f)
                             | FUSE_CAP_VOL_RENAME | FUSE_CAP_ALLOCATE
                             | FUSE_CAP_EXCHANGE_DATA
 #endif
-                            ;
+                            | FUSE_CAP_DURABLE_WRITES;
         f->init_result = f->ops->init(&conn_info);
+        nfs4_server_set_durable_writes(
+            f->chan->server, (conn_info.want & FUSE_CAP_DURABLE_WRITES) != 0);
     }
 
     /* Set private_data to init() return value (or keep user_data) */
