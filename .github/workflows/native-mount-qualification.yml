@@ -88,10 +88,10 @@ jobs:
           cargo build --locked -p acyclic-plugin --release --target-dir "$target" &
           release=$!
           cargo build --locked -p acyclic-conformance --features local-runner \
-            --bin native-mount-qualify --target-dir "$target-qualifier"
+            --bin native-mount-qualify --target-dir "${target}-qualifier"
           wait "$release"
           echo "ACYCLIC_RELEASE_EXECUTABLE=$target/release/acyclic$suffix" >> "$GITHUB_ENV"
-          echo "ACYCLIC_QUALIFIER_EXECUTABLE=$target-qualifier/debug/native-mount-qualify$suffix" >> "$GITHUB_ENV"
+          echo "ACYCLIC_QUALIFIER_EXECUTABLE=${target}-qualifier/debug/native-mount-qualify$suffix" >> "$GITHUB_ENV"
 
       - name: Qualify Linux or macOS native mount
         if: runner.os != 'Windows'

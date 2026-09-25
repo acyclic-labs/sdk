@@ -108,8 +108,9 @@ jobs:
             pids+=("$!")
             names+=(install)
           fi
-          node scripts/build-product.mjs
+          # Report every concurrent build even when the product build fails.
           status=0
+          node scripts/build-product.mjs || status=$?
           for index in "${!pids[@]}"; do
             if ! wait "${pids[$index]}"; then
               status=1
