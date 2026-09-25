@@ -515,6 +515,15 @@ impl MountPath {
     pub fn components(&self) -> &[Vec<u8>] {
         &self.components
     }
+
+    /// Returns the containing directory, or `None` at the volume root.
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
+        let (_, parent) = self.components.split_last()?;
+        Some(Self {
+            components: parent.to_vec(),
+        })
+    }
 }
 
 /// Errors returned by the canonical checkout callback bridge.

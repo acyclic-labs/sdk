@@ -1,11 +1,11 @@
 //! Native projection of one demand-backed lazy workspace.
 
-use super::adapter::{CallbackRuntime, CheckoutDetachedFile};
+use super::adapter::{CallbackRuntime, CheckoutCandidate, CheckoutDetachedFile, InstallScope};
 use super::view_gate::{
     ViewGate as SourceViewGate, ViewReadLease as SourceViewLease,
     ViewWriteLease as SourceMutationLease,
 };
-use super::view_ledger::{ViewChange, ViewStamp};
+use super::view_ledger::{Installed, ViewChange, ViewStamp};
 use super::{
     CheckoutMountSource, MountAttributePage, MountAttributeWriteMode, MountContentPin,
     MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountNode,
@@ -45,12 +45,11 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    let promoted = authored.namespace_path(mounted)?;
     for _ in 0..MAXIMUM_PROMOTION_RETRIES {
-        let (mut candidate, revision) = authored.shared_checkout().candidate().await?;
+        let mut candidate = authored.shared_checkout().candidate().await?;
         let changed = lazy
             .stage_exact_into_checkout(
-                &mut candidate,
+                &mut candidate.checkout,
                 path,
                 expected_source,
                 MAXIMUM_PROMOTION_BYTES,
@@ -58,23 +57,75 @@ where
             )
             .await
             .map_err(lazy_error)?;
+        if !changed {
+            return Ok(());
+        }
+        // Boxed: comparing lookups nests whole lookup futures, which would
+        // otherwise inline into every promoting caller's future.
+        let installed =
+            Box::pin(promotion_effect(lazy, authored, &candidate, path, mounted)).await?;
         let mut checkout = authored.shared_checkout().lock().await;
         checkout.ensure_publication_resolved()?;
-        if checkout.revision() != revision {
-            continue;
+        if checkout.install_candidate(candidate, &installed) {
+            return checkout.publish_mutation(authored.cancellation()).await;
         }
-        if changed {
-            checkout.install_candidate(candidate);
-            checkout
-                .publish_after_mutation(
-                    ViewChange::Promoted(&promoted, expected_source),
-                    authored.cancellation(),
-                )
-                .await?;
-        }
-        return Ok(());
     }
     Err(MountSourceError::Stale)
+}
+
+/// The observable effect of promoting `mounted` and the ancestors staged
+/// with it. Promotion keeps every node's identity and projects its source
+/// facts, so a node is recorded only where the lookup the view answers after
+/// installation differs from the one it answered before.
+async fn promotion_effect<A, O, D, S>(
+    lazy: &LazyWorkspace<A, O, D, S>,
+    authored: &CheckoutMountSource<A, O>,
+    candidate: &CheckoutCandidate<A, O>,
+    path: &str,
+    mounted: &MountPath,
+) -> Result<Installed, MountSourceError>
+where
+    A: AsyncAuthorityStore + Send + Sync,
+    O: AsyncObjectStore + Send + Sync,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+{
+    let mut installed = Installed::default();
+    let mut prefix = mounted.clone();
+    let mut text = path.to_owned();
+    loop {
+        let after = authored.lookup_in(&candidate.checkout, &prefix).await?;
+        let before = match authored.lookup_in(candidate.base(), &prefix).await? {
+            Some(lookup) => Some(lookup),
+            None => match lazy.inspect_unauthored(&text, None).await {
+                Ok((lookup, _)) => {
+                    let file_id = lazy
+                        .stable_file_id_for_lookup(&text, &lookup)
+                        .await
+                        .map_err(lazy_error)?;
+                    Some(mount_lookup(lookup, file_id))
+                }
+                Err(LazyWorkspaceError::NotFound) => None,
+                Err(error) => return Err(lazy_error(error)),
+            },
+        };
+        if before != after {
+            installed.nodes.extend(
+                [before, after]
+                    .into_iter()
+                    .flatten()
+                    .map(|lookup| lookup.node.file_id),
+            );
+        }
+        let Some(parent) = prefix.parent() else {
+            return Ok(installed);
+        };
+        prefix = parent;
+        text = match text.rsplit_once('/') {
+            Some(("", _)) | None => "/".to_owned(),
+            Some((parent, _)) => parent.to_owned(),
+        };
+    }
 }
 
 struct StampedCursor<T> {
@@ -546,10 +597,22 @@ where
             self.abort_detached_publication()?;
             return Err(lazy_error(error));
         }
+        let removed = paths
+            .iter()
+            .map(|path| self.lazy.namespace_path(path).map_err(lazy_error))
+            .collect::<Result<Vec<_>, _>>()?;
+        let installed = candidate
+            .installed_changes(InstallScope::Paths(&removed), self.authored.cancellation())
+            .await;
+        // The mutation lease excludes every other change to the checkout.
+        if !self
+            .authored
+            .shared_checkout()
+            .lock()
+            .await
+            .install_candidate(candidate, &installed)
         {
-            let mut checkout = self.authored.shared_checkout().lock().await;
-            checkout.install_candidate(candidate);
-            checkout.record(&ViewChange::Everything);
+            return Err(MountSourceError::Stale);
         }
         self.authored.sync_async_with_permit_force(permit).await?;
         if !self
@@ -579,7 +642,7 @@ where
     ) -> Result<
         (
             crate::OperationId,
-            crate::Checkout<A, O>,
+            CheckoutCandidate<A, O>,
             Vec<(FileRecord, FileMetadata)>,
         ),
         MountSourceError,
@@ -589,8 +652,8 @@ where
         O: AsyncObjectStore,
     {
         let mut checkout = self.authored.shared_checkout().lock().await;
-        checkout.ensure_publication_resolved()?;
-        let mut candidate = checkout.private_candidate();
+        let mut transaction = checkout.candidate()?;
+        let candidate = &mut transaction.checkout;
         let mut identity_records = BTreeMap::new();
         for (path, removed_id) in removals {
             let namespace = self.lazy.namespace_path(path).map_err(lazy_error)?;
@@ -672,7 +735,7 @@ where
         }
         let identity_records = identity_records.into_values().collect();
         let operation_id = checkout.retained_operation_id();
-        Ok((operation_id, candidate, identity_records))
+        Ok((operation_id, transaction, identity_records))
     }
 
     /// Advances the authored checkout after an external publication.
@@ -1251,7 +1314,12 @@ where
     }
 
     fn read_attribute(&self, name: &[u8]) -> Result<Option<Bytes>, MountSourceError> {
-        self.with_authored(|file| file.read_attribute(name))
+        let _lease = self.source_lease()?;
+        // An unpromoted source file carries no named attributes.
+        match self.current_authored()? {
+            Some(file) => file.read_attribute(name),
+            None => Ok(None),
+        }
     }
 
     fn list_attributes(
@@ -1259,7 +1327,14 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError> {
-        self.with_authored(|file| file.list_attributes(cursor, maximum_entries))
+        let _lease = self.source_lease()?;
+        match self.current_authored()? {
+            Some(file) => file.list_attributes(cursor, maximum_entries),
+            None => Ok(MountAttributePage {
+                names: Vec::new(),
+                next_cursor: None,
+            }),
+        }
     }
 
     fn write_attribute(
@@ -1710,11 +1785,13 @@ where
         path: &MountPath,
         name: &[u8],
     ) -> Result<Option<Bytes>, MountSourceError> {
-        let _mutation = self.mutation_lease(None)?;
+        let _lease = self.view_lease(None)?;
         if let Some(file) = self.detached_for_path(path)? {
             return file.read_attribute(name);
         }
-        self.promote_locked(path)?;
+        if self.is_source_projection(path)? {
+            return Ok(None);
+        }
         self.authored.read_attribute(path, name)
     }
 
@@ -1724,11 +1801,16 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError> {
-        let _mutation = self.mutation_lease(None)?;
+        let _lease = self.view_lease(None)?;
         if let Some(file) = self.detached_for_path(path)? {
             return file.list_attributes(cursor, maximum_entries);
         }
-        self.promote_locked(path)?;
+        if self.is_source_projection(path)? {
+            return Ok(MountAttributePage {
+                names: Vec::new(),
+                next_cursor: None,
+            });
+        }
         self.authored.list_attributes(path, cursor, maximum_entries)
     }
 
@@ -2116,6 +2198,29 @@ where
         self.wait(|| {
             let source_view = Arc::clone(&self.source_view);
             async move { source_view.read_for_callback(owner, expected).await }
+        })
+    }
+
+    /// Whether `path` is answered from its source rather than the authored
+    /// checkout. A projected source node carries no named attributes, and
+    /// promotion stages none, so reading them never promotes.
+    fn is_source_projection(&self, path: &MountPath) -> Result<bool, MountSourceError> {
+        let text = self.path(path)?;
+        let owner = SourceViewGate::callback_owner();
+        self.wait(|| async move {
+            if self.authored.lookup_async(path, owner).await?.is_some() {
+                return Ok(false);
+            }
+            if self.is_removed(&text)? {
+                return Err(MountSourceError::NotFound);
+            }
+            match self.lazy.inspect_unauthored(&text, None).await {
+                Ok((LazyLookup::Source(_), _)) => Ok(true),
+                Ok(_) => Err(MountSourceError::Unsupported(
+                    "named attributes of an unpromoted shadow are not projected".to_owned(),
+                )),
+                Err(error) => Err(lazy_error(error)),
+            }
         })
     }
 
@@ -2745,6 +2850,88 @@ mod tests {
         view.recover_pending_mount_change(crate::PublicationPermit::Unrestricted)
             .await?;
         assert!(lazy.mount_removal_publication().await?.is_none());
+        Ok(())
+    }
+
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn promotion_and_attribute_reads_leave_cached_lookups_current()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::native::NativeDemandSource;
+        use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, VolumeLimits};
+        use crate::native_mount::{MountPublication, SharedCheckout};
+        use crate::{Fs, MemoryLazyWorkspaceStore};
+
+        let source_root = tempfile::tempdir()?;
+        std::fs::create_dir(source_root.path().join("d"))?;
+        std::fs::write(source_root.path().join("d").join("f"), b"source")?;
+        std::fs::write(source_root.path().join("g"), b"other")?;
+        let demand = Arc::new(
+            NativeDemandSource::open(
+                source_root.path(),
+                FilesystemProfile::Portable,
+                VolumeLimits::default(),
+            )
+            .await?,
+        );
+        let fs = Fs::memory();
+        let lazy = Arc::new(
+            LazyWorkspace::attach(
+                &fs,
+                "mounted-promotion-effect",
+                demand,
+                MemoryLazyWorkspaceStore::default(),
+            )
+            .await?,
+        );
+        let checkout = lazy
+            .workspace()
+            .engine_checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        let config = checkout.volume_config();
+        let authored = Arc::new(CheckoutMountSource::new(
+            Arc::new(SharedCheckout::with_publication(
+                checkout,
+                MountPublication::Manual,
+            )),
+            config,
+        )?);
+        let view = LazyMountSource::new(Arc::clone(&lazy), authored, "/".to_owned())?;
+        let component = |name: &str| -> Vec<u8> {
+            if cfg!(windows) {
+                name.encode_utf16().flat_map(u16::to_le_bytes).collect()
+            } else {
+                name.as_bytes().to_vec()
+            }
+        };
+        let directory = MountPath::root().child(component("d"));
+        let file = directory.child(component("f"));
+        let other = MountPath::root().child(component("g"));
+        let before = [&directory, &file, &other].map(|path| view.lookup(path));
+        let stamp = view.view_stamp().ok_or("lazy view has no stamp")?;
+
+        // Reading attributes of a source file answers from the source.
+        assert_eq!(view.read_attribute(&file, b"user.absent")?, None);
+        assert!(view.list_attributes(&file, None, 8)?.names.is_empty());
+        assert!(view.authored.lookup(&file)?.is_none());
+
+        // A promotion records only the nodes whose answer changed.
+        view.promote_locked(&file)?;
+        assert!(view.authored.lookup(&file)?.is_some());
+        let after = [&directory, &file, &other].map(|path| view.lookup(path));
+        for ((path, before), after) in [&directory, &file, &other].iter().zip(before).zip(after) {
+            let (before, after) = (before?, after?);
+            let file_id = after.map(|lookup| lookup.node.file_id);
+            assert_eq!(
+                view.unchanged_since(path, file_id, stamp),
+                before == after,
+                "a promotion's record disagrees with what the view answers for {path:?}"
+            );
+        }
+        assert!(view.unchanged_since(&other, None, stamp));
         Ok(())
     }
 
