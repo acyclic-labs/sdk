@@ -387,6 +387,12 @@ impl<A, O> SharedCheckout<A, O> {
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
         self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp)
     }
+
+    /// Whether no change of unenumerated effect, such as a rebind, has
+    /// happened since `stamp`.
+    pub(super) fn enumerated_since(&self, stamp: ViewStamp) -> bool {
+        self.view_gate.is_stable() && self.ledger.enumerated_since(stamp)
+    }
 }
 
 impl<A, O> Deref for SharedCheckoutGuard<'_, A, O> {

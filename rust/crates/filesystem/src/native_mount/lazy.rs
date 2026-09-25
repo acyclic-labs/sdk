@@ -236,6 +236,40 @@ enum Resolution {
     Unauthored(LazyLookup, Option<SourceReference>),
 }
 
+/// Names the source view lacks beneath: once neither the source nor the lazy
+/// overlay answers a directory, neither answers anything within it until the
+/// source is rebound, which records a change of unenumerated effect. The
+/// authored checkout may still create names there; those it answers itself.
+#[derive(Default)]
+struct UnsourcedDirectories(Mutex<HashMap<String, ViewStamp>>);
+
+impl UnsourcedDirectories {
+    /// The stamp after which the nearest proper ancestor of `text` was
+    /// found unanswered, if any was.
+    fn ancestor(&self, text: &str) -> Option<ViewStamp> {
+        let unsourced = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut ancestor = text;
+        while let Some((parent, _)) = ancestor.rsplit_once('/') {
+            if parent.is_empty() {
+                return None;
+            }
+            if let Some(stamp) = unsourced.get(parent) {
+                return Some(*stamp);
+            }
+            ancestor = parent;
+        }
+        None
+    }
+
+    fn remember(&self, text: &str, stamp: ViewStamp) {
+        let mut unsourced = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if unsourced.len() >= MAXIMUM_REMEMBERED_RESOLUTIONS {
+            unsourced.clear();
+        }
+        unsourced.insert(text.to_owned(), stamp);
+    }
+}
+
 /// Names the authored checkout lacked, remembered with the view stamp they
 /// were resolved after. An answer is reused only while the view records no
 /// change to the name's binding, its parent directories, or its node, so it
@@ -310,6 +344,7 @@ pub struct LazyMountSource<A, O, D, S> {
     root: String,
     runtime: Arc<CallbackRuntime>,
     resolutions: Resolutions,
+    unsourced: UnsourcedDirectories,
     unstaged: UnstagedIdentities,
     cursors: CursorTable<(ViewStamp, LazyDirectoryCursor)>,
     source_view: Arc<SourceViewGate>,
@@ -337,6 +372,7 @@ where
             root,
             runtime: Arc::new(CallbackRuntime::create()?),
             resolutions: Resolutions::default(),
+            unsourced: UnsourcedDirectories::default(),
             unstaged: Arc::default(),
             cursors: CursorTable::new(MAXIMUM_LAZY_DIRECTORY_CURSORS),
             source_view: Arc::new(SourceViewGate::new()),
@@ -1056,11 +1092,22 @@ where
         if self.is_removed(text)? {
             return Ok(Resolution::Absent);
         }
+        // A name beneath a directory the source view lacked needs no source
+        // request to prove its own absence.
+        if self.unsourced.ancestor(text).is_some_and(|since| {
+            self.source_view.is_stable() && self.authored.shared_checkout().enumerated_since(since)
+        }) {
+            if let Some(stamp) = stamp {
+                self.resolutions.remember(path, stamp, None);
+            }
+            return Ok(Resolution::Absent);
+        }
         let resolved = match self.lazy.inspect_unauthored(text, None).await {
             Ok(resolved) => resolved,
             Err(LazyWorkspaceError::NotFound) => {
                 if let Some(stamp) = stamp {
                     self.resolutions.remember(path, stamp, None);
+                    self.unsourced.remember(text, stamp);
                 }
                 return Ok(Resolution::Absent);
             }
@@ -3166,6 +3213,18 @@ mod tests {
             view.open_file(&a),
             Err(MountSourceError::NotFound)
         ));
+
+        // Names beneath a directory the source lacks are absent until created.
+        let fresh = mount_path("fresh");
+        let inner = fresh.child(mount_path("inner").components()[0].clone());
+        assert_eq!(view.lookup(&fresh)?, None);
+        view.create_directory(&fresh, FileMetadata::default())?;
+        assert_eq!(view.lookup(&inner)?, None);
+        let created = view.create_file(&inner, FileMetadata::default())?;
+        assert_eq!(
+            view.lookup(&inner)?.map(|lookup| lookup.node.file_id),
+            Some(created.node.file_id)
+        );
 
         // A source file changed outside the view since it was remembered is
         // opened at its current version, never served stale.
