@@ -184,6 +184,16 @@ pub enum OperationWindowFinish {
     AlreadyClosed,
 }
 
+/// What the final close of a window owes the parent.
+enum FinalClose {
+    /// Reconcile what the window observed.
+    Reconcile,
+    /// Nothing: the fork is based on its parent's head.
+    Settle,
+    /// Rebase onto this parent head.
+    Rebase(GenerationId),
+}
+
 /// Bounds applied when the last tool lease reconciles a fork with its parent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OperationReconcileLimits {
@@ -754,10 +764,27 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         now_millis: u64,
         reconciliation_ticket: OperationId,
     ) -> Result<OperationWindowFinish, OperationWindowError<S::Error>> {
+        self.close(lease, now_millis, reconciliation_ticket, || {
+            std::future::ready(Ok(FinalClose::Reconcile))
+        })
+        .await
+        .map(|(finish, _)| finish)
+    }
+
+    /// Closes a lease in one transition. The final close asks `final_close`
+    /// what reconciliation owes the parent; the returned flag says that the
+    /// close settled the window, with nothing left to reconcile.
+    async fn close<F: Future<Output = Result<FinalClose, OperationWindowError<S::Error>>>>(
+        &self,
+        lease: &OperationWindowLease,
+        now_millis: u64,
+        reconciliation_ticket: OperationId,
+        final_close: impl Fn() -> F,
+    ) -> Result<(OperationWindowFinish, bool), OperationWindowError<S::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut current = self.snapshot(lease.workspace_id).await?;
             let before = current.phase.clone();
-            let result = close_lease(
+            let mut result = close_lease(
                 &mut current.phase,
                 lease.lease_id,
                 lease.expires_at_millis,
@@ -765,12 +792,33 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 reconciliation_ticket,
             );
             if result.is_none() && current.phase == before {
-                return Ok(OperationWindowFinish::AlreadyClosed);
+                return Ok((OperationWindowFinish::AlreadyClosed, false));
+            }
+            let mut settled = false;
+            if let Some(OperationWindowFinish::Reconcile(reconcile)) = &mut result {
+                match final_close().await? {
+                    FinalClose::Reconcile => {}
+                    FinalClose::Settle => {
+                        current.phase = OperationWindowPhase::Idle;
+                        settled = true;
+                    }
+                    FinalClose::Rebase(parent) => {
+                        reconcile.pending_parent = Some(parent);
+                        if let OperationWindowPhase::Reconciling { pending_parent, .. } =
+                            &mut current.phase
+                        {
+                            *pending_parent = Some(parent);
+                        }
+                    }
+                }
             }
             let expected = current.revision;
             current.revision = expected.saturating_add(1);
             if self.cas(lease.workspace_id, expected, current).await? {
-                return Ok(result.unwrap_or(OperationWindowFinish::AlreadyClosed));
+                return Ok((
+                    result.unwrap_or(OperationWindowFinish::AlreadyClosed),
+                    settled,
+                ));
             }
         }
         Err(OperationWindowError::Contended)
@@ -778,6 +826,9 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
 
     /// Closes a lease and runs exactly one core live rebase after the last close.
     ///
+    /// The last close rebases the fork onto its parent's head, whether or not
+    /// the window observed the advance. A fork already based on that head needs
+    /// no rebase, so its last close releases the window in the same transition.
     /// Successful, current, and conflicted outcomes are terminal and release
     /// the window. Stale, fenced, and idempotency-conflicted outcomes retain the
     /// durable reconciliation ticket so recovery can retry or inspect it.
@@ -791,14 +842,37 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         if workspace.id() != lease.workspace_id {
             return Err(OperationWindowError::IncompatibleState);
         }
-        let reconcile = match self.finish(lease, now_millis).await? {
-            OperationWindowFinish::StillActive { remaining } => {
+        let final_close = || {
+            let workspace = workspace.clone();
+            async move {
+                match workspace.parent_advance(limits.maximum_generations).await {
+                    Ok(Some(parent)) => Ok(FinalClose::Rebase(parent)),
+                    // A workspace that is not a fork has no parent to follow.
+                    Ok(None) | Err(WorkspaceError::NotFork) => Ok(FinalClose::Settle),
+                    Err(error) => Err(OperationWindowError::Workspace(error)),
+                }
+            }
+        };
+        let reconcile = match self
+            .close(lease, now_millis, OperationId::new(), final_close)
+            .await?
+        {
+            (OperationWindowFinish::StillActive { remaining }, _) => {
                 return Ok(WorkspaceOperationFinish::StillActive { remaining });
             }
-            OperationWindowFinish::AlreadyClosed => {
+            (OperationWindowFinish::AlreadyClosed, _) => {
                 return Ok(WorkspaceOperationFinish::AlreadyClosed);
             }
-            OperationWindowFinish::Reconcile(reconcile) => reconcile,
+            (OperationWindowFinish::Reconcile(_), true) => {
+                return workspace
+                    .head()
+                    .await
+                    .map(|head| {
+                        WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Current(head))
+                    })
+                    .map_err(OperationWindowError::Workspace);
+            }
+            (OperationWindowFinish::Reconcile(reconcile), false) => reconcile,
         };
         self.reconcile_workspace(workspace, reconcile, limits)
             .await
@@ -1309,6 +1383,94 @@ mod tests {
             coordinator.inspect(child.id()).await.expect("window").phase,
             OperationWindowPhase::Idle
         ));
+    }
+
+    #[tokio::test]
+    async fn final_close_of_a_current_fork_releases_the_window_in_one_transition() {
+        let fs = Fs::memory();
+        let parent = fs.create_workspace("current-parent").await.expect("parent");
+        let child = parent
+            .fork(
+                "current-child",
+                ForkOptions::from_generation(
+                    parent.head().await.expect("base"),
+                    IdempotencyKey::new(),
+                ),
+            )
+            .await
+            .expect("child");
+        let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
+        let lease = coordinator
+            .begin(
+                child.id(),
+                parent.head().await.expect("parent head").id(),
+                "tool",
+                1,
+                100,
+            )
+            .await
+            .expect("lease");
+        let opened = coordinator.inspect(child.id()).await.expect("window");
+        assert!(matches!(
+            coordinator
+                .finish_workspace(&child, &lease, 2, OperationReconcileLimits::default())
+                .await
+                .expect("final close"),
+            WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Current(_))
+        ));
+        let closed = coordinator.inspect(child.id()).await.expect("window");
+        assert_eq!(closed.phase, OperationWindowPhase::Idle);
+        assert_eq!(closed.revision, opened.revision + 1);
+    }
+
+    #[tokio::test]
+    async fn final_close_rebases_onto_a_parent_advance_it_never_observed() {
+        let fs = Fs::memory();
+        let parent = fs
+            .create_workspace("unobserved-parent")
+            .await
+            .expect("parent");
+        let child = parent
+            .fork(
+                "unobserved-child",
+                ForkOptions::from_generation(
+                    parent.head().await.expect("base"),
+                    IdempotencyKey::new(),
+                ),
+            )
+            .await
+            .expect("child");
+        parent
+            .write_text("/parent", "unobserved")
+            .await
+            .expect("parent write");
+        let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
+        // The window pins the advanced head, which the fork is not based on.
+        let lease = coordinator
+            .begin(
+                child.id(),
+                parent.head().await.expect("parent head").id(),
+                "tool",
+                1,
+                100,
+            )
+            .await
+            .expect("lease");
+        assert!(matches!(
+            coordinator
+                .finish_workspace(&child, &lease, 2, OperationReconcileLimits::default())
+                .await
+                .expect("final close"),
+            WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Rebased(_))
+        ));
+        assert_eq!(
+            child.read("/parent", 16).await.expect("upstream").as_ref(),
+            b"unobserved"
+        );
+        assert_eq!(
+            coordinator.inspect(child.id()).await.expect("window").phase,
+            OperationWindowPhase::Idle
+        );
     }
 
     #[tokio::test]

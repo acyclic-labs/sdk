@@ -77,6 +77,8 @@ pub mod distributed;
 mod distributed_fs;
 pub mod facade;
 pub mod foundation;
+#[cfg(all(feature = "native-watch", target_os = "macos"))]
+mod fsevents;
 pub mod git_compat;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted;

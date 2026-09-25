@@ -14,7 +14,7 @@ use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
 use notify::event::{ModifyKind, RenameMode};
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::collections::BTreeSet;
 use std::mem::size_of;
 use std::path::{Component, Path, PathBuf};
@@ -24,12 +24,21 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+/// The host's native event watcher. On macOS it loads `FSEvents` when the
+/// first one is created instead of linking `CoreServices`, which would load it
+/// into every process at start.
+#[cfg(target_os = "macos")]
+pub type NativeEventWatcher = crate::fsevents::FsEventsWatcher;
+/// The host's native event watcher.
+#[cfg(not(target_os = "macos"))]
+pub type NativeEventWatcher = notify::RecommendedWatcher;
+
 /// Native notification mechanism compiled for this target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeWatchBackend {
     /// Linux inotify through the reviewed `notify` adapter.
     LinuxInotify,
-    /// macOS `FSEvents` through the reviewed `notify` adapter.
+    /// macOS `FSEvents`, loaded on first use; see [`NativeEventWatcher`].
     MacosFsevents,
     /// Windows `ReadDirectoryChangesW` through the reviewed `notify` adapter.
     WindowsReadDirectoryChanges,
@@ -329,7 +338,7 @@ struct NativeEventContext {
 /// [`Self::finish_rescan`] before polling. The same handshake repairs overflow
 /// without losing changes concurrent with the baseline scan.
 pub struct NativeWatch {
-    watcher: RecommendedWatcher,
+    watcher: NativeEventWatcher,
     root: PathBuf,
     recursive: bool,
     watched_directories: BTreeSet<PathBuf>,
@@ -423,26 +432,29 @@ impl NativeWatch {
             #[cfg(target_os = "linux")]
             maximum_queued_changes: options.maximum_queued_changes,
         };
-        let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
-            accept_native_event(
-                &event,
-                &callback_context,
-                &sender,
-                &callback_shared,
-                &callback_queued,
-            );
-            // Signal only after the cookie's own hint is handled: delivery is
-            // ordered, so every earlier host change is already queued.
-            if let (Ok(event), Ok(mut state)) = (&event, callback_shared.lock())
-                && state
-                    .fence
-                    .as_ref()
-                    .is_some_and(|fence| event.paths.contains(fence))
-            {
-                state.fence = None;
-                callback_fenced.notify_all();
-            }
-        })
+        let mut watcher = NativeEventWatcher::new(
+            move |event: notify::Result<Event>| {
+                accept_native_event(
+                    &event,
+                    &callback_context,
+                    &sender,
+                    &callback_shared,
+                    &callback_queued,
+                );
+                // Signal only after the cookie's own hint is handled: delivery is
+                // ordered, so every earlier host change is already queued.
+                if let (Ok(event), Ok(mut state)) = (&event, callback_shared.lock())
+                    && state
+                        .fence
+                        .as_ref()
+                        .is_some_and(|fence| event.paths.contains(fence))
+                {
+                    state.fence = None;
+                    callback_fenced.notify_all();
+                }
+            },
+            notify::Config::default(),
+        )
         .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
         watcher
             .watch(

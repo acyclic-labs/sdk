@@ -125,7 +125,7 @@ struct CheckoutSnapshot {
 }
 
 enum QualificationWatcher {
-    Native(notify::RecommendedWatcher),
+    Native(acyclic_fs::watch::NativeEventWatcher),
     Poll(notify::PollWatcher),
 }
 
@@ -895,9 +895,12 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
             notify::Config::default().with_poll_interval(Duration::from_millis(100)),
         )?)
     } else {
-        QualificationWatcher::Native(notify::recommended_watcher(move |event| {
-            let _ = watch_tx.send(event);
-        })?)
+        QualificationWatcher::Native(acyclic_fs::watch::NativeEventWatcher::new(
+            move |event| {
+                let _ = watch_tx.send(event);
+            },
+            notify::Config::default(),
+        )?)
     };
     let mount = workspace
         .mount(&mount_path, MountOptions::read_write())
