@@ -352,6 +352,15 @@ void fuse_exit(struct fuse *f);
 /* Reject stale NFS READDIR continuations after provider-side changes. */
 void fuse_mark_namespace_changed(struct fuse *f);
 
+/*
+ * Report, from inside fuse_loop(), the moment the mount became visible:
+ * the loop calls mounted(arg) once, after the kernel accepted the mount and
+ * before it serves the mount's requests. A caller that must not expose the
+ * mount point earlier waits for this instead of polling the mount table.
+ */
+void fuse_set_mounted_callback(struct fuse *f, void (*mounted)(void *arg),
+                               void *arg);
+
 /* ---- Utility functions ---- */
 
 /*

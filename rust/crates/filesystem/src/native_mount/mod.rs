@@ -1960,8 +1960,7 @@ mod platform {
     use super::{NativeMountCapabilities, NativeMountKind, NativeMountSessionIsolation};
 
     pub(super) fn probe() -> NativeMountCapabilities {
-        let available = std::path::Path::new("/sbin/mount_nfs").is_file()
-            && std::path::Path::new("/sbin/umount").is_file();
+        let available = std::path::Path::new("/sbin/mount_nfs").is_file();
         NativeMountCapabilities {
             kind: Some(NativeMountKind::MacOsNfs),
             available,
@@ -1969,7 +1968,7 @@ mod platform {
             provider_process_io_observable: available,
             session_isolation: NativeMountSessionIsolation::SharedProcess,
             unavailable_reason: (!available)
-                .then(|| "the built-in macOS NFS mount utilities are unavailable".to_owned()),
+                .then(|| "the built-in macOS NFS mount utility is unavailable".to_owned()),
         }
     }
 }

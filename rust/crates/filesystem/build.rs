@@ -35,10 +35,9 @@ fn build_darwin_mount() {
         "vendor/darwinfuse/src/darwinfuse.c",
         "src/native_mount/darwin_mount_bridge.c",
     ];
-    println!("cargo:rerun-if-changed=vendor/darwinfuse/LICENSE");
-    for source in SOURCES {
-        println!("cargo:rerun-if-changed={source}");
-    }
+    // The whole vendored tree, so a changed header also rebuilds.
+    println!("cargo:rerun-if-changed=vendor/darwinfuse");
+    println!("cargo:rerun-if-changed=src/native_mount/darwin_mount_bridge.c");
     cc::Build::new()
         .files(SOURCES)
         .include("vendor/darwinfuse/include")

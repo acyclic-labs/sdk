@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, RwLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -38,6 +38,7 @@ const FALLOC_FL_KEEP_SIZE: c_int = 0x01;
 const FALLOC_FL_PUNCH_HOLE: c_int = 0x02;
 const FALLOC_FL_ZERO_RANGE: c_int = 0x10;
 const DISKUTIL_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(4);
+const MOUNT_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(10);
 const MOUNT_LOOP_EXIT_TIMEOUT: Duration = Duration::from_secs(4);
 const DISKUTIL_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2);
 const DIRECT_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -106,6 +107,8 @@ unsafe extern "C" {
         argv: *const *const c_char,
         mountpoint: *const c_char,
         context: usize,
+        mounted: unsafe extern "C" fn(*mut c_void),
+        mounted_argument: *mut c_void,
     ) -> c_int;
     fn acyclic_fs_darwin_mount_interrupt(session: *mut c_void);
     fn acyclic_fs_darwin_mount_invalidate(session: *mut c_void, path: *const c_char) -> c_int;
@@ -970,11 +973,69 @@ enum InitialHandleState {
     Written,
 }
 
+/// What a mount loop has reported: that the kernel accepted its mount, and
+/// that the loop has returned. Mount and teardown block on these reports
+/// rather than polling for their effects, so each wakes the moment the loop
+/// reports; a poll's sleep is stretched far beyond its interval when the
+/// system coalesces a background service's timers.
+#[derive(Default)]
+struct LoopEvents {
+    state: Mutex<LoopState>,
+    changed: Condvar,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LoopState {
+    mounted: bool,
+    exited: bool,
+}
+
+impl LoopEvents {
+    fn report(&self, update: impl FnOnce(&mut LoopState)) {
+        update(&mut self.state.lock().unwrap_or_else(PoisonError::into_inner));
+        self.changed.notify_all();
+    }
+
+    fn current(&self) -> LoopState {
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Waits up to `timeout` for a state `done` accepts, and returns the
+    /// state reported by then.
+    fn wait_until(&self, timeout: Duration, done: impl Fn(LoopState) -> bool) -> LoopState {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| !done(*state))
+            .unwrap_or_else(PoisonError::into_inner);
+        *state
+    }
+}
+
+/// Held by the mount loop thread; reports its return when dropped, so a
+/// waiter also wakes if the thread unwinds.
+struct ExitReport(Arc<LoopEvents>);
+
+impl Drop for ExitReport {
+    fn drop(&mut self) {
+        self.0.report(|state| state.exited = true);
+    }
+}
+
+/// Called by the bridge once the kernel has accepted the mount.
+unsafe extern "C" fn report_mounted(events: *mut c_void) {
+    // SAFETY: the loop thread's `ExitReport` keeps these events alive for
+    // the whole native loop, which is the only caller.
+    let events = unsafe { &*events.cast_const().cast::<LoopEvents>() };
+    events.report(|state| state.mounted = true);
+}
+
 /// One process-owned high-level Darwin mount session.
 pub(super) struct DarwinMountSession {
     resources: Option<Arc<DriverSessionResources>>,
     destination: PathBuf,
     thread: Option<JoinHandle<c_int>>,
+    events: Arc<LoopEvents>,
     loop_finished_before_teardown: Option<bool>,
     loop_result: Option<MountLoopResult>,
     teardown_complete: bool,
@@ -1017,7 +1078,7 @@ impl Drop for DriverSessionResources {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UnmountEvidence {
     AlreadyUnmounted,
-    DiskutilUnmounted,
+    Detached,
 }
 
 impl DarwinMountSession {
@@ -1080,9 +1141,12 @@ impl DarwinMountSession {
             driver_session,
         });
         let loop_resources = Arc::clone(&resources);
+        let events = Arc::new(LoopEvents::default());
+        let exit_report = ExitReport(Arc::clone(&events));
         let thread = std::thread::Builder::new()
             .name("acyclic-fs-darwin-nfs".to_owned())
             .spawn(move || {
+                let exit_report = exit_report;
                 let pointers = arguments
                     .iter()
                     .map(|argument| argument.as_ptr())
@@ -1094,6 +1158,8 @@ impl DarwinMountSession {
                         pointers.as_ptr(),
                         destination_c.as_ptr(),
                         loop_resources.source_context,
+                        report_mounted,
+                        Arc::as_ptr(&exit_report.0).cast_mut().cast(),
                     )
                 }
             })
@@ -1102,6 +1168,7 @@ impl DarwinMountSession {
             resources: Some(resources),
             destination,
             thread: Some(thread),
+            events,
             loop_finished_before_teardown: None,
             loop_result: None,
             teardown_complete: false,
@@ -1110,30 +1177,34 @@ impl DarwinMountSession {
     }
 
     fn await_mount(mut self, parent_metadata: &Metadata) -> Result<Self, DriverStartFailure> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            match is_mounted(&self.destination, parent_metadata) {
-                Ok(true) => break,
-                Ok(false) => {}
-                Err(error) => {
-                    return Err(self.failed_start(NativeMountError::Driver(error)));
-                }
-            }
-            if self.thread.as_ref().is_some_and(JoinHandle::is_finished) {
-                let status = self.finish_thread();
-                self.loop_finished_before_teardown = Some(true);
-                let description = format!("{status:?}");
-                self.loop_result = Some(status);
+        let reported = self.events.wait_until(MOUNT_VISIBILITY_TIMEOUT, |state| {
+            state.mounted || state.exited
+        });
+        if !reported.mounted {
+            if !reported.exited {
                 return Err(self.failed_start(NativeMountError::Driver(format!(
-                    "Darwin mount exited before the mount became visible: {description}"
+                    "Darwin mount did not become visible within {} seconds",
+                    MOUNT_VISIBILITY_TIMEOUT.as_secs()
                 ))));
             }
-            if Instant::now() >= deadline {
+            let status = self.finish_thread();
+            self.loop_finished_before_teardown = Some(true);
+            let description = format!("{status:?}");
+            self.loop_result = Some(status);
+            return Err(self.failed_start(NativeMountError::Driver(format!(
+                "Darwin mount exited before the mount became visible: {description}"
+            ))));
+        }
+        // The loop reports only a mount the kernel accepted; the mount table
+        // confirms that it is this destination's.
+        match is_mounted(&self.destination, parent_metadata) {
+            Ok(true) => {}
+            Ok(false) => {
                 return Err(self.failed_start(NativeMountError::Driver(
-                    "Darwin mount did not become visible within 10 seconds".to_owned(),
+                    "Darwin mount reported a mount the mount table does not show".to_owned(),
                 )));
             }
-            std::thread::sleep(Duration::from_millis(25));
+            Err(error) => return Err(self.failed_start(NativeMountError::Driver(error))),
         }
         // A successful NFS mount does not prove the caller can use it: macOS
         // privacy policy can allow metadata lookups while denying every open
@@ -1222,14 +1293,14 @@ impl DarwinMountSession {
             return Ok(());
         }
         // Observe whether the provider loop failed independently before any
-        // teardown action can make it exit. `diskutil unmount` waits for the
-        // transport to close on some hosts, so sampling after that call races
-        // a successful detach and misclassifies it as a pre-existing failure.
+        // teardown action can make it exit. A detach closes the transport,
+        // which ends the loop, so sampling after it races a successful detach
+        // and misclassifies it as a pre-existing failure.
         if self.loop_result.is_none() {
             self.loop_finished_before_teardown =
-                Some(self.thread.as_ref().is_none_or(JoinHandle::is_finished));
+                Some(self.thread.is_none() || self.events.current().exited);
         }
-        let unmount = bounded_diskutil_unmount(&self.destination);
+        let unmount = bounded_unmount(&self.destination);
         if self
             .loop_result
             .as_ref()
@@ -1263,18 +1334,15 @@ impl DarwinMountSession {
     }
 
     fn finish_thread_within(&mut self, timeout: Duration) -> MountLoopResult {
-        let Some(thread) = self.thread.as_ref() else {
+        if self.thread.is_none() {
             return MountLoopResult::Exited(0);
-        };
-        let deadline = Instant::now() + timeout;
-        while !thread.is_finished() {
-            if Instant::now() >= deadline {
-                // Keep the join handle, callback resources, and destination
-                // fence so a later stop can retry once callbacks have exited.
-                return MountLoopResult::TimedOut;
-            }
-            std::thread::sleep(Duration::from_millis(10));
         }
+        if !self.events.wait_until(timeout, |state| state.exited).exited {
+            // Keep the join handle, callback resources, and destination
+            // fence so a later stop can retry once callbacks have exited.
+            return MountLoopResult::TimedOut;
+        }
+        // The loop has returned: joining waits only for its thread to end.
         let Some(thread) = self.thread.take() else {
             return MountLoopResult::Panicked;
         };
@@ -1377,7 +1445,9 @@ fn is_mounted(destination: &Path, _parent: &Metadata) -> Result<bool, String> {
     }))
 }
 
-fn bounded_diskutil_unmount(destination: &Path) -> Result<UnmountEvidence, String> {
+/// Detaches `destination` directly, falling back to `diskutil unmount
+/// force` only when the direct detach leaves it mounted.
+fn bounded_unmount(destination: &Path) -> Result<UnmountEvidence, String> {
     let parent = destination
         .parent()
         .and_then(|path| path.metadata().ok())
@@ -1386,7 +1456,7 @@ fn bounded_diskutil_unmount(destination: &Path) -> Result<UnmountEvidence, Strin
         return Ok(UnmountEvidence::AlreadyUnmounted);
     }
     if bounded_direct_unmount(destination, &parent)? {
-        return Ok(UnmountEvidence::DiskutilUnmounted);
+        return Ok(UnmountEvidence::Detached);
     }
     let mut child = Command::new("/usr/sbin/diskutil")
         .arg("unmount")
@@ -1406,7 +1476,7 @@ fn bounded_diskutil_unmount(destination: &Path) -> Result<UnmountEvidence, Strin
             let _ = child.kill();
             let _ = child.wait();
             if !is_mounted(destination, &parent)? {
-                return Ok(UnmountEvidence::DiskutilUnmounted);
+                return Ok(UnmountEvidence::Detached);
             }
             return Err(format!(
                 "diskutil unmount exceeded its {}-second bound",
@@ -1416,7 +1486,7 @@ fn bounded_diskutil_unmount(destination: &Path) -> Result<UnmountEvidence, Strin
         std::thread::sleep(Duration::from_millis(10));
     };
     if !is_mounted(destination, &parent)? {
-        return Ok(UnmountEvidence::DiskutilUnmounted);
+        return Ok(UnmountEvidence::Detached);
     }
     if !status.success() {
         return Err(format!("diskutil unmount failed with status {status}"));
@@ -1428,40 +1498,36 @@ fn bounded_diskutil_unmount(destination: &Path) -> Result<UnmountEvidence, Strin
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    Ok(UnmountEvidence::DiskutilUnmounted)
+    Ok(UnmountEvidence::Detached)
 }
 
 pub(super) fn recover_destination(destination: &Path) -> Result<(), NativeMountError> {
-    bounded_diskutil_unmount(destination)
+    bounded_unmount(destination)
         .map(|_| ())
         .map_err(NativeMountError::Driver)
 }
 
+/// Force-detaches with `unmount(2)`, as `umount -f` would without its
+/// process launch, and reports whether the destination is detached. The
+/// kernel detaches within the call, so its return is the answer; a helper
+/// thread bounds a call that a wedged transport blocks, after which the
+/// caller's fallback takes over.
 fn bounded_direct_unmount(destination: &Path, parent: &Metadata) -> Result<bool, String> {
-    let mut child = Command::new("/sbin/umount")
-        .arg("-f")
-        .arg(destination)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+    let path = path_cstring(destination)
+        .map_err(|error| std::io::Error::from_raw_os_error(error).to_string())?;
+    let (detached, outcome) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("acyclic-fs-darwin-unmount".to_owned())
+        .spawn(move || {
+            // SAFETY: `path` is a NUL-terminated path this thread owns.
+            let status = unsafe { libc::unmount(path.as_ptr(), libc::MNT_FORCE) };
+            let _ = detached.send(status);
+        })
         .map_err(|error| error.to_string())?;
-    let deadline = Instant::now() + DIRECT_UNMOUNT_TIMEOUT;
-    loop {
-        if child
-            .try_wait()
-            .map_err(|error| error.to_string())?
-            .is_some()
-        {
-            return is_mounted(destination, parent).map(|mounted| !mounted);
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return is_mounted(destination, parent).map(|mounted| !mounted);
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    // The mount table decides either way: a failed or still-blocked call
+    // leaves the destination mounted for the fallback.
+    let _ = outcome.recv_timeout(DIRECT_UNMOUNT_TIMEOUT);
+    is_mounted(destination, parent).map(|mounted| !mounted)
 }
 
 fn context(address: usize) -> Result<&'static DarwinMountContext, i32> {
@@ -3391,7 +3457,10 @@ mod tests {
     fn stalled_mount_loop_keeps_destination_fenced_until_callbacks_finish() {
         let (release, waiting) = std::sync::mpsc::channel::<()>();
         let (exited, complete) = std::sync::mpsc::channel::<()>();
+        let events = Arc::new(LoopEvents::default());
+        let exit_report = ExitReport(Arc::clone(&events));
         let thread = std::thread::spawn(move || {
+            let _exit_report = exit_report;
             let _ = waiting.recv();
             let _ = exited.send(());
             0
@@ -3400,6 +3469,7 @@ mod tests {
             resources: None,
             destination: PathBuf::new(),
             thread: Some(thread),
+            events,
             loop_finished_before_teardown: None,
             loop_result: None,
             teardown_complete: false,
@@ -3407,18 +3477,45 @@ mod tests {
         let start = Instant::now();
         let result = session.finish_thread_within(Duration::from_millis(20));
         assert!(matches!(result, MountLoopResult::TimedOut));
-        assert!(
-            classify_detached_loop(&result, UnmountEvidence::DiskutilUnmounted, false).is_err()
-        );
+        assert!(classify_detached_loop(&result, UnmountEvidence::Detached, false).is_err());
         assert!(start.elapsed() < Duration::from_secs(1));
         assert!(session.thread.is_some());
         let _ = release.send(());
         assert!(complete.recv_timeout(Duration::from_secs(1)).is_ok());
         let result = session.finish_thread_within(Duration::from_secs(1));
         assert!(matches!(result, MountLoopResult::Exited(0)));
-        assert!(classify_detached_loop(&result, UnmountEvidence::DiskutilUnmounted, false).is_ok());
+        assert!(classify_detached_loop(&result, UnmountEvidence::Detached, false).is_ok());
         assert!(session.thread.is_none());
         // This synthetic session has no destination or native driver to stop.
         session.teardown_complete = true;
+    }
+
+    #[test]
+    fn mount_loop_reports_wake_waiters_and_survive_an_unwinding_loop() {
+        const LONG: Duration = Duration::from_secs(60);
+        let events = Arc::new(LoopEvents::default());
+        let silent = events.wait_until(Duration::from_millis(20), |state| state.mounted);
+        assert!(!silent.mounted && !silent.exited, "nothing was reported");
+
+        let (proceed, proceeding) = std::sync::mpsc::channel::<()>();
+        let exit_report = ExitReport(Arc::clone(&events));
+        let thread = std::thread::spawn(move || {
+            // SAFETY: `exit_report` keeps the events alive across the call,
+            // as the mount loop thread does.
+            unsafe { report_mounted(Arc::as_ptr(&exit_report.0).cast_mut().cast()) };
+            let _ = proceeding.recv();
+            std::panic::resume_unwind(Box::new("the loop unwinds instead of returning"));
+        });
+        let began = Instant::now();
+        let mounted = events.wait_until(LONG, |state| state.mounted);
+        assert!(mounted.mounted && !mounted.exited);
+        let _ = proceed.send(());
+        let exited = events.wait_until(LONG, |state| state.exited);
+        assert!(exited.exited, "an unwinding loop still reports its exit");
+        assert!(
+            began.elapsed() < LONG / 2,
+            "reports wake waiters, not timeouts"
+        );
+        assert!(thread.join().is_err());
     }
 }
