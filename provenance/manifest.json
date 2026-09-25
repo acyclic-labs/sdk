@@ -61,7 +61,7 @@
       "sourcePath": "crates/bundle-graphcoder/src/byok.rs",
       "destinationPath": "rust/crates/harness/src/models/openai_compat.rs",
       "license": "Apache-2.0",
-      "auditResult": "pending",
+      "auditResult": "approved",
       "reviewer": "Acyclic Labs model adapter extraction audit"
     },
     {
@@ -70,7 +70,7 @@
       "sourcePath": "crates/bundle-graphcoder/tests/fixtures",
       "destinationPath": "rust/crates/harness/tests/fixtures",
       "license": "Apache-2.0",
-      "auditResult": "pending",
+      "auditResult": "approved",
       "reviewer": "Acyclic Labs model adapter extraction audit"
     }
   ],
