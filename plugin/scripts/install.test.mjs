@@ -45,6 +45,18 @@ function fixture() {
   const source = join(bin, target, executableName);
   mkdirSync(dirname(source), { recursive: true });
   copyFileSync(process.execPath, source);
+  // Package managers ship executables writable by their owner; the host
+  // interpreter may be installed read-only (Homebrew installs node 0555).
+  chmodSync(source, 0o755);
+  // The copy stands in for a self-contained release binary, which an
+  // official Node build is. A Homebrew Node links a sibling libnode and
+  // cannot run from another directory.
+  const relocated = spawnSync(source, ["--version"], { encoding: "utf8" });
+  assert.equal(
+    relocated.stdout?.trim(),
+    process.version,
+    `these tests need a relocatable Node (an official build), not ${process.execPath}: ${relocated.stderr}`,
+  );
   writeFileSync(join(bin, "platform-binaries.json"), JSON.stringify({
     version: 1,
     targets: { [target]: { path: `${target}/${executableName}`, sha256: digest(source) } },
