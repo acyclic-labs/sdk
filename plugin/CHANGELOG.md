@@ -4,6 +4,8 @@
 
 - Preserves executable permissions while testing a read-only installation,
   allowing the packaged launcher to complete release qualification.
+- Recognizes the expanded native-mount certification coverage and continues to
+  require every baseline case when installing the universal package.
 
 ## 0.1.4 - 2026-09-25
 
