@@ -177,6 +177,11 @@ async fn serve_stream(
     let mut input = tokio::io::BufReader::new(input);
     let mut calls = tokio::task::JoinSet::new();
     loop {
+        // Every request reaps the calls that have finished, so a long
+        // session holds only the hooks still running.
+        while let Some(finished) = calls.try_join_next() {
+            finished.map_err(display)??;
+        }
         let mut line = Vec::new();
         let read = (&mut input)
             .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
@@ -239,9 +244,6 @@ async fn serve_stream(
             _ => error_response(&id, -32601, "method not found"),
         };
         write_line(&output, &response).await?;
-        while let Some(finished) = calls.try_join_next() {
-            finished.map_err(display)??;
-        }
     }
     while let Some(finished) = calls.join_next().await {
         finished.map_err(display)??;
