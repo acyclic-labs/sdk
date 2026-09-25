@@ -7187,7 +7187,6 @@ async fn handle_linux_mailbox_request(
         Ok(_) => uncorrelated_control_response("Acyclic control request exceeds the 4 MiB bound"),
         Err(error) => uncorrelated_control_response(&display(error)),
     };
-    let encoded = encode_control_response(&response)?;
     let Ok(response_file) = rustix::fs::openat(
         &*exchange,
         "response.pending",
@@ -7202,7 +7201,7 @@ async fn handle_linux_mailbox_request(
         return Ok(());
     };
     if std::fs::File::from(response_file)
-        .write_all(&encoded)
+        .write_all(&response)
         .is_err()
     {
         return Ok(());
@@ -7578,9 +7577,8 @@ where
             }
         }
     };
-    let encoded = encode_control_response(&response)?;
     let write = async {
-        stream.write_all(&encoded).await.map_err(display)?;
+        stream.write_all(&response).await.map_err(display)?;
         stream.write_all(b"\n").await.map_err(display)?;
         stream.flush().await.map_err(display)
     };
@@ -7603,7 +7601,7 @@ async fn dispatch_control_envelope(
     control: &Arc<impl ConcurrentControlRequestDispatcher>,
     ledger: &Arc<ControlLedger>,
     envelope: ControlEnvelope<ControlRequest>,
-) -> Value {
+) -> Vec<u8> {
     let request_id = envelope.request_id.clone();
     if let Err(error) = envelope.validate() {
         return control_response_for(&request_id, Err(error));
@@ -7624,6 +7622,7 @@ async fn dispatch_control_envelope(
         Ok(LedgerDecision::Completed(response)) => response,
         Ok(LedgerDecision::Execute) => {
             let result = dispatch_control_request(control, envelope.request.clone()).await;
+            // The ledger records exactly the bounded bytes that are sent.
             let response = control_response_for(&request_id, result);
             match ledger.complete(&envelope, &response) {
                 Ok(()) => response,
@@ -9439,19 +9438,11 @@ async fn dispatch_plane_request(
     }
 }
 
-#[cfg(test)]
-fn control_response(result: Result<Value, String>) -> Value {
-    match result {
-        Ok(result) => json!({"version":1,"ok":true,"result":result}),
-        Err(error) => json!({"version":1,"ok":false,"error":error}),
-    }
+fn uncorrelated_control_response(error: &str) -> Vec<u8> {
+    encode_control_response(&json!({"version":2,"ok":false,"error":error}), None)
 }
 
-fn uncorrelated_control_response(error: &str) -> Value {
-    json!({"version":2,"ok":false,"error":error})
-}
-
-fn invalid_control_request_response(request: &[u8], error: &serde_json::Error) -> Value {
+fn invalid_control_request_response(request: &[u8], error: &serde_json::Error) -> Vec<u8> {
     let message = format!("invalid Acyclic control request: {error}");
     let request_id = serde_json::from_slice::<Value>(request)
         .ok()
@@ -9463,10 +9454,11 @@ fn invalid_control_request_response(request: &[u8], error: &serde_json::Error) -
     }
 }
 
+/// Encodes the response for one request, bounded to one control message.
 fn control_response_for(
     request_id: &control_protocol::RequestId,
     result: Result<Value, String>,
-) -> Value {
+) -> Vec<u8> {
     let response = match result {
         Ok(result) => {
             json!({"version":2,"requestId":request_id.as_str(),"ok":true,"result":result})
@@ -9475,18 +9467,7 @@ fn control_response_for(
             json!({"version":2,"requestId":request_id.as_str(),"ok":false,"error":error})
         }
     };
-    if serde_json::to_vec(&response)
-        .is_ok_and(|encoded| encoded.len().saturating_add(1) < MAXIMUM_CONTROL_MESSAGE_BYTES)
-    {
-        response
-    } else {
-        json!({
-            "version":2,
-            "requestId":request_id.as_str(),
-            "ok":false,
-            "error":"Acyclic control response exceeds the 4 MiB bound"
-        })
-    }
+    encode_control_response(&response, Some(request_id))
 }
 
 struct BoundedJsonBuffer {
@@ -9518,26 +9499,25 @@ impl Write for BoundedJsonBuffer {
     }
 }
 
-fn encode_control_response(response: &Value) -> Result<Vec<u8>, String> {
+/// Encodes `response` in under one control message (leaving room for the
+/// frame's newline), or, when it does not fit, the error that replaces it.
+fn encode_control_response(
+    response: &Value,
+    request_id: Option<&control_protocol::RequestId>,
+) -> Vec<u8> {
     let mut bounded = BoundedJsonBuffer::new();
     if serde_json::to_writer(&mut bounded, response).is_ok() {
-        return Ok(bounded.bytes);
+        return bounded.bytes;
     }
-    let fallback = response
-        .get("requestId")
-        .and_then(Value::as_str)
-        .map_or_else(
-            || uncorrelated_control_response("Acyclic control response exceeds the 4 MiB bound"),
-            |request_id| {
-                json!({
-                    "version":2,
-                    "requestId":request_id,
-                    "ok":false,
-                    "error":"Acyclic control response exceeds the 4 MiB bound"
-                })
-            },
-        );
-    serde_json::to_vec(&fallback).map_err(display)
+    // Request identities are validated ASCII identifiers, so they need no
+    // escaping.
+    let correlation = request_id.map_or_else(String::new, |request_id| {
+        format!(r#""requestId":"{}","#, request_id.as_str())
+    });
+    format!(
+        r#"{{"version":2,{correlation}"ok":false,"error":"Acyclic control response exceeds the 4 MiB bound"}}"#
+    )
+    .into_bytes()
 }
 
 /// Unified Acyclic CLI, local service, Codex hook bridge, and installer.
@@ -17056,8 +17036,12 @@ mod tests {
         let reopened = Arc::new(ControlLedger::open(&data).expect("reopened ledger"));
         let replay = dispatch_control_envelope(&dispatcher, &reopened, envelope).await;
 
-        assert_eq!(first["ok"], true, "first hook must execute: {first}");
-        assert_eq!(first, replay, "a retry must receive the durable response");
+        let executed: Value = serde_json::from_slice(&first).expect("first response");
+        assert_eq!(executed["ok"], true, "first hook must execute: {executed}");
+        assert_eq!(
+            first, replay,
+            "a retry must receive the exact bytes first sent"
+        );
         assert_eq!(
             dispatcher
                 .executions
@@ -17087,7 +17071,10 @@ mod tests {
                 arguments: Value::Null,
             });
             envelope.protocol.major = envelope.protocol.major.saturating_add(1);
-            let response = dispatch_control_envelope(&dispatcher, &ledger, envelope).await;
+            let response: Value = serde_json::from_slice(
+                &dispatch_control_envelope(&dispatcher, &ledger, envelope).await,
+            )
+            .expect("response");
             assert_eq!(response["ok"], false, "mismatched protocol was accepted");
         }
         assert_eq!(
@@ -19009,10 +18996,8 @@ mod tests {
 
     #[test]
     fn control_responses_are_bounded() {
-        let oversized = control_response(Ok(json!({
-            "payload": "x".repeat(MAXIMUM_CONTROL_MESSAGE_BYTES)
-        })));
-        let encoded = encode_control_response(&oversized).expect("bounded response");
+        let payload = "x".repeat(MAXIMUM_CONTROL_MESSAGE_BYTES);
+        let encoded = encode_control_response(&json!({"payload": payload}), None);
         assert!(encoded.len() < MAXIMUM_CONTROL_MESSAGE_BYTES);
         let response: Value = serde_json::from_slice(&encoded).expect("response JSON");
         assert_eq!(response["ok"], false);
@@ -19023,13 +19008,10 @@ mod tests {
         );
 
         let request_id = control_protocol::RequestId::fresh();
-        let response = control_response_for(
-            &request_id,
-            Ok(json!({"payload":"x".repeat(MAXIMUM_CONTROL_MESSAGE_BYTES)})),
-        );
-        let encoded = encode_control_response(&response).expect("bounded v2 response");
+        let encoded = control_response_for(&request_id, Ok(json!({"payload": payload})));
         assert!(encoded.len() < MAXIMUM_CONTROL_MESSAGE_BYTES);
         let response: Value = serde_json::from_slice(&encoded).expect("v2 response JSON");
+        assert_eq!(response["version"], 2);
         assert_eq!(response["requestId"], request_id.as_str());
         assert_eq!(response["ok"], false);
     }
@@ -19044,7 +19026,9 @@ mod tests {
         .expect("invalid envelope fixture");
         let error = serde_json::from_slice::<ControlEnvelope<ControlRequest>>(&request)
             .expect_err("fixture must not be a valid envelope");
-        let response = invalid_control_request_response(&request, &error);
+        let response: Value =
+            serde_json::from_slice(&invalid_control_request_response(&request, &error))
+                .expect("correlated response");
         assert_eq!(response["version"], 2);
         assert_eq!(response["requestId"], request_id.as_str());
         assert_eq!(response["ok"], false);
@@ -19052,10 +19036,10 @@ mod tests {
         let uncorrelated = br#"{"unexpected":true}"#;
         let error = serde_json::from_slice::<ControlEnvelope<ControlRequest>>(uncorrelated)
             .expect_err("fixture must not be a valid envelope");
-        let response = invalid_control_request_response(uncorrelated, &error);
+        let encoded = invalid_control_request_response(uncorrelated, &error);
+        let response: Value = serde_json::from_slice(&encoded).expect("uncorrelated response");
         assert_eq!(response["version"], 2);
         assert!(response.get("requestId").is_none());
-        let encoded = serde_json::to_vec(&response).expect("uncorrelated response");
         assert!(matches!(
             decode_control_response(&encoded, &request_id),
             Err(ControlRequestError::Indeterminate(_))
