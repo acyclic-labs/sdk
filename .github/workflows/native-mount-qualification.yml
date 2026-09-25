@@ -28,13 +28,13 @@ jobs:
       matrix:
         include:
           - backend: linux-fuse
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: blacksmith-16vcpu-ubuntu-2404
             shell: bash
           - backend: macos-nfs
             runner: blacksmith-12vcpu-macos-15
             shell: bash
           - backend: windows-projfs
-            runner: blacksmith-4vcpu-windows-2025
+            runner: blacksmith-16vcpu-windows-2025
             shell: pwsh
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
@@ -72,6 +72,23 @@ jobs:
           if ((Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS).State -ne 'Enabled') {
             throw 'Client-ProjFS could not be enabled without a reboot'
           }
+
+      # The qualification scripts accept prebuilt executables; building the
+      # release binary and the qualifier side by side halves the critical path.
+      - name: Build release and qualification executables
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/native-mount-target"
+          suffix=""
+          if [[ "$RUNNER_OS" == Windows ]]; then suffix=.exe; fi
+          cargo build --locked -p acyclic-plugin --release --target-dir "$target" &
+          release=$!
+          cargo build --locked -p acyclic-conformance --features local-runner \
+            --bin native-mount-qualify --target-dir "$target-qualifier"
+          wait "$release"
+          echo "ACYCLIC_RELEASE_EXECUTABLE=$target/release/acyclic$suffix" >> "$GITHUB_ENV"
+          echo "ACYCLIC_QUALIFIER_EXECUTABLE=$target-qualifier/debug/native-mount-qualify$suffix" >> "$GITHUB_ENV"
 
       - name: Qualify Linux or macOS native mount
         if: runner.os != 'Windows'
