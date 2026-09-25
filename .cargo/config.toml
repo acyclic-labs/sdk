@@ -1,0 +1,5 @@
+# Every hook starts a fresh process. Linking the C runtime statically spares
+# each start loading vcruntime and the UCRT, about 0.4 ms on Windows, and frees
+# the executables from the Visual C++ redistributable.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
