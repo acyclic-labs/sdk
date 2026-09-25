@@ -2243,7 +2243,7 @@ async fn an_independent_fork_is_one_commit_and_exact_at_every_provider_cut()
 /// Truncates a local root's Stream journal to `length` bytes, as a power
 /// loss before the rest was synchronized would leave it.
 #[cfg(all(feature = "local", any(unix, windows)))]
-fn cut_journal(root: &Path, journal: &[u8], length: usize) -> std::io::Result<()> {
+fn cut_journal(root: &std::path::Path, journal: &[u8], length: usize) -> std::io::Result<()> {
     std::fs::write(
         root.join("stream").join("stream.journal"),
         journal.get(..length).unwrap_or(journal),
