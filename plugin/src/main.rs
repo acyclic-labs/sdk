@@ -9710,7 +9710,8 @@ async fn send_native_hook(
     event: &str,
     input: Value,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let cwd = env::current_dir()?.canonicalize()?;
+    // The service canonicalizes whichever path a hook resolves to.
+    let cwd = env::current_dir()?;
     let data = default_data_directory();
     let request = ControlRequest {
         version: 1,
