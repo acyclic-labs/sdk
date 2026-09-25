@@ -1379,30 +1379,19 @@ impl HostRoot {
         destination: &Path,
         expected: Option<crate::NativeRootIdentity>,
     ) -> io::Result<bool> {
-        let source = open_windows_regular_source(&source_root.directory, source, false)?;
-        if expected.is_some_and(|identity| {
-            crate::NativeRootIdentity::from_file(&source).ok() != Some(identity)
-        }) {
-            return Err(io::Error::other("copy source identity changed"));
-        }
+        let mut source = open_windows_clone_source(source_root, source, expected)?;
         let length = source.metadata()?.len();
-        let mut source = cap_std::fs::File::from_std(source);
-        if length < 4 * 1024 || i64::try_from(length).is_err() {
+        if !clonable_windows_length(length) {
             return Ok(false);
         }
-        // ReFS volumes use either 4-KiB or 64-KiB clusters. Try the common
-        // smaller unit first for maximum sharing, then retry at 64 KiB when
-        // the volume requires it. A failed attempt is always removed.
-        for alignment in [4 * 1024, 64 * 1024] {
-            let mut target = create_windows_copy_target(&self.directory, destination, false)?;
-            let cloned = clone_windows_file(&mut source, &mut target, length, alignment).is_ok();
-            drop(target);
-            if cloned {
-                return Ok(true);
-            }
+        let mut target = create_windows_copy_target(&self.directory, destination, false)?;
+        let cloned = clone_windows_file_into(&mut source, &mut target, length);
+        drop(target);
+        // A failed attempt is always removed.
+        if !matches!(cloned, Ok(true)) {
             self.directory.remove_file(destination)?;
         }
-        Ok(false)
+        cloned
     }
 
     /// Copies one pinned regular source into a new file using `ReFS` block
@@ -1412,9 +1401,11 @@ impl HostRoot {
     /// SDK lineage or preserve multi-file hard-link topology.
     ///
     /// The destination name only ever holds the complete copy: bytes are
-    /// written under a private staging name beside it and renamed into place
-    /// once complete, so a failed or cancelled copy leaves the destination
-    /// exactly as absent as it was.
+    /// written under a [`StagedWindowsFile`] beside it and linked into place
+    /// once complete. Whatever ends the copy early, a failure, a cancelled
+    /// caller, or the process dying, the kernel removes the staged name, so
+    /// the destination stays exactly as absent as it was and nothing is
+    /// left behind.
     #[cfg(windows)]
     pub async fn copy_file_from(
         &self,
@@ -1428,51 +1419,25 @@ impl HostRoot {
         };
         let (parent, name) = open_windows_parent(&self.directory, destination)?;
         let name = name.to_os_string();
-        let staging_root = HostRoot {
-            directory: parent,
-            identity: self.identity,
-        };
-        let staged = staging_name();
         let source = source.to_path_buf();
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        // The detached owner drains admitted kernel I/O before discarding the
-        // staged bytes even when its awaiting caller is cancelled.
+        // The detached owner drains admitted kernel I/O before it closes the
+        // staged file, even when its awaiting caller is cancelled.
         tokio::spawn(async move {
-            let mut created = false;
-            let mut result = copy_windows_file_worker(
-                &source_root,
-                &source,
-                &staging_root,
-                &staged,
-                &sender,
-                &mut created,
-            )
-            .await;
-            if result.is_ok() {
-                result = if sender.is_closed() {
-                    Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"))
-                } else {
-                    let parent = staging_root.directory.try_clone();
-                    let staged = staged.clone();
-                    match parent {
-                        Ok(parent) => acyclic_native_runtime::run_blocking_io(move || {
-                            publish_windows_file(&parent, &staged, &name)
-                        })
-                        .await
-                        .and_then(|published| published),
-                        Err(error) => Err(error),
-                    }
-                };
-            }
-            if created && result.is_err() {
-                let root = staging_root.directory.try_clone();
-                let path = staged.clone();
-                if let Ok(root) = root {
-                    let _ =
-                        acyclic_native_runtime::run_blocking_io(move || root.remove_file(&path))
-                            .await;
+            let result = async {
+                let staged = std::sync::Arc::new(
+                    acyclic_native_runtime::run_blocking_io(move || {
+                        StagedWindowsFile::create(parent)
+                    })
+                    .await??,
+                );
+                copy_windows_file_worker(&source_root, &source, &staged, &sender).await?;
+                if sender.is_closed() {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"));
                 }
+                acyclic_native_runtime::run_blocking_io(move || staged.publish(&name)).await?
             }
+            .await;
             let _ = sender.send(result);
         });
         receiver
@@ -2154,75 +2119,126 @@ fn open_windows_parent<'a>(root: &Dir, path: &'a Path) -> io::Result<(Dir, &'a O
     ))
 }
 
-/// Gives a completed file its final name within one directory, failing
-/// rather than replacing an existing entry. The name changes atomically, so
-/// no reader of `name` can observe the file before it is complete, and the
-/// target is named relative to the held directory, never re-resolved by path.
+/// A file under a private name beside its destination, for bytes not yet
+/// published. The name is held by a delete-on-close handle, so the kernel
+/// removes it when that handle closes for any reason, including the process
+/// dying; no sweep ever looks for leftovers. [`Self::publish`] first links
+/// the complete file to its final name, which then outlives the staged one.
 #[cfg(windows)]
-#[allow(unsafe_code)]
-fn publish_windows_file(parent: &Dir, staged: &Path, name: &OsStr) -> io::Result<()> {
-    use cap_std::fs::OpenOptionsExt as _;
-    use std::mem::{offset_of, size_of};
-    use std::os::windows::ffi::OsStrExt as _;
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
-    use windows::Wdk::Storage::FileSystem::{
-        FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
-    };
-    use windows::Win32::Foundation::{HANDLE, RtlNtStatusToDosError};
-    use windows::Win32::Storage::FileSystem::{DELETE, FILE_FLAG_OPEN_REPARSE_POINT};
-    use windows::Win32::System::IO::IO_STATUS_BLOCK;
+struct StagedWindowsFile {
+    parent: Dir,
+    name: std::path::PathBuf,
+    /// Deletes the staged name when closed.
+    guard: File,
+}
 
-    let mut options = OpenOptions::new();
-    options
-        .access_mode(DELETE.0)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0);
-    let staged = parent.open_with(staged, &options)?;
-    let name = name.encode_wide().collect::<Vec<_>>();
-    let overflow = || io::Error::other("rename information overflow");
-    let name_bytes = name
-        .len()
-        .checked_mul(size_of::<u16>())
-        .ok_or_else(overflow)?;
-    let name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
-    let total = name_offset
-        .checked_add(name_bytes)
-        .ok_or_else(overflow)?
-        .max(size_of::<FILE_RENAME_INFORMATION>());
-    // u64 storage satisfies FILE_RENAME_INFORMATION's alignment.
-    let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
-    let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
-    // SAFETY: `storage` spans `total` bytes, aligned for the structure, with
-    // `name_bytes` after the name offset; nothing else aliases it.
-    unsafe {
-        (*information).Anonymous.ReplaceIfExists = false;
-        (*information).RootDirectory = HANDLE(parent.as_handle().as_raw_handle());
-        (*information).FileNameLength = u32::try_from(name_bytes).map_err(|_| overflow())?;
-        std::ptr::copy_nonoverlapping(
-            name.as_ptr(),
-            information.cast::<u8>().add(name_offset).cast::<u16>(),
-            name.len(),
-        );
+#[cfg(windows)]
+impl StagedWindowsFile {
+    /// Creates an empty staged file under a name no other writer uses.
+    fn create(parent: Dir) -> io::Result<Self> {
+        use cap_std::fs::OpenOptionsExt as _;
+        use windows::Win32::Storage::FileSystem::{
+            DELETE, FILE_FLAG_DELETE_ON_CLOSE, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
+        };
+
+        let name =
+            std::path::PathBuf::from(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4().simple()));
+        let mut options = OpenOptions::new();
+        options
+            .write(true)
+            .create_new(true)
+            .access_mode(DELETE.0 | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0)
+            .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+            .custom_flags(FILE_FLAG_DELETE_ON_CLOSE.0);
+        let guard = parent.open_with(&name, &options)?.into_std();
+        Ok(Self {
+            parent,
+            name,
+            guard,
+        })
     }
-    let mut status_block = IO_STATUS_BLOCK::default();
-    // SAFETY: both handles, the status block, and the initialized information
-    // buffer outlive this synchronous call; the length is exactly the buffer's.
-    let status = unsafe {
-        NtSetInformationFile(
-            HANDLE(staged.as_handle().as_raw_handle()),
-            &raw mut status_block,
-            information.cast(),
-            u32::try_from(total).map_err(|_| overflow())?,
-            FileRenameInformation,
-        )
-    };
-    if status.is_ok() {
-        return Ok(());
+
+    /// Opens the staged file for writing; the staged name still goes when
+    /// the guard closes, however long this handle lives.
+    fn open_writer(&self, overlapped: bool) -> io::Result<File> {
+        use cap_std::fs::OpenOptionsExt as _;
+        use windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
+        let mut options = OpenOptions::new();
+        options.write(true);
+        if overlapped {
+            options.custom_flags(FILE_FLAG_OVERLAPPED.0);
+        }
+        self.parent
+            .open_with(&self.name, &options)
+            .map(cap_std::fs::File::into_std)
     }
-    // SAFETY: a pure status-code translation.
-    let code = unsafe { RtlNtStatusToDosError(status) };
-    Err(io::Error::from_raw_os_error(
-        i32::try_from(code).map_err(|_| io::Error::other("unmapped rename status"))?,
-    ))
+
+    /// Gives the complete file its final `name` in the same directory,
+    /// failing rather than replacing an existing entry. The final name is a
+    /// second link made atomically, so no reader of it can observe the file
+    /// before it is complete, and it is named relative to the held
+    /// directory, never re-resolved by path. Closing the guard then removes
+    /// only the staged name.
+    #[allow(unsafe_code)]
+    fn publish(&self, name: &OsStr) -> io::Result<()> {
+        use std::mem::{offset_of, size_of};
+        use std::os::windows::ffi::OsStrExt as _;
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_LINK_INFORMATION, FileLinkInformation, NtSetInformationFile,
+        };
+        use windows::Win32::Foundation::{HANDLE, RtlNtStatusToDosError};
+        use windows::Win32::System::IO::IO_STATUS_BLOCK;
+
+        let name = name.encode_wide().collect::<Vec<_>>();
+        let overflow = || io::Error::other("link information overflow");
+        let name_bytes = name
+            .len()
+            .checked_mul(size_of::<u16>())
+            .ok_or_else(overflow)?;
+        let name_offset = offset_of!(FILE_LINK_INFORMATION, FileName);
+        let total = name_offset
+            .checked_add(name_bytes)
+            .ok_or_else(overflow)?
+            .max(size_of::<FILE_LINK_INFORMATION>());
+        // u64 storage satisfies FILE_LINK_INFORMATION's alignment.
+        let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
+        let information = storage.as_mut_ptr().cast::<FILE_LINK_INFORMATION>();
+        // SAFETY: `storage` spans `total` bytes, aligned for the structure, with
+        // `name_bytes` after the name offset; nothing else aliases it.
+        unsafe {
+            (*information).Anonymous.ReplaceIfExists = false;
+            (*information).RootDirectory = HANDLE(self.parent.as_handle().as_raw_handle());
+            (*information).FileNameLength = u32::try_from(name_bytes).map_err(|_| overflow())?;
+            std::ptr::copy_nonoverlapping(
+                name.as_ptr(),
+                information.cast::<u8>().add(name_offset).cast::<u16>(),
+                name.len(),
+            );
+        }
+        let mut status_block = IO_STATUS_BLOCK::default();
+        // SAFETY: both handles, the status block, and the initialized information
+        // buffer outlive this synchronous call; the length is exactly the buffer's.
+        let status = unsafe {
+            NtSetInformationFile(
+                HANDLE(self.guard.as_handle().as_raw_handle()),
+                &raw mut status_block,
+                information.cast(),
+                u32::try_from(total).map_err(|_| overflow())?,
+                FileLinkInformation,
+            )
+        };
+        if status.is_ok() {
+            return Ok(());
+        }
+        // SAFETY: a pure status-code translation.
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        Err(io::Error::from_raw_os_error(
+            i32::try_from(code).map_err(|_| io::Error::other("unmapped link status"))?,
+        ))
+    }
 }
 
 #[cfg(windows)]
@@ -2263,10 +2279,46 @@ fn create_windows_copy_target(root: &Dir, path: &Path, overlapped: bool) -> io::
     open_windows_metadata_file(root, path, &options).map(cap_std::fs::File::into_std)
 }
 
-/// One private name no other writer uses, for bytes not yet published.
+/// Opens a non-overlapped clone source, which must still be the `expected`
+/// file when one is named.
 #[cfg(windows)]
-fn staging_name() -> std::path::PathBuf {
-    std::path::PathBuf::from(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4().simple()))
+fn open_windows_clone_source(
+    source_root: &HostRoot,
+    source: &Path,
+    expected: Option<crate::NativeRootIdentity>,
+) -> io::Result<cap_std::fs::File> {
+    let source = open_windows_regular_source(&source_root.directory, source, false)?;
+    if expected.is_some_and(|identity| {
+        crate::NativeRootIdentity::from_file(&source).ok() != Some(identity)
+    }) {
+        return Err(io::Error::other("copy source identity changed"));
+    }
+    Ok(cap_std::fs::File::from_std(source))
+}
+
+/// Whether a file of `length` bytes can be block cloned at all.
+#[cfg(windows)]
+fn clonable_windows_length(length: u64) -> bool {
+    length >= 4 * 1024 && i64::try_from(length).is_ok()
+}
+
+/// Block clones `source` into the empty `target`. `ReFS` volumes use either
+/// 4-KiB or 64-KiB clusters: the common smaller unit is tried first for
+/// maximum sharing, then 64 KiB when the volume requires it. `false` leaves
+/// `target` empty for an ordinary copy.
+#[cfg(windows)]
+fn clone_windows_file_into(
+    source: &mut cap_std::fs::File,
+    target: &mut File,
+    length: u64,
+) -> io::Result<bool> {
+    for alignment in [4 * 1024, 64 * 1024] {
+        if clone_windows_file(source, target, length, alignment).is_ok() {
+            return Ok(true);
+        }
+        target.set_len(0)?;
+    }
+    Ok(false)
 }
 
 #[cfg(windows)]
@@ -2276,10 +2328,8 @@ const STAGING_PREFIX: &str = ".acyclic-copy-";
 async fn copy_windows_file_worker(
     source_root: &HostRoot,
     source_path: &Path,
-    destination_root: &HostRoot,
-    destination_path: &Path,
+    staged: &std::sync::Arc<StagedWindowsFile>,
     receiver: &tokio::sync::oneshot::Sender<io::Result<()>>,
-    created: &mut bool,
 ) -> io::Result<()> {
     use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
 
@@ -2296,39 +2346,30 @@ async fn copy_windows_file_worker(
     if receiver.is_closed() {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"));
     }
-    let clone_source = HostRoot {
-        directory: source_root.directory.try_clone()?,
-        identity: source_root.identity,
-    };
-    let clone_destination = HostRoot {
-        directory: destination_root.directory.try_clone()?,
-        identity: destination_root.identity,
-    };
-    let clone_source_path = source_path.to_path_buf();
-    let clone_destination_path = destination_path.to_path_buf();
-    if acyclic_native_runtime::run_blocking_io(move || {
-        clone_destination.clone_file_from_identity(
-            &clone_source,
-            &clone_source_path,
-            &clone_destination_path,
-            Some(identity),
-        )
-    })
-    .await??
-    {
-        *created = true;
-        return Ok(());
+    if clonable_windows_length(length) {
+        let clone_source = HostRoot {
+            directory: source_root.directory.try_clone()?,
+            identity: source_root.identity,
+        };
+        let clone_source_path = source_path.to_path_buf();
+        let clone_target = std::sync::Arc::clone(staged);
+        if acyclic_native_runtime::run_blocking_io(move || {
+            let mut source =
+                open_windows_clone_source(&clone_source, &clone_source_path, Some(identity))?;
+            let mut target = clone_target.open_writer(false)?;
+            clone_windows_file_into(&mut source, &mut target, length)
+        })
+        .await??
+        {
+            return Ok(());
+        }
+        if receiver.is_closed() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"));
+        }
     }
-    if receiver.is_closed() {
-        return Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"));
-    }
-    let destination_directory = destination_root.directory.try_clone()?;
-    let destination_path_owned = destination_path.to_path_buf();
-    let destination = acyclic_native_runtime::run_blocking_io(move || {
-        create_windows_copy_target(&destination_directory, &destination_path_owned, true)
-    })
-    .await??;
-    *created = true;
+    let writer = std::sync::Arc::clone(staged);
+    let destination =
+        acyclic_native_runtime::run_blocking_io(move || writer.open_writer(true)).await??;
     // SAFETY: both handles were opened with FILE_FLAG_OVERLAPPED and are
     // transferred once; no independent I/O is performed after this point.
     #[allow(unsafe_code)]
@@ -3759,6 +3800,75 @@ mod windows_clone_tests {
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
             Err(error) => return Err(error),
         }
+        Ok(())
+    }
+
+    /// Names the directory [`staged_copy_crash_child`] stages into.
+    const CRASH_DIRECTORY: &str = "ACYCLIC_STAGED_COPY_CRASH_DIRECTORY";
+
+    /// Stages written bytes, then dies without unwinding, as a process
+    /// killed mid-copy does. Runs only as [`a_process_dying_mid_copy_leaves_nothing`]'s
+    /// child.
+    #[test]
+    #[ignore = "runs only as a child of a_process_dying_mid_copy_leaves_nothing"]
+    fn staged_copy_crash_child() -> std::io::Result<()> {
+        let Some(directory) = std::env::var_os(CRASH_DIRECTORY) else {
+            return Ok(());
+        };
+        let staged = super::StagedWindowsFile::create(cap_std::fs::Dir::open_ambient_dir(
+            directory,
+            cap_std::ambient_authority(),
+        )?)?;
+        staged.open_writer(false)?.write_all(b"partial copy")?;
+        std::process::abort();
+    }
+
+    #[test]
+    fn a_process_dying_mid_copy_leaves_nothing() -> std::io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--ignored",
+                "--exact",
+                "native_host::windows_clone_tests::staged_copy_crash_child",
+                "--test-threads=1",
+            ])
+            .env(CRASH_DIRECTORY, temporary.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()?;
+        assert!(!status.success(), "the child must die mid-copy");
+        let names = std::fs::read_dir(temporary.path())?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        assert!(names.is_empty(), "a crashed copy left {names:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_published_copy_keeps_only_its_final_name() -> std::io::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let parent =
+            cap_std::fs::Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
+        let staged = super::StagedWindowsFile::create(parent)?;
+        staged.open_writer(false)?.write_all(b"complete copy")?;
+        staged.publish(std::ffi::OsStr::new("copy"))?;
+        assert_eq!(
+            staged
+                .publish(std::ffi::OsStr::new("copy"))
+                .map_err(|error| error.kind()),
+            Err(std::io::ErrorKind::AlreadyExists),
+            "publishing never replaces an existing name"
+        );
+        drop(staged);
+        let names = std::fs::read_dir(temporary.path())?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        assert_eq!(names, ["copy"]);
+        assert_eq!(
+            std::fs::read(temporary.path().join("copy"))?,
+            b"complete copy"
+        );
         Ok(())
     }
 
