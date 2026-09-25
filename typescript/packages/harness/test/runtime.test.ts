@@ -338,26 +338,54 @@ describe("typed agent runtime", () => {
     const taskId = "task:remote" as RuntimeTaskId;
     const observed: number[] = [];
     let cancelled = false;
+    const terminal = { id: "event:terminal", taskId, sequence: 43,
+      event: { kind: "settled" as const, outcome: { kind: "succeeded" as const, value: 7 } } };
     const task = Task.fromHost(taskId, {
       operationId: "operation:remote",
       async result() { return { kind: "succeeded", value: 7 } as const; },
       async *events(fromSequence) {
         observed.push(fromSequence);
-        yield { id: "event:remote", taskId, sequence: 42, event: { kind: "started" } as const };
+        if (fromSequence <= 42) yield { id: "event:remote", taskId, sequence: 42, event: { kind: "started" } as const };
       },
+      async terminalEvent() { return terminal; },
       async cancel() { cancelled = true; return { requested: true, taskId }; },
     });
     expect(await task.result()).toEqual({ kind: "succeeded", value: 7 });
     const events = [];
     for await (const event of task.events(41)) events.push(event);
-    expect(events.map(event => event.sequence)).toEqual([42]);
+    expect(events.map(event => event.sequence)).toEqual([42, 43]);
     expect(observed).toEqual([41]);
+    const afterTerminal = [];
+    for await (const event of task.events(44)) afterTerminal.push(event);
+    expect(afterTerminal).toEqual([]);
+    expect(observed).toEqual([41, 44]);
+    for (const outcome of [
+      { kind: "failed" as const, error: { message: "failed" } },
+      { kind: "cancelled" as const, receipt: { requested: true, taskId } },
+    ]) {
+      const settled = { ...terminal, event: { kind: "settled" as const, outcome } };
+      const replayed = Task.fromHost(taskId, {
+        operationId: "operation:remote",
+        async result() { return outcome; },
+        async *events(fromSequence) { if (fromSequence <= settled.sequence) yield settled; },
+        async terminalEvent() { return settled; },
+        async cancel() { return { requested: true, taskId }; },
+      });
+      const replay = [];
+      for await (const event of replayed.events()) replay.push(event);
+      expect(replay).toEqual([settled]);
+      const past = [];
+      for await (const event of replayed.events(settled.sequence + 1)) past.push(event);
+      expect(past).toEqual([]);
+    }
     expect(await task.cancel()).toEqual({ requested: true, taskId });
     expect(cancelled).toBeTrue();
     const disconnected = Task.fromHost(taskId, {
       operationId: "operation:remote",
       async result() { throw new Error("transport offline"); },
       async *events() { yield* []; },
+      async terminalEvent() { return { id: "event:indeterminate", taskId, sequence: 1,
+        event: { kind: "settled" as const, outcome: { kind: "indeterminate" as const, operationId: "operation:remote" } } }; },
       async cancel() { return { requested: false, taskId }; },
     });
     expect(await disconnected.result()).toEqual({ kind: "indeterminate", operationId: "operation:remote" });

@@ -41,6 +41,8 @@ export interface DurableTaskDriver<Output> {
   readonly operationId: string;
   result(): Promise<Outcome<Output>>;
   events(fromSequence: number): AsyncIterable<TaskEvent<Output>>;
+  /** The persisted terminal record, including its stable ID and sequence. */
+  terminalEvent(): Promise<TaskEvent<Output>>;
   cancel(): Promise<CancelReceipt>;
 }
 
@@ -391,6 +393,7 @@ export class Task<Output> {
   readonly #events = new ReplayQueue<TaskEvent<Output>>();
   readonly #result: Promise<Outcome<Output>>;
   readonly #driver: DurableTaskDriver<Output> | undefined;
+  #terminalEvent: TaskEvent<Output> | undefined;
   #sequence = 0;
   constructor(readonly taskId: RuntimeTaskId, execution: ((signal: AbortSignal) => Promise<Output>) | DurableTaskDriver<Output>, readonly controller = new AbortController()) {
     if (typeof execution !== "function") {
@@ -403,31 +406,50 @@ export class Task<Output> {
     this.#result = execution(controller.signal).then<Outcome<Output>, Outcome<Output>>(
       value => ({ kind: "succeeded", value }),
       error => controller.signal.aborted ? { kind: "cancelled", receipt: { requested: true, taskId } } : { kind: "failed", error: { message: error instanceof Error ? error.message : String(error), cause: error } },
-    ).then(outcome => { this.#events.push({ id: `${taskId}:${this.#sequence}`, taskId, sequence: this.#sequence++, event: { kind: "settled", outcome } }); this.#events.close(); return outcome; });
+    ).then(outcome => { this.#terminalEvent = { id: `${taskId}:${this.#sequence}`, taskId, sequence: this.#sequence++, event: { kind: "settled", outcome } }; this.#events.push(this.#terminalEvent); this.#events.close(); return outcome; });
   }
   static fromHost<Output>(taskId: RuntimeTaskId, driver: DurableTaskDriver<Output>): Task<Output> {
     return new Task(taskId, driver);
   }
   id(): RuntimeTaskId { return this.taskId; }
   result(): Promise<Outcome<Output>> { return this.#result; }
+  async terminalEvent(): Promise<TaskEvent<Output>> {
+    if (this.#driver) return this.#driver.terminalEvent();
+    await this.#result;
+    if (!this.#terminalEvent) throw new Error("local task lost its terminal event");
+    return this.#terminalEvent;
+  }
   events(fromSequence = 0): AsyncIterable<TaskEvent<Output>> {
     if (!this.#driver) return this.#events.from(fromSequence);
     return this.#hostEvents(fromSequence);
   }
   async *#hostEvents(fromSequence: number): AsyncIterable<TaskEvent<Output>> {
-    let nextSequence = fromSequence;
-    let settled = false;
+    let streamedTerminal: TaskEvent<Output> | undefined;
+    let lastSequence = fromSequence - 1;
+    let invalidEvent = false;
     try {
       for await (const event of this.#driver!.events(fromSequence)) {
-        nextSequence = Math.max(nextSequence, event.sequence + 1);
-        if (event.event.kind === "settled") settled = true;
+        if (event.taskId !== this.taskId || !Number.isSafeInteger(event.sequence)
+          || event.sequence <= lastSequence || streamedTerminal) {
+          invalidEvent = true;
+          throw new Error("durable host returned an invalid task event");
+        }
+        lastSequence = event.sequence;
+        if (event.event.kind === "settled") streamedTerminal = event;
         yield event;
       }
-    } catch { /* A transport failure is reconciled through result() below. */ }
-    if (!settled) {
-      const outcome = await this.#result;
-      if (outcome.kind === "indeterminate") yield { id: `${this.taskId}:indeterminate:${nextSequence}`, taskId: this.taskId, sequence: nextSequence, event: { kind: "settled", outcome } };
+    } catch (error) {
+      if (invalidEvent) throw error;
+      /* A transport failure is reconciled through the authoritative terminal record. */
     }
+    const terminal = await this.#driver!.terminalEvent();
+    if (terminal.taskId !== this.taskId || terminal.event.kind !== "settled") {
+      throw new Error("durable host returned an invalid terminal event");
+    }
+    if (streamedTerminal && (streamedTerminal.id !== terminal.id || streamedTerminal.sequence !== terminal.sequence)) {
+      throw new Error("durable host task stream disagrees with its terminal event");
+    }
+    if (!streamedTerminal && terminal.sequence >= fromSequence) yield terminal;
   }
   async cancel(): Promise<CancelReceipt> { if (this.#driver) return this.#driver.cancel(); this.controller.abort(new Error("task cancellation requested")); return { requested: true, taskId: this.taskId }; }
 }
@@ -1327,6 +1349,12 @@ function validatedHostTask<Output>(original: Task<unknown>, operationId: string,
         if (event.event.kind === "settled") yield { ...event, event: { kind: "settled" as const, outcome: await validateTaskOutcome(event.event.outcome, schema) } };
         else yield { ...event, event: { kind: "started" as const } };
       }
+    },
+    async terminalEvent() {
+      const event = await original.terminalEvent();
+      if (event.event.kind !== "settled") throw new Error("host terminal event is not settled");
+      return { ...event, event: { kind: "settled" as const,
+        outcome: await validateTaskOutcome(event.event.outcome, schema) } };
     },
     cancel: () => original.cancel(),
   });
