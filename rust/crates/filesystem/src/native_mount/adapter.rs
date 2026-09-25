@@ -20,8 +20,9 @@ use crate::native_capture::{
 };
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
-    Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, NamedAttributeWriteMode,
-    NativeRootIdentity, ObjectId, OperationFailure, OperationId, VolumeId, WorkBudget,
+    Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, GroupedChange,
+    GroupedOutcome, NamedAttributeWriteMode, NativeRootIdentity, ObjectId, OperationFailure,
+    OperationId, VolumeId, WorkBudget,
 };
 use bytes::Bytes;
 use std::future::Future;
@@ -274,6 +275,16 @@ pub struct SharedCheckout<A, O> {
     revision: Arc<AtomicU64>,
     ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
+    grouped: StdMutex<Vec<GroupedRequest>>,
+}
+
+/// Most queued changes one hold of the checkout applies as one mutation.
+const MAXIMUM_GROUPED_CHANGES: usize = 64;
+
+/// One change waiting for group commit, and where its own result goes.
+struct GroupedRequest {
+    change: GroupedChange,
+    reply: tokio::sync::oneshot::Sender<Result<GroupedOutcome, MountSourceError>>,
 }
 
 /// Exclusive access to a shared checkout. The retained view lease prevents a
@@ -332,6 +343,51 @@ impl<A, O> SharedCheckout<A, O> {
             revision,
             ledger,
             view_gate: Arc::new(ViewGate::new()),
+            grouped: StdMutex::new(Vec::new()),
+        }
+    }
+
+    /// Applies one change by group commit. Changes queued while another
+    /// caller holds the checkout are applied together by whichever queued
+    /// caller next acquires it, as one mutation per hold, in queue order;
+    /// each caller receives exactly its own change's result.
+    ///
+    /// Queued changes are concurrent: none was issued after another's result
+    /// returned, so applying them in queue order is linearizable.
+    pub(super) async fn apply_grouped(
+        &self,
+        change: GroupedChange,
+        cancellation: &CancellationToken,
+    ) -> Result<GroupedOutcome, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let (reply, mut outcome) = tokio::sync::oneshot::channel();
+        self.grouped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(GroupedRequest { change, reply });
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut outcome => {
+                    return result.map_err(|_| MountSourceError::Stale)?;
+                }
+                mut checkout = self.lock() => {
+                    let requests = {
+                        let mut queue = self
+                            .grouped
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let count = queue.len().min(MAXIMUM_GROUPED_CHANGES);
+                        queue.drain(..count).collect::<Vec<_>>()
+                    };
+                    if !requests.is_empty() {
+                        checkout.apply_grouped_requests(requests, cancellation).await;
+                    }
+                }
+            }
         }
     }
 
@@ -719,6 +775,75 @@ impl<A, O> SharedCheckoutState<A, O> {
 
     /// Records one change to the checkout's view. The exclusive guard keeps
     /// every lookup from overlapping the change it records.
+    /// Applies queued changes as one group, records exactly what each
+    /// successful one changed, publishes once when the policy publishes
+    /// every mutation, and answers every caller.
+    async fn apply_grouped_requests(
+        &mut self,
+        requests: Vec<GroupedRequest>,
+        cancellation: &CancellationToken,
+    ) where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        if let Err(error) = self.ensure_publication_resolved() {
+            for request in requests {
+                let _ = request.reply.send(Err(error.clone()));
+            }
+            return;
+        }
+        let (changes, replies): (Vec<_>, Vec<_>) = requests
+            .into_iter()
+            .map(|request| (request.change, request.reply))
+            .unzip();
+        let views = changes
+            .iter()
+            .map(|change| match change {
+                GroupedChange::CreateFile { path, .. } => GroupedView::Bound(path.clone()),
+                GroupedChange::Content { file_id, .. } => GroupedView::Node(*file_id),
+            })
+            .collect::<Vec<_>>();
+        let results = match self
+            .checkout
+            .apply_group(changes, boundary_budget(), cancellation)
+            .await
+        {
+            Ok(receipt) => receipt.value,
+            Err(failure) => {
+                let error = engine_error(failure.error);
+                for reply in replies {
+                    let _ = reply.send(Err(error.clone()));
+                }
+                return;
+            }
+        };
+        let mut changed = false;
+        for (result, view) in results.iter().zip(&views) {
+            if result.is_ok() {
+                changed = true;
+                match view {
+                    GroupedView::Bound(path) => self.record(&ViewChange::Bound(path)),
+                    GroupedView::Node(file_id) => self.record(&ViewChange::Node(*file_id)),
+                }
+            }
+        }
+        let published = if changed {
+            self.publish_mutation(cancellation).await
+        } else {
+            Ok(())
+        };
+        for ((result, view), reply) in results.into_iter().zip(views).zip(replies) {
+            let answer = match result {
+                Ok(outcome) => published.clone().map(|()| outcome),
+                Err(error) => Err(match view {
+                    GroupedView::Bound(_) => fs_error(error),
+                    GroupedView::Node(_) => engine_error(error),
+                }),
+            };
+            let _ = reply.send(answer);
+        }
+    }
+
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
         self.ledger.record(change);
         self.revision.fetch_add(1, Ordering::AcqRel);
@@ -1192,12 +1317,16 @@ where
     /// Applies one content change to this file with its time stamp as one
     /// mutation.
     fn change_content(&self, change: ContentChange<FileId>) -> Result<(), MountSourceError> {
+        let change = GroupedChange::Content {
+            file_id: self.file_id,
+            change,
+            times: ContentTimes::Stamp(content_change_time()?),
+        };
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            checkout
-                .change_content_by_id(self.file_id, change, &self.cancellation)
+            self.checkout
+                .apply_grouped(change, &self.cancellation)
                 .await
+                .map(|_| ())
         })
     }
 }
@@ -2454,32 +2583,18 @@ where
     ) -> Result<MountLookup, MountSourceError> {
         let path = self.path(path)?;
         self.runtime.wait(|| async {
-            let mut checkout = self.checkout.lock().await;
-            checkout.ensure_publication_resolved()?;
-            let receipt = checkout
-                .apply_authored_transaction(
-                    vec![AuthoredMutation::CreateFile {
-                        path: path.clone(),
-                        bytes: Bytes::new(),
-                        metadata,
-                    }],
-                    boundary_budget(),
+            let GroupedOutcome::Created(file_id) = self
+                .checkout
+                .apply_grouped(
+                    GroupedChange::CreateFile { path, metadata },
                     &self.cancellation,
                 )
-                .await
-                .map_err(facade_error)?;
-            let file_id = receipt
-                .value
-                .created_file_ids
-                .first()
-                .copied()
-                .flatten()
-                .ok_or_else(|| {
-                    MountSourceError::Engine("create omitted file identity".to_owned())
-                })?;
-            checkout
-                .publish_after_mutation(ViewChange::Bound(&path), &self.cancellation)
-                .await?;
+                .await?
+            else {
+                return Err(MountSourceError::Engine(
+                    "create omitted file identity".to_owned(),
+                ));
+            };
             Ok(MountLookup {
                 node: MountNode {
                     file_id,
@@ -3098,6 +3213,12 @@ fn mount_node(record: FileRecord) -> MountNode {
 
 /// Sets every modification and status-change time the metadata represents
 /// to now, and returns whether it represents either.
+/// What one grouped change alters in the checkout's view.
+enum GroupedView {
+    Bound(NamespacePath),
+    Node(FileId),
+}
+
 /// The current instant as a content-change time, in signed Unix-epoch nanoseconds.
 fn content_change_time() -> Result<i64, MountSourceError> {
     std::time::SystemTime::now()
@@ -3131,7 +3252,11 @@ fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
 }
 
 fn facade_error(error: OperationFailure<FsError>) -> MountSourceError {
-    match error.error {
+    fs_error(error.error)
+}
+
+fn fs_error(error: FsError) -> MountSourceError {
+    match error {
         FsError::CreationRejected | FsError::Mutation(GenerationMutationError::AlreadyExists) => {
             MountSourceError::AlreadyExists
         }
