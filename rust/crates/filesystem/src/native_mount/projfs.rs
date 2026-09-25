@@ -7,6 +7,7 @@
 
 #![allow(unsafe_code, unsafe_op_in_unsafe_fn)]
 
+use super::provider_stack;
 use super::{
     DriverStartFailure, MountContentPin, MountFilesystem, MountLookup, MountNode, MountNodeKind,
     MountPath, MountSourceError, NativeMountError, NativeMountRequest, ViewStamp,
@@ -1721,7 +1722,7 @@ fn windows_time(field: MetadataField<i64>) -> Option<i64> {
     i64::try_from(ticks).ok()
 }
 
-unsafe extern "system" fn start_directory(
+unsafe fn start_directory(
     callback_data: *const PRJ_CALLBACK_DATA,
     enumeration_id: *const GUID,
 ) -> HRESULT {
@@ -1853,7 +1854,7 @@ fn directory_snapshot(
     Ok(entries)
 }
 
-unsafe extern "system" fn end_directory(
+unsafe fn end_directory(
     callback_data: *const PRJ_CALLBACK_DATA,
     enumeration_id: *const GUID,
 ) -> HRESULT {
@@ -1876,7 +1877,7 @@ unsafe extern "system" fn end_directory(
     clippy::too_many_lines,
     reason = "paged ProjFS enumeration and buffer filling share one callback boundary"
 )]
-unsafe extern "system" fn get_directory(
+unsafe fn get_directory(
     callback_data: *const PRJ_CALLBACK_DATA,
     enumeration_id: *const GUID,
     search_expression: PCWSTR,
@@ -1964,7 +1965,7 @@ unsafe extern "system" fn get_directory(
     HR_OK
 }
 
-unsafe extern "system" fn placeholder(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
+unsafe fn placeholder(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
     let Some((data, runtime)) = runtime(callback_data) else {
         return HR_UNEXPECTED;
     };
@@ -2020,7 +2021,7 @@ unsafe extern "system" fn placeholder(callback_data: *const PRJ_CALLBACK_DATA) -
     }
 }
 
-unsafe extern "system" fn file_data(
+unsafe fn file_data(
     callback_data: *const PRJ_CALLBACK_DATA,
     byte_offset: u64,
     length: u32,
@@ -2078,7 +2079,7 @@ unsafe extern "system" fn file_data(
     result
 }
 
-unsafe extern "system" fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
+unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
     let Some((data, runtime)) = runtime(callback_data) else {
         return HR_UNEXPECTED;
     };
@@ -2131,7 +2132,7 @@ fn record_post_operation_failure(
     clippy::too_many_lines,
     reason = "notification admission and its exact authored operation share one callback boundary"
 )]
-unsafe extern "system" fn notification(
+unsafe fn notification(
     callback_data: *const PRJ_CALLBACK_DATA,
     is_directory: bool,
     notification: PRJ_NOTIFICATION,
@@ -2545,15 +2546,54 @@ unsafe fn copy_optional_wide(pointer: PCWSTR) -> Option<Option<HSTRING>> {
 
 unsafe extern "system" fn cancel(_callback_data: *const PRJ_CALLBACK_DATA) {}
 
+/// The `ProjFS` entry point for `callback`: it runs the callback on the
+/// provider's stack, not on the stack of the thread `ProjFS` calls from.
+macro_rules! on_provider_stack {
+    ($callback:ident($($argument:ident: $type:ty),*)) => {{
+        unsafe extern "system" fn entry($($argument: $type),*) -> HRESULT {
+            // SAFETY: `ProjFS` passes the arguments its callback contract
+            // promises, and they stay valid until this entry returns.
+            provider_stack::run(|| unsafe { $callback($($argument),*) })
+                .unwrap_or_else(|error| error.code())
+        }
+        entry
+    }};
+}
+
 fn callbacks() -> PRJ_CALLBACKS {
     PRJ_CALLBACKS {
-        StartDirectoryEnumerationCallback: Some(start_directory),
-        EndDirectoryEnumerationCallback: Some(end_directory),
-        GetDirectoryEnumerationCallback: Some(get_directory),
-        GetPlaceholderInfoCallback: Some(placeholder),
-        GetFileDataCallback: Some(file_data),
-        QueryFileNameCallback: Some(query_name),
-        NotificationCallback: Some(notification),
+        StartDirectoryEnumerationCallback: Some(on_provider_stack!(start_directory(
+            callback_data: *const PRJ_CALLBACK_DATA,
+            enumeration_id: *const GUID
+        ))),
+        EndDirectoryEnumerationCallback: Some(on_provider_stack!(end_directory(
+            callback_data: *const PRJ_CALLBACK_DATA,
+            enumeration_id: *const GUID
+        ))),
+        GetDirectoryEnumerationCallback: Some(on_provider_stack!(get_directory(
+            callback_data: *const PRJ_CALLBACK_DATA,
+            enumeration_id: *const GUID,
+            search_expression: PCWSTR,
+            buffer: PRJ_DIR_ENTRY_BUFFER_HANDLE
+        ))),
+        GetPlaceholderInfoCallback: Some(on_provider_stack!(placeholder(
+            callback_data: *const PRJ_CALLBACK_DATA
+        ))),
+        GetFileDataCallback: Some(on_provider_stack!(file_data(
+            callback_data: *const PRJ_CALLBACK_DATA,
+            byte_offset: u64,
+            length: u32
+        ))),
+        QueryFileNameCallback: Some(on_provider_stack!(query_name(
+            callback_data: *const PRJ_CALLBACK_DATA
+        ))),
+        NotificationCallback: Some(on_provider_stack!(notification(
+            callback_data: *const PRJ_CALLBACK_DATA,
+            is_directory: bool,
+            kind: PRJ_NOTIFICATION,
+            destination_filename: PCWSTR,
+            operation_parameters: *mut PRJ_NOTIFICATION_PARAMETERS
+        ))),
         CancelCommandCallback: Some(cancel),
     }
 }
@@ -3028,6 +3068,48 @@ mod tests {
             "a placeholder hydrated content it never promised: {stale:?}"
         );
         assert_eq!(std::fs::read(destination.join("stable.txt"))?, b"stable");
+        mount.unmount().await?;
+        Ok(())
+    }
+
+    /// `ProjFS` calls back on threads it creates with the executable's
+    /// default stack. Listing a lazy workspace needs more than that in an
+    /// unoptimized build, so this fails unless callbacks run on the
+    /// provider's own stack.
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn lazy_listing_runs_on_the_provider_stack() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::native::NativeDemandSource;
+
+        let root = tempfile::tempdir()?;
+        let source_root = root.path().join("source");
+        std::fs::create_dir(&source_root)?;
+        std::fs::write(source_root.join("a.txt"), b"a")?;
+        std::fs::write(source_root.join("b.rs"), b"b")?;
+        let demand = NativeDemandSource::open(
+            &source_root,
+            crate::model::FilesystemProfile::Windows,
+            crate::model::VolumeLimits::default(),
+        )
+        .await?;
+        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+        let lazy = crate::LazyWorkspace::attach_with_config(
+            &engine,
+            "listed-projfs",
+            Arc::new(demand),
+            crate::LocalCoreStateStore::open_owned(root.path().join("core"))?,
+            VolumeConfig::native(Lifecycle::Ephemeral),
+        )
+        .await?;
+        let destination = root.path().join("mount");
+        std::fs::create_dir(&destination)?;
+        let mount = lazy
+            .mount(
+                &destination,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        assert_eq!(sorted_names(&destination)?, ["a.txt", "b.rs"]);
         mount.unmount().await?;
         Ok(())
     }
