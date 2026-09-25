@@ -1246,17 +1246,9 @@ fn remove_authenticated_destination(
         }
         None => return Ok(()),
     }
-    // After PrjStopVirtualizing, ProjFS rejects the first delete of each
-    // emptied placeholder directory as temporarily unavailable and admits
-    // the next, so one removal pass clears at most one such directory.
-    // Retry for as long as passes make progress; give up only after the
-    // filter stops admitting deletes altogether.
-    let patience = std::time::Duration::from_millis(250);
-    let mut deadline = std::time::Instant::now() + patience;
-    let mut remaining = usize::MAX;
-    loop {
-        // Every attempt must reauthenticate the directory, because the path
-        // can be replaced while the filter is draining.
+    // The path can be replaced while the filter is draining, so every
+    // removal of the root itself reauthenticates it first.
+    let authenticate = || {
         let (current_tag, current_identity) = reparse_tag(destination)?;
         if current_tag != Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)
             || current_identity != expected_identity
@@ -1266,46 +1258,68 @@ fn remove_authenticated_destination(
                 destination.display()
             )));
         }
-        match std::fs::remove_dir_all(destination) {
-            Ok(()) => return Ok(()),
-            Err(error) if matches!(error.raw_os_error(), Some(145 | 369)) => {
-                let now = std::time::Instant::now();
-                let left = descendant_count(destination);
-                if left < remaining {
-                    remaining = left;
-                    deadline = now + patience;
-                } else if now >= deadline {
-                    return Err(NativeMountError::Driver(format!(
-                        "authenticated ProjFS root removal failed for {}: {error}",
-                        destination.display()
-                    )));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            Err(error) => {
-                return Err(NativeMountError::Driver(format!(
-                    "authenticated ProjFS root removal failed for {}: {error}",
-                    destination.display()
-                )));
-            }
-        }
+        Ok(())
+    };
+    remove_projection_tree(destination, &authenticate).map_err(|error| match error {
+        TreeRemovalError::Io(error) => NativeMountError::Driver(format!(
+            "authenticated ProjFS root removal failed for {}: {error}",
+            destination.display()
+        )),
+        TreeRemovalError::Root(error) => error,
+    })
+}
+
+enum TreeRemovalError {
+    Io(std::io::Error),
+    Root(NativeMountError),
+}
+
+impl From<std::io::Error> for TreeRemovalError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
     }
 }
 
-/// Counts every entry below `directory` without following links; an
-/// unreadable subtree counts as unbounded, so it never looks like progress.
-fn descendant_count(directory: &std::path::Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return usize::MAX;
-    };
-    entries.fold(0_usize, |count, entry| {
-        let nested = match entry.and_then(|entry| Ok((entry.file_type()?, entry.path()))) {
-            Ok((kind, path)) if kind.is_dir() => descendant_count(&path),
-            Ok(_) => 0,
-            Err(_) => usize::MAX,
-        };
-        count.saturating_add(1).saturating_add(nested)
-    })
+/// Removes `directory` and everything below it, visiting each entry once.
+///
+/// After `PrjStopVirtualizing`, `ProjFS` refuses the first delete of each
+/// emptied placeholder directory as temporarily unavailable and admits the
+/// next. A refused removal has already removed everything it visited before
+/// the refused directory, so only what remains is visited again: each child
+/// directory is removed the same way, and then the directory itself, retried
+/// in place while the filter keeps refusing it within a bounded patience.
+/// `before_removal` runs before every removal of `directory` itself.
+fn remove_projection_tree(
+    directory: &std::path::Path,
+    before_removal: &dyn Fn() -> Result<(), NativeMountError>,
+) -> Result<(), TreeRemovalError> {
+    const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
+    let refused = |error: &std::io::Error| matches!(error.raw_os_error(), Some(145 | 369));
+    before_removal().map_err(TreeRemovalError::Root)?;
+    match std::fs::remove_dir_all(directory) {
+        Ok(()) => return Ok(()),
+        Err(error) if refused(&error) => {}
+        Err(error) => return Err(error.into()),
+    }
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            remove_projection_tree(&entry.path(), &|| Ok(()))?;
+        }
+    }
+    let deadline = std::time::Instant::now() + PATIENCE;
+    loop {
+        before_removal().map_err(TreeRemovalError::Root)?;
+        match std::fs::remove_dir_all(directory) {
+            Ok(()) => return Ok(()),
+            Err(error) if refused(&error) && std::time::Instant::now() < deadline => {
+                // The filter admits a refused directory's next delete; only
+                // a filter still draining needs a moment.
+                std::thread::yield_now();
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 #[allow(unsafe_code)]
