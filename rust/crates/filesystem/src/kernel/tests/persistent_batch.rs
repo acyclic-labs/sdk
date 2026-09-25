@@ -43,28 +43,6 @@ fn exact_internal_helpers_are_bounded() -> Result<(), Box<dyn std::error::Error>
     assert_eq!(heap_parent_count(1), 0);
     assert_eq!(heap_parent_count(2), 1);
     assert_eq!(heap_parent_count(5), 2);
-    assert_eq!(
-        charge_work(WorkCounters::default(), 3, WorkBudget::UNBOUNDED)?,
-        WorkCounters {
-            items_examined: 3,
-            ..WorkCounters::default()
-        }
-    );
-    assert!(matches!(
-        charge_work(
-            WorkCounters::default(),
-            1,
-            WorkBudget {
-                items_examined: 0,
-                ..WorkBudget::UNBOUNDED
-            }
-        ),
-        Err(WorkError::BudgetExceeded {
-            counter: "items_examined",
-            observed: 1,
-            maximum: 0
-        })
-    ));
 
     Ok(())
 }

@@ -459,17 +459,8 @@ fn charge_items(
     budget: WorkBudget,
     count: u64,
 ) -> Result<(), ExtentMutationFailure> {
-    let prospective = work
-        .checked_add(WorkCounters {
-            items_examined: count,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    prospective
-        .verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    *work = prospective;
-    Ok(())
+    work.charge_items(count, &budget)
+        .map_err(|error| OperationFailure::new(error.into(), *work))
 }
 
 fn charge_copied_bytes(
@@ -1222,13 +1213,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
     }
 
     fn charge_items(&mut self, count: u64) -> Result<(), ExtentMutationError> {
-        let prospective = self.work.checked_add(WorkCounters {
-            items_examined: count,
-            ..WorkCounters::default()
-        })?;
-        prospective.verify(self.budget)?;
-        self.work = prospective;
-        Ok(())
+        Ok(self.work.charge_items(count, &self.budget)?)
     }
 
     async fn write_page(&mut self, page: &ExtentPage) -> Result<ObjectId, ExtentMutationError> {

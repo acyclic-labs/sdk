@@ -149,6 +149,7 @@ impl WorkCounters {
     /// # Errors
     ///
     /// Returns [`WorkError::Overflow`] if any exact counter cannot be represented.
+    #[inline]
     pub fn checked_add(self, other: Self) -> Result<Self, WorkError> {
         Ok(Self {
             authority_records_read: add(self.authority_records_read, other.authority_records_read)?,
@@ -195,7 +196,56 @@ impl WorkCounters {
     /// # Errors
     ///
     /// Returns the first stable counter name that exceeded its bound.
+    #[inline]
     pub fn verify(self, budget: WorkBudget) -> Result<(), WorkError> {
+        self.verify_within(&budget)
+    }
+
+    /// Charges `count` examined items in place.
+    ///
+    /// Exactly equivalent to replacing `self` with its [`Self::checked_add`]
+    /// of `count` items once that sum verifies against `budget`, but copies
+    /// neither counter set: hot traversals charge once per examined item.
+    /// On failure `self` is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns overflow or the first counter exceeding `budget`.
+    #[inline]
+    pub fn charge_items(&mut self, count: u64, budget: &WorkBudget) -> Result<(), WorkError> {
+        let prior = self.items_examined;
+        self.items_examined = add(prior, count)?;
+        self.verify_within(budget).inspect_err(|_| {
+            self.items_examined = prior;
+        })
+    }
+
+    /// Charges `operations` allocations that leave `live_bytes` owned at
+    /// once, in place, with the same exactness and failure behavior as
+    /// [`Self::charge_items`]: peak allocation is the maximum ever live.
+    ///
+    /// # Errors
+    ///
+    /// Returns overflow or the first counter exceeding `budget`.
+    #[inline]
+    pub fn charge_allocation(
+        &mut self,
+        operations: u64,
+        live_bytes: u64,
+        budget: &WorkBudget,
+    ) -> Result<(), WorkError> {
+        let (prior_operations, prior_peak) =
+            (self.allocation_operations, self.peak_allocation_bytes);
+        self.allocation_operations = add(prior_operations, operations)?;
+        self.peak_allocation_bytes = prior_peak.max(live_bytes);
+        self.verify_within(budget).inspect_err(|_| {
+            self.allocation_operations = prior_operations;
+            self.peak_allocation_bytes = prior_peak;
+        })
+    }
+
+    #[inline]
+    fn verify_within(&self, budget: &WorkBudget) -> Result<(), WorkError> {
         // Charged once per examined item on hot paths: compare every counter
         // without branching and name the exceeded one only on failure.
         if (self.authority_records_read <= budget.authority_records_read)
@@ -229,7 +279,7 @@ impl WorkCounters {
     }
 
     #[cold]
-    fn exceeded(self, budget: WorkBudget) -> Result<(), WorkError> {
+    fn exceeded(&self, budget: &WorkBudget) -> Result<(), WorkError> {
         let fields = [
             (
                 "authority_records_read",
@@ -337,7 +387,7 @@ impl WorkCounters {
     /// Returns the exact exceeded counter when already-spent work is outside
     /// the admitted budget.
     pub fn remaining(self, budget: WorkBudget) -> Result<WorkBudget, WorkError> {
-        self.verify(budget)?;
+        self.verify_within(&budget)?;
         Ok(WorkBudget {
             authority_records_read: budget.authority_records_read - self.authority_records_read,
             authority_records_appended: budget.authority_records_appended

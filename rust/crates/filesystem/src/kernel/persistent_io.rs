@@ -749,13 +749,7 @@ fn admit_clone(
 }
 
 fn charge_items(work: &mut WorkCounters, count: u64, budget: WorkBudget) -> Result<(), WorkError> {
-    let prospective = work.checked_add(WorkCounters {
-        items_examined: count,
-        ..WorkCounters::default()
-    })?;
-    prospective.verify(budget)?;
-    *work = prospective;
-    Ok(())
+    work.charge_items(count, &budget)
 }
 
 pub(crate) fn merge_backend_work(

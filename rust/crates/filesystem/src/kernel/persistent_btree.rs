@@ -837,13 +837,7 @@ where
     }
 
     fn charge_items(&mut self, count: u64) -> Result<(), Error<M::Error>> {
-        let prospective = self.work.checked_add(WorkCounters {
-            items_examined: count,
-            ..WorkCounters::default()
-        })?;
-        prospective.verify(self.budget)?;
-        self.work = prospective;
-        Ok(())
+        Ok(self.work.charge_items(count, &self.budget)?)
     }
 
     async fn write_leaf_chunks(
