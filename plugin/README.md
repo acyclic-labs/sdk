@@ -33,8 +33,13 @@ exact executable completes the native-mount qualification.
 Native hooks and the npm-installed `acyclic` command both run the installed
 Acyclic binary directly: installation verifies it against the release checksum
 once, and no interpreter starts on each run. Install scripts must be enabled.
-Acyclic does not add an MCP server or a second command implementation to
-shell-capable hosts. Codex plugins do not inject
+Codex runs command hooks through the session shell (`PowerShell` on Windows), so
+the Codex plugin delivers its per-prompt, per-tool, and subagent hooks to
+`acyclic __mcp`, a hook-only MCP server that Codex keeps connected for each
+thread and that lists no tools to the model; only `SessionStart`, which starts
+the service, and `SessionEnd` remain command hooks. Acyclic adds no
+model-visible MCP server or second command implementation to shell-capable
+hosts. Codex plugins do not inject
 arbitrary executables into `PATH`, so install the npm package globally when
 humans or agent shell commands need the `acyclic` executable.
 

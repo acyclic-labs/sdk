@@ -336,6 +336,25 @@ test("same version cannot be replaced with different bytes", () => {
   }
 });
 
+test("the published package declares the Codex hook MCP server on the installed command", () => {
+  const [packed] = JSON.parse(run("npm pack --dry-run --json --ignore-scripts", plugin));
+  const files = packed.files.map(file => file.path.replaceAll("\\", "/"));
+  for (const path of [".mcp.json", ".codex-plugin/plugin.json", "hooks/hooks.json", "bin/acyclic"]) {
+    assert.ok(files.includes(path), `package omits ${path}`);
+  }
+  assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"))).mcpServers, "./.mcp.json");
+  const servers = JSON.parse(readFileSync(join(plugin, ".mcp.json"))).mcpServers;
+  assert.deepEqual(Object.keys(servers), ["acyclic-hooks"]);
+  // Codex starts the server from the plugin root. `bin/acyclic` is the
+  // native executable on Unix; on Windows the installer removes it, so Codex
+  // resolves the command through PATHEXT to `bin/acyclic.exe` (checked for
+  // every package manager below).
+  assert.equal(servers["acyclic-hooks"].cwd, ".");
+  assert.equal(servers["acyclic-hooks"].command, "./bin/acyclic");
+  assert.deepEqual(servers["acyclic-hooks"].args, ["__mcp"]);
+  assert.equal(servers["acyclic-hooks"].required, true);
+});
+
 // Installs a package whose "native executable" is this Node binary with each
 // package manager, and checks that the `acyclic` command runs the executable
 // with no interpreter in between, across an upgrade to different bytes and an

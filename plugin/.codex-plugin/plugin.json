@@ -6,6 +6,7 @@
     "name": "Acyclic Labs"
   },
   "license": "Apache-2.0",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Acyclic",
     "shortDescription": "Isolate and reconcile recursive subagents.",
