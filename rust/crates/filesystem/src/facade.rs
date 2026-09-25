@@ -855,6 +855,43 @@ pub enum ContentChange<F> {
     },
 }
 
+/// One independent change that [`Checkout::apply_group`] may apply together
+/// with others as a single mutation.
+///
+/// Compiling a change reads at most the metadata of the file whose content
+/// it changes, and no kind writes anything another kind reads except
+/// content-change times, which each stamp overwrites completely. So every
+/// change compiles against the same candidate to exactly the operations it
+/// would compile to after its predecessors.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GroupedChange {
+    /// Creates one empty regular file with a fresh stable identity.
+    CreateFile {
+        /// New namespace path.
+        path: NamespacePath,
+        /// Exact cross-profile metadata.
+        metadata: FileMetadata,
+    },
+    /// Changes the content of one regular file by stable identity.
+    Content {
+        /// Existing regular-file identity.
+        file_id: FileId,
+        /// The content change.
+        change: ContentChange<FileId>,
+        /// Whether the change also stamps the file's content-change times.
+        times: ContentTimes,
+    },
+}
+
+/// What one successful [`GroupedChange`] produced.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GroupedOutcome {
+    /// The identity of the created file.
+    Created(FileId),
+    /// The content change applied.
+    Changed,
+}
+
 /// Whether a content change also records its time in the changed file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContentTimes {
@@ -9105,6 +9142,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
+        let compiled = self
+            .compile_content(file, change, times, budget, cancellation)
+            .await?;
+        let mut work = compiled.work;
+        let mutation = self
+            .mutate(compiled.value, remaining(work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        work = add(work, mutation.work)?;
+        Ok(FsReceipt { value: (), work })
+    }
+
+    /// Stages one content change's bytes and time stamp and returns the
+    /// operations that apply it, reading at most the changed file's metadata.
+    async fn compile_content<F: ContentFile>(
+        &mut self,
+        file: F,
+        change: ContentChange<F>,
+        times: ContentTimes,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Mutation>> {
         let mut work = WorkCounters::default();
         let operation = match change {
             ContentChange::Write { bytes, .. } if bytes.is_empty() => {
@@ -9178,12 +9237,150 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 operations.push(file.mutation(ContentOperation::SetMetadata { metadata }));
             }
         }
-        let mutation = self
-            .mutate(operations, remaining(work, budget)?, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, mutation.work)?;
-        Ok(FsReceipt { value: (), work })
+        Ok(FsReceipt {
+            value: operations,
+            work,
+        })
+    }
+
+    /// Applies independent changes as if one at a time in order, landing
+    /// them as one mutation whenever they all apply.
+    ///
+    /// Each result is exactly what applying that change alone after its
+    /// successful predecessors returns: when the combined mutation fails,
+    /// every compiled change is retried alone in order, so one change's
+    /// failure never fails another. A change that fails leaves only harmless
+    /// unreferenced staged objects.
+    ///
+    /// # Errors
+    ///
+    /// Fails as a whole only once spent work leaves nothing of `budget` or
+    /// overflows; every other failure belongs to its change.
+    pub async fn apply_group(
+        &mut self,
+        changes: Vec<GroupedChange>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<Result<GroupedOutcome, FsError>>> {
+        let mut work = WorkCounters::default();
+        let mut staged_metadata = AuthoredMetadataCache::new();
+        let mut compiled = Vec::with_capacity(changes.len());
+        for change in changes {
+            let receipt = self
+                .compile_grouped(
+                    change,
+                    &mut staged_metadata,
+                    remaining(work, budget)?,
+                    cancellation,
+                )
+                .await;
+            compiled.push(match receipt {
+                Ok(receipt) => {
+                    work = add(work, receipt.work)?;
+                    Ok(receipt.value)
+                }
+                Err(failure) => {
+                    work = add(work, *failure.work)?;
+                    Err(failure.error)
+                }
+            });
+        }
+        if compiled.iter().filter(|change| change.is_ok()).count() > 1 {
+            let operations = compiled
+                .iter()
+                .flatten()
+                .flat_map(|(operations, _)| operations.iter().cloned())
+                .collect();
+            match self
+                .mutate(operations, remaining(work, budget)?, cancellation)
+                .await
+            {
+                Ok(mutation) => {
+                    work = add(work, mutation.work)?;
+                    let value = compiled
+                        .into_iter()
+                        .map(|change| change.map(|(_, outcome)| outcome))
+                        .collect();
+                    return Ok(FsReceipt { value, work });
+                }
+                Err(failure) => work = add(work, *failure.work)?,
+            }
+        }
+        let mut value = Vec::with_capacity(compiled.len());
+        for change in compiled {
+            let applied = match change {
+                Ok((operations, outcome)) => {
+                    match self
+                        .mutate(operations, remaining(work, budget)?, cancellation)
+                        .await
+                    {
+                        Ok(mutation) => {
+                            work = add(work, mutation.work)?;
+                            Ok(outcome)
+                        }
+                        Err(failure) => {
+                            work = add(work, *failure.work)?;
+                            Err(failure.error)
+                        }
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            value.push(applied);
+        }
+        Ok(FsReceipt { value, work })
+    }
+
+    async fn compile_grouped(
+        &mut self,
+        change: GroupedChange,
+        staged_metadata: &mut AuthoredMetadataCache,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<(Vec<Mutation>, GroupedOutcome)> {
+        match change {
+            GroupedChange::CreateFile { path, metadata } => {
+                let mut operations = Vec::new();
+                let mut work = WorkCounters::default();
+                let created = self
+                    .compile_authored_mutation(
+                        AuthoredMutation::CreateFile {
+                            path,
+                            bytes: Bytes::new(),
+                            metadata,
+                        },
+                        &mut operations,
+                        &mut work,
+                        staged_metadata,
+                        budget,
+                        cancellation,
+                    )
+                    .await?;
+                let file_id = created.ok_or_else(|| {
+                    OperationFailure::new(
+                        FsError::Mutation(GenerationMutationError::InconsistentState),
+                        work,
+                    )
+                })?;
+                Ok(FsReceipt {
+                    value: (operations, GroupedOutcome::Created(file_id)),
+                    work,
+                })
+            }
+            GroupedChange::Content {
+                file_id,
+                change,
+                times,
+            } => {
+                let compiled = self
+                    .compile_content(file_id, change, times, budget, cancellation)
+                    .await?;
+                Ok(FsReceipt {
+                    value: (compiled.value, GroupedOutcome::Changed),
+                    work: compiled.work,
+                })
+            }
+        }
     }
 
     /// Replaces one range of an attached regular file by stable identity.

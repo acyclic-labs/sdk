@@ -11169,3 +11169,120 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
     assert_eq!(untimed_after, untimed_before);
     Ok(())
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn grouped_changes_land_together_and_each_keeps_its_own_result()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([141; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut checkout = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    let existing = poll_ready(checkout.create_file(
+        path("existing")?,
+        Bytes::from(vec![b'a'; 128]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed create blocked")??
+    .value;
+    let content = |bytes: &'static [u8]| GroupedChange::Content {
+        file_id: existing,
+        change: ContentChange::Write {
+            offset: 0,
+            bytes: Bytes::from_static(bytes),
+        },
+        times: ContentTimes::Stamp(7),
+    };
+    let create = |name: &str| -> Result<GroupedChange, Box<dyn std::error::Error>> {
+        Ok(GroupedChange::CreateFile {
+            path: path(name)?,
+            metadata: FileMetadata::default(),
+        })
+    };
+
+    // Every change applies: one mutation, one result each.
+    let applied = poll_ready(checkout.apply_group(
+        vec![create("first")?, content(b"ONE"), create("second")?],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("group blocked")??
+    .value;
+    let [
+        Ok(GroupedOutcome::Created(first)),
+        Ok(GroupedOutcome::Changed),
+        Ok(GroupedOutcome::Created(second)),
+    ] = applied.as_slice()
+    else {
+        return Err(format!("unexpected grouped outcomes {applied:?}").into());
+    };
+    assert_ne!(first, second);
+
+    // A failing change fails alone; its neighbours still apply in order.
+    let mixed = poll_ready(checkout.apply_group(
+        vec![
+            create("third")?,
+            create("first")?,
+            GroupedChange::Content {
+                file_id: FileId::from_bytes([142; 16]),
+                change: ContentChange::Resize { logical_bytes: 1 },
+                times: ContentTimes::Stamp(8),
+            },
+            content(b"TWO"),
+        ],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("mixed group blocked")??
+    .value;
+    assert!(matches!(mixed[0], Ok(GroupedOutcome::Created(_))));
+    assert!(
+        mixed[1].is_err(),
+        "an existing name cannot be created again"
+    );
+    assert!(mixed[2].is_err(), "an absent identity cannot change");
+    assert!(matches!(mixed[3], Ok(GroupedOutcome::Changed)));
+
+    for name in ["existing", "first", "second", "third"] {
+        assert!(
+            poll_ready(checkout.lookup_no_follow(
+                &path(name)?,
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            ))
+            .ok_or("lookup blocked")??
+            .value
+            .record
+            .is_some(),
+            "{name} is bound"
+        );
+    }
+    let read = poll_ready(checkout.read_file_range_by_id(
+        existing,
+        ByteRange {
+            offset: 0,
+            length: 4,
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("read blocked")??
+    .value;
+    assert_eq!(read.bytes.as_ref(), b"TWOa");
+    Ok(())
+}
