@@ -773,10 +773,12 @@ mod tests {
             )
             .await?;
         let page = read_coordinator_event_page(&client, 0, 1).await?;
-        assert_eq!(page.len(), 1);
-        assert_eq!(page[0].revision, 1);
-        assert_eq!(page[0].operation_id, operation_id);
-        assert!(matches!(page[0].event, SchedulerEvent::Declared { .. }));
+        let [event] = page.as_slice() else {
+            return Err(Error::Storage("expected one committed event".into()));
+        };
+        assert_eq!(event.revision, 1);
+        assert_eq!(event.operation_id, operation_id);
+        assert!(matches!(event.event, SchedulerEvent::Declared { .. }));
         assert!(read_coordinator_event_page(&client, 1, 1).await?.is_empty());
         assert!(read_coordinator_event_page(&client, 0, 0).await.is_err());
         Ok(())
