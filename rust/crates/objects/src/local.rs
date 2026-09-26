@@ -18,10 +18,9 @@ use prost::Message;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::{
-    BufferedObject, Condition, DeleteResult, ExternalBody, GetRequest, LocalBodyLocation,
-    LocalBodyReference, LocalBodyRelocations, MemoryObjects, ObjectsError, ObjectsProvider,
-    HeadRequest,
-    ProviderListPage, PutRequest, ReadTarget, wire,
+    BufferedObject, Condition, DeleteResult, ExternalBody, GetRequest, HeadRequest,
+    LocalBodyLocation, LocalBodyReference, LocalBodyRelocations, MemoryObjects, ObjectsError,
+    ObjectsProvider, ProviderListPage, PutRequest, ReadTarget, wire,
 };
 
 const JOURNAL_MAGIC: &[u8; 23] = b"ACYCLIC-OBJECTS-LOCAL\0\x04";
