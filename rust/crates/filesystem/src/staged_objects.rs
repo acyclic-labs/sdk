@@ -26,7 +26,8 @@ use crate::storage::{
 };
 use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
 use bytes::Bytes;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, PoisonError};
@@ -101,9 +102,37 @@ fn resident_read(bytes: Bytes, maximum_bytes: u64, budget: WorkBudget) -> Object
     })
 }
 
+/// Hashes an [`ObjectId`] by folding the words it writes: its digest is
+/// already a cryptographic hash, so mixing it again, as the default
+/// `SipHash` does, only adds work to every staged read and admission.
+#[derive(Default)]
+struct IdentityHasher(u64);
+
+impl Hasher for IdentityHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let mut words = bytes.chunks_exact(8);
+        for word in &mut words {
+            let mut buffer = [0_u8; 8];
+            buffer.copy_from_slice(word);
+            self.write_u64(u64::from_le_bytes(buffer));
+        }
+        for &byte in words.remainder() {
+            self.write_u64(u64::from(byte));
+        }
+    }
+
+    fn write_u64(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Default)]
 struct Index {
-    objects: BTreeMap<ObjectId, Staged>,
+    objects: HashMap<ObjectId, Staged, BuildHasherDefault<IdentityHasher>>,
     // Resident identities in admission order, each re-queued once when read
     // since it was last considered: the window spills from the front, so
     // pages the current candidate keeps reading stay in memory while
