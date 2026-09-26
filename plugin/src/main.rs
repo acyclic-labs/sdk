@@ -7065,8 +7065,6 @@ async fn start_control_endpoint(
 ) -> Result<ControlEndpoint, String> {
     fs::create_dir_all(data).map_err(display)?;
     let ledger = Arc::new(ControlLedger::open(data)?);
-    #[cfg(windows)]
-    let opaque_id = short_hash(data.as_os_str().to_string_lossy().as_bytes());
     let (shutdown, receiver) = watch::channel(false);
     #[cfg(all(test, not(target_os = "linux")))]
     let accepted = Arc::new(tokio::sync::Notify::new());
@@ -7117,8 +7115,7 @@ async fn start_control_endpoint(
     }
     #[cfg(windows)]
     {
-        let opaque_name = format!("acyclic-{opaque_id}");
-        let pipe_path = format!(r"\\.\pipe\{opaque_name}");
+        let pipe_path = windows_control_pipe_path(data);
         #[cfg(test)]
         let endpoint_pipe_path = pipe_path.clone();
         // The first instance exists before this returns, so a started
@@ -7566,19 +7563,15 @@ async fn serve_windows_control(
     mut shutdown: watch::Receiver<bool>,
     #[cfg(test)] accepted: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
-    let mut next = Some(first);
+    // One instance listens at every moment: the next is created before a
+    // connected one is handed to its task, since a client that finds no
+    // listening instance gets `NotFound`, as if no service ran.
+    let mut listening = first;
     let mut connections = tokio::task::JoinSet::new();
     let result = 'result: loop {
-        let server = match next.take() {
-            Some(server) => server,
-            None => match create_current_user_pipe(&pipe_path, false) {
-                Ok(server) => server,
-                Err(error) => break Err(display(error)),
-            },
-        };
         let connected = loop {
             tokio::select! {
-                connected = server.connect(), if connections.len() < MAXIMUM_CONCURRENT_CONTROL_REQUESTS => break connected,
+                connected = listening.connect(), if connections.len() < MAXIMUM_CONCURRENT_CONTROL_REQUESTS => break connected,
                 completed = connections.join_next(), if !connections.is_empty() => {
                     let _ = completed;
                 }
@@ -7589,8 +7582,15 @@ async fn serve_windows_control(
                 }
             }
         };
-        if let Err(error) = connected {
-            break Err(display(error));
+        let next = match create_current_user_pipe(&pipe_path, false) {
+            Ok(next) => next,
+            Err(error) => break Err(display(error)),
+        };
+        let server = std::mem::replace(&mut listening, next);
+        // A client that vanished before its connection completed costs only
+        // its own instance.
+        if connected.is_err() {
+            continue;
         }
         let control = Arc::clone(&control);
         let ledger = Arc::clone(&ledger);
@@ -9672,35 +9672,46 @@ fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error
     let [host, event] = arguments else {
         return Err(io::Error::other("acyclic __hook requires a host and event").into());
     };
-    let response = (|| {
-        let mut input = Vec::new();
-        io::stdin()
-            .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
-            .read_to_end(&mut input)
-            .map_err(display)?;
-        if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
-            return Err("native hook input exceeds the 4 MiB bound".to_owned());
+    let response = match read_native_hook_call() {
+        Ok((cwd, input)) => {
+            let failure = HookFailure::classify(host, event, Some((&cwd, &input)));
+            match local_native_hook_answer(host, event, &input) {
+                Ok(Some(answer)) => answer,
+                Ok(None) => tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(display)
+                    .and_then(|runtime| {
+                        runtime.block_on(forward_native_hook(
+                            host,
+                            event,
+                            cwd,
+                            input,
+                            ServiceStart::Allowed,
+                        ))
+                    })
+                    .unwrap_or_else(|error| failure.answer(&error)),
+                Err(error) => failure.answer(&error),
+            }
         }
-        let input: Value = serde_json::from_slice(&input).map_err(display)?;
-        if let Some(answer) = local_native_hook_answer(host, event, &input)? {
-            return Ok(answer);
-        }
-        let cwd = env::current_dir().map_err(display)?;
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(display)?
-            .block_on(forward_native_hook(
-                host,
-                event,
-                cwd,
-                input,
-                ServiceStart::Allowed,
-            ))
-    })()
-    .unwrap_or_else(|error| native_hook_failure(host, event, &error));
+        Err(error) => HookFailure::classify(host, event, None).answer(&error),
+    };
     serde_json::to_writer(io::stdout().lock(), &response)?;
     Ok(())
+}
+
+/// The working directory and input of the native hook on standard input.
+fn read_native_hook_call() -> Result<(PathBuf, Value), String> {
+    let mut input = Vec::new();
+    io::stdin()
+        .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
+        .read_to_end(&mut input)
+        .map_err(display)?;
+    if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
+        return Err("native hook input exceeds the 4 MiB bound".to_owned());
+    }
+    let input = serde_json::from_slice(&input).map_err(display)?;
+    Ok((env::current_dir().map_err(display)?, input))
 }
 
 /// The answer to a native hook that never needs the service, or `None` when
@@ -9776,31 +9787,123 @@ fn native_hook_request(host: &str, event: &str, cwd: PathBuf, input: Value) -> C
     }
 }
 
-/// The answer that lets the host continue, visibly, when Acyclic cannot
-/// answer a hook.
-fn native_hook_failure(host: &str, event: &str, error: &str) -> Value {
-    let notice = format!(
-        "Acyclic is unavailable; this tool will run without an isolated workspace: {error}"
-    );
-    if !matches!(event, "PreToolUse" | "preToolUse") {
-        return json!({"systemMessage": notice});
-    }
-    if host == "copilot" {
-        return json!({
-            "permissionDecision": "allow",
-            "permissionDecisionReason": notice,
-            "systemMessage": notice
-        });
-    }
-    json!({
-        "systemMessage": notice,
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "permissionDecisionReason": notice,
-            "additionalContext": notice
+/// What the host does with a hook that Acyclic could not answer, whatever
+/// the failure: an unreachable service, a lost response or a refusal. This is
+/// the one place that decides which hooks may fail open.
+///
+/// Only a tool hook gates anything, so every other hook lets the host
+/// continue, visibly. The root agent works in its own physical roots, which
+/// need no rewrite, so its tools continue too. A tool that may act for an
+/// isolated subagent, or that would spawn one, is denied: without its rewrite
+/// it would act on the shared roots, and a spawn without its prepared
+/// workspace would start a subagent that has none.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HookFailurePolicy {
+    Continue,
+    Deny,
+}
+
+/// A hook's answer should Acyclic fail to give one; see [`HookFailurePolicy`].
+#[derive(Clone, Copy, Debug)]
+struct HookFailure<'a> {
+    host: &'a str,
+    event: &'a str,
+    policy: HookFailurePolicy,
+}
+
+impl<'a> HookFailure<'a> {
+    /// Classifies a hook from its call alone, before anything can fail. A
+    /// call that could not be read is a tool of unknown caller.
+    fn classify(host: &'a str, event: &'a str, call: Option<(&Path, &Value)>) -> Self {
+        let tool_hook = matches!(event, "PreToolUse" | "preToolUse");
+        let isolated = || {
+            call.is_none_or(|(cwd, input)| {
+                tool_may_act_for_subagent(host, cwd, input, &default_data_directory())
+            })
+        };
+        let policy = if tool_hook && isolated() {
+            HookFailurePolicy::Deny
+        } else {
+            HookFailurePolicy::Continue
+        };
+        Self {
+            host,
+            event,
+            policy,
         }
-    })
+    }
+
+    fn answer(&self, error: &str) -> Value {
+        let (decision, notice) = match self.policy {
+            HookFailurePolicy::Continue => (
+                "allow",
+                format!(
+                    "Acyclic is unavailable; this tool will run without an isolated workspace: {error}"
+                ),
+            ),
+            HookFailurePolicy::Deny => (
+                "deny",
+                format!("Acyclic denied the tool because workspace isolation failed: {error}"),
+            ),
+        };
+        if !matches!(self.event, "PreToolUse" | "preToolUse") {
+            return json!({"systemMessage": notice});
+        }
+        if self.host == "copilot" {
+            return json!({
+                "permissionDecision": decision,
+                "permissionDecisionReason": notice,
+                "systemMessage": notice
+            });
+        }
+        json!({
+            "systemMessage": notice,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": decision,
+                "permissionDecisionReason": notice,
+                "additionalContext": notice
+            }
+        })
+    }
+}
+
+/// Whether a tool call may belong to an isolated subagent, judged from the
+/// call alone because the service that knows cannot answer. A subagent's
+/// tool names its agent (`agent_id`), a Codex MCP call names a thread other
+/// than the session's own, and a subagent without either runs inside its
+/// workspace mount, which lies under the state directory. A spawn prepares
+/// a subagent's workspace, and a call that names no tool cannot be told
+/// apart, so both count too.
+fn tool_may_act_for_subagent(host: &str, cwd: &Path, input: &Value, data: &Path) -> bool {
+    let Some(tool) = hook_optional_string(input, "tool_name", "toolName") else {
+        return true;
+    };
+    let session = hook_optional_string(input, "session_id", "sessionId");
+    let thread = hook_optional_string(input, "thread_id", "threadId");
+    let cwd = hook_path(input, "cwd").map_or_else(|| cwd.to_path_buf(), |path| cwd.join(path));
+    is_spawn_tool(&tool)
+        || (host == "copilot" && tool == "task")
+        || input.get("agent_id").is_some()
+        || input.get("agentId").is_some()
+        || thread.is_some_and(|thread| session.as_ref() != Some(&thread))
+        || path_is_within(&cwd, data)
+}
+
+/// Whether `path` lies lexically within `root`. Windows compares without
+/// case and without a verbatim prefix, as hosts spell one path either way.
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let spell = |path: &Path| {
+            let text = path.to_string_lossy().replace('/', "\\").to_lowercase();
+            text.strip_prefix(r"\\?\")
+                .map_or_else(|| text.clone(), str::to_owned)
+        };
+        Path::new(&spell(path)).starts_with(spell(root))
+    }
+    #[cfg(not(windows))]
+    path.starts_with(root)
 }
 
 fn is_foreground_cli_invocation() -> bool {
@@ -11321,7 +11424,8 @@ async fn send_control_envelope_once(
     data: &Path,
     envelope: &ControlEnvelope<ControlRequest>,
 ) -> Result<Value, ControlRequestError> {
-    send_control_envelope_with_attempts(data, envelope, 1, CONTROL_PROBE_WAIT).await
+    send_control_envelope_with_attempts(data, envelope, 1, control_request_wait(&envelope.request))
+        .await
 }
 
 async fn send_control_envelope_with_attempts(
@@ -11363,40 +11467,7 @@ async fn send_control_envelope_with_attempts(
             ControlRequestError::Unavailable(format!("Acyclic service is not running: {error}"))
         })?;
         #[cfg(windows)]
-        let stream = {
-            let pipe = format!(
-                r"\\.\pipe\acyclic-{}",
-                short_hash(data.as_os_str().to_string_lossy().as_bytes())
-            );
-            let mut last = None;
-            let mut connected = None;
-            for attempt in 1..=windows_connect_attempts {
-                let remaining = remaining_control_wait(deadline)?;
-                match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe) {
-                    Ok(client) => {
-                        connected = Some(client);
-                        break;
-                    }
-                    Err(error) => {
-                        last = Some(error);
-                        // Only a further attempt is worth waiting for.
-                        if attempt < windows_connect_attempts {
-                            tokio::time::sleep(std::time::Duration::from_millis(20).min(remaining))
-                                .await;
-                        }
-                    }
-                }
-            }
-            connected.ok_or_else(|| {
-                ControlRequestError::Unavailable(format!(
-                    "Acyclic service is not running: {}",
-                    last.map_or_else(
-                        || "unknown connection failure".to_owned(),
-                        |error| error.to_string()
-                    )
-                ))
-            })?
-        };
+        let stream = connect_windows_control_pipe(data, windows_connect_attempts, deadline).await?;
         exchange_control_stream(
             stream,
             &encoded,
@@ -11405,6 +11476,58 @@ async fn send_control_envelope_with_attempts(
         )
         .await
     }
+}
+
+/// Connects to the service's pipe, trying `attempts` times while none
+/// exists. A pipe whose every instance is connected is busy only until the
+/// service creates the next, so that wait counts no attempt.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+async fn connect_windows_control_pipe(
+    data: &Path,
+    attempts: usize,
+    deadline: tokio::time::Instant,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, ControlRequestError> {
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+    use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
+
+    let pipe = windows_control_pipe_path(data);
+    let mut attempt = 1;
+    loop {
+        let remaining = remaining_control_wait(deadline)?;
+        let error = match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe) {
+            Ok(client) => return Ok(client),
+            Err(error) => error,
+        };
+        if error.raw_os_error() == i32::try_from(ERROR_PIPE_BUSY).ok() {
+            let name = pipe.encode_utf16().chain([0]).collect::<Vec<_>>();
+            let wait = u32::try_from(remaining.as_millis())
+                .unwrap_or(u32::MAX)
+                .max(1);
+            // A failed wait (the pipe vanished) shows in the next open.
+            // SAFETY: `name` is a live NUL-terminated UTF-16 string that the
+            // task owns for the whole call.
+            let _ =
+                tokio::task::spawn_blocking(move || unsafe { WaitNamedPipeW(name.as_ptr(), wait) })
+                    .await;
+            continue;
+        }
+        if attempt >= attempts {
+            return Err(ControlRequestError::Unavailable(format!(
+                "Acyclic service is not running: {error}"
+            )));
+        }
+        attempt += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(20).min(remaining)).await;
+    }
+}
+
+#[cfg(windows)]
+fn windows_control_pipe_path(data: &Path) -> String {
+    format!(
+        r"\\.\pipe\acyclic-{}",
+        short_hash(data.as_os_str().to_string_lossy().as_bytes())
+    )
 }
 
 fn remaining_control_wait(

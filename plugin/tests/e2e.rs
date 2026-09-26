@@ -702,6 +702,115 @@ fn hook_failure_allows_the_host_to_continue_with_a_visible_notice() {
     assert!(response.get("systemMessage").is_some_and(Value::is_string));
 }
 
+/// Runs `acyclic ARGS` against a state root that cannot hold a service, so
+/// every hook it answers finds the service unreachable.
+fn unreachable_service_output(root: &Path, arguments: &[&str], input: &[u8]) -> Value {
+    let unusable_state = root.join("not-a-directory");
+    fs::write(&unusable_state, b"file").expect("unusable state root");
+    let mut process = command(ACYCLIC);
+    process.args(arguments);
+    isolated_state(&mut process, root);
+    process.env(
+        if cfg!(windows) {
+            "LOCALAPPDATA"
+        } else {
+            "XDG_STATE_HOME"
+        },
+        &unusable_state,
+    );
+    let output = output_with_stdin(&mut process, input);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
+        Value::Array(
+            output
+                .stdout
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_slice(line).expect("JSON-RPC response"))
+                .collect(),
+        )
+    })
+}
+
+fn tool_decision(answer: &Value) -> Option<&str> {
+    answer
+        .pointer("/hookSpecificOutput/permissionDecision")
+        .and_then(Value::as_str)
+}
+
+#[test]
+fn unreachable_service_denies_subagent_tools_on_every_transport() {
+    let temporary = test_tempdir("fail-closed-");
+    let child_tool = serde_json::json!({
+        "session_id": "session", "turn_id": "child-turn", "cwd": ".",
+        "agent_id": "child", "tool_name": "Bash",
+        "tool_input": {"command": "true"}, "tool_use_id": "tool-1"
+    });
+    for host in ["codex", "claude-code"] {
+        let answer = unreachable_service_output(
+            temporary.path(),
+            &["__hook", host, "PreToolUse"],
+            &serde_json::to_vec(&child_tool).expect("hook input"),
+        );
+        assert_eq!(tool_decision(&answer), Some("deny"), "{host}: {answer}");
+    }
+    let root_spawn = serde_json::json!({
+        "session_id": "session", "turn_id": "root-turn", "cwd": ".",
+        "tool_name": "Agent", "tool_input": {}, "tool_use_id": "spawn-1"
+    });
+    let answer = unreachable_service_output(
+        temporary.path(),
+        &["__hook", "claude-code", "PreToolUse"],
+        &serde_json::to_vec(&root_spawn).expect("hook input"),
+    );
+    assert_eq!(tool_decision(&answer), Some("deny"), "{answer}");
+
+    // Codex's MCP transport never starts the service and names the calling
+    // thread; a thread other than the session's own may be a subagent.
+    let call = |id: u64, thread: &str| {
+        serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+            "name": "hook",
+            "arguments": {"event": "PreToolUse", "hook": {
+                "session_id": "session", "turn_id": "turn", "cwd": ".",
+                "tool_name": "exec_command", "tool_input": {"cmd": "true"},
+                "tool_use_id": format!("tool-{id}")
+            }},
+            "_meta": {"threadId": thread}
+        }})
+    };
+    let mut input = Vec::new();
+    for message in [call(1, "child-thread"), call(2, "session")] {
+        input.extend(serde_json::to_vec(&message).expect("MCP call"));
+        input.push(b'\n');
+    }
+    let Value::Array(mut responses) =
+        unreachable_service_output(temporary.path(), &["__mcp"], &input)
+    else {
+        panic!("the MCP server answers one line per call");
+    };
+    responses.sort_by_key(|response| response["id"].as_u64());
+    let decisions = responses
+        .iter()
+        .map(|response| {
+            let text = response
+                .pointer("/result/content/0/text")
+                .and_then(Value::as_str)
+                .expect("hook answer text");
+            let answer: Value = serde_json::from_str(text).expect("hook answer");
+            tool_decision(&answer).map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        decisions,
+        [Some("deny".to_owned()), Some("allow".to_owned())],
+        "{responses:?}"
+    );
+}
+
 #[test]
 fn immutable_package_command_runs_the_real_service_lifecycle() {
     let temporary = test_tempdir("immutable-lifecycle-");

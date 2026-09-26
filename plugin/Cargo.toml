@@ -40,6 +40,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
   "Win32_System_Memory",
+  "Win32_System_Pipes",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
