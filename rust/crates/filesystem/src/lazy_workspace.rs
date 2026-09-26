@@ -3354,15 +3354,18 @@ where
                                 source: Some(entry.node),
                             });
                         }
-                        let next = Some(LazyDirectoryCursor {
+                        // The checkout's own names follow the source's, unless
+                        // it holds no such directory to name them in.
+                        let next = match page.next {
+                            Some(next) => Some(LazyDirectoryPhase::Source(Some(next))),
+                            None if directory_authored => Some(LazyDirectoryPhase::Authored(None)),
+                            None => None,
+                        }
+                        .map(|phase| LazyDirectoryCursor {
                             source: state.source,
                             overlay: state.overlay,
                             directory,
-                            phase: page
-                                .next
-                                .map_or(LazyDirectoryPhase::Authored(None), |next| {
-                                    LazyDirectoryPhase::Source(Some(next))
-                                }),
+                            phase,
                         });
                         return Ok(OperationReceipt {
                             value: LazyDirectoryPage { entries, next },
