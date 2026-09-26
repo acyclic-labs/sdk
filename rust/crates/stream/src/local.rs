@@ -311,6 +311,29 @@ impl LocalStream {
         Ok(())
     }
 
+    /// Runs one mutation under exclusive visibility on its own task, so a
+    /// cancelled caller can neither expose it before its frame is durable nor
+    /// leave a failed persist unpoisoned: readers wait until `mutation` has
+    /// applied and persisted, or poisoned the store.
+    async fn exclusive<T, F>(
+        &self,
+        mutation: impl FnOnce(Self) -> F + Send + 'static,
+    ) -> Result<T, StreamError>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T, StreamError>> + Send + 'static,
+    {
+        self.check_available()?;
+        let stream = self.clone();
+        tokio::spawn(async move {
+            let _visibility = stream.inner.visibility.write().await;
+            stream.check_available()?;
+            mutation(stream.clone()).await
+        })
+        .await
+        .map_err(|_| StreamError::Unavailable)?
+    }
+
     async fn read_visible(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.check_available()?;
         let _visibility = self.inner.visibility.read().await;
@@ -342,28 +365,27 @@ impl StreamProvider for LocalStream {
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.write().await;
-        self.check_available()?;
-        let command = Command::Append(request.clone());
-        let frame = self.prepare(&command)?;
-        let retain_conflict = request.idempotency_key.is_some();
-        let outcome = self.inner.provider.append(request).await?;
-        if matches!(outcome, AppendOutcome::Committed(_)) || retain_conflict {
-            self.persist(frame).await?;
-        }
-        Ok(outcome)
+        self.exclusive(|stream| async move {
+            let command = Command::Append(request.clone());
+            let frame = stream.prepare(&command)?;
+            let retain_conflict = request.idempotency_key.is_some();
+            let outcome = stream.inner.provider.append(request).await?;
+            if matches!(outcome, AppendOutcome::Committed(_)) || retain_conflict {
+                stream.persist(frame).await?;
+            }
+            Ok(outcome)
+        })
+        .await
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.write().await;
-        self.check_available()?;
-        let command = Command::Fork(request.clone());
-        let frame = self.prepare(&command)?;
-        let outcome = self.inner.provider.fork(request).await?;
-        self.persist(frame).await?;
-        Ok(outcome)
+        self.exclusive(|stream| async move {
+            let frame = stream.prepare(&Command::Fork(request.clone()))?;
+            let outcome = stream.inner.provider.fork(request).await?;
+            stream.persist(frame).await?;
+            Ok(outcome)
+        })
+        .await
     }
 
     async fn trim(
@@ -372,22 +394,21 @@ impl StreamProvider for LocalStream {
         before: u64,
         idempotency_key: IdempotencyKey,
     ) -> Result<TrimReceipt, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.write().await;
-        self.check_available()?;
-        let command = Command::Trim {
-            path: path.clone(),
-            before,
-            idempotency_key: idempotency_key.clone(),
-        };
-        let frame = self.prepare(&command)?;
-        let outcome = self
-            .inner
-            .provider
-            .trim(path, before, idempotency_key)
-            .await?;
-        self.persist(frame).await?;
-        Ok(outcome)
+        self.exclusive(move |stream| async move {
+            let frame = stream.prepare(&Command::Trim {
+                path: path.clone(),
+                before,
+                idempotency_key: idempotency_key.clone(),
+            })?;
+            let outcome = stream
+                .inner
+                .provider
+                .trim(path, before, idempotency_key)
+                .await?;
+            stream.persist(frame).await?;
+            Ok(outcome)
+        })
+        .await
     }
 
     async fn delete(
@@ -395,17 +416,16 @@ impl StreamProvider for LocalStream {
         path: StreamPath,
         idempotency_key: IdempotencyKey,
     ) -> Result<DeleteReceipt, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.write().await;
-        self.check_available()?;
-        let command = Command::Delete {
-            path: path.clone(),
-            idempotency_key: idempotency_key.clone(),
-        };
-        let frame = self.prepare(&command)?;
-        let outcome = self.inner.provider.delete(path, idempotency_key).await?;
-        self.persist(frame).await?;
-        Ok(outcome)
+        self.exclusive(move |stream| async move {
+            let frame = stream.prepare(&Command::Delete {
+                path: path.clone(),
+                idempotency_key: idempotency_key.clone(),
+            })?;
+            let outcome = stream.inner.provider.delete(path, idempotency_key).await?;
+            stream.persist(frame).await?;
+            Ok(outcome)
+        })
+        .await
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
@@ -468,14 +488,13 @@ impl StreamProvider for LocalStream {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.write().await;
-        self.check_available()?;
-        let command = Command::Commit(request.clone());
-        let frame = self.prepare(&command)?;
-        let outcome = self.inner.provider.commit(request).await?;
-        self.persist(frame).await?;
-        Ok(outcome)
+        self.exclusive(|stream| async move {
+            let frame = stream.prepare(&Command::Commit(request.clone()))?;
+            let outcome = stream.inner.provider.commit(request).await?;
+            stream.persist(frame).await?;
+            Ok(outcome)
+        })
+        .await
     }
 
     async fn commit_before(
@@ -483,18 +502,17 @@ impl StreamProvider for LocalStream {
         request: CommitRequest,
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.write().await;
-        self.check_available()?;
-        let command = Command::Commit(request.clone());
-        let frame = self.prepare(&command)?;
-        let outcome = self
-            .inner
-            .provider
-            .commit_before(request, deadline_unix_millis)
-            .await?;
-        self.persist(frame).await?;
-        Ok(outcome)
+        self.exclusive(move |stream| async move {
+            let frame = stream.prepare(&Command::Commit(request.clone()))?;
+            let outcome = stream
+                .inner
+                .provider
+                .commit_before(request, deadline_unix_millis)
+                .await?;
+            stream.persist(frame).await?;
+            Ok(outcome)
+        })
+        .await
     }
 
     async fn read_commit(
@@ -1061,6 +1079,9 @@ mod tests {
     #[test]
     fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _serial = PERSIST_BLOCKER_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .max_blocking_threads(1)
@@ -1116,6 +1137,64 @@ mod tests {
                 Arc::clone(&lifecycle).lock_owned(),
             )
             .await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+    }
+
+    /// Serializes the tests that install [`JOURNAL_PERSIST_BLOCKER`], which is
+    /// process-wide.
+    static PERSIST_BLOCKER_TESTS: Mutex<()> = Mutex::new(());
+
+    /// A cancelled mutation stays invisible until its frame is durable: a
+    /// reader waits for the persist the cancelled caller started, then sees
+    /// the committed record.
+    #[test]
+    fn a_cancelled_mutation_is_invisible_until_its_frame_is_durable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _serial = PERSIST_BLOCKER_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+        runtime.block_on(async move {
+            let directory = tempfile::tempdir()?;
+            let provider =
+                LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+            let journal_identity = Arc::as_ptr(&provider.inner.journal.journal) as usize;
+            let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+            *JOURNAL_PERSIST_BLOCKER
+                .lock()
+                .map_err(|_| "journal-persist test hook was poisoned")? =
+                Some((journal_identity, started_tx, release_rx));
+            let path = StreamPath::new("cancelled-visibility")?;
+            let appending = tokio::spawn({
+                let (provider, path) = (provider.clone(), path.clone());
+                async move {
+                    provider
+                        .append(AppendRequest {
+                            path,
+                            records: vec![Bytes::from_static(b"record")],
+                            if_tail: Some(0),
+                            idempotency_key: None,
+                        })
+                        .await
+                }
+            });
+            tokio::task::spawn_blocking(move || started_rx.recv()).await??;
+            appending.abort();
+            assert!(appending.await.is_err_and(|error| error.is_cancelled()));
+
+            let reading = tokio::spawn({
+                let (provider, path) = (provider.clone(), path.clone());
+                async move { provider.tail(path).await }
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            assert!(!reading.is_finished(), "the unsynced record is not visible");
+            release_tx.send(())?;
+            assert_eq!(reading.await??, 1, "the persisted record is visible");
             Ok::<_, Box<dyn std::error::Error>>(())
         })
     }
