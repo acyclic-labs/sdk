@@ -284,7 +284,7 @@ pub use native_mount::{
     NativeMountCapabilities, NativeMountError, NativeMountKind, NativeMountRequest,
     NativeMountSession, NativeMountSessionIsolation, NativeSparseAccelerationEvidence,
     NativeStorageAccelerationError, NativeStorageAccelerationEvidence, NativeStorageCapabilities,
-    NativeStorageCapabilityError, RoutedMountSource, SharedCheckout, SharedCheckoutState,
+    NativeStorageCapabilityError, SharedCheckout, SharedCheckoutState,
     detach_native_mount_destination_after_crash, materialize_checkout,
     materialize_checkout_host_path, materialize_checkout_path, materialize_checkout_paths,
     mount_native, mount_native_over_existing, probe_native_mount,

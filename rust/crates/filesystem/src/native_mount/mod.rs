@@ -61,9 +61,6 @@ pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 mod lazy;
 pub use lazy::LazyMountSource;
 
-mod routed;
-pub use routed::RoutedMountSource;
-
 mod customer;
 pub use customer::{
     LazyMount, LazyWorkingSet, Mount, MountLifecycleError, MountOptions, MountPublication,
@@ -2144,7 +2141,33 @@ mod tests {
             destination: root.path().to_path_buf(),
             writable: true,
         };
-        let source = Arc::new(RoutedMountSource::new());
+        let fs = Fs::memory();
+        let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let checkout = runtime.block_on(async {
+            let cancellation = CancellationToken::new();
+            let volume = fs
+                .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value;
+            volume
+                .checkout(
+                    GenerationSelector::Head,
+                    CheckoutMode {
+                        access: AccessMode::ReadWrite,
+                        consistency: ConsistencyMode::Pinned,
+                        mutations: MutationMode::PrivateOverlay,
+                    },
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map(|receipt| receipt.value)
+        })?;
+        let source = Arc::new(CheckoutMountSource::new(
+            Arc::new(SharedCheckout::new(checkout)),
+            config,
+        )?);
         assert!(matches!(
             mount_native_over_existing(request, source),
             Err(NativeMountError::WritableUnavailable(_))
