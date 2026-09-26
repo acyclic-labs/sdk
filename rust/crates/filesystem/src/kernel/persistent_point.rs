@@ -7,6 +7,7 @@ use super::persistent_btree::{Child, Format, Page};
 use super::persistent_io;
 use crate::async_storage::{AsyncObjectStore, DecodedCacheKey};
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters};
 use crate::storage::{ObjectId, ObjectStoreError};
 use std::collections::HashSet;
@@ -138,18 +139,21 @@ where
             .map_err(|_| storage(ObjectStoreError::Corrupt, prospective))?;
         return Ok((decoded, prospective));
     }
-    let receipt = store
-        .read(
+    // The read runs in its own heap frame, so a lookup the decoded cache
+    // answers, which is nearly every one, never builds or moves its future.
+    let receipt = in_heap(|| {
+        store.read(
             page,
             limits.maximum_page_object_bytes(),
             remaining,
             cancellation,
         )
-        .await
-        .map_err(|failure| match prospective.checked_add(*failure.work) {
-            Ok(spent) => storage(failure.error, spent),
-            Err(error) => OperationFailure::new(error.into(), prospective),
-        })?;
+    })
+    .await
+    .map_err(|failure| match prospective.checked_add(*failure.work) {
+        Ok(spent) => storage(failure.error, spent),
+        Err(error) => OperationFailure::new(error.into(), prospective),
+    })?;
     let work = prospective
         .checked_add(receipt.work)
         .map_err(|error| OperationFailure::new(error.into(), prospective))?;

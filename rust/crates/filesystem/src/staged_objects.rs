@@ -18,6 +18,7 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue, PublicationScope,
 };
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     HashedObject, ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention,
@@ -502,6 +503,71 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         }
         Ok(ObjectReceipt { value: (), work })
     }
+
+    /// Reads one object that was spilled when looked up: from the spill file
+    /// if it still is, from memory if it has since returned to the window,
+    /// and from the durable provider if a drain has since admitted it.
+    async fn read_spilled_object(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<ObjectRead> {
+        // Sharing the spill file keeps a drain from truncating or reusing it
+        // until this read completes.
+        let spill_file = self.spill_io.read().await;
+        let (offset, length) = match self.lookup(object_id) {
+            Lookup::Spilled { offset, length } => (offset, length),
+            Lookup::Resident(bytes) => return resident_read(bytes, maximum_bytes, budget),
+            Lookup::Absent => {
+                drop(spill_file);
+                return self
+                    .inner
+                    .read(object_id, maximum_bytes, budget, cancellation)
+                    .await;
+            }
+        };
+        if length > maximum_bytes {
+            return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
+                observed: length,
+                maximum: maximum_bytes,
+            }));
+        }
+        let work = WorkCounters {
+            backend_read_operations: 1,
+            object_bytes_read: length,
+            bytes_hashed: length,
+            ..WorkCounters::default()
+        };
+        work.verify(budget)
+            .map_err(|error| ObjectFailure::before_work(error.into()))?;
+        let object = self
+            .read_spilled(&[(object_id, offset, length)])
+            .await
+            .map_err(|error| ObjectFailure::new(error, work))?
+            .pop()
+            .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
+        let (_, bytes) = object.into_parts();
+        // A spilled object read again is live; it returns to the
+        // window when there is room, and otherwise stays spilled.
+        let mut index = self.index_mut();
+        if index.resident_bytes.saturating_add(length) <= MAXIMUM_RESIDENT_BYTES
+            && matches!(
+                index.objects.get(&object_id),
+                Some(&Staged::Spilled { offset: current, .. }) if current == offset
+            )
+        {
+            index.insert_resident(object_id, bytes.clone());
+        }
+        Ok(ObjectReceipt {
+            value: ObjectRead {
+                bytes,
+                retention: ObjectReadRetention::Shared,
+            },
+            work,
+        })
+    }
 }
 
 impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
@@ -590,8 +656,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        // Direct admission and spilling await I/O in their own heap frames,
+        // so a resident admission, which almost every page write is, never
+        // builds or moves their larger futures.
         if object.length() > MAXIMUM_DRAIN_BYTES {
-            return self.inner.put_hashed(object, budget, cancellation).await;
+            return in_heap(|| self.inner.put_hashed(object, budget, cancellation)).await;
         }
         // The object's hash is its identity: an equal identity already
         // staged holds these exact bytes.
@@ -606,7 +675,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
                 work: WorkCounters::default(),
             });
         }
-        self.relieve_window(budget).await
+        in_heap(|| self.relieve_window(budget)).await
     }
 
     async fn put_many(
@@ -671,66 +740,20 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         match self.lookup(object_id) {
-            Lookup::Absent => {
-                self.inner
-                    .read(object_id, maximum_bytes, budget, cancellation)
-                    .await
-            }
             Lookup::Resident(bytes) => resident_read(bytes, maximum_bytes, budget),
-            Lookup::Spilled { .. } => {
-                // Sharing the spill file keeps a drain from truncating or
-                // reusing it until this read completes.
-                let spill_file = self.spill_io.read().await;
-                let (offset, length) = match self.lookup(object_id) {
-                    Lookup::Spilled { offset, length } => (offset, length),
-                    Lookup::Resident(bytes) => return resident_read(bytes, maximum_bytes, budget),
-                    Lookup::Absent => {
-                        drop(spill_file);
-                        return self
-                            .inner
-                            .read(object_id, maximum_bytes, budget, cancellation)
-                            .await;
-                    }
-                };
-                if length > maximum_bytes {
-                    return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
-                        observed: length,
-                        maximum: maximum_bytes,
-                    }));
-                }
-                let work = WorkCounters {
-                    backend_read_operations: 1,
-                    object_bytes_read: length,
-                    bytes_hashed: length,
-                    ..WorkCounters::default()
-                };
-                work.verify(budget)
-                    .map_err(|error| ObjectFailure::before_work(error.into()))?;
-                let object = self
-                    .read_spilled(&[(object_id, offset, length)])
-                    .await
-                    .map_err(|error| ObjectFailure::new(error, work))?
-                    .pop()
-                    .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
-                let (_, bytes) = object.into_parts();
-                // A spilled object read again is live; it returns to the
-                // window when there is room, and otherwise stays spilled.
-                let mut index = self.index_mut();
-                if index.resident_bytes.saturating_add(length) <= MAXIMUM_RESIDENT_BYTES
-                    && matches!(
-                        index.objects.get(&object_id),
-                        Some(&Staged::Spilled { offset: current, .. }) if current == offset
-                    )
-                {
-                    index.insert_resident(object_id, bytes.clone());
-                }
-                Ok(ObjectReceipt {
-                    value: ObjectRead {
-                        bytes,
-                        retention: ObjectReadRetention::Shared,
-                    },
-                    work,
+            // Every other answer awaits I/O and runs in its own heap frame,
+            // so the resident answer, which every staged page read takes,
+            // never builds or moves those larger futures.
+            Lookup::Absent => {
+                in_heap(|| {
+                    self.inner
+                        .read(object_id, maximum_bytes, budget, cancellation)
                 })
+                .await
+            }
+            Lookup::Spilled { .. } => {
+                in_heap(|| self.read_spilled_object(object_id, maximum_bytes, budget, cancellation))
+                    .await
             }
         }
     }

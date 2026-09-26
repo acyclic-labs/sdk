@@ -8,6 +8,7 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
@@ -198,13 +199,17 @@ where
         .peak_allocation_bytes
         .checked_sub(context.allocations.live_bytes())
         .ok_or(WorkError::Overflow)?;
-    let receipt = match AsyncObjectStore::read(
-        store,
-        page,
-        context.limits.maximum_page_object_bytes(),
-        remaining,
-        context.cancellation,
-    )
+    // The read runs in its own heap frame, so a page the decoded cache
+    // answers never builds or moves its future.
+    let receipt = match in_heap(|| {
+        AsyncObjectStore::read(
+            store,
+            page,
+            context.limits.maximum_page_object_bytes(),
+            remaining,
+            context.cancellation,
+        )
+    })
     .await
     {
         Ok(receipt) => receipt,
@@ -353,20 +358,23 @@ where
         prospective,
         remaining,
     } = plan;
-    let reads = match read_cold_pages(
-        store,
-        &cold_requests,
-        ColdReadContext {
-            prospective,
-            remaining,
-            budget,
-            cancellation,
-            allocations,
-            work,
-        },
-    )
-    .await
-    {
+    // Cold pages await the store in their own heap frame, so a batch the
+    // decoded cache answers whole never builds or moves that future.
+    let context = ColdReadContext {
+        prospective,
+        remaining,
+        budget,
+        cancellation,
+        allocations,
+        work,
+    };
+    let cold = if cold_requests.is_empty() {
+        *context.work = context.prospective;
+        Ok(Vec::new())
+    } else {
+        in_heap(|| read_cold_pages(store, &cold_requests, context)).await
+    };
+    let reads = match cold {
         Ok(reads) => reads,
         Err(error) => {
             allocations.release(source_bytes)?;
@@ -475,15 +483,12 @@ where
     planned
 }
 
+/// Reads a non-empty batch of pages the decoded cache did not answer.
 async fn read_cold_pages<S: AsyncObjectStore>(
     store: &S,
     requests: &[ObjectReadRequest],
     context: ColdReadContext<'_>,
 ) -> Result<Vec<ObjectRead>, Error> {
-    if requests.is_empty() {
-        *context.work = context.prospective;
-        return Ok(Vec::new());
-    }
     let receipt = match store
         .read_many(requests, context.remaining, context.cancellation)
         .await
