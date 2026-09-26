@@ -1402,7 +1402,7 @@ where
                 let (lookup, pin) = if let Some(node) = entry.source {
                     let (lookup, source) = self
                         .lazy
-                        .inspect_listed(&state, &child, node)
+                        .inspect_listed(&state, &child, node, entry.unobserved)
                         .await
                         .map_err(lazy_error)?;
                     if deferrals && let (LazyLookup::Source(node), Some(source)) = (&lookup, source)

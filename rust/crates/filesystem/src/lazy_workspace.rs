@@ -759,6 +759,8 @@ struct InspectBasis<'a> {
     listed: Option<SourceNode>,
     /// Keep an observation pinned to an earlier source epoch.
     retain_pinned_observation: bool,
+    /// The overlay records no fact for the path, as its listing proved.
+    unobserved: bool,
 }
 
 /// A source-backed workspace whose unresolved paths remain outside its authored generation.
@@ -914,6 +916,9 @@ pub struct LazyDirectoryEntry {
     pub authored: bool,
     /// The source node observed while listing, for entries the source supplies.
     pub source: Option<SourceNode>,
+    /// Whether the overlay records no fact for the entry, which the listing
+    /// proved of its whole directory: the listed node is then its node.
+    pub unobserved: bool,
 }
 
 /// Opaque bounded continuation for a merged source/authored directory scan.
@@ -1664,12 +1669,14 @@ where
         state: &LazyWorkspaceState,
         path: &str,
         node: SourceNode,
+        unobserved: bool,
     ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
         in_heap(move || async move {
             let basis = InspectBasis {
                 state: Some(state),
                 authored_absent: true,
                 listed: Some(node),
+                unobserved,
                 ..InspectBasis::default()
             };
             self.inspect_with(
@@ -1694,9 +1701,15 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<(SourceReference, SourceNode)>, LazyWorkspaceError> {
-        let fact = self
-            .overlay_fact_measured(state.overlay, path, budget, cancellation)
-            .await?;
+        let fact = if basis.unobserved && basis.listed.is_some() {
+            OperationReceipt {
+                value: None,
+                work: WorkCounters::default(),
+            }
+        } else {
+            self.overlay_fact_measured(state.overlay, path, budget, cancellation)
+                .await?
+        };
         let mut work = fact.work;
         let observed = match fact.value {
             Some(LazyOverlayChange::Tombstone) => return Err(LazyWorkspaceError::NotFound),
@@ -3352,6 +3365,7 @@ where
                                 kind: entry.node.kind,
                                 authored: false,
                                 source: Some(entry.node),
+                                unobserved: !facts_beneath.value,
                             });
                         }
                         // The checkout's own names follow the source's, unless
@@ -4889,6 +4903,7 @@ fn authored_entry(entry: WorkspaceDirectoryEntry) -> LazyDirectoryEntry {
         kind: source_kind(entry.kind),
         authored: true,
         source: None,
+        unobserved: false,
     }
 }
 
