@@ -795,6 +795,21 @@ pub trait MountFilesystem: Send + Sync + 'static {
     /// Returns absence, non-regular-kind, storage, authentication,
     /// cancellation, or bounded-work failures.
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
+    /// Opens `path` as [`Self::open_file`] does, with the facts the opened
+    /// file had: a source whose open already proved them reports them
+    /// without asking the file again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failures of [`Self::open_file`] and [`MountOpenFile::lookup`].
+    fn open_file_with_lookup(
+        &self,
+        path: &MountPath,
+    ) -> Result<(Arc<dyn MountOpenFile>, MountLookup), MountSourceError> {
+        let file = self.open_file(path)?;
+        let lookup = file.lookup()?;
+        Ok((file, lookup))
+    }
     /// Opens `created`, the regular file [`Self::create_file`] just made at
     /// `path`. A source that can address the file by identity binds the
     /// handle to it without resolving `path` again, as a native `O_CREAT`

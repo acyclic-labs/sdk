@@ -1309,15 +1309,33 @@ pub mod native {
             Ok(Bytes::from(bytes))
         }
 
+        /// What the file's name holds now. It is only compared with the file
+        /// held beneath the root, which nothing a name resolves elsewhere can
+        /// match, so one lookup through the root's path serves, where a walk
+        /// held beneath the root costs several.
+        #[cfg(not(windows))]
+        fn named_stat(&self) -> std::io::Result<crate::native_host::HostStat> {
+            std::fs::symlink_metadata(self.provider.inner.path.join(&self.relative))
+                .map(cap_std::fs::Metadata::from_just_metadata)
+        }
+
+        /// What the file's name holds now, by one query against the held root.
+        #[cfg(windows)]
+        fn named_stat(&self) -> std::io::Result<crate::native_host::HostStat> {
+            self.provider.inner.root.stat(&self.relative)
+        }
+
         /// Proves the bytes just read belong to the opened version: the held
         /// file is unmodified (in-place writes), the source path still names
         /// it (replacement by rename), and the root and reference are current.
         fn prove_current(&self, cancellation: &CancellationToken) -> Result<(), DemandError> {
             let held = self.provider.inner.root.stat_file(&self.file)?;
-            let named = self.provider.inner.root.stat(&self.relative);
+            let named = self.named_stat();
             if version(&held) != self.expected
                 || named.as_ref().map(version).ok() != Some(self.expected)
             {
+                // A replaced root renames every file under it: report that.
+                self.provider.check(self.source, cancellation)?;
                 return Err(DemandError::StaleVersion);
             }
             self.provider.check(self.source, cancellation)
