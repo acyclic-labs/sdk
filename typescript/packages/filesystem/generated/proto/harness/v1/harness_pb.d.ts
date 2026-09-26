@@ -871,6 +871,14 @@ export declare type SchedulerEventEnvelope = Message<"acyclic.harness.v1.Schedul
    * @generated from field: optional uint64 committed_at_ms = 7;
    */
   committedAtMs?: bigint | undefined;
+
+  /**
+   * Binds the new commit time and record identity to the event digest. Legacy
+   * untimed records omit this field; timed records must carry it.
+   *
+   * @generated from field: bytes record_digest = 8;
+   */
+  recordDigest: Uint8Array;
 };
 
 /**
