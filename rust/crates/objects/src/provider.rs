@@ -1036,11 +1036,20 @@ impl MemoryObjects {
             },
             MutationOutcome::Version,
             |state| {
+                // Validate the complete upload identity before removing it.  Removing by
+                // upload ID first would let a request with the right ID but the wrong bucket
+                // or object key consume the retained upload even though the operation returns
+                // `NotFound`.
+                let matches = state.multiparts.get(&upload_id).is_some_and(|upload| {
+                    upload.bucket == bucket && upload.object_key == object_key
+                });
+                if !matches {
+                    return Err(ObjectsError::NotFound);
+                }
                 let upload = state
                     .multiparts
                     .remove(&upload_id)
-                    .filter(|upload| upload.bucket == bucket && upload.object_key == object_key)
-                    .ok_or(ObjectsError::NotFound)?;
+                    .ok_or(ObjectsError::Unavailable)?;
                 if !upload.completes_with(&parts) {
                     state.multiparts.insert(upload_id, upload);
                     return Err(ObjectsError::Invalid("multipart receipts do not match"));
