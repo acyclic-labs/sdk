@@ -3355,10 +3355,9 @@ impl FuseProjection {
                 Arc::clone(&file.open_file),
             )
         };
-        // A close or durability request applies what the handle held back
-        // first. The per-handle operation gate remains held, but unrelated
+        // A durability request applies what the handle held back first. The per-handle operation gate remains held, but unrelated
         // FUSE callbacks never wait on the state lock during durable IO.
-        let settled = if force || release {
+        let settled = if force {
             open_file.settle().map_err(errno)
         } else {
             Ok(())

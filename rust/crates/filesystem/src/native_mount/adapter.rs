@@ -296,10 +296,13 @@ pub struct SharedCheckout<A, O> {
 const PENDING_CREATE_BYTES: u64 = 1 << 20;
 
 /// A regular file created through the mount whose creation is applied with
-/// its first bytes, as one change: when its creating handle settles (closes
-/// or syncs), when its bytes outgrow [`PENDING_CREATE_BYTES`], or before
-/// anything else reads or changes the checkout, whichever is first. Its name
-/// is recorded as changed when it is created, so nothing remembers it absent.
+/// its first bytes, as one change, and with the creations pending beside it,
+/// as one group: when a durability request settles it, when its bytes
+/// outgrow [`PENDING_CREATE_BYTES`], when [`MAXIMUM_GROUPED_CHANGES`]
+/// creations wait, or before anything reads or changes what it creates,
+/// whichever is first. Its name is recorded as changed when it is created,
+/// so nothing remembers it absent, and a lookup of that name reports it
+/// from here; no other name's answer depends on it.
 pub(super) struct PendingCreate {
     path: NamespacePath,
     file_id: FileId,
@@ -345,6 +348,23 @@ impl PendingCreate {
             Ok(_) => PendingState::Applied,
             Err(error) => PendingState::Failed(error),
         };
+    }
+
+    /// The file as it is created, while its creation waits.
+    fn lookup(&self) -> Option<MountLookup> {
+        match &*self.state() {
+            PendingState::Pending { metadata, bytes } => Some(MountLookup {
+                node: MountNode {
+                    file_id: self.file_id,
+                    kind: MountNodeKind::Regular,
+                    logical_bytes: bytes.len() as u64,
+                    link_count: 1,
+                    device: None,
+                },
+                metadata: **metadata,
+            }),
+            _ => None,
+        }
     }
 
     /// What the creation left for a handle to report once applied.
@@ -635,6 +655,16 @@ impl<A, O> SharedCheckout<A, O> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(pending);
+    }
+
+    /// The pending creation of `path`, reported as it stands.
+    fn pending_lookup(&self, path: &NamespacePath) -> Option<MountLookup> {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|pending| pending.path == *path)
+            .find_map(|pending| pending.lookup())
     }
 
     fn pending_create(&self, file_id: FileId) -> Option<Arc<PendingCreate>> {
@@ -2211,7 +2241,12 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         in_heap(move || async move {
             let path = self.path(path)?;
-            let observation = self.checkout.observe(owner).await?;
+            // A pending creation answers for its own name and changes no
+            // other name's answer (see `PendingCreate`).
+            if let Some(pending) = self.checkout.pending_lookup(&path) {
+                return Ok(Some(pending));
+            }
+            let observation = self.checkout.observe_as_is(owner).await?;
             let mut checkout = observation.observer();
             let receipt = checkout
                 .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
@@ -3215,6 +3250,18 @@ where
                 .await
                 .ensure_publication_resolved()
         })?;
+        let waiting = self
+            .checkout
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
+        if waiting >= MAXIMUM_GROUPED_CHANGES {
+            self.runtime.wait(|| async {
+                self.checkout.settle_pending().await;
+                Ok(())
+            })?;
+        }
         let file_id = FileId::new();
         self.checkout.hold_pending(Arc::new(PendingCreate {
             path,
