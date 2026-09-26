@@ -52,8 +52,19 @@ function chromeExecutable() {
   return found;
 }
 
+// Requests the file server did not answer in full, printed with a failed
+// page: a page's "Failed to fetch" names no request, but these do.
+const anomalies = [];
+
 async function serve() {
   const server = createServer((request, response) => {
+    const started = Date.now();
+    response.on("close", () => {
+      if (response.statusCode !== 200 || !response.writableFinished) {
+        const finished = response.writableFinished ? "" : " (closed before finishing)";
+        anomalies.push(`${request.url} -> ${response.statusCode}${finished} after ${Date.now() - started} ms`);
+      }
+    });
     const pathname = decodeURIComponent(new URL(request.url, "http://host").pathname);
     const dependency = [...dependencyRoots].find(([prefix]) => pathname.startsWith(prefix));
     const base = dependency?.[1] ?? root;
@@ -230,6 +241,10 @@ try {
     failed ||= !outcome.passed;
     process.stdout.write(`${outcome.passed ? "PASS" : "FAIL"} ${page}: ${outcome.text}\n`);
     for (const event of outcome.events) process.stdout.write(`  ${event}\n`);
+    if (!outcome.passed) {
+      for (const anomaly of anomalies) process.stdout.write(`  served: ${anomaly}\n`);
+    }
+    anomalies.length = 0;
   }
   await browser.send("Browser.close").catch(() => {});
   browser.close();
