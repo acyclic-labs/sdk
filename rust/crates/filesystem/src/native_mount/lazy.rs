@@ -4465,6 +4465,74 @@ mod tests {
         Ok(())
     }
 
+    /// A source that reuses a removed file's identity for a new file under
+    /// another name gives the mount a new file: the new name resolves (it
+    /// once failed as a node with too many names), and the inode the kernel
+    /// still holds for the removed name cannot change the new file.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "mounts a live native session; requires the host's native mount capability"]
+    async fn live_mount_keeps_a_reused_identity_apart() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+
+        let root = tempfile::tempdir()?;
+        let (source, mount) = (root.path().join("source"), root.path().join("mount"));
+        std::fs::create_dir_all(&source)?;
+        std::fs::write(source.join("removed"), b"old")?;
+        let live = live_lazy_mount(&source, &mount, "live-reused-identity").await?;
+        assert_eq!(std::fs::metadata(mount.join("removed"))?.len(), 3);
+        // Holds the removed name's inode without a file handle.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH)
+            .open(mount.join("removed"))?;
+        let identity = std::fs::metadata(source.join("removed"))?.ino();
+        std::fs::remove_file(source.join("removed"))?;
+        let mut reused = false;
+        for index in 0..256 {
+            let candidate = source.join(format!("created-{index}"));
+            std::fs::write(&candidate, b"new file")?;
+            if std::fs::metadata(&candidate)?.ino() == identity {
+                std::fs::rename(&candidate, source.join("created"))?;
+                reused = true;
+                break;
+            }
+            std::fs::remove_file(&candidate)?;
+        }
+        if !reused {
+            eprintln!("the host did not reuse the identity; nothing to check");
+            live.unmount().await?;
+            return Ok(());
+        }
+        live.revalidate()?;
+        let created = std::fs::metadata(mount.join("created"))?;
+        assert_eq!(created.len(), 8);
+        let mode = std::fs::metadata(source.join("created"))?
+            .permissions()
+            .mode();
+        // A mode change through the held inode must not reach the new file.
+        let _ = std::fs::set_permissions(
+            format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&held)),
+            std::fs::Permissions::from_mode(0o600),
+        );
+        assert_eq!(
+            std::fs::metadata(source.join("created"))?
+                .permissions()
+                .mode(),
+            mode
+        );
+        assert_eq!(
+            std::fs::metadata(mount.join("created"))?
+                .permissions()
+                .mode()
+                & 0o777,
+            mode & 0o777
+        );
+        drop(held);
+        live.unmount().await?;
+        Ok(())
+    }
+
     /// Writers replace, remove, and create source files while readers stat,
     /// list, and read them through the mount. Every read the mount serves is
     /// one whole version some writer wrote, and once the writers stop and

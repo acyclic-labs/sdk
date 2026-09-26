@@ -642,6 +642,7 @@ impl ProjectionState {
                 |name, verified| source.unchanged_since(name, Some(lookup.node.file_id), verified),
             );
             self.invalidation.deferred.extend(forgotten);
+            retire_reused_identity(&self.by_inode, &mut self.inode_by_file, inode);
         }
         intern_projected(
             &mut self.next_inode,
@@ -671,7 +672,7 @@ impl ProjectionState {
                     self.inode_by_path.remove(&binding.path);
                 }
             }
-            self.inode_by_file.remove(&entry.lookup.node.file_id);
+            forget_file(&mut self.inode_by_file, entry.lookup.node.file_id, inode);
         }
     }
 
@@ -1013,7 +1014,7 @@ impl ProjectionState {
             && entry.open_handles == 0
             && let Some(entry) = self.by_inode.remove(&inode)
         {
-            self.inode_by_file.remove(&entry.lookup.node.file_id);
+            forget_file(&mut self.inode_by_file, entry.lookup.node.file_id, inode);
         }
         Ok(())
     }
@@ -1137,7 +1138,7 @@ impl ProjectionState {
             false
         };
         if remove_inode && let Some(entry) = self.by_inode.remove(&inode) {
-            self.inode_by_file.remove(&entry.lookup.node.file_id);
+            forget_file(&mut self.inode_by_file, entry.lookup.node.file_id, inode);
         }
     }
 
@@ -1464,6 +1465,39 @@ fn forget_unbound_names(
             })
         })
         .collect()
+}
+
+/// Forgets that `file_id` is `inode`, unless it already names another.
+fn forget_file(
+    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    file_id: crate::FileId,
+    inode: u64,
+) {
+    if inode_by_file.get(&file_id) == Some(&inode) {
+        inode_by_file.remove(&file_id);
+    }
+}
+
+/// Retires `inode` from its identity once it has no name left, so the next
+/// name bound to that identity gets a fresh inode.
+///
+/// A host that reuses a removed file's identity for a new file makes the
+/// old inode, which the kernel may still hold, name a file that no longer
+/// exists; attaching the new file to it would let a request against the
+/// held inode, such as a `SETATTR` without a handle, change the new file.
+/// A retired inode keeps its open handles and answers every request that
+/// needs a name as stale until the kernel forgets it.
+fn retire_reused_identity(
+    by_inode: &HashMap<u64, InodeEntry>,
+    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    inode: u64,
+) {
+    if inode != ROOT_INODE
+        && let Some(entry) = by_inode.get(&inode)
+        && entry.bindings.is_empty()
+    {
+        forget_file(inode_by_file, entry.lookup.node.file_id, inode);
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // Projection indexes are updated together.
@@ -3738,7 +3772,7 @@ mod tests {
         MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath,
         MountSeekTarget, PAGE_STORE_LIMIT, PageStores, ROOT_INODE, ViewStamp, admit_open,
         cached_projected_lookup, changes_content, forget_unbound_names, intern_projected,
-        replace_root_lookup, stale_kernel_items,
+        replace_root_lookup, retire_reused_identity, stale_kernel_items,
     };
     use crate::FileId;
     use crate::kernel::{FileMetadata, MetadataField};
@@ -3887,11 +3921,12 @@ mod tests {
         Ok(())
     }
 
-    /// A node whose identity a source reused keeps only the names still
-    /// bound to it: a stale name neither counts against its links, which
-    /// would refuse the new name, nor stays in the kernel.
+    /// A reused identity gets a fresh inode: its removed name neither counts
+    /// against the new file's links, which would refuse the new name, nor
+    /// stays in the kernel, and the old inode, which the kernel may still
+    /// hold, names no file any more.
     #[test]
-    fn a_reused_identity_keeps_only_its_bound_names() -> Result<(), i32> {
+    fn a_reused_identity_gets_a_fresh_inode() -> Result<(), i32> {
         let [before, after] = positions();
         let reused = regular(FileId::new(), 3);
         let mut next_inode = ROOT_INODE + 1;
@@ -3901,7 +3936,7 @@ mod tests {
         )]);
         let mut by_path = HashMap::from([(MountPath::root(), ROOT_INODE)]);
         let mut by_file = HashMap::new();
-        let inode = intern_projected(
+        let old = intern_projected(
             &mut next_inode,
             &mut by_inode,
             &mut by_path,
@@ -3912,7 +3947,7 @@ mod tests {
             true,
         )?;
         if let Some(binding) = by_inode
-            .get_mut(&inode)
+            .get_mut(&old)
             .and_then(|entry| entry.binding_mut(&name("removed")))
         {
             binding.kernel = Some(before);
@@ -3934,7 +3969,7 @@ mod tests {
         let forgotten = forget_unbound_names(
             &mut by_inode,
             &mut by_path,
-            inode,
+            old,
             &name("created"),
             |path, _| *path != name("removed"),
         );
@@ -3942,21 +3977,25 @@ mod tests {
             forgotten.as_slice(),
             [KernelCacheItem::Entry { parent: ROOT_INODE, name }] if name == b"removed"
         ));
-        assert!(!by_path.contains_key(&name("removed")));
-        assert_eq!(
-            intern_projected(
-                &mut next_inode,
-                &mut by_inode,
-                &mut by_path,
-                &mut by_file,
-                name("created"),
-                &reused,
-                Some(after),
-                true,
-            )?,
-            inode
+        retire_reused_identity(&by_inode, &mut by_file, old);
+        let created = intern_projected(
+            &mut next_inode,
+            &mut by_inode,
+            &mut by_path,
+            &mut by_file,
+            name("created"),
+            &reused,
+            Some(after),
+            true,
+        )?;
+        assert_ne!(created, old, "the new file gets a fresh inode");
+        assert_eq!(by_inode[&created].anchor(), &name("created"));
+        assert!(
+            by_inode[&old].bindings.is_empty(),
+            "the old inode names no file"
         );
-        assert_eq!(by_inode[&inode].anchor(), &name("created"));
+        assert_eq!(by_path.get(&name("created")), Some(&created));
+        assert_eq!(by_file.get(&reused.node.file_id), Some(&created));
         Ok(())
     }
 
