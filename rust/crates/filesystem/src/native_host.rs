@@ -932,6 +932,14 @@ impl HostRoot {
         self.directory.as_handle()
     }
 
+    /// The held root directory's descriptor, for host queries that must be
+    /// bound to exactly this root.
+    #[cfg(unix)]
+    pub(crate) fn directory_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd as _;
+        self.directory.as_raw_fd()
+    }
+
     pub fn is_empty(&self) -> io::Result<bool> {
         Ok(self.directory.entries()?.next().is_none())
     }
@@ -2631,7 +2639,7 @@ fn bind_unix_socket_in(parent: &Dir, name: &OsStr) -> io::Result<()> {
 
 /// Network, clustered, and user-space filesystems, by `statfs(2)` magic.
 #[cfg(target_os = "linux")]
-const REMOTE_FILESYSTEMS: [u64; 12] = [
+const REMOTE_FILESYSTEMS: [u64; 13] = [
     0x6969,      // NFS
     0x517b,      // SMB
     0xff53_4d42, // CIFS
@@ -2639,6 +2647,7 @@ const REMOTE_FILESYSTEMS: [u64; 12] = [
     0x5346_414f, // AFS
     0x00c3_6400, // Ceph
     0x6573_5546, // FUSE
+    0x6a65_6a63, // virtiofs, which a hypervisor's host changes unseen
     0x0102_1997, // 9P
     0x564c,      // NCP
     0x7375_7245, // Coda

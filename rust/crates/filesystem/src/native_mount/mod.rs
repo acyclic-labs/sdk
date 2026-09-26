@@ -19,6 +19,22 @@
 //!   lock by process: two descriptors that one process opened never exclude
 //!   each other with `flock`, whereas APFS gives each open file description
 //!   its own `flock`. `fcntl` record locks are per process on both.
+//!
+//! # A lazy mount's source
+//!
+//! A lazy mount projects a source directory that changes outside it. A
+//! source on a local file system reports each change (inotify, `FSEvents`,
+//! or `ReadDirectoryChangesExW`), and the mount records the report in its
+//! view exactly as it records its own changes: every answer the mount or
+//! the kernel remembered holds until a change to what it depends on is
+//! reported, and drivers drop what the report superseded, as they do for
+//! any change made around the mount. A change takes effect in the mount
+//! when its report is recorded, shortly after the host operation returned;
+//! [`NativeMountSession::revalidate`] (and `LazyMount::revalidate`) waits
+//! until every change completed before it is visible. See the
+//! `source_watch` module for the exactness argument. A source the host
+//! cannot watch (a network or user-space file system) is read afresh
+//! behind every remembered answer, and nothing of it is cached.
 
 use crate::kernel::FileMetadata;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -633,6 +649,29 @@ pub trait MountFilesystem: Send + Sync + 'static {
         false
     }
 
+    /// [`Self::unchanged_since`], counting only changes the source reported:
+    /// facts read after `stamp` that a driver read again since, with the
+    /// same result, still describe the view across changes the source could
+    /// not yet confirm ([`super::demand::SourceChange::Unconfirmed`]).
+    fn reported_unchanged_since(
+        &self,
+        path: &MountPath,
+        file_id: Option<FileId>,
+        stamp: ViewStamp,
+    ) -> bool {
+        self.unchanged_since(path, file_id, stamp)
+    }
+
+    /// Whether this source reports every change to the node `file_id`, so
+    /// facts about it may be kept (by a kernel, or an NFS client) until a
+    /// reported change supersedes them. Facts about a node it does not are
+    /// read afresh on every use and never kept, whatever else vouches for
+    /// them; [`Self::unchanged_since`] and [`Self::node_unchanged_since`]
+    /// never vouch for them either.
+    fn reports_changes_to(&self, _file_id: FileId) -> bool {
+        self.view_stamp().is_some()
+    }
+
     /// Whether facts about the node `file_id`, read after `stamp` was
     /// sampled, still describe it: no change after `stamp` touched the node
     /// under any of its names. Facts that follow from a directory's listing
@@ -658,6 +697,19 @@ pub trait MountFilesystem: Send + Sync + 'static {
     /// holds, so a source that returns view stamps must report every change
     /// here. Sources without stamps are never cached and need not.
     fn observe_view(&self, _observer: std::sync::Weak<dyn ViewObserver>) {}
+
+    /// Returns once every change made to what this source projects outside
+    /// every view of it, and completed before the call, is recorded in the
+    /// view. A driver calls it before it brings kernel caches in line with
+    /// the view. Sources whose content changes only through their own
+    /// methods, or that are never cached, have nothing to wait for.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed failure when the changes cannot be read.
+    fn fence_changes(&self) -> Result<(), MountSourceError> {
+        Ok(())
+    }
 
     /// Changes only when existing path or handle bindings may be replaced by
     /// an external source transition. Ordinary mutations never change it;

@@ -13,6 +13,42 @@
 //! superseded, as the source reports them. A small file's content reaches
 //! the kernel with its first read-only open rather than page by page
 //! ([`PAGE_STORE_LIMIT`]).
+//!
+//! # Inode identity
+//!
+//! An inode stands for one source node, the node its file identity named
+//! when the inode was made, and records the names it was reached through.
+//! One rule decides which inode a name gets:
+//!
+//! **A name joins the inode of its node's identity only while that inode
+//! still stands for the same node. Otherwise that inode is retired and the
+//! name gets a fresh one.**
+//!
+//! The inode still stands for the node while another of its names is still
+//! bound to the identity: a host reuses an identity only once the node that
+//! had it lost its last name, so one name still bound shows the node is the
+//! one the inode was made for. Each recorded name is judged as of the moment
+//! the joining name's facts were resolved, and is kept only on evidence that
+//! it is still bound:
+//!
+//! - the view vouches that the name has not changed since it was last seen
+//!   bound (a watched source reports every change to it); or
+//! - a resolution of the name, made with the joining name's facts and outside
+//!   the state's lock, found the same identity. One made at a position holds
+//!   only while the view vouches that the name has not changed since, since a
+//!   listed page's entries are used after the page was read. One from a
+//!   source that cannot be watched has no position and is exactly as current
+//!   as the facts it came with, which such a source reads afresh whenever
+//!   they are used again.
+//!
+//! A node with one name has no other name to keep. A name without evidence
+//! is forgotten, and an inode left without names is retired: its identity
+//! names no inode, the next name bound to the identity gets a fresh one, and
+//! a request through the retired inode that needs a name fails as stale. The
+//! mount's own links and renames move names between inodes it already knows,
+//! so they need no evidence. Whether a node's facts are current is a separate
+//! question: a node with several names is read afresh on every use, but its
+//! names stay bound under this rule.
 
 use super::view_ledger::ViewOriginScope;
 use super::{
@@ -157,6 +193,41 @@ const MAXIMUM_DIRECTORY_STREAMS: usize = 256;
 /// Listings need no open handle: the kernel resumes one at the offset it
 /// last received, so streams wait keyed by inode and offset. That lets the
 /// kernel skip `OPENDIR` and `RELEASEDIR` entirely where it supports that.
+/// Names the source was seen binding to the node each is paired with, after
+/// the view could no longer vouch for them, each with the position it was
+/// resolved after: the evidence the module's inode identity rule accepts
+/// from a resolution.
+///
+/// A confirmation made at a position holds only while the view vouches that
+/// its name has not changed since. One without a position, from a source
+/// that cannot report its changes, is as current as the facts it was
+/// resolved with, which such a source reads afresh whenever they are used
+/// again.
+#[derive(Default)]
+struct ConfirmedNames {
+    names: HashMap<(crate::FileId, MountPath), Option<ViewStamp>>,
+}
+
+impl ConfirmedNames {
+    fn confirm(&mut self, file_id: crate::FileId, name: MountPath, stamp: Option<ViewStamp>) {
+        self.names.insert((file_id, name), stamp);
+    }
+
+    /// Whether `name` is confirmed bound to `file_id` now.
+    fn still_bound(
+        &self,
+        source: &dyn MountFilesystem,
+        file_id: crate::FileId,
+        name: &MountPath,
+    ) -> bool {
+        self.names
+            .get(&(file_id, name.clone()))
+            .is_some_and(|stamp| {
+                stamp.is_none_or(|stamp| source.unchanged_since(name, None, stamp))
+            })
+    }
+}
+
 struct DirectoryStream {
     path: MountPath,
     parent_inode: u64,
@@ -165,6 +236,8 @@ struct DirectoryStream {
     entries: VecDeque<MountDirectoryEntry>,
     /// Source view the buffered entries were read after, if cacheable.
     entries_stamp: Option<ViewStamp>,
+    /// Names of the buffered entries' nodes the source still binds.
+    confirmed: ConfirmedNames,
     exhausted: bool,
     /// Offset of the next entry: `.` and `..` are 1 and 2.
     emitted: u64,
@@ -616,13 +689,17 @@ impl ProjectionState {
     }
 
     /// Records facts about `path`, resolved after `stamp`, and returns the
-    /// inode they belong to.
+    /// inode they belong to. `confirmed` holds names the source was seen
+    /// binding to their nodes since the view last vouched for them (see
+    /// [`FuseProjection::confirm_names`]).
     fn intern(
         &mut self,
+        source: &dyn MountFilesystem,
         path: MountPath,
         lookup: &MountLookup,
         stamp: Option<ViewStamp>,
         lookup_reference: bool,
+        confirmed: &ConfirmedNames,
     ) -> Result<u64, i32> {
         if let Some(previous) = self.inode_by_path.get(&path).copied()
             && self
@@ -630,7 +707,37 @@ impl ProjectionState {
                 .get(&previous)
                 .is_some_and(|entry| entry.lookup.node.file_id != lookup.node.file_id)
         {
+            // The kernel's entry for the name still names the old node.
+            let held = self
+                .by_inode
+                .get(&previous)
+                .and_then(|entry| entry.binding(&path))
+                .is_some_and(|binding| binding.kernel.is_some());
+            if held
+                && let Some((parent, name)) = split_parent(&path)
+                && let Some(parent) = self.inode_by_path.get(&parent).copied()
+            {
+                self.invalidation.deferred.push(KernelCacheItem::Entry {
+                    parent,
+                    name: name.to_vec(),
+                });
+            }
             self.remove_binding(previous, &path);
+        }
+        if let Some(inode) = self.inode_by_file.get(&lookup.node.file_id).copied() {
+            let forgotten = forget_unbound_names(
+                &mut self.by_inode,
+                &mut self.inode_by_path,
+                inode,
+                &path,
+                |name, verified| {
+                    confirmed.still_bound(source, lookup.node.file_id, name)
+                        || verified
+                            .is_some_and(|verified| source.unchanged_since(name, None, verified))
+                },
+            );
+            self.invalidation.deferred.extend(forgotten);
+            retire_reused_identity(&self.by_inode, &mut self.inode_by_file, inode);
         }
         intern_projected(
             &mut self.next_inode,
@@ -642,6 +749,33 @@ impl ProjectionState {
             stamp,
             lookup_reference,
         )
+    }
+
+    /// The names other than `path` recorded for the node `file_id` names
+    /// that the view cannot vouch are still bound to it.
+    fn unvouched_names(
+        &self,
+        source: &dyn MountFilesystem,
+        file_id: crate::FileId,
+        path: &MountPath,
+    ) -> Vec<MountPath> {
+        self.inode_by_file
+            .get(&file_id)
+            .and_then(|inode| self.by_inode.get(inode))
+            .map(|entry| {
+                entry
+                    .bindings
+                    .iter()
+                    .filter(|binding| {
+                        binding.path != *path
+                            && !binding.verified.is_some_and(|verified| {
+                                source.unchanged_since(&binding.path, None, verified)
+                            })
+                    })
+                    .map(|binding| binding.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn release_lookup_reference(&mut self, inode: u64, references: u64) {
@@ -660,7 +794,7 @@ impl ProjectionState {
                     self.inode_by_path.remove(&binding.path);
                 }
             }
-            self.inode_by_file.remove(&entry.lookup.node.file_id);
+            forget_file(&mut self.inode_by_file, entry.lookup.node.file_id, inode);
         }
     }
 
@@ -678,8 +812,12 @@ impl ProjectionState {
     }
 
     /// Whether facts about `file_id` at `anchor`, derived after `stamp`, may
-    /// enter the kernel: every change the invalidator already checked the
-    /// kernel against either precedes them or left them unchanged.
+    /// enter the kernel: the source reports every change to the node, so the
+    /// invalidator will drop them once one supersedes them, and every change
+    /// the invalidator already checked the kernel against either precedes
+    /// them or left them unchanged. Every kernel admission (entry and
+    /// attribute lifetimes, negative entries, listings, kept pages, and page
+    /// stores) is decided here.
     fn admissible(
         &self,
         source: &dyn MountFilesystem,
@@ -688,10 +826,12 @@ impl ProjectionState {
         stamp: Option<ViewStamp>,
     ) -> bool {
         stamp.is_some_and(|stamp| {
-            self.invalidation
-                .scanned
-                .is_none_or(|scanned| scanned <= stamp)
-                || source.unchanged_since(anchor, file_id, stamp)
+            file_id.is_none_or(|file_id| source.reports_changes_to(file_id))
+                && (self
+                    .invalidation
+                    .scanned
+                    .is_none_or(|scanned| scanned <= stamp)
+                    || source.unchanged_since(anchor, file_id, stamp))
         })
     }
 
@@ -1002,7 +1142,7 @@ impl ProjectionState {
             && entry.open_handles == 0
             && let Some(entry) = self.by_inode.remove(&inode)
         {
-            self.inode_by_file.remove(&entry.lookup.node.file_id);
+            forget_file(&mut self.inode_by_file, entry.lookup.node.file_id, inode);
         }
         Ok(())
     }
@@ -1126,7 +1266,7 @@ impl ProjectionState {
             false
         };
         if remove_inode && let Some(entry) = self.by_inode.remove(&inode) {
-            self.inode_by_file.remove(&entry.lookup.node.file_id);
+            forget_file(&mut self.inode_by_file, entry.lookup.node.file_id, inode);
         }
     }
 
@@ -1202,6 +1342,7 @@ impl ProjectionState {
             cursor: None,
             entries: VecDeque::new(),
             entries_stamp: None,
+            confirmed: ConfirmedNames::default(),
             exhausted: false,
             emitted: 0,
             parked: 0,
@@ -1268,13 +1409,19 @@ impl ProjectionState {
                     .and_then(|known| self.by_inode.get(known))
                     .map_or(page_lookup, |known| known.lookup)
             };
-            let listed_attr =
-                match self.intern(child.key().clone(), &lookup, current, L::COUNTS_LOOKUPS) {
-                    Ok(child) => self
-                        .attr(child, &lookup)
-                        .inspect_err(|_| self.release_listed_reference::<L>(child)),
-                    Err(error) => Err(error),
-                };
+            let listed_attr = match self.intern(
+                source,
+                child.key().clone(),
+                &lookup,
+                current,
+                L::COUNTS_LOOKUPS,
+                &stream.confirmed,
+            ) {
+                Ok(child) => self
+                    .attr(child, &lookup)
+                    .inspect_err(|_| self.release_listed_reference::<L>(child)),
+                Err(error) => Err(error),
+            };
             let attr = match listed_attr {
                 Ok(attr) => attr,
                 // Entries already listed stand; the failure repeats on the
@@ -1405,6 +1552,86 @@ fn replace_root_lookup(
     Ok(())
 }
 
+/// Forgets the names `inode` no longer has, other than `path`, returning
+/// the kernel entries held by them to drop.
+///
+/// A source can remove a name and its host reuse the node's identity for a
+/// file it creates under another name, so a name recorded before may be one
+/// the view no longer binds: only names `still_bound` (given the position
+/// they were last verified after) count against the node's links. The inode
+/// itself stays, as the kernel may still hold it.
+///
+/// Whether a name is still bound is a question about the name, not about
+/// the node's facts: a node with several names is read afresh on every
+/// lookup, yet each of its names stays bound until the source reports it
+/// changed or a lookup sees it naming another node.
+fn forget_unbound_names(
+    by_inode: &mut HashMap<u64, InodeEntry>,
+    inode_by_path: &mut HashMap<MountPath, u64>,
+    inode: u64,
+    path: &MountPath,
+    still_bound: impl Fn(&MountPath, Option<ViewStamp>) -> bool,
+) -> Vec<KernelCacheItem> {
+    let Some(entry) = by_inode.get_mut(&inode) else {
+        return Vec::new();
+    };
+    let mut forgotten = Vec::new();
+    entry.bindings.retain(|binding| {
+        let bound = binding.path == *path || still_bound(&binding.path, binding.verified);
+        if !bound {
+            forgotten.push((binding.path.clone(), binding.kernel.is_some()));
+        }
+        bound
+    });
+    forgotten
+        .into_iter()
+        .filter_map(|(name, held)| {
+            if inode_by_path.get(&name) == Some(&inode) {
+                inode_by_path.remove(&name);
+            }
+            let (parent, component) = split_parent(&name)?;
+            let parent = inode_by_path.get(&parent).copied()?;
+            held.then(|| KernelCacheItem::Entry {
+                parent,
+                name: component.to_vec(),
+            })
+        })
+        .collect()
+}
+
+/// Forgets that `file_id` is `inode`, unless it already names another.
+fn forget_file(
+    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    file_id: crate::FileId,
+    inode: u64,
+) {
+    if inode_by_file.get(&file_id) == Some(&inode) {
+        inode_by_file.remove(&file_id);
+    }
+}
+
+/// Retires `inode` from its identity once it has no name left, so the next
+/// name bound to that identity gets a fresh inode.
+///
+/// A host that reuses a removed file's identity for a new file makes the
+/// old inode, which the kernel may still hold, name a file that no longer
+/// exists; attaching the new file to it would let a request against the
+/// held inode, such as a `SETATTR` without a handle, change the new file.
+/// A retired inode keeps its open handles and answers every request that
+/// needs a name as stale until the kernel forgets it.
+fn retire_reused_identity(
+    by_inode: &HashMap<u64, InodeEntry>,
+    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    inode: u64,
+) {
+    if inode != ROOT_INODE
+        && let Some(entry) = by_inode.get(&inode)
+        && entry.bindings.is_empty()
+    {
+        forget_file(inode_by_file, entry.lookup.node.file_id, inode);
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Projection indexes are updated together.
 fn intern_projected(
     next_inode: &mut u64,
@@ -1421,9 +1648,6 @@ fn intern_projected(
         if let Some(binding) = entry.binding_mut(&path) {
             binding.verified = stamp;
         } else {
-            if u64::try_from(entry.bindings.len()).unwrap_or(u64::MAX) >= lookup.node.link_count {
-                return Err(libc::EIO);
-            }
             entry.bindings.try_reserve(1).map_err(|_| libc::ENOMEM)?;
             entry.bindings.push(Binding::new(path.clone(), stamp));
         }
@@ -1519,12 +1743,95 @@ struct ProjectionCore {
     requests: Mutex<Vec<&'static str>>,
 }
 
+/// A callback's hold on the projection state. Releasing it wakes the
+/// invalidator for kernel items the callback deferred, so they drop without
+/// waiting for the next change to the source (a source that cannot be
+/// watched reports none).
+struct StateGuard<'a> {
+    state: Option<MutexGuard<'a, ProjectionState>>,
+    /// The invalidator's condition.
+    wake: &'a Condvar,
+}
+
+impl std::ops::Deref for StateGuard<'_> {
+    type Target = ProjectionState;
+
+    fn deref(&self) -> &ProjectionState {
+        self.state
+            .as_deref()
+            .unwrap_or_else(|| unreachable!("held until dropped"))
+    }
+}
+
+impl std::ops::DerefMut for StateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut ProjectionState {
+        self.state
+            .as_deref_mut()
+            .unwrap_or_else(|| unreachable!("held until dropped"))
+    }
+}
+
+impl StateGuard<'_> {
+    /// Waits on `condition`, releasing the state meanwhile.
+    fn wait(mut self, condition: &Condvar) -> Result<Self, i32> {
+        let state = self
+            .state
+            .take()
+            .unwrap_or_else(|| unreachable!("held until dropped"));
+        self.state = Some(condition.wait(state).map_err(|_| libc::EIO)?);
+        Ok(self)
+    }
+}
+
+impl Drop for StateGuard<'_> {
+    fn drop(&mut self) {
+        let deferred = self
+            .state
+            .take()
+            .is_some_and(|state| !state.invalidation.deferred.is_empty());
+        if deferred {
+            self.wake.notify_all();
+        }
+    }
+}
+
 impl ProjectionCore {
-    fn state(&self) -> Result<MutexGuard<'_, ProjectionState>, i32> {
+    fn new(source: Arc<dyn MountFilesystem>, state: ProjectionState) -> Self {
+        Self {
+            source,
+            state: Mutex::new(state),
+            names: RwLock::new(()),
+            invalidation: Condvar::new(),
+            page_stored: Condvar::new(),
+            stopping: AtomicBool::new(false),
+            origin: ViewOrigin::new(),
+            notifier: OnceLock::new(),
+            #[cfg(test)]
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The state for a callback serving a request.
+    fn state(&self) -> Result<StateGuard<'_>, i32> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(libc::ENODEV);
         }
-        self.state.lock().map_err(|_| libc::EIO)
+        let state = self.state.lock().map_err(|_| libc::EIO)?;
+        Ok(self.guard(state))
+    }
+
+    /// The state for a callback that must finish what it started, such as
+    /// landing a page store or releasing a claim, even while the session
+    /// stops or after another callback panicked.
+    fn state_to_finish(&self) -> StateGuard<'_> {
+        self.guard(self.state.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    fn guard<'a>(&'a self, state: MutexGuard<'a, ProjectionState>) -> StateGuard<'a> {
+        StateGuard {
+            state: Some(state),
+            wake: &self.invalidation,
+        }
     }
 
     fn names(&self) -> Result<RwLockReadGuard<'_, ()>, i32> {
@@ -1533,15 +1840,6 @@ impl ProjectionCore {
 
     fn names_exclusive(&self) -> Result<RwLockWriteGuard<'_, ()>, i32> {
         self.names.write().map_err(|_| libc::EIO)
-    }
-
-    /// Unlocks `state`, waking the invalidator for items a callback deferred.
-    fn release(&self, state: MutexGuard<'_, ProjectionState>) {
-        let deferred = !state.invalidation.deferred.is_empty();
-        drop(state);
-        if deferred {
-            self.invalidation.notify_all();
-        }
     }
 
     /// Begins serving one kernel request: every view change it causes is
@@ -1562,7 +1860,7 @@ impl ProjectionCore {
     fn claim_content(&self, file_id: crate::FileId) -> Result<ContentClaim<'_>, i32> {
         let mut state = self.state()?;
         while state.page_stores.in_flight.contains_key(&file_id) {
-            state = self.page_stored.wait(state).map_err(|_| libc::EIO)?;
+            state = state.wait(&self.page_stored)?;
         }
         state.page_stores.claim(file_id);
         Ok(ContentClaim {
@@ -1582,9 +1880,7 @@ struct ContentClaim<'a> {
 impl Drop for ContentClaim<'_> {
     fn drop(&mut self) {
         self.core
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .state_to_finish()
             .page_stores
             .release(self.file_id);
     }
@@ -1799,6 +2095,9 @@ impl FuseSession {
     /// observe one through the mount immediately afterwards.
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
         let stopped = || NativeMountError::Driver("session is stopped".to_owned());
+        // Every change made to the source before this call is recorded, and
+        // so notified, before the wait begins.
+        self.core.source.fence_changes().map_err(source_error)?;
         let poisoned = |_| NativeMountError::Driver("FUSE projection state is poisoned".to_owned());
         let mut state = self.lock_state()?;
         let target = state.invalidation.notified;
@@ -1890,18 +2189,7 @@ impl FuseSession {
             invalidation: InvalidationQueue::default(),
             page_stores: PageStores::default(),
         };
-        let core = Arc::new(ProjectionCore {
-            source,
-            state: Mutex::new(state),
-            names: RwLock::new(()),
-            invalidation: Condvar::new(),
-            page_stored: Condvar::new(),
-            stopping: AtomicBool::new(false),
-            origin: ViewOrigin::new(),
-            notifier: OnceLock::new(),
-            #[cfg(test)]
-            requests: Mutex::new(Vec::new()),
-        });
+        let core = Arc::new(ProjectionCore::new(source, state));
         let observer: Weak<ProjectionCore> = Arc::downgrade(&core);
         core.source.observe_view(observer);
         // Even with `noatime`, a writable mount pays one GETATTR per file
@@ -2064,6 +2352,60 @@ impl FuseProjection {
         ))
     }
 
+    /// The recorded names of each node with several names, other than the
+    /// name it was just resolved through, that the source still binds to it.
+    ///
+    /// A node with several names keeps one inode for all of them, while a
+    /// host that reused a removed node's identity for a new file must not
+    /// have the new file attached to the inode the kernel holds for the
+    /// removed one. Once the view cannot vouch for a recorded name, only the
+    /// source can tell the two apart: a name that still resolves to the same
+    /// identity shows that the node the inode stands for still exists, and
+    /// so is the node resolved now. Those names are resolved here, outside
+    /// the state's lock, into `confirmed`; a node with one name has no other
+    /// name to keep, and a node no inode stands for has no recorded name.
+    ///
+    /// Only a resolution that finds the name absent or naming another node
+    /// counts against it. One that fails (a name the caller may not reach,
+    /// say) leaves the name recorded as bound: the requested name resolved,
+    /// so its own lookup must not fail for a name it did not ask for.
+    fn confirm_names<'a>(
+        &self,
+        mut confirmed: ConfirmedNames,
+        resolved: impl IntoIterator<Item = (&'a MountPath, MountNode)>,
+    ) -> Result<ConfirmedNames, i32> {
+        let source = self.source();
+        let linked = resolved
+            .into_iter()
+            .filter(|(_, node)| node.link_count > 1)
+            .collect::<Vec<_>>();
+        if linked.is_empty() {
+            return Ok(confirmed);
+        }
+        let unvouched = {
+            let state = self.core.state()?;
+            linked
+                .iter()
+                .flat_map(|(path, node)| {
+                    state
+                        .unvouched_names(source, node.file_id, path)
+                        .into_iter()
+                        .map(|name| (node.file_id, name))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (file_id, name) in unvouched {
+            match resolve_path(source, &name) {
+                Ok((Some(found), stamp)) if found.node.file_id == file_id => {
+                    confirmed.confirm(file_id, name, stamp);
+                }
+                Ok(_) => {}
+                Err(_) => confirmed.confirm(file_id, name, None),
+            }
+        }
+        Ok(confirmed)
+    }
+
     fn lookup_entry(&self, parent: u64, name: &OsStr) -> Result<Entry, i32> {
         let source = self.source();
         let _names = self.core.names()?;
@@ -2078,6 +2420,12 @@ impl FuseProjection {
             child
         };
         let (found, stamp) = resolve_path(source, &child.spelled)?;
+        let confirmed = match found {
+            Some(lookup) => {
+                self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)])?
+            }
+            None => ConfirmedNames::default(),
+        };
         let mut state = self.core.state()?;
         let Some(lookup) = found else {
             state.remove_path_cache(child.key());
@@ -2091,7 +2439,14 @@ impl FuseProjection {
             attr.ino = INodeNo(0);
             return Ok(Entry { attr, ttl });
         };
-        let inode = state.intern(child.key().clone(), &lookup, stamp, true)?;
+        let inode = state.intern(
+            source,
+            child.key().clone(),
+            &lookup,
+            stamp,
+            true,
+            &confirmed,
+        )?;
         let attr = state
             .attr(inode, &lookup)
             .inspect_err(|_| state.release_lookup_reference(inode, 1))?;
@@ -2198,8 +2553,18 @@ impl FuseProjection {
         };
         let stamp = source.view_stamp();
         let lookup = create(&child.spelled).map_err(errno)?;
+        // A node just created has no recorded name to confirm.
+        let confirmed =
+            self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)])?;
         let mut state = self.core.state()?;
-        let inode = state.intern(child.key().clone(), &lookup, stamp, true)?;
+        let inode = state.intern(
+            source,
+            child.key().clone(),
+            &lookup,
+            stamp,
+            true,
+            &confirmed,
+        )?;
         let attr = state
             .attr(inode, &lookup)
             .inspect_err(|_| state.release_lookup_reference(inode, 1))?;
@@ -2434,11 +2799,7 @@ impl FuseProjection {
                 .read_up_to(0, store.length)
                 .is_ok_and(|bytes| notifier.store(INodeNo(store.inode), 0, &bytes).is_ok())
         });
-        let mut state = self
-            .core
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.core.state_to_finish();
         state.page_stores.land(store.file_id);
         let admitted = state.admissible(
             self.source(),
@@ -2453,7 +2814,7 @@ impl FuseProjection {
                 .push(KernelCacheItem::Inode(store.inode));
         }
         self.core.page_stored.notify_all();
-        self.core.release(state);
+        drop(state);
         open_flags.set(FopenFlags::FOPEN_KEEP_CACHE, stored && admitted);
         open_flags
     }
@@ -2480,7 +2841,7 @@ impl FuseProjection {
                 .then(|| self.core.claim_content(file_id))
                 .transpose()
         };
-        let (lookup, open_file, dirty, _claim) =
+        let (lookup, open_file, dirty, _claim, confirmed) =
             if let Some(existing) = source.lookup(path).map_err(errno)? {
                 {
                     if flags & libc::O_EXCL != 0 {
@@ -2489,6 +2850,9 @@ impl FuseProjection {
                     if existing.node.kind != MountNodeKind::Regular {
                         return Err(libc::EISDIR);
                     }
+                    // Confirmed before the open changes anything.
+                    let confirmed = self
+                        .confirm_names(ConfirmedNames::default(), [(child.key(), existing.node)])?;
                     let claimed = claim(existing.node.file_id)?;
                     let open_file = source.open_file(path).map_err(errno)?;
                     let opened = open_file.lookup().map_err(errno)?;
@@ -2496,10 +2860,11 @@ impl FuseProjection {
                         return Err(libc::ESTALE);
                     }
                     if flags & libc::O_TRUNC == 0 {
-                        (opened, open_file, false, claimed)
+                        (opened, open_file, false, claimed, confirmed)
                     } else {
                         open_file.resize(0).map_err(errno)?;
-                        (open_file.lookup().map_err(errno)?, open_file, true, claimed)
+                        let resized = open_file.lookup().map_err(errno)?;
+                        (resized, open_file, true, claimed, confirmed)
                     }
                 }
             } else {
@@ -2511,10 +2876,19 @@ impl FuseProjection {
                     source.open_file(path).map_err(errno)?,
                     true,
                     claimed,
+                    // A file just created has no other name.
+                    ConfirmedNames::default(),
                 )
             };
         let mut state = self.core.state()?;
-        let inode = state.intern(child.key().clone(), &lookup, stamp, true)?;
+        let inode = state.intern(
+            source,
+            child.key().clone(),
+            &lookup,
+            stamp,
+            true,
+            &confirmed,
+        )?;
         let created = state.attr(inode, &lookup).and_then(|attr| {
             let opened = OpenedFile {
                 path: child.key(),
@@ -2586,12 +2960,7 @@ impl FuseProjection {
     }
 
     fn flush_handle(&self, inode: u64, handle: u64, force: bool, release: bool) -> Result<(), i32> {
-        let operation = self
-            .core
-            .state
-            .lock()
-            .map_err(|_| libc::EIO)?
-            .open_handle_operation(inode, handle)?;
+        let operation = self.core.state()?.open_handle_operation(inode, handle)?;
         let _operation = operation.lock().map_err(|_| libc::EIO)?;
         let should_flush = {
             let state = self.core.state()?;
@@ -2652,7 +3021,7 @@ impl FuseProjection {
             Ok((_names, _lease, mut stream, mut state)) => {
                 state.list_directory(source, inode, &mut stream, listing);
                 state.streams.park(inode, stream);
-                self.core.release(state);
+                drop(state);
             }
             Err(error) => listing.error(Errno::from_i32(error)),
         }
@@ -2681,7 +3050,7 @@ impl FuseProjection {
             if !stream.entries.is_empty() || stream.exhausted {
                 return Ok(());
             }
-            let _lease = source
+            let lease = source
                 .acquire_binding_lease(stream.binding_epoch)
                 .map_err(|_| libc::ESTALE)?;
             let stamp = source.view_stamp();
@@ -2693,9 +3062,41 @@ impl FuseProjection {
             }
             stream.exhausted = page.next_cursor.is_none();
             stream.cursor = page.next_cursor;
+            drop(lease);
+            stream.confirmed = self.confirm_listed_names(&stream.path, &page.entries, stamp)?;
             stream.entries.extend(page.entries);
             stream.entries_stamp = stamp;
         }
+    }
+
+    /// [`Self::confirm_names`] for one listed page, read after `stamp`,
+    /// whose entries also confirm each other: names the page lists for one
+    /// node all name it. Its entries are emitted later, so every
+    /// confirmation is buffered and holds only while the view vouches for
+    /// its name since it was resolved.
+    fn confirm_listed_names(
+        &self,
+        directory: &MountPath,
+        entries: &[MountDirectoryEntry],
+        stamp: Option<ViewStamp>,
+    ) -> Result<ConfirmedNames, i32> {
+        let source = self.source();
+        let listed = entries
+            .iter()
+            .filter(|entry| entry.node.link_count > 1)
+            .map(|entry| {
+                let name = ChildName::new(source, directory.child(entry.name.clone()));
+                (name.key().clone(), entry.node)
+            })
+            .collect::<Vec<_>>();
+        let mut confirmed = self.confirm_names(
+            ConfirmedNames::default(),
+            listed.iter().map(|(path, node)| (path, *node)),
+        )?;
+        for (path, node) in listed {
+            confirmed.confirm(node.file_id, path, stamp);
+        }
+        Ok(confirmed)
     }
 
     fn attributes_to_write(&self, inode: u64) -> Result<AttributeTarget, i32> {
@@ -3034,9 +3435,9 @@ impl Filesystem for FuseProjection {
     fn forget(&self, request: &Request, inode: INodeNo, nlookup: u64) {
         let _ = request;
         let _request = self.core.request("forget");
-        if let Ok(mut state) = self.core.state.lock() {
-            state.release_lookup_reference(inode.0, nlookup);
-        }
+        self.core
+            .state_to_finish()
+            .release_lookup_reference(inode.0, nlookup);
     }
 
     fn readlink(&self, request: &Request, inode: INodeNo, reply: ReplyData) {
@@ -3670,10 +4071,11 @@ mod tests {
         MountSourceError, MountViewLease, ViewObserver,
     };
     use super::{
-        CachedContent, InodeEntry, KernelCacheItem, MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY,
-        MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath,
-        MountSeekTarget, PAGE_STORE_LIMIT, PageStores, ROOT_INODE, ViewStamp, admit_open,
-        cached_projected_lookup, changes_content, intern_projected, replace_root_lookup,
+        CachedContent, ConfirmedNames, InodeEntry, KernelCacheItem,
+        MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY, MountFilesystem, MountLookup, MountNode,
+        MountNodeKind, MountOpenFile, MountPath, MountSeekTarget, PAGE_STORE_LIMIT, PageStores,
+        ROOT_INODE, ViewStamp, admit_open, cached_projected_lookup, changes_content,
+        forget_unbound_names, intern_projected, replace_root_lookup, retire_reused_identity,
         stale_kernel_items,
     };
     use crate::FileId;
@@ -3823,6 +4225,109 @@ mod tests {
         Ok(())
     }
 
+    /// A reused identity gets a fresh inode: its removed name neither counts
+    /// against the new file's links, which would refuse the new name, nor
+    /// stays in the kernel, and the old inode, which the kernel may still
+    /// hold, names no file any more.
+    /// A name joins its node's inode on the identity rule alone: facts that
+    /// still count fewer links than the names shown bound (a link made in
+    /// the source since they were read) never refuse it.
+    #[test]
+    fn a_name_joins_its_node_whatever_link_count_its_facts_carry() -> Result<(), i32> {
+        let [before, after] = positions();
+        let stale = regular(FileId::new(), 3);
+        let mut next_inode = ROOT_INODE + 1;
+        let mut by_inode = HashMap::from([(
+            ROOT_INODE,
+            InodeEntry::new(MountPath::root(), directory(FileId::new()), Some(before), 1),
+        )]);
+        let mut by_path = HashMap::from([(MountPath::root(), ROOT_INODE)]);
+        let mut by_file = HashMap::new();
+        let first = intern_projected(
+            &mut next_inode,
+            &mut by_inode,
+            &mut by_path,
+            &mut by_file,
+            name("a"),
+            &stale,
+            Some(before),
+            true,
+        )?;
+        let second = intern_projected(
+            &mut next_inode,
+            &mut by_inode,
+            &mut by_path,
+            &mut by_file,
+            name("b"),
+            &stale,
+            Some(after),
+            true,
+        )?;
+        assert_eq!(first, second);
+        assert_eq!(by_inode[&first].bindings.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn a_reused_identity_gets_a_fresh_inode() -> Result<(), i32> {
+        let [before, after] = positions();
+        let reused = regular(FileId::new(), 3);
+        let mut next_inode = ROOT_INODE + 1;
+        let mut by_inode = HashMap::from([(
+            ROOT_INODE,
+            InodeEntry::new(MountPath::root(), directory(FileId::new()), Some(before), 1),
+        )]);
+        let mut by_path = HashMap::from([(MountPath::root(), ROOT_INODE)]);
+        let mut by_file = HashMap::new();
+        let old = intern_projected(
+            &mut next_inode,
+            &mut by_inode,
+            &mut by_path,
+            &mut by_file,
+            name("removed"),
+            &reused,
+            Some(before),
+            true,
+        )?;
+        if let Some(binding) = by_inode
+            .get_mut(&old)
+            .and_then(|entry| entry.binding_mut(&name("removed")))
+        {
+            binding.kernel = Some(before);
+        }
+        let forgotten = forget_unbound_names(
+            &mut by_inode,
+            &mut by_path,
+            old,
+            &name("created"),
+            |path, _| *path != name("removed"),
+        );
+        assert!(matches!(
+            forgotten.as_slice(),
+            [KernelCacheItem::Entry { parent: ROOT_INODE, name }] if name == b"removed"
+        ));
+        retire_reused_identity(&by_inode, &mut by_file, old);
+        let created = intern_projected(
+            &mut next_inode,
+            &mut by_inode,
+            &mut by_path,
+            &mut by_file,
+            name("created"),
+            &reused,
+            Some(after),
+            true,
+        )?;
+        assert_ne!(created, old, "the new file gets a fresh inode");
+        assert_eq!(by_inode[&created].anchor(), &name("created"));
+        assert!(
+            by_inode[&old].bindings.is_empty(),
+            "the old inode names no file"
+        );
+        assert_eq!(by_path.get(&name("created")), Some(&created));
+        assert_eq!(by_file.get(&reused.node.file_id), Some(&created));
+        Ok(())
+    }
+
     #[test]
     fn lookup_cache_requires_an_unchanged_view() {
         let path = name("cached");
@@ -3965,6 +4470,7 @@ mod tests {
             cursor: None,
             entries: std::collections::VecDeque::new(),
             entries_stamp: None,
+            confirmed: ConfirmedNames::default(),
             exhausted: false,
             emitted,
             parked: 0,
@@ -3987,6 +4493,104 @@ mod tests {
         assert!(streams.take(ROOT_INODE, 3).is_some());
         assert!(streams.take(ROOT_INODE, 1_000).is_some());
         assert!(streams.take(ROOT_INODE + 1, 1).is_none());
+    }
+
+    /// A name confirmed bound at a position (a listed page, read before its
+    /// entries are emitted) stops counting once the name changes, so a
+    /// reused identity is never kept on the inode of the node it replaced;
+    /// one confirmed without a position, by a source that cannot be watched,
+    /// counts with the facts it was resolved with.
+    /// A callback that leaves kernel items for the invalidator wakes it as it
+    /// releases the state, whether it serves a request or finishes one (a
+    /// page store landing), so the items drop, and a revalidation waiting on
+    /// them returns, without a further change to the source.
+    #[test]
+    fn releasing_deferred_items_wakes_the_invalidator() -> Result<(), Box<dyn std::error::Error>> {
+        use super::{
+            AttributeDefaults, DirectoryStreams, InvalidationQueue, PageStores, ProjectionCore,
+            ProjectionState,
+        };
+        use std::sync::PoisonError;
+        let state = || ProjectionState {
+            defaults: AttributeDefaults {
+                writable: true,
+                mount_uid: 0,
+                mount_gid: 0,
+            },
+            next_inode: ROOT_INODE + 1,
+            next_handle: 1,
+            by_inode: HashMap::new(),
+            inode_by_path: HashMap::new(),
+            inode_by_file: HashMap::new(),
+            files: HashMap::new(),
+            streams: DirectoryStreams::default(),
+            invalidation: InvalidationQueue::default(),
+            page_stores: PageStores::default(),
+        };
+        for finishing in [false, true] {
+            let (source, _) = shared_sources()?;
+            let core = Arc::new(ProjectionCore::new(Arc::new(source), state()));
+            let waiting = core.state.lock().map_err(|_| "poisoned")?;
+            let invalidator = std::thread::spawn({
+                let core = Arc::clone(&core);
+                move || {
+                    // Waits once: only a notification ends it before the
+                    // deadline.
+                    let state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    let (state, waited) = core
+                        .invalidation
+                        .wait_timeout(state, std::time::Duration::from_secs(20))
+                        .unwrap_or_else(PoisonError::into_inner);
+                    (state.invalidation.deferred.len(), waited.timed_out())
+                }
+            });
+            drop(waiting);
+            // Let the invalidator sleep before the item is deferred.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let mut state = if finishing {
+                core.state_to_finish()
+            } else {
+                core.state().map_err(|_| "stopped")?
+            };
+            state
+                .invalidation
+                .deferred
+                .push(KernelCacheItem::Inode(ROOT_INODE));
+            drop(state);
+            let (deferred, timed_out) = invalidator.join().map_err(|_| "invalidator panicked")?;
+            assert_eq!((deferred, timed_out), (1, false), "finishing: {finishing}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_confirmation_at_a_position_lapses_when_its_name_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (source, _) = shared_sources()?;
+        let file = source.create_file(&name("a"), FileMetadata::default())?;
+        source.hard_link(&name("a"), &name("b"))?;
+        let file_id = file.node.file_id;
+        let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
+
+        let mut confirmed = ConfirmedNames::default();
+        confirmed.confirm(file_id, name("b"), Some(stamp));
+        confirmed.confirm(file_id, name("a"), None);
+        assert!(confirmed.still_bound(&source, file_id, &name("b")));
+        assert!(confirmed.still_bound(&source, file_id, &name("a")));
+        assert!(!confirmed.still_bound(&source, FileId::new(), &name("b")));
+        assert!(!confirmed.still_bound(&source, file_id, &name("c")));
+
+        // The name changes after the page was read, before it is emitted.
+        source.remove(&name("b"), Some(file_id))?;
+        source.create_file(&name("b"), FileMetadata::default())?;
+        assert!(!confirmed.still_bound(&source, file_id, &name("b")));
+        // A sibling changing leaves another name's confirmation standing.
+        let mut sibling = ConfirmedNames::default();
+        let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
+        sibling.confirm(file_id, name("a"), Some(stamp));
+        source.create_file(&name("c"), FileMetadata::default())?;
+        assert!(sibling.still_bound(&source, file_id, &name("a")));
+        Ok(())
     }
 
     #[test]

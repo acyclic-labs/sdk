@@ -119,6 +119,8 @@ pub mod s3_http;
 pub mod simulation;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod source;
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+mod source_watch;
 pub mod speculation;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[doc(hidden)]

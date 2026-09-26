@@ -317,6 +317,11 @@ static void *bridge_init(struct fuse_conn_info *connection) {
   if ((connection->capable & FUSE_CAP_EXPORT_SUPPORT) != 0) {
     connection->want |= FUSE_CAP_EXPORT_SUPPORT;
   }
+  /* Every stat carries the inode of the node's identity, which all its
+     names share, so the client sees hard links as one file. */
+  if ((connection->capable & FUSE_CAP_NODE_IDENTITY) != 0) {
+    connection->want |= FUSE_CAP_NODE_IDENTITY;
+  }
   if ((connection->capable & FUSE_CAP_DURABLE_WRITES) != 0 &&
       acyclic_fs_darwin_mount_durable_writes(current_context())) {
     connection->want |= FUSE_CAP_DURABLE_WRITES;

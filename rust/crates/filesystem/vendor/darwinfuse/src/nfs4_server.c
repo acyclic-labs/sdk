@@ -875,6 +875,12 @@ void nfs4_server_set_durable_writes(darwinfuse_server_t *srv, int durable)
     srv->config.durable_writes = durable;
 }
 
+void nfs4_server_set_node_identity(darwinfuse_server_t *srv, int node_identity)
+{
+    if (!srv) return;
+    srv->config.node_identity = node_identity;
+}
+
 void nfs4_server_set_private_data(darwinfuse_server_t *srv, void *private_data)
 {
     if (!srv) return;
