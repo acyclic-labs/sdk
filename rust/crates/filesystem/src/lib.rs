@@ -18,7 +18,7 @@ pub mod wire {
     pub mod harness {
         /// Version 1 of the shared harness contract.
         pub mod v1 {
-            include!("generated/acyclic/harness/v1/acyclic.harness.v1.rs");
+            include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v1.rs"));
         }
     }
 
