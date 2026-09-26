@@ -619,6 +619,7 @@ impl ProjectionState {
     /// inode they belong to.
     fn intern(
         &mut self,
+        source: &dyn MountFilesystem,
         path: MountPath,
         lookup: &MountLookup,
         stamp: Option<ViewStamp>,
@@ -631,6 +632,16 @@ impl ProjectionState {
                 .is_some_and(|entry| entry.lookup.node.file_id != lookup.node.file_id)
         {
             self.remove_binding(previous, &path);
+        }
+        if let Some(inode) = self.inode_by_file.get(&lookup.node.file_id).copied() {
+            let forgotten = forget_unbound_names(
+                &mut self.by_inode,
+                &mut self.inode_by_path,
+                inode,
+                &path,
+                |name, verified| source.unchanged_since(name, Some(lookup.node.file_id), verified),
+            );
+            self.invalidation.deferred.extend(forgotten);
         }
         intern_projected(
             &mut self.next_inode,
@@ -1268,13 +1279,18 @@ impl ProjectionState {
                     .and_then(|known| self.by_inode.get(known))
                     .map_or(page_lookup, |known| known.lookup)
             };
-            let listed_attr =
-                match self.intern(child.key().clone(), &lookup, current, L::COUNTS_LOOKUPS) {
-                    Ok(child) => self
-                        .attr(child, &lookup)
-                        .inspect_err(|_| self.release_listed_reference::<L>(child)),
-                    Err(error) => Err(error),
-                };
+            let listed_attr = match self.intern(
+                source,
+                child.key().clone(),
+                &lookup,
+                current,
+                L::COUNTS_LOOKUPS,
+            ) {
+                Ok(child) => self
+                    .attr(child, &lookup)
+                    .inspect_err(|_| self.release_listed_reference::<L>(child)),
+                Err(error) => Err(error),
+            };
             let attr = match listed_attr {
                 Ok(attr) => attr,
                 // Entries already listed stand; the failure repeats on the
@@ -1403,6 +1419,51 @@ fn replace_root_lookup(
         root.lookup = lookup;
     }
     Ok(())
+}
+
+/// Forgets the names `inode` no longer has, other than `path`, returning
+/// the kernel entries held by them to drop.
+///
+/// A source can remove a name and its host reuse the node's identity for a
+/// file it creates under another name, so a name recorded before may be one
+/// the view no longer binds: only names `still_bound` since they were last
+/// verified count against the node's links. The inode itself stays, as the
+/// kernel may still hold it.
+fn forget_unbound_names(
+    by_inode: &mut HashMap<u64, InodeEntry>,
+    inode_by_path: &mut HashMap<MountPath, u64>,
+    inode: u64,
+    path: &MountPath,
+    still_bound: impl Fn(&MountPath, ViewStamp) -> bool,
+) -> Vec<KernelCacheItem> {
+    let Some(entry) = by_inode.get_mut(&inode) else {
+        return Vec::new();
+    };
+    let mut forgotten = Vec::new();
+    entry.bindings.retain(|binding| {
+        let bound = binding.path == *path
+            || binding
+                .verified
+                .is_some_and(|verified| still_bound(&binding.path, verified));
+        if !bound {
+            forgotten.push((binding.path.clone(), binding.kernel.is_some()));
+        }
+        bound
+    });
+    forgotten
+        .into_iter()
+        .filter_map(|(name, held)| {
+            if inode_by_path.get(&name) == Some(&inode) {
+                inode_by_path.remove(&name);
+            }
+            let (parent, component) = split_parent(&name)?;
+            let parent = inode_by_path.get(&parent).copied()?;
+            held.then(|| KernelCacheItem::Entry {
+                parent,
+                name: component.to_vec(),
+            })
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)] // Projection indexes are updated together.
@@ -2094,7 +2155,7 @@ impl FuseProjection {
             attr.ino = INodeNo(0);
             return Ok(Entry { attr, ttl });
         };
-        let inode = state.intern(child.key().clone(), &lookup, stamp, true)?;
+        let inode = state.intern(source, child.key().clone(), &lookup, stamp, true)?;
         let attr = state
             .attr(inode, &lookup)
             .inspect_err(|_| state.release_lookup_reference(inode, 1))?;
@@ -2202,7 +2263,7 @@ impl FuseProjection {
         let stamp = source.view_stamp();
         let lookup = create(&child.spelled).map_err(errno)?;
         let mut state = self.core.state()?;
-        let inode = state.intern(child.key().clone(), &lookup, stamp, true)?;
+        let inode = state.intern(source, child.key().clone(), &lookup, stamp, true)?;
         let attr = state
             .attr(inode, &lookup)
             .inspect_err(|_| state.release_lookup_reference(inode, 1))?;
@@ -2517,7 +2578,7 @@ impl FuseProjection {
                 )
             };
         let mut state = self.core.state()?;
-        let inode = state.intern(child.key().clone(), &lookup, stamp, true)?;
+        let inode = state.intern(source, child.key().clone(), &lookup, stamp, true)?;
         let created = state.attr(inode, &lookup).and_then(|attr| {
             let opened = OpenedFile {
                 path: child.key(),
@@ -3676,8 +3737,8 @@ mod tests {
         CachedContent, InodeEntry, KernelCacheItem, MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY,
         MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath,
         MountSeekTarget, PAGE_STORE_LIMIT, PageStores, ROOT_INODE, ViewStamp, admit_open,
-        cached_projected_lookup, changes_content, intern_projected, replace_root_lookup,
-        stale_kernel_items,
+        cached_projected_lookup, changes_content, forget_unbound_names, intern_projected,
+        replace_root_lookup, stale_kernel_items,
     };
     use crate::FileId;
     use crate::kernel::{FileMetadata, MetadataField};
@@ -3823,6 +3884,79 @@ mod tests {
             cached_projected_lookup(&mut by_inode, &by_path, &name("alias"), |_, _| true).is_none(),
             "an unverified name is never reused"
         );
+        Ok(())
+    }
+
+    /// A node whose identity a source reused keeps only the names still
+    /// bound to it: a stale name neither counts against its links, which
+    /// would refuse the new name, nor stays in the kernel.
+    #[test]
+    fn a_reused_identity_keeps_only_its_bound_names() -> Result<(), i32> {
+        let [before, after] = positions();
+        let reused = regular(FileId::new(), 3);
+        let mut next_inode = ROOT_INODE + 1;
+        let mut by_inode = HashMap::from([(
+            ROOT_INODE,
+            InodeEntry::new(MountPath::root(), directory(FileId::new()), Some(before), 1),
+        )]);
+        let mut by_path = HashMap::from([(MountPath::root(), ROOT_INODE)]);
+        let mut by_file = HashMap::new();
+        let inode = intern_projected(
+            &mut next_inode,
+            &mut by_inode,
+            &mut by_path,
+            &mut by_file,
+            name("removed"),
+            &reused,
+            Some(before),
+            true,
+        )?;
+        if let Some(binding) = by_inode
+            .get_mut(&inode)
+            .and_then(|entry| entry.binding_mut(&name("removed")))
+        {
+            binding.kernel = Some(before);
+        }
+        // Before the stale name is forgotten, the new one exceeds the links.
+        assert_eq!(
+            intern_projected(
+                &mut next_inode,
+                &mut by_inode,
+                &mut by_path,
+                &mut by_file,
+                name("created"),
+                &reused,
+                Some(after),
+                true,
+            ),
+            Err(libc::EIO)
+        );
+        let forgotten = forget_unbound_names(
+            &mut by_inode,
+            &mut by_path,
+            inode,
+            &name("created"),
+            |path, _| *path != name("removed"),
+        );
+        assert!(matches!(
+            forgotten.as_slice(),
+            [KernelCacheItem::Entry { parent: ROOT_INODE, name }] if name == b"removed"
+        ));
+        assert!(!by_path.contains_key(&name("removed")));
+        assert_eq!(
+            intern_projected(
+                &mut next_inode,
+                &mut by_inode,
+                &mut by_path,
+                &mut by_file,
+                name("created"),
+                &reused,
+                Some(after),
+                true,
+            )?,
+            inode
+        );
+        assert_eq!(by_inode[&inode].anchor(), &name("created"));
         Ok(())
     }
 
