@@ -55,6 +55,17 @@ impl Default for MemoryLimits {
     }
 }
 
+/// A retention clock that never advances.
+#[cfg(target_arch = "wasm32")]
+struct StoppedClock;
+
+#[cfg(target_arch = "wasm32")]
+impl UnixMillisClock for StoppedClock {
+    fn now_unix_millis(&self) -> u64 {
+        0
+    }
+}
+
 /// How long, in retention-clock milliseconds, a result and its envelope are
 /// kept after they are made.
 const RETENTION_MILLIS: u64 = MIN_IDEMPOTENCY_RETENTION_SECS * 1000;
@@ -82,7 +93,13 @@ impl MemoryStream {
     /// Constructs one bounded independent provider.
     #[must_use]
     pub fn new(limits: MemoryLimits) -> Self {
-        Self::new_with_clock(limits, Arc::new(SystemUnixMillisClock))
+        // A browser has no system clock std can read; a page-lived provider
+        // there retains everything, within its capacity.
+        #[cfg(target_arch = "wasm32")]
+        let retention: Arc<dyn UnixMillisClock> = Arc::new(StoppedClock);
+        #[cfg(not(target_arch = "wasm32"))]
+        let retention: Arc<dyn UnixMillisClock> = Arc::new(SystemUnixMillisClock);
+        Self::new_with_clocks(limits, Arc::new(SystemUnixMillisClock), retention)
     }
 
     /// Constructs a provider with an injected trusted clock.
