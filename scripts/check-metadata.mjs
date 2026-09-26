@@ -163,7 +163,6 @@ if ((await load("typescript/packages/sdk/package.json")).dependencies["@acyclic-
 const objectsVersion = compatibility.families.objects.version;
 const objectsCrateVersion = compatibility.families.objects.crateVersion ?? objectsVersion;
 const objectsManifest = await readFile(new URL("rust/crates/objects/Cargo.toml", root), "utf8");
-const harnessPackage = await load("typescript/packages/harness/package.json");
 if (
   (await load("typescript/packages/objects/package.json")).version !== objectsVersion ||
   sdkPackage.dependencies["@acyclic-labs/objects"] !== objectsVersion ||
