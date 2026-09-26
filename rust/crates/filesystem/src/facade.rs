@@ -2517,7 +2517,12 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 return Err(FsError::InvalidAuthorityHistory);
             };
             after = last.sequence;
-            for record in &records {
+            // Exactly the history as of the head read: a record appended
+            // since, such as a deletion's tombstone, is the next pass's.
+            for record in records
+                .iter()
+                .take_while(|record| record.sequence <= head.sequence)
+            {
                 let generation = generation_from_record(record, volume_id, WorkCounters::default())
                     .map_err(|failure| failure.error)?;
                 marker

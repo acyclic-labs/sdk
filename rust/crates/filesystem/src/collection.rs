@@ -97,6 +97,20 @@ impl PublicationHold {
     }
 }
 
+/// Proof that no sweep batch runs: the collection gate, held shared.
+/// Writing to the durable store while a collection runs requires one, so a
+/// write lands either before a batch chooses what to sweep or after it.
+pub(crate) struct Unswept(tokio::sync::OwnedRwLockReadGuard<()>);
+
+impl Unswept {
+    /// Holds sweeping off until the publication's record is written.
+    pub(crate) fn into_hold(self) -> PublicationHold {
+        PublicationHold {
+            _gate: Some(self.0),
+        }
+    }
+}
+
 /// A collection in progress; see [`Collection::begin`].
 pub(crate) struct Collecting {
     collection: Arc<Collection>,
@@ -127,8 +141,8 @@ impl Collection {
         closure: &[ObjectId],
         staged: impl Fn(&ObjectId) -> bool,
         proven_at: u64,
-    ) -> Result<PublicationHold, ObjectStoreError> {
-        let hold = Arc::clone(&self.gate).read_owned().await;
+    ) -> Result<Unswept, ObjectStoreError> {
+        let hold = self.unswept().await;
         let mut state = self.state();
         let refused = proven_at < state.sweeps
             && (proven_at < state.forgotten
@@ -147,7 +161,7 @@ impl Collection {
         if let Some(admitted) = &mut state.admitted {
             admitted.extend(closure.iter().copied());
         }
-        Ok(PublicationHold { _gate: Some(hold) })
+        Ok(hold)
     }
 
     /// Starts a collection once every publication admitted before it has
@@ -172,11 +186,16 @@ impl Collection {
         }
     }
 
-    /// Records `objects`, about to be written to the durable store, so a
-    /// running collection keeps them: an object written while a collection
-    /// runs is kept by it, whoever names it next. A sweep that removed one
-    /// first is undone by the write itself.
-    pub(crate) fn writing(&self, objects: impl IntoIterator<Item = ObjectId>) {
+    /// Holds sweeping off until the returned proof drops.
+    pub(crate) async fn unswept(&self) -> Unswept {
+        Unswept(Arc::clone(&self.gate).read_owned().await)
+    }
+
+    /// Records `objects`, about to be written to the durable store while
+    /// `unswept` holds sweeping off, so a running collection keeps them: the
+    /// write lands either before a sweep batch chooses (which then keeps
+    /// them) or after its deletions (which the write undoes by storing them).
+    pub(crate) fn writing(&self, _unswept: &Unswept, objects: impl IntoIterator<Item = ObjectId>) {
         if let Some(admitted) = &mut self.state().admitted {
             admitted.extend(objects);
         }

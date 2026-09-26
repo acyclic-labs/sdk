@@ -425,8 +425,14 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         };
         // One segment-bounded batch bounds the step's work; a fresh token
         // keeps the caller's cancellation from abandoning it midway.
+        let unswept = self.collection.unswept().await;
         let _step = self
-            .drain_locked(targets, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .drain_locked(
+                &unswept,
+                targets,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await;
         Ok(spilled)
     }
@@ -438,6 +444,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
     /// once no staged object remains spilled.
     async fn drain_locked(
         &self,
+        unswept: &crate::collection::Unswept,
         targets: Vec<ObjectId>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -504,7 +511,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 }));
             }
             self.collection
-                .writing(writes.iter().map(|write| write.object_id));
+                .writing(unswept, writes.iter().map(|write| write.object_id));
             let receipt = self
                 .inner
                 .put_many(
@@ -693,8 +700,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         // so a resident admission, which almost every page write is, never
         // builds or moves their larger futures.
         if object.length() > MAXIMUM_DRAIN_BYTES {
-            self.collection.writing([object.object_id()]);
-            return in_heap(|| self.inner.put_hashed(object, budget, cancellation)).await;
+            let unswept = self.collection.unswept().await;
+            self.collection.writing(&unswept, [object.object_id()]);
+            let written = in_heap(|| self.inner.put_hashed(object, budget, cancellation)).await;
+            drop(unswept);
+            return written;
         }
         // The object's hash is its identity: an equal identity already
         // staged holds these exact bytes.
@@ -784,7 +794,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             PublicationScope::Closure { objects, proven_at } => (objects, proven_at),
             PublicationScope::Everything => (&[][..], self.collection.sweeps()),
         };
-        let hold = self
+        let unswept = self
             .collection
             .admit(
                 objects,
@@ -804,9 +814,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
                 PublicationScope::Everything => index.objects.keys().copied().collect(),
             }
         };
-        let drained = self.drain_locked(targets, budget, cancellation).await?;
+        let drained = self
+            .drain_locked(&unswept, targets, budget, cancellation)
+            .await?;
         Ok(ObjectReceipt {
-            value: hold,
+            value: unswept.into_hold(),
             work: drained.work,
         })
     }
