@@ -456,7 +456,7 @@ impl RoutedMountSource {
         candidates.truncate(limit);
         let mut entries = Vec::with_capacity(candidates.len());
         for (name, source, tag) in candidates {
-            let Some(lookup) = source.lookup(&MountPath::root())? else {
+            let Some((lookup, pin)) = source.lookup_pinned(&MountPath::root())? else {
                 continue;
             };
             let remapped = self.remap_lookup(lookup, tag, &name);
@@ -464,6 +464,7 @@ impl RoutedMountSource {
                 name,
                 node: remapped.node,
                 metadata: remapped.metadata,
+                pin: pin.map(|pin| remap_content_pin(pin, tag)),
             });
         }
         let next_cursor = has_more
@@ -595,6 +596,17 @@ impl MountFilesystem for RoutedMountSource {
         self.observers.add(observer);
     }
 
+    fn fence_changes(&self) -> Result<(), MountSourceError> {
+        let routes = self
+            .routes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .map(|route| Arc::clone(&route.source))
+            .collect::<Vec<_>>();
+        routes.iter().try_for_each(|source| source.fence_changes())
+    }
+
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
         stamp.precedes_none_of(&self.routes_changed)
             && match self.route(path) {
@@ -631,6 +643,24 @@ impl MountFilesystem for RoutedMountSource {
             }
             None => path.clone(),
         })
+    }
+
+    fn reports_changes_to(&self, file_id: FileId) -> bool {
+        let owner = self
+            .file_id_index
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&file_id)
+            .cloned();
+        // A node no route owns is the router's own, whose changes it records.
+        owner.map_or_else(
+            || self.view_stamp().is_some(),
+            |name| {
+                self.locate(&name).is_ok_and(|(source, tag)| {
+                    source.reports_changes_to(remap_file_id(file_id, tag))
+                })
+            },
+        )
     }
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
@@ -791,6 +821,7 @@ impl MountFilesystem for RoutedMountSource {
             .into_iter()
             .map(|mut entry| {
                 entry.node.file_id = remap_file_id(entry.node.file_id, routed.tag);
+                entry.pin = entry.pin.map(|pin| remap_content_pin(pin, routed.tag));
                 self.record_file_id(entry.node.file_id, routed.name.clone());
                 entry
             })

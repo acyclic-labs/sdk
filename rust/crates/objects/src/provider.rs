@@ -510,6 +510,41 @@ impl StoredBody {
         }
     }
 
+    /// This body with every local leaf found in `relocations` moved, if any leaf moves.
+    #[cfg(feature = "local")]
+    fn relocated(&self, relocations: &LocalBodyRelocations) -> Option<Self> {
+        match self {
+            Self::Memory(_) => None,
+            Self::Composite { parts, length } => {
+                let moved = parts
+                    .iter()
+                    .map(|part| part.relocated(relocations))
+                    .collect::<Vec<_>>();
+                moved.iter().any(Option::is_some).then(|| Self::Composite {
+                    parts: moved
+                        .into_iter()
+                        .zip(parts.iter())
+                        .map(|(moved, part)| moved.unwrap_or_else(|| part.clone()))
+                        .collect(),
+                    length: *length,
+                })
+            }
+            Self::Local {
+                root,
+                digest,
+                length,
+                location,
+            } => relocations
+                .get(&(location.clone(), *digest))
+                .map(|destination| Self::Local {
+                    root: Arc::clone(root),
+                    digest: *digest,
+                    length: *length,
+                    location: destination.clone(),
+                }),
+        }
+    }
+
     fn read_async(
         &self,
         start: usize,
@@ -622,6 +657,26 @@ struct MultipartState {
     parts: BTreeMap<u32, (wire::UploadedPart, StoredBody)>,
 }
 
+impl MultipartState {
+    /// Whether `parts` are exactly the staged receipts, with every part but the last at
+    /// least the minimum part size.
+    fn completes_with(&self, parts: &[wire::UploadedPart]) -> bool {
+        self.parts.values().map(|(part, _)| part).eq(parts.iter())
+            && parts.iter().enumerate().all(|(index, part)| {
+                index + 1 == parts.len() || part.size >= limits::MIN_MULTIPART_PART_BYTES
+            })
+    }
+}
+
+/// The digest of the concatenation of `bodies`.
+fn composite_digest(bodies: &[StoredBody]) -> Result<[u8; 32], ObjectsError> {
+    let mut hasher = blake3::Hasher::new();
+    for body in bodies {
+        body.update_hash(&mut hasher)?;
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
 struct StoredPartRequest {
     bucket: wire::BucketRef,
     object_key: String,
@@ -643,8 +698,18 @@ pub(crate) struct ExternalBody {
 #[cfg(feature = "local")]
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum LocalBodyLocation {
+    /// A body record inside one immutable, content-addressed segment file.
     Segment { id: [u8; 32], offset: u64 },
+    /// Bytes carried by the journal frame that committed the body.
+    Journal { offset: u64 },
+    /// Unreachable when journal compaction dropped its bytes; never readable.
+    Reclaimed,
 }
+
+/// Physical moves of local bodies, keyed by current location and digest: an empty body
+/// shares its journal offset with the inline body that follows it.
+#[cfg(feature = "local")]
+pub(crate) type LocalBodyRelocations = BTreeMap<(LocalBodyLocation, [u8; 32]), LocalBodyLocation>;
 
 #[cfg(feature = "local")]
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -870,6 +935,194 @@ impl MemoryObjects {
             body.local_references(&mut references);
         }
         references
+    }
+
+    /// Rewrites every retained local body at a relocated physical location: bucket and
+    /// snapshot versions and staged multipart parts alike.
+    ///
+    /// Blocks on the state lock, so it runs only on a blocking worker.
+    #[cfg(feature = "local")]
+    pub(crate) fn relocate_local_bodies(&self, relocations: &LocalBodyRelocations) {
+        fn relocate_bucket(bucket: &mut BucketState, relocations: &LocalBodyRelocations) {
+            // Touch only moved histories so snapshots keep sharing every other node.
+            let moved = bucket
+                .objects
+                .iter()
+                .filter(|(_, history)| {
+                    history.iter().any(|version| {
+                        version
+                            .body
+                            .as_ref()
+                            .is_some_and(|body| body.relocated(relocations).is_some())
+                    })
+                })
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            for key in moved {
+                for version in bucket.objects.get_mut(&key).into_iter().flatten() {
+                    if let Some(body) = version
+                        .body
+                        .as_ref()
+                        .and_then(|body| body.relocated(relocations))
+                    {
+                        version.body = Some(body);
+                    }
+                }
+            }
+        }
+
+        if relocations.is_empty() {
+            return;
+        }
+        let mut state = self.state.blocking_lock();
+        let state = &mut *state;
+        for bucket in state.buckets.values_mut() {
+            relocate_bucket(bucket, relocations);
+        }
+        for snapshot in state.snapshots.values_mut() {
+            relocate_bucket(&mut snapshot.bucket, relocations);
+        }
+        for (_, body) in state
+            .multiparts
+            .values_mut()
+            .flat_map(|upload| upload.parts.values_mut())
+        {
+            if let Some(moved) = body.relocated(relocations) {
+                *body = moved;
+            }
+        }
+    }
+
+    /// Completes an upload. A `known_digest` must be the digest of the exact parts, as
+    /// [`Self::multipart_completion_digest`] computed it; without one, the parts are hashed.
+    pub(crate) async fn complete_multipart_with_digest(
+        &self,
+        bucket: wire::BucketRef,
+        object_key: String,
+        upload_id: String,
+        parts: Vec<wire::UploadedPart>,
+        idempotency_key: Option<String>,
+        known_digest: Option<[u8; 32]>,
+    ) -> Result<wire::ObjectVersion, ObjectsError> {
+        if parts.is_empty() || parts.len() > limits::MULTIPART_PARTS as usize {
+            return Err(ObjectsError::Invalid("invalid multipart completion"));
+        }
+        let bucket_fields = Self::reference_fields(&bucket);
+        let mut part_bytes = Vec::new();
+        for part in &parts {
+            part_bytes.extend_from_slice(&part.part_number.to_le_bytes());
+            part_bytes.extend_from_slice(&(part.etag.len() as u64).to_le_bytes());
+            part_bytes.extend_from_slice(part.etag.as_bytes());
+            part_bytes.extend_from_slice(&part.size.to_le_bytes());
+        }
+        let fingerprint = Self::fingerprint(
+            "complete-multipart",
+            &[
+                bucket_fields[0],
+                bucket_fields[1],
+                object_key.as_bytes(),
+                upload_id.as_bytes(),
+                &part_bytes,
+            ],
+        );
+        let mut state = self.state.lock().await;
+        Self::execute(
+            &mut state,
+            idempotency_key.as_deref(),
+            fingerprint,
+            |outcome| match outcome {
+                MutationOutcome::Version(value) => Some(value.clone()),
+                _ => None,
+            },
+            MutationOutcome::Version,
+            |state| {
+                let upload = state
+                    .multiparts
+                    .remove(&upload_id)
+                    .filter(|upload| upload.bucket == bucket && upload.object_key == object_key)
+                    .ok_or(ObjectsError::NotFound)?;
+                if !upload.completes_with(&parts) {
+                    state.multiparts.insert(upload_id, upload);
+                    return Err(ObjectsError::Invalid("multipart receipts do not match"));
+                }
+                let current = Self::bucket(state, &bucket)?
+                    .objects
+                    .get(&object_key)
+                    .and_then(|history| history.last())
+                    .cloned();
+                if !Self::condition(current.as_ref(), &upload.condition) {
+                    state.multiparts.insert(upload_id, upload);
+                    return Err(ObjectsError::PreconditionFailed);
+                }
+                let body_length =
+                    match upload.parts.values().try_fold(0usize, |total, (_, body)| {
+                        total.checked_add(body.len()).ok_or(ObjectsError::Capacity)
+                    }) {
+                        Ok(body_length) => body_length,
+                        Err(error) => {
+                            state.multiparts.insert(upload_id, upload);
+                            return Err(error);
+                        }
+                    };
+                if body_length > state.maximum_object_bytes {
+                    state.multiparts.insert(upload_id, upload);
+                    return Err(ObjectsError::Capacity);
+                }
+                let bodies = upload
+                    .parts
+                    .into_values()
+                    .map(|(_, body)| body)
+                    .collect::<Vec<_>>();
+                let body_digest = match known_digest {
+                    Some(digest) => digest,
+                    None => composite_digest(&bodies)?,
+                };
+                let descriptor =
+                    Self::descriptor(state, &body_digest, body_length, upload.metadata, false)?;
+                Self::bucket_mut(state, &bucket)?.append(
+                    object_key,
+                    Version {
+                        descriptor: descriptor.clone(),
+                        body: Some(StoredBody::Composite {
+                            parts: bodies.into(),
+                            length: body_length,
+                        }),
+                    },
+                );
+                Ok(descriptor)
+            },
+        )
+    }
+
+    /// The digest a completion of `upload_id` from exactly `parts` would publish, or `None`
+    /// when the completion fails before hashing. A journal records it so that replaying the
+    /// completion never reads part bodies that reclamation may since have removed.
+    #[cfg(feature = "local")]
+    pub(crate) async fn multipart_completion_digest(
+        &self,
+        bucket: &wire::BucketRef,
+        object_key: &str,
+        upload_id: &str,
+        parts: &[wire::UploadedPart],
+    ) -> Result<Option<[u8; 32]>, ObjectsError> {
+        let bodies = {
+            let state = self.state.lock().await;
+            match state.multiparts.get(upload_id) {
+                Some(upload)
+                    if upload.bucket == *bucket
+                        && upload.object_key == object_key
+                        && upload.completes_with(parts) =>
+                {
+                    upload
+                        .parts
+                        .values()
+                        .map(|(_, body)| body.clone())
+                        .collect::<Vec<_>>()
+                }
+                _ => return Ok(None),
+            }
+        };
+        composite_digest(&bodies).map(Some)
     }
 
     /// Resolves a bucket by its canonical name without mutating provider state.
@@ -2324,104 +2577,15 @@ impl ObjectsProvider for MemoryObjects {
         parts: Vec<wire::UploadedPart>,
         idempotency_key: Option<String>,
     ) -> Result<wire::ObjectVersion, ObjectsError> {
-        if parts.is_empty() || parts.len() > limits::MULTIPART_PARTS as usize {
-            return Err(ObjectsError::Invalid("invalid multipart completion"));
-        }
-        let bucket_fields = Self::reference_fields(&bucket);
-        let mut part_bytes = Vec::new();
-        for part in &parts {
-            part_bytes.extend_from_slice(&part.part_number.to_le_bytes());
-            part_bytes.extend_from_slice(&(part.etag.len() as u64).to_le_bytes());
-            part_bytes.extend_from_slice(part.etag.as_bytes());
-            part_bytes.extend_from_slice(&part.size.to_le_bytes());
-        }
-        let fingerprint = Self::fingerprint(
-            "complete-multipart",
-            &[
-                bucket_fields[0],
-                bucket_fields[1],
-                object_key.as_bytes(),
-                upload_id.as_bytes(),
-                &part_bytes,
-            ],
-        );
-        let mut state = self.state.lock().await;
-        Self::execute(
-            &mut state,
-            idempotency_key.as_deref(),
-            fingerprint,
-            |outcome| match outcome {
-                MutationOutcome::Version(value) => Some(value.clone()),
-                _ => None,
-            },
-            MutationOutcome::Version,
-            |state| {
-                let matches = state.multiparts.get(&upload_id).is_some_and(|upload| {
-                    upload.bucket == bucket && upload.object_key == object_key
-                });
-                if !matches {
-                    return Err(ObjectsError::NotFound);
-                }
-                let upload = state
-                    .multiparts
-                    .remove(&upload_id)
-                    .ok_or(ObjectsError::Unavailable)?;
-                let exact = upload.parts.values().map(|(part, _)| part).eq(parts.iter());
-                let sizes_valid = parts.iter().enumerate().all(|(index, part)| {
-                    index + 1 == parts.len() || part.size >= limits::MIN_MULTIPART_PART_BYTES
-                });
-                if !exact || !sizes_valid {
-                    state.multiparts.insert(upload_id, upload);
-                    return Err(ObjectsError::Invalid("multipart receipts do not match"));
-                }
-                let current = Self::bucket(state, &bucket)?
-                    .objects
-                    .get(&object_key)
-                    .and_then(|history| history.last())
-                    .cloned();
-                if !Self::condition(current.as_ref(), &upload.condition) {
-                    state.multiparts.insert(upload_id, upload);
-                    return Err(ObjectsError::PreconditionFailed);
-                }
-                let body_length =
-                    match upload.parts.values().try_fold(0usize, |total, (_, body)| {
-                        total.checked_add(body.len()).ok_or(ObjectsError::Capacity)
-                    }) {
-                        Ok(body_length) => body_length,
-                        Err(error) => {
-                            state.multiparts.insert(upload_id, upload);
-                            return Err(error);
-                        }
-                    };
-                if body_length > state.maximum_object_bytes {
-                    state.multiparts.insert(upload_id, upload);
-                    return Err(ObjectsError::Capacity);
-                }
-                let bodies = upload
-                    .parts
-                    .into_values()
-                    .map(|(_, body)| body)
-                    .collect::<Vec<_>>();
-                let mut hasher = blake3::Hasher::new();
-                for body in &bodies {
-                    body.update_hash(&mut hasher)?;
-                }
-                let body_digest = *hasher.finalize().as_bytes();
-                let descriptor =
-                    Self::descriptor(state, &body_digest, body_length, upload.metadata, false)?;
-                Self::bucket_mut(state, &bucket)?.append(
-                    object_key,
-                    Version {
-                        descriptor: descriptor.clone(),
-                        body: Some(StoredBody::Composite {
-                            parts: bodies.into(),
-                            length: body_length,
-                        }),
-                    },
-                );
-                Ok(descriptor)
-            },
+        self.complete_multipart_with_digest(
+            bucket,
+            object_key,
+            upload_id,
+            parts,
+            idempotency_key,
+            None,
         )
+        .await
     }
 
     async fn abort_multipart(

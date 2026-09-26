@@ -1662,7 +1662,7 @@ where
         state: &LazyWorkspaceState,
         path: &str,
         node: SourceNode,
-    ) -> Result<LazyLookup, LazyWorkspaceError> {
+    ) -> Result<(LazyLookup, Option<SourceReference>), LazyWorkspaceError> {
         in_heap(move || async move {
             let basis = InspectBasis {
                 state: Some(state),
@@ -1677,7 +1677,7 @@ where
                 &CancellationToken::new(),
             )
             .await
-            .map(|receipt| receipt.value.lookup)
+            .map(|receipt| (receipt.value.lookup, receipt.value.source))
         })
         .await
     }
@@ -1819,14 +1819,30 @@ where
     /// Aliases carrying the same source-native identity map to one `FileId`,
     /// independent of path, so mount lookups preserve hard-link topology.
     pub fn source_file_id(&self, node: &SourceNode) -> FileId {
+        self.source_file_id_of(&node.file_identity)
+    }
+
+    /// The identity of the source node whose [`SourceNode::file_identity`]
+    /// is `file_identity`.
+    pub(crate) fn source_file_id_of(&self, file_identity: &[u8; 32]) -> FileId {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"acyclic-fs-lazy-source-file-id-v1\0");
         hasher.update(&self.source.reference().identity);
-        hasher.update(&node.file_identity);
+        hasher.update(file_identity);
         let digest = hasher.finalize();
         let mut bytes = [0_u8; 16];
         bytes.copy_from_slice(&digest.as_bytes()[..16]);
         FileId::from_bytes(bytes)
+    }
+
+    /// Starts the source reporting its changes to `sink`; `None` when it
+    /// cannot (see [`DemandSource::watch`]).
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn watch_source(
+        &self,
+        sink: Arc<dyn crate::demand::SourceChangeSink>,
+    ) -> Result<Option<Box<dyn crate::demand::SourceWatch>>, LazyWorkspaceError> {
+        self.source.watch(sink).map_err(LazyWorkspaceError::from)
     }
 
     /// Direct identity of the resolved fact. Mounted directory identity is a

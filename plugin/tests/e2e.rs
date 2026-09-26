@@ -2,6 +2,7 @@
 
 #![allow(
     clippy::expect_used,
+    clippy::indexing_slicing,
     clippy::panic,
     clippy::permissions_set_readonly_false
 )]
@@ -59,8 +60,8 @@ fn packaged_service_hook_latency_receipt() {
     let hook = |session: usize, event: &str, fields: Value| {
         hook_at(session, &workspace(session), event, fields).0
     };
-    let mut samples = std::collections::BTreeMap::<&str, Vec<Duration>>::new();
-    let mut record = |label, elapsed| samples.entry(label).or_default().push(elapsed);
+    let mut samples = std::collections::BTreeMap::<String, Vec<Duration>>::new();
+    let mut record = |label: &str, elapsed| samples.entry(label.into()).or_default().push(elapsed);
     let none = || serde_json::json!({});
     record(
         "SessionStart (starts service)",
@@ -120,10 +121,11 @@ fn packaged_service_hook_latency_receipt() {
         record("SessionEnd", hook(session, "SessionEnd", none()));
     }
     hook(0, "SessionEnd", none());
+    record_codex_transports(&package, temporary.path(), pairs, &mut record);
     service.drain();
     let events = samples
         .into_iter()
-        .map(|(label, durations)| (label.to_owned(), latency_summary(durations)))
+        .map(|(label, durations)| (label, latency_summary(durations)))
         .collect::<serde_json::Map<_, _>>();
     println!(
         "{}",
@@ -135,6 +137,412 @@ fn packaged_service_hook_latency_receipt() {
             "events": events,
         })
     );
+}
+
+/// One way Codex can deliver a hook to Acyclic.
+enum CodexTransport {
+    /// A call on the plugin's hook MCP server, which Codex keeps connected.
+    Mcp(CodexHookServer),
+    /// The hook process spawned directly: the floor of any command hook.
+    Process,
+    /// A command hook as Codex runs it: through the session shell.
+    Shell { label: String, argv: Vec<String> },
+}
+
+impl CodexTransport {
+    fn label(&self) -> &str {
+        match self {
+            Self::Mcp(_) => "mcp",
+            Self::Process => "process",
+            Self::Shell { label, .. } => label,
+        }
+    }
+
+    /// The shells Codex may run command hooks through on this platform, each
+    /// with the arguments Codex passes before the command.
+    fn shells() -> Vec<Self> {
+        let candidates: &[(&str, &[&str])] = if cfg!(windows) {
+            &[
+                ("powershell.exe", &["-NoProfile", "-Command"]),
+                ("pwsh.exe", &["-NoProfile", "-Command"]),
+            ]
+        } else {
+            &[("sh", &["-c"]), ("bash", &["-c"]), ("zsh", &["-c"])]
+        };
+        let paths = std::env::var_os("PATH").unwrap_or_default();
+        candidates
+            .iter()
+            .filter_map(|(name, arguments)| {
+                let program = std::env::split_paths(&paths)
+                    .map(|directory| directory.join(name))
+                    .find(|path| path.is_file())?;
+                let mut argv = vec![program.display().to_string()];
+                argv.extend(arguments.iter().map(|argument| (*argument).to_owned()));
+                Some(Self::Shell {
+                    label: name.trim_end_matches(".exe").to_owned(),
+                    argv,
+                })
+            })
+            .collect()
+    }
+}
+
+/// A running `acyclic __mcp`, started from the plugin root as Codex starts it.
+struct CodexHookServer {
+    child: std::process::Child,
+    input: std::process::ChildStdin,
+    output: std::io::BufReader<std::process::ChildStdout>,
+    next_id: u64,
+}
+
+impl CodexHookServer {
+    fn start(package: &PackagedPlugin, root: &Path) -> Self {
+        let mut server = command(&package.native);
+        server
+            .arg("__mcp")
+            .current_dir(&package.root)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        isolated_state(&mut server, root);
+        let mut child = server.spawn().expect("start the hook MCP server");
+        let mut server = Self {
+            input: child.stdin.take().expect("server input"),
+            output: std::io::BufReader::new(child.stdout.take().expect("server output")),
+            child,
+            next_id: 0,
+        };
+        let initialized = server.request(
+            "initialize",
+            &serde_json::json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "acyclic-latency", "version": "0"},
+            }),
+        );
+        assert_eq!(initialized["serverInfo"]["name"], "acyclic-hooks");
+        server.send(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+        let listed = server.request("tools/list", &serde_json::json!({}));
+        assert_eq!(listed["tools"], serde_json::json!([]));
+        server
+    }
+
+    fn send(&mut self, message: &Value) {
+        use std::io::Write as _;
+        let mut line = serde_json::to_vec(message).expect("request");
+        line.push(b'\n');
+        self.input.write_all(&line).expect("write request");
+        self.input.flush().expect("flush request");
+    }
+
+    fn request(&mut self, method: &str, params: &Value) -> Value {
+        use std::io::BufRead as _;
+        self.next_id += 1;
+        let id = self.next_id;
+        self.send(
+            &serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+        );
+        let mut line = String::new();
+        self.output.read_line(&mut line).expect("read response");
+        let response: Value = serde_json::from_str(&line).expect("response");
+        assert_eq!(response["id"], id);
+        response
+            .get("result")
+            .cloned()
+            .unwrap_or_else(|| panic!("{method} failed: {response}"))
+    }
+}
+
+impl Drop for CodexHookServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// One Codex session on the running service, whose hooks are delivered over
+/// any [`CodexTransport`] and timed end to end from the host's side.
+struct CodexLatencySession<'a> {
+    package: &'a PackagedPlugin,
+    root: &'a Path,
+    workspace: &'a Path,
+    manifest: Value,
+}
+
+impl CodexLatencySession<'_> {
+    const SESSION: &'static str = "codex-latency-session";
+
+    /// A hook event as Codex serializes it for a command hook.
+    fn event(&self, name: &str, turn: &str, fields: &Value) -> Value {
+        let mut event = serde_json::json!({
+            "session_id": Self::SESSION,
+            "turn_id": turn,
+            "transcript_path": null,
+            "cwd": self.workspace,
+            "hook_event_name": name,
+            "model": "gpt-5.6-sol",
+            "permission_mode": "bypassPermissions",
+        });
+        event
+            .as_object_mut()
+            .expect("event")
+            .extend(fields.as_object().expect("fields").clone());
+        event
+    }
+
+    /// Delivers `event` from Codex thread `thread` and returns its latency.
+    fn deliver(
+        &self,
+        transport: &mut CodexTransport,
+        name: &str,
+        thread: &str,
+        event: &Value,
+    ) -> Duration {
+        let started = Instant::now();
+        let answer: Value = if let CodexTransport::Mcp(server) = transport {
+            let template = &self.manifest["hooks"][name][0]["hooks"][0]["input"];
+            let result = server.request(
+                "tools/call",
+                &serde_json::json!({
+                    "name": "hook",
+                    "arguments": codex_expand(template, event),
+                    "_meta": {"threadId": thread},
+                }),
+            );
+            serde_json::from_str(result["content"][0]["text"].as_str().expect("hook text"))
+                .expect("hook answer")
+        } else {
+            let mut process = if let CodexTransport::Shell { argv, .. } = transport {
+                // The command hook Codex's manifest declares for every event
+                // that is not delivered over MCP.
+                let key = if cfg!(windows) {
+                    "commandWindows"
+                } else {
+                    "command"
+                };
+                let declared = self.manifest["hooks"]["SessionEnd"][0]["hooks"][0][key]
+                    .as_str()
+                    .expect("command hook")
+                    .replace("SessionEnd", name);
+                let mut shell = command(&argv[0]);
+                shell.args(&argv[1..]).arg(declared);
+                shell
+            } else {
+                let mut process = command(&self.package.native);
+                process.args(["__hook", "codex", name]);
+                process
+            };
+            process
+                .current_dir(self.workspace)
+                .env("PLUGIN_ROOT", &self.package.root);
+            isolated_state(&mut process, self.root);
+            let output = output_with_stdin(
+                &mut process,
+                &serde_json::to_vec(event).expect("hook input"),
+            );
+            assert!(
+                output.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice(&output.stdout).expect("hook answer")
+        };
+        let elapsed = started.elapsed();
+        assert!(
+            !answer.to_string().contains("Acyclic is unavailable"),
+            "{name} over {} failed: {answer}",
+            transport.label()
+        );
+        elapsed
+    }
+
+    /// A root turn's prompt and one Bash call.
+    fn root_tool(
+        &self,
+        transport: &mut CodexTransport,
+        index: usize,
+    ) -> [(&'static str, Duration); 3] {
+        let label = transport.label().to_owned();
+        let turn = format!("{label}-turn-{index}");
+        let bash = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_use_id": format!("{label}-bash-{index}"),
+            "tool_input": {"command": format!("git status --short # {index}")},
+        });
+        let prompt = self.event(
+            "UserPromptSubmit",
+            &turn,
+            &serde_json::json!({"prompt": "go"}),
+        );
+        let prompt = self.deliver(transport, "UserPromptSubmit", Self::SESSION, &prompt);
+        let pre = self.event("PreToolUse", &turn, &bash);
+        let pre = self.deliver(transport, "PreToolUse", Self::SESSION, &pre);
+        let mut post = self.event("PostToolUse", &turn, &bash);
+        post["tool_response"] = Value::String(String::new());
+        let post = self.deliver(transport, "PostToolUse", Self::SESSION, &post);
+        [
+            ("UserPromptSubmit", prompt),
+            ("PreToolUse Bash", pre),
+            ("PostToolUse Bash", post),
+        ]
+    }
+
+    /// A spawned subagent's lifecycle and Bash calls in a later turn of its
+    /// own thread.
+    fn subagent(
+        &self,
+        transport: &mut CodexTransport,
+        spawn: usize,
+        calls: usize,
+    ) -> Vec<(&'static str, Duration)> {
+        let label = transport.label().to_owned();
+        let turn = format!("{label}-spawn-turn-{spawn}");
+        let prompt = self.event(
+            "UserPromptSubmit",
+            &turn,
+            &serde_json::json!({"prompt": "go"}),
+        );
+        self.deliver(transport, "UserPromptSubmit", Self::SESSION, &prompt);
+        let tool = serde_json::json!({
+            "tool_name": "collaborationspawn_agent",
+            "tool_use_id": format!("{label}-spawn-{spawn}"),
+            "tool_input": {"message": "measure"},
+        });
+        let spawned = self.event("PreToolUse", &turn, &tool);
+        self.deliver(transport, "PreToolUse", Self::SESSION, &spawned);
+        let agent = format!("{label}-child-{spawn}");
+        let identity = serde_json::json!({"agent_id": agent, "agent_type": "explorer"});
+        let start = self.event("SubagentStart", &format!("{agent}-turn"), &identity);
+        let mut samples = vec![(
+            "SubagentStart",
+            self.deliver(transport, "SubagentStart", &agent, &start),
+        )];
+        let later = format!("{agent}-later-turn");
+        for call in 0..calls {
+            let mut child_tool = identity.clone();
+            child_tool["tool_name"] = "Bash".into();
+            child_tool["tool_use_id"] = format!("{agent}-bash-{call}").into();
+            child_tool["tool_input"] =
+                serde_json::json!({"command": format!("git status --short # {call}")});
+            let pre = self.event("PreToolUse", &later, &child_tool);
+            samples.push((
+                "PreToolUse Bash, subagent",
+                self.deliver(transport, "PreToolUse", &agent, &pre),
+            ));
+            let mut post = self.event("PostToolUse", &later, &child_tool);
+            post["tool_response"] = Value::String(String::new());
+            samples.push((
+                "PostToolUse Bash, subagent",
+                self.deliver(transport, "PostToolUse", &agent, &post),
+            ));
+        }
+        let mut stop = self.event("SubagentStop", &later, &identity);
+        stop["agent_transcript_path"] = Value::Null;
+        stop["stop_hook_active"] = false.into();
+        stop["last_assistant_message"] = "done".into();
+        samples.push((
+            "SubagentStop",
+            self.deliver(transport, "SubagentStop", &agent, &stop),
+        ));
+        let mut finished = self.event("PostToolUse", &turn, &tool);
+        finished["tool_response"] = serde_json::json!({"agent_id": agent});
+        self.deliver(transport, "PostToolUse", Self::SESSION, &finished);
+        samples
+    }
+
+    /// Starts or ends the session through its command hook.
+    fn boundary(&self, name: &str, fields: &Value) {
+        let mut event = serde_json::json!({
+            "session_id": Self::SESSION,
+            "transcript_path": null,
+            "cwd": self.workspace,
+            "hook_event_name": name,
+        });
+        event
+            .as_object_mut()
+            .expect("event")
+            .extend(fields.as_object().expect("fields").clone());
+        self.deliver(&mut CodexTransport::Process, name, Self::SESSION, &event);
+    }
+}
+
+/// Codex's `mcp_tool` argument expansion for whole-string `${field}`
+/// placeholders.
+fn codex_expand(template: &Value, event: &Value) -> Value {
+    match template {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), codex_expand(value, event)))
+                .collect(),
+        ),
+        Value::String(text) => {
+            text.strip_prefix("${")
+                .and_then(|field| field.strip_suffix('}'))
+                .map_or_else(
+                    || template.clone(),
+                    |field| {
+                        event.get(field).cloned().unwrap_or_else(|| {
+                            panic!("Codex would fail the hook: {field} is missing")
+                        })
+                    },
+                )
+        }
+        _ => template.clone(),
+    }
+}
+
+/// Times every Codex hook over each transport on the running service: the
+/// MCP call the plugin's manifest declares, the bare hook process, and the
+/// command hook through each shell Codex may use (`-NoProfile -Command` for
+/// `PowerShell`, `-c` for a POSIX shell). Transports alternate call by call,
+/// so they share the host's load.
+fn record_codex_transports(
+    package: &PackagedPlugin,
+    root: &Path,
+    pairs: usize,
+    record: &mut impl FnMut(&str, Duration),
+) {
+    const WARMUP: usize = 3;
+    const SPAWNS: usize = 3;
+    const CHILD_CALLS: usize = 5;
+    let workspace = root.join("codex-workspace");
+    fs::create_dir_all(&workspace).expect("Codex workspace");
+    let session = CodexLatencySession {
+        package,
+        root,
+        workspace: &workspace,
+        manifest: serde_json::from_slice(include_bytes!("../hooks/hooks.json"))
+            .expect("hook manifest"),
+    };
+    let mut transports = vec![
+        CodexTransport::Mcp(CodexHookServer::start(package, root)),
+        CodexTransport::Process,
+    ];
+    transports.extend(CodexTransport::shells());
+    session.boundary(
+        "SessionStart",
+        &serde_json::json!({
+            "model": "gpt-5.6-sol", "permission_mode": "bypassPermissions", "source": "startup",
+        }),
+    );
+    for index in 0..WARMUP + pairs.div_ceil(4).max(10) {
+        for transport in &mut transports {
+            let samples = session.root_tool(transport, index);
+            if index >= WARMUP {
+                for (event, elapsed) in samples {
+                    record(&format!("codex {event} ({})", transport.label()), elapsed);
+                }
+            }
+        }
+    }
+    for spawn in 0..SPAWNS {
+        for transport in &mut transports {
+            for (event, elapsed) in session.subagent(transport, spawn, CHILD_CALLS) {
+                record(&format!("codex {event} ({})", transport.label()), elapsed);
+            }
+        }
+    }
+    session.boundary("SessionEnd", &serde_json::json!({"reason": "other"}));
 }
 
 /// Runs one hook for session `session` from `workspace` and returns the

@@ -10,14 +10,20 @@
 //! Observers learn of every recorded position together with the
 //! [`ViewOrigin`] that made the change, so a driver can tell changes it made
 //! itself (which its kernel already applied) from changes made around it.
+//!
+//! Names are keyed by every spelling a host resolves to them: a lookup may
+//! spell a name differently from the change that later invalidates it, as
+//! when a case-insensitive source reports its own spelling of a name a
+//! caller looked up in another case, or another Unicode normalization.
 
 use crate::FileId;
-use crate::kernel::{LogicalName, NamespacePath};
+use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
+use unicode_normalization::UnicodeNormalization as _;
 
 static VIEW_CHANGES: AtomicU64 = AtomicU64::new(0);
 // Only the Linux and macOS drivers attribute their changes.
@@ -124,6 +130,13 @@ impl Drop for ViewOriginScope {
 pub trait ViewObserver: Send + Sync {
     /// One change was recorded at `position` by `origin`.
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
+
+    /// Changes to the source may not all have been reported by `position`,
+    /// though none is known to have been lost (`ViewChange::Unconfirmed`).
+    /// An observer that cannot verify what it keeps treats it as a change.
+    fn view_unconfirmed(&self, position: ViewStamp) {
+        self.view_changed(position, ViewOrigin::current());
+    }
 }
 
 /// The observers of one source of view changes.
@@ -154,6 +167,13 @@ impl ViewObservers {
             observer.view_changed(position, origin);
         }
     }
+
+    /// Tells every observer that changes may be unreported by `position`.
+    pub(super) fn notify_unconfirmed(&self, position: ViewStamp) {
+        for observer in self.live() {
+            observer.view_unconfirmed(position);
+        }
+    }
 }
 
 /// What one checkout mutation changed in the mounted view.
@@ -173,21 +193,31 @@ pub(super) enum ViewChange<'a> {
         moved: FileId,
         replaced: Option<FileId>,
     },
-    /// A prepared candidate replaced the checkout with this exact effect.
-    Installed(&'a Installed),
+    /// An effect enumerated in full: a prepared candidate replaced the
+    /// checkout, or the source reported changes made to it outside the view.
+    Effect(&'a ViewEffect),
     /// An effect set that cannot be enumerated, such as a rebind.
     Everything,
+    /// Changes to the source may not all have been reported yet, though
+    /// none is known to have been lost. Every fact read before is stale to
+    /// [`ViewLedger::unchanged_since`], so it is read again, and kept where
+    /// what is read again matches it: nothing reported changed it
+    /// ([`ViewLedger::reported_unchanged_since`]).
+    Unconfirmed,
 }
 
-/// The exact effect of installing a candidate prepared from a copy of the
-/// checkout, as the generation diff between the two reports it.
+/// One enumerated effect on the view: installing a candidate prepared from
+/// a copy of the checkout, as the generation diff between the two reports
+/// it, or changes the source reported having happened to it.
 #[derive(Default)]
-pub(super) struct Installed {
+pub(super) struct ViewEffect {
     /// Nodes whose record changed.
     pub(super) nodes: Vec<FileId>,
     /// Names bound, unbound, or rebound within a directory at a known path.
     pub(super) names: Vec<(NamespacePath, LogicalName)>,
-    /// Paths beneath which names changed in directories at unknown paths.
+    /// Names rebound together with everything reached through them, as
+    /// when names changed in directories at unknown paths beneath one, or
+    /// the source reported a change to the entry a name binds.
     pub(super) subtrees: Vec<NamespacePath>,
     /// Directories whose listing changed while every name in them still
     /// resolves as it did, as when promotion moves a name's answer from the
@@ -195,6 +225,17 @@ pub(super) struct Installed {
     pub(super) listings: Vec<NamespacePath>,
     /// Whether the effect could not be enumerated at all.
     pub(super) everything: bool,
+}
+
+impl ViewEffect {
+    /// Whether the effect changes nothing.
+    pub(super) fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+            && self.names.is_empty()
+            && self.subtrees.is_empty()
+            && self.listings.is_empty()
+            && !self.everything
+    }
 }
 
 /// Change positions of one checkout's view.
@@ -205,6 +246,7 @@ pub(super) struct Installed {
 pub(super) struct ViewLedger {
     latest: AtomicU64,
     everything: AtomicU64,
+    unconfirmed: AtomicU64,
     bindings: ChangeMap,
     directories: ChangeMap,
     nodes: ChangeMap,
@@ -216,6 +258,7 @@ impl ViewLedger {
         Self {
             latest: AtomicU64::new(0),
             everything: AtomicU64::new(0),
+            unconfirmed: AtomicU64::new(0),
             bindings: ChangeMap::default(),
             directories: ChangeMap::default(),
             nodes: ChangeMap::default(),
@@ -234,7 +277,10 @@ impl ViewLedger {
     }
 
     /// Records one change at one fresh position. Callers hold the exclusive
-    /// view of what changed, so no lookup overlaps the change it records.
+    /// view of what changed, so no lookup overlaps the change it records;
+    /// a change the source reported was made before it is recorded, so a
+    /// lookup that overlaps it read the source either before it, and is
+    /// invalidated here, or after it, and is already current.
     pub(super) fn record(&self, change: &ViewChange<'_>) {
         let position = ViewStamp::next();
         match change {
@@ -257,26 +303,32 @@ impl ViewLedger {
                     self.node_changed(*replaced, position);
                 }
             }
-            ViewChange::Installed(installed) => {
-                for file_id in &installed.nodes {
+            ViewChange::Effect(effect) => {
+                for file_id in &effect.nodes {
                     self.node_changed(*file_id, position);
                 }
-                for (directory, name) in &installed.names {
+                for (directory, name) in &effect.names {
                     let directory = path_key(directory);
                     self.bindings.record(child_key(directory, name), position);
                     self.directories.record(directory, position);
                 }
-                for subtree in &installed.subtrees {
+                for subtree in &effect.subtrees {
                     self.rebound(subtree, position);
                 }
-                for directory in &installed.listings {
+                for directory in &effect.listings {
                     self.directories.record(path_key(directory), position);
                 }
-                if installed.everything {
+                if effect.everything {
                     position.record_in(&self.everything);
                 }
             }
             ViewChange::Everything => position.record_in(&self.everything),
+            ViewChange::Unconfirmed => {
+                position.record_in(&self.unconfirmed);
+                position.record_in(&self.latest);
+                self.observers.notify_unconfirmed(position);
+                return;
+            }
         }
         position.record_in(&self.latest);
         self.observers.notify(position);
@@ -287,6 +339,19 @@ impl ViewLedger {
     /// rebound, `path`'s own listing and attributes are unchanged, and the
     /// node itself is unchanged.
     pub(super) fn unchanged_since(
+        &self,
+        path: &NamespacePath,
+        file_id: Option<FileId>,
+        stamp: ViewStamp,
+    ) -> bool {
+        stamp.precedes_none_of(&self.unconfirmed)
+            && self.reported_unchanged_since(path, file_id, stamp)
+    }
+
+    /// [`Self::unchanged_since`], counting only reported changes: facts read
+    /// after `stamp` and read again since, with the same result, still
+    /// describe the view.
+    pub(super) fn reported_unchanged_since(
         &self,
         path: &NamespacePath,
         file_id: Option<FileId>,
@@ -315,7 +380,8 @@ impl ViewLedger {
     /// listing is keyed by its path, so only [`Self::unchanged_since`] covers
     /// facts that follow from a listing.
     pub(super) fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
-        stamp.precedes_none_of(&self.everything)
+        stamp.precedes_none_of(&self.unconfirmed)
+            && stamp.precedes_none_of(&self.everything)
             && self
                 .nodes
                 .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id)))
@@ -421,8 +487,83 @@ fn path_key(path: &NamespacePath) -> u64 {
     PathKeys::new(path).last().unwrap_or_else(|| key_of(&()))
 }
 
+/// Keys `name` beneath `parent` by its spelling fold: the name's Unicode
+/// text, canonically composed and case-folded, whatever its encoding, or
+/// its bytes when it is not Unicode. Every spelling a case- or
+/// normalization-insensitive host resolves to one entry shares the key, and
+/// distinct names that share it only share positions, which can only
+/// invalidate more.
 fn child_key(parent: u64, name: &LogicalName) -> u64 {
-    key_of(&(parent, name.case_fold_key()))
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u64(parent);
+    hash_spelling_fold(name, &mut hasher);
+    hasher.finish()
+}
+
+fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
+    /// Separates folded text from raw bytes that happen to equal it.
+    const TEXT: u8 = 1;
+    const RAW: u8 = 2;
+    let bytes = name.as_bytes();
+    let text = match name.encoding() {
+        NameEncoding::Utf8 | NameEncoding::PosixBytes => {
+            if bytes.is_ascii() {
+                hasher.write_u8(TEXT);
+                hash_ascii_fold(bytes.iter().copied(), hasher);
+                return;
+            }
+            std::str::from_utf8(bytes)
+                .ok()
+                .map(std::borrow::Cow::Borrowed)
+        }
+        NameEncoding::WindowsUtf16Le => {
+            let units = || {
+                bytes
+                    .chunks_exact(2)
+                    .map(|pair| <[u8; 2]>::try_from(pair).map_or(0, u16::from_le_bytes))
+            };
+            if units().all(|unit| unit < 0x80) {
+                hasher.write_u8(TEXT);
+                hash_ascii_fold(units().map(|unit| unit.to_le_bytes()[0]), hasher);
+                return;
+            }
+            char::decode_utf16(units())
+                .collect::<Result<String, _>>()
+                .ok()
+                .map(std::borrow::Cow::Owned)
+        }
+    };
+    let Some(text) = text else {
+        hasher.write_u8(RAW);
+        hasher.write(bytes);
+        return;
+    };
+    hasher.write_u8(TEXT);
+    let mut encoded = [0_u8; 4];
+    for folded in text
+        .nfc()
+        .flat_map(char::to_uppercase)
+        .flat_map(char::to_lowercase)
+    {
+        hasher.write(folded.encode_utf8(&mut encoded).as_bytes());
+    }
+}
+
+/// Hashes ASCII text lowercased, exactly as the Unicode fold hashes it.
+fn hash_ascii_fold(bytes: impl Iterator<Item = u8>, hasher: &mut DefaultHasher) {
+    let mut buffer = [0_u8; 64];
+    let mut filled = 0;
+    for byte in bytes {
+        if let Some(slot) = buffer.get_mut(filled) {
+            *slot = byte.to_ascii_lowercase();
+            filled += 1;
+        }
+        if filled == buffer.len() {
+            hasher.write(&buffer);
+            filled = 0;
+        }
+    }
+    hasher.write(buffer.get(..filled).unwrap_or_default());
 }
 
 fn key_of(value: &impl Hash) -> u64 {
@@ -471,6 +612,72 @@ mod tests {
         assert!(!ledger.unchanged_since(&path(&["writes"])?, None, stamp));
         ledger.record(&ViewChange::Node(file_id));
         assert!(!ledger.unchanged_since(&watched, Some(file_id), stamp));
+        Ok(())
+    }
+
+    /// A change reported under one spelling of a name reaches a lookup made
+    /// under any other spelling a case- or normalization-insensitive host
+    /// resolves to the same entry, whatever either name's encoding.
+    #[test]
+    fn every_spelling_of_a_name_shares_its_changes() -> Result<(), Box<dyn std::error::Error>> {
+        let limits = VolumeLimits::default();
+        let name = |encoding, text: &str| {
+            let bytes = match encoding {
+                NameEncoding::WindowsUtf16Le => {
+                    text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+                }
+                NameEncoding::Utf8 | NameEncoding::PosixBytes => text.as_bytes().to_vec(),
+            };
+            LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
+        };
+        let directory = name(NameEncoding::Utf8, "src")?;
+        let under = |name| NamespacePath::new(vec![directory.clone(), name], limits);
+        let spellings = [
+            (
+                name(NameEncoding::Utf8, "Readme.MD")?,
+                name(NameEncoding::PosixBytes, "README.md")?,
+            ),
+            (
+                name(NameEncoding::WindowsUtf16Le, "ReadMe.md")?,
+                name(NameEncoding::Utf8, "readme.MD")?,
+            ),
+            // Composed and decomposed forms of one accented name, in
+            // different cases.
+            (
+                name(NameEncoding::PosixBytes, "\u{e9}t\u{e9}")?,
+                name(NameEncoding::WindowsUtf16Le, "E\u{301}TE\u{301}")?,
+            ),
+        ];
+        for (changed, looked_up) in spellings {
+            let ledger = ViewLedger::new();
+            let looked_up = under(looked_up)?;
+            let stamp = ledger.stamp();
+            ledger.record(&ViewChange::Bound(&under(changed)?));
+            assert!(!ledger.unchanged_since(&looked_up, None, stamp));
+        }
+        let ledger = ViewLedger::new();
+        let other = under(name(NameEncoding::Utf8, "readme.txt")?)?;
+        let stamp = ledger.stamp();
+        ledger.record(&ViewChange::Bound(&under(name(
+            NameEncoding::Utf8,
+            "readme.md",
+        )?)?));
+        assert!(
+            ledger.unchanged_since(&other, None, stamp),
+            "distinct names stay distinct"
+        );
+        // Bytes that are not Unicode are keyed as bytes.
+        let raw = |bytes: &[u8]| {
+            LogicalName::new(
+                NameEncoding::PosixBytes,
+                bytes.to_vec(),
+                limits.maximum_component_bytes,
+            )
+        };
+        let looked_up = under(raw(&[0xff, b'a'])?)?;
+        let stamp = ledger.stamp();
+        ledger.record(&ViewChange::Bound(&under(raw(&[0xff, b'A'])?)?));
+        assert!(ledger.unchanged_since(&looked_up, None, stamp));
         Ok(())
     }
 

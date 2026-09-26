@@ -102,6 +102,12 @@ struct fuse_context {
  * stable and the NFS client never needs to COMMIT. */
 #define FUSE_CAP_DURABLE_WRITES  (1 << 20)
 
+/* DarwinFUSE: st_ino names the node, whichever path reaches it: every name
+ * of a hard link reports the same st_ino, and no two nodes share one. The
+ * NFS server then reports it as each object's fileid, so the client sees
+ * hard links as one file; otherwise a fileid names a path. */
+#define FUSE_CAP_NODE_IDENTITY   (1 << 21)
+
 /* DarwinFUSE: whole seconds the NFS client caches attributes and names
  * (actimeo); a change made around the mount reaches it once they expire. */
 #define DARWINFUSE_ATTRIBUTE_TIMEOUT 1

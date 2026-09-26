@@ -308,6 +308,7 @@ int nfs4_test_durable_writes(void);
 int nfs4_test_change_attribute(void);
 int nfs4_test_access_rights(void);
 int nfs4_test_verify_attributes(void);
+int nfs4_test_node_identity(void);
 int nfs4_test_release_open_files(void);
 
 #endif /* DARWINFUSE_NFS4_OPS_H */

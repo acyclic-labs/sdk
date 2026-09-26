@@ -2754,14 +2754,11 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             let host_kind = host_kind(&metadata)?;
             let snapshot = HostSnapshot::from_metadata(&metadata)
                 .map_err(|error| OperationFailure::new(error, receipt.work))?;
-            let link_probe =
-                if host_kind == FileKind::Regular && checkout.volume_config().hard_links {
-                    host_link_count(source_root, &host_path, &snapshot, &metadata)
-                        .map_err(|error| OperationFailure::new(error, receipt.work))?
-                } else {
-                    HostLinkProbe::unlinked()
-                };
-            let linked_regular = link_probe.count > 1;
+            let linked_regular = host_kind == FileKind::Regular
+                && checkout.volume_config().hard_links
+                && host_link_count(&metadata)
+                    .map_err(|error| OperationFailure::new(error, receipt.work))?
+                    > 1;
             if linked_regular {
                 let identity = snapshot.identity.to_bytes();
                 if let Some(source) = host_links.get(&identity) {
@@ -2864,19 +2861,8 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 });
                 None
             } else if host_kind == FileKind::Regular {
-                let file = if let Some(file) = link_probe.file {
-                    file
-                } else {
-                    source_root
-                        .open_file(&host_path)
-                        .map_err(|error| OperationFailure::new(error.into(), receipt.work))?
-                };
-                let opened = file
-                    .metadata()
-                    .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
-                ensure_same_host_node(&snapshot, &opened)
-                    .map_err(|error| OperationFailure::new(error, receipt.work))?;
-                drop(file);
+                // Staging opens the file once and proves it is still the
+                // observed node before reading a byte.
                 Some(PreparedPath::Regular(Box::new(PreparedRegular {
                     path,
                     host_path,
@@ -3149,7 +3135,6 @@ async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         source_root,
         &prepared.host_path,
         &prepared.snapshot,
-        None,
         maximum_extent_spans,
         receipt.work,
         budget,
@@ -3206,7 +3191,6 @@ async fn finish_prepared_regular_batch<A: AsyncAuthorityStore, O: AsyncObjectSto
                 source_root,
                 &host_path,
                 &snapshot,
-                None,
                 maximum_extent_spans,
                 WorkCounters::default(),
                 WorkBudget::UNBOUNDED,
@@ -3348,19 +3332,16 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     source_root: &HostRoot,
     host_path: &Path,
     snapshot: &HostSnapshot,
-    opened_file: Option<cap_std::fs::File>,
     maximum_extent_spans: u32,
     prior_work: WorkCounters,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<StagedRegularBody, OperationFailure<CaptureError>> {
-    let file = if let Some(file) = opened_file {
-        file
-    } else {
-        source_root
-            .open_file(host_path)
-            .map_err(|error| OperationFailure::new(error.into(), prior_work))?
-    };
+    // Read only at offsets: on Windows the handle's I/O then runs in place
+    // on a callback thread instead of reopening the file for every read.
+    let file = source_root
+        .open_file_positional(host_path)
+        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
     let metadata = file
         .metadata()
         .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
@@ -3451,70 +3432,22 @@ impl HostObservation {
     }
 }
 
-struct HostLinkProbe {
-    count: u64,
-    file: Option<cap_std::fs::File>,
-}
-
-impl HostLinkProbe {
-    const fn unlinked() -> Self {
-        Self {
-            count: 1,
-            file: None,
-        }
-    }
-}
-
+/// The link count of the observed node, read by the same query as its
+/// identity, so it describes exactly the observed node.
 #[cfg(unix)]
-fn host_link_count(
-    _source_root: &HostRoot,
-    _host_path: &Path,
-    _snapshot: &HostSnapshot,
-    metadata: &cap_std::fs::Metadata,
-) -> Result<HostLinkProbe, CaptureError> {
+#[allow(clippy::unnecessary_wraps)]
+fn host_link_count(metadata: &cap_std::fs::Metadata) -> Result<u64, CaptureError> {
     use cap_std::fs::MetadataExt;
-    Ok(HostLinkProbe {
-        count: metadata.nlink(),
-        file: None,
-    })
+    Ok(metadata.nlink())
 }
 
+/// The link count of the observed node, read by the same handle query as
+/// its identity, so it describes exactly the observed node.
 #[cfg(windows)]
-#[allow(
-    unsafe_code,
-    reason = "reads FILE_STANDARD_INFO through a held capability-opened file handle"
-)]
-fn host_link_count(
-    source_root: &HostRoot,
-    host_path: &Path,
-    snapshot: &HostSnapshot,
-    _metadata: &cap_std::fs::Metadata,
-) -> Result<HostLinkProbe, CaptureError> {
-    use std::mem::size_of;
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::{
-        FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx,
-    };
-
-    let file = source_root.open_file(host_path)?;
-    ensure_same_host_node(snapshot, &file.metadata()?)?;
-    let mut information = FILE_STANDARD_INFO::default();
-    // SAFETY: file stays open and information is a correctly sized output.
-    unsafe {
-        GetFileInformationByHandleEx(
-            HANDLE(file.as_raw_handle()),
-            FileStandardInfo,
-            (&raw mut information).cast(),
-            u32::try_from(size_of::<FILE_STANDARD_INFO>())
-                .map_err(|_| CaptureError::InvalidOptions)?,
-        )
-        .map_err(|error| CaptureError::Io(std::io::Error::other(error)))?;
-    }
-    Ok(HostLinkProbe {
-        count: u64::from(information.NumberOfLinks),
-        file: Some(file),
-    })
+fn host_link_count(metadata: &cap_std::fs::Metadata) -> Result<u64, CaptureError> {
+    cap_primitives::fs::_WindowsByHandle::number_of_links(metadata)
+        .map(u64::from)
+        .ok_or_else(|| CaptureError::Io(std::io::Error::other("host link count is unavailable")))
 }
 
 impl HostSnapshot {
@@ -3658,18 +3591,23 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, prior_work))?;
     let mut work = WorkCounters::default();
     let mut bytes = 0_u64;
+    // One native file serves every range, reading through a duplicate of
+    // the positional handle; the caller keeps the original for metadata.
+    let native = file
+        .try_clone()
+        .map(cap_std::fs::File::into_std)
+        .and_then(native_positional_file)
+        .map(std::sync::Arc::new)
+        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
     for range in ranges {
         let accumulated = prior_work
             .checked_add(work)
             .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
-        let native = file
-            .try_clone()
-            .map(cap_std::fs::File::into_std)
-            .map_err(|error| OperationFailure::new(error.into(), accumulated))?;
-        let mut bounded = NativeRangeSource(
-            acyclic_native_runtime::AsyncRangeReader::new(native, range.offset, range.length)
-                .map_err(|error| OperationFailure::new(error.into(), accumulated))?,
-        );
+        let mut bounded = NativeRangeSource(acyclic_native_runtime::AsyncRangeReader::new(
+            std::sync::Arc::clone(&native),
+            range.offset,
+            range.length,
+        ));
         let remaining = accumulated
             .remaining(budget)
             .map_err(|error| OperationFailure::new(CaptureError::Work(error), accumulated))?;
@@ -3700,6 +3638,28 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         work,
         bytes,
     })
+}
+
+/// The native file a handle from [`HostRoot::open_file_positional`] reads
+/// through.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn native_positional_file(
+    file: std::fs::File,
+) -> std::io::Result<acyclic_native_runtime::NativeFile> {
+    // SAFETY: a positional handle is opened overlapped; this fresh file
+    // object is attached to no port, and this sole duplicate carries all of
+    // its I/O.
+    unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file) }
+}
+
+/// The native file a handle from [`HostRoot::open_file_positional`] reads
+/// through.
+#[cfg(not(windows))]
+fn native_positional_file(
+    file: std::fs::File,
+) -> std::io::Result<acyclic_native_runtime::NativeFile> {
+    acyclic_native_runtime::NativeFile::from_file(file)
 }
 
 struct NativeRangeSource(acyclic_native_runtime::AsyncRangeReader);
