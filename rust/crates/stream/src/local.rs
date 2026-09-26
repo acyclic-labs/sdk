@@ -612,41 +612,25 @@ impl Journal {
         file.seek(SeekFrom::Start(valid_length))?;
         while valid_length < total_length {
             let frame_start = valid_length;
-            let remaining = total_length.saturating_sub(frame_start);
-            if remaining < 4 {
-                truncate_torn_tail(&mut file, frame_start, limits.durability)?;
-                valid_length = frame_start;
-                break;
-            }
-            let mut length_bytes = [0_u8; 4];
-            file.read_exact(&mut length_bytes)?;
-            let command_length = u64::from(u32::from_le_bytes(length_bytes));
-            let frame_length = 4_u64
-                .checked_add(command_length)
-                .and_then(|value| value.checked_add(u64::try_from(FRAME_CHECKSUM_BYTES).ok()?))
-                .ok_or(LocalStreamError::Corrupt)?;
-            if remaining < frame_length {
-                truncate_torn_tail(&mut file, frame_start, limits.durability)?;
-                valid_length = frame_start;
-                break;
-            }
-            if command_length == 0
-                || command_length
-                    > u64::try_from(MAX_COMMAND_BYTES)
-                        .map_err(|_| LocalStreamError::InvalidLimits)?
-            {
-                return Err(LocalStreamError::Corrupt);
-            }
-            let command_length =
-                usize::try_from(command_length).map_err(|_| LocalStreamError::Corrupt)?;
-            let mut encoded = vec![0_u8; command_length];
-            file.read_exact(&mut encoded)?;
-            let mut checksum = [0_u8; FRAME_CHECKSUM_BYTES];
-            file.read_exact(&mut checksum)?;
-            if frame_checksum(&length_bytes, &encoded) != checksum {
-                return Err(LocalStreamError::Corrupt);
-            }
-            let command = decode_command(&encoded).map_err(|_| LocalStreamError::Corrupt)?;
+            let Some(frame) = read_frame(&mut file, total_length - frame_start)? else {
+                // An invalid frame is a torn append exactly when nothing valid
+                // follows it; power loss can leave one zero-filled or garbage.
+                match acyclic_native_runtime::recover_log_tail(
+                    &mut file,
+                    frame_start,
+                    maximum_frame_bytes(),
+                    native_durability(limits.durability),
+                    frame_is_valid,
+                )? {
+                    acyclic_native_runtime::LogTail::Torn => break,
+                    acyclic_native_runtime::LogTail::Corrupt => {
+                        return Err(LocalStreamError::Corrupt);
+                    }
+                }
+            };
+            // An intact frame was written whole, so one that does not decode
+            // may be a committed command: fail closed.
+            let command = decode_command(&frame.command).map_err(|_| LocalStreamError::Corrupt)?;
             operations = operations.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
             if operations > limits.journal_operations {
                 return Err(LocalStreamError::Corrupt);
@@ -655,7 +639,7 @@ impl Journal {
                 .blocking_send(command)
                 .map_err(|_| LocalStreamError::Executor)?;
             valid_length = valid_length
-                .checked_add(frame_length)
+                .checked_add(frame_bytes(&frame.length))
                 .ok_or(LocalStreamError::Corrupt)?;
         }
         if valid_length > limits.journal_bytes {
@@ -692,15 +676,69 @@ impl Journal {
     }
 }
 
-fn truncate_torn_tail(
-    file: &mut File,
-    valid_length: u64,
-    durability: LocalDurability,
-) -> Result<(), LocalStreamError> {
-    file.set_len(valid_length)?;
-    sync_file(file, durability)?;
-    file.seek(SeekFrom::Start(valid_length))?;
-    Ok(())
+/// The largest frame the journal holds: length prefix, command and checksum.
+fn maximum_frame_bytes() -> usize {
+    4 + MAX_COMMAND_BYTES + FRAME_CHECKSUM_BYTES
+}
+
+/// The bytes of the frame whose length prefix is `length_bytes`.
+fn frame_bytes(length_bytes: &[u8; 4]) -> u64 {
+    4 + u64::from(u32::from_le_bytes(*length_bytes)) + FRAME_CHECKSUM_BYTES as u64
+}
+
+/// The command length a frame's prefix declares, if the journal can hold it.
+fn command_length(length_bytes: [u8; 4]) -> Option<usize> {
+    usize::try_from(u32::from_le_bytes(length_bytes))
+        .ok()
+        .filter(|length| (1..=MAX_COMMAND_BYTES).contains(length))
+}
+
+/// One whole journal frame whose checksum matched.
+struct JournalFrame {
+    length: [u8; 4],
+    command: Vec<u8>,
+}
+
+/// Reads the frame at the file's cursor, `remaining` bytes before its end,
+/// or `None` when it is invalid.
+fn read_frame(file: &mut File, remaining: u64) -> Result<Option<JournalFrame>, LocalStreamError> {
+    let mut length_bytes = [0_u8; 4];
+    if remaining < 4 {
+        return Ok(None);
+    }
+    file.read_exact(&mut length_bytes)?;
+    let Some(length) = command_length(length_bytes) else {
+        return Ok(None);
+    };
+    if remaining < frame_bytes(&length_bytes) {
+        return Ok(None);
+    }
+    let mut encoded = vec![0_u8; length];
+    file.read_exact(&mut encoded)?;
+    let mut checksum = [0_u8; FRAME_CHECKSUM_BYTES];
+    file.read_exact(&mut checksum)?;
+    Ok(
+        (frame_checksum(&length_bytes, &encoded) == checksum).then_some(JournalFrame {
+            length: length_bytes,
+            command: encoded,
+        }),
+    )
+}
+
+/// Whether a whole frame with a matching checksum starts `bytes`.
+fn frame_is_valid(bytes: &[u8]) -> bool {
+    let Some(length_bytes) = bytes.first_chunk::<4>() else {
+        return false;
+    };
+    let Some(length) = command_length(*length_bytes) else {
+        return false;
+    };
+    let Some(encoded) = bytes.get(4..4 + length) else {
+        return false;
+    };
+    bytes
+        .get(4 + length..4 + length + FRAME_CHECKSUM_BYTES)
+        .is_some_and(|checksum| checksum == frame_checksum(length_bytes, encoded))
 }
 
 fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
@@ -1329,32 +1367,97 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn complete_frame_corruption_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    /// Appends one record to `path` and returns the journal's length after.
+    async fn append_one(
+        provider: &LocalStream,
+        path: &str,
+        journal: &Path,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
         provider
             .append(AppendRequest {
-                path: StreamPath::new("authenticated")?,
+                path: StreamPath::new(path)?,
                 records: vec![Bytes::from_static(b"body")],
                 if_tail: Some(0),
                 idempotency_key: None,
             })
             .await?;
+        Ok(std::fs::metadata(journal)?.len())
+    }
+
+    /// The tail of `path` in the journal reopened, if the path exists.
+    async fn tail_of(
+        directory: &Path,
+        path: &str,
+    ) -> Result<Option<u64>, Box<dyn std::error::Error>> {
+        let provider = LocalStream::open(directory, LocalStreamLimits::default()).await?;
+        Ok(provider.tail(StreamPath::new(path)?).await.ok())
+    }
+
+    /// A damaged frame with an intact one after it was committed, so the
+    /// journal fails closed and is left as it was.
+    #[tokio::test]
+    async fn a_damaged_frame_before_an_intact_one_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let journal = directory.path().join("stream.journal");
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        append_one(&provider, "first", &journal).await?;
+        append_one(&provider, "second", &journal).await?;
         drop(provider);
 
-        let journal = directory.path().join("stream.journal");
-        let mut file = OpenOptions::new().read(true).write(true).open(journal)?;
+        let mut file = OpenOptions::new().read(true).write(true).open(&journal)?;
         let body_offset = u64::try_from(HEADER_BYTES + 5).map_err(std::io::Error::other)?;
         file.seek(SeekFrom::Start(body_offset))?;
         file.write_all(&[0xff])?;
         file.sync_all()?;
         drop(file);
+        let damaged = std::fs::read(&journal)?;
 
         assert!(matches!(
             LocalStream::open(directory.path(), LocalStreamLimits::default()).await,
             Err(LocalStreamError::Corrupt)
         ));
+        assert_eq!(
+            std::fs::read(&journal)?,
+            damaged,
+            "recovery left it untouched"
+        );
+        Ok(())
+    }
+
+    /// Power loss can leave the last append whole in length but zero-filled
+    /// or garbage; nothing valid follows it, so it is a torn tail and the
+    /// journal reopens with every frame before it.
+    #[tokio::test]
+    async fn a_zero_filled_or_garbage_last_frame_is_a_torn_tail()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for fill in [0x00_u8, 0x5a] {
+            let directory = tempfile::tempdir()?;
+            let journal = directory.path().join("stream.journal");
+            let provider =
+                LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+            let kept = append_one(&provider, "kept", &journal).await?;
+            let torn = append_one(&provider, "torn", &journal).await?;
+            drop(provider);
+
+            let mut file = OpenOptions::new().read(true).write(true).open(&journal)?;
+            file.seek(SeekFrom::Start(kept))?;
+            file.write_all(&vec![fill; usize::try_from(torn - kept)?])?;
+            file.sync_all()?;
+            drop(file);
+
+            assert_eq!(
+                tail_of(directory.path(), "kept").await?,
+                Some(1),
+                "{fill:#x}"
+            );
+            assert_eq!(
+                tail_of(directory.path(), "torn").await?.unwrap_or(0),
+                0,
+                "{fill:#x}"
+            );
+            assert_eq!(std::fs::metadata(&journal)?.len(), kept, "{fill:#x}");
+        }
         Ok(())
     }
 }
