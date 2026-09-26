@@ -679,8 +679,10 @@ pub mod native {
         next_cursor: AtomicU64,
         requests: Arc<Semaphore>,
         observer: Option<Arc<dyn DemandDirectoryObserver>>,
-        /// Live change watches, which inotify admits directory by directory.
-        #[cfg(target_os = "linux")]
+        /// Live change watches: on Linux, inotify admits directories to them
+        /// one by one; on Windows, each holds the root open (see
+        /// [`Self::root_named_while_watched`]).
+        #[cfg(any(target_os = "linux", windows))]
         watches: std::sync::RwLock<Vec<std::sync::Weak<crate::source_watch::NativeSourceWatch>>>,
     }
 
@@ -873,7 +875,7 @@ pub mod native {
                     next_cursor: AtomicU64::new(0),
                     requests: Arc::new(Semaphore::new(MAXIMUM_NATIVE_REQUESTS)),
                     observer,
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", windows))]
                     watches: std::sync::RwLock::new(Vec::new()),
                 }),
                 #[cfg(test)]
@@ -1009,6 +1011,9 @@ pub mod native {
             if cancellation.is_cancelled() {
                 return Err(DemandError::Cancelled);
             }
+            if self.root_named_while_watched() {
+                return Ok(());
+            }
             // The held root answers for the source only while its path still
             // names it. Comparing identities never reopens the root.
             if crate::NativeRootIdentity::of_root_path(&self.inner.path).ok()
@@ -1017,6 +1022,27 @@ pub mod native {
                 return Err(DemandError::SourceUnavailable);
             }
             Ok(())
+        }
+
+        /// Whether a live watch proves the root's path still names the held
+        /// root. A Windows watch holds the root open without sharing its
+        /// deletion, so while it lives neither the root nor any ancestor can
+        /// be renamed or removed.
+        #[cfg(windows)]
+        fn root_named_while_watched(&self) -> bool {
+            self.inner
+                .watches
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|watch| watch.strong_count() != 0)
+        }
+
+        /// Watches elsewhere report a moved root rather than prevent it.
+        #[cfg(not(windows))]
+        #[allow(clippy::unused_self)]
+        const fn root_named_while_watched(&self) -> bool {
+            false
         }
 
         fn relative(&self, path: &NamespacePath) -> Result<PathBuf, DemandError> {
@@ -1472,7 +1498,7 @@ pub mod native {
                 &self.inner.root,
                 changes,
             )?);
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             {
                 let mut watches = self
                     .inner
