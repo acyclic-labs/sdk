@@ -426,7 +426,7 @@ impl Persistence {
         loop {
             let frame = match next_frame(&mut source)? {
                 FrameRead::End => break,
-                FrameRead::Torn => return Err(LocalObjectsError::Corrupt),
+                FrameRead::Invalid => return Err(LocalObjectsError::Corrupt),
                 FrameRead::Complete(frame) => frame,
             };
             let bodies_start = position
@@ -1634,10 +1634,10 @@ fn decode_replay(
         inline_bytes: 0,
     };
     let mut reader = std::io::BufReader::with_capacity(JOURNAL_BUFFER_BYTES, &*journal);
-    let torn = loop {
+    let invalid = loop {
         let frame = match next_frame(&mut reader)? {
             FrameRead::End => break false,
-            FrameRead::Torn => break true,
+            FrameRead::Invalid => break true,
             FrameRead::Complete(frame) => frame,
         };
         let bodies_start = replayed
@@ -1686,9 +1686,18 @@ fn decode_replay(
             .map_err(|_| LocalObjectsError::Unavailable)?;
     };
     drop(reader);
-    if torn {
-        journal.set_len(replayed.bytes)?;
-        sync_file_data(journal, limits.durability)?;
+    // An invalid frame is a torn append exactly when nothing valid follows
+    // it; power loss can leave one zero-filled or garbage.
+    if invalid
+        && acyclic_native_runtime::recover_log_tail(
+            journal,
+            replayed.bytes,
+            MAXIMUM_FRAME_BYTES,
+            native_durability(limits.durability),
+            frame_is_valid,
+        )? == acyclic_native_runtime::LogTail::Corrupt
+    {
+        return Err(LocalObjectsError::Corrupt);
     }
     journal.seek(SeekFrom::End(0))?;
     Ok(replayed)
@@ -2205,8 +2214,9 @@ impl Frame {
 
 enum FrameRead {
     Complete(Frame),
-    /// The journal ends inside this frame: a crash tore its append.
-    Torn,
+    /// The frame is short, declares impossible lengths, or fails its
+    /// checksum: a torn append if nothing valid follows it.
+    Invalid,
     End,
 }
 
@@ -2219,28 +2229,52 @@ fn next_frame(reader: &mut impl Read) -> Result<FrameRead, LocalObjectsError> {
     if !read_exact_or_torn(reader, &mut lengths[1..])?
         || !read_exact_or_torn(reader, &mut checksum)?
     {
-        return Ok(FrameRead::Torn);
+        return Ok(FrameRead::Invalid);
     }
-    let [r0, r1, r2, r3, b0, b1, b2, b3] = lengths;
-    let record_length = usize::try_from(u32::from_le_bytes([r0, r1, r2, r3]))
-        .map_err(|_| LocalObjectsError::Corrupt)?;
-    let body_length = usize::try_from(u32::from_le_bytes([b0, b1, b2, b3]))
-        .map_err(|_| LocalObjectsError::Corrupt)?;
-    if record_length == 0
-        || record_length > MAXIMUM_RECORD_BYTES
-        || body_length > MAXIMUM_FRAME_BODY_BYTES
-    {
-        return Err(LocalObjectsError::Corrupt);
-    }
+    let Some((record_length, body_length)) = frame_lengths(lengths) else {
+        return Ok(FrameRead::Invalid);
+    };
     let mut record = vec![0; record_length];
     let mut bodies = vec![0; body_length];
     if !read_exact_or_torn(reader, &mut record)? || !read_exact_or_torn(reader, &mut bodies)? {
-        return Ok(FrameRead::Torn);
+        return Ok(FrameRead::Invalid);
     }
     if frame_checksum(&lengths, &record, &[&bodies]) != checksum {
-        return Err(LocalObjectsError::Corrupt);
+        return Ok(FrameRead::Invalid);
     }
     Ok(FrameRead::Complete(Frame { record, bodies }))
+}
+
+/// The record and body lengths a frame's prefix declares, if a frame can hold them.
+fn frame_lengths(lengths: [u8; 8]) -> Option<(usize, usize)> {
+    let [r0, r1, r2, r3, b0, b1, b2, b3] = lengths;
+    let record = usize::try_from(u32::from_le_bytes([r0, r1, r2, r3])).ok()?;
+    let bodies = usize::try_from(u32::from_le_bytes([b0, b1, b2, b3])).ok()?;
+    ((1..=MAXIMUM_RECORD_BYTES).contains(&record) && bodies <= MAXIMUM_FRAME_BODY_BYTES)
+        .then_some((record, bodies))
+}
+
+/// The largest frame the journal holds.
+const MAXIMUM_FRAME_BYTES: usize = 8 + 32 + MAXIMUM_RECORD_BYTES + MAXIMUM_FRAME_BODY_BYTES;
+
+/// Whether a whole frame with a matching checksum starts `bytes`.
+fn frame_is_valid(bytes: &[u8]) -> bool {
+    let Some(lengths) = bytes.first_chunk::<8>() else {
+        return false;
+    };
+    let Some((record_length, body_length)) = frame_lengths(*lengths) else {
+        return false;
+    };
+    let record_start = 8 + 32;
+    let bodies_start = record_start + record_length;
+    let (Some(checksum), Some(record), Some(bodies)) = (
+        bytes.get(8..record_start),
+        bytes.get(record_start..bodies_start),
+        bytes.get(bodies_start..bodies_start + body_length),
+    ) else {
+        return false;
+    };
+    frame_checksum(lengths, record, &[bodies]) == checksum
 }
 
 fn read_exact_or_torn(reader: &mut impl Read, bytes: &mut [u8]) -> std::io::Result<bool> {
@@ -5114,10 +5148,98 @@ mod tests {
             Err(ObjectsError::Unavailable)
         );
         drop(provider);
+        // The damaged frame is the journal's last, which power loss can leave
+        // the same way, so reopening drops it as a torn append.
+        assert!(LocalObjects::open(root.path(), limits).await.is_ok());
+        assert_eq!(
+            fs::metadata(&journal_path)
+                .unwrap_or_else(|_| unreachable!())
+                .len(),
+            journal_frames(&journal)
+                .last()
+                .map_or(0, |(start, _, _)| *start as u64),
+        );
+    }
+
+    /// A damaged frame with an intact one after it was committed: the journal
+    /// fails closed and is left as it was.
+    #[tokio::test]
+    async fn a_damaged_frame_before_an_intact_one_fails_closed() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        let provider = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let bucket = provider
+            .create_bucket("damaged".into(), None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
+        for key in ["first", "second"] {
+            provider
+                .put(small_put(&bucket, key, b"body"))
+                .await
+                .unwrap_or_else(|_| unreachable!());
+        }
+        drop(provider);
+        let journal_path = root.path().join(JOURNAL_FILE);
+        let mut journal = fs::read(&journal_path).unwrap_or_else(|_| unreachable!());
+        let frames = journal_frames(&journal);
+        let damaged = frames
+            .get(frames.len().saturating_sub(2))
+            .map_or_else(|| unreachable!(), |(start, _, _)| start + 8);
+        if let Some(byte) = journal.get_mut(damaged) {
+            *byte ^= 1;
+        }
+        fs::write(&journal_path, &journal).unwrap_or_else(|_| unreachable!());
         assert!(matches!(
             LocalObjects::open(root.path(), limits).await,
             Err(LocalObjectsError::Corrupt)
         ));
+        assert_eq!(
+            fs::read(&journal_path).unwrap_or_else(|_| unreachable!()),
+            journal
+        );
+    }
+
+    /// Power loss can leave the last append full-length but zero-filled;
+    /// nothing valid follows it, so reopening drops it as a torn append.
+    #[tokio::test]
+    async fn a_zero_filled_last_frame_is_a_torn_tail() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        let limits = LocalObjectsLimits::default();
+        let provider = LocalObjects::open(root.path(), limits)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let bucket = provider
+            .create_bucket("zeroed".into(), None)
+            .await
+            .unwrap_or_else(|_| unreachable!())
+            .bucket
+            .unwrap_or_else(|| unreachable!());
+        provider
+            .put(small_put(&bucket, "zeroed", b"body"))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        drop(provider);
+        let journal_path = root.path().join(JOURNAL_FILE);
+        let mut journal = fs::read(&journal_path).unwrap_or_else(|_| unreachable!());
+        let start = journal_frames(&journal)
+            .last()
+            .map_or_else(|| unreachable!(), |(start, _, _)| *start);
+        journal
+            .get_mut(start..)
+            .unwrap_or_else(|| unreachable!())
+            .fill(0);
+        fs::write(&journal_path, &journal).unwrap_or_else(|_| unreachable!());
+        assert!(LocalObjects::open(root.path(), limits).await.is_ok());
+        assert_eq!(
+            fs::metadata(&journal_path)
+                .unwrap_or_else(|_| unreachable!())
+                .len(),
+            start as u64
+        );
     }
 
     #[tokio::test]
