@@ -227,6 +227,53 @@ test("local conversation retains exact tool call and full result artifact", asyn
   host.free();
 });
 
+test("partial tool-history publication is idempotent across a transient retry", async () => {
+  const host = await MemoryConversation.create({ agent, wasm });
+  const tool = defineTool<number, string>({ name: "echo_retry", revision: "1", description: "echo",
+    inputSchema: {}, outputSchema: {},
+    parseInput(value) { if (typeof value !== "number") throw new TypeError("expected number"); return value; },
+    parseOutput(value) { if (typeof value !== "string") throw new TypeError("expected string"); return value; },
+  }, async (_, value) => `value:${value}`);
+  let step = 0;
+  const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:echo_retry").model(testModel, {
+    async *generate() {
+      if (step++ === 0) {
+        yield { kind: "tool_call" as const, callId: "retry-call-1", name: "echo_retry", arguments: 1 };
+        yield { kind: "tool_call" as const, callId: "retry-call-2", name: "echo_retry", arguments: 2 };
+        yield { kind: "completed" as const, metadata: {} };
+      } else {
+        yield { kind: "content" as const, delta: "published" };
+        yield { kind: "completed" as const, metadata: {} };
+      }
+    },
+    async reconcile() { return undefined; },
+  }).build();
+  const operation = "14141414-1414-1414-1414-141414141414" as OperationId;
+  const content = await host.stage("turns/retry/user.txt", new TextEncoder().encode("start"), "text/plain", "user.txt");
+  const originalStage = host.stage.bind(host);
+  let failPublication = true;
+  host.stage = async (path, bytes, mediaType, displayName) => {
+    if (failPublication && path.includes("/tools/2-call.json")) {
+      failPublication = false;
+      throw new Error("injected publication failure");
+    }
+    return originalStage(path, bytes, mediaType, displayName);
+  };
+
+  await expect(host.runConversation(runtime, operation, content)).rejects.toThrow("injected publication failure");
+  expect(host.conversation().messages.map(message => message.kind)).toEqual([
+    "user", "tool_call", "tool_result",
+  ]);
+  const recovered = await host.runConversation(runtime, operation, content);
+  expect(recovered.text).toBe("published");
+  expect(host.conversation().messages.map(message => message.kind)).toEqual([
+    "user", "tool_call", "tool_result", "tool_call", "tool_result", "assistant",
+  ]);
+  expect(new Set(host.conversation().messages.map(message => message.id)).size)
+    .toBe(host.conversation().messages.length);
+  host.free();
+});
+
 test("large canonical attachment lists produce a bounded model request", async () => {
   const host = await MemoryConversation.create({ agent, wasm });
   let projectedParts = 0;
@@ -385,6 +432,50 @@ test("authoritative failed and cancelled turns close without claiming an unknown
     expect(dispatches).toBe(2);
     conversation.free();
   }
+});
+
+test("terminal outcomes publish under tight but valid file and path limits", async () => {
+  const conversation = await MemoryConversation.create({ agent, wasm });
+  let dispatches = 0;
+  const host: HarnessRuntimeHost = {
+    policyIdentity: () => null,
+    async executeSelectedTurn(operationId) {
+      dispatches++;
+      return { kind: "failed", error: { message: "provider rejected" } };
+    },
+    async attach() { throw new Error("unused"); },
+    async reconcileEffect() { return { state: "indeterminate" }; },
+    async send(message) { return { accepted: true, messageId: message.id }; },
+    async *inbox() { yield* []; },
+  };
+  const runtime = Harness.builder(contracts).limits({ file_bytes: 1, path_bytes: 1, render_bytes: 1 })
+    .host(host).build();
+  const operation = "12121212-1212-1212-1212-121212121212" as OperationId;
+  const content = await conversation.stage("u", new TextEncoder().encode("q"), "text/plain", "u");
+  await expect(conversation.runConversation(runtime, operation, content))
+    .rejects.toBeInstanceOf(TerminalModelTurnError);
+  const terminal = conversation.conversation().messages[1]!;
+  expect(terminal.kind).toBe("system");
+  expect(new TextDecoder().decode(await conversation.read(terminal.content))).toBe("f");
+  expect(terminal.content.descriptor.byte_length).toBe(1);
+  expect(terminal.content.path).toBe("u");
+
+  // Reusing the fallback path creates a new immutable user version, then
+  // returns to the already-resident terminal marker version. Both refs must
+  // remain readable and independently recorded.
+  const nextContent = await conversation.stage("u", new TextEncoder().encode("n"), "text/plain", "u");
+  await expect(conversation.runConversation(runtime,
+    "13131313-1313-1313-1313-131313131313" as OperationId, nextContent))
+    .rejects.toBeInstanceOf(TerminalModelTurnError);
+  expect(dispatches).toBe(2);
+  const messages = conversation.conversation().messages;
+  expect(messages.map(message => message.kind)).toEqual([
+    "user", "system", "user", "system",
+  ]);
+  expect(messages[3]!.content.path).toBe("u");
+  expect(messages[3]!.content.version).toBe(messages[1]!.content.version);
+  expect(new TextDecoder().decode(await conversation.read(messages[3]!.content))).toBe("f");
+  conversation.free();
 });
 
 test("different local turns serialize and inherit the prior committed assistant", async () => {

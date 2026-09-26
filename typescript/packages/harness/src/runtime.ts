@@ -570,21 +570,24 @@ export class Task<Output> {
     return this.#terminalEvent;
   }
   events(fromSequence = 0): AsyncIterable<TaskEvent<Output>> {
+    if (!Number.isSafeInteger(fromSequence) || fromSequence < 0) {
+      throw new RangeError("task event cursor must be a nonnegative safe integer");
+    }
     if (!this.#driver) return this.#events.from(fromSequence);
     return this.#hostEvents(fromSequence);
   }
   async *#hostEvents(fromSequence: number): AsyncIterable<TaskEvent<Output>> {
     let streamedTerminal: TaskEvent<Output> | undefined;
-    let lastSequence = fromSequence - 1;
+    let nextSequence = fromSequence;
     let invalidEvent = false;
     try {
       for await (const event of this.#driver!.events(fromSequence)) {
         if (event.taskId !== this.taskId || !Number.isSafeInteger(event.sequence)
-          || event.sequence <= lastSequence || streamedTerminal) {
+          || event.sequence !== nextSequence || streamedTerminal) {
           invalidEvent = true;
-          throw new Error("durable host returned an invalid task event");
+          throw new Error("durable host returned a missing or invalid task event");
         }
-        lastSequence = event.sequence;
+        nextSequence++;
         if (event.event.kind === "settled") streamedTerminal = event;
         yield event;
       }
@@ -600,8 +603,14 @@ export class Task<Output> {
     if (streamedTerminal && (streamedTerminal.id !== terminal.id || streamedTerminal.sequence !== terminal.sequence)) {
       throw new Error("durable host task stream disagrees with its terminal event");
     }
-    if (!streamedTerminal && lastSequence >= fromSequence && terminal.sequence <= lastSequence) {
-      throw new Error("durable host returned an out-of-order terminal event");
+    if (!streamedTerminal && terminal.sequence < fromSequence) {
+      if (nextSequence !== fromSequence) {
+        throw new Error("durable host returned a terminal event before its streamed events");
+      }
+      return;
+    }
+    if (!streamedTerminal && terminal.sequence !== nextSequence) {
+      throw new Error("durable host omitted task events before its terminal event");
     }
     if (!streamedTerminal && terminal.sequence >= fromSequence) {
       yield terminal;
@@ -651,15 +660,17 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
         // Validate and canonicalize every member before consulting the owner
         // manifest. Invalid input must be rejected locally and must never be
         // turned into an unsupported-provider result (or partially admitted).
-        const requestWithoutRetention = await this.#batchRequest(definition, batch);
+        this.#validateBatchInputs(definition, batch);
         if (!this.#harness.spawner?.loadBatch) {
           throw new Error("durable batch requires an owner-retained manifest provider");
         }
         const retainedValue = await this.#harness.spawner.loadBatch(batch.id, this.#harness);
         this.#harness.assertPolicyIdentity();
         const retained = retainedValue === null ? null : this.#harness.contracts.validate("durable_batch_request", retainedValue);
-        request = retained === null ? requestWithoutRetention
-          : await this.#batchRequest(definition, batch, retained.execution);
+        // A retained batch already has an immutable execution placement. Load
+        // it before qualification so replay still works if the provider is
+        // unavailable or now returns a different placement.
+        request = await this.#batchRequest(definition, batch, retained?.execution);
         if (retained && !this.#harness.contracts.canonicalEqual(retained, request.canonical)) {
           throw new Error("batch identity belongs to another admission request");
         }
@@ -923,6 +934,20 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     }
     this.#pinBatchDigest(batch.id, request.inputDigest);
     return request;
+  }
+  #validateBatchInputs<Input>(definition: TaskDefinition<Input, Output>, batch: Batch<Input>): void {
+    if (definition.implementation.kind !== "resumable" || !definition.options.input
+      || !definition.options.implementationDigest) throw new BatchInputError("durable batch needs a pinned resumable task");
+    if (batch.inputs.length > 65_536) throw new BatchInputError("batch has too many inputs");
+    try {
+      const contracts = this.#harness.contracts;
+      for (const input of batch.inputs) {
+        const admitted = definition.options.input.parse(contracts.validateToolValue(definition.options.input.document, input));
+        contracts.validateToolValue(definition.options.input.document, admitted);
+      }
+    } catch (error) {
+      throw new BatchInputError(error instanceof Error ? error.message : String(error));
+    }
   }
   #pinBatchDigest(batchId: BatchId, digest: readonly number[] | Uint8Array): void {
     const hex = Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");

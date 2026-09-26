@@ -449,17 +449,24 @@ export class MemoryConversation {
     const noticeId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "terminal-notice"));
     const state = this.conversation();
     if (state.messages.some(message => message.id === noticeId)) return;
-    const content = await this.stage(`turns/${operationId}/terminal.txt`, encoder.encode(
-      `The preceding model attempt ${outcome}. No assistant answer was published.`), "text/plain", "terminal.txt");
-    const result = await this.stage(`turns/${operationId}/terminal.json`, this.#core.canonicalJsonBytes({
-      state: outcome, operation_id: operationId,
-    }), "application/json", "terminal.json");
-    this.#core.validateFileUnderLimits(content, limits);
-    this.#core.validateFileUnderLimits(result, limits);
+    const user = state.messages.find(message => message.id === userId && message.kind === "user");
+    if (user === undefined) throw new TypeError("terminal turn has no admitted user message");
+    // Terminalization must remain possible under every valid narrowed limit,
+    // including file_bytes/path_bytes == 1. The marker is control-plane data:
+    // its one-byte body and display name retain the outcome while its path
+    // falls back to the admitted user path when no short path is available.
+    const marker = encoder.encode(outcome === "failed" ? "f" : "c");
+    const preferredPath = `turns/${operationId}/terminal`;
+    const path = encoder.encode(preferredPath).byteLength <= limits.path_bytes
+      && ![...this.#paths.keys()].some(existing => existing !== preferredPath
+        && (existing.startsWith(`${preferredPath}/`) || preferredPath.startsWith(`${existing}/`)))
+      ? preferredPath : user.content.path;
+    const terminal = await this.stage(path, marker, "text/plain", `${outcome}.txt`);
+    this.#core.validateFileUnderLimits(terminal, limits);
     this.#append(this.#core.deriveOperationId(operationId, "terminal-event"), "terminal", {
-      id: noticeId, sequence: BigInt(state.messages.length + 1), kind: "system", content,
+      id: noticeId, sequence: BigInt(state.messages.length + 1), kind: "system", content: terminal,
       attachments: { kind: "inline", items: [] }, reply_to: userId, tool_call_id: null,
-      extensions: { "acyclic.turn.outcome": result },
+      extensions: { "acyclic.turn.outcome": terminal },
     }, limits);
   }
 
@@ -617,13 +624,13 @@ export class MemoryConversation {
         this.#core.canonicalJsonBytes(receipt.projection), "application/json", "projection.json");
       for (const file of [call, result, projection]) this.#core.validateFileUnderLimits(file, limits);
       let state = this.conversation();
-      this.#append(this.#core.deriveOperationId(operation, `tool-call-event:${index}`), "tool-call", {
+      this.#appendIfAbsent(this.#core.deriveOperationId(operation, `tool-call-event:${index}`), "tool-call", {
         id: callId, sequence: BigInt(state.messages.length + 1), kind: "tool_call", content: call,
         attachments: { kind: "inline", items: [] }, reply_to: userId,
         tool_call_id: receipt.callId, extensions: {},
       }, limits);
       state = this.conversation();
-      this.#append(this.#core.deriveOperationId(operation, `tool-result-event:${index}`), "tool-result", {
+      this.#appendIfAbsent(this.#core.deriveOperationId(operation, `tool-result-event:${index}`), "tool-result", {
         id: resultId, sequence: BigInt(state.messages.length + 1), kind: "tool_result", content: result,
         attachments: { kind: "inline", items: [{ file: projection, label: "model_projection" }] },
         reply_to: callId, tool_call_id: receipt.callId, extensions: {},
@@ -634,6 +641,20 @@ export class MemoryConversation {
   #append(operation: OperationId, label: string, message: ConversationMessage, limits: Limits): void {
     const admitted = this.#core.validateConversationMessage(message, limits);
     this.#apply(operation, label, { kind: "append_conversation_message", message: admitted });
+  }
+
+  /** Publish a ref-only record exactly once, including after a partial retry. */
+  #appendIfAbsent(operation: OperationId, label: string, message: ConversationMessage, limits: Limits): void {
+    const existing = this.conversation().messages.find(candidate => candidate.id === message.id);
+    if (existing !== undefined) {
+      const { sequence: _existingSequence, ...existingWithoutSequence } = existing;
+      const { sequence: _messageSequence, ...messageWithoutSequence } = message;
+      if (!this.#core.canonicalEqual(existingWithoutSequence, messageWithoutSequence)) {
+        throw new TypeError("conversation message identity is bound to another record");
+      }
+      return;
+    }
+    this.#append(operation, label, message, limits);
   }
 
   #validatedFile(reference: FileRef): FileRef {

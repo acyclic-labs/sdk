@@ -513,14 +513,14 @@ describe("typed agent runtime", () => {
     const taskId = "task:remote" as RuntimeTaskId;
     const observed: number[] = [];
     let cancelled = false;
-    const terminal = { id: "event:terminal", taskId, sequence: 43,
+    const terminal = { id: "event:terminal", taskId, sequence: 42,
       event: { kind: "settled" as const, outcome: { kind: "succeeded" as const, value: 7 } } };
     const task = Task.fromHost(taskId, {
       operationId: "operation:remote",
       async result() { return { kind: "succeeded", value: 7 } as const; },
       async *events(fromSequence) {
         observed.push(fromSequence);
-        if (fromSequence <= 42) yield { id: "event:remote", taskId, sequence: 42, event: { kind: "started" } as const };
+        if (fromSequence <= 41) yield { id: "event:remote", taskId, sequence: 41, event: { kind: "started" } as const };
       },
       async terminalEvent() { return terminal; },
       async cancel() { cancelled = true; return { requested: true, taskId }; },
@@ -528,7 +528,7 @@ describe("typed agent runtime", () => {
     expect(await task.result()).toEqual({ kind: "succeeded", value: 7 });
     const events = [];
     for await (const event of task.events(41)) events.push(event);
-    expect(events.map(event => event.sequence)).toEqual([42, 43]);
+    expect(events.map(event => event.sequence)).toEqual([41, 42]);
     expect(observed).toEqual([41]);
     const afterTerminal = [];
     for await (const event of task.events(44)) afterTerminal.push(event);
@@ -538,17 +538,20 @@ describe("typed agent runtime", () => {
       { kind: "failed" as const, error: { message: "failed" } },
       { kind: "cancelled" as const, receipt: { requested: true, taskId } },
     ]) {
-      const settled = { ...terminal, event: { kind: "settled" as const, outcome } };
+      const settled = { ...terminal, sequence: 1, event: { kind: "settled" as const, outcome } };
       const replayed = Task.fromHost(taskId, {
         operationId: "operation:remote",
         async result() { return outcome; },
-        async *events(fromSequence) { if (fromSequence <= settled.sequence) yield settled; },
+        async *events(fromSequence) {
+          if (fromSequence <= 0) yield { id: "event:started", taskId, sequence: 0, event: { kind: "started" } as const };
+          if (fromSequence <= settled.sequence) yield settled;
+        },
         async terminalEvent() { return settled; },
         async cancel() { return { requested: true, taskId }; },
       });
       const replay = [];
       for await (const event of replayed.events()) replay.push(event);
-      expect(replay).toEqual([settled]);
+      expect(replay).toEqual([{ id: "event:started", taskId, sequence: 0, event: { kind: "started" } }, { ...settled, sequence: 1 }]);
       const past = [];
       for await (const event of replayed.events(settled.sequence + 1)) past.push(event);
       expect(past).toEqual([]);
@@ -559,7 +562,7 @@ describe("typed agent runtime", () => {
       operationId: "operation:remote",
       async result() { throw new Error("transport offline"); },
       async *events() { yield* []; },
-      async terminalEvent() { return { id: "event:indeterminate", taskId, sequence: 1,
+      async terminalEvent() { return { id: "event:indeterminate", taskId, sequence: 0,
         event: { kind: "settled" as const, outcome: { kind: "indeterminate" as const, operationId: "operation:remote" } } }; },
       async cancel() { return { requested: false, taskId }; },
     });
@@ -570,13 +573,57 @@ describe("typed agent runtime", () => {
     const outOfOrder = Task.fromHost(taskId, {
       operationId: "operation:remote",
       async result() { return { kind: "succeeded", value: 7 } as const; },
-      async *events() { yield { id: "event:later", taskId, sequence: 5, event: { kind: "started" } as const }; },
-      async terminalEvent() { return { ...terminal, sequence: 2 }; },
+      async *events() { yield { id: "event:started", taskId, sequence: 0, event: { kind: "started" } as const }; },
+      async terminalEvent() { return { ...terminal, sequence: 0 }; },
       async cancel() { return { requested: false, taskId }; },
     });
     await expect(async () => {
       for await (const _event of outOfOrder.events()) { /* consume */ }
-    }).toThrow("out-of-order terminal event");
+    }).toThrow("omitted task events");
+    const missingStreamEvent = Task.fromHost(taskId, {
+      operationId: "operation:remote",
+      async result() { return { kind: "succeeded", value: 7 } as const; },
+      async *events() {
+        yield { id: "event:later", taskId, sequence: 1, event: { kind: "started" } as const };
+      },
+      async terminalEvent() { return { ...terminal, sequence: 1 }; },
+      async cancel() { return { requested: false, taskId }; },
+    });
+    await expect(async () => {
+      for await (const _event of missingStreamEvent.events()) { /* consume */ }
+    }).toThrow("missing or invalid task event");
+    const missingBeforeTerminal = Task.fromHost(taskId, {
+      operationId: "operation:remote",
+      async result() { return { kind: "succeeded", value: 7 } as const; },
+      async *events() {
+        yield { id: "event:started", taskId, sequence: 0, event: { kind: "started" } as const };
+      },
+      async terminalEvent() { return { ...terminal, sequence: 2 }; },
+      async cancel() { return { requested: false, taskId }; },
+    });
+    await expect(async () => {
+      for await (const _event of missingBeforeTerminal.events()) { /* consume */ }
+    }).toThrow("omitted task events");
+    const emptyReplay = Task.fromHost(taskId, {
+      operationId: "operation:remote",
+      async result() { return { kind: "succeeded", value: 7 } as const; },
+      async *events() { yield* []; },
+      async terminalEvent() { return { ...terminal, sequence: 2 }; },
+      async cancel() { return { requested: false, taskId }; },
+    });
+    await expect(async () => {
+      for await (const _event of emptyReplay.events()) { /* consume */ }
+    }).toThrow("omitted task events");
+    const resumedEmptyReplay = Task.fromHost(taskId, {
+      operationId: "operation:remote",
+      async result() { return { kind: "succeeded", value: 7 } as const; },
+      async *events() { yield* []; },
+      async terminalEvent() { return { ...terminal, sequence: 7 }; },
+      async cancel() { return { requested: false, taskId }; },
+    });
+    await expect(async () => {
+      for await (const _event of resumedEmptyReplay.events(5)) { /* consume */ }
+    }).toThrow("omitted task events");
   });
 
   test("reconciles lost durable admission acknowledgement by stable operation ID", async () => {
@@ -813,6 +860,69 @@ describe("typed agent runtime", () => {
     expect((await reconstructed.join()).entries).toHaveLength(2);
     const cancellation = await reconstructed.cancelBatchId(definition, batch.id);
     expect(cancellation?.entries.map(entry => entry.status.kind)).toEqual(["indeterminate", "indeterminate"]);
+  });
+
+  test("replays a retained batch without requalifying its immutable placement", async () => {
+    const definition = TaskDefinition.resumable<number, number, number>("retained-placement", "1", {
+      state: numberSchema, initial: input => input,
+      async transition(_context, state) { return { kind: "finish", output: state }; },
+    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    const routeIdentity = policyIdentity("test.batch.execution", "1", Uint8Array.from({ length: 32 }, () => 8));
+    const placement = {
+      provider: routeIdentity,
+      build: { kind: "artifact" as const,
+        provider: { namespace: "test", family: "objects", version: "1" }, key: [1], version: null },
+      environment: { kind: "sandbox" as const,
+        provider: { namespace: "test", family: "machines", version: "1" }, key: [2], version: null },
+      readiness_revision: Array.from({ length: 32 }, () => 3),
+    };
+    let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
+    let qualifications = 0;
+    let unavailable = false;
+    const replay = (request: import("../src/index.js").BatchAdmissionRequest): HostBatchReplay => ({
+      taskName: request.taskName, revision: request.revision,
+      implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
+      entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
+        admission: { kind: "indeterminate" as const, operationId: member.operation_id } })),
+    });
+    const spawner: HarnessRuntimeSpawner = {
+      policyIdentity: () => null,
+      executionIdentity: () => routeIdentity,
+      async admitBatch(request) { retained = request; return replay(request); },
+      async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
+      async reconcileBatch(request) { return replay(request); },
+    };
+    const state: HarnessRuntimeState = {
+      policyIdentity: () => null,
+      executionIdentity: () => routeIdentity,
+      async attach() { throw new Error("no accepted member"); },
+      async reconcileEffect() { return { state: "indeterminate" }; },
+      async send(message) { return { accepted: true, messageId: message.id }; },
+      async *inbox() { yield* []; },
+    };
+    const execution: HarnessExecutionProvider = {
+      identity: () => routeIdentity, spawner: () => spawner, state: () => state,
+      async qualifyTask() { return placement; },
+      async qualifyBatch() {
+        qualifications++;
+        if (unavailable) throw new Error("execution provider unavailable");
+        return placement;
+      },
+    };
+    const batchId = "44444444-4444-4444-8444-444444444444" as BatchId;
+    const groupId = "55555555-5555-4555-8555-555555555555" as GroupId;
+    const batch = new Batch(batchId, [1, 2]);
+    const first = Harness.builder(contracts).execution(execution).task(definition).build()
+      .group<number>(GroupPolicies.collectAll, groupId);
+    expect((await first.spawnMany(definition, batch)).map(entry => entry.admission.kind))
+      .toEqual(["indeterminate", "indeterminate"]);
+    expect(qualifications).toBe(1);
+    unavailable = true;
+    const reopened = Harness.builder(contracts).execution(execution).task(definition).build()
+      .group<number>(GroupPolicies.collectAll, groupId);
+    expect((await reopened.spawnMany(definition, batch)).map(entry => entry.admission.kind))
+      .toEqual(["indeterminate", "indeterminate"]);
+    expect(qualifications).toBe(1);
   });
 
   test("asks the durable batch owner to retain cancellation after a failed member", async () => {
