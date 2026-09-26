@@ -376,6 +376,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the append and observed-retry paths share one committed-record verification gate"
+    )]
     pub(crate) async fn apply_internal(
         &mut self,
         operation_id: OperationId,
@@ -417,7 +421,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             Some(committed_at_ms),
         );
         let stream_key = stream_key(idempotency_key.as_str())?;
-        let outcome = match self
+        let (outcome, observed_retry) = match self
             .stream
             .append_batch(
                 vec![Bytes::copy_from_slice(&bytes)],
@@ -426,22 +430,22 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             )
             .await
         {
-            Ok(outcome) => outcome,
-            Err(StreamError::Unavailable) => {
+            Ok(outcome) => (outcome, false),
+            Err(error @ (StreamError::Unavailable | StreamError::IdempotencyMismatch)) => {
                 match self.client.inspect_idempotency(stream_key).await {
                     Ok(Some(observation)) => match observation.outcome {
-                        IdempotencyOutcome::Append(outcome) => outcome,
+                        IdempotencyOutcome::Append(outcome) => (outcome, true),
                         _ => {
                             return Err(Error::Conflict(
                                 "coordinator retry identity has another operation kind".into(),
                             ));
                         }
                     },
+                    Ok(None) if matches!(error, StreamError::IdempotencyMismatch) => {
+                        return Err(Error::Conflict("coordinator retry identity reused".into()));
+                    }
                     Ok(None) | Err(_) => return Err(Error::Indeterminate(operation_id)),
                 }
-            }
-            Err(StreamError::IdempotencyMismatch) => {
-                return Err(Error::Conflict("coordinator retry identity reused".into()));
             }
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
@@ -462,7 +466,29 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 let record = records.first().ok_or_else(|| {
                     Error::Storage("committed coordinator record is unavailable".into())
                 })?;
-                if record.sequence != receipt.start || record.value.as_ref() != bytes.as_slice() {
+                if record.sequence != receipt.start {
+                    return Err(Error::Conflict(
+                        "coordinator observation does not match submitted event".into(),
+                    ));
+                }
+                if observed_retry {
+                    let (
+                        observed_revision,
+                        observed_operation,
+                        observed_key,
+                        observed_digest,
+                        _,
+                        observed_event,
+                    ) = decode(&record.value)?;
+                    if observed_revision != revision
+                        || observed_operation != operation_id
+                        || observed_key != idempotency_key.as_str()
+                        || observed_digest != digest
+                        || observed_event != event
+                    {
+                        return Err(Error::Conflict("coordinator retry identity reused".into()));
+                    }
+                } else if record.value.as_ref() != bytes.as_slice() {
                     return Err(Error::Conflict(
                         "coordinator observation does not match submitted event".into(),
                     ));
@@ -855,8 +881,105 @@ mod tests {
             replayed.first().and_then(|item| item.committed_at_ms),
             event.committed_at_ms
         );
-        assert!(read_coordinator_event_page(&client, 1, 1).await?.is_empty());
+        let second = OperationId::from_bytes([46; 16]);
+        coordinator
+            .apply(
+                second,
+                IdempotencyKey::new("projector-second")?,
+                coordinator.scheduler().declare(spec(second, 1))?,
+            )
+            .await?;
+        let continuation = read_coordinator_event_page(&client, 1, 1).await?;
+        assert_eq!(continuation.len(), 1);
+        assert_eq!(continuation[0].revision, 2);
+        assert_eq!(continuation[0].operation_id, second);
+        assert!(read_coordinator_event_page(&client, 2, 1).await?.is_empty());
         assert!(read_coordinator_event_page(&client, 0, 0).await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retry_recognizes_committed_event_with_original_timestamp() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let operation_id = OperationId::from_bytes([45; 16]);
+        let event = SchedulerEvent::Declared {
+            spec: Box::new(spec(operation_id, 1)),
+        };
+        let key = IdempotencyKey::new("ambiguous-append")?;
+        let canonical =
+            serde_json::to_vec(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+        let digest = *blake3::hash(&canonical).as_bytes();
+        let bytes = encode(1, operation_id, key.as_str(), digest, canonical, Some(1));
+        let mut coordinator = DistributedCoordinator::open(&client).await?;
+        assert!(matches!(
+            coordinator
+                .stream
+                .append_batch(
+                    vec![Bytes::from(bytes)],
+                    Some(0),
+                    Some(stream_key(key.as_str())?)
+                )
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            AppendOutcome::Committed(_)
+        ));
+        assert_eq!(
+            coordinator
+                .apply(operation_id, key.clone(), event.clone())
+                .await?,
+            CoordinatorApply::Applied
+        );
+        assert_eq!(
+            coordinator.apply(operation_id, key, event).await?,
+            CoordinatorApply::Replayed
+        );
+        let page = read_coordinator_event_page(&client, 0, 1).await?;
+        assert_eq!(page[0].committed_at_ms, Some(1));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retry_rejects_a_different_event_under_the_same_key() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let first = OperationId::from_bytes([47; 16]);
+        let second = OperationId::from_bytes([48; 16]);
+        let key = IdempotencyKey::new("conflicting-append")?;
+        let event = SchedulerEvent::Declared {
+            spec: Box::new(spec(first, 1)),
+        };
+        let canonical =
+            serde_json::to_vec(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+        let digest = *blake3::hash(&canonical).as_bytes();
+        let mut coordinator = DistributedCoordinator::open(&client).await?;
+        coordinator
+            .stream
+            .append_batch(
+                vec![Bytes::from(encode(
+                    1,
+                    first,
+                    key.as_str(),
+                    digest,
+                    canonical,
+                    Some(1),
+                ))],
+                Some(0),
+                Some(stream_key(key.as_str())?),
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            coordinator
+                .apply(
+                    second,
+                    key,
+                    SchedulerEvent::Declared {
+                        spec: Box::new(spec(second, 1))
+                    }
+                )
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(coordinator.revision, 0);
         Ok(())
     }
 
