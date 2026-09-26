@@ -8,10 +8,22 @@
   <body>
     <pre id="result">running</pre>
     <script type="module">
-      import("./browser-multitab.js").catch((error) => {
+      const query = new URLSearchParams(location.search);
+      const runId = query.get("run");
+      const actor = query.get("actor");
+      const startupChannel = runId !== null && actor !== null
+        ? new BroadcastChannel(`acyclic-fs-multitab-${runId}`)
+        : null;
+      import("./browser-multitab.js").then(() => startupChannel?.close()).catch((error) => {
         const result = document.querySelector("#result");
         result.dataset.status = "failed";
         result.textContent = String(error.stack ?? error);
+        startupChannel?.postMessage({
+          actor,
+          event: "failed",
+          error: String(error.stack ?? error),
+        });
+        startupChannel?.close();
       });
     </script>
   </body>

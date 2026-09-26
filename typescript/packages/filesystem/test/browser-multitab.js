@@ -339,14 +339,33 @@ async function runActor() {
       }
       if (message.command === "close") {
         fs?.close();
-        channel.close();
-        window.close();
+        post(channel, { event: "closed" });
+        // Let the acknowledgement leave the renderer before tearing down the
+        // browsing context. The coordinator uses this boundary to avoid
+        // opening the next actor while Chrome is still retiring this one.
+        setTimeout(() => {
+          channel.close();
+          window.close();
+        }, 0);
       }
     } catch (error) {
       post(channel, { event: "failed", error: errorText(error) });
     }
   });
   post(channel, { event: "ready", reloaded: query.get("reload") === "1" });
+}
+
+async function closeActor(channel, nextMessage, actorWindow, actor) {
+  channel.postMessage({ target: actor, command: "close" });
+  await nextMessage(
+    (message) => message.actor === actor && message.event === "closed",
+    `${actor} closed`,
+  );
+  const deadline = Date.now() + 10_000;
+  while (!actorWindow.closed && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert(actorWindow.closed, `${actor} actor window did not close`);
 }
 
 async function runTargetedCase(
@@ -415,7 +434,7 @@ async function runTargetedCase(
     `${name} observation`,
   );
   mergeAccounting(accounting, observed.accounting);
-  actorWindow.close();
+  await closeActor(channel, nextMessage, actorWindow, name);
 
   const verifierFs = await openBrowserFs(databaseOptions(database));
   const verifierVolume = await verifierFs.openVolume(identity);
@@ -540,8 +559,10 @@ async function runCoordinator() {
   const losing = outcomes.find((outcome) => outcome.status === "conflict");
   assert(winning !== undefined && losing !== undefined, "authority race had no exact winner and loser");
 
-  left.close();
-  right.close();
+  await Promise.all([
+    closeActor(channel, nextMessage, left, "left"),
+    closeActor(channel, nextMessage, right, "right"),
+  ]);
   actorUrl.searchParams.set("actor", "abandoned");
   const abandoned = window.open(actorUrl, `acyclic-fs-abandoned-${run}`);
   assert(abandoned !== null, "browser blocked the abrupt-lifecycle actor window");
@@ -571,7 +592,7 @@ async function runCoordinator() {
   await nextMessage((message) => message.actor === "verifier" && message.event === "ready" && message.reloaded, "reloaded verifier ready");
   channel.postMessage(verifyCommand);
   await nextMessage((message) => message.actor === "verifier" && message.event === "verified" && message.reloaded, "reloaded verification");
-  verifier.close();
+  await closeActor(channel, nextMessage, verifier, "verifier");
   const targetedCases = [];
   let targetedIndex = 0;
   for (const operationSequence of [
