@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { compatibilityArtifacts } from "./generated-bindings.mjs";
+import { harnessPackageClosure } from "./harness-package-closure.mjs";
 
 if (process.argv.length !== 5) {
   throw new Error("usage: run-harness-conformance.mjs ARTIFACT_DIR REPORT.json RECEIPT.json");
@@ -52,14 +53,13 @@ const suite = JSON.parse(suiteBytes.toString("utf8"));
 const artifacts = readdirSync(artifactDirectory)
   .filter(name => name.endsWith(".crate") || name.endsWith(".tgz"))
   .sort();
-if (
-  artifacts.length !== 4
-  || !artifacts.includes("acyclic-harness.tgz")
-  || artifacts.filter(name => /^acyclic-harness-[^-].*\.crate$/.test(name)).length !== 1
-  || artifacts.filter(name => /^acyclic-native-runtime-[^-].*\.crate$/.test(name)).length !== 1
-  || artifacts.filter(name => /^acyclic-stream-[^-].*\.crate$/.test(name)).length !== 1
-) {
-  throw new Error("expected exact native runtime, Stream, Harness, and npm archives");
+// The same closure the packaging step stages, so the two cannot drift.
+const expectedArtifacts = [
+  "acyclic-harness.tgz",
+  ...harnessPackageClosure().map(({ name, version }) => `${name}-${version}.crate`),
+].sort();
+if (JSON.stringify(artifacts) !== JSON.stringify(expectedArtifacts)) {
+  throw new Error(`expected exactly the Harness npm archive and crate closure: ${expectedArtifacts.join(", ")}`);
 }
 const artifactEvidence = artifacts.map(name => ({
   name,
