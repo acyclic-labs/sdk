@@ -29,6 +29,10 @@ struct CachedObject {
 }
 
 struct CacheState {
+    /// Open-addressed table, a power of two long, grown by doubling up to
+    /// [`OperationReadCache::slot_limit`] as entries arrive: most operations
+    /// read a few objects, so reserving the whole bound up front would clear
+    /// memory they never touch.
     slots: Vec<Option<CachedObject>>,
     entry_count: usize,
     retained_owned_bytes: u64,
@@ -39,8 +43,14 @@ struct OperationReadCache<'a, S> {
     store: &'a S,
     state: Mutex<CacheState>,
     maximum_entries: usize,
+    slot_limit: usize,
+    /// The table's full bound, which the operation's work accounts for
+    /// whether or not it grows that far.
     metadata_bytes: u64,
 }
+
+/// Slots a new cache starts with.
+const INITIAL_CACHE_SLOTS: usize = 16;
 
 impl<'a, S> OperationReadCache<'a, S> {
     fn new(
@@ -68,16 +78,12 @@ impl<'a, S> OperationReadCache<'a, S> {
         .verify(budget)
         .map_err(|error| OperationFailure::before_work(error.into()))?;
         let mut slots = Vec::new();
+        let initial = slot_count.min(INITIAL_CACHE_SLOTS);
         slots
-            .try_reserve_exact(slot_count)
+            .try_reserve_exact(initial)
             .map_err(|_| OperationFailure::before_work(PathLookupError::AllocationFailed))?;
-        slots.resize_with(slot_count, || None);
-        let metadata_bytes = u64::try_from(slots.capacity())
-            .unwrap_or(u64::MAX)
-            .checked_mul(u64::try_from(size_of::<Option<CachedObject>>()).unwrap_or(u64::MAX))
-            .ok_or_else(|| {
-                OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
-            })?;
+        slots.resize_with(initial, || None);
+        let metadata_bytes = requested;
         let work = WorkCounters {
             allocation_operations: 1,
             peak_allocation_bytes: metadata_bytes,
@@ -95,48 +101,64 @@ impl<'a, S> OperationReadCache<'a, S> {
                     external_resident_bytes: 0,
                 }),
                 maximum_entries,
+                slot_limit: slot_count,
                 metadata_bytes,
             },
             work,
         ))
     }
 
-    fn probe(
-        &self,
-        object_id: ObjectId,
-    ) -> Result<(Option<ObjectRead>, usize, u64), ObjectFailure> {
-        let state = self.lock_state();
-        let mask = state.slots.len() - 1;
-        let mut index = object_hash(object_id) & mask;
-        let mut examined = 0_u64;
-        for _ in 0..state.slots.len() {
-            examined = examined.saturating_add(1);
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "OperationReadCache::new computes slot_count via checked_next_power_of_two, so state.slots.len() is always a power of two; index is initialized as `object_hash(object_id) & mask` and updated only as `(index + 1) & mask` where `mask = state.slots.len() - 1`, so index is always < state.slots.len()"
-            )]
-            match &state.slots[index] {
-                Some(entry) if entry.object_id == object_id => {
-                    return Ok((
-                        Some(ObjectRead {
-                            bytes: entry.bytes.clone(),
-                            retention: ObjectReadRetention::Shared,
-                        }),
-                        index,
-                        examined,
-                    ));
-                }
-                Some(_) => index = (index + 1) & mask,
-                None => return Ok((None, index, examined)),
-            }
+    fn probe(&self, object_id: ObjectId) -> Result<(Option<ObjectRead>, u64), ObjectFailure> {
+        let (hit, _, examined) = probe_slots(&self.lock_state().slots, object_id)?;
+        Ok((hit, examined))
+    }
+
+    /// Keeps `bytes` as `object_id`'s content, growing the table while it is
+    /// at least half full; true when it was kept.
+    fn admit(&self, object_id: ObjectId, bytes: &Bytes) -> Result<bool, ObjectStoreError> {
+        let mut state = self.lock_state();
+        if state.entry_count >= self.maximum_entries {
+            return Ok(false);
         }
-        Err(ObjectFailure::new(
-            ObjectStoreError::Corrupt,
-            WorkCounters {
-                items_examined: examined,
-                ..WorkCounters::default()
-            },
-        ))
+        if state.entry_count.saturating_mul(2) >= state.slots.len()
+            && state.slots.len() < self.slot_limit
+        {
+            let length = state.slots.len().saturating_mul(2).min(self.slot_limit);
+            let mut grown = Vec::new();
+            grown
+                .try_reserve_exact(length)
+                .map_err(|_| ObjectStoreError::Work(WorkError::Overflow))?;
+            grown.resize_with(length, || None);
+            for entry in std::mem::take(&mut state.slots).into_iter().flatten() {
+                let (_, vacant, _) =
+                    probe_slots(&grown, entry.object_id).map_err(|failure| failure.error)?;
+                #[allow(
+                    clippy::indexing_slicing,
+                    reason = "probe_slots returns an index masked by the table's power-of-two length"
+                )]
+                {
+                    grown[vacant] = Some(entry);
+                }
+            }
+            state.slots = grown;
+        }
+        let (hit, vacant, _) =
+            probe_slots(&state.slots, object_id).map_err(|failure| failure.error)?;
+        if hit.is_some() {
+            return Ok(false);
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "probe_slots returns an index masked by the table's power-of-two length"
+        )]
+        {
+            state.slots[vacant] = Some(CachedObject {
+                object_id,
+                bytes: bytes.clone(),
+            });
+        }
+        state.entry_count += 1;
+        Ok(true)
     }
 
     fn resident_bytes(&self) -> Result<u64, ObjectFailure> {
@@ -163,6 +185,46 @@ impl<'a, S> OperationReadCache<'a, S> {
             Err(poisoned) => poisoned.into_inner(),
         }
     }
+}
+
+/// Finds `object_id` in an open-addressed `slots` table whose length is a
+/// power of two: its content if present, the slot where it belongs, and the
+/// slots examined.
+fn probe_slots(
+    slots: &[Option<CachedObject>],
+    object_id: ObjectId,
+) -> Result<(Option<ObjectRead>, usize, u64), ObjectFailure> {
+    let mask = slots.len() - 1;
+    let mut index = object_hash(object_id) & mask;
+    let mut examined = 0_u64;
+    for _ in 0..slots.len() {
+        examined = examined.saturating_add(1);
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "every table OperationReadCache builds is a power of two long (a power-of-two limit, a start below it, and doublings); index is initialized as `object_hash(object_id) & mask` and updated only as `(index + 1) & mask` where `mask = slots.len() - 1`, so index is always < slots.len()"
+        )]
+        match &slots[index] {
+            Some(entry) if entry.object_id == object_id => {
+                return Ok((
+                    Some(ObjectRead {
+                        bytes: entry.bytes.clone(),
+                        retention: ObjectReadRetention::Shared,
+                    }),
+                    index,
+                    examined,
+                ));
+            }
+            Some(_) => index = (index + 1) & mask,
+            None => return Ok((None, index, examined)),
+        }
+    }
+    Err(ObjectFailure::new(
+        ObjectStoreError::Corrupt,
+        WorkCounters {
+            items_examined: examined,
+            ..WorkCounters::default()
+        },
+    ))
 }
 
 fn object_hash(object_id: ObjectId) -> usize {
@@ -281,7 +343,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<ObjectRead> {
-        let (hit, vacant_slot, examined) = self.probe(object_id)?;
+        let (hit, examined) = self.probe(object_id)?;
         let hit_work = WorkCounters {
             items_examined: examined,
             ..WorkCounters::default()
@@ -324,17 +386,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
         };
         let work = merge_backend_peak(hit_work, receipt.work, resident, budget)?;
-        let mut state = self.lock_state();
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "vacant_slot is the index returned by probe(), which only ever returns an index bounded by its own `& mask` invariant (see probe's match on state.slots[index]); state.slots is created once in OperationReadCache::new and never resized afterward, so that bound still holds against this (possibly different) MutexGuard borrow of the same Vec"
-        )]
-        if state.entry_count < self.maximum_entries && state.slots[vacant_slot].is_none() {
-            state.slots[vacant_slot] = Some(CachedObject {
-                object_id,
-                bytes: receipt.value.bytes.clone(),
-            });
-            state.entry_count += 1;
+        let admitted = self
+            .admit(object_id, &receipt.value.bytes)
+            .map_err(|error| ObjectFailure::new(error, work))?;
+        if admitted {
+            let mut state = self.lock_state();
             state.retained_owned_bytes = state
                 .retained_owned_bytes
                 .checked_add(owned_bytes)
@@ -363,7 +419,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<bool> {
-        let (hit, _, examined) = self.probe(object_id)?;
+        let (hit, examined) = self.probe(object_id)?;
         if hit.is_some() {
             let work = WorkCounters {
                 items_examined: examined,
@@ -1773,11 +1829,13 @@ fn maximum_cache_entries_for_components(
         .min(usize::try_from(config.limits.maximum_objects_per_generation).unwrap_or(usize::MAX)))
 }
 
+#[inline]
 fn add(left: WorkCounters, right: WorkCounters) -> Result<WorkCounters, PathLookupFailure> {
     left.checked_add(right)
         .map_err(|error| OperationFailure::new(error.into(), left))
 }
 
+#[inline]
 fn remaining(work: WorkCounters, budget: WorkBudget) -> Result<WorkBudget, PathLookupFailure> {
     work.remaining(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))

@@ -20,15 +20,17 @@ use tonic::{
 };
 
 use crate::wire_codec::{
-    condition_from_wire, condition_wire, mutation_from_wire, mutation_wire, optional_key, path,
-    required_key,
+    append_outcome_from_wire, append_outcome_wire, commit_id, commit_outcome_from_wire,
+    commit_outcome_wire, condition_from_wire, condition_wire, delete_receipt_wire,
+    envelope_from_wire, envelope_wire, fork_receipt_wire, mutation_from_wire, mutation_wire,
+    observation_from_wire, observation_wire, optional_key, path, record, record_wire, required_key,
+    trim_receipt_wire,
 };
 use crate::{
-    AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenRequest,
-    CommitConflict, CommitId, CommitOutcome, CommitRequest, CommittedAppend, CommittedDelete,
-    CommittedEnvelope, CommittedFork, CommittedMutation, CommittedTrim, DeleteReceipt, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, ReadRequest, Record,
-    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt, wire,
+    AppendOutcome, AppendRequest, Child, ChildStream, ChildrenRequest, CommitId, CommitOutcome,
+    CommitRequest, CommittedEnvelope, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamPath,
+    StreamProvider, TrimReceipt, wire,
 };
 
 const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -630,6 +632,7 @@ impl StreamProvider for Client {
         let body = wire::ChildrenRequest {
             parent: request.parent.map(|path| path.to_string()),
             limit: request.limit,
+            after: request.after.map(|path| path.to_string()),
         };
         let mut last = None;
         for _ in 0..self.channels.len() {
@@ -889,6 +892,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .transpose()
                     .map_err(|error| error_status(&error))?,
                 limit: request.limit,
+                after: request
+                    .after
+                    .map(path)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
             })
             .await
             .map_err(|error| error_status(&error))?;
@@ -953,48 +961,6 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     }
 }
 
-fn observation_from_wire(
-    value: wire::IdempotencyObservation,
-) -> Result<IdempotencyObservation, StreamError> {
-    let request_digest = <[u8; 32]>::try_from(value.request_digest.as_ref())
-        .map_err(|_| StreamError::Unavailable)?;
-    let outcome = match value.outcome.ok_or(StreamError::Unavailable)? {
-        wire::idempotency_observation::Outcome::Append(value) => {
-            IdempotencyOutcome::Append(append_outcome_from_wire(value)?)
-        }
-        wire::idempotency_observation::Outcome::Fork(value) => {
-            IdempotencyOutcome::Fork(ForkReceipt {
-                source: path(value.source)?,
-                destination: path(value.destination)?,
-                forked_at: value.forked_at,
-                tail: value.tail,
-                commit_id: commit_id(&value.commit_id)?,
-            })
-        }
-        wire::idempotency_observation::Outcome::Trim(value) => {
-            IdempotencyOutcome::Trim(TrimReceipt {
-                path: path(value.path)?,
-                trim_point: value.trim_point,
-                commit_id: commit_id(&value.commit_id)?,
-            })
-        }
-        wire::idempotency_observation::Outcome::Delete(value) => {
-            IdempotencyOutcome::Delete(DeleteReceipt {
-                path: path(value.path)?,
-                commit_id: commit_id(&value.commit_id)?,
-            })
-        }
-        wire::idempotency_observation::Outcome::Commit(value) => {
-            IdempotencyOutcome::Commit(commit_outcome_from_wire(value)?)
-        }
-    };
-    Ok(IdempotencyObservation {
-        idempotency_key: IdempotencyKey::new(value.idempotency_key)?,
-        request_digest,
-        outcome,
-    })
-}
-
 fn bind_observation(
     requested: &IdempotencyKey,
     observation: Option<wire::IdempotencyObservation>,
@@ -1007,87 +973,6 @@ fn bind_observation(
         return Err(StreamError::Unavailable);
     }
     Ok(observation)
-}
-
-fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservation {
-    let outcome = match value.outcome {
-        IdempotencyOutcome::Append(value) => {
-            wire::idempotency_observation::Outcome::Append(append_outcome_wire(value))
-        }
-        IdempotencyOutcome::Fork(value) => {
-            wire::idempotency_observation::Outcome::Fork(fork_receipt_wire(&value))
-        }
-        IdempotencyOutcome::Trim(value) => {
-            wire::idempotency_observation::Outcome::Trim(trim_receipt_wire(&value))
-        }
-        IdempotencyOutcome::Delete(value) => {
-            wire::idempotency_observation::Outcome::Delete(delete_receipt_wire(&value))
-        }
-        IdempotencyOutcome::Commit(value) => {
-            wire::idempotency_observation::Outcome::Commit(commit_outcome_wire(value))
-        }
-    };
-    wire::IdempotencyObservation {
-        idempotency_key: Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
-        request_digest: Bytes::copy_from_slice(&value.request_digest),
-        outcome: Some(outcome),
-    }
-}
-
-fn append_outcome_from_wire(value: wire::AppendResponse) -> Result<AppendOutcome, StreamError> {
-    match value.outcome.ok_or(StreamError::Unavailable)? {
-        wire::append_response::Outcome::Committed(receipt) => {
-            Ok(AppendOutcome::Committed(append_receipt(&receipt)?))
-        }
-        wire::append_response::Outcome::Conflict(conflict) => Ok(AppendOutcome::TailConflict {
-            actual_tail: conflict.actual_tail,
-        }),
-    }
-}
-
-fn append_outcome_wire(value: AppendOutcome) -> wire::AppendResponse {
-    let outcome = match value {
-        AppendOutcome::Committed(receipt) => {
-            wire::append_response::Outcome::Committed(append_receipt_wire(&receipt))
-        }
-        AppendOutcome::TailConflict { actual_tail } => {
-            wire::append_response::Outcome::Conflict(wire::TailConflict { actual_tail })
-        }
-    };
-    wire::AppendResponse {
-        outcome: Some(outcome),
-    }
-}
-
-fn commit_outcome_from_wire(value: wire::CommitResponse) -> Result<CommitOutcome, StreamError> {
-    match value.outcome.ok_or(StreamError::Unavailable)? {
-        wire::commit_response::Outcome::Committed(envelope) => {
-            Ok(CommitOutcome::Committed(envelope_from_wire(envelope)?))
-        }
-        wire::commit_response::Outcome::Conflict(conflicts) => Ok(CommitOutcome::Conflict(
-            conflicts
-                .conflicts
-                .into_iter()
-                .map(conflict_from_wire)
-                .collect::<Result<_, _>>()?,
-        )),
-    }
-}
-
-fn commit_outcome_wire(value: CommitOutcome) -> wire::CommitResponse {
-    let outcome = match value {
-        CommitOutcome::Committed(envelope) => {
-            wire::commit_response::Outcome::Committed(envelope_wire(envelope))
-        }
-        CommitOutcome::Conflict(conflicts) => {
-            wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
-                conflicts: conflicts.into_iter().map(conflict_wire).collect(),
-            })
-        }
-    };
-    wire::CommitResponse {
-        outcome: Some(outcome),
-    }
 }
 
 fn error_status(error: &StreamError) -> Status {
@@ -1136,216 +1021,8 @@ fn status(error: &tonic::Status) -> StreamError {
     }
 }
 
-fn commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
-    let bytes = <[u8; 32]>::try_from(value).map_err(|_| StreamError::Unavailable)?;
-    Ok(CommitId::from_bytes(bytes))
-}
-
-fn record(value: wire::Record) -> Result<Record, StreamError> {
-    Ok(Record {
-        sequence: value.sequence,
-        value: value.value,
-        commit_id: commit_id(&value.commit_id)?,
-    })
-}
-
 fn read_response(value: wire::ReadResponse) -> Result<Record, StreamError> {
     record(value.record.ok_or(StreamError::Unavailable)?)
-}
-
-fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceipt, StreamError> {
-    Ok(AppendReceipt {
-        start: value.start,
-        end: value.end,
-        tail: value.tail,
-        commit_id: commit_id(&value.commit_id)?,
-    })
-}
-
-fn record_wire(value: Record) -> wire::Record {
-    wire::Record {
-        sequence: value.sequence,
-        value: value.value,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn append_receipt_wire(value: &AppendReceipt) -> wire::AppendReceipt {
-    wire::AppendReceipt {
-        start: value.start,
-        end: value.end,
-        tail: value.tail,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
-    wire::ForkReceipt {
-        source: value.source.to_string(),
-        destination: value.destination.to_string(),
-        forked_at: value.forked_at,
-        tail: value.tail,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn trim_receipt_wire(value: &TrimReceipt) -> wire::TrimReceipt {
-    wire::TrimReceipt {
-        path: value.path.to_string(),
-        trim_point: value.trim_point,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn delete_receipt_wire(value: &DeleteReceipt) -> wire::DeleteReceipt {
-    wire::DeleteReceipt {
-        path: value.path.to_string(),
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn envelope_from_wire(value: wire::CommittedEnvelope) -> Result<CommittedEnvelope, StreamError> {
-    Ok(CommittedEnvelope {
-        commit_id: commit_id(&value.commit_id)?,
-        mutations: value
-            .mutations
-            .into_iter()
-            .map(committed_mutation)
-            .collect::<Result<_, _>>()?,
-    })
-}
-
-fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope {
-    wire::CommittedEnvelope {
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-        mutations: value
-            .mutations
-            .into_iter()
-            .map(committed_mutation_wire)
-            .collect(),
-    }
-}
-
-fn committed_mutation(value: wire::CommittedMutation) -> Result<CommittedMutation, StreamError> {
-    match value.mutation.ok_or(StreamError::Unavailable)? {
-        wire::committed_mutation::Mutation::Append(value) => {
-            Ok(CommittedMutation::Append(CommittedAppend {
-                path: path(value.path)?,
-                start: value.start,
-                end: value.end,
-                tail: value.tail,
-                records: value
-                    .records
-                    .into_iter()
-                    .map(record)
-                    .collect::<Result<_, _>>()?,
-            }))
-        }
-        wire::committed_mutation::Mutation::Fork(value) => {
-            Ok(CommittedMutation::Fork(CommittedFork {
-                source: path(value.source)?,
-                destination: path(value.destination)?,
-                forked_at: value.forked_at,
-                tail: value.tail,
-                records: value
-                    .records
-                    .into_iter()
-                    .map(record)
-                    .collect::<Result<_, _>>()?,
-            }))
-        }
-        wire::committed_mutation::Mutation::Trim(value) => {
-            Ok(CommittedMutation::Trim(CommittedTrim {
-                path: path(value.path)?,
-                trim_point: value.trim_point,
-            }))
-        }
-        wire::committed_mutation::Mutation::Delete(value) => {
-            Ok(CommittedMutation::Delete(CommittedDelete {
-                path: path(value.path)?,
-            }))
-        }
-    }
-}
-
-fn committed_mutation_wire(value: CommittedMutation) -> wire::CommittedMutation {
-    let mutation = match value {
-        CommittedMutation::Append(value) => {
-            wire::committed_mutation::Mutation::Append(wire::CommittedAppend {
-                path: value.path.to_string(),
-                start: value.start,
-                end: value.end,
-                tail: value.tail,
-                records: value.records.into_iter().map(record_wire).collect(),
-            })
-        }
-        CommittedMutation::Fork(value) => {
-            wire::committed_mutation::Mutation::Fork(wire::CommittedFork {
-                source: value.source.to_string(),
-                destination: value.destination.to_string(),
-                forked_at: value.forked_at,
-                tail: value.tail,
-                records: value.records.into_iter().map(record_wire).collect(),
-            })
-        }
-        CommittedMutation::Trim(value) => {
-            wire::committed_mutation::Mutation::Trim(wire::CommittedTrim {
-                path: value.path.to_string(),
-                trim_point: value.trim_point,
-            })
-        }
-        CommittedMutation::Delete(value) => {
-            wire::committed_mutation::Mutation::Delete(wire::CommittedDelete {
-                path: value.path.to_string(),
-            })
-        }
-    };
-    wire::CommittedMutation {
-        mutation: Some(mutation),
-    }
-}
-
-fn conflict_from_wire(value: wire::CommitConflict) -> Result<CommitConflict, StreamError> {
-    match value.conflict.ok_or(StreamError::Unavailable)? {
-        wire::commit_conflict::Conflict::Tail(value) => Ok(CommitConflict::Tail {
-            path: path(value.path)?,
-            expected: value.expected,
-            actual: value.actual,
-        }),
-        wire::commit_conflict::Conflict::Exists(value) => Ok(CommitConflict::Exists {
-            path: path(value.path)?,
-        }),
-        wire::commit_conflict::Conflict::Retired(value) => Ok(CommitConflict::Retired {
-            path: path(value.path)?,
-        }),
-    }
-}
-
-fn conflict_wire(value: CommitConflict) -> wire::CommitConflict {
-    let conflict = match value {
-        CommitConflict::Tail {
-            path,
-            expected,
-            actual,
-        } => wire::commit_conflict::Conflict::Tail(wire::TailCommitConflict {
-            path: path.to_string(),
-            expected,
-            actual,
-        }),
-        CommitConflict::Exists { path } => {
-            wire::commit_conflict::Conflict::Exists(wire::ExistsCommitConflict {
-                path: path.to_string(),
-            })
-        }
-        CommitConflict::Retired { path } => {
-            wire::commit_conflict::Conflict::Retired(wire::RetiredCommitConflict {
-                path: path.to_string(),
-            })
-        }
-    };
-    wire::CommitConflict {
-        conflict: Some(conflict),
-    }
 }
 
 #[cfg(test)]

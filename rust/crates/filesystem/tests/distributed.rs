@@ -136,6 +136,7 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
         .children(ChildrenRequest {
             parent: Some(authority_path),
             limit: 16,
+            after: None,
         })
         .await?
         .collect::<Vec<_>>()

@@ -18,7 +18,7 @@ pub mod wire {
     pub mod harness {
         /// Version 1 of the shared harness contract.
         pub mod v1 {
-            include!("generated/acyclic/harness/v1/acyclic.harness.v1.rs");
+            include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v1.rs"));
         }
     }
 
@@ -65,6 +65,8 @@ mod public_contract_tests {
 }
 
 pub mod async_storage;
+mod collection;
+pub use collection::{Collection, PublicationHold};
 pub mod cache;
 pub mod cancellation;
 pub mod compat_wire;
@@ -142,6 +144,10 @@ pub mod workspace_context;
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObjectsLimits};
+/// Scopes authority writes that survive a crash of this process but wait
+/// for [`LocalFs::flush_deferred_authority`] to survive a power loss.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use acyclic_stream::deferring_durability as deferring_authority_durability;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 pub use async_storage::{
@@ -280,7 +286,7 @@ pub use native_mount::{
     NativeMountCapabilities, NativeMountError, NativeMountKind, NativeMountRequest,
     NativeMountSession, NativeMountSessionIsolation, NativeSparseAccelerationEvidence,
     NativeStorageAccelerationError, NativeStorageAccelerationEvidence, NativeStorageCapabilities,
-    NativeStorageCapabilityError, RoutedMountSource, SharedCheckout, SharedCheckoutState,
+    NativeStorageCapabilityError, SharedCheckout, SharedCheckoutState,
     detach_native_mount_destination_after_crash, materialize_checkout,
     materialize_checkout_host_path, materialize_checkout_path, materialize_checkout_paths,
     mount_native, mount_native_over_existing, probe_native_mount,

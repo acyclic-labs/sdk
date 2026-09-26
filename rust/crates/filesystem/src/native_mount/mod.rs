@@ -61,9 +61,6 @@ pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 mod lazy;
 pub use lazy::LazyMountSource;
 
-mod routed;
-pub use routed::RoutedMountSource;
-
 mod customer;
 pub use customer::{
     LazyMount, LazyWorkingSet, Mount, MountLifecycleError, MountOptions, MountPublication,
@@ -386,6 +383,15 @@ pub trait MountOpenFile: Send + Sync + 'static {
     ///
     /// Returns absence, unsupported-profile, storage, or work failures.
     fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError>;
+    /// Applies whatever this handle holds back from the view, as a
+    /// durability request must; most handles hold nothing back.
+    ///
+    /// # Errors
+    ///
+    /// Returns the storage, cancellation, or work failure of applying it.
+    fn settle(&self) -> Result<(), MountSourceError> {
+        Ok(())
+    }
 
     /// Reads one bounded sparse range without materializing holes.
     ///
@@ -795,6 +801,37 @@ pub trait MountFilesystem: Send + Sync + 'static {
     /// Returns absence, non-regular-kind, storage, authentication,
     /// cancellation, or bounded-work failures.
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
+    /// Opens `path` as [`Self::open_file`] does, with the facts the opened
+    /// file had: a source whose open already proved them reports them
+    /// without asking the file again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failures of [`Self::open_file`] and [`MountOpenFile::lookup`].
+    fn open_file_with_lookup(
+        &self,
+        path: &MountPath,
+    ) -> Result<(Arc<dyn MountOpenFile>, MountLookup), MountSourceError> {
+        let file = self.open_file(path)?;
+        let lookup = file.lookup()?;
+        Ok((file, lookup))
+    }
+    /// Opens `created`, the regular file [`Self::create_file`] just made at
+    /// `path`. A source that can address the file by identity binds the
+    /// handle to it without resolving `path` again, as a native `O_CREAT`
+    /// descriptor names the file it created.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::open_file`].
+    fn open_created(
+        &self,
+        path: &MountPath,
+        created: &MountLookup,
+    ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
+        let _ = created;
+        self.open_file(path)
+    }
     /// Captures one regular file as a detached path-independent open-file view.
     ///
     /// The driver calls this immediately before removing the final namespace
@@ -2104,7 +2141,33 @@ mod tests {
             destination: root.path().to_path_buf(),
             writable: true,
         };
-        let source = Arc::new(RoutedMountSource::new());
+        let fs = Fs::memory();
+        let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let checkout = runtime.block_on(async {
+            let cancellation = CancellationToken::new();
+            let volume = fs
+                .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value;
+            volume
+                .checkout(
+                    GenerationSelector::Head,
+                    CheckoutMode {
+                        access: AccessMode::ReadWrite,
+                        consistency: ConsistencyMode::Pinned,
+                        mutations: MutationMode::PrivateOverlay,
+                    },
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map(|receipt| receipt.value)
+        })?;
+        let source = Arc::new(CheckoutMountSource::new(
+            Arc::new(SharedCheckout::new(checkout)),
+            config,
+        )?);
         assert!(matches!(
             mount_native_over_existing(request, source),
             Err(NativeMountError::WritableUnavailable(_))

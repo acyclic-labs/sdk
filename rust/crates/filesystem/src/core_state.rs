@@ -599,16 +599,10 @@ fn remove_if_present(path: &Path) -> Result<(), std::io::Error> {
     }
 }
 
+/// Makes the entries of directory `path` durable, with the one directory
+/// synchronization every store shares; Windows flushes a directory handle.
 fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
-    #[cfg(unix)]
-    {
-        File::open(path)?.sync_all()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
+    acyclic_native_runtime::sync_parent(path, acyclic_native_runtime::Durability::Full)
 }
 
 /// Guard for a [`LocalCoreStateStore::defer_durability`] scope.
@@ -661,6 +655,10 @@ pub enum LocalCoreStateStoreError {
     /// A durable workspace-context transaction was malformed or incompatible.
     #[error("workspace-context transaction is incompatible: {0}")]
     ContextTransaction(String),
+    /// The core-state log holds an intact frame that does not decode, so it
+    /// may commit changes this store cannot apply.
+    #[error("core state log holds an undecodable intact frame: {}", .0.display())]
+    Corrupt(PathBuf),
 }
 
 impl WorkspaceLineageStore for LocalCoreStateStore {
@@ -1136,6 +1134,7 @@ fn index_change(
 
 /// One log line: `<blake3 hex> <frame json>`.
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LogFrame<C> {
     epoch: Uuid,
     sequence: u64,
@@ -1227,7 +1226,9 @@ impl CoreLog {
         if bytes.is_empty() {
             return Ok(log);
         }
-        for change in replayable_changes(&bytes) {
+        let changes = replayable_changes(&bytes)
+            .map_err(|_| LocalCoreStateStoreError::Corrupt(paths.current.clone()))?;
+        for change in changes {
             log.apply(change);
         }
         log.checkpoint(root)?;
@@ -1391,7 +1392,11 @@ impl CoreLog {
 
 /// Decodes the log's valid prefix: frames of the first frame's epoch in
 /// consecutive sequence, each intact.
-fn replayable_changes(bytes: &[u8]) -> Vec<Change> {
+///
+/// A torn frame ends the prefix, but an intact frame that does not decode
+/// fails: its checksum proves it was written whole, so it may be a committed
+/// change, and treating it as torn would let the next checkpoint discard it.
+fn replayable_changes(bytes: &[u8]) -> Result<Vec<Change>, serde_json::Error> {
     let mut changes = Vec::new();
     let mut epoch = None;
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
@@ -1407,9 +1412,7 @@ fn replayable_changes(bytes: &[u8]) -> Vec<Change> {
         if blake3::hash(frame).to_hex().as_bytes() != checksum {
             break;
         }
-        let Ok(frame) = serde_json::from_slice::<LogFrame<Change>>(frame) else {
-            break;
-        };
+        let frame = serde_json::from_slice::<LogFrame<Change>>(frame)?;
         if *epoch.get_or_insert(frame.epoch) != frame.epoch
             || frame.sequence != changes.len() as u64
         {
@@ -1417,7 +1420,7 @@ fn replayable_changes(bytes: &[u8]) -> Vec<Change> {
         }
         changes.push(frame.change);
     }
-    changes
+    Ok(changes)
 }
 
 /// Aborts the process at the configured crash point of a crash-atomicity test,
@@ -1755,14 +1758,54 @@ const NODE_CACHE_GENERATION: usize = 16_384;
 struct Generations<K, V> {
     current: HashMap<K, V>,
     previous: HashMap<K, V>,
+    /// When each node was last put; see [`LAZY_NODE_GRACE`].
+    put: HashMap<K, Instant>,
+    /// The size at which expired put times are next pruned: twice what the
+    /// last pruning kept, so pruning stays amortized constant per put.
+    prune_at: usize,
 }
+
+/// How long a node that was put stays safe from collection: long enough for
+/// the mutation that put it to swap it into its workspace's state.
+const LAZY_NODE_GRACE: Duration = if cfg!(test) {
+    Duration::ZERO
+} else {
+    Duration::from_secs(10 * 60)
+};
 
 impl<K: Copy + Eq + Hash, V: Clone> Generations<K, V> {
     fn new() -> Self {
         Self {
             current: HashMap::new(),
             previous: HashMap::new(),
+            put: HashMap::new(),
+            prune_at: NODE_CACHE_GENERATION,
         }
+    }
+
+    /// Records that `key` was just put.
+    fn touch(&mut self, key: K) {
+        if self.put.len() >= self.prune_at {
+            self.put.retain(|_, put| put.elapsed() < LAZY_NODE_GRACE);
+            self.prune_at = NODE_CACHE_GENERATION.max(self.put.len().saturating_mul(2));
+        }
+        self.put.insert(key, Instant::now());
+    }
+
+    /// Forgets `key` for collection unless it was put within the grace
+    /// period; answers whether it may be collected.
+    fn release(&mut self, key: &K) -> bool {
+        if self
+            .put
+            .get(key)
+            .is_some_and(|put| put.elapsed() < LAZY_NODE_GRACE)
+        {
+            return false;
+        }
+        self.put.remove(key);
+        self.current.remove(key);
+        self.previous.remove(key);
+        true
     }
 
     fn get(&mut self, key: &K) -> Option<V> {
@@ -1877,12 +1920,18 @@ impl LocalCoreStateStore {
                 Err(LocalCoreStateStoreError::Integrity)
             };
         }
-        if let Some(existing) = T::memo(&self.nodes).get(&id) {
-            return if existing == value {
-                Ok(())
-            } else {
-                Err(LocalCoreStateStoreError::Integrity)
-            };
+        {
+            // Recorded first, under the lock a collection decides under: a
+            // node put here is not collected before its state names it.
+            let mut memo = T::memo(&self.nodes);
+            memo.touch(id);
+            if let Some(existing) = memo.get(&id) {
+                return if existing == value {
+                    Ok(())
+                } else {
+                    Err(LocalCoreStateStoreError::Integrity)
+                };
+            }
         }
         let stored = value.clone();
         self.transaction(move |namespace| {
@@ -1946,6 +1995,274 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
     ) -> Result<(), Self::Error> {
         self.put_node(shadow, value).await
     }
+}
+
+impl LocalCoreStateStore {
+    /// Every file record a stored lazy shadow holds, which an object
+    /// collection keeps: a lazy workspace may still resolve any of them.
+    pub(crate) async fn lazy_shadow_records(
+        &self,
+    ) -> Result<Vec<crate::kernel::FileRecord>, LocalCoreStateStoreError> {
+        self.transaction(|namespace| {
+            let family = <crate::LazyShadow as LazyNode>::FAMILY;
+            let entries = match std::fs::read_dir(namespace.family(family)) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Vec::new());
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let mut addresses = std::collections::BTreeSet::new();
+            for entry in entries {
+                let name = entry?.file_name();
+                let Some(stem) = name.to_str().and_then(|name| name.strip_suffix(".json")) else {
+                    continue;
+                };
+                let stem = stem.strip_suffix(".previous").unwrap_or(stem);
+                if let Some(address) = hex::decode(stem)
+                    .ok()
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                {
+                    addresses.insert(address);
+                }
+            }
+            let mut records = Vec::new();
+            for address in addresses {
+                if let Some(crate::LazyShadow::Node { record, .. }) =
+                    load_content_addressed::<crate::LazyShadow>(namespace, family, address)?
+                {
+                    records.push(
+                        crate::kernel::decode_file_record(&record)
+                            .map_err(|_| LocalCoreStateStoreError::Integrity)?,
+                    );
+                }
+            }
+            Ok(records)
+        })
+        .await
+    }
+}
+
+impl LocalCoreStateStore {
+    /// Every workspace this store keeps a lineage, lazy binding, or
+    /// Git-compatibility record for.
+    pub(crate) async fn workspace_records(
+        &self,
+    ) -> Result<BTreeSet<WorkspaceId>, LocalCoreStateStoreError> {
+        self.transaction(|root| {
+            root.with_log(|log| {
+                let mut workspaces = log
+                    .resident_keys(|key| match key {
+                        RecordKey::Lineage(id) | RecordKey::LazyWorkspace(id) => Some(id),
+                        _ => None,
+                    })
+                    .into_iter()
+                    .collect::<BTreeSet<_>>();
+                for family in [LINEAGE_FAMILY, LAZY_WORKSPACE_FAMILY, GIT_COMPAT_NAMESPACE] {
+                    for stem in family_stems(root, family)? {
+                        if let Ok(bytes) = <[u8; 16]>::try_from(stem.as_slice()) {
+                            workspaces.insert(WorkspaceId::from_bytes(bytes));
+                        }
+                    }
+                }
+                // A logged absence stays on disk as `null`.
+                let mut recorded = BTreeSet::new();
+                for workspace in workspaces {
+                    if log
+                        .get::<WorkspaceLineageRecord>(root, workspace)?
+                        .is_some()
+                        || log.get::<LazyWorkspaceState>(root, workspace)?.is_some()
+                        || read_locked::<GitCompatState>(
+                            &root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes()),
+                        )?
+                        .is_some()
+                    {
+                        recorded.insert(workspace);
+                    }
+                }
+                Ok(recorded)
+            })
+        })
+        .await
+    }
+
+    /// Forgets every record of a deleted workspace: its lineage, its lazy
+    /// binding, and its Git-compatibility state.
+    pub(crate) async fn forget_workspace(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Result<(), LocalCoreStateStoreError> {
+        self.transaction(move |root| {
+            root.with_log(|log| {
+                let mut change = Change::default();
+                change.put::<WorkspaceLineageRecord>(workspace, None);
+                change.put::<LazyWorkspaceState>(workspace, None);
+                log.commit(root, change)
+            })?;
+            // Unsynchronized: a removal a crash undoes is found again by the
+            // next collection.
+            let paths = root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes());
+            for path in [
+                &paths.temporary,
+                &paths.previous,
+                &paths.current,
+                &paths.lock,
+            ] {
+                remove_if_present(path)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Removes every lazy overlay and shadow node no lazy workspace reaches,
+    /// and returns how many it removed.
+    ///
+    /// It runs as one log transaction, so no workspace state changes while
+    /// it marks and sweeps; a node put within the grace period is kept for
+    /// the mutation still to swap it in.
+    ///
+    /// # Errors
+    ///
+    /// Fails, removing nothing, when a reachable node is missing or damaged.
+    pub async fn collect_lazy_nodes(&self) -> Result<u64, LocalCoreStateStoreError> {
+        let nodes = Arc::clone(&self.nodes);
+        self.transaction(move |root| {
+            root.with_log(|log| {
+                let mut workspaces = log
+                    .resident_keys(|key| match key {
+                        RecordKey::LazyWorkspace(id) => Some(id),
+                        _ => None,
+                    })
+                    .into_iter()
+                    .collect::<BTreeSet<_>>();
+                for stem in family_stems(root, LAZY_WORKSPACE_FAMILY)? {
+                    if let Ok(bytes) = <[u8; 16]>::try_from(stem.as_slice()) {
+                        workspaces.insert(WorkspaceId::from_bytes(bytes));
+                    }
+                }
+                let mut overlays = Vec::new();
+                let mut shadows = Vec::new();
+                for workspace in workspaces {
+                    let Some(state) = log.get::<LazyWorkspaceState>(root, workspace)? else {
+                        continue;
+                    };
+                    overlays.push(state.overlay);
+                    shadows.push(state.shadows);
+                    if let Some(pending) = state.pending_remove {
+                        overlays.extend([pending.prior_overlay, pending.prepared_overlay]);
+                        shadows.push(pending.prior_shadows);
+                    }
+                }
+                let overlays = reachable_nodes::<LazyOverlay>(root, overlays, |node| match node {
+                    LazyOverlay::Node { left, right, .. } => {
+                        vec![left.into_bytes(), right.into_bytes()]
+                    }
+                    LazyOverlay::Empty => Vec::new(),
+                })?;
+                let shadows =
+                    reachable_nodes::<crate::LazyShadow>(root, shadows, |node| match node {
+                        crate::LazyShadow::Node { left, right, .. } => {
+                            vec![left.into_bytes(), right.into_bytes()]
+                        }
+                        crate::LazyShadow::Empty => Vec::new(),
+                    })?;
+                Ok(
+                    sweep_nodes::<LazyOverlay>(root, &nodes, &overlays, LazyOverlayId::from_bytes)?
+                        + sweep_nodes::<crate::LazyShadow>(
+                            root,
+                            &nodes,
+                            &shadows,
+                            crate::LazyShadowId::from_bytes,
+                        )?,
+                )
+            })
+        })
+        .await
+    }
+}
+
+/// The distinct record keys one family holds, whatever recovery copies
+/// accompany them.
+fn family_stems(
+    root: &Namespace,
+    family: &str,
+) -> Result<BTreeSet<Vec<u8>>, LocalCoreStateStoreError> {
+    let entries = match std::fs::read_dir(root.family(family)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut stems = BTreeSet::new();
+    for entry in entries {
+        let name = entry?.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let stem = name
+            .strip_suffix(".previous.json")
+            .or_else(|| name.strip_suffix(".next.json"))
+            .or_else(|| name.strip_suffix(".json"))
+            .or_else(|| name.strip_suffix(".lock"));
+        if let Some(bytes) = stem.and_then(|stem| hex::decode(stem).ok()) {
+            stems.insert(bytes);
+        }
+    }
+    Ok(stems)
+}
+
+/// Every stored node of one family the `roots` reach.
+fn reachable_nodes<T: LazyNode>(
+    root: &Namespace,
+    roots: Vec<T::Id>,
+    children: impl Fn(T) -> Vec<[u8; 32]>,
+) -> Result<std::collections::HashSet<[u8; 32]>, LocalCoreStateStoreError> {
+    let empty = content_address(&T::default())?;
+    let mut reachable = std::collections::HashSet::new();
+    let mut pending = roots.into_iter().map(T::address).collect::<Vec<_>>();
+    while let Some(address) = pending.pop() {
+        if address == empty || !reachable.insert(address) {
+            continue;
+        }
+        let node = load_content_addressed::<T>(root, T::FAMILY, address)?
+            .ok_or(LocalCoreStateStoreError::Integrity)?;
+        pending.extend(children(node));
+    }
+    Ok(reachable)
+}
+
+/// Removes every stored node of one family outside `reachable` that was not
+/// put within the grace period.
+fn sweep_nodes<T: LazyNode>(
+    root: &Namespace,
+    nodes: &NodeMemo,
+    reachable: &std::collections::HashSet<[u8; 32]>,
+    id: impl Fn([u8; 32]) -> T::Id,
+) -> Result<u64, LocalCoreStateStoreError> {
+    let mut removed = 0;
+    for stem in family_stems(root, T::FAMILY)? {
+        let Ok(address) = <[u8; 32]>::try_from(stem.as_slice()) else {
+            continue;
+        };
+        if reachable.contains(&address) {
+            continue;
+        }
+        // Decided and removed under the memo lock a put records under.
+        let mut memo = T::memo(nodes);
+        if !memo.release(&id(address)) {
+            continue;
+        }
+        // Unsynchronized: a removal a crash undoes leaves only garbage.
+        let paths = root.record(T::FAMILY, &address);
+        for path in [
+            &paths.temporary,
+            &paths.previous,
+            &paths.current,
+            &paths.lock,
+        ] {
+            remove_if_present(path)?;
+        }
+        removed += 1;
+    }
+    Ok(removed)
 }
 
 /// Loads an immutable record whose key is the BLAKE3 digest of its encoding.
@@ -2957,6 +3274,69 @@ mod tests {
         );
     }
 
+    /// Rewrites the log's only frame with `edit` and a matching checksum.
+    fn rewrite_intact_frame(root: &Path, edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
+        let log = {
+            let store = LocalCoreStateStore::new(root);
+            let namespace = store.namespace().expect("admitted namespace");
+            core_log_paths(&namespace).current
+        };
+        let bytes = std::fs::read(&log).expect("read core log");
+        let line = bytes.strip_suffix(b"\n").expect("one complete frame");
+        let mut frame: serde_json::Value = serde_json::from_slice(&line[65..]).expect("frame json");
+        edit(&mut frame);
+        let frame = serde_json::to_vec(&frame).expect("encode frame");
+        let mut rewritten = blake3::hash(&frame).to_hex().as_bytes().to_vec();
+        rewritten.push(b' ');
+        rewritten.extend_from_slice(&frame);
+        rewritten.push(b'\n');
+        std::fs::write(&log, &rewritten).expect("rewrite core log");
+        rewritten
+    }
+
+    #[tokio::test]
+    async fn intact_undecodable_frame_fails_closed_and_is_kept() {
+        type Edit = fn(&mut serde_json::Value);
+        let edits: [(&str, Edit); 3] = [
+            ("unknown record key", |frame| {
+                frame["change"][0][0] = serde_json::json!({ "Future": [0] });
+            }),
+            ("unknown frame field", |frame| {
+                frame["future"] = serde_json::json!(1);
+            }),
+            ("unknown payload field", |frame| {
+                frame["change"][0][1]["LazyWorkspace"]["future"] = serde_json::json!(1);
+            }),
+        ];
+        for (case, edit) in edits {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let owner = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
+            assert!(
+                owner
+                    .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1))
+                    .await
+                    .expect("commit")
+            );
+            // The owner leaves its committed frame in the log for replay.
+            drop(owner);
+            let log = rewrite_intact_frame(directory.path(), edit);
+            let store = LocalCoreStateStore::new(directory.path());
+            assert!(
+                matches!(
+                    store.load_lazy_workspace(workspace()).await,
+                    Err(LocalCoreStateStoreError::Corrupt(_))
+                ),
+                "{case}: an intact frame that does not decode is corruption"
+            );
+            let namespace = store.namespace().expect("admitted namespace");
+            assert_eq!(
+                std::fs::read(core_log_paths(&namespace).current).expect("read core log"),
+                log,
+                "{case}: a failed replay must not checkpoint the log away"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn deferred_commits_are_visible_at_once_and_durable_on_commit() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -2988,7 +3368,7 @@ mod tests {
         };
         let bytes = std::fs::read(&log).expect("read core log");
         assert_eq!(
-            replayable_changes(&bytes).len(),
+            replayable_changes(&bytes).expect("decodable log").len(),
             2,
             "both frames are in the log"
         );
@@ -3172,7 +3552,9 @@ mod tests {
         let torn = flushed + (bytes.len().saturating_sub(flushed)) / 2;
         bytes.truncate(torn);
         std::fs::write(&log, &bytes).expect("tear unflushed frames");
-        for change in replayable_changes(bytes.get(..flushed).unwrap_or(&bytes)) {
+        for change in
+            replayable_changes(bytes.get(..flushed).unwrap_or(&bytes)).expect("decodable log")
+        {
             for (key, _) in change.0 {
                 let paths = key.paths(&namespace);
                 std::fs::create_dir_all(&paths.directory).expect("record directory");
@@ -3278,5 +3660,134 @@ mod tests {
     #[test]
     fn shared_core_commits_are_crash_atomic() {
         assert_core_commits_are_crash_atomic(false);
+    }
+
+    /// A treap node over `left` and `right`, as mutations build them.
+    fn linked_overlay(
+        path: &str,
+        left: LazyOverlayId,
+        right: LazyOverlayId,
+    ) -> (LazyOverlayId, LazyOverlay) {
+        let node: LazyOverlay = serde_json::from_value(serde_json::json!({
+            "Node": {
+                "path": path,
+                "priority": 0,
+                "change": "Tombstone",
+                "left": left,
+                "right": right
+            }
+        }))
+        .expect("overlay node");
+        let id = LazyOverlayId::from_bytes(content_address(&node).expect("overlay address"));
+        (id, node)
+    }
+
+    /// Collection removes every node no lazy workspace reaches, keeps every
+    /// node one does, and a node put again after removal is stored again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::open_owned(directory.path()).expect("owned store");
+        let empty = LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).expect("empty"));
+        let (leaf, leaf_node) = linked_overlay("/a", empty, empty);
+        let (root, root_node) = linked_overlay("/b", leaf, empty);
+        let (orphan, orphan_node) = linked_overlay("/old", empty, empty);
+        for (id, node) in [
+            (leaf, leaf_node),
+            (root, root_node),
+            (orphan, orphan_node.clone()),
+        ] {
+            store.put_lazy_overlay(id, node).await.expect("put overlay");
+        }
+        let empty_shadows = crate::LazyShadowId::from_bytes(
+            content_address(&crate::LazyShadow::Empty).expect("empty shadow"),
+        );
+        // Collection walks the index, not the records it holds.
+        let record = vec![1, 2, 3];
+        let metadata =
+            crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default());
+        let shadow = crate::LazyShadow::Node {
+            file_id: crate::foundation::FileId::from_bytes([7; 16]),
+            priority: 0,
+            record: record.clone(),
+            metadata: Box::new(metadata),
+            left: empty_shadows,
+            right: empty_shadows,
+        };
+        let shadow_id =
+            crate::LazyShadowId::from_bytes(content_address(&shadow).expect("shadow address"));
+        store
+            .put_lazy_shadow(shadow_id, shadow)
+            .await
+            .expect("put shadow");
+        let orphan_shadow = crate::LazyShadow::Node {
+            file_id: crate::foundation::FileId::from_bytes([8; 16]),
+            priority: 0,
+            record,
+            metadata: Box::new(metadata),
+            left: empty_shadows,
+            right: empty_shadows,
+        };
+        let orphan_shadow_id = crate::LazyShadowId::from_bytes(
+            content_address(&orphan_shadow).expect("orphan shadow address"),
+        );
+        store
+            .put_lazy_shadow(orphan_shadow_id, orphan_shadow)
+            .await
+            .expect("put orphan shadow");
+        let mut state = lazy_state(workspace(), 1);
+        state.overlay = root;
+        state.shadows = shadow_id;
+        assert!(
+            store
+                .compare_and_swap_lazy_workspace(workspace(), 0, state)
+                .await
+                .expect("bind lazy workspace")
+        );
+
+        assert_eq!(store.collect_lazy_nodes().await.expect("collect"), 2);
+        let reopened = LocalCoreStateStore::new(directory.path());
+        drop(store);
+        for id in [root, leaf] {
+            assert!(
+                reopened
+                    .load_lazy_overlay(id)
+                    .await
+                    .expect("load")
+                    .is_some()
+            );
+        }
+        assert!(
+            reopened
+                .load_lazy_shadow(shadow_id)
+                .await
+                .expect("load")
+                .is_some()
+        );
+        assert!(
+            reopened
+                .load_lazy_overlay(orphan)
+                .await
+                .expect("load")
+                .is_none()
+        );
+        assert!(
+            reopened
+                .load_lazy_shadow(orphan_shadow_id)
+                .await
+                .expect("load")
+                .is_none()
+        );
+        reopened
+            .put_lazy_overlay(orphan, orphan_node)
+            .await
+            .expect("put again");
+        assert!(
+            reopened
+                .load_lazy_overlay(orphan)
+                .await
+                .expect("load")
+                .is_some()
+        );
     }
 }

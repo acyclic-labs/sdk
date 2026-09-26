@@ -8,6 +8,7 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError,
@@ -49,15 +50,7 @@ impl<F: Format> OwnedPage<F> {
                     work,
                     budget,
                 )?;
-                let copied = work.checked_add(WorkCounters {
-                    bytes_copied: logical_bytes,
-                    ..WorkCounters::default()
-                })?;
-                if let Err(error) = copied.verify(budget) {
-                    allocations.release(logical_bytes)?;
-                    return Err(error.into());
-                }
-                *work = copied;
+                charge_copy(logical_bytes, &budget, allocations, work)?;
                 Ok(((*page).clone(), logical_bytes))
             }
         }
@@ -148,14 +141,13 @@ where
     S: AsyncObjectStore,
     F: Format,
 {
-    let prospective = context.work.checked_add(WorkCounters {
-        page_reads: 1,
-        ..WorkCounters::default()
-    })?;
-    prospective.verify(context.budget)?;
     let cache_key = DecodedCacheKey::new::<Page<F>>(page, context.limits);
+    // Admit the page read before consulting the cache, as a backend read
+    // would; the read is charged once the page is known to be cached, and
+    // otherwise the same prospective work carries the backend's receipt.
+    context.work.admit(&PAGE_READ, &context.budget)?;
     if let Some(cached) = store.decoded_cache_get(cache_key)? {
-        *context.work = prospective;
+        context.work.charge(&PAGE_READ, &context.budget)?;
         let logical_bytes = cached.logical_bytes;
         let page = cached
             .value
@@ -176,15 +168,12 @@ where
                     context.work,
                     context.budget,
                 )?;
-                let copied = context.work.checked_add(WorkCounters {
-                    bytes_copied: logical_bytes,
-                    ..WorkCounters::default()
-                })?;
-                if let Err(error) = copied.verify(context.budget) {
-                    context.allocations.release(logical_bytes)?;
-                    return Err(error.into());
-                }
-                *context.work = copied;
+                charge_copy(
+                    logical_bytes,
+                    &context.budget,
+                    context.allocations,
+                    context.work,
+                )?;
                 Ok(OwnedPage {
                     page: PageLease::Owned((*page).clone()),
                     logical_bytes,
@@ -192,19 +181,24 @@ where
             }
         };
     }
+    let prospective = context.work.checked_add(PAGE_READ)?;
     let mut remaining = prospective.remaining(context.budget)?;
     remaining.peak_allocation_bytes = context
         .budget
         .peak_allocation_bytes
         .checked_sub(context.allocations.live_bytes())
         .ok_or(WorkError::Overflow)?;
-    let receipt = match AsyncObjectStore::read(
-        store,
-        page,
-        context.limits.maximum_page_object_bytes(),
-        remaining,
-        context.cancellation,
-    )
+    // The read runs in its own heap frame, so a page the decoded cache
+    // answers never builds or moves its future.
+    let receipt = match in_heap(|| {
+        AsyncObjectStore::read(
+            store,
+            page,
+            context.limits.maximum_page_object_bytes(),
+            remaining,
+            context.cancellation,
+        )
+    })
     .await
     {
         Ok(receipt) => receipt,
@@ -353,20 +347,23 @@ where
         prospective,
         remaining,
     } = plan;
-    let reads = match read_cold_pages(
-        store,
-        &cold_requests,
-        ColdReadContext {
-            prospective,
-            remaining,
-            budget,
-            cancellation,
-            allocations,
-            work,
-        },
-    )
-    .await
-    {
+    // Cold pages await the store in their own heap frame, so a batch the
+    // decoded cache answers whole never builds or moves that future.
+    let context = ColdReadContext {
+        prospective,
+        remaining,
+        budget,
+        cancellation,
+        allocations,
+        work,
+    };
+    let cold = if cold_requests.is_empty() {
+        *context.work = context.prospective;
+        Ok(Vec::new())
+    } else {
+        in_heap(|| read_cold_pages(store, &cold_requests, context)).await
+    };
+    let reads = match cold {
         Ok(reads) => reads,
         Err(error) => {
             allocations.release(source_bytes)?;
@@ -475,15 +472,12 @@ where
     planned
 }
 
+/// Reads a non-empty batch of pages the decoded cache did not answer.
 async fn read_cold_pages<S: AsyncObjectStore>(
     store: &S,
     requests: &[ObjectReadRequest],
     context: ColdReadContext<'_>,
 ) -> Result<Vec<ObjectRead>, Error> {
-    if requests.is_empty() {
-        *context.work = context.prospective;
-        return Ok(Vec::new());
-    }
     let receipt = match store
         .read_many(requests, context.remaining, context.cancellation)
         .await
@@ -746,22 +740,49 @@ fn admit_clone(
     work: &mut WorkCounters,
 ) -> Result<(), Error> {
     allocations.claim_bytes(nested, u64::from(nested != 0), work, budget)?;
-    let copied = match work.checked_add(WorkCounters {
-        bytes_copied: nested,
-        ..WorkCounters::default()
-    }) {
-        Ok(copied) => copied,
-        Err(error) => {
-            allocations.release(nested)?;
-            return Err(error.into());
-        }
-    };
-    if let Err(error) = copied.verify(budget) {
+    if let Err(error) = work.charge(
+        &WorkCounters {
+            bytes_copied: nested,
+            ..WorkCounters::default()
+        },
+        &budget,
+    ) {
         allocations.release(nested)?;
         return Err(error.into());
     }
-    *work = copied;
     Ok(())
+}
+
+/// One authenticated page read, as charged before any backend work.
+const PAGE_READ: WorkCounters = WorkCounters {
+    page_reads: 1,
+    ..WorkCounters::UNCHARGED
+};
+
+/// Charges `copied` bytes of a shared page cloned into an owned one whose
+/// allocation `allocations` has just claimed. An exceeded budget releases
+/// that claim before failing; an overflowing charge fails without releasing
+/// it, exactly as the prospective sum this replaces did.
+fn charge_copy(
+    copied: u64,
+    budget: &WorkBudget,
+    allocations: &mut AllocationLedger,
+    work: &mut WorkCounters,
+) -> Result<(), Error> {
+    match work.charge(
+        &WorkCounters {
+            bytes_copied: copied,
+            ..WorkCounters::default()
+        },
+        budget,
+    ) {
+        Ok(()) => Ok(()),
+        Err(WorkError::Overflow) => Err(WorkError::Overflow.into()),
+        Err(error) => {
+            allocations.release(copied)?;
+            Err(error.into())
+        }
+    }
 }
 
 fn charge_items(work: &mut WorkCounters, count: u64, budget: WorkBudget) -> Result<(), WorkError> {

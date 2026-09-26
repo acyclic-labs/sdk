@@ -33,6 +33,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
+use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
@@ -286,6 +287,93 @@ pub struct SharedCheckout<A, O> {
     ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
     grouped: StdMutex<GroupedQueue>,
+    /// Creations applied together with their first bytes; see
+    /// [`PendingCreate`].
+    pending: StdMutex<Vec<Arc<PendingCreate>>>,
+}
+
+/// Most bytes a created file holds before its creation is applied.
+const PENDING_CREATE_BYTES: u64 = 1 << 20;
+
+/// A regular file created through the mount whose creation is applied with
+/// its first bytes, as one change, and with the creations pending beside it,
+/// as one group: when a durability request settles it, when its bytes
+/// outgrow [`PENDING_CREATE_BYTES`], when [`MAXIMUM_GROUPED_CHANGES`]
+/// creations wait, or before anything reads or changes what it creates,
+/// whichever is first. Its name is recorded as changed when it is created,
+/// so nothing remembers it absent, and a lookup of that name reports it
+/// from here; no other name's answer depends on it.
+pub(super) struct PendingCreate {
+    path: NamespacePath,
+    file_id: FileId,
+    origin: ViewOrigin,
+    maximum_bytes: u64,
+    state: StdMutex<PendingState>,
+}
+
+enum PendingState {
+    Pending {
+        metadata: Box<FileMetadata>,
+        bytes: Vec<u8>,
+    },
+    Applying,
+    Applied,
+    Failed(MountSourceError),
+}
+
+impl PendingCreate {
+    fn state(&self) -> std::sync::MutexGuard<'_, PendingState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The change that applies the creation, once.
+    fn begin_applying(&self) -> Option<GroupedChange> {
+        let mut state = self.state();
+        match std::mem::replace(&mut *state, PendingState::Applying) {
+            PendingState::Pending { metadata, bytes } => Some(GroupedChange::CreateFile {
+                path: self.path.clone(),
+                metadata,
+                file_id: self.file_id,
+                bytes: Bytes::from(bytes),
+            }),
+            other => {
+                *state = other;
+                None
+            }
+        }
+    }
+
+    fn finish_applying(&self, applied: Result<GroupedOutcome, MountSourceError>) {
+        *self.state() = match applied {
+            Ok(_) => PendingState::Applied,
+            Err(error) => PendingState::Failed(error),
+        };
+    }
+
+    /// The file as it is created, while its creation waits.
+    fn lookup(&self) -> Option<MountLookup> {
+        match &*self.state() {
+            PendingState::Pending { metadata, bytes } => Some(MountLookup {
+                node: MountNode {
+                    file_id: self.file_id,
+                    kind: MountNodeKind::Regular,
+                    logical_bytes: bytes.len() as u64,
+                    link_count: 1,
+                    device: None,
+                },
+                metadata: **metadata,
+            }),
+            _ => None,
+        }
+    }
+
+    /// What the creation left for a handle to report once applied.
+    fn applied(&self) -> Result<(), MountSourceError> {
+        match &*self.state() {
+            PendingState::Failed(error) => Err(error.clone()),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// Most queued changes one hold of the checkout applies as one mutation.
@@ -306,6 +394,9 @@ struct GroupedRequest {
     /// The requester's origin, which its change takes whichever caller or
     /// drain applies the group.
     origin: ViewOrigin,
+    /// Whether the change was recorded when it was requested, as a pending
+    /// creation is (see [`PendingCreate`]).
+    recorded: bool,
 }
 
 /// Whether a queued change was claimed for application or abandoned by its
@@ -444,6 +535,7 @@ impl<A, O> SharedCheckout<A, O> {
             revision,
             ledger,
             view_gate: Arc::new(ViewGate::new()),
+            pending: StdMutex::new(Vec::new()),
             grouped: StdMutex::new(GroupedQueue::default()),
         }
     }
@@ -467,6 +559,8 @@ impl<A, O> SharedCheckout<A, O> {
         A: AsyncAuthorityStore + Send + Sync + 'static,
         O: AsyncObjectStore + Send + Sync + 'static,
     {
+        // A change may depend on a pending creation: apply those first.
+        self.settle_pending().await;
         let (reply, outcome) = tokio::sync::oneshot::channel();
         let admission = Arc::new(GroupedAdmission(AtomicU8::new(GROUPED_QUEUED)));
         let _abandon = AbandonUnlessClaimed(Arc::clone(&admission));
@@ -480,6 +574,7 @@ impl<A, O> SharedCheckout<A, O> {
                 admission,
                 reply,
                 origin: ViewOrigin::current(),
+                recorded: false,
             });
             !std::mem::replace(&mut queue.draining, true)
         };
@@ -503,7 +598,7 @@ impl<A, O> SharedCheckout<A, O> {
     {
         in_heap(move || async move {
             loop {
-                let mut checkout = self.lock().await;
+                let mut checkout = self.lock_settled().await;
                 let requests = {
                     let mut queue = self
                         .grouped
@@ -531,15 +626,119 @@ impl<A, O> SharedCheckout<A, O> {
         .await;
     }
 
-    /// Serializes external checkout access and excludes native callbacks.
-    pub async fn lock(&self) -> SharedCheckoutGuard<'_, A, O> {
+    /// Serializes external checkout access and excludes native callbacks,
+    /// once every pending creation is applied.
+    pub async fn lock(&self) -> SharedCheckoutGuard<'_, A, O>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.settle_pending().await;
+        self.lock_settled().await
+    }
+
+    async fn lock_settled(&self) -> SharedCheckoutGuard<'_, A, O> {
         let view = self.view_gate.write().await;
         let state = self.state.write().await;
         SharedCheckoutGuard { _view: view, state }
     }
 
-    /// Admits one callback to the current view alongside every other reader.
+    /// Records `pending` as created: its name changed now, though its
+    /// creation is applied later (see [`PendingCreate`]).
+    fn hold_pending(&self, pending: Arc<PendingCreate>) {
+        {
+            let _origin = pending.origin.enter();
+            self.ledger.record(&ViewChange::Bound(&pending.path));
+        }
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(pending);
+    }
+
+    /// The pending creation of `path`, reported as it stands.
+    fn pending_lookup(&self, path: &NamespacePath) -> Option<MountLookup> {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|pending| pending.path == *path)
+            .find_map(|pending| pending.lookup())
+    }
+
+    fn pending_create(&self, file_id: FileId) -> Option<Arc<PendingCreate>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|pending| pending.file_id == file_id)
+            .cloned()
+    }
+
+    /// Applies every pending creation as one group. The exclusive hold is
+    /// taken first, so no reader sees the checkout between the claim and
+    /// the change; each creation keeps its own outcome.
+    async fn settle_pending(&self)
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        if self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+        {
+            return;
+        }
+        let mut checkout = self.lock_settled().await;
+        let pending =
+            std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner));
+        let mut requests = Vec::with_capacity(pending.len());
+        let mut outcomes = Vec::with_capacity(pending.len());
+        for create in pending {
+            if let Some(change) = create.begin_applying() {
+                let (reply, outcome) = tokio::sync::oneshot::channel();
+                requests.push(GroupedRequest {
+                    change,
+                    admission: Arc::new(GroupedAdmission(AtomicU8::new(GROUPED_CLAIMED))),
+                    reply,
+                    origin: create.origin,
+                    recorded: true,
+                });
+                outcomes.push((create, outcome));
+            }
+        }
+        checkout
+            .apply_grouped_requests(requests, &CancellationToken::new())
+            .await;
+        drop(checkout);
+        for (create, outcome) in outcomes {
+            create.finish_applying(outcome.await.unwrap_or(Err(MountSourceError::Stale)));
+        }
+    }
+
+    /// Admits one callback to the current view alongside every other reader,
+    /// once every pending creation is applied. A callback that already reads
+    /// the view reads the one it began with.
     pub(super) async fn observe(
+        &self,
+        owner: ThreadId,
+    ) -> Result<SharedCheckoutObservation<'_, A, O>, MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        if !self.view_gate.reads_for_callback(owner) {
+            self.settle_pending().await;
+        }
+        self.observe_as_is(owner).await
+    }
+
+    /// Admits one callback to the view as it stands, pending creations and
+    /// all: for facts no creation changes.
+    async fn observe_as_is(
         &self,
         owner: ThreadId,
     ) -> Result<SharedCheckoutObservation<'_, A, O>, MountSourceError> {
@@ -590,6 +789,10 @@ impl<A, O> SharedCheckout<A, O> {
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
         self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp)
+    }
+
+    fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
+        self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp)
     }
 }
 
@@ -937,7 +1140,7 @@ impl<A, O> SharedCheckoutState<A, O> {
             }
             let origins = requests
                 .iter()
-                .map(|request| request.origin)
+                .map(|request| (request.origin, request.recorded))
                 .collect::<Vec<_>>();
             let (changes, replies): (Vec<_>, Vec<_>) = requests
                 .into_iter()
@@ -965,15 +1168,22 @@ impl<A, O> SharedCheckoutState<A, O> {
                 }
             };
             let mut changed = false;
-            for ((result, view), origin) in results.iter().zip(&views).zip(origins) {
+            for ((result, view), (origin, recorded)) in results.iter().zip(&views).zip(origins) {
                 if result.is_ok() {
                     changed = true;
+                    if recorded {
+                        continue;
+                    }
                     let _origin = origin.enter();
                     match view {
                         GroupedView::Bound(path) => self.record(&ViewChange::Bound(path)),
                         GroupedView::Node(file_id) => self.record(&ViewChange::Node(*file_id)),
                     }
                 }
+            }
+            if changed {
+                // Changes recorded when they were requested are recorded too.
+                self.recorded_view = self.checkout.root().file_table;
             }
             let published = if changed {
                 self.publish_mutation(cancellation).await
@@ -1409,6 +1619,221 @@ where
     }
 }
 
+/// The handle a creation through the mount opens: until its creation is
+/// applied (see [`PendingCreate`]), it holds the file's bytes and facts
+/// itself; afterwards it is the checkout's file.
+struct PendingCreatedFile<A, O> {
+    pending: Arc<PendingCreate>,
+    attached: CheckoutAttachedFile<A, O>,
+}
+
+impl<A, O> PendingCreatedFile<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    /// Applies the creation, if it is still pending, and reports how it went.
+    fn apply(&self) -> Result<(), MountSourceError> {
+        let pending = matches!(&*self.pending.state(), PendingState::Pending { .. });
+        if pending {
+            self.attached.runtime.wait(|| async {
+                self.attached.checkout.settle_pending().await;
+                Ok(())
+            })?;
+        }
+        self.pending.applied()
+    }
+
+    /// Runs `held` on the bytes and facts the handle holds while its
+    /// creation is pending and they stay within their bound; otherwise
+    /// applies the creation and runs `attached` on the checkout's file.
+    fn held_or_attached<T>(
+        &self,
+        held: impl FnOnce(&mut Box<FileMetadata>, &mut Vec<u8>, u64) -> Option<T>,
+        attached: impl FnOnce(&CheckoutAttachedFile<A, O>) -> Result<T, MountSourceError>,
+    ) -> Result<T, MountSourceError> {
+        {
+            let mut state = self.pending.state();
+            if let PendingState::Pending { metadata, bytes } = &mut *state
+                && let Some(value) = held(metadata, bytes, self.pending.maximum_bytes)
+            {
+                return Ok(value);
+            }
+        }
+        self.apply()?;
+        attached(&self.attached)
+    }
+
+    /// Records that the held file changed, as an applied change would.
+    fn record_held_change(&self) {
+        let _origin = self.pending.origin.enter();
+        self.attached
+            .checkout
+            .ledger
+            .record(&ViewChange::Node(self.pending.file_id));
+        self.attached
+            .checkout
+            .revision
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn held_lookup(&self, metadata: FileMetadata, logical_bytes: u64) -> MountLookup {
+        MountLookup {
+            node: MountNode {
+                file_id: self.pending.file_id,
+                kind: MountNodeKind::Regular,
+                logical_bytes,
+                link_count: 1,
+                device: None,
+            },
+            metadata,
+        }
+    }
+}
+
+/// Bytes `[offset, offset + length)` of `bytes`, clipped to its end.
+fn held_range(bytes: &[u8], offset: u64, length: u64) -> Bytes {
+    let start = usize::try_from(offset)
+        .unwrap_or(usize::MAX)
+        .min(bytes.len());
+    let end = usize::try_from(offset.saturating_add(length))
+        .unwrap_or(usize::MAX)
+        .min(bytes.len());
+    Bytes::copy_from_slice(bytes.get(start..end).unwrap_or_default())
+}
+
+impl<A, O> MountOpenFile for PendingCreatedFile<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    fn lookup(&self) -> Result<MountLookup, MountSourceError> {
+        self.held_or_attached(
+            |metadata, bytes, _| Some(self.held_lookup(**metadata, bytes.len() as u64)),
+            MountOpenFile::lookup,
+        )
+    }
+
+    fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
+        self.held_or_attached(
+            |_, bytes, _| {
+                let end = offset.checked_add(u64::from(length))?;
+                (end <= bytes.len() as u64).then(|| held_range(bytes, offset, u64::from(length)))
+            },
+            |file| file.read_range(offset, length),
+        )
+    }
+
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
+        self.held_or_attached(
+            |_, bytes, _| Some(held_range(bytes, offset, u64::from(maximum_bytes))),
+            |file| file.read_up_to(offset, maximum_bytes),
+        )
+    }
+
+    fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
+        self.apply()?;
+        self.attached.seek(offset, target)
+    }
+
+    fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
+        let time = content_change_time()?;
+        let written = bytes.clone();
+        let held = self.held_or_attached(
+            |metadata, held, maximum| {
+                let end = offset.checked_add(written.len() as u64)?;
+                if end > maximum {
+                    return None;
+                }
+                let start = usize::try_from(offset).ok()?;
+                let end = usize::try_from(end).ok()?;
+                if held.len() < end {
+                    held.resize(end, 0);
+                }
+                held.get_mut(start..end)?.copy_from_slice(&written);
+                metadata.stamp_content_change(time);
+                Some(true)
+            },
+            |file| file.write_range(offset, bytes).map(|()| false),
+        )?;
+        if held {
+            self.record_held_change();
+        }
+        Ok(())
+    }
+
+    fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
+        let time = content_change_time()?;
+        let held = self.held_or_attached(
+            |metadata, held, maximum| {
+                if logical_bytes > maximum {
+                    return None;
+                }
+                held.resize(usize::try_from(logical_bytes).ok()?, 0);
+                metadata.stamp_content_change(time);
+                Some(true)
+            },
+            |file| file.resize(logical_bytes).map(|()| false),
+        )?;
+        if held {
+            self.record_held_change();
+        }
+        Ok(())
+    }
+
+    fn allocate_range(
+        &self,
+        offset: u64,
+        length: u64,
+        operation: MountRangeAllocation,
+    ) -> Result<(), MountSourceError> {
+        self.apply()?;
+        self.attached.allocate_range(offset, length, operation)
+    }
+
+    fn set_attributes(
+        &self,
+        metadata: FileMetadata,
+        logical_bytes: Option<u64>,
+    ) -> Result<(), MountSourceError> {
+        self.apply()?;
+        self.attached.set_attributes(metadata, logical_bytes)
+    }
+
+    fn read_attribute(&self, name: &[u8]) -> Result<Option<Bytes>, MountSourceError> {
+        self.apply()?;
+        self.attached.read_attribute(name)
+    }
+
+    fn list_attributes(
+        &self,
+        cursor: Option<&[u8]>,
+        maximum_entries: u32,
+    ) -> Result<MountAttributePage, MountSourceError> {
+        self.apply()?;
+        self.attached.list_attributes(cursor, maximum_entries)
+    }
+
+    fn write_attribute(
+        &self,
+        name: &[u8],
+        value: Bytes,
+        mode: MountAttributeWriteMode,
+    ) -> Result<(), MountSourceError> {
+        self.apply()?;
+        self.attached.write_attribute(name, value, mode)
+    }
+
+    fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError> {
+        self.apply()?;
+        self.attached.remove_attribute(name)
+    }
+
+    fn settle(&self) -> Result<(), MountSourceError> {
+        self.apply()
+    }
+}
+
 impl<A, O> CheckoutAttachedFile<A, O> {
     fn attribute_name(&self, bytes: &[u8]) -> Result<AttributeName, MountSourceError> {
         if self.profile != FilesystemProfile::Posix {
@@ -1725,8 +2150,8 @@ impl<A, O> CheckoutMountSource<A, O> {
     #[cfg(all(test, target_os = "macos"))]
     pub(super) fn generation_id(&self) -> Result<crate::GenerationId, MountSourceError>
     where
-        A: Send + Sync,
-        O: Send + Sync,
+        A: AsyncAuthorityStore + Send + Sync,
+        O: AsyncObjectStore + Send + Sync,
     {
         let owner = ViewGate::callback_owner();
         self.runtime
@@ -1820,7 +2245,12 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         in_heap(move || async move {
             let path = self.path(path)?;
-            let observation = self.checkout.observe(owner).await?;
+            // A pending creation answers for its own name and changes no
+            // other name's answer (see `PendingCreate`).
+            if let Some(pending) = self.checkout.pending_lookup(&path) {
+                return Ok(Some(pending));
+            }
+            let observation = self.checkout.observe_as_is(owner).await?;
             let mut checkout = observation.observer();
             let receipt = checkout
                 .lookup_no_follow_with_metadata(&path, boundary_budget(), &self.cancellation)
@@ -1932,6 +2362,13 @@ impl<A, O> CheckoutMountSource<A, O> {
         })
     }
 
+    /// Whether `path` still names what it named after `stamp`, whatever
+    /// changed beneath it.
+    pub(super) fn binding_unchanged_since(&self, path: &MountPath, stamp: ViewStamp) -> bool {
+        self.path(path)
+            .is_ok_and(|path| self.checkout.binding_unchanged_since(&path, stamp))
+    }
+
     /// Returns the checkout's owning volume without filesystem I/O.
     ///
     /// # Errors
@@ -1944,7 +2381,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     {
         let owner = ViewGate::callback_owner();
         self.runtime
-            .wait(|| async { Ok(self.checkout.observe(owner).await?.volume_id()) })
+            .wait(|| async { Ok(self.checkout.observe_as_is(owner).await?.volume_id()) })
     }
 
     /// Cancels future and in-flight canonical operations owned by this mount.
@@ -2580,22 +3017,23 @@ where
     }
 
     fn acquire_view_lease(&self) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-        let owner = ViewGate::callback_owner();
-        let lease = self.runtime.wait(|| {
-            let gate = Arc::clone(&self.checkout.view_gate);
-            async move { gate.read_for_callback(owner, None).await }
-        })?;
-        Ok(Box::new(lease))
+        self.acquire_binding_lease(None)
     }
 
+    /// Leases the view for a callback, once every pending creation is
+    /// applied: whatever the callback then reads sees them.
     fn acquire_binding_lease(
         &self,
         expected_epoch: Option<u64>,
     ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
         let owner = ViewGate::callback_owner();
-        let lease = self.runtime.wait(|| {
-            let gate = Arc::clone(&self.checkout.view_gate);
-            async move { gate.read_for_callback(owner, expected_epoch).await }
+        let lease = self.runtime.wait(|| async {
+            if !self.checkout.view_gate.reads_for_callback(owner) {
+                self.checkout.settle_pending().await;
+            }
+            Arc::clone(&self.checkout.view_gate)
+                .read_for_callback(owner, expected_epoch)
+                .await
         })?;
         Ok(Box::new(lease))
     }
@@ -2633,6 +3071,25 @@ where
             profile: self.profile,
             limits: self.limits,
         }))
+    }
+
+    fn open_created(
+        &self,
+        _path: &MountPath,
+        created: &MountLookup,
+    ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
+        let attached = CheckoutAttachedFile {
+            checkout: Arc::clone(&self.checkout),
+            file_id: created.node.file_id,
+            runtime: self.runtime.clone(),
+            cancellation: self.cancellation.clone(),
+            profile: self.profile,
+            limits: self.limits,
+        };
+        Ok(match self.checkout.pending_create(created.node.file_id) {
+            Some(pending) => Arc::new(PendingCreatedFile { pending, attached }),
+            None => Arc::new(attached),
+        })
     }
 
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
@@ -2796,29 +3253,46 @@ where
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError> {
         let path = self.path(path)?;
+        // A creation waits to be applied, but not for publication to resolve.
         self.runtime.wait(|| async {
-            let GroupedOutcome::Created(file_id) = self
-                .checkout
-                .apply_grouped(
-                    GroupedChange::CreateFile { path, metadata },
-                    &self.cancellation,
-                )
-                .await?
-            else {
-                return Err(MountSourceError::Engine(
-                    "create omitted file identity".to_owned(),
-                ));
-            };
-            Ok(MountLookup {
-                node: MountNode {
-                    file_id,
-                    kind: MountNodeKind::Regular,
-                    logical_bytes: 0,
-                    link_count: 1,
-                    device: None,
-                },
-                metadata,
-            })
+            self.checkout
+                .state
+                .read()
+                .await
+                .ensure_publication_resolved()
+        })?;
+        let waiting = self
+            .checkout
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
+        if waiting >= MAXIMUM_GROUPED_CHANGES {
+            self.runtime.wait(|| async {
+                self.checkout.settle_pending().await;
+                Ok(())
+            })?;
+        }
+        let file_id = FileId::new();
+        self.checkout.hold_pending(Arc::new(PendingCreate {
+            path,
+            file_id,
+            origin: ViewOrigin::current(),
+            maximum_bytes: PENDING_CREATE_BYTES.min(self.limits.maximum_read_bytes),
+            state: StdMutex::new(PendingState::Pending {
+                metadata: Box::new(metadata),
+                bytes: Vec::new(),
+            }),
+        }));
+        Ok(MountLookup {
+            node: MountNode {
+                file_id,
+                kind: MountNodeKind::Regular,
+                logical_bytes: 0,
+                link_count: 1,
+                device: None,
+            },
+            metadata,
         })
     }
 
@@ -4024,6 +4498,54 @@ mod tests {
         shared_sources_with_publication(profile, MountPublication::CloseAndSync)
     }
 
+    /// A file created through the mount holds its first bytes until its
+    /// handle settles; anything else that reads the checkout meanwhile
+    /// applies the creation first, and bytes past the bound apply it too.
+    #[test]
+    fn a_created_file_is_applied_with_its_first_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let (held, read, large) = (
+            native_test_path("held"),
+            native_test_path("read"),
+            native_test_path("large"),
+        );
+
+        let created = source.create_file(&held, metadata())?;
+        let file = source.open_created(&held, &created)?;
+        file.write_range(0, Bytes::from_static(b"first bytes"))?;
+        assert_eq!(file.lookup()?.node.logical_bytes, 11);
+        assert_eq!(file.read_up_to(0, 64)?.as_ref(), b"first bytes");
+        file.settle()?;
+        let applied = source.lookup(&held)?.ok_or("settled creation is absent")?;
+        assert_eq!(applied.node.file_id, created.node.file_id);
+        assert_eq!(applied.node.logical_bytes, 11);
+        assert_eq!(applied.metadata, file.lookup()?.metadata);
+
+        // Another reader applies a creation its handle still holds.
+        let created = source.create_file(&read, metadata())?;
+        let file = source.open_created(&read, &created)?;
+        file.write_range(4, Bytes::from_static(b"tail"))?;
+        let reopened = source.open_file(&read)?;
+        assert_eq!(reopened.read_up_to(0, 64)?.as_ref(), b"\0\0\0\0tail");
+        file.write_range(0, Bytes::from_static(b"head"))?;
+        assert_eq!(reopened.read_up_to(0, 64)?.as_ref(), b"headtail");
+
+        // Bytes past the bound apply the creation and continue in place.
+        let created = source.create_file(&large, metadata())?;
+        let file = source.open_created(&large, &created)?;
+        let past = usize::try_from(PENDING_CREATE_BYTES)? + 1;
+        file.write_range(0, Bytes::from(vec![7_u8; past]))?;
+        assert_eq!(
+            source
+                .lookup(&large)?
+                .ok_or("large creation is absent")?
+                .node
+                .logical_bytes,
+            u64::try_from(past)?
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_grouped_change_takes_its_requesters_origin() -> Result<(), Box<dyn std::error::Error>> {
         struct Origins(StdMutex<Vec<ViewOrigin>>);
@@ -4041,6 +4563,10 @@ mod tests {
         let weak: Weak<dyn ViewObserver> = Arc::<Origins>::downgrade(&observer);
         source.observe_view(weak);
         let (requester, applier) = (ViewOrigin::new(), ViewOrigin::new());
+        let target = native_test_path("applied");
+        source.create_file(&target, metadata())?;
+        // Applies the creation, which waits for its first bytes.
+        assert!(source.lookup(&target)?.is_some());
         // A request queued under one origin, then applied in the group of a
         // caller under another.
         let (reply, _outcome) = tokio::sync::oneshot::channel();
@@ -4053,18 +4579,26 @@ mod tests {
             .push_back(GroupedRequest {
                 change: GroupedChange::CreateFile {
                     path: source.path(&native_test_path("queued"))?,
-                    metadata: metadata(),
+                    metadata: Box::new(metadata()),
+                    file_id: FileId::new(),
+                    bytes: Bytes::new(),
                 },
                 admission: Arc::new(GroupedAdmission(AtomicU8::new(GROUPED_QUEUED))),
                 reply,
                 origin: requester,
+                recorded: false,
             });
         {
             let _applier = applier.enter();
-            source.create_file(&native_test_path("applied"), metadata())?;
+            source
+                .open_file(&target)?
+                .write_range(0, Bytes::from_static(b"applied"))?;
         }
         let origins = observer.0.lock().map_err(|_| "poisoned origins")?.clone();
-        assert_eq!(origins.get(..2), Some(&[requester, applier][..]));
+        assert_eq!(
+            origins.get(origins.len().saturating_sub(2)..),
+            Some(&[requester, applier][..])
+        );
         Ok(())
     }
 
@@ -4095,7 +4629,9 @@ mod tests {
         let create = |path: &MountPath| -> Result<GroupedChange, MountSourceError> {
             Ok(GroupedChange::CreateFile {
                 path: source.path(path)?,
-                metadata: metadata(),
+                metadata: Box::new(metadata()),
+                file_id: FileId::new(),
+                bytes: Bytes::new(),
             })
         };
         let (abandoned_change, kept_change) = (create(&abandoned)?, create(&kept)?);
@@ -4133,7 +4669,9 @@ mod tests {
         let create = |path: &MountPath| -> Result<GroupedChange, MountSourceError> {
             Ok(GroupedChange::CreateFile {
                 path: source.path(path)?,
-                metadata: metadata(),
+                metadata: Box::new(metadata()),
+                file_id: FileId::new(),
+                bytes: Bytes::new(),
             })
         };
         let (abandoned_change, kept_change) = (create(&abandoned)?, create(&kept)?);
@@ -4176,7 +4714,7 @@ mod tests {
         let (completed, receive) = std::sync::mpsc::sync_channel(1);
         let task = std::thread::spawn(move || {
             let result =
-                writer.create_file(&MountPath::root().child(b"leased".to_vec()), metadata());
+                writer.create_directory(&MountPath::root().child(b"leased".to_vec()), metadata());
             assert!(completed.send(result).is_ok(), "mutation result receiver");
         });
         assert!(

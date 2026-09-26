@@ -72,6 +72,103 @@ type LocalSingleMount =
 #[derive(Clone, Default)]
 struct SharedRootRegistry {
     roots: Arc<AsyncMutex<BTreeMap<PathBuf, Arc<AsyncMutex<SharedRootRegistration>>>>>,
+    collection: BackgroundCollection,
+}
+
+/// Workspaces deleted before the local store is collected again.
+const DELETIONS_PER_COLLECTION: u64 = 32;
+/// The longest the local store goes uncollected while the service runs.
+const COLLECTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Collects the local object store in the background, off every hook's
+/// path: once enough workspaces were deleted since the last collection, and
+/// at least daily.
+#[derive(Clone, Default)]
+struct BackgroundCollection {
+    deletions: Arc<std::sync::atomic::AtomicU64>,
+    wake: Arc<tokio::sync::Notify>,
+    task: Arc<CollectionSlot>,
+}
+
+/// The running background collection, shared by every registry clone: the
+/// last clone to go stops it, so the root it holds is released even when
+/// nothing stops it explicitly.
+#[derive(Default)]
+struct CollectionSlot(Mutex<Option<CollectionTask>>);
+
+/// The running background collection and how to stop it.
+struct CollectionTask {
+    cancellation: acyclic_fs::CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl CollectionSlot {
+    fn take(&self) -> Option<CollectionTask> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
+impl Drop for CollectionSlot {
+    fn drop(&mut self) {
+        if let Some(task) = self.take() {
+            task.cancellation.cancel();
+        }
+    }
+}
+
+impl BackgroundCollection {
+    /// Counts one deleted workspace toward the next collection.
+    fn deleted(&self) {
+        if self
+            .deletions
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1
+            >= DELETIONS_PER_COLLECTION
+        {
+            self.wake.notify_one();
+        }
+    }
+
+    fn start(&self, fs: LocalFs, store: LocalCoreStateStore) {
+        let collection = LocalDistributedFs::new(fs, store);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let deletions = Arc::clone(&self.deletions);
+        let wake = Arc::clone(&self.wake);
+        let token = cancellation.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = wake.notified() => {}
+                    () = tokio::time::sleep(COLLECTION_INTERVAL) => {}
+                    () = token.cancelled() => return,
+                }
+                deletions.store(0, std::sync::atomic::Ordering::Release);
+                // A failed collection sweeps nothing it should not; the next
+                // one starts over.
+                let _ = collection.collect_garbage(&token).await;
+            }
+        });
+        if let Some(previous) = self
+            .task
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(CollectionTask { cancellation, task })
+        {
+            previous.cancellation.cancel();
+        }
+    }
+
+    /// Stops collecting and waits for a collection in progress to end.
+    async fn stop(&self) {
+        if let Some(CollectionTask { cancellation, task }) = self.task.take() {
+            cancellation.cancel();
+            let _ = task.await;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1824,6 +1921,9 @@ struct ControlPlane {
     physical_roots: BTreeMap<String, Arc<SharedPhysicalRoot>>,
     mounts: BTreeMap<String, LocalMount>,
     pending_mounts: BTreeMap<[u8; 16], LocalMount>,
+    /// Detached mounts whose sources are still being torn down; see
+    /// [`ControlPlane::retire`].
+    retiring: Vec<tokio::task::JoinHandle<()>>,
     /// The last save was left unflushed; see [`Survives::ServiceCrash`].
     unflushed: bool,
     slots: StateSlots,
@@ -1904,6 +2004,7 @@ impl ControlPlane {
             physical_roots: BTreeMap::new(),
             mounts: BTreeMap::new(),
             pending_mounts: BTreeMap::new(),
+            retiring: Vec::new(),
             unflushed: false,
             slots,
             #[cfg(test)]
@@ -2380,6 +2481,7 @@ impl ControlPlane {
                 mount.abandon().map_err(|error| {
                     format!("cannot fence expired agent '{agent_id}' before recovery: {error}")
                 })?;
+                self.retire(mount);
             }
         }
         for record in expired {
@@ -4296,7 +4398,8 @@ impl ControlPlane {
                 .await
                 .map_err(display)?
             {
-                WorkspaceDelete::Deleted | WorkspaceDelete::AlreadyDeleted => {}
+                WorkspaceDelete::Deleted => self.shared_roots.collection.deleted(),
+                WorkspaceDelete::AlreadyDeleted => {}
                 WorkspaceDelete::Conflict => {
                     return Err("prepared workspace deletion conflicted".to_owned());
                 }
@@ -4961,7 +5064,8 @@ impl ControlPlane {
                     .await
                     .map_err(|error| format!("cannot delete discarded workspace: {error}"))?
                 {
-                    WorkspaceDelete::Deleted | WorkspaceDelete::AlreadyDeleted => {}
+                    WorkspaceDelete::Deleted => self.shared_roots.collection.deleted(),
+                    WorkspaceDelete::AlreadyDeleted => {}
                     WorkspaceDelete::Conflict => {
                         return Err("discarded workspace deletion conflicted".to_owned());
                     }
@@ -5008,9 +5112,21 @@ impl ControlPlane {
         }
         if let Some(mount) = self.mounts.get(agent_id) {
             mount.unmount().await?;
-            self.mounts.remove(agent_id);
+            if let Some(mount) = self.mounts.remove(agent_id) {
+                self.retire(mount);
+            }
         }
         Ok(())
+    }
+
+    /// Tears a detached mount's source down off the caller's path: its
+    /// namespace is gone and its effects are published, so nothing waits on
+    /// the watch and checkout it still holds, whose release takes a while.
+    /// Close joins every retirement before it lets the root go.
+    fn retire(&mut self, mount: LocalMount) {
+        self.retiring.retain(|retirement| !retirement.is_finished());
+        self.retiring
+            .push(tokio::task::spawn_blocking(move || drop(mount)));
     }
 
     #[cfg(test)]
@@ -5465,6 +5581,9 @@ impl ControlPlane {
     }
 
     fn persist(&mut self) -> Result<(), String> {
+        // A save that survives a power loss survives it with every authority
+        // write it may rest on.
+        self.fs.flush_deferred_authority().map_err(display)?;
         self.slots
             .save(&self.data, &self.state, Survives::PowerLoss)?;
         // A flushed save is a whole snapshot, so it covers any unflushed one.
@@ -5481,9 +5600,15 @@ impl ControlPlane {
         Ok(())
     }
 
-    /// Flushes an unflushed save. Every request starts here, so nothing ever
-    /// acts on a transition that a power loss could still undo.
+    /// Flushes an unflushed save and the authority writes of the requests
+    /// before it. Every request starts here, so nothing ever acts on a
+    /// transition that a power loss could still undo.
     async fn make_durable(&mut self) -> Result<(), String> {
+        let fs = self.fs.clone();
+        tokio::task::spawn_blocking(move || fs.flush_deferred_authority())
+            .await
+            .map_err(display)?
+            .map_err(display)?;
         if !self.unflushed {
             return Ok(());
         }
@@ -5520,6 +5645,8 @@ impl ControlPlane {
         let has_leases = !self.state.leases.is_empty();
         if has_leases || !self.mounts.is_empty() || !self.pending_mounts.is_empty() {
             self.make_durable().await?;
+        } else {
+            self.fs.flush_deferred_authority().map_err(display)?;
         }
         #[cfg(test)]
         let root_released = if self.owns_local_root {
@@ -5611,6 +5738,13 @@ impl ControlPlane {
                 }
             }
             drop(operations);
+            for retirement in std::mem::take(&mut self.retiring) {
+                if let Err(error) = retirement.await {
+                    first_error.get_or_insert_with(|| {
+                        format!("cannot release a retired mount during shutdown: {error}")
+                    });
+                }
+            }
             first_error.map_or(Ok(()), Err)
         }
         .await;
@@ -6982,6 +7116,11 @@ fn public_tools(commandless: bool) -> Value {
 
 const MAXIMUM_CONTROL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_CONCURRENT_CONTROL_REQUESTS: usize = 64;
+/// How long a response may take to reach a client that still holds its end.
+/// A client that gave up closes it, which ends the write at once, so this
+/// bounds only a client that stopped reading: the longest any client waits.
+const CONTROL_RESPONSE_DELIVERY: std::time::Duration = CONTROL_COMMAND_WAIT;
+/// How long a stopping service still delivers responses in flight.
 const CONTROL_RESPONSE_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const CONTROL_PROBE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 const CONTROL_HOOK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -7065,8 +7204,6 @@ async fn start_control_endpoint(
 ) -> Result<ControlEndpoint, String> {
     fs::create_dir_all(data).map_err(display)?;
     let ledger = Arc::new(ControlLedger::open(data)?);
-    #[cfg(windows)]
-    let opaque_id = short_hash(data.as_os_str().to_string_lossy().as_bytes());
     let (shutdown, receiver) = watch::channel(false);
     #[cfg(all(test, not(target_os = "linux")))]
     let accepted = Arc::new(tokio::sync::Notify::new());
@@ -7117,8 +7254,7 @@ async fn start_control_endpoint(
     }
     #[cfg(windows)]
     {
-        let opaque_name = format!("acyclic-{opaque_id}");
-        let pipe_path = format!(r"\\.\pipe\{opaque_name}");
+        let pipe_path = windows_control_pipe_path(data);
         #[cfg(test)]
         let endpoint_pipe_path = pipe_path.clone();
         // The first instance exists before this returns, so a started
@@ -7238,9 +7374,13 @@ async fn serve_linux_control_mailbox(
 
     let mut requests = tokio::task::JoinSet::new();
     let mut result = loop {
-        if let Err(error) =
-            claim_linux_mailbox_requests(&mailbox_directory, &control, &ledger, &mut requests)
-        {
+        if let Err(error) = claim_linux_mailbox_requests(
+            &mailbox_directory,
+            &control,
+            &ledger,
+            &shutdown,
+            &mut requests,
+        ) {
             break Err(error);
         }
         tokio::select! {
@@ -7284,6 +7424,7 @@ fn claim_linux_mailbox_requests(
     mailbox_directory: &Arc<rustix::fd::OwnedFd>,
     control: &Arc<impl ConcurrentControlRequestDispatcher + 'static>,
     ledger: &Arc<ControlLedger>,
+    shutdown: &watch::Receiver<bool>,
     requests: &mut tokio::task::JoinSet<()>,
 ) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt as _;
@@ -7322,7 +7463,12 @@ fn claim_linux_mailbox_requests(
         };
         let control = Arc::clone(control);
         let ledger = Arc::clone(ledger);
-        requests.spawn(handle_linux_mailbox_request(exchange, control, ledger));
+        requests.spawn(handle_linux_mailbox_request(
+            exchange,
+            control,
+            ledger,
+            shutdown.clone(),
+        ));
     }
     Ok(())
 }
@@ -7332,6 +7478,7 @@ async fn handle_linux_mailbox_request(
     exchange: LinuxMailboxExchange,
     control: Arc<impl ConcurrentControlRequestDispatcher>,
     ledger: Arc<ControlLedger>,
+    shutdown: watch::Receiver<bool>,
 ) {
     if let Some(directory) = &exchange.exchange {
         let mut response = match read_linux_control_file_at(directory, LINUX_EXCHANGE_CLAIMED) {
@@ -7360,8 +7507,8 @@ async fn handle_linux_mailbox_request(
         .map_err(errno_to_io)
         .and_then(tokio::net::unix::pipe::Sender::from_owned_fd);
         if let Ok(mut sender) = sender {
-            let _ = tokio::time::timeout(CONTROL_RESPONSE_DRAIN_GRACE, sender.write_all(&response))
-                .await;
+            let write = async { sender.write_all(&response).await.map_err(display) };
+            let _ = deliver_control_response(write, shutdown).await;
         }
     }
     exchange.remove();
@@ -7566,19 +7713,15 @@ async fn serve_windows_control(
     mut shutdown: watch::Receiver<bool>,
     #[cfg(test)] accepted: Arc<tokio::sync::Notify>,
 ) -> Result<(), String> {
-    let mut next = Some(first);
+    // One instance listens at every moment: the next is created before a
+    // connected one is handed to its task, since a client that finds no
+    // listening instance gets `NotFound`, as if no service ran.
+    let mut listening = first;
     let mut connections = tokio::task::JoinSet::new();
     let result = 'result: loop {
-        let server = match next.take() {
-            Some(server) => server,
-            None => match create_current_user_pipe(&pipe_path, false) {
-                Ok(server) => server,
-                Err(error) => break Err(display(error)),
-            },
-        };
         let connected = loop {
             tokio::select! {
-                connected = server.connect(), if connections.len() < MAXIMUM_CONCURRENT_CONTROL_REQUESTS => break connected,
+                connected = listening.connect(), if connections.len() < MAXIMUM_CONCURRENT_CONTROL_REQUESTS => break connected,
                 completed = connections.join_next(), if !connections.is_empty() => {
                     let _ = completed;
                 }
@@ -7589,8 +7732,15 @@ async fn serve_windows_control(
                 }
             }
         };
-        if let Err(error) = connected {
-            break Err(display(error));
+        let next = match create_current_user_pipe(&pipe_path, false) {
+            Ok(next) => next,
+            Err(error) => break Err(display(error)),
+        };
+        let server = std::mem::replace(&mut listening, next);
+        // A client that vanished before its connection completed costs only
+        // its own instance.
+        if connected.is_err() {
+            continue;
         }
         let control = Arc::clone(&control);
         let ledger = Arc::clone(&ledger);
@@ -7734,9 +7884,25 @@ where
         stream.write_all(b"\n").await.map_err(display)?;
         stream.flush().await.map_err(display)
     };
-    tokio::time::timeout(CONTROL_RESPONSE_DRAIN_GRACE, write)
-        .await
-        .map_err(|_| "Acyclic control response exceeded its drain deadline".to_owned())?
+    deliver_control_response(write, shutdown).await
+}
+
+/// Delivers one response while its client still reads it: up to
+/// [`CONTROL_RESPONSE_DELIVERY`], or [`CONTROL_RESPONSE_DRAIN_GRACE`] once
+/// the service stops.
+async fn deliver_control_response(
+    write: impl std::future::Future<Output = Result<(), String>>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let stopped = async {
+        let _ = shutdown.wait_for(|stopping| *stopping).await;
+        tokio::time::sleep(CONTROL_RESPONSE_DRAIN_GRACE).await;
+    };
+    tokio::select! {
+        delivered = tokio::time::timeout(CONTROL_RESPONSE_DELIVERY, write) => delivered
+            .map_err(|_| "Acyclic control response exceeded its delivery deadline".to_owned())?,
+        () = stopped => Err("Acyclic control response exceeded its drain deadline".to_owned()),
+    }
 }
 
 async fn dispatch_control_request(
@@ -7838,6 +8004,10 @@ impl ServiceResources {
             data,
             fs,
         };
+        resources
+            .shared_roots
+            .collection
+            .start(resources.fs.clone(), resources.store.clone());
         let mut entries = fs::read_dir(resources.data.join("sessions"))
             .map_err(display)?
             .filter_map(|entry| match entry {
@@ -8129,6 +8299,7 @@ impl ServiceControl {
     async fn shutdown(mut self) -> Result<(), String> {
         let root_released = self.fs.local_root_release_barrier();
         let result = self.shutdown_sessions(false).await;
+        self.shared_roots.collection.stop().await;
         // Publish service shutdown only after its final LocalFs handle has released the durable
         // Stream and Objects roots. A completed async future may otherwise retain `self` until the
         // executor drops the future, allowing an immediate replacement service to race the lock.
@@ -8325,16 +8496,18 @@ async fn dispatch_native_session_hook(
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             let tool_use_id = native_hook_tool_id(&input, &session_id, &tool_name, &tool_input)?;
-            let output = control
-                .pre_tool(json!({
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "tool_use_id": tool_use_id,
-                    "tool_name": tool_name,
-                    "tool_input": tool_input,
-                    "_caller_root_id": hex::encode(root_id.into_bytes())
-                }))
-                .await?;
+            // Like the request's own save, its authority writes survive a crash
+            // of the service at once and a power loss once the next request
+            // begins (see `ControlPlane::make_durable`).
+            let output = acyclic_fs::deferring_authority_durability(control.pre_tool(json!({
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "tool_use_id": tool_use_id,
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "_caller_root_id": hex::encode(root_id.into_bytes())
+            })))
+            .await?;
             if host == "copilot" {
                 let updated = output.pointer("/hookSpecificOutput/updatedInput").cloned();
                 Ok(json!({
@@ -8358,14 +8531,13 @@ async fn dispatch_native_session_hook(
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             let tool_use_id = native_hook_tool_id(&input, &session_id, &tool_name, &tool_input)?;
-            control
-                .post_tool(json!({
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "tool_use_id": tool_use_id,
-                    "tool_name": tool_name
-                }))
-                .await
+            acyclic_fs::deferring_authority_durability(control.post_tool(json!({
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "tool_use_id": tool_use_id,
+                "tool_name": tool_name
+            })))
+            .await
         }
         "SubagentStart" | "subagentStart" => {
             let agent_id = hook_optional_id(&input, "agent_id", "agentId")?
@@ -9266,6 +9438,7 @@ impl ConcurrentServiceControl {
             .shutdown_deactivates
             .load(std::sync::atomic::Ordering::Acquire);
         let result = self.drain_sessions(deactivate).await;
+        self.shared_roots.collection.stop().await;
         drop(self);
         wait_for_root_release(root_released).await?;
         result
@@ -9672,35 +9845,46 @@ fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error
     let [host, event] = arguments else {
         return Err(io::Error::other("acyclic __hook requires a host and event").into());
     };
-    let response = (|| {
-        let mut input = Vec::new();
-        io::stdin()
-            .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
-            .read_to_end(&mut input)
-            .map_err(display)?;
-        if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
-            return Err("native hook input exceeds the 4 MiB bound".to_owned());
+    let response = match read_native_hook_call() {
+        Ok((cwd, input)) => {
+            let failure = HookFailure::classify(host, event, Some((&cwd, &input)));
+            match local_native_hook_answer(host, event, &input) {
+                Ok(Some(answer)) => answer,
+                Ok(None) => tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(display)
+                    .and_then(|runtime| {
+                        runtime.block_on(forward_native_hook(
+                            host,
+                            event,
+                            cwd,
+                            input,
+                            ServiceStart::Allowed,
+                        ))
+                    })
+                    .unwrap_or_else(|error| failure.answer(&error)),
+                Err(error) => failure.answer(&error),
+            }
         }
-        let input: Value = serde_json::from_slice(&input).map_err(display)?;
-        if let Some(answer) = local_native_hook_answer(host, event, &input)? {
-            return Ok(answer);
-        }
-        let cwd = env::current_dir().map_err(display)?;
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(display)?
-            .block_on(forward_native_hook(
-                host,
-                event,
-                cwd,
-                input,
-                ServiceStart::Allowed,
-            ))
-    })()
-    .unwrap_or_else(|error| native_hook_failure(host, event, &error));
+        Err(error) => HookFailure::classify(host, event, None).answer(&error),
+    };
     serde_json::to_writer(io::stdout().lock(), &response)?;
     Ok(())
+}
+
+/// The working directory and input of the native hook on standard input.
+fn read_native_hook_call() -> Result<(PathBuf, Value), String> {
+    let mut input = Vec::new();
+    io::stdin()
+        .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
+        .read_to_end(&mut input)
+        .map_err(display)?;
+    if input.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
+        return Err("native hook input exceeds the 4 MiB bound".to_owned());
+    }
+    let input = serde_json::from_slice(&input).map_err(display)?;
+    Ok((env::current_dir().map_err(display)?, input))
 }
 
 /// The answer to a native hook that never needs the service, or `None` when
@@ -9776,31 +9960,123 @@ fn native_hook_request(host: &str, event: &str, cwd: PathBuf, input: Value) -> C
     }
 }
 
-/// The answer that lets the host continue, visibly, when Acyclic cannot
-/// answer a hook.
-fn native_hook_failure(host: &str, event: &str, error: &str) -> Value {
-    let notice = format!(
-        "Acyclic is unavailable; this tool will run without an isolated workspace: {error}"
-    );
-    if !matches!(event, "PreToolUse" | "preToolUse") {
-        return json!({"systemMessage": notice});
-    }
-    if host == "copilot" {
-        return json!({
-            "permissionDecision": "allow",
-            "permissionDecisionReason": notice,
-            "systemMessage": notice
-        });
-    }
-    json!({
-        "systemMessage": notice,
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "permissionDecisionReason": notice,
-            "additionalContext": notice
+/// What the host does with a hook that Acyclic could not answer, whatever
+/// the failure: an unreachable service, a lost response or a refusal. This is
+/// the one place that decides which hooks may fail open.
+///
+/// Only a tool hook gates anything, so every other hook lets the host
+/// continue, visibly. The root agent works in its own physical roots, which
+/// need no rewrite, so its tools continue too. A tool that may act for an
+/// isolated subagent, or that would spawn one, is denied: without its rewrite
+/// it would act on the shared roots, and a spawn without its prepared
+/// workspace would start a subagent that has none.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HookFailurePolicy {
+    Continue,
+    Deny,
+}
+
+/// A hook's answer should Acyclic fail to give one; see [`HookFailurePolicy`].
+#[derive(Clone, Copy, Debug)]
+struct HookFailure<'a> {
+    host: &'a str,
+    event: &'a str,
+    policy: HookFailurePolicy,
+}
+
+impl<'a> HookFailure<'a> {
+    /// Classifies a hook from its call alone, before anything can fail. A
+    /// call that could not be read is a tool of unknown caller.
+    fn classify(host: &'a str, event: &'a str, call: Option<(&Path, &Value)>) -> Self {
+        let tool_hook = matches!(event, "PreToolUse" | "preToolUse");
+        let isolated = || {
+            call.is_none_or(|(cwd, input)| {
+                tool_may_act_for_subagent(host, cwd, input, &default_data_directory())
+            })
+        };
+        let policy = if tool_hook && isolated() {
+            HookFailurePolicy::Deny
+        } else {
+            HookFailurePolicy::Continue
+        };
+        Self {
+            host,
+            event,
+            policy,
         }
-    })
+    }
+
+    fn answer(&self, error: &str) -> Value {
+        let (decision, notice) = match self.policy {
+            HookFailurePolicy::Continue => (
+                "allow",
+                format!(
+                    "Acyclic is unavailable; this tool will run without an isolated workspace: {error}"
+                ),
+            ),
+            HookFailurePolicy::Deny => (
+                "deny",
+                format!("Acyclic denied the tool because workspace isolation failed: {error}"),
+            ),
+        };
+        if !matches!(self.event, "PreToolUse" | "preToolUse") {
+            return json!({"systemMessage": notice});
+        }
+        if self.host == "copilot" {
+            return json!({
+                "permissionDecision": decision,
+                "permissionDecisionReason": notice,
+                "systemMessage": notice
+            });
+        }
+        json!({
+            "systemMessage": notice,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": decision,
+                "permissionDecisionReason": notice,
+                "additionalContext": notice
+            }
+        })
+    }
+}
+
+/// Whether a tool call may belong to an isolated subagent, judged from the
+/// call alone because the service that knows cannot answer. A subagent's
+/// tool names its agent (`agent_id`), a Codex MCP call names a thread other
+/// than the session's own, and a subagent without either runs inside its
+/// workspace mount, which lies under the state directory. A spawn prepares
+/// a subagent's workspace, and a call that names no tool cannot be told
+/// apart, so both count too.
+fn tool_may_act_for_subagent(host: &str, cwd: &Path, input: &Value, data: &Path) -> bool {
+    let Some(tool) = hook_optional_string(input, "tool_name", "toolName") else {
+        return true;
+    };
+    let session = hook_optional_string(input, "session_id", "sessionId");
+    let thread = hook_optional_string(input, "thread_id", "threadId");
+    let cwd = hook_path(input, "cwd").map_or_else(|| cwd.to_path_buf(), |path| cwd.join(path));
+    is_spawn_tool(&tool)
+        || (host == "copilot" && tool == "task")
+        || input.get("agent_id").is_some()
+        || input.get("agentId").is_some()
+        || thread.is_some_and(|thread| session.as_ref() != Some(&thread))
+        || path_is_within(&cwd, data)
+}
+
+/// Whether `path` lies lexically within `root`. Windows compares without
+/// case and without a verbatim prefix, as hosts spell one path either way.
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let spell = |path: &Path| {
+            let text = path.to_string_lossy().replace('/', "\\").to_lowercase();
+            text.strip_prefix(r"\\?\")
+                .map_or_else(|| text.clone(), str::to_owned)
+        };
+        Path::new(&spell(path)).starts_with(spell(root))
+    }
+    #[cfg(not(windows))]
+    path.starts_with(root)
 }
 
 fn is_foreground_cli_invocation() -> bool {
@@ -10683,9 +10959,11 @@ impl Drop for ServiceLock {
 ///   exactly `acyclic-service-v1\n{instance id}\n{binary identity}\n`.
 /// - A file `service-stop/{instance id}` holding a drain ID of at most 128
 ///   ASCII letters, digits and hyphens asks that instance to drain every
-///   session and exit. It then writes `service-drain.json`, version 1, with
-///   its instance ID as `identity`, the `drainId` and whether teardown
-///   succeeded, and releases its lock.
+///   session and exit. It then writes `service-drain/{instance id}.json`,
+///   version 1, with its instance ID as `identity`, the `drainId` of the
+///   request it served and whether teardown succeeded, and releases its
+///   lock. Every requester of that instance is answered by that record:
+///   an instance drains every session once, whichever request it read.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ServiceMarker {
     instance_id: String,
@@ -10753,7 +11031,14 @@ impl StopRequests {
     fn open(data: &Path, instance_id: &str) -> Result<Self, String> {
         let directory = data.join(SERVICE_STOP_DIRECTORY);
         fs::create_dir_all(&directory).map_err(display)?;
-        // Requests addressed to earlier instances can never be served.
+        // Requests addressed to earlier instances can never be served, and
+        // their drain records were read by requesters that held this lock.
+        let drains = data.join(SERVICE_DRAIN_DIRECTORY);
+        match fs::remove_dir_all(&drains) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(display(error)),
+        }
         for entry in fs::read_dir(&directory).map_err(display)? {
             match fs::remove_file(entry.map_err(display)?.path()) {
                 Ok(()) => {}
@@ -10802,9 +11087,15 @@ struct PublishedServiceMarker {
 }
 
 impl PublishedServiceMarker {
+    /// Publishes the marker whole: a reader sees no marker or all of it.
     fn create(data: &Path, marker: &ServiceMarker) -> Result<Self, String> {
         let path = ServiceMarker::path(data);
-        fs::write(&path, marker.encode()).map_err(display)?;
+        let staged = data.join(format!("service.identity.{}.next", marker.instance_id));
+        fs::write(&staged, marker.encode()).map_err(display)?;
+        if let Err(error) = fs::rename(&staged, &path) {
+            let _ = fs::remove_file(&staged);
+            return Err(display(error));
+        }
         Ok(Self { path })
     }
 }
@@ -10815,8 +11106,12 @@ impl Drop for PublishedServiceMarker {
     }
 }
 
-fn service_drain_completion_path(data: &Path) -> PathBuf {
-    data.join("service-drain.json")
+const SERVICE_DRAIN_DIRECTORY: &str = "service-drain";
+
+/// Where the instance `identity` records its drain; see [`ServiceMarker`].
+fn service_drain_completion_path(data: &Path, identity: &str) -> PathBuf {
+    data.join(SERVICE_DRAIN_DIRECTORY)
+        .join(format!("{identity}.json"))
 }
 
 fn write_service_drain_completion(
@@ -10825,8 +11120,9 @@ fn write_service_drain_completion(
     drain_id: &str,
     result: &Result<(), String>,
 ) -> Result<(), String> {
-    let path = service_drain_completion_path(data);
-    let next = data.join("service-drain.next.json");
+    let path = service_drain_completion_path(data, identity);
+    let next = path.with_extension("next");
+    fs::create_dir_all(data.join(SERVICE_DRAIN_DIRECTORY)).map_err(display)?;
     let value = json!({
         "version": 1,
         "identity": identity,
@@ -10847,12 +11143,8 @@ fn write_service_drain_completion(
     durable_rename(&next, &path, RenameMode::Replace).map_err(display)
 }
 
-fn verify_service_drain_completion(
-    data: &Path,
-    identity: &str,
-    drain_id: &str,
-) -> Result<(), String> {
-    let path = service_drain_completion_path(data);
+fn verify_service_drain_completion(data: &Path, identity: &str) -> Result<(), String> {
+    let path = service_drain_completion_path(data, identity);
     let value: Value = serde_json::from_slice(&fs::read(&path).map_err(|error| {
         format!(
             "Acyclic service exited without durable drain confirmation at {}: {error}",
@@ -10862,7 +11154,6 @@ fn verify_service_drain_completion(
     .map_err(display)?;
     if value.get("version").and_then(Value::as_u64) != Some(1)
         || value.get("identity").and_then(Value::as_str) != Some(identity)
-        || value.get("drainId").and_then(Value::as_str) != Some(drain_id)
     {
         return Err("Acyclic service drain confirmation does not match this request".to_owned());
     }
@@ -11039,9 +11330,9 @@ async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bo
     // through the same contract.
     match ServiceMarker::read(data) {
         Some(marker) if marker.binary_identity != identity => {
-            let fence = drain_service(data, Some(&marker.instance_id)).await?;
-            clear_obsolete_runtime_state(data)?;
-            drop(fence);
+            // Only the service is replaced: its state belongs to the stores,
+            // each of which refuses a format it does not know.
+            drop(drain_service(data, Some(&marker.instance_id)).await?);
             Ok(false)
         }
         // This binary's service, or one still starting: it answers soon.
@@ -11052,13 +11343,6 @@ async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bo
             )),
         },
     }
-}
-
-fn clear_obsolete_runtime_state(data: &Path) -> Result<(), String> {
-    for name in ["core-state", "filesystem", "sessions", "w"] {
-        remove_tree_checked(data, &data.join(name))?;
-    }
-    Ok(())
 }
 
 async fn ensure_service(data: &Path) -> Result<(), String> {
@@ -11328,7 +11612,8 @@ async fn send_control_envelope_once(
     data: &Path,
     envelope: &ControlEnvelope<ControlRequest>,
 ) -> Result<Value, ControlRequestError> {
-    send_control_envelope_with_attempts(data, envelope, 1, CONTROL_PROBE_WAIT).await
+    send_control_envelope_with_attempts(data, envelope, 1, control_request_wait(&envelope.request))
+        .await
 }
 
 async fn send_control_envelope_with_attempts(
@@ -11369,41 +11654,20 @@ async fn send_control_envelope_with_attempts(
         .map_err(|error| {
             ControlRequestError::Unavailable(format!("Acyclic service is not running: {error}"))
         })?;
+        // Only this user's own service may answer.
+        #[cfg(all(unix, not(target_os = "linux")))]
+        if stream
+            .peer_cred()
+            .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?
+            .uid()
+            != rustix::process::getuid().as_raw()
+        {
+            return Err(ControlRequestError::Unavailable(
+                "Acyclic service socket is served by another user".to_owned(),
+            ));
+        }
         #[cfg(windows)]
-        let stream = {
-            let pipe = format!(
-                r"\\.\pipe\acyclic-{}",
-                short_hash(data.as_os_str().to_string_lossy().as_bytes())
-            );
-            let mut last = None;
-            let mut connected = None;
-            for attempt in 1..=windows_connect_attempts {
-                let remaining = remaining_control_wait(deadline)?;
-                match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe) {
-                    Ok(client) => {
-                        connected = Some(client);
-                        break;
-                    }
-                    Err(error) => {
-                        last = Some(error);
-                        // Only a further attempt is worth waiting for.
-                        if attempt < windows_connect_attempts {
-                            tokio::time::sleep(std::time::Duration::from_millis(20).min(remaining))
-                                .await;
-                        }
-                    }
-                }
-            }
-            connected.ok_or_else(|| {
-                ControlRequestError::Unavailable(format!(
-                    "Acyclic service is not running: {}",
-                    last.map_or_else(
-                        || "unknown connection failure".to_owned(),
-                        |error| error.to_string()
-                    )
-                ))
-            })?
-        };
+        let stream = connect_windows_control_pipe(data, windows_connect_attempts, deadline).await?;
         exchange_control_stream(
             stream,
             &encoded,
@@ -11412,6 +11676,154 @@ async fn send_control_envelope_with_attempts(
         )
         .await
     }
+}
+
+/// Connects to the service's pipe, trying `attempts` times while none
+/// exists. A pipe whose every instance is connected is busy only until the
+/// service creates the next, so that wait counts no attempt.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+async fn connect_windows_control_pipe(
+    data: &Path,
+    attempts: usize,
+    deadline: tokio::time::Instant,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, ControlRequestError> {
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+    use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
+
+    let pipe = windows_control_pipe_path(data);
+    let mut attempt = 1;
+    loop {
+        let remaining = remaining_control_wait(deadline)?;
+        let error = match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe) {
+            // Only this user's own service may answer.
+            Ok(client) => {
+                return match windows_pipe_server_is_this_user(&client) {
+                    Ok(true) => Ok(client),
+                    Ok(false) => Err(ControlRequestError::Unavailable(
+                        "Acyclic service pipe is served by another user".to_owned(),
+                    )),
+                    Err(error) => Err(ControlRequestError::Unavailable(format!(
+                        "cannot identify the Acyclic service pipe's server: {error}"
+                    ))),
+                };
+            }
+            Err(error) => error,
+        };
+        if error.raw_os_error() == i32::try_from(ERROR_PIPE_BUSY).ok() {
+            let name = pipe.encode_utf16().chain([0]).collect::<Vec<_>>();
+            let wait = u32::try_from(remaining.as_millis())
+                .unwrap_or(u32::MAX)
+                .max(1);
+            // A failed wait (the pipe vanished) shows in the next open.
+            // SAFETY: `name` is a live NUL-terminated UTF-16 string that the
+            // task owns for the whole call.
+            let _ =
+                tokio::task::spawn_blocking(move || unsafe { WaitNamedPipeW(name.as_ptr(), wait) })
+                    .await;
+            continue;
+        }
+        if attempt >= attempts {
+            return Err(ControlRequestError::Unavailable(format!(
+                "Acyclic service is not running: {error}"
+            )));
+        }
+        attempt += 1;
+        tokio::time::sleep(std::time::Duration::from_millis(20).min(remaining)).await;
+    }
+}
+
+/// Whether the process serving `client`'s pipe runs as this process's user.
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "queries the pipe's server process and both processes' token users"
+)]
+fn windows_pipe_server_is_this_user(
+    client: &tokio::net::windows::named_pipe::NamedPipeClient,
+) -> io::Result<bool> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let mut server = 0_u32;
+    // SAFETY: the pipe handle is live for the call and `server` is writable.
+    if unsafe { GetNamedPipeServerProcessId(client.as_raw_handle() as HANDLE, &mut server) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: opening a process by id has no preconditions; a null handle is
+    // an error.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, server) };
+    if process.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let server_user = windows_token_user(process);
+    // SAFETY: `process` was opened above and is closed once.
+    unsafe { CloseHandle(process) };
+    // SAFETY: the pseudo-handle of this process needs no closing.
+    let own_user = windows_token_user(unsafe { GetCurrentProcess() })?;
+    Ok(server_user? == own_user)
+}
+
+/// The security identifier of the user `process` runs as, as bytes.
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "reads a process token's user")]
+fn windows_token_user(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<Vec<u8>> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{
+        GetLengthSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
+
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: `process` is a live process handle and `token` is writable.
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let user = (|| {
+        let mut length = 0_u32;
+        // SAFETY: a null buffer of length zero asks only for the length.
+        unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut length) };
+        let words = usize::try_from(length)
+            .map_err(io::Error::other)?
+            .div_ceil(8);
+        let mut buffer = vec![0_u64; words.max(1)];
+        // SAFETY: `buffer` holds `length` writable, 8-aligned bytes.
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                length,
+                &mut length,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the call filled a TOKEN_USER at the start of `buffer`,
+        // whose SID points within it.
+        let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+        // SAFETY: `sid` is a valid SID within `buffer`.
+        let bytes = unsafe { GetLengthSid(sid) };
+        let bytes = usize::try_from(bytes).map_err(io::Error::other)?;
+        // SAFETY: the SID spans `bytes` readable bytes within `buffer`.
+        Ok(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), bytes) }.to_vec())
+    })();
+    // SAFETY: `token` was opened above and is closed once.
+    unsafe { CloseHandle(token) };
+    user
+}
+
+#[cfg(windows)]
+fn windows_control_pipe_path(data: &Path) -> String {
+    format!(
+        r"\\.\pipe\acyclic-{}",
+        short_hash(data.as_os_str().to_string_lossy().as_bytes())
+    )
 }
 
 fn remaining_control_wait(
@@ -11495,9 +11907,11 @@ async fn send_linux_mailbox_request(
     )?);
     let metadata = rustix::fs::fstat(&*mailbox_directory)
         .map_err(|error| ControlRequestError::Unavailable(error.to_string()))?;
-    if metadata.st_mode & 0o777 != 0o700 {
+    // Only this user's own service may answer: the mailbox must be private
+    // to this user and owned by them.
+    if metadata.st_mode & 0o777 != 0o700 || metadata.st_uid != rustix::process::getuid().as_raw() {
         return Err(ControlRequestError::Unavailable(
-            "Acyclic service mailbox is not a private directory".to_owned(),
+            "Acyclic service mailbox is not this user's private directory".to_owned(),
         ));
     }
     rustix::fs::mkdirat(&*mailbox_directory, &unpublished, rustix::fs::Mode::RWXU).map_err(
@@ -11931,8 +12345,16 @@ async fn drain_service(
     request_service_stop(data, &marker.instance_id, &drain_id)?;
     for _ in 0..250 {
         if let Some(lock) = acquire_service_lock(data)? {
-            verify_service_drain_completion(data, &marker.instance_id, &drain_id)?;
+            verify_service_drain_completion(data, &marker.instance_id)?;
             return Ok(lock);
+        }
+        // A replacement that took the lock first holds what this drain was
+        // for; waiting would only time out.
+        if ServiceMarker::read(data).is_some_and(|next| next.instance_id != marker.instance_id) {
+            return Err(
+                "a replacement Acyclic service started before this drain could take its place"
+                    .to_owned(),
+            );
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
@@ -15489,6 +15911,48 @@ mod tests {
             .expect("plugin lifecycle e2e thread");
     }
 
+    /// A response reaches a client that is slow to read it, for as long as a
+    /// client can wait; a stopping service stops waiting after its grace.
+    #[tokio::test]
+    async fn responses_reach_slow_readers_until_the_service_stops() {
+        let (_running, shutdown) = watch::channel(false);
+        let slow = async {
+            tokio::time::sleep(CONTROL_RESPONSE_DRAIN_GRACE * 3 / 2).await;
+            Ok(())
+        };
+        assert_eq!(deliver_control_response(slow, shutdown).await, Ok(()));
+
+        let (stopping, shutdown) = watch::channel(false);
+        let never = std::future::pending::<Result<(), String>>();
+        let delivering = tokio::spawn(deliver_control_response(never, shutdown));
+        stopping.send(true).expect("stop the service");
+        let error = delivering
+            .await
+            .expect("delivery task")
+            .expect_err("a stopping service stops delivering");
+        assert!(error.contains("drain deadline"), "{error}");
+    }
+
+    /// A client accepts a pipe only from a server running as its own user.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_pipe_served_by_this_user_is_accepted() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let pipe = windows_control_pipe_path(temporary.path());
+        let _server = create_current_user_pipe(&pipe, true).expect("pipe server");
+        let client = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(&pipe)
+            .expect("pipe client");
+        assert!(windows_pipe_server_is_this_user(&client).expect("server user"));
+        // SAFETY: the pseudo-handle of this process needs no closing.
+        #[allow(unsafe_code)]
+        let own = windows_token_user(unsafe {
+            windows_sys::Win32::System::Threading::GetCurrentProcess()
+        })
+        .expect("own user");
+        assert!(own.len() >= 8, "a SID has a header and an authority");
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn service_drain_waits_for_shutdown_completion_and_lock_release() {
@@ -15520,17 +15984,31 @@ mod tests {
                             Err(error) if error == "refusing to drain a replacement Acyclic service"
                         ));
                         assert!(acquire_service_lock(&data).expect("service lock").is_none());
-                        let fence = drain_service(&data, Some(&identity))
-                            .await
-                            .expect("identity-bound durable drain");
-                        drop(fence);
+                        // Two requesters that ask at once are both answered.
+                        let (first, second) = tokio::join!(
+                            async {
+                                drop(
+                                    drain_service(&data, Some(&identity))
+                                        .await
+                                        .expect("identity-bound durable drain"),
+                                );
+                            },
+                            async {
+                                drop(
+                                    drain_service(&data, Some(&identity))
+                                        .await
+                                        .expect("concurrent durable drain"),
+                                );
+                            }
+                        );
+                        let ((), ()) = (first, second);
                         tokio::time::timeout(std::time::Duration::from_secs(5), service)
                             .await
                             .expect("service exit deadline")
                             .expect("service task")
                             .expect("clean service shutdown");
                         assert!(!data.join("service.identity").exists());
-                        assert!(service_drain_completion_path(&data).exists());
+                        assert!(service_drain_completion_path(&data, &identity).exists());
                         assert!(acquire_service_lock(&data).expect("service lock").is_some());
                     });
             })
@@ -15599,7 +16077,8 @@ mod tests {
                         assert!(ServiceMarker::read(&data).is_none());
                         assert!(acquire_service_lock(&data).expect("service lock").is_some());
                         let completion: Value = serde_json::from_slice(
-                            &fs::read(service_drain_completion_path(&data)).expect("drain record"),
+                            &fs::read(service_drain_completion_path(&data, &marker.instance_id))
+                                .expect("drain record"),
                         )
                         .expect("drain record json");
                         assert_eq!(completion["identity"], marker.instance_id.as_str());
@@ -15827,6 +16306,14 @@ mod tests {
                             .expect("service instance identity")
                             .instance_id;
                         assert!(uuid::Uuid::parse_str(&instance_id).is_ok());
+                        // Workspace state outlives the binary that wrote it.
+                        let kept = ["core-state", "filesystem", "sessions", "w"]
+                            .map(|name| data.join(name).join("kept"));
+                        for path in &kept {
+                            std::fs::create_dir_all(path.parent().expect("state directory"))
+                                .expect("state directory");
+                            std::fs::write(path, b"kept").expect("state file");
+                        }
                         assert!(
                             !service_is_ready_for_identity(&data, "replacement-service-binary")
                                 .await
@@ -15837,8 +16324,9 @@ mod tests {
                             .expect("service exit deadline")
                             .expect("service task")
                             .expect("clean service shutdown");
-                        assert!(service_drain_completion_path(&data).exists());
+                        assert!(service_drain_completion_path(&data, &instance_id).exists());
                         assert!(acquire_service_lock(&data).expect("service lock").is_some());
+                        assert!(kept.iter().all(|path| path.exists()));
                     });
             })
             .expect("test thread")

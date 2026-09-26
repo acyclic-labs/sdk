@@ -18,6 +18,7 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue, PublicationScope,
 };
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     HashedObject, ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention,
@@ -25,10 +26,11 @@ use crate::storage::{
 };
 use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
 use bytes::Bytes;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{OnceLock, PoisonError};
+use std::sync::{Arc, OnceLock, PoisonError};
 use tokio::sync::RwLock;
 
 // The local provider stores one batch in a bounded segment. Every durable
@@ -100,9 +102,37 @@ fn resident_read(bytes: Bytes, maximum_bytes: u64, budget: WorkBudget) -> Object
     })
 }
 
+/// Hashes an [`ObjectId`] by folding the words it writes: its digest is
+/// already a cryptographic hash, so mixing it again, as the default
+/// `SipHash` does, only adds work to every staged read and admission.
+#[derive(Default)]
+struct IdentityHasher(u64);
+
+impl Hasher for IdentityHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let mut words = bytes.chunks_exact(8);
+        for word in &mut words {
+            let mut buffer = [0_u8; 8];
+            buffer.copy_from_slice(word);
+            self.write_u64(u64::from_le_bytes(buffer));
+        }
+        for &byte in words.remainder() {
+            self.write_u64(u64::from(byte));
+        }
+    }
+
+    fn write_u64(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Default)]
 struct Index {
-    objects: BTreeMap<ObjectId, Staged>,
+    objects: HashMap<ObjectId, Staged, BuildHasherDefault<IdentityHasher>>,
     // Resident identities in admission order, each re-queued once when read
     // since it was last considered: the window spills from the front, so
     // pages the current candidate keeps reading stay in memory while
@@ -217,6 +247,7 @@ pub struct StagedObjects<S> {
     spill: NativeFile,
     index: std::sync::RwLock<Index>,
     spill_io: RwLock<()>,
+    collection: Arc<crate::Collection>,
 }
 
 impl<S> StagedObjects<S> {
@@ -234,6 +265,7 @@ impl<S> StagedObjects<S> {
             spill: NativeFile::from_file(spill)?,
             index: std::sync::RwLock::new(Index::default()),
             spill_io: RwLock::new(()),
+            collection: Arc::default(),
         })
     }
 
@@ -502,6 +534,71 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         }
         Ok(ObjectReceipt { value: (), work })
     }
+
+    /// Reads one object that was spilled when looked up: from the spill file
+    /// if it still is, from memory if it has since returned to the window,
+    /// and from the durable provider if a drain has since admitted it.
+    async fn read_spilled_object(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<ObjectRead> {
+        // Sharing the spill file keeps a drain from truncating or reusing it
+        // until this read completes.
+        let spill_file = self.spill_io.read().await;
+        let (offset, length) = match self.lookup(object_id) {
+            Lookup::Spilled { offset, length } => (offset, length),
+            Lookup::Resident(bytes) => return resident_read(bytes, maximum_bytes, budget),
+            Lookup::Absent => {
+                drop(spill_file);
+                return self
+                    .inner
+                    .read(object_id, maximum_bytes, budget, cancellation)
+                    .await;
+            }
+        };
+        if length > maximum_bytes {
+            return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
+                observed: length,
+                maximum: maximum_bytes,
+            }));
+        }
+        let work = WorkCounters {
+            backend_read_operations: 1,
+            object_bytes_read: length,
+            bytes_hashed: length,
+            ..WorkCounters::default()
+        };
+        work.verify(budget)
+            .map_err(|error| ObjectFailure::before_work(error.into()))?;
+        let object = self
+            .read_spilled(&[(object_id, offset, length)])
+            .await
+            .map_err(|error| ObjectFailure::new(error, work))?
+            .pop()
+            .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
+        let (_, bytes) = object.into_parts();
+        // A spilled object read again is live; it returns to the
+        // window when there is room, and otherwise stays spilled.
+        let mut index = self.index_mut();
+        if index.resident_bytes.saturating_add(length) <= MAXIMUM_RESIDENT_BYTES
+            && matches!(
+                index.objects.get(&object_id),
+                Some(&Staged::Spilled { offset: current, .. }) if current == offset
+            )
+        {
+            index.insert_resident(object_id, bytes.clone());
+        }
+        Ok(ObjectReceipt {
+            value: ObjectRead {
+                bytes,
+                retention: ObjectReadRetention::Shared,
+            },
+            work,
+        })
+    }
 }
 
 impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
@@ -590,8 +687,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        // Direct admission and spilling await I/O in their own heap frames,
+        // so a resident admission, which almost every page write is, never
+        // builds or moves their larger futures.
         if object.length() > MAXIMUM_DRAIN_BYTES {
-            return self.inner.put_hashed(object, budget, cancellation).await;
+            return in_heap(|| self.inner.put_hashed(object, budget, cancellation)).await;
         }
         // The object's hash is its identity: an equal identity already
         // staged holds these exact bytes.
@@ -606,7 +706,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
                 work: WorkCounters::default(),
             });
         }
-        self.relieve_window(budget).await
+        in_heap(|| self.relieve_window(budget)).await
     }
 
     async fn put_many(
@@ -639,17 +739,61 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         Ok(ObjectReceipt { value: (), work })
     }
 
+    async fn put_many_hashed(
+        &self,
+        objects: &[HashedObject],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        if objects.is_empty() {
+            return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
+                "object write batch is empty".to_owned(),
+            )));
+        }
+        let mut work = WorkCounters::default();
+        for object in objects {
+            let receipt = self
+                .put_hashed(
+                    object.clone(),
+                    work.remaining(budget)
+                        .map_err(|error| ObjectFailure::new(error.into(), work))?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = work
+                .checked_add(receipt.work)
+                .map_err(|error| ObjectFailure::new(error.into(), work))?;
+        }
+        Ok(ObjectReceipt { value: (), work })
+    }
+
     async fn flush_before_publish(
         &self,
         scope: PublicationScope<'_>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+    ) -> ObjectResult<crate::PublicationHold> {
         let _spill_file = self.spill_io.write().await;
+        // Admitted before the drain: a collection cannot sweep what the
+        // drain stores until the record naming it is written.
+        let (objects, proven_at) = match scope {
+            PublicationScope::Closure { objects, proven_at } => (objects, proven_at),
+            PublicationScope::Everything => (&[][..], self.collection.sweeps()),
+        };
+        let hold = self
+            .collection
+            .admit(
+                objects,
+                |object_id| self.index().objects.contains_key(object_id),
+                proven_at,
+            )
+            .await
+            .map_err(ObjectFailure::before_work)?;
         let targets = {
             let index = self.index();
             match scope {
-                PublicationScope::Closure(closure) => closure
+                PublicationScope::Closure { objects, .. } => objects
                     .iter()
                     .copied()
                     .filter(|object_id| index.objects.contains_key(object_id))
@@ -657,7 +801,15 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
                 PublicationScope::Everything => index.objects.keys().copied().collect(),
             }
         };
-        self.drain_locked(targets, budget, cancellation).await
+        let drained = self.drain_locked(targets, budget, cancellation).await?;
+        Ok(ObjectReceipt {
+            value: hold,
+            work: drained.work,
+        })
+    }
+
+    fn collection(&self) -> Option<&Arc<crate::Collection>> {
+        Some(&self.collection)
     }
 
     async fn read(
@@ -671,66 +823,20 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         match self.lookup(object_id) {
-            Lookup::Absent => {
-                self.inner
-                    .read(object_id, maximum_bytes, budget, cancellation)
-                    .await
-            }
             Lookup::Resident(bytes) => resident_read(bytes, maximum_bytes, budget),
-            Lookup::Spilled { .. } => {
-                // Sharing the spill file keeps a drain from truncating or
-                // reusing it until this read completes.
-                let spill_file = self.spill_io.read().await;
-                let (offset, length) = match self.lookup(object_id) {
-                    Lookup::Spilled { offset, length } => (offset, length),
-                    Lookup::Resident(bytes) => return resident_read(bytes, maximum_bytes, budget),
-                    Lookup::Absent => {
-                        drop(spill_file);
-                        return self
-                            .inner
-                            .read(object_id, maximum_bytes, budget, cancellation)
-                            .await;
-                    }
-                };
-                if length > maximum_bytes {
-                    return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
-                        observed: length,
-                        maximum: maximum_bytes,
-                    }));
-                }
-                let work = WorkCounters {
-                    backend_read_operations: 1,
-                    object_bytes_read: length,
-                    bytes_hashed: length,
-                    ..WorkCounters::default()
-                };
-                work.verify(budget)
-                    .map_err(|error| ObjectFailure::before_work(error.into()))?;
-                let object = self
-                    .read_spilled(&[(object_id, offset, length)])
-                    .await
-                    .map_err(|error| ObjectFailure::new(error, work))?
-                    .pop()
-                    .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
-                let (_, bytes) = object.into_parts();
-                // A spilled object read again is live; it returns to the
-                // window when there is room, and otherwise stays spilled.
-                let mut index = self.index_mut();
-                if index.resident_bytes.saturating_add(length) <= MAXIMUM_RESIDENT_BYTES
-                    && matches!(
-                        index.objects.get(&object_id),
-                        Some(&Staged::Spilled { offset: current, .. }) if current == offset
-                    )
-                {
-                    index.insert_resident(object_id, bytes.clone());
-                }
-                Ok(ObjectReceipt {
-                    value: ObjectRead {
-                        bytes,
-                        retention: ObjectReadRetention::Shared,
-                    },
-                    work,
+            // Every other answer awaits I/O and runs in its own heap frame,
+            // so the resident answer, which every staged page read takes,
+            // never builds or moves those larger futures.
+            Lookup::Absent => {
+                in_heap(|| {
+                    self.inner
+                        .read(object_id, maximum_bytes, budget, cancellation)
                 })
+                .await
+            }
+            Lookup::Spilled { .. } => {
+                in_heap(|| self.read_spilled_object(object_id, maximum_bytes, budget, cancellation))
+                    .await
             }
         }
     }
@@ -1089,7 +1195,10 @@ mod tests {
 
         store
             .flush_before_publish(
-                PublicationScope::Closure(&closure),
+                PublicationScope::Closure {
+                    objects: &closure,
+                    proven_at: 0,
+                },
                 WorkBudget::UNBOUNDED,
                 &token,
             )
@@ -1210,7 +1319,10 @@ mod tests {
         writers.await?;
         store
             .flush_before_publish(
-                PublicationScope::Closure(&closure),
+                PublicationScope::Closure {
+                    objects: &closure,
+                    proven_at: 0,
+                },
                 WorkBudget::UNBOUNDED,
                 token,
             )

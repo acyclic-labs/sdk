@@ -466,6 +466,118 @@ struct FileHandle {
     claim: Option<crate::FileId>,
 }
 
+/// A read-only handle to a file whose pages the kernel already holds at the
+/// version this handle opens. Reads come from those pages, so the source file
+/// opens only when a use reaches it, and serves that use only while it is
+/// still the file and version the handle opened.
+struct DeferredOpenFile {
+    source: Arc<dyn MountFilesystem>,
+    path: MountPath,
+    opened: MountLookup,
+    file: Mutex<Option<Arc<dyn MountOpenFile>>>,
+}
+
+impl DeferredOpenFile {
+    fn file(&self) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
+        let mut file = self.file.lock().map_err(|_| MountSourceError::Stale)?;
+        if let Some(file) = file.as_ref() {
+            return Ok(Arc::clone(file));
+        }
+        let opened = self.source.open_file(&self.path)?;
+        let current = opened.lookup()?;
+        if current.node.file_id != self.opened.node.file_id
+            || ContentVersion::of(&current) != ContentVersion::of(&self.opened)
+        {
+            return Err(MountSourceError::Stale);
+        }
+        *file = Some(Arc::clone(&opened));
+        Ok(opened)
+    }
+}
+
+impl MountOpenFile for DeferredOpenFile {
+    fn lookup(&self) -> Result<MountLookup, MountSourceError> {
+        self.file()?.lookup()
+    }
+
+    fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
+        self.file()?.read_range(offset, length)
+    }
+
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
+        self.file()?.read_up_to(offset, maximum_bytes)
+    }
+
+    fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
+        self.file()?.seek(offset, target)
+    }
+
+    fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
+        self.file()?.write_range(offset, bytes)
+    }
+
+    fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
+        self.file()?.resize(logical_bytes)
+    }
+
+    fn allocate_range(
+        &self,
+        offset: u64,
+        length: u64,
+        operation: super::MountRangeAllocation,
+    ) -> Result<(), MountSourceError> {
+        self.file()?.allocate_range(offset, length, operation)
+    }
+
+    fn set_attributes(
+        &self,
+        metadata: FileMetadata,
+        logical_bytes: Option<u64>,
+    ) -> Result<(), MountSourceError> {
+        self.file()?.set_attributes(metadata, logical_bytes)
+    }
+
+    fn read_attribute(&self, name: &[u8]) -> Result<Option<Bytes>, MountSourceError> {
+        self.file()?.read_attribute(name)
+    }
+
+    fn list_attributes(
+        &self,
+        cursor: Option<&[u8]>,
+        maximum_entries: u32,
+    ) -> Result<super::MountAttributePage, MountSourceError> {
+        self.file()?.list_attributes(cursor, maximum_entries)
+    }
+
+    fn write_attribute(
+        &self,
+        name: &[u8],
+        value: Bytes,
+        mode: super::MountAttributeWriteMode,
+    ) -> Result<(), MountSourceError> {
+        self.file()?.write_attribute(name, value, mode)
+    }
+
+    fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError> {
+        self.file()?.remove_attribute(name)
+    }
+}
+
+/// A handle this session opened for a file the kernel opened without
+/// asking.
+#[derive(Clone, Copy)]
+struct Implicit {
+    handle: u64,
+    writes: bool,
+}
+
+/// What I/O the kernel sent without a handle needs of the inode's own.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Access {
+    Read,
+    Write,
+}
+
 /// Whether an open with `flags` may change the file's content.
 fn changes_content(flags: i32) -> bool {
     flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_TRUNC != 0
@@ -543,6 +655,8 @@ struct OpenedFile<'a> {
     flags: i32,
     open_file: Arc<dyn MountOpenFile>,
     dirty: bool,
+    /// Whether the open may send the kernel small files' pages.
+    stores_pages: bool,
 }
 
 /// Mount-wide facts every attribute reply is built from.
@@ -654,6 +768,10 @@ struct ProjectionState {
     inode_by_path: HashMap<MountPath, u64>,
     inode_by_file: HashMap<crate::FileId, u64>,
     files: HashMap<u64, FileHandle>,
+    /// The handle this session opened for each inode whose I/O the kernel
+    /// sends without one (see [`FuseProjection::skips_open`]), and whether
+    /// it writes, until the kernel forgets the inode.
+    implicit: HashMap<u64, Implicit>,
     streams: DirectoryStreams,
     invalidation: InvalidationQueue,
     page_stores: PageStores,
@@ -782,12 +900,19 @@ impl ProjectionState {
         if inode == ROOT_INODE {
             return;
         }
-        let remove = if let Some(entry) = self.by_inode.get_mut(&inode) {
+        let forgotten = self.by_inode.get_mut(&inode).is_some_and(|entry| {
             entry.lookup_references = entry.lookup_references.saturating_sub(references);
-            entry.lookup_references == 0 && entry.open_handles == 0
-        } else {
-            false
-        };
+            entry.lookup_references == 0
+        });
+        // The kernel forgets only an inode no open file holds, so the
+        // handle its I/O arrived on is done.
+        if forgotten && let Some(implicit) = self.implicit.remove(&inode) {
+            let _ = self.discard_file_handle(inode, implicit.handle);
+        }
+        let remove = self
+            .by_inode
+            .get(&inode)
+            .is_some_and(|entry| entry.lookup_references == 0 && entry.open_handles == 0);
         if remove && let Some(entry) = self.by_inode.remove(&inode) {
             for binding in &entry.bindings {
                 if self.inode_by_path.get(&binding.path) == Some(&inode) {
@@ -886,6 +1011,21 @@ impl ProjectionState {
         if admitted { attributes } else { Duration::ZERO }
     }
 
+    /// The position after which `name` under `parent` was last found absent,
+    /// as the negative entry the kernel holds for it records.
+    fn absent_since(&self, parent: u64, name: &ChildName) -> Option<ViewStamp> {
+        let component = name.key().components().last()?;
+        name.is_exact()
+            .then(|| {
+                self.by_inode
+                    .get(&parent)?
+                    .negative_children
+                    .get(component)
+                    .copied()
+            })
+            .flatten()
+    }
+
     /// Records a negative entry for `name` under `parent`, derived after
     /// `stamp`, returning its cache lifetime when the kernel may keep it.
     fn admit_negative(
@@ -969,12 +1109,20 @@ impl ProjectionState {
         inode: u64,
         handle: Option<u64>,
     ) -> Result<Result<Resolved, NodeFacts>, i32> {
-        if let Some(handle) = handle {
-            return self
-                .open_handle(inode, handle)
-                .map(|open_file| Err(NodeFacts::Handle(open_file)));
-        }
         let entry = self.by_inode.get(&inode).ok_or(libc::ESTALE)?;
+        if let Some(handle) = handle {
+            let open_file = self.open_handle(inode, handle)?;
+            // The handle names the inode's file, whose changes are recorded
+            // by identity: facts nothing changed since answer for it too.
+            return Ok(match entry.current_facts(source) {
+                Some(stamp) => Ok(Resolved {
+                    lookup: entry.lookup,
+                    stamp: Some(stamp),
+                    through: None,
+                }),
+                None => Err(NodeFacts::Handle(open_file)),
+            });
+        }
         if let Some(stamp) = entry.current_facts(source) {
             return Ok(Ok(Resolved {
                 lookup: entry.lookup,
@@ -1057,6 +1205,7 @@ impl ProjectionState {
             flags,
             open_file,
             dirty,
+            stores_pages,
         } = opened;
         let file_id = lookup.node.file_id;
         let handle = self.next_handle;
@@ -1072,7 +1221,8 @@ impl ProjectionState {
         let claim = changes_content(flags).then_some(file_id);
         let store = match (stamp, u32::try_from(lookup.node.logical_bytes)) {
             (Some(stamp), Ok(length))
-                if admitted
+                if stores_pages
+                    && admitted
                     && cached == CachedContent::Absent
                     && claim.is_none()
                     && flags & libc::O_DIRECT == 0
@@ -1230,6 +1380,21 @@ impl ProjectionState {
         debug_assert_eq!(assigned, expected);
     }
 
+    /// The inode the kernel may still use for I/O, without having opened it
+    /// through this session, once `lookup`'s name is removed: a regular file
+    /// with one name, which the kernel holds and has no handle for yet.
+    fn unopened_referenced_inode(&self, lookup: Option<&MountLookup>) -> Option<u64> {
+        let lookup = lookup?;
+        if lookup.node.kind != MountNodeKind::Regular || lookup.node.link_count != 1 {
+            return None;
+        }
+        let inode = self.inode_by_file.get(&lookup.node.file_id).copied()?;
+        self.by_inode
+            .get(&inode)
+            .is_some_and(|entry| entry.lookup_references != 0 && entry.open_handles == 0)
+            .then_some(inode)
+    }
+
     /// The inode with open handles that loses its last name when `lookup`'s
     /// name is removed; its handles must move to a detached view first.
     fn detaching_inode(&self, lookup: Option<&MountLookup>) -> Option<u64> {
@@ -1245,13 +1410,8 @@ impl ProjectionState {
     }
 
     fn remove_path_cache(&mut self, path: &MountPath) {
-        let affected = self
-            .by_inode
-            .iter()
-            .filter_map(|(inode, entry)| entry.binding(path).is_some().then_some(*inode))
-            .collect::<Vec<_>>();
-        for inode in affected {
-            self.remove_binding(inode, path);
+        if let Some(inode) = self.inode_by_path.remove(path) {
+            unbind(&mut self.by_inode, &mut self.inode_by_file, inode, path);
         }
     }
 
@@ -1259,15 +1419,7 @@ impl ProjectionState {
         if self.inode_by_path.get(path) == Some(&inode) {
             self.inode_by_path.remove(path);
         }
-        let remove_inode = if let Some(entry) = self.by_inode.get_mut(&inode) {
-            entry.bindings.retain(|binding| binding.path != *path);
-            entry.bindings.is_empty() && entry.lookup_references == 0 && entry.open_handles == 0
-        } else {
-            false
-        };
-        if remove_inode && let Some(entry) = self.by_inode.remove(&inode) {
-            forget_file(&mut self.inode_by_file, entry.lookup.node.file_id, inode);
-        }
+        unbind(&mut self.by_inode, &mut self.inode_by_file, inode, path);
     }
 
     fn invalidate_prefix(&mut self, prefix: &MountPath) {
@@ -1299,7 +1451,8 @@ impl ProjectionState {
         self.inode_by_path.clear();
         for (inode, entry) in &self.by_inode {
             for binding in &entry.bindings {
-                self.inode_by_path.insert(binding.path.clone(), *inode);
+                let previous = self.inode_by_path.insert(binding.path.clone(), *inode);
+                debug_assert!(previous.is_none(), "a path is bound to one inode");
             }
         }
     }
@@ -1600,6 +1753,41 @@ fn forget_unbound_names(
 }
 
 /// Forgets that `file_id` is `inode`, unless it already names another.
+/// Records `path` as bound to `inode` alone. A path names one file, so an
+/// inode that held it before holds it no longer, and one left with no name,
+/// reference, or handle is forgotten. `inode_by_path` thereby indexes every
+/// binding, which lets a path's binding go without scanning every inode.
+fn bind_path(
+    by_inode: &mut HashMap<u64, InodeEntry>,
+    inode_by_path: &mut HashMap<MountPath, u64>,
+    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    path: &MountPath,
+    inode: u64,
+) {
+    if let Some(previous) = inode_by_path.insert(path.clone(), inode)
+        && previous != inode
+    {
+        unbind(by_inode, inode_by_file, previous, path);
+    }
+}
+
+/// Removes `path` from `inode`'s bindings and forgets an inode left with no
+/// name, lookup reference, or open handle. The caller keeps `inode_by_path`.
+fn unbind(
+    by_inode: &mut HashMap<u64, InodeEntry>,
+    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    inode: u64,
+    path: &MountPath,
+) {
+    let remove_inode = by_inode.get_mut(&inode).is_some_and(|entry| {
+        entry.bindings.retain(|binding| binding.path != *path);
+        entry.bindings.is_empty() && entry.lookup_references == 0 && entry.open_handles == 0
+    });
+    if remove_inode && let Some(entry) = by_inode.remove(&inode) {
+        forget_file(inode_by_file, entry.lookup.node.file_id, inode);
+    }
+}
+
 fn forget_file(
     inode_by_file: &mut HashMap<crate::FileId, u64>,
     file_id: crate::FileId,
@@ -1656,7 +1844,7 @@ fn intern_projected(
         if lookup_reference {
             entry.lookup_references = entry.lookup_references.saturating_add(1);
         }
-        inode_by_path.insert(path, inode);
+        bind_path(by_inode, inode_by_path, inode_by_file, &path, inode);
         return Ok(inode);
     }
     let inode = *next_inode;
@@ -1666,7 +1854,7 @@ fn intern_projected(
     let following = inode.checked_add(1).ok_or(libc::EOVERFLOW)?;
     *next_inode = following;
     inode_by_file.insert(lookup.node.file_id, inode);
-    inode_by_path.insert(path.clone(), inode);
+    bind_path(by_inode, inode_by_path, inode_by_file, &path, inode);
     by_inode.insert(
         inode,
         InodeEntry::new(path, *lookup, stamp, u64::from(lookup_reference)),
@@ -2022,6 +2210,13 @@ struct FuseProjection {
     /// then does with the listing cached as [`ProjectionState::directory_open_flags`]
     /// would allow for a source with view stamps.
     skips_opendir: bool,
+    /// Whether the kernel opens files without asking. It then keeps every
+    /// file's pages, which a source that reports its changes keeps coherent
+    /// (and, should its reports stop, attributes that expire at once let
+    /// the kernel drop on the next read), and sends each file's I/O on its
+    /// inode, which [`Self::handle`] gives one handle of its own. A source
+    /// that flushes when a handle closes needs every close, so it is asked.
+    skips_open: bool,
 }
 
 /// One background libfuse session.
@@ -2185,6 +2380,7 @@ impl FuseSession {
             inode_by_path: HashMap::from([(MountPath::root(), ROOT_INODE)]),
             inode_by_file: HashMap::from([(root.node.file_id, ROOT_INODE)]),
             files: HashMap::new(),
+            implicit: HashMap::new(),
             streams: DirectoryStreams::default(),
             invalidation: InvalidationQueue::default(),
             page_stores: PageStores::default(),
@@ -2213,6 +2409,7 @@ impl FuseSession {
         let filesystem = FuseProjection {
             core: Arc::clone(&core),
             skips_opendir: false,
+            skips_open: false,
         };
         let session = fuser::Session::new(filesystem, &request.destination, &config)
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
@@ -2572,6 +2769,21 @@ impl FuseProjection {
         Ok(Entry { attr, ttl })
     }
 
+    /// Opens the implicit handle of the file `lookup` names, when the kernel
+    /// may hold it open without having asked, so removing its last name
+    /// detaches it for the kernel's later I/O.
+    fn hold_unopened(&self, lookup: Option<&MountLookup>) -> Result<(), i32> {
+        if !self.skips_open {
+            return Ok(());
+        }
+        let inode = self.core.state()?.unopened_referenced_inode(lookup);
+        // The caller holds the names lock exclusively.
+        inode.map_or(Ok(()), |inode| {
+            self.reopen_implicit_named(inode, None, Access::Read)
+                .map(|_| ())
+        })
+    }
+
     fn remove_name(&self, parent: u64, name: &OsStr) -> Result<(), i32> {
         let source = self.source();
         let _names = self.core.names_exclusive()?;
@@ -2582,6 +2794,7 @@ impl FuseProjection {
         };
         let path = &child.spelled;
         let current = source.lookup(path).map_err(errno)?;
+        self.hold_unopened(current.as_ref())?;
         let detaching = self.core.state()?.detaching_inode(current.as_ref());
         let detached = detaching
             .map(|inode| source.detach_file(path).map(|detached| (inode, detached)))
@@ -2625,6 +2838,7 @@ impl FuseProjection {
         } else {
             None
         };
+        self.hold_unopened(replaced.as_ref())?;
         let detaching = self.core.state()?.detaching_inode(replaced.as_ref());
         let detached = detaching
             .map(|inode| {
@@ -2644,9 +2858,9 @@ impl FuseProjection {
         // Renaming between spellings of one folded name moves nothing the
         // projection records.
         if from.key() != to.key() {
-            if replace {
-                state.invalidate_prefix(to.key());
-            }
+            // Whatever the projection still binds under the destination is
+            // gone now: the rename replaced it, or it was already absent.
+            state.invalidate_prefix(to.key());
             state.rename_prefix(from.key(), to.key());
         }
         Ok(())
@@ -2686,7 +2900,13 @@ impl FuseProjection {
         entry.lookup = projected;
         entry.facts = None;
         entry.lookup_references = entry.lookup_references.saturating_add(1);
-        state.inode_by_path.insert(to.key().clone(), inode);
+        let ProjectionState {
+            by_inode,
+            inode_by_path,
+            inode_by_file,
+            ..
+        } = &mut *state;
+        bind_path(by_inode, inode_by_path, inode_by_file, to.key(), inode);
         let ttl = state.admit_entry(source, inode, &to, current.stamp);
         Ok(Entry { attr, ttl })
     }
@@ -2703,50 +2923,68 @@ impl FuseProjection {
     }
 
     fn open_node(&self, inode: u64, flags: i32) -> Result<(u64, FopenFlags), i32> {
-        let source = self.source();
+        self.open_node_storing(inode, flags, true)
+    }
+
+    /// Opens `inode` with `flags`; `storing` sends small files' pages to the
+    /// kernel with the open.
+    fn open_node_storing(
+        &self,
+        inode: u64,
+        flags: i32,
+        storing: bool,
+    ) -> Result<(u64, FopenFlags), i32> {
         let _names = self.core.names()?;
-        let (path, file_id, stamp_before, binding_before) = {
+        self.open_node_named(inode, flags, storing)
+    }
+
+    /// [`Self::open_node_storing`] for a caller that holds the names lock.
+    fn open_node_named(
+        &self,
+        inode: u64,
+        flags: i32,
+        storing: bool,
+    ) -> Result<(u64, FopenFlags), i32> {
+        let source = self.source();
+        let (path, file_id, stamp_before, binding_before, held) = {
             let state = self.core.state()?;
             admit_open(state.defaults.writable, flags)?;
             let node = state.node(inode)?;
             if node.kind != MountNodeKind::Regular {
                 return Err(libc::EISDIR);
             }
+            // Facts a read-only open can stand on without the source: pages
+            // the kernel holds at the version these facts describe.
+            let held = (!changes_content(flags) && flags & libc::O_DIRECT == 0)
+                .then(|| state.by_inode.get(&inode))
+                .flatten()
+                .filter(|entry| entry.cached_content == Some(ContentVersion::of(&entry.lookup)))
+                .and_then(|entry| Some((entry.lookup, entry.facts?)));
             (
                 state.path(inode)?.clone(),
                 node.file_id,
                 source.view_stamp(),
                 source.binding_epoch(),
+                held,
             )
         };
         let _claim = changes_content(flags)
             .then(|| self.core.claim_content(file_id))
             .transpose()?;
-        let open_file = source.open_file(&path).map_err(errno)?;
-        // The inode may have outlived its path binding. Check the attached
-        // file before O_TRUNC can mutate a replacement at that path.
-        let opened = match open_file.lookup() {
-            Ok(lookup) if lookup.node.file_id == file_id => lookup,
-            _ => return Err(libc::ESTALE),
-        };
-        let truncated = flags & libc::O_TRUNC != 0;
-        if truncated {
-            open_file.resize(0).map_err(errno)?;
-        }
-        // O_TRUNC (and a lazy-file promotion during open) legitimately
-        // changes the node. Validate the attached handle instead of treating
-        // that authored mutation as an external rebind.
-        let unchanged = !truncated
-            && stamp_before
-                .is_some_and(|stamp| source.unchanged_since(&path, Some(file_id), stamp));
-        let (refreshed, stamp) = if unchanged {
-            (opened, stamp_before)
-        } else {
-            let stamp = source.view_stamp();
-            match open_file.lookup() {
-                Ok(lookup) if lookup.node.file_id == file_id => (lookup, stamp),
-                _ => return Err(libc::ESTALE),
+        let held = held.filter(|(lookup, facts)| {
+            lookup.node.file_id == file_id && source.unchanged_since(&path, Some(file_id), *facts)
+        });
+        let (open_file, refreshed, stamp, truncated) = match held {
+            Some((lookup, facts)) => {
+                let deferred: Arc<dyn MountOpenFile> = Arc::new(DeferredOpenFile {
+                    source: Arc::clone(&self.core.source),
+                    path: path.clone(),
+                    opened: lookup,
+                    file: Mutex::new(None),
+                });
+                (deferred, lookup, Some(facts), false)
             }
+            None => self.open_source(source, &path, file_id, flags, stamp_before)?,
         };
         // Lazy promotion and O_TRUNC may write while opening, so pin the
         // external binding only after those operations have completed.
@@ -2776,10 +3014,50 @@ impl FuseProjection {
                 flags,
                 open_file,
                 dirty: truncated,
+                stores_pages: storing,
             },
         )?;
         drop(state);
         Ok((handle, self.store_pages(store, open_flags)))
+    }
+
+    /// Opens `path` in the source for an open with `flags` and returns the
+    /// file with its facts, the position they were read after, and whether
+    /// the open truncated it.
+    #[allow(clippy::type_complexity)]
+    fn open_source(
+        &self,
+        source: &dyn MountFilesystem,
+        path: &MountPath,
+        file_id: crate::FileId,
+        flags: i32,
+        stamp_before: Option<ViewStamp>,
+    ) -> Result<(Arc<dyn MountOpenFile>, MountLookup, Option<ViewStamp>, bool), i32> {
+        // The inode may have outlived its path binding. Check the attached
+        // file before O_TRUNC can mutate a replacement at that path.
+        let (open_file, opened) = source.open_file_with_lookup(path).map_err(errno)?;
+        if opened.node.file_id != file_id {
+            return Err(libc::ESTALE);
+        }
+        let truncated = flags & libc::O_TRUNC != 0;
+        if truncated {
+            open_file.resize(0).map_err(errno)?;
+        }
+        // O_TRUNC (and a lazy-file promotion during open) legitimately
+        // changes the node. Validate the attached handle instead of treating
+        // that authored mutation as an external rebind.
+        let unchanged = !truncated
+            && stamp_before.is_some_and(|stamp| source.unchanged_since(path, Some(file_id), stamp));
+        let (refreshed, stamp) = if unchanged {
+            (opened, stamp_before)
+        } else {
+            let stamp = source.view_stamp();
+            match open_file.lookup() {
+                Ok(lookup) if lookup.node.file_id == file_id => (lookup, stamp),
+                _ => return Err(libc::ESTALE),
+            }
+        };
+        Ok((open_file, refreshed, stamp, truncated))
     }
 
     /// Completes `store`, if any, for an open replying with `open_flags`.
@@ -2829,10 +3107,12 @@ impl FuseProjection {
     ) -> Result<(Entry, u64, FopenFlags), i32> {
         let source = self.source();
         let _names = self.core.names()?;
-        let child = {
+        let (child, absent_since) = {
             let state = self.core.state()?;
             state.admit_write()?;
-            self.child(&state, parent, name)?
+            let child = self.child(&state, parent, name)?;
+            let absent_since = state.absent_since(parent, &child);
+            (child, absent_since)
         };
         let path = &child.spelled;
         let stamp = source.view_stamp();
@@ -2841,45 +3121,50 @@ impl FuseProjection {
                 .then(|| self.core.claim_content(file_id))
                 .transpose()
         };
-        let (lookup, open_file, dirty, _claim, confirmed) =
-            if let Some(existing) = source.lookup(path).map_err(errno)? {
-                {
-                    if flags & libc::O_EXCL != 0 {
-                        return Err(libc::EEXIST);
-                    }
-                    if existing.node.kind != MountNodeKind::Regular {
-                        return Err(libc::EISDIR);
-                    }
-                    // Confirmed before the open changes anything.
-                    let confirmed = self
-                        .confirm_names(ConfirmedNames::default(), [(child.key(), existing.node)])?;
-                    let claimed = claim(existing.node.file_id)?;
-                    let open_file = source.open_file(path).map_err(errno)?;
-                    let opened = open_file.lookup().map_err(errno)?;
-                    if opened.node.file_id != existing.node.file_id {
-                        return Err(libc::ESTALE);
-                    }
-                    if flags & libc::O_TRUNC == 0 {
-                        (opened, open_file, false, claimed, confirmed)
-                    } else {
-                        open_file.resize(0).map_err(errno)?;
-                        let resized = open_file.lookup().map_err(errno)?;
-                        (resized, open_file, true, claimed, confirmed)
-                    }
+        // The kernel looks a name up before it creates it: an absence it was
+        // told of that nothing has changed since needs no second lookup.
+        let existing = match absent_since {
+            Some(held) if source.unchanged_since(child.key(), None, held) => None,
+            _ => source.lookup(path).map_err(errno)?,
+        };
+        let (lookup, open_file, dirty, _claim, confirmed) = if let Some(existing) = existing {
+            {
+                if flags & libc::O_EXCL != 0 {
+                    return Err(libc::EEXIST);
                 }
-            } else {
-                let metadata = create_metadata(request, mode, S_IFREG);
-                let created = source.create_file(path, metadata).map_err(errno)?;
-                let claimed = claim(created.node.file_id)?;
-                (
-                    created,
-                    source.open_file(path).map_err(errno)?,
-                    true,
-                    claimed,
-                    // A file just created has no other name.
-                    ConfirmedNames::default(),
-                )
-            };
+                if existing.node.kind != MountNodeKind::Regular {
+                    return Err(libc::EISDIR);
+                }
+                // Confirmed before the open changes anything.
+                let confirmed =
+                    self.confirm_names(ConfirmedNames::default(), [(child.key(), existing.node)])?;
+                let claimed = claim(existing.node.file_id)?;
+                let open_file = source.open_file(path).map_err(errno)?;
+                let opened = open_file.lookup().map_err(errno)?;
+                if opened.node.file_id != existing.node.file_id {
+                    return Err(libc::ESTALE);
+                }
+                if flags & libc::O_TRUNC == 0 {
+                    (opened, open_file, false, claimed, confirmed)
+                } else {
+                    open_file.resize(0).map_err(errno)?;
+                    let resized = open_file.lookup().map_err(errno)?;
+                    (resized, open_file, true, claimed, confirmed)
+                }
+            }
+        } else {
+            let metadata = create_metadata(request, mode, S_IFREG);
+            let created = source.create_file(path, metadata).map_err(errno)?;
+            let claimed = claim(created.node.file_id)?;
+            (
+                created,
+                source.open_created(path, &created).map_err(errno)?,
+                true,
+                claimed,
+                // A file just created has no other name.
+                ConfirmedNames::default(),
+            )
+        };
         let mut state = self.core.state()?;
         let inode = state.intern(
             source,
@@ -2897,6 +3182,7 @@ impl FuseProjection {
                 flags,
                 open_file,
                 dirty,
+                stores_pages: true,
             };
             let (handle, open_flags, store) = state.admit_file_handle(source, inode, opened)?;
             Ok((attr, handle, open_flags, store))
@@ -2907,6 +3193,98 @@ impl FuseProjection {
         drop(state);
         let open_flags = self.store_pages(store, open_flags);
         Ok((Entry { attr, ttl }, handle, open_flags))
+    }
+
+    /// Runs `operation` with the handle for I/O the kernel sent on `handle`:
+    /// that handle, or for a file the kernel opened without asking (handle
+    /// 0), the one this session holds for the inode, opened to write on its
+    /// first change. A read of a file the session holds no handle for opens
+    /// one for its own duration, so a file that is only read holds nothing
+    /// open.
+    fn with_handle<T>(
+        &self,
+        inode: u64,
+        handle: u64,
+        access: Access,
+        operation: impl FnOnce(u64) -> Result<T, i32>,
+    ) -> Result<T, i32> {
+        if handle != 0 || !self.skips_open {
+            return operation(handle);
+        }
+        let held = self.core.state()?.implicit.get(&inode).copied();
+        match (held, access) {
+            (Some(implicit), Access::Read) => operation(implicit.handle),
+            (Some(implicit), Access::Write) if implicit.writes => operation(implicit.handle),
+            (_, Access::Write) => operation(self.reopen_implicit(inode, held, access)?),
+            (None, Access::Read) => {
+                let (transient, _) = self.open_node_storing(inode, libc::O_RDONLY, false)?;
+                let result = operation(transient);
+                let _ = self.core.state()?.discard_file_handle(inode, transient);
+                result
+            }
+        }
+    }
+
+    /// Opens `inode`'s implicit handle for `access` in place of `stale`,
+    /// the one it held, if any. The kernel reads what it does not hold
+    /// itself, so the open stores no pages.
+    fn reopen_implicit(
+        &self,
+        inode: u64,
+        stale: Option<Implicit>,
+        access: Access,
+    ) -> Result<u64, i32> {
+        let _names = self.core.names()?;
+        self.reopen_implicit_named(inode, stale, access)
+    }
+
+    /// [`Self::reopen_implicit`] for a caller that holds the names lock.
+    fn reopen_implicit_named(
+        &self,
+        inode: u64,
+        stale: Option<Implicit>,
+        access: Access,
+    ) -> Result<u64, i32> {
+        let writes = access == Access::Write || stale.is_some_and(|stale| stale.writes);
+        let flags = if writes { libc::O_RDWR } else { libc::O_RDONLY };
+        let (opened, _) = self.open_node_named(inode, flags, false)?;
+        let mut state = self.core.state()?;
+        let current = state.implicit.get(&inode).map(|implicit| implicit.handle);
+        if current.is_some() && current != stale.map(|stale| stale.handle) {
+            // Another callback reopened it meanwhile.
+            let _ = state.discard_file_handle(inode, opened);
+            return current.ok_or(libc::ESTALE);
+        }
+        if let Some(stale) = state.implicit.insert(
+            inode,
+            Implicit {
+                handle: opened,
+                writes,
+            },
+        ) {
+            let _ = state.discard_file_handle(inode, stale.handle);
+        }
+        Ok(opened)
+    }
+
+    /// Reads for I/O the kernel sent on `handle`. A held implicit handle
+    /// serves every open the kernel made without asking, so when the file
+    /// changed around the mount since it opened, it reopens once to read
+    /// what those later opens see.
+    fn read_through(&self, inode: u64, handle: u64, offset: u64, size: u32) -> Result<Bytes, i32> {
+        let read = self.with_handle(inode, handle, Access::Read, |opened| {
+            self.read_handle(inode, opened, offset, size)
+        });
+        match read {
+            Err(libc::ESTALE) if handle == 0 && self.skips_open => {
+                let Some(stale) = self.core.state()?.implicit.get(&inode).copied() else {
+                    return Err(libc::ESTALE);
+                };
+                let reopened = self.reopen_implicit(inode, Some(stale), Access::Read)?;
+                self.read_handle(inode, reopened, offset, size)
+            }
+            read => read,
+        }
     }
 
     fn read_handle(&self, inode: u64, handle: u64, offset: u64, size: u32) -> Result<Bytes, i32> {
@@ -2962,7 +3340,7 @@ impl FuseProjection {
     fn flush_handle(&self, inode: u64, handle: u64, force: bool, release: bool) -> Result<(), i32> {
         let operation = self.core.state()?.open_handle_operation(inode, handle)?;
         let _operation = operation.lock().map_err(|_| libc::EIO)?;
-        let should_flush = {
+        let (should_flush, open_file) = {
             let state = self.core.state()?;
             let file = state
                 .files
@@ -2972,15 +3350,25 @@ impl FuseProjection {
             // fsync is an explicit durability request for the file, including
             // writes made through other descriptors. A close only flushes when
             // this handle was dirty and the source requires it.
-            force || (file.dirty && self.source().flush_on_handle_close())
+            (
+                force || (file.dirty && self.source().flush_on_handle_close()),
+                Arc::clone(&file.open_file),
+            )
         };
-        // The per-handle operation gate remains held, but unrelated FUSE
-        // callbacks never wait on the state lock during durable IO.
-        let flushed = if should_flush {
-            self.source().flush().map_err(errno)
+        // A durability request applies what the handle held back first. The per-handle operation gate remains held, but unrelated
+        // FUSE callbacks never wait on the state lock during durable IO.
+        let settled = if force {
+            open_file.settle().map_err(errno)
         } else {
             Ok(())
         };
+        let flushed = settled.and_then(|()| {
+            if should_flush {
+                self.source().flush().map_err(errno)
+            } else {
+                Ok(())
+            }
+        });
         let mut state = self.core.state()?;
         let current = state
             .files
@@ -3403,6 +3791,11 @@ impl Filesystem for FuseProjection {
             .contains(InitFlags::FUSE_NO_OPENDIR_SUPPORT)
             && ProjectionState::directory_open_flags(self.source())
                 .contains(FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE);
+        self.skips_open = config
+            .capabilities()
+            .contains(InitFlags::FUSE_NO_OPEN_SUPPORT)
+            && self.source().view_stamp().is_some()
+            && !self.source().flush_on_handle_close();
         let supported = REQUESTED_CAPABILITIES & config.capabilities();
         config
             .add_capabilities(supported)
@@ -3427,7 +3820,10 @@ impl Filesystem for FuseProjection {
         let _request = self.core.request("getattr");
         respond!(
             reply,
-            self.node_attributes(inode.0, fh.map(|handle| handle.0)),
+            self.node_attributes(
+                inode.0,
+                fh.map(|handle| handle.0).filter(|handle| *handle != 0)
+            ),
             |(attr, ttl)| reply.attr(&ttl, &attr)
         );
     }
@@ -3483,7 +3879,11 @@ impl Filesystem for FuseProjection {
         };
         respond!(
             reply,
-            self.set_attributes(inode.0, fh.map(|handle| handle.0), &changes),
+            self.set_attributes(
+                inode.0,
+                fh.map(|handle| handle.0).filter(|handle| *handle != 0),
+                &changes
+            ),
             |(attr, ttl)| reply.attr(&ttl, &attr)
         );
     }
@@ -3610,6 +4010,10 @@ impl Filesystem for FuseProjection {
     fn open(&self, request: &Request, inode: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let _ = request;
         let _request = self.core.request("open");
+        if self.skips_open {
+            // `ENOSYS` tells the kernel to open every file without asking.
+            return reply.error(Errno::from_i32(libc::ENOSYS));
+        }
         respond!(reply, self.open_node(inode.0, flags.0), |(
             handle,
             flags,
@@ -3633,7 +4037,7 @@ impl Filesystem for FuseProjection {
         let _request = self.core.request("read");
         respond!(
             reply,
-            self.read_handle(inode.0, fh.0, offset, size),
+            self.read_through(inode.0, fh.0, offset, size),
             |bytes| {
                 reply.data(&bytes);
             }
@@ -3657,7 +4061,9 @@ impl Filesystem for FuseProjection {
         let _request = self.core.request("write");
         respond!(
             reply,
-            self.write_handle(inode.0, fh.0, offset, data),
+            self.with_handle(inode.0, fh.0, Access::Write, |handle| {
+                self.write_handle(inode.0, handle, offset, data)
+            }),
             |written| {
                 reply.written(written);
             }
@@ -3674,7 +4080,10 @@ impl Filesystem for FuseProjection {
     ) {
         let _ = (request, datasync);
         let _request = self.core.request("fsync");
-        respond!(reply, self.flush_handle(inode.0, fh.0, true, false), |()| {
+        let flushed = self.with_handle(inode.0, fh.0, Access::Read, |handle| {
+            self.flush_handle(inode.0, handle, true, false)
+        });
+        respond!(reply, flushed, |()| {
             reply.ok();
         });
     }
@@ -3689,6 +4098,11 @@ impl Filesystem for FuseProjection {
     ) {
         let _ = (request, lock_owner);
         let _request = self.core.request("flush");
+        if self.skips_open && fh.0 == 0 {
+            // A close flushes nothing for this source (see `skips_open`), and
+            // `ENOSYS` tells the kernel to stop sending closes.
+            return reply.error(Errno::from_i32(libc::ENOSYS));
+        }
         respond!(
             reply,
             self.flush_handle(inode.0, fh.0, false, false),
@@ -3850,7 +4264,9 @@ impl Filesystem for FuseProjection {
         let _request = self.core.request("fallocate");
         respond!(
             reply,
-            self.allocate(inode.0, fh.0, offset, length, mode),
+            self.with_handle(inode.0, fh.0, Access::Write, |handle| {
+                self.allocate(inode.0, handle, offset, length, mode)
+            }),
             |()| reply.ok()
         );
     }
@@ -3866,7 +4282,10 @@ impl Filesystem for FuseProjection {
     ) {
         let _ = request;
         let _request = self.core.request("lseek");
-        respond!(reply, self.seek(inode.0, fh.0, offset, whence), |found| {
+        let found = self.with_handle(inode.0, fh.0, Access::Read, |handle| {
+            self.seek(inode.0, handle, offset, whence)
+        });
+        respond!(reply, found, |found| {
             reply.offset(found);
         });
     }
@@ -3887,20 +4306,21 @@ impl Filesystem for FuseProjection {
     ) {
         let _ = request;
         let _request = self.core.request("copy_file_range");
-        respond!(
-            reply,
-            self.copy_range(
-                inode_in.0,
-                fh_in.0,
-                offset_in,
-                inode_out.0,
-                fh_out.0,
-                offset_out,
-                length,
-                flags.bits()
-            ),
-            |written| reply.written(written)
-        );
+        let copied = self.with_handle(inode_in.0, fh_in.0, Access::Read, |handle_in| {
+            self.with_handle(inode_out.0, fh_out.0, Access::Write, |handle_out| {
+                self.copy_range(
+                    inode_in.0,
+                    handle_in,
+                    offset_in,
+                    inode_out.0,
+                    handle_out,
+                    offset_out,
+                    length,
+                    flags.bits(),
+                )
+            })
+        });
+        respond!(reply, copied, |written| reply.written(written));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4523,6 +4943,7 @@ mod tests {
             inode_by_path: HashMap::new(),
             inode_by_file: HashMap::new(),
             files: HashMap::new(),
+            implicit: HashMap::new(),
             streams: DirectoryStreams::default(),
             invalidation: InvalidationQueue::default(),
             page_stores: PageStores::default(),

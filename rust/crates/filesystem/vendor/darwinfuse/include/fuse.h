@@ -34,7 +34,6 @@ extern "C" {
 
 struct fuse;
 struct fuse_chan;
-struct fuse_session;
 struct fuse_pollhandle;
 struct fuse_bufvec;
 
@@ -272,25 +271,6 @@ struct fuse_operations {
 #endif
 #define FUSE_CHANGE_UNLABELED  (UINT64_C(1) << 63)
 
-/* ---- High-level API (fuse_main) ---- */
-
-/*
- * Main entry point. Parses arguments, starts NFSv4 server, mounts,
- * and runs event loop. Blocks until the filesystem is unmounted.
- *
- * Returns 0 on success, non-zero on failure.
- */
-int fuse_main(int argc, char *argv[],
-              const struct fuse_operations *op, void *user_data);
-
-/*
- * Same as fuse_main but accepts ops_size for ABI compatibility.
- * This is what the libfuse macro typically expands to.
- */
-int fuse_main_real(int argc, char *argv[],
-                   const struct fuse_operations *op, size_t op_size,
-                   void *user_data);
-
 /* ---- Component API ---- */
 
 /*
@@ -335,22 +315,6 @@ int fuse_loop(struct fuse *f);
 int fuse_loop_mt(struct fuse *f);
 
 /*
- * Get the session from a FUSE handle (for signal handler setup).
- */
-struct fuse_session *fuse_get_session(struct fuse *f);
-
-/*
- * Install signal handlers for clean shutdown.
- * SIGINT and SIGTERM will trigger fuse_exit().
- */
-int fuse_set_signal_handlers(struct fuse_session *se);
-
-/*
- * Remove previously installed signal handlers.
- */
-void fuse_remove_signal_handlers(struct fuse_session *se);
-
-/*
  * Signal the event loop to exit.
  */
 void fuse_exit(struct fuse *f);
@@ -375,35 +339,10 @@ void fuse_set_mounted_callback(struct fuse *f, void (*mounted)(void *arg),
 struct fuse_context *fuse_get_context(void);
 
 /*
- * Parse standard FUSE command-line options.
- * Extracts mountpoint, foreground flag, and multi-thread flag.
- * Returns 0 on success, -1 on error.
- */
-int fuse_parse_cmdline(struct fuse_args *args, char **mountpoint,
-                       int *multithreaded, int *foreground);
-
-/*
- * Daemonize the process (unless foreground is true).
- * Returns 0 on success, -1 on error.
- */
-int fuse_daemonize(int foreground);
-
-/*
- * Return the FUSE library version number (26).
- */
-int fuse_version(void);
-
-/*
  * Get supplementary group IDs for the current request.
  * Returns number of groups on success, -1 on error.
  */
 int fuse_getgroups(int size, gid_t list[]);
-
-/*
- * Check if the current request has been interrupted.
- * Returns 1 if interrupted, 0 otherwise.
- */
-int fuse_interrupted(void);
 
 #ifdef __cplusplus
 }

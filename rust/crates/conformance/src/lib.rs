@@ -390,6 +390,7 @@ mod tests {
             .children(acyclic_stream::ChildrenRequest {
                 parent: None,
                 limit: 8,
+                after: None,
             })
             .await
             .map_err(|error| error.to_string())?

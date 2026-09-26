@@ -357,6 +357,23 @@ pub trait AsyncAuthorityStore: StorageProvider {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = AuthorityResult<CreateAuthorityOutcome>> + StorageFuture;
 
+    /// Releases every durable fact of `authority_id`, whose workspace or
+    /// retention ended for good, and answers [`crate::storage::AuthorityStoreError::Retired`]
+    /// for it from then on. Retiring a retired authority succeeds. Backends
+    /// that keep every authority answer from its last record instead.
+    fn retire_authority(
+        &self,
+        authority_id: AuthorityId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<()>> + StorageFuture {
+        let _ = (authority_id, budget, cancellation);
+        std::future::ready(Ok(crate::storage::AuthorityReceipt {
+            value: (),
+            work: crate::WorkCounters::default(),
+        }))
+    }
+
     /// Asynchronously reads the linearizable head.
     fn head(
         &self,
@@ -520,7 +537,13 @@ impl<T: ImmediateAuthorityStore + ?Sized> ImmediateAuthorityStore for Arc<T> {}
 #[derive(Clone, Copy, Debug)]
 pub enum PublicationScope<'a> {
     /// The complete authenticated closure of one published generation.
-    Closure(&'a [ObjectId]),
+    Closure {
+        /// Every object the record reaches.
+        objects: &'a [ObjectId],
+        /// The store's [`AsyncObjectStore::collection_sweeps`] before the
+        /// closure was proven.
+        proven_at: u64,
+    },
     /// Every object admitted so far, for a record whose closure was not
     /// enumerated.
     Everything,
@@ -598,22 +621,57 @@ pub trait AsyncObjectStore: StorageProvider {
         }
     }
 
+    /// Asynchronously admits an ordered bounded group of objects whose
+    /// identities their construction already proved. A store that verifies
+    /// digests on admission may skip hashing the same bytes again; the
+    /// default verifies through [`Self::put_many`].
+    fn put_many_hashed(
+        &self,
+        objects: &[crate::storage::HashedObject],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
+        let writes = objects
+            .iter()
+            .map(|object| ObjectWrite {
+                object_id: object.object_id(),
+                bytes: object.bytes().clone(),
+            })
+            .collect::<Vec<_>>();
+        async move { self.put_many(&writes, budget, cancellation).await }
+    }
+
     /// Makes every admitted object in `scope` crash-durable before an
-    /// authority record may reference it. Ordinary stores already provide
-    /// that guarantee from `put`/`put_many`; a bounded staging adapter overrides
-    /// this boundary to group physical writes without changing publication.
+    /// authority record may reference it, and keeps it from collection until
+    /// the returned hold drops, which the caller does after writing the
+    /// record. Ordinary stores already provide durability from
+    /// `put`/`put_many` and never collect; a bounded staging adapter
+    /// overrides this boundary to group physical writes and to admit the
+    /// closure against a running collection.
     fn flush_before_publish(
         &self,
         _scope: PublicationScope<'_>,
         _budget: WorkBudget,
         _cancellation: &CancellationToken,
-    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
+    ) -> impl Future<Output = ObjectResult<crate::PublicationHold>> + StorageFuture {
         async {
             Ok(crate::storage::ObjectReceipt {
-                value: (),
+                value: crate::PublicationHold::none(),
                 work: crate::WorkCounters::default(),
             })
         }
+    }
+
+    /// The collection this store runs while it stays open, if it collects.
+    fn collection(&self) -> Option<&Arc<crate::Collection>> {
+        None
+    }
+
+    /// The count a proof records before it starts, for
+    /// [`PublicationScope::Closure`].
+    fn collection_sweeps(&self) -> u64 {
+        self.collection()
+            .map_or(0, |collection| collection.sweeps())
     }
 
     /// Asynchronously reads one complete bounded object.

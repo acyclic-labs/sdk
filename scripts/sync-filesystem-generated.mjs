@@ -17,24 +17,6 @@ const packagedNativeWasmVector = join(root, "rust/crates/harness/conformance/nat
 mkdirSync(dirname(packagedNativeWasmVector), { recursive: true });
 copyFileSync(nativeWasmVector, packagedNativeWasmVector);
 
-const files = [
-  ["acyclic/filesystem/v2/acyclic.filesystem.v2.rs", "acyclic.filesystem.v2.tonic.rs"],
-];
-
-for (const [file, tonic] of files) {
-  for (const generatedFile of [file, join(dirname(file), tonic)]) {
-    const source = join(root, "generated/rust", generatedFile);
-    const destination = join(root, "rust/crates/filesystem/src/generated", generatedFile);
-    if (!existsSync(source)) {
-      throw new Error(`filesystem code-generation path is missing: ${generatedFile}`);
-    }
-    const normalized = `${readFileSync(source, "utf8").trimEnd()}\n`;
-    mkdirSync(dirname(destination), { recursive: true });
-    writeFileSync(source, normalized);
-    writeFileSync(destination, normalized);
-  }
-}
-
 for (const generatedFile of [
   "acyclic/objects/v1/acyclic.objects.v1.rs",
   "acyclic/objects/v1/acyclic.objects.v1.tonic.rs",

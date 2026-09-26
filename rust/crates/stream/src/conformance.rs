@@ -122,6 +122,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         .children(ChildrenRequest {
             parent: Some(path("conformance")?),
             limit: 8,
+            after: None,
         })
         .await
         .map_err(|err| error(&err))?

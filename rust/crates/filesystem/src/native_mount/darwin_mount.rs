@@ -2674,9 +2674,6 @@ fn metadata_time(field: MetadataField<i64>) -> (i64, u32) {
 }
 
 fn errno(error: &MountSourceError) -> i32 {
-    if std::env::var_os("ACYCLIC_FS_DARWIN_MOUNT_DEBUG").is_some() {
-        eprintln!("acyclic-fs Darwin mount callback error: {error}");
-    }
     match error {
         MountSourceError::NotFound => libc::ENOENT,
         MountSourceError::AlreadyExists => libc::EEXIST,
@@ -2967,10 +2964,13 @@ mod tests {
             issued.observed.lookup.node.logical_bytes += 1;
         }
         source.record_projection_change(&ViewChange::Unconfirmed);
-        let started = Instant::now();
+        let before = context.around.made.load(Ordering::Acquire);
         context.revalidate();
+        // The wait ends on a whole uptime second, so its length says little;
+        // what it waited out does.
+        let waited = context.around.made.load(Ordering::Acquire);
         assert!(
-            started.elapsed() >= Duration::from_millis(500),
+            waited > before && context.around.settled.load(Ordering::Acquire) >= waited,
             "a change the fence could not confirm is waited out"
         );
         Ok(())
@@ -3493,7 +3493,9 @@ mod tests {
 
         // An NFS NULL call, as any local process could send it.
         let mut stream = std::os::unix::net::UnixStream::connect(&socket)?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        // macOS refuses socket options (EINVAL) once the peer has closed, as
+        // this server may already have done; the read then ends at once.
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let call: [u32; 11] = [0x8000_0028, 1, 0, 2, 100_003, 4, 0, 0, 0, 0, 0];
         let bytes = call
             .iter()

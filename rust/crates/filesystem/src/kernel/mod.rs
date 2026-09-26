@@ -21,6 +21,8 @@ mod generation;
 mod generation_mutation;
 mod list;
 mod live;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+mod mark;
 mod merge;
 mod metadata;
 mod mutation;
@@ -129,6 +131,10 @@ pub use live::{
     LiveMutationOutcome, LivePublicationObservation, LiveRetryAction, LiveRetryError,
     LiveRetryState,
 };
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use mark::MarkError;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub(crate) use mark::Marker;
 pub use merge::{
     MergeConflict, MergeConflictResolution, MergeConflictSide, MergeGenerationError,
     MergeGenerationOutcome, MergeGenerationRequest, MergeGenerationResult, merge_generation_async,

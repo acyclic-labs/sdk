@@ -517,7 +517,7 @@ where
             request.page,
             &mut self.allocations,
             &mut self.work,
-            self.budget,
+            &self.budget,
         )?;
         if !visited.inserted {
             return Err(Error::CycleOrAlias);
@@ -941,38 +941,51 @@ where
         let allocation =
             self.allocations
                 .claim_elements::<u8>(encoded_length, &mut self.work, self.budget)?;
-        let encoded_work = self.work.checked_add(WorkCounters {
+        // Each charge below is admitted before its work runs and added in
+        // place after it succeeds, exactly as the prospective sums it
+        // replaces, without copying the counters.
+        let encoding = WorkCounters {
             bytes_encoded: encoded_bytes,
-            ..WorkCounters::default()
-        })?;
-        if let Err(error) = encoded_work.verify(self.budget) {
-            self.allocations.release(allocation)?;
+            ..WorkCounters::UNCHARGED
+        };
+        if let Err(error) = self.work.admit(&encoding, &self.budget) {
+            if error != WorkError::Overflow {
+                self.allocations.release(allocation)?;
+            }
             return Err(Error::Work(error));
         }
         let encoded = F::encode(page, self.limits.maximum_page_items)?;
-        self.work = encoded_work;
+        self.work.charge(&encoding, &self.budget)?;
         if encoded.len() != encoded_length {
             self.allocations.release(allocation)?;
             return Err(Error::MutationContract);
         }
-        let hashed_work = self.work.checked_add(WorkCounters {
+        let hashing = WorkCounters {
             bytes_hashed: encoded_bytes
                 .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
                 .ok_or(WorkError::Overflow)?,
-            ..WorkCounters::default()
-        })?;
-        if let Err(error) = hashed_work.verify(self.budget) {
-            self.allocations.release(allocation)?;
+            ..WorkCounters::UNCHARGED
+        };
+        if let Err(error) = self.work.admit(&hashing, &self.budget) {
+            if error != WorkError::Overflow {
+                self.allocations.release(allocation)?;
+            }
             return Err(Error::Work(error));
         }
         let hashed = HashedObject::new(F::kind(), Bytes::from(encoded));
         let object = hashed.object_id();
-        self.work = hashed_work;
-        let prospective = self.work.checked_add(WorkCounters {
-            page_writes: 1,
-            ..WorkCounters::default()
-        })?;
-        let remaining = prospective.remaining(self.budget)?;
+        self.work.charge(&hashing, &self.budget)?;
+        // On a failure before the backend runs, or on an overflowing
+        // receipt, `work` returns to the hashed total by removing exactly
+        // the page write added here.
+        self.work.try_add_assign(&PAGE_WRITE)?;
+        let remaining = match self.work.remaining(self.budget) {
+            Ok(remaining) => remaining,
+            Err(error) => {
+                self.work.page_writes -= 1;
+                return Err(Error::Work(error));
+            }
+        };
         let receipt = match crate::AsyncObjectStore::put_hashed(
             self.store,
             hashed,
@@ -984,24 +997,27 @@ where
             Ok(receipt) => receipt,
             Err(failure) => {
                 self.allocations.release(allocation)?;
-                return match prospective.checked_add(*failure.work) {
-                    Ok(spent) => {
-                        self.work = spent;
-                        Err(Error::Storage(failure.error))
-                    }
-                    Err(error) => {
-                        self.work = prospective;
-                        Err(Error::Work(error))
-                    }
+                return match self.work.try_add_assign(&failure.work) {
+                    Ok(()) => Err(Error::Storage(failure.error)),
+                    Err(error) => Err(Error::Work(error)),
                 };
             }
         };
-        self.work = prospective.checked_add(receipt.work)?;
-        self.work.verify(self.budget)?;
+        if let Err(error) = self.work.try_add_assign(&receipt.work) {
+            self.work.page_writes -= 1;
+            return Err(Error::Work(error));
+        }
+        self.work.verify_ref(&self.budget)?;
         self.allocations.release(allocation)?;
         Ok(object)
     }
 }
+
+/// One authenticated page written, as charged before the backend's work.
+const PAGE_WRITE: WorkCounters = WorkCounters {
+    page_writes: 1,
+    ..WorkCounters::UNCHARGED
+};
 
 fn map_io<E: std::error::Error>(error: persistent_io::Error) -> Error<E> {
     match error {

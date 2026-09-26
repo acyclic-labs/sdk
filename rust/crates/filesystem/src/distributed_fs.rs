@@ -143,6 +143,50 @@ impl<A, O, S> DistributedFs<A, O, S> {
     }
 }
 
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+impl
+    DistributedFs<
+        crate::LocalAuthorityBackend,
+        crate::LocalObjectBackend,
+        crate::LocalCoreStateStore,
+    >
+{
+    /// Reclaims everything the local root keeps that nothing live needs,
+    /// while it stays open: the core-state records of deleted workspaces,
+    /// then lazy nodes no workspace reaches, then objects; see
+    /// [`Fs::collect_local_garbage`].
+    ///
+    /// # Errors
+    ///
+    /// Fails at the first step that fails; each step removes nothing it
+    /// cannot prove unneeded.
+    pub async fn collect_garbage(
+        &self,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::LocalGarbageCollection, crate::FsError> {
+        let store_error = |error: crate::LocalCoreStateStoreError| {
+            crate::FsError::Object(crate::ObjectStoreError::Rejected(error.to_string()))
+        };
+        for workspace in self.store.workspace_records().await.map_err(store_error)? {
+            cancellation.check()?;
+            if self
+                .fs
+                .local_volume_deleted(workspace.volume_id(), cancellation)
+                .await?
+            {
+                self.store
+                    .forget_workspace(workspace)
+                    .await
+                    .map_err(store_error)?;
+            }
+        }
+        self.store.collect_lazy_nodes().await.map_err(store_error)?;
+        self.fs
+            .collect_local_garbage(Some(&self.store), cancellation)
+            .await
+    }
+}
+
 impl<P, O, S> DistributedFs<crate::StreamAuthorityStore<P>, O, S> {
     /// Constructs operation windows on the same authority stream that fences
     /// generation publication.

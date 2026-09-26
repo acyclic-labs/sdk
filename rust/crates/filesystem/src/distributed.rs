@@ -69,53 +69,39 @@ struct AuthoritySnapshot {
 }
 
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
-    /// Lists a bounded snapshot of exact filesystem authority identities.
+    /// Lists up to `maximum` exact filesystem authority identities, in order.
     ///
     /// Authorities are native direct children in Stream; no filesystem record or object is read.
     pub async fn authorities(&self, maximum: u32) -> Result<Vec<AuthorityId>, AuthorityStoreError> {
-        let request_limit = maximum.checked_add(1).ok_or_else(|| {
-            AuthorityStoreError::Rejected("authority listing bound is too large".to_owned())
-        })?;
         let parent = acyclic_stream::StreamPath::new("fs/authorities").map_err(map_stream_error)?;
-        let mut children = self
-            .provider
-            .children(acyclic_stream::ChildrenRequest {
-                parent: Some(parent),
-                limit: request_limit,
-            })
-            .await
-            .map_err(map_stream_error)?;
+        let page = u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX);
+        let mut after = None;
         let mut authorities = Vec::new();
-        while let Some(child) = children.next().await {
-            let child = child.map_err(map_stream_error)?;
-            let encoded = child
-                .path
-                .as_str()
-                .strip_prefix("fs/authorities/")
-                .ok_or_else(|| {
-                    AuthorityStoreError::Corrupt(
-                        "Stream authority child escaped its parent".to_owned(),
-                    )
-                })?;
-            if encoded.len() != 32 || encoded.contains('/') {
-                return Err(AuthorityStoreError::Corrupt(
-                    "Stream authority child has a noncanonical identity".to_owned(),
-                ));
+        loop {
+            let mut children = self
+                .provider
+                .children(acyclic_stream::ChildrenRequest {
+                    parent: Some(parent.clone()),
+                    limit: page,
+                    after: after.take(),
+                })
+                .await
+                .map_err(map_stream_error)?;
+            let listed = authorities.len();
+            while let Some(child) = children.next().await {
+                let child = child.map_err(map_stream_error)?;
+                authorities.push(authority_child(&child.path)?);
+                after = Some(child.path);
+                if authorities.len() > maximum as usize {
+                    return Err(AuthorityStoreError::Rejected(
+                        "authority listing bound exceeded".to_owned(),
+                    ));
+                }
             }
-            let mut bytes = [0_u8; 16];
-            hex::decode_to_slice(encoded, &mut bytes).map_err(|_| {
-                AuthorityStoreError::Corrupt(
-                    "Stream authority child has a noncanonical identity".to_owned(),
-                )
-            })?;
-            authorities.push(AuthorityId::from_bytes(bytes));
+            if authorities.len() - listed < page as usize {
+                return Ok(authorities);
+            }
         }
-        if authorities.len() > maximum as usize {
-            return Err(AuthorityStoreError::Rejected(
-                "authority listing bound exceeded".to_owned(),
-            ));
-        }
-        Ok(authorities)
     }
 
     async fn snapshot(
@@ -366,6 +352,55 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             ))
             .map_err(|error| OperationFailure::before_work(error.into()))?;
         Ok((request, work))
+    }
+}
+
+impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+    /// Deletes `path` and every path beneath it, deepest first.
+    fn retire_subtree<'a>(
+        &'a self,
+        path: acyclic_stream::StreamPath,
+        work: &'a mut WorkCounters,
+        cancellation: &'a CancellationToken,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), AuthorityStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            loop {
+                cancellation
+                    .check()
+                    .map_err(|_| AuthorityStoreError::Cancelled)?;
+                let children = self
+                    .provider
+                    .children(acyclic_stream::ChildrenRequest {
+                        parent: Some(path.clone()),
+                        limit: u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX),
+                        after: None,
+                    })
+                    .await
+                    .map_err(map_stream_error)?
+                    .map(|child| child.map(|child| child.path))
+                    .collect::<Vec<_>>()
+                    .await
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(map_stream_error)?;
+                *work = work.checked_add(authority_read_work(1))?;
+                if children.is_empty() {
+                    break;
+                }
+                for child in children {
+                    self.retire_subtree(child, work, cancellation).await?;
+                }
+            }
+            let key = stream_key(b"retire-path", path.as_str().as_bytes())?;
+            *work = work.checked_add(authority_write_work(0, 0))?;
+            match self.provider.delete(path, key).await {
+                Ok(_)
+                | Err(
+                    acyclic_stream::StreamError::NotFound | acyclic_stream::StreamError::Retired,
+                ) => Ok(()),
+                Err(error) => Err(map_stream_error(error)),
+            }
+        })
     }
 }
 
@@ -859,6 +894,27 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             .await
             .map_err(OperationFailure::before_work)?;
         authority_success(snapshot.head, authority_read_work(2), budget)
+    }
+
+    /// Deletes the authority's whole subtree of Stream paths, each once
+    /// nothing lives beneath it; Stream then answers every path in it as
+    /// retired. Each deletion has its own retry identity, so an interrupted
+    /// retirement resumes where it stopped.
+    async fn retire_authority(
+        &self,
+        authority_id: AuthorityId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let root = authority_path(authority_id).map_err(OperationFailure::before_work)?;
+        let mut work = WorkCounters::default();
+        self.retire_subtree(root, &mut work, cancellation)
+            .await
+            .map_err(|error| OperationFailure::new(error, work))?;
+        authority_success((), work, budget)
     }
 
     async fn compare_and_append(
@@ -1608,10 +1664,10 @@ fn provider_put_request(bucket: &wire::BucketRef, write: &ObjectWrite) -> PutReq
             ..wire::ObjectMetadata::default()
         },
         condition: Some(Condition::IfAbsent),
-        idempotency_key: Some(format!(
-            "fs-object-{}",
-            hex::encode(write.object_id.digest.as_bytes())
-        )),
+        // IfAbsent on a content-addressed key already makes a retry exact.
+        // A retained idempotency outcome would outlive a collection of the
+        // object and answer a later put of it without storing it.
+        idempotency_key: None,
     }
 }
 
@@ -1668,10 +1724,10 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
                 ..wire::ObjectMetadata::default()
             },
             condition: Some(Condition::IfAbsent),
-            idempotency_key: Some(format!(
-                "fs-object-{}",
-                hex::encode(object_id.digest.as_bytes())
-            )),
+            // IfAbsent on a content-addressed key already makes a retry exact.
+            // A retained idempotency outcome would outlive a collection of the
+            // object and answer a later put of it without storing it.
+            idempotency_key: None,
         };
         match self.provider.put(request).await {
             Ok(version) if version.size == byte_count => success((), work, budget),
@@ -1935,12 +1991,47 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
     }
 }
 
+/// The object an [`object_key`] names.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub(crate) fn object_id_from_key(key: &str) -> Option<ObjectId> {
+    let (tag, digest) = key.strip_prefix("fs/v1/")?.split_once('/')?;
+    let kind = crate::storage::ObjectKind::from_canonical_tag(tag.parse().ok()?).ok()?;
+    let digest = <[u8; 32]>::try_from(hex::decode(digest).ok()?).ok()?;
+    let object = ObjectId {
+        kind,
+        digest: crate::foundation::Digest::from_bytes(digest),
+    };
+    (object_key(object) == key).then_some(object)
+}
+
 pub(crate) fn object_key(object_id: ObjectId) -> String {
     format!(
         "fs/v1/{}/{}",
         object_id.kind.canonical_tag(),
         hex::encode(object_id.digest.as_bytes())
     )
+}
+
+/// The authority a direct child of `fs/authorities` names.
+fn authority_child(child: &acyclic_stream::StreamPath) -> Result<AuthorityId, AuthorityStoreError> {
+    let encoded = child
+        .as_str()
+        .strip_prefix("fs/authorities/")
+        .ok_or_else(|| {
+            AuthorityStoreError::Corrupt("Stream authority child escaped its parent".to_owned())
+        })?;
+    if encoded.len() != 32 || encoded.contains('/') {
+        return Err(AuthorityStoreError::Corrupt(
+            "Stream authority child has a noncanonical identity".to_owned(),
+        ));
+    }
+    let mut bytes = [0_u8; 16];
+    hex::decode_to_slice(encoded, &mut bytes).map_err(|_| {
+        AuthorityStoreError::Corrupt(
+            "Stream authority child has a noncanonical identity".to_owned(),
+        )
+    })?;
+    Ok(AuthorityId::from_bytes(bytes))
 }
 
 fn authority_prefix(authority_id: AuthorityId) -> String {
@@ -2320,6 +2411,7 @@ fn decode_durable(
 fn map_stream_error(error: acyclic_stream::StreamError) -> AuthorityStoreError {
     match error {
         acyclic_stream::StreamError::NotFound => AuthorityStoreError::Missing,
+        acyclic_stream::StreamError::Retired => AuthorityStoreError::Retired,
         acyclic_stream::StreamError::Capacity => {
             AuthorityStoreError::Rejected("Stream capacity exhausted".to_owned())
         }

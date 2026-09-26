@@ -1,9 +1,8 @@
 /*
- * DarwinFUSE — fuse_main() and component API implementation
+ * DarwinFUSE — component API implementation
  *
- * Provides both the monolithic fuse_main() entry point and the
- * component API (fuse_mount/fuse_new/fuse_loop/etc.) used by
- * programs like sshfs, encfs, and others.
+ * The libfuse component API (fuse_mount/fuse_new/fuse_loop_mt/etc.) over
+ * the NFSv4 loopback server.
  *
  * Copyright (c) 2026 Marcel Cotta. All rights reserved.
  * Licensed under the MIT License.
@@ -21,9 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <signal.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <pthread.h>
 #include <sys/mount.h>
 #include <sys/wait.h>
@@ -83,9 +80,6 @@ typedef struct {
     int         rdonly;
     int         nobrowse;
     int         namedattr;
-    int         foreground;
-    int         debug;
-    int         singlethreaded;
 } parsed_args_t;
 
 /* Reject what mount_nfs would not honor rather than dropping it silently. */
@@ -124,95 +118,21 @@ struct fuse_chan {
     parsed_args_t        mount_args;
 };
 
-struct fuse_session {
-    struct fuse *fuse;
-};
-
 struct fuse {
     struct fuse_chan              *chan;
     const struct fuse_operations *ops;
     size_t                        ops_size;
     void                         *user_data;
     void                         *init_result;
-    struct fuse_session           session;
     volatile int                  exited;
     void                        (*mounted)(void *arg);
     void                         *mounted_arg;
 };
 
-/* ---- Global fuse instance for signal handling ---- */
-
-static struct fuse *g_fuse = NULL;
-static darwinfuse_server_t *g_server = NULL;
-
-static void signal_handler(int sig)
-{
-    (void)sig;
-    if (g_fuse)
-        fuse_exit(g_fuse);
-    else if (g_server)
-        nfs4_server_stop(g_server);
-}
-
 static void *server_thread_func(void *arg)
 {
     nfs4_server_run((darwinfuse_server_t *)arg);
     return NULL;
-}
-
-static int parse_args(int argc, char *argv[], parsed_args_t *out)
-{
-    memset(out, 0, sizeof(*out));
-
-    if (argc < 2) {
-        DFUSE_ERR("Usage: <program> [options] <mount_point>");
-        return -1;
-    }
-
-    /* Detect Basalt-style args: argv[1] is a path (starts with '/') */
-    int basalt_style = (argv[1][0] == '/');
-
-    if (basalt_style) {
-        out->mount_point = argv[1];
-        for (int i = 2; i < argc; i++) {
-            if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
-                i++;
-                if (parse_mount_opts(argv[i], out) < 0)
-                    return -1;
-            } else if (strcmp(argv[i], "-f") == 0) {
-                out->foreground = 1;
-            } else if (strcmp(argv[i], "-d") == 0) {
-                out->debug = 1;
-                out->foreground = 1;
-            }
-        }
-    } else {
-        /* Standard FUSE-style */
-        const char *mountpoint = NULL;
-        for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "-f") == 0) {
-                out->foreground = 1;
-            } else if (strcmp(argv[i], "-d") == 0) {
-                out->debug = 1;
-                out->foreground = 1;
-            } else if (strcmp(argv[i], "-s") == 0) {
-                out->singlethreaded = 1;
-            } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
-                i++;
-                if (parse_mount_opts(argv[i], out) < 0)
-                    return -1;
-            } else if (argv[i][0] != '-') {
-                mountpoint = argv[i];
-            }
-        }
-        if (!mountpoint) {
-            DFUSE_ERR("No mount point specified");
-            return -1;
-        }
-        out->mount_point = mountpoint;
-    }
-
-    return 0;
 }
 
 /* ---- Mount via mount_nfs ---- */
@@ -412,7 +332,6 @@ struct fuse *fuse_new(struct fuse_chan *ch, struct fuse_args *args,
     f->ops = op;
     f->ops_size = op_size;
     f->user_data = user_data;
-    f->session.fuse = f;
 
     /* Attach real ops to the server */
     nfs4_server_set_ops(ch->server, op, user_data);
@@ -428,15 +347,9 @@ void fuse_destroy(struct fuse *f)
 {
     if (!f) return;
 
-    if (g_fuse == f)
-        g_fuse = NULL;
-
     if (f->chan) {
-        if (f->chan->server) {
+        if (f->chan->server)
             nfs4_server_destroy(f->chan->server);
-            if (g_server == f->chan->server)
-                g_server = NULL;
-        }
         if (f->chan->inode_table)
             dfuse_itable_destroy(f->chan->inode_table);
         free(f->chan->mountpoint);
@@ -504,11 +417,6 @@ int fuse_loop(struct fuse *f)
     if (f->ops->destroy)
         f->ops->destroy(f->init_result);
 
-    if (g_fuse == f)
-        g_fuse = NULL;
-    if (g_server == f->chan->server)
-        g_server = NULL;
-
     return rc;
 }
 
@@ -517,42 +425,6 @@ int fuse_loop_mt(struct fuse *f)
     if (!f || !f->chan || !f->chan->server) return -1;
     nfs4_server_set_multithreaded(f->chan->server, DFUSE_DEFAULT_THREADS);
     return fuse_loop(f);
-}
-
-struct fuse_session *fuse_get_session(struct fuse *f)
-{
-    if (!f) return NULL;
-    return &f->session;
-}
-
-int fuse_set_signal_handlers(struct fuse_session *se)
-{
-    if (!se || !se->fuse) return -1;
-
-    g_fuse = se->fuse;
-    if (se->fuse->chan)
-        g_server = se->fuse->chan->server;
-
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = signal_handler;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-
-    return 0;
-}
-
-void fuse_remove_signal_handlers(struct fuse_session *se)
-{
-    (void)se;
-
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = SIG_DFL;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-
-    g_fuse = NULL;
 }
 
 void fuse_exit(struct fuse *f)
@@ -579,270 +451,6 @@ void fuse_set_mounted_callback(struct fuse *f, void (*mounted)(void *arg),
 
 /* ---- Utility functions ---- */
 
-int fuse_parse_cmdline(struct fuse_args *args, char **mountpoint,
-                       int *multithreaded, int *foreground)
-{
-    if (!args) return -1;
-
-    if (mountpoint) *mountpoint = NULL;
-    if (multithreaded) *multithreaded = 0;
-    if (foreground) *foreground = 0;
-
-    for (int i = 1; i < args->argc; i++) {
-        const char *arg = args->argv[i];
-        if (strcmp(arg, "-f") == 0) {
-            if (foreground) *foreground = 1;
-        } else if (strcmp(arg, "-d") == 0) {
-            if (foreground) *foreground = 1;
-        } else if (strcmp(arg, "-s") == 0) {
-            /* single-threaded (our default) */
-        } else if (strcmp(arg, "-o") == 0) {
-            i++;  /* skip option value */
-        } else if (arg[0] != '-') {
-            if (mountpoint && !*mountpoint)
-                *mountpoint = strdup(arg);
-        }
-    }
-
-    return 0;
-}
-
-int fuse_daemonize(int foreground)
-{
-    if (foreground)
-        return 0;
-
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid > 0) _exit(0);
-
-    setsid();
-
-    int devnull = open("/dev/null", O_RDWR);
-    if (devnull >= 0) {
-        dup2(devnull, STDIN_FILENO);
-        dup2(devnull, STDOUT_FILENO);
-        dup2(devnull, STDERR_FILENO);
-        if (devnull > STDERR_FILENO)
-            close(devnull);
-    }
-
-    return 0;
-}
-
-int fuse_version(void)
-{
-    return 26;
-}
-
-/* ---- fuse_main / fuse_main_real ---- */
-
-int fuse_main_real(int argc, char *argv[],
-                   const struct fuse_operations *op, size_t op_size,
-                   void *user_data)
-{
-    (void)op_size;
-
-    if (!op) return -1;
-
-    /* Parse arguments */
-    parsed_args_t args;
-    if (parse_args(argc, argv, &args) < 0)
-        return -1;
-
-    DFUSE_LOG("fuse_main: uid=%u euid=%u mount_point=%s foreground=%d",
-              getuid(), geteuid(), args.mount_point, args.foreground);
-
-    /* Set initial FUSE context */
-    darwinfuse_set_context(getuid(), getgid(), 0, NULL);
-    darwinfuse_set_private_data(user_data);
-
-    /* Create dynamic inode table */
-    dfuse_inode_table_t *itable = dfuse_itable_create();
-    if (!itable) {
-        DFUSE_ERR("Failed to create inode table");
-        return -1;
-    }
-
-    void *init_result = NULL;
-
-    /* Configure NFS server */
-    darwinfuse_config_t config;
-    memset(&config, 0, sizeof(config));
-    config.ops = op;
-    config.user_data = user_data;
-    config.uid = getuid();
-    config.gid = getgid();
-    config.inode_table = itable;
-
-    /* Create NFS server */
-    darwinfuse_server_t *srv = nfs4_server_create(&config);
-    if (!srv) {
-        DFUSE_ERR("Failed to create NFS server");
-        dfuse_itable_destroy(itable);
-        return -1;
-    }
-
-    g_server = srv;
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = signal_handler;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-
-    pthread_t srv_thread;
-    if (pthread_create(&srv_thread, NULL, server_thread_func, srv) != 0) {
-        DFUSE_ERR("Failed to create server thread");
-        nfs4_server_destroy(srv);
-        dfuse_itable_destroy(itable);
-        g_server = NULL;
-        return -1;
-    }
-
-    if (do_mount_nfs(nfs4_server_socket_path(srv), args.mount_point, &args) < 0) {
-
-        DFUSE_ERR("Failed to mount NFS");
-        nfs4_server_stop(srv);
-        pthread_join(srv_thread, NULL);
-        nfs4_server_destroy(srv);
-        dfuse_itable_destroy(itable);
-        g_server = NULL;
-        return -1;
-    }
-
-    if (args.foreground) {
-        /* Foreground mode */
-        nfs4_server_stop(srv);
-        pthread_join(srv_thread, NULL);
-
-        DFUSE_LOG("Foreground mode: running in current process (pid=%d)", getpid());
-
-        if (op->init) {
-            struct fuse_conn_info conn_info;
-            memset(&conn_info, 0, sizeof(conn_info));
-            conn_info.proto_major = 7;
-            conn_info.proto_minor = 26;
-            conn_info.max_write = DFUSE_IO_SIZE;
-            conn_info.max_readahead = DFUSE_IO_SIZE;
-            conn_info.capable = FUSE_CAP_BIG_WRITES | FUSE_CAP_EXPORT_SUPPORT |
-                                FUSE_CAP_ATOMIC_O_TRUNC;
-            init_result = op->init(&conn_info);
-        }
-        darwinfuse_set_private_data(init_result ? init_result : user_data);
-
-        if (!args.singlethreaded)
-            nfs4_server_set_multithreaded(srv, DFUSE_DEFAULT_THREADS);
-        nfs4_server_set_private_data(srv, init_result ? init_result : user_data);
-
-        {
-            struct sigaction sa2;
-            memset(&sa2, 0, sizeof(sa2));
-            sa2.sa_handler = signal_handler;
-            sigaction(SIGTERM, &sa2, NULL);
-            sigaction(SIGINT, &sa2, NULL);
-        }
-
-        nfs4_server_restart(srv);
-        nfs4_server_run(srv);
-
-        DFUSE_LOG("Foreground: server exited");
-
-        nfs4_server_destroy(srv);
-        dfuse_itable_destroy(itable);
-        g_server = NULL;
-
-        if (op->destroy)
-            op->destroy(init_result);
-
-        return 0;
-    }
-
-    /* Daemon mode */
-    nfs4_server_stop(srv);
-    pthread_join(srv_thread, NULL);
-
-    DFUSE_LOG("mount succeeded, daemonizing");
-
-    pid_t daemon_pid = fork();
-    if (daemon_pid < 0) {
-        nfs4_server_destroy(srv);
-        dfuse_itable_destroy(itable);
-        g_server = NULL;
-        return -1;
-    }
-
-    if (daemon_pid > 0) {
-        DFUSE_LOG("Parent: _exit(0), daemon pid=%d", daemon_pid);
-        _exit(0);
-    }
-
-    /* ---- Child (daemon) ---- */
-    setsid();
-
-    int devnull = open("/dev/null", O_RDWR);
-    if (devnull >= 0) {
-        dup2(devnull, STDIN_FILENO);
-        dup2(devnull, STDOUT_FILENO);
-        dup2(devnull, STDERR_FILENO);
-        if (devnull > STDERR_FILENO)
-            close(devnull);
-    }
-
-    nfs4_server_close_inherited_pipes(srv);
-
-    if (op->init) {
-        struct fuse_conn_info conn_info;
-        memset(&conn_info, 0, sizeof(conn_info));
-        conn_info.proto_major = 7;
-        conn_info.proto_minor = 26;
-        conn_info.max_write = DFUSE_IO_SIZE;
-        conn_info.max_readahead = DFUSE_IO_SIZE;
-        conn_info.capable = FUSE_CAP_BIG_WRITES | FUSE_CAP_EXPORT_SUPPORT |
-                            FUSE_CAP_ATOMIC_O_TRUNC
-#ifdef __APPLE__
-                            | FUSE_CAP_XTIMES | FUSE_CAP_CASE_INSENSITIVE
-                            | FUSE_CAP_VOL_RENAME | FUSE_CAP_ALLOCATE
-                            | FUSE_CAP_EXCHANGE_DATA
-#endif
-                            ;
-        init_result = op->init(&conn_info);
-    }
-    darwinfuse_set_private_data(init_result ? init_result : user_data);
-
-    if (!args.singlethreaded)
-        nfs4_server_set_multithreaded(srv, DFUSE_DEFAULT_THREADS);
-    nfs4_server_set_private_data(srv, init_result ? init_result : user_data);
-
-    {
-        struct sigaction sa2;
-        memset(&sa2, 0, sizeof(sa2));
-        sa2.sa_handler = signal_handler;
-        sigaction(SIGTERM, &sa2, NULL);
-        sigaction(SIGINT, &sa2, NULL);
-    }
-
-    nfs4_server_restart(srv);
-
-    DFUSE_LOG("Daemon: running event loop (pid=%d)", getpid());
-    nfs4_server_run(srv);
-    DFUSE_LOG("Daemon: server exited");
-
-    nfs4_server_destroy(srv);
-    dfuse_itable_destroy(itable);
-    g_server = NULL;
-
-    if (op->destroy)
-        op->destroy(init_result);
-
-    _exit(0);
-}
-
-int fuse_main(int argc, char *argv[],
-              const struct fuse_operations *op, void *user_data)
-{
-    return fuse_main_real(argc, argv, op, sizeof(*op), user_data);
-}
-
 /* The requesting caller's supplementary groups (libfuse semantics), not
  * this process's. With size 0, returns how many there are. */
 int fuse_getgroups(int size, gid_t list[])
@@ -853,9 +461,4 @@ int fuse_getgroups(int size, gid_t list[])
         return -ERANGE;
     memcpy(list, tls_groups, tls_ngroups * sizeof(*list));
     return (int)tls_ngroups;
-}
-
-int fuse_interrupted(void)
-{
-    return 0;
 }

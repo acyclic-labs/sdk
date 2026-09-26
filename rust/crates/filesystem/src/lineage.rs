@@ -21,6 +21,7 @@ const MAXIMUM_LINEAGE_CAS_ATTEMPTS: usize = 16;
 
 /// Durable identity and direct parent of one SDK workspace.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceLineageRecord {
     /// Serialization contract version.
     pub version: u32,

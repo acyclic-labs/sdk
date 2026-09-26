@@ -92,6 +92,7 @@ pub enum WorkspaceContextState {
 
 /// One root binding inside a context.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceContextRoot {
     /// Stable identity shared by this root throughout the context tree.
     pub root_id: WorkspaceRootId,
@@ -109,6 +110,7 @@ pub struct WorkspaceContextRoot {
 
 /// Durable multi-root workspace context.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceContext {
     /// Serialization contract version.
     pub version: u32,
