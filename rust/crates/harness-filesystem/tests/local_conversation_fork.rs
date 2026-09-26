@@ -230,7 +230,11 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             boundary: None,
         };
         let report = aggregate.prepare_fork(&preparer, request).await?;
-        let inherited_file = report.inherited_context[0].clone();
+        let inherited_file = report
+            .inherited_context
+            .first()
+            .ok_or_else(|| Error::Invalid("child inherited context is missing".into()))?
+            .clone();
         let attachment_capability = report
             .reference_grants
             .iter()
@@ -288,11 +292,10 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 &[],
             )
             .await?;
-        let receipt = match outcome {
-            ProjectJoinOutcome::Applied(receipt) | ProjectJoinOutcome::AlreadyApplied(receipt) => {
-                receipt
-            }
-            _ => return Err(Error::Conflict("local child project was not merged".into())),
+        let (ProjectJoinOutcome::Applied(receipt) | ProjectJoinOutcome::AlreadyApplied(receipt)) =
+            outcome
+        else {
+            return Err(Error::Conflict("local child project was not merged".into()));
         };
         let merged_generation = receipt.result_generation.clone();
         aggregate
@@ -340,9 +343,13 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         .conversation()
         .ok_or_else(|| Error::Invalid("missing conversation".into()))?;
     assert_eq!(conversation.messages.len(), 2);
-    assert_eq!(conversation.messages[0].content, message_file);
-    assert!(matches!(&conversation.messages[0].attachments,
-        ReferencedAttachments::Inline { items } if items.len() == 1 && items[0].file == attachment_file));
+    let first_message = conversation
+        .messages
+        .first()
+        .ok_or_else(|| Error::Invalid("reopened conversation is empty".into()))?;
+    assert_eq!(first_message.content, message_file);
+    assert!(matches!(&first_message.attachments,
+        ReferencedAttachments::Inline { items } if items.len() == 1 && items.first().is_some_and(|item| item.file == attachment_file)));
     let read = ContentGrant::verify(&issuer.verifier(), &scope, &private, VolumeOperation::Read)?;
     assert_eq!(
         host.read_content(&attachment_file, &read, 1_024)

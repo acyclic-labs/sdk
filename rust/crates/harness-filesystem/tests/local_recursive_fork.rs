@@ -530,7 +530,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     &child_project,
                 )
                 .await?;
-            let receipt = match plan
+            let (ProjectJoinOutcome::Applied(receipt)
+            | ProjectJoinOutcome::AlreadyApplied(receipt)) = plan
                 .apply(
                     &grant_scope,
                     OperationId::from_bytes([91; 16]),
@@ -539,14 +540,10 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     &[],
                 )
                 .await?
-            {
-                ProjectJoinOutcome::Applied(receipt)
-                | ProjectJoinOutcome::AlreadyApplied(receipt) => receipt,
-                _ => {
-                    return Err(Error::Conflict(
-                        "final local project merge was not applied".into(),
-                    ));
-                }
+            else {
+                return Err(Error::Conflict(
+                    "final local project merge was not applied".into(),
+                ));
             };
             aggregate
                 .execute(Command {

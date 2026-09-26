@@ -62,7 +62,9 @@ fn report() -> Result<RunnerReport, Box<dyn std::error::Error>> {
 #[test]
 fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
 -> Result<(), Box<dyn std::error::Error>> {
-    let bytes = serde_json::to_vec(&report()?)?;
+    let valid_report = report()?;
+    let expected_cases = u64::try_from(valid_report.cases.len())?;
+    let bytes = serde_json::to_vec(&valid_report)?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_harness-conformance"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -81,7 +83,7 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
         .get("qualified")
         .and_then(serde_json::Value::as_bool)
         != Some(true)
-        || receipt.get("total").and_then(serde_json::Value::as_u64) != Some(23)
+        || receipt.get("total").and_then(serde_json::Value::as_u64) != Some(expected_cases)
     {
         return Err("successful CLI receipt is incomplete".into());
     }
@@ -107,11 +109,14 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
         return Err("failed case returned a successful process status".into());
     }
     let receipt: serde_json::Value = serde_json::from_slice(&failed_output.stdout)?;
+    let expected_passed = expected_cases
+        .checked_sub(1)
+        .ok_or("conformance suite has no harness cases")?;
     if receipt
         .get("qualified")
         .and_then(serde_json::Value::as_bool)
         != Some(false)
-        || receipt.get("passed").and_then(serde_json::Value::as_u64) != Some(22)
+        || receipt.get("passed").and_then(serde_json::Value::as_u64) != Some(expected_passed)
     {
         return Err("failed CLI receipt did not preserve the result".into());
     }
