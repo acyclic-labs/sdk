@@ -29,7 +29,7 @@ use fuser::{
     ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen,
     ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -157,6 +157,10 @@ const MAXIMUM_DIRECTORY_STREAMS: usize = 256;
 /// Listings need no open handle: the kernel resumes one at the offset it
 /// last received, so streams wait keyed by inode and offset. That lets the
 /// kernel skip `OPENDIR` and `RELEASEDIR` entirely where it supports that.
+/// Names the source was seen binding to the node each is paired with, after
+/// the view could no longer vouch for them.
+type ConfirmedNames = HashSet<(crate::FileId, MountPath)>;
+
 struct DirectoryStream {
     path: MountPath,
     parent_inode: u64,
@@ -165,6 +169,8 @@ struct DirectoryStream {
     entries: VecDeque<MountDirectoryEntry>,
     /// Source view the buffered entries were read after, if cacheable.
     entries_stamp: Option<ViewStamp>,
+    /// Names of the buffered entries' nodes the source still binds.
+    confirmed: ConfirmedNames,
     exhausted: bool,
     /// Offset of the next entry: `.` and `..` are 1 and 2.
     emitted: u64,
@@ -616,7 +622,9 @@ impl ProjectionState {
     }
 
     /// Records facts about `path`, resolved after `stamp`, and returns the
-    /// inode they belong to.
+    /// inode they belong to. `confirmed` holds names the source was seen
+    /// binding to their nodes since the view last vouched for them (see
+    /// [`FuseProjection::confirm_names`]).
     fn intern(
         &mut self,
         source: &dyn MountFilesystem,
@@ -624,6 +632,7 @@ impl ProjectionState {
         lookup: &MountLookup,
         stamp: Option<ViewStamp>,
         lookup_reference: bool,
+        confirmed: &ConfirmedNames,
     ) -> Result<u64, i32> {
         if let Some(previous) = self.inode_by_path.get(&path).copied()
             && self
@@ -639,7 +648,11 @@ impl ProjectionState {
                 &mut self.inode_by_path,
                 inode,
                 &path,
-                |name, verified| source.unchanged_since(name, Some(lookup.node.file_id), verified),
+                |name, verified| {
+                    confirmed.contains(&(lookup.node.file_id, name.clone()))
+                        || verified
+                            .is_some_and(|verified| source.unchanged_since(name, None, verified))
+                },
             );
             self.invalidation.deferred.extend(forgotten);
             retire_reused_identity(&self.by_inode, &mut self.inode_by_file, inode);
@@ -654,6 +667,33 @@ impl ProjectionState {
             stamp,
             lookup_reference,
         )
+    }
+
+    /// The names other than `path` recorded for the node `file_id` names
+    /// that the view cannot vouch are still bound to it.
+    fn unvouched_names(
+        &self,
+        source: &dyn MountFilesystem,
+        file_id: crate::FileId,
+        path: &MountPath,
+    ) -> Vec<MountPath> {
+        self.inode_by_file
+            .get(&file_id)
+            .and_then(|inode| self.by_inode.get(inode))
+            .map(|entry| {
+                entry
+                    .bindings
+                    .iter()
+                    .filter(|binding| {
+                        binding.path != *path
+                            && !binding.verified.is_some_and(|verified| {
+                                source.unchanged_since(&binding.path, None, verified)
+                            })
+                    })
+                    .map(|binding| binding.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn release_lookup_reference(&mut self, inode: u64, references: u64) {
@@ -1214,6 +1254,7 @@ impl ProjectionState {
             cursor: None,
             entries: VecDeque::new(),
             entries_stamp: None,
+            confirmed: ConfirmedNames::new(),
             exhausted: false,
             emitted: 0,
             parked: 0,
@@ -1286,6 +1327,7 @@ impl ProjectionState {
                 &lookup,
                 current,
                 L::COUNTS_LOOKUPS,
+                &stream.confirmed,
             ) {
                 Ok(child) => self
                     .attr(child, &lookup)
@@ -1427,25 +1469,27 @@ fn replace_root_lookup(
 ///
 /// A source can remove a name and its host reuse the node's identity for a
 /// file it creates under another name, so a name recorded before may be one
-/// the view no longer binds: only names `still_bound` since they were last
-/// verified count against the node's links. The inode itself stays, as the
-/// kernel may still hold it.
+/// the view no longer binds: only names `still_bound` (given the position
+/// they were last verified after) count against the node's links. The inode
+/// itself stays, as the kernel may still hold it.
+///
+/// Whether a name is still bound is a question about the name, not about
+/// the node's facts: a node with several names is read afresh on every
+/// lookup, yet each of its names stays bound until the source reports it
+/// changed or a lookup sees it naming another node.
 fn forget_unbound_names(
     by_inode: &mut HashMap<u64, InodeEntry>,
     inode_by_path: &mut HashMap<MountPath, u64>,
     inode: u64,
     path: &MountPath,
-    still_bound: impl Fn(&MountPath, ViewStamp) -> bool,
+    still_bound: impl Fn(&MountPath, Option<ViewStamp>) -> bool,
 ) -> Vec<KernelCacheItem> {
     let Some(entry) = by_inode.get_mut(&inode) else {
         return Vec::new();
     };
     let mut forgotten = Vec::new();
     entry.bindings.retain(|binding| {
-        let bound = binding.path == *path
-            || binding
-                .verified
-                .is_some_and(|verified| still_bound(&binding.path, verified));
+        let bound = binding.path == *path || still_bound(&binding.path, binding.verified);
         if !bound {
             forgotten.push((binding.path.clone(), binding.kernel.is_some()));
         }
@@ -2162,6 +2206,53 @@ impl FuseProjection {
         ))
     }
 
+    /// The recorded names of each node with several names, other than the
+    /// name it was just resolved through, that the source still binds to it.
+    ///
+    /// A node with several names keeps one inode for all of them, while a
+    /// host that reused a removed node's identity for a new file must not
+    /// have the new file attached to the inode the kernel holds for the
+    /// removed one. Once the view cannot vouch for a recorded name, only the
+    /// source can tell the two apart: a name that still resolves to the same
+    /// identity shows that the node the inode stands for still exists, and
+    /// so is the node resolved now. Those names are resolved here, outside
+    /// the state's lock; a node with one name has no other name to keep.
+    fn confirm_names<'a>(
+        &self,
+        resolved: impl IntoIterator<Item = (&'a MountPath, MountNode)>,
+    ) -> ConfirmedNames {
+        let source = self.source();
+        let linked = resolved
+            .into_iter()
+            .filter(|(_, node)| node.link_count > 1)
+            .collect::<Vec<_>>();
+        if linked.is_empty() {
+            return ConfirmedNames::new();
+        }
+        let unvouched = {
+            let Ok(state) = self.core.state() else {
+                return ConfirmedNames::new();
+            };
+            linked
+                .iter()
+                .flat_map(|(path, node)| {
+                    state
+                        .unvouched_names(source, node.file_id, path)
+                        .into_iter()
+                        .map(|name| (node.file_id, name))
+                })
+                .collect::<HashSet<_>>()
+        };
+        unvouched
+            .into_iter()
+            .filter(|(file_id, name)| {
+                resolve_path(source, name).is_ok_and(|(found, _)| {
+                    found.is_some_and(|found| found.node.file_id == *file_id)
+                })
+            })
+            .collect()
+    }
+
     fn lookup_entry(&self, parent: u64, name: &OsStr) -> Result<Entry, i32> {
         let source = self.source();
         let _names = self.core.names()?;
@@ -2176,6 +2267,9 @@ impl FuseProjection {
             child
         };
         let (found, stamp) = resolve_path(source, &child.spelled)?;
+        let confirmed = found.map_or_else(ConfirmedNames::new, |lookup| {
+            self.confirm_names([(child.key(), lookup.node)])
+        });
         let mut state = self.core.state()?;
         let Some(lookup) = found else {
             state.remove_path_cache(child.key());
@@ -2189,7 +2283,14 @@ impl FuseProjection {
             attr.ino = INodeNo(0);
             return Ok(Entry { attr, ttl });
         };
-        let inode = state.intern(source, child.key().clone(), &lookup, stamp, true)?;
+        let inode = state.intern(
+            source,
+            child.key().clone(),
+            &lookup,
+            stamp,
+            true,
+            &confirmed,
+        )?;
         let attr = state
             .attr(inode, &lookup)
             .inspect_err(|_| state.release_lookup_reference(inode, 1))?;
@@ -2296,8 +2397,16 @@ impl FuseProjection {
         };
         let stamp = source.view_stamp();
         let lookup = create(&child.spelled).map_err(errno)?;
+        let confirmed = self.confirm_names([(child.key(), lookup.node)]);
         let mut state = self.core.state()?;
-        let inode = state.intern(source, child.key().clone(), &lookup, stamp, true)?;
+        let inode = state.intern(
+            source,
+            child.key().clone(),
+            &lookup,
+            stamp,
+            true,
+            &confirmed,
+        )?;
         let attr = state
             .attr(inode, &lookup)
             .inspect_err(|_| state.release_lookup_reference(inode, 1))?;
@@ -2611,8 +2720,16 @@ impl FuseProjection {
                     claimed,
                 )
             };
+        let confirmed = self.confirm_names([(child.key(), lookup.node)]);
         let mut state = self.core.state()?;
-        let inode = state.intern(source, child.key().clone(), &lookup, stamp, true)?;
+        let inode = state.intern(
+            source,
+            child.key().clone(),
+            &lookup,
+            stamp,
+            true,
+            &confirmed,
+        )?;
         let created = state.attr(inode, &lookup).and_then(|attr| {
             let opened = OpenedFile {
                 path: child.key(),
@@ -2779,7 +2896,7 @@ impl FuseProjection {
             if !stream.entries.is_empty() || stream.exhausted {
                 return Ok(());
             }
-            let _lease = source
+            let lease = source
                 .acquire_binding_lease(stream.binding_epoch)
                 .map_err(|_| libc::ESTALE)?;
             let stamp = source.view_stamp();
@@ -2791,9 +2908,32 @@ impl FuseProjection {
             }
             stream.exhausted = page.next_cursor.is_none();
             stream.cursor = page.next_cursor;
+            drop(lease);
+            stream.confirmed = self.confirm_listed_names(&stream.path, &page.entries);
             stream.entries.extend(page.entries);
             stream.entries_stamp = stamp;
         }
+    }
+
+    /// [`Self::confirm_names`] for one listed page, whose entries also
+    /// confirm each other: names the page lists for one node all name it.
+    fn confirm_listed_names(
+        &self,
+        directory: &MountPath,
+        entries: &[MountDirectoryEntry],
+    ) -> ConfirmedNames {
+        let source = self.source();
+        let listed = entries
+            .iter()
+            .filter(|entry| entry.node.link_count > 1)
+            .map(|entry| {
+                let name = ChildName::new(source, directory.child(entry.name.clone()));
+                (name.key().clone(), entry.node)
+            })
+            .collect::<Vec<_>>();
+        let mut confirmed = self.confirm_names(listed.iter().map(|(path, node)| (path, *node)));
+        confirmed.extend(listed.into_iter().map(|(path, node)| (node.file_id, path)));
+        confirmed
     }
 
     fn attributes_to_write(&self, inode: u64) -> Result<AttributeTarget, i32> {
@@ -3768,11 +3908,12 @@ mod tests {
         MountSourceError, MountViewLease, ViewObserver,
     };
     use super::{
-        CachedContent, InodeEntry, KernelCacheItem, MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY,
-        MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath,
-        MountSeekTarget, PAGE_STORE_LIMIT, PageStores, ROOT_INODE, ViewStamp, admit_open,
-        cached_projected_lookup, changes_content, forget_unbound_names, intern_projected,
-        replace_root_lookup, retire_reused_identity, stale_kernel_items,
+        CachedContent, ConfirmedNames, InodeEntry, KernelCacheItem,
+        MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY, MountFilesystem, MountLookup, MountNode,
+        MountNodeKind, MountOpenFile, MountPath, MountSeekTarget, PAGE_STORE_LIMIT, PageStores,
+        ROOT_INODE, ViewStamp, admit_open, cached_projected_lookup, changes_content,
+        forget_unbound_names, intern_projected, replace_root_lookup, retire_reused_identity,
+        stale_kernel_items,
     };
     use crate::FileId;
     use crate::kernel::{FileMetadata, MetadataField};
@@ -4141,6 +4282,7 @@ mod tests {
             cursor: None,
             entries: std::collections::VecDeque::new(),
             entries_stamp: None,
+            confirmed: ConfirmedNames::new(),
             exhausted: false,
             emitted,
             parked: 0,

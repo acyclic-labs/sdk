@@ -4566,6 +4566,68 @@ mod tests {
         Ok(())
     }
 
+    /// Source hard links stay one file through the mount, whichever name is
+    /// looked up or listed first: every name has the same inode and link
+    /// count, and a write through one name is read through the other. Each
+    /// such node is read afresh, so this also checks that reading it afresh
+    /// never takes its other names for names of a reused identity.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "mounts a live native session; requires the host's native mount capability"]
+    async fn live_mount_keeps_hard_links_one_file() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let root = tempfile::tempdir()?;
+        let (source, mount) = (root.path().join("source"), root.path().join("mount"));
+        let pairs = [("a", "d/a"), ("b", "d/b"), ("c", "l/c")];
+        std::fs::create_dir_all(source.join("d"))?;
+        std::fs::create_dir_all(source.join("l"))?;
+        for (first, second) in pairs {
+            std::fs::write(source.join(first), first.as_bytes())?;
+            std::fs::hard_link(source.join(first), source.join(second))?;
+        }
+        let live = live_lazy_mount(&source, &mount, "live-hard-links").await?;
+        let same_file = |first: &str, second: &str| -> Result<(), Box<dyn std::error::Error>> {
+            let (one, other) = (
+                std::fs::metadata(mount.join(first))?,
+                std::fs::metadata(mount.join(second))?,
+            );
+            assert_eq!(one.ino(), other.ino(), "{first} and {second} are one inode");
+            assert_eq!((one.nlink(), other.nlink()), (2, 2), "{first} and {second}");
+            std::fs::write(mount.join(second), format!("through {second}"))?;
+            assert_eq!(
+                std::fs::read_to_string(mount.join(first))?,
+                format!("through {second}")
+            );
+            std::fs::write(mount.join(first), format!("through {first}"))?;
+            assert_eq!(
+                std::fs::read_to_string(mount.join(second))?,
+                format!("through {first}")
+            );
+            Ok(())
+        };
+        // A listing names the inner one first.
+        let listed = std::fs::read_dir(mount.join("l"))?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(listed, ["c"]);
+        same_file("c", "l/c")?;
+        // The outer name first, then the inner one.
+        same_file("a", "d/a")?;
+        // The inner name first, then the outer one.
+        same_file("d/b", "b")?;
+        // And every name still agrees after the source is revalidated.
+        live.revalidate()?;
+        for (first, second) in pairs {
+            assert_eq!(
+                std::fs::metadata(mount.join(first))?.ino(),
+                std::fs::metadata(mount.join(second))?.ino()
+            );
+        }
+        live.unmount().await?;
+        Ok(())
+    }
+
     /// Writers replace, remove, and create source files while readers stat,
     /// list, and read them through the mount. Every read the mount serves is
     /// one whole version some writer wrote, and once the writers stop and
