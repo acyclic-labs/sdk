@@ -2150,8 +2150,8 @@ impl<A, O> CheckoutMountSource<A, O> {
     #[cfg(all(test, target_os = "macos"))]
     pub(super) fn generation_id(&self) -> Result<crate::GenerationId, MountSourceError>
     where
-        A: Send + Sync,
-        O: Send + Sync,
+        A: AsyncAuthorityStore + Send + Sync,
+        O: AsyncObjectStore + Send + Sync,
     {
         let owner = ViewGate::callback_owner();
         self.runtime
