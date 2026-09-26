@@ -651,6 +651,10 @@ pub mod native {
     #[derive(Clone)]
     pub struct NativeDemandSource {
         inner: Arc<NativeDemandInner>,
+        /// Whether a test let this source be watched, so tests cover the path
+        /// taken by roots the host cannot watch.
+        #[cfg(test)]
+        watchable: bool,
     }
 
     struct NativeDemandInner {
@@ -865,7 +869,19 @@ pub mod native {
                     #[cfg(target_os = "linux")]
                     watches: std::sync::RwLock::new(Vec::new()),
                 }),
+                #[cfg(test)]
+                watchable: true,
             })
+        }
+
+        /// This source, reporting no changes as a root the host cannot watch
+        /// would.
+        #[cfg(test)]
+        pub(crate) fn unwatched(self) -> Self {
+            Self {
+                watchable: false,
+                ..self
+            }
         }
 
         fn observe_directory(&self, directory: &NamespacePath) -> Result<(), DemandError> {
@@ -1358,6 +1374,10 @@ pub mod native {
             sink: Arc<dyn SourceChangeSink>,
         ) -> Result<Option<Box<dyn SourceWatch>>, DemandError> {
             if !self.inner.inline {
+                return Ok(None);
+            }
+            #[cfg(test)]
+            if !self.watchable {
                 return Ok(None);
             }
             let changes = Arc::new(NativeChanges {

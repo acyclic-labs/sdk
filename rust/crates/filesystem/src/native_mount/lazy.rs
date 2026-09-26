@@ -4397,6 +4397,31 @@ mod tests {
         >,
         Box<dyn std::error::Error>,
     > {
+        live_lazy_mount_over(source, destination, name, Watched::Yes).await
+    }
+
+    /// Whether a test's source reports its changes or, like a root the host
+    /// cannot watch, is read afresh.
+    #[derive(Clone, Copy, Debug)]
+    enum Watched {
+        Yes,
+        No,
+    }
+
+    async fn live_lazy_mount_over(
+        source: &Path,
+        destination: &Path,
+        name: &str,
+        watched: Watched,
+    ) -> Result<
+        super::super::LazyMount<
+            impl AsyncAuthorityStore + Send + Sync + 'static,
+            impl AsyncObjectStore + Send + Sync + 'static,
+            crate::demand::native::NativeDemandSource,
+            crate::MemoryLazyWorkspaceStore,
+        >,
+        Box<dyn std::error::Error>,
+    > {
         use crate::model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
         use crate::native_mount::{MountOptions, MountPublication};
         use crate::{Fs, MemoryLazyWorkspaceStore};
@@ -4406,12 +4431,15 @@ mod tests {
         } else {
             FilesystemProfile::Posix
         };
-        let demand = crate::demand::native::NativeDemandSource::open(
+        let mut demand = crate::demand::native::NativeDemandSource::open(
             source,
             profile,
             VolumeLimits::default(),
         )
         .await?;
+        if matches!(watched, Watched::No) {
+            demand = demand.unwatched();
+        }
         let lazy = LazyWorkspace::attach_with_config(
             &Fs::memory(),
             name,
@@ -4506,13 +4534,23 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "mounts a live native session; requires the host's native mount capability"]
     async fn live_mount_keeps_a_reused_identity_apart() -> Result<(), Box<dyn std::error::Error>> {
+        for watched in [Watched::Yes, Watched::No] {
+            keeps_a_reused_identity_apart(watched).await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn keeps_a_reused_identity_apart(
+        watched: Watched,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 
         let root = tempfile::tempdir()?;
         let (source, mount) = (root.path().join("source"), root.path().join("mount"));
         std::fs::create_dir_all(&source)?;
         std::fs::write(source.join("removed"), b"old")?;
-        let live = live_lazy_mount(&source, &mount, "live-reused-identity").await?;
+        let live = live_lazy_mount_over(&source, &mount, "live-reused-identity", watched).await?;
         assert_eq!(std::fs::metadata(mount.join("removed"))?.len(), 3);
         // Holds the removed name's inode without a file handle.
         let held = std::fs::OpenOptions::new()
@@ -4533,7 +4571,7 @@ mod tests {
             std::fs::remove_file(&candidate)?;
         }
         if !reused {
-            eprintln!("the host did not reuse the identity; nothing to check");
+            eprintln!("the host did not reuse the identity ({watched:?}); nothing to check");
             live.unmount().await?;
             return Ok(());
         }
@@ -4575,25 +4613,42 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "mounts a live native session; requires the host's native mount capability"]
     async fn live_mount_keeps_hard_links_one_file() -> Result<(), Box<dyn std::error::Error>> {
+        for watched in [Watched::Yes, Watched::No] {
+            keeps_hard_links_one_file(watched).await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    async fn keeps_hard_links_one_file(watched: Watched) -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::MetadataExt as _;
 
         let root = tempfile::tempdir()?;
         let (source, mount) = (root.path().join("source"), root.path().join("mount"));
-        let pairs = [("a", "d/a"), ("b", "d/b"), ("c", "l/c")];
-        std::fs::create_dir_all(source.join("d"))?;
-        std::fs::create_dir_all(source.join("l"))?;
+        let pairs = [("a", "d/a"), ("b", "d/b"), ("c", "l/c"), ("s/x", "s/y")];
+        for directory in ["d", "l", "s"] {
+            std::fs::create_dir_all(source.join(directory))?;
+        }
         for (first, second) in pairs {
             std::fs::write(source.join(first), first.as_bytes())?;
             std::fs::hard_link(source.join(first), source.join(second))?;
         }
-        let live = live_lazy_mount(&source, &mount, "live-hard-links").await?;
+        let live = live_lazy_mount_over(&source, &mount, "live-hard-links", watched).await?;
         let same_file = |first: &str, second: &str| -> Result<(), Box<dyn std::error::Error>> {
             let (one, other) = (
                 std::fs::metadata(mount.join(first))?,
                 std::fs::metadata(mount.join(second))?,
             );
-            assert_eq!(one.ino(), other.ino(), "{first} and {second} are one inode");
-            assert_eq!((one.nlink(), other.nlink()), (2, 2), "{first} and {second}");
+            assert_eq!(
+                one.ino(),
+                other.ino(),
+                "{first} and {second} are one inode ({watched:?})"
+            );
+            assert_eq!(
+                (one.nlink(), other.nlink()),
+                (2, 2),
+                "{first} and {second} ({watched:?})"
+            );
             std::fs::write(mount.join(second), format!("through {second}"))?;
             assert_eq!(
                 std::fs::read_to_string(mount.join(first))?,
@@ -4606,6 +4661,9 @@ mod tests {
             );
             Ok(())
         };
+        // One listing names both.
+        assert_eq!(sorted_names(&mount.join("s"))?, ["x", "y"]);
+        same_file("s/x", "s/y")?;
         // A listing names the inner one first.
         let listed = std::fs::read_dir(mount.join("l"))?
             .map(|entry| entry.map(|entry| entry.file_name()))
@@ -4621,7 +4679,8 @@ mod tests {
         for (first, second) in pairs {
             assert_eq!(
                 std::fs::metadata(mount.join(first))?.ino(),
-                std::fs::metadata(mount.join(second))?.ino()
+                std::fs::metadata(mount.join(second))?.ino(),
+                "{first} and {second} after revalidation ({watched:?})"
             );
         }
         live.unmount().await?;

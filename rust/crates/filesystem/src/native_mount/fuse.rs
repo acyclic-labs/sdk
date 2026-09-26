@@ -13,6 +13,42 @@
 //! superseded, as the source reports them. A small file's content reaches
 //! the kernel with its first read-only open rather than page by page
 //! ([`PAGE_STORE_LIMIT`]).
+//!
+//! # Inode identity
+//!
+//! An inode stands for one source node, the node its file identity named
+//! when the inode was made, and records the names it was reached through.
+//! One rule decides which inode a name gets:
+//!
+//! **A name joins the inode of its node's identity only while that inode
+//! still stands for the same node. Otherwise that inode is retired and the
+//! name gets a fresh one.**
+//!
+//! The inode still stands for the node while another of its names is still
+//! bound to the identity: a host reuses an identity only once the node that
+//! had it lost its last name, so one name still bound shows the node is the
+//! one the inode was made for. Each recorded name is judged as of the moment
+//! the joining name's facts were resolved, and is kept only on evidence that
+//! it is still bound:
+//!
+//! - the view vouches that the name has not changed since it was last seen
+//!   bound (a watched source reports every change to it); or
+//! - a resolution of the name, made with the joining name's facts and outside
+//!   the state's lock, found the same identity. One made at a position holds
+//!   only while the view vouches that the name has not changed since, since a
+//!   listed page's entries are used after the page was read. One from a
+//!   source that cannot be watched has no position and is exactly as current
+//!   as the facts it came with, which such a source reads afresh whenever
+//!   they are used again.
+//!
+//! A node with one name has no other name to keep. A name without evidence
+//! is forgotten, and an inode left without names is retired: its identity
+//! names no inode, the next name bound to the identity gets a fresh one, and
+//! a request through the retired inode that needs a name fails as stale. The
+//! mount's own links and renames move names between inodes it already knows,
+//! so they need no evidence. Whether a node's facts are current is a separate
+//! question: a node with several names is read afresh on every use, but its
+//! names stay bound under this rule.
 
 use super::view_ledger::ViewOriginScope;
 use super::{
@@ -159,35 +195,20 @@ const MAXIMUM_DIRECTORY_STREAMS: usize = 256;
 /// kernel skip `OPENDIR` and `RELEASEDIR` entirely where it supports that.
 /// Names the source was seen binding to the node each is paired with, after
 /// the view could no longer vouch for them, each with the position it was
-/// resolved after.
+/// resolved after: the evidence the module's inode identity rule accepts
+/// from a resolution.
 ///
-/// A confirmation is evidence about the moment it was resolved. Used later
-/// (a listed page's entries are emitted after the page was read), it holds
-/// only while the view vouches that its name has not changed since; one
-/// without a position, from a source that cannot report its changes, holds
-/// only for the operation that resolved it.
+/// A confirmation made at a position holds only while the view vouches that
+/// its name has not changed since. One without a position, from a source
+/// that cannot report its changes, is as current as the facts it was
+/// resolved with, which such a source reads afresh whenever they are used
+/// again.
 #[derive(Default)]
 struct ConfirmedNames {
     names: HashMap<(crate::FileId, MountPath), Option<ViewStamp>>,
-    /// Whether these confirmations are used by the operation that resolved
-    /// them, rather than buffered for later.
-    immediate: bool,
 }
 
 impl ConfirmedNames {
-    /// Confirmations the resolving operation uses at once.
-    fn immediate() -> Self {
-        Self {
-            names: HashMap::new(),
-            immediate: true,
-        }
-    }
-
-    /// Confirmations buffered for later use.
-    fn buffered() -> Self {
-        Self::default()
-    }
-
     fn confirm(&mut self, file_id: crate::FileId, name: MountPath, stamp: Option<ViewStamp>) {
         self.names.insert((file_id, name), stamp);
     }
@@ -201,9 +222,8 @@ impl ConfirmedNames {
     ) -> bool {
         self.names
             .get(&(file_id, name.clone()))
-            .is_some_and(|stamp| match stamp {
-                Some(stamp) => source.unchanged_since(name, None, *stamp),
-                None => self.immediate,
+            .is_some_and(|stamp| {
+                stamp.is_none_or(|stamp| source.unchanged_since(name, None, stamp))
             })
     }
 }
@@ -1301,7 +1321,7 @@ impl ProjectionState {
             cursor: None,
             entries: VecDeque::new(),
             entries_stamp: None,
-            confirmed: ConfirmedNames::buffered(),
+            confirmed: ConfirmedNames::default(),
             exhausted: false,
             emitted: 0,
             parked: 0,
@@ -1705,12 +1725,67 @@ struct ProjectionCore {
     requests: Mutex<Vec<&'static str>>,
 }
 
+/// A callback's hold on the projection state. Releasing it wakes the
+/// invalidator for kernel items the callback deferred, so they drop without
+/// waiting for the next change to the source (a source that cannot be
+/// watched reports none).
+struct StateGuard<'a> {
+    state: Option<MutexGuard<'a, ProjectionState>>,
+    invalidation: &'a Condvar,
+}
+
+impl std::ops::Deref for StateGuard<'_> {
+    type Target = ProjectionState;
+
+    fn deref(&self) -> &ProjectionState {
+        self.state
+            .as_deref()
+            .unwrap_or_else(|| unreachable!("held until dropped"))
+    }
+}
+
+impl std::ops::DerefMut for StateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut ProjectionState {
+        self.state
+            .as_deref_mut()
+            .unwrap_or_else(|| unreachable!("held until dropped"))
+    }
+}
+
+impl StateGuard<'_> {
+    /// Waits on `condition`, releasing the state meanwhile.
+    fn wait(mut self, condition: &Condvar) -> Result<Self, i32> {
+        let state = self
+            .state
+            .take()
+            .unwrap_or_else(|| unreachable!("held until dropped"));
+        self.state = Some(condition.wait(state).map_err(|_| libc::EIO)?);
+        Ok(self)
+    }
+}
+
+impl Drop for StateGuard<'_> {
+    fn drop(&mut self) {
+        let deferred = self
+            .state
+            .take()
+            .is_some_and(|state| !state.invalidation.deferred.is_empty());
+        if deferred {
+            self.invalidation.notify_all();
+        }
+    }
+}
+
 impl ProjectionCore {
-    fn state(&self) -> Result<MutexGuard<'_, ProjectionState>, i32> {
+    fn state(&self) -> Result<StateGuard<'_>, i32> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(libc::ENODEV);
         }
-        self.state.lock().map_err(|_| libc::EIO)
+        let state = self.state.lock().map_err(|_| libc::EIO)?;
+        Ok(StateGuard {
+            state: Some(state),
+            invalidation: &self.invalidation,
+        })
     }
 
     fn names(&self) -> Result<RwLockReadGuard<'_, ()>, i32> {
@@ -1719,15 +1794,6 @@ impl ProjectionCore {
 
     fn names_exclusive(&self) -> Result<RwLockWriteGuard<'_, ()>, i32> {
         self.names.write().map_err(|_| libc::EIO)
-    }
-
-    /// Unlocks `state`, waking the invalidator for items a callback deferred.
-    fn release(&self, state: MutexGuard<'_, ProjectionState>) {
-        let deferred = !state.invalidation.deferred.is_empty();
-        drop(state);
-        if deferred {
-            self.invalidation.notify_all();
-        }
     }
 
     /// Begins serving one kernel request: every view change it causes is
@@ -1748,7 +1814,7 @@ impl ProjectionCore {
     fn claim_content(&self, file_id: crate::FileId) -> Result<ContentClaim<'_>, i32> {
         let mut state = self.state()?;
         while state.page_stores.in_flight.contains_key(&file_id) {
-            state = self.page_stored.wait(state).map_err(|_| libc::EIO)?;
+            state = state.wait(&self.page_stored)?;
         }
         state.page_stores.claim(file_id);
         Ok(ContentClaim {
@@ -2316,8 +2382,8 @@ impl FuseProjection {
             child
         };
         let (found, stamp) = resolve_path(source, &child.spelled)?;
-        let confirmed = found.map_or_else(ConfirmedNames::immediate, |lookup| {
-            self.confirm_names(ConfirmedNames::immediate(), [(child.key(), lookup.node)])
+        let confirmed = found.map_or_else(ConfirmedNames::default, |lookup| {
+            self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)])
         });
         let mut state = self.core.state()?;
         let Some(lookup) = found else {
@@ -2446,8 +2512,7 @@ impl FuseProjection {
         };
         let stamp = source.view_stamp();
         let lookup = create(&child.spelled).map_err(errno)?;
-        let confirmed =
-            self.confirm_names(ConfirmedNames::immediate(), [(child.key(), lookup.node)]);
+        let confirmed = self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)]);
         let mut state = self.core.state()?;
         let inode = state.intern(
             source,
@@ -2710,7 +2775,7 @@ impl FuseProjection {
                 .push(KernelCacheItem::Inode(store.inode));
         }
         self.core.page_stored.notify_all();
-        self.core.release(state);
+        drop(state);
         open_flags.set(FopenFlags::FOPEN_KEEP_CACHE, stored && admitted);
         open_flags
     }
@@ -2770,8 +2835,7 @@ impl FuseProjection {
                     claimed,
                 )
             };
-        let confirmed =
-            self.confirm_names(ConfirmedNames::immediate(), [(child.key(), lookup.node)]);
+        let confirmed = self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)]);
         let mut state = self.core.state()?;
         let inode = state.intern(
             source,
@@ -2918,7 +2982,7 @@ impl FuseProjection {
             Ok((_names, _lease, mut stream, mut state)) => {
                 state.list_directory(source, inode, &mut stream, listing);
                 state.streams.park(inode, stream);
-                self.core.release(state);
+                drop(state);
             }
             Err(error) => listing.error(Errno::from_i32(error)),
         }
@@ -2987,7 +3051,7 @@ impl FuseProjection {
             })
             .collect::<Vec<_>>();
         let mut confirmed = self.confirm_names(
-            ConfirmedNames::buffered(),
+            ConfirmedNames::default(),
             listed.iter().map(|(path, node)| (path, *node)),
         );
         for (path, node) in listed {
@@ -4342,7 +4406,7 @@ mod tests {
             cursor: None,
             entries: std::collections::VecDeque::new(),
             entries_stamp: None,
-            confirmed: ConfirmedNames::buffered(),
+            confirmed: ConfirmedNames::default(),
             exhausted: false,
             emitted,
             parked: 0,
@@ -4367,13 +4431,13 @@ mod tests {
         assert!(streams.take(ROOT_INODE + 1, 1).is_none());
     }
 
-    /// A name confirmed bound when a directory page was read stops counting
-    /// once the name changes before the page's entries are emitted, so a
-    /// reused identity is never kept on the inode of the node it replaced; a
-    /// confirmation without a position holds only for the operation that
-    /// resolved it.
+    /// A name confirmed bound at a position (a listed page, read before its
+    /// entries are emitted) stops counting once the name changes, so a
+    /// reused identity is never kept on the inode of the node it replaced;
+    /// one confirmed without a position, by a source that cannot be watched,
+    /// counts with the facts it was resolved with.
     #[test]
-    fn a_buffered_confirmation_lapses_when_its_name_changes()
+    fn a_confirmation_at_a_position_lapses_when_its_name_changes()
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) = shared_sources()?;
         let file = source.create_file(&name("a"), FileMetadata::default())?;
@@ -4381,27 +4445,24 @@ mod tests {
         let file_id = file.node.file_id;
         let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
 
-        let mut buffered = ConfirmedNames::buffered();
-        buffered.confirm(file_id, name("b"), Some(stamp));
-        buffered.confirm(file_id, name("a"), None);
-        assert!(buffered.still_bound(&source, file_id, &name("b")));
-        assert!(!buffered.still_bound(&source, FileId::new(), &name("b")));
-        assert!(!buffered.still_bound(&source, file_id, &name("a")));
+        let mut confirmed = ConfirmedNames::default();
+        confirmed.confirm(file_id, name("b"), Some(stamp));
+        confirmed.confirm(file_id, name("a"), None);
+        assert!(confirmed.still_bound(&source, file_id, &name("b")));
+        assert!(confirmed.still_bound(&source, file_id, &name("a")));
+        assert!(!confirmed.still_bound(&source, FileId::new(), &name("b")));
+        assert!(!confirmed.still_bound(&source, file_id, &name("c")));
 
         // The name changes after the page was read, before it is emitted.
         source.remove(&name("b"), Some(file_id))?;
         source.create_file(&name("b"), FileMetadata::default())?;
-        assert!(!buffered.still_bound(&source, file_id, &name("b")));
+        assert!(!confirmed.still_bound(&source, file_id, &name("b")));
         // A sibling changing leaves another name's confirmation standing.
-        let mut sibling = ConfirmedNames::buffered();
+        let mut sibling = ConfirmedNames::default();
         let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
         sibling.confirm(file_id, name("a"), Some(stamp));
         source.create_file(&name("c"), FileMetadata::default())?;
         assert!(sibling.still_bound(&source, file_id, &name("a")));
-
-        let mut immediate = ConfirmedNames::immediate();
-        immediate.confirm(file_id, name("a"), None);
-        assert!(immediate.still_bound(&source, file_id, &name("a")));
         Ok(())
     }
 
