@@ -5,14 +5,14 @@
   "families": {
     "harness": {
       "version": "0.1.5",
-      "schemaDigest": "sha256:fbdb2ccaf9a7fdf64d5959f4b01d471bf23524ddf6cb5355aac6741d6be9a8b3",
+      "schemaDigest": "sha256:e014a0e98c2b5e4d9b93e5fdfdb6c321e47d5a5035d47ca7582e6fda661e1aa0",
       "conformanceDigest": "sha256:5c98ebc030e4d9b790277be2ea0491067962a48667f5ceb9e2de1fdaf4f41318"
     },
     "filesystem": {
       "version": "0.1.5",
       "crateVersion": "0.1.5",
       "schemaDigest": "sha256:a71f48d93e5eb2f1e980bb2979ec929a442e7e17dc9b0a5f252ee3f6ea7515f9",
-      "descriptorDigest": "sha256:c8ae65d452115ba2a4f890ff765c9de3f0487f3ef7d19aaaa34384a76ffa3fea",
+      "descriptorDigest": "sha256:40d7d5afbbcf48b2dffe18e4352d5954b3f4d56df8f4c83d8e42418bcd719d46",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
