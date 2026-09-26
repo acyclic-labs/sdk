@@ -1,4 +1,6 @@
-import { create, fromJson, toJsonString } from "@bufbuild/protobuf";
+import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
+/** Injectable HTTP function; host-specific fetch extras are not required of test or custom transports. */
+export type HttpFetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 import {
   AdmissionSchema,
   AdmissionState,
@@ -20,6 +22,7 @@ import {
   type CommandEnvelope,
   type CancelRequest,
   type CancelResponse,
+  type ClientFrame,
   type Delivery,
   type HandshakeRequest,
   type HandshakeResponse,
@@ -28,7 +31,7 @@ import {
   type ResumeRequest,
   type Scope,
   type ServerFrame,
-} from "../generated/proto/harness/v1/harness_pb.js";
+} from "../generated/proto/harness/v2/harness_pb.js";
 import { TerminalAdmissionError } from "./client.js";
 
 export interface WireConnection extends AsyncIterable<Delivery> {
@@ -118,12 +121,12 @@ export class JsonlWireTransport implements WireTransport {
     resume = withResumeProtocol(resume, this.negotiation);
     const channel = await this.open(signal);
     const source = channel[Symbol.asyncIterator]();
-    await channel.write(clientFrameJson("handshake", this.negotiation));
+    await channel.write(clientFrameJson({ case: "handshake", value: this.negotiation }));
     const first = await source.next();
     if (first.done) throw new WireError(ErrorCode.UNSUPPORTED, "missing handshake response");
     validateHandshake(this.negotiation, handshakeFromFrame(parseServerFrame(first.value)));
     const connection = new FramedConnection(source, line => channel.write(line), () => channel.close(), this.negotiation);
-    await channel.write(clientFrameJson("resume", resume));
+    await channel.write(clientFrameJson({ case: "resume", value: resume }));
     return connection;
   }
 }
@@ -139,7 +142,7 @@ export class WebSocketWireTransport implements WireTransport {
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
     resume = withResumeProtocol(resume, this.negotiation);
-    const socket = this.factory(this.url, ["acyclic.harness.v1"]);
+    const socket = this.factory(this.url, ["acyclic.harness.v2"]);
     const incoming = new AsyncQueue<string>();
     const onMessage = (event: MessageEvent) => {
       void websocketText(event.data).then(value => incoming.push(value), error => incoming.fail(error));
@@ -151,7 +154,7 @@ export class WebSocketWireTransport implements WireTransport {
     socket.addEventListener("error", onError);
     await waitForOpen(socket, signal);
     const source = incoming[Symbol.asyncIterator]();
-    socket.send(clientFrameJson("handshake", this.negotiation));
+    socket.send(clientFrameJson({ case: "handshake", value: this.negotiation }));
     const first = await source.next();
     if (first.done) throw new WireError(ErrorCode.UNSUPPORTED, "missing handshake response");
     validateHandshake(this.negotiation, handshakeFromFrame(parseServerFrame(first.value)));
@@ -163,7 +166,7 @@ export class WebSocketWireTransport implements WireTransport {
       incoming.end();
     };
     const connection = new FramedConnection(source, async line => socket.send(line), close, this.negotiation);
-    socket.send(clientFrameJson("resume", resume));
+    socket.send(clientFrameJson({ case: "resume", value: resume }));
     return connection;
   }
 }
@@ -172,20 +175,20 @@ export class HttpSseWireTransport implements WireTransport {
   constructor(
     readonly baseUrl: string,
     readonly negotiation: HandshakeRequest,
-    readonly fetcher: typeof fetch = fetch,
+    readonly fetcher: HttpFetcher = fetch,
   ) {}
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
     resume = withResumeProtocol(resume, this.negotiation);
-    const handshakeResponse = await this.fetcher(new URL("v1/harness/handshake", withSlash(this.baseUrl)), {
+    const handshakeResponse = await this.fetcher(new URL("v2/harness/handshake", withSlash(this.baseUrl)), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: toJsonString(HandshakeRequestSchema, this.negotiation),
       ...(signal === undefined ? {} : { signal }),
     });
     if (!handshakeResponse.ok) throw new WireError(ErrorCode.UNSUPPORTED, "handshake failed");
-    validateHandshake(this.negotiation, fromJson(HandshakeResponseSchema, await handshakeResponse.json()));
-    const response = await this.fetcher(new URL("v1/harness/replay", withSlash(this.baseUrl)), {
+    validateHandshake(this.negotiation, fromJsonString(HandshakeResponseSchema, await handshakeResponse.text()));
+    const response = await this.fetcher(new URL("v2/harness/replay", withSlash(this.baseUrl)), {
       method: "POST",
       headers: { accept: "text/event-stream", "content-type": "application/json" },
       body: toJsonString(ResumeRequestSchema, resume),
@@ -198,7 +201,7 @@ export class HttpSseWireTransport implements WireTransport {
     return {
       async send(command) {
         command = withProtocol(command, negotiation);
-        const submitted = await fetcher(new URL("v1/harness/commands", withSlash(baseUrl)), {
+        const submitted = await fetcher(new URL("v2/harness/commands", withSlash(baseUrl)), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: toJsonString(CommandEnvelopeSchema, command),
@@ -206,7 +209,7 @@ export class HttpSseWireTransport implements WireTransport {
         });
         if (!submitted.ok) {
           try {
-            const admission = fromJson(AdmissionSchema, await submitted.json());
+            const admission = fromJsonString(AdmissionSchema, await submitted.text());
             validateAdmissionIdentity(command, admission);
             if (admission.state === AdmissionState.REJECTED) {
               throw new TerminalAdmissionError(admission.error?.message ?? "command was rejected");
@@ -216,7 +219,7 @@ export class HttpSseWireTransport implements WireTransport {
           }
           throw new WireError(ErrorCode.INDETERMINATE, `command failed: ${submitted.status}`);
         }
-        const admission = fromJson(AdmissionSchema, await submitted.json());
+        const admission = fromJsonString(AdmissionSchema, await submitted.text());
         validateAdmissionIdentity(command, admission);
         if (admission.state === AdmissionState.REJECTED) {
           throw new TerminalAdmissionError(admission.error?.message ?? "command was rejected");
@@ -230,25 +233,25 @@ export class HttpSseWireTransport implements WireTransport {
       },
       async observe(request) {
         request = withObserveProtocol(request, negotiation);
-        const observed = await fetcher(new URL("v1/harness/operations/observe", withSlash(baseUrl)), {
+        const observed = await fetcher(new URL("v2/harness/operations/observe", withSlash(baseUrl)), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: toJsonString(ObserveRequestSchema, request),
           ...(signal === undefined ? {} : { signal }),
         });
         if (!observed.ok) throw await httpWireError(observed, "observe");
-        return validateStatus(request, negotiation, fromJson(OperationStatusSchema, await observed.json()));
+        return validateStatus(request, negotiation, fromJsonString(OperationStatusSchema, await observed.text()));
       },
       async cancel(request) {
         request = withCancelProtocol(request, negotiation);
-        const cancelled = await fetcher(new URL("v1/harness/operations/cancel", withSlash(baseUrl)), {
+        const cancelled = await fetcher(new URL("v2/harness/operations/cancel", withSlash(baseUrl)), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: toJsonString(CancelRequestSchema, request),
           ...(signal === undefined ? {} : { signal }),
         });
         if (!cancelled.ok) throw await httpWireError(cancelled, "cancel");
-        const response = fromJson(CancelResponseSchema, await cancelled.json());
+        const response = fromJsonString(CancelResponseSchema, await cancelled.text());
         validateCancelIdentity(request, negotiation, response);
         return response;
       },
@@ -295,7 +298,7 @@ export class GrpcWireTransport implements WireTransport {
 }
 
 export class WireError extends Error {
-  constructor(readonly code: number, message: string) {
+  constructor(readonly code: ErrorCode, message: string) {
     super(message);
   }
 }
@@ -334,7 +337,7 @@ class FramedConnection implements WireConnection {
       this.#pending.set(operationId, { idempotencyKey, resolve, reject }),
     );
     try {
-      await this.write(clientFrameJson("command", command));
+      await this.write(clientFrameJson({ case: "command", value: command }));
     } catch (error) {
       this.#pending.delete(operationId);
       throw error;
@@ -353,7 +356,7 @@ class FramedConnection implements WireConnection {
       this.#observations.set(operationId, { request, resolve, reject }),
     );
     try {
-      await this.write(clientFrameJson("observe", request));
+      await this.write(clientFrameJson({ case: "observe", value: request }));
     } catch (error) {
       this.#observations.delete(operationId);
       throw error;
@@ -373,7 +376,7 @@ class FramedConnection implements WireConnection {
       this.#cancellations.set(operationId, { request, resolve, reject }),
     );
     try {
-      await this.write(clientFrameJson("cancel", request));
+      await this.write(clientFrameJson({ case: "cancel", value: request }));
     } catch (error) {
       this.#cancellations.delete(operationId);
       throw error;
@@ -519,11 +522,8 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   }
 }
 
-function clientFrameJson(
-  case_: "handshake" | "resume" | "command" | "observe" | "cancel",
-  value: HandshakeRequest | ResumeRequest | CommandEnvelope | ObserveRequest | CancelRequest,
-): string {
-  const frame = create(ClientFrameSchema, { frame: { case: case_, value } } as never);
+function clientFrameJson(frameValue: Exclude<ClientFrame["frame"], { case: undefined }>): string {
+  const frame = create(ClientFrameSchema, { frame: frameValue });
   return `${toJsonString(ClientFrameSchema, frame)}\n`;
 }
 
@@ -574,7 +574,7 @@ function validateCancelIdentity(
 }
 
 function parseServerFrame(value: string): ServerFrame {
-  return fromJson(ServerFrameSchema, JSON.parse(value.trim()));
+  return fromJsonString(ServerFrameSchema, value.trim());
 }
 
 function handshakeFromFrame(frame: ServerFrame): HandshakeResponse {
@@ -646,7 +646,7 @@ function withSlash(value: string): string {
 
 async function httpWireError(response: Response, operation: string): Promise<WireError> {
   try {
-    const error = fromJson(ErrorSchema, await response.json());
+    const error = fromJsonString(ErrorSchema, await response.text());
     if (error.code !== ErrorCode.UNSPECIFIED && error.message.length > 0) {
       return new WireError(error.code, error.message);
     }

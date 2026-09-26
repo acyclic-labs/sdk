@@ -1,10 +1,10 @@
-import { create, fromJson, toJsonString, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
+import { create, fromJson, toBinary, toJsonString, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
+import { InferenceProtocolError, validateContract } from "./contract.js";
 import {
   ContextViewSchema,
   CreateEvaluationRequestSchema,
   CreateContextRequestSchema,
-  EvaluationCaseOutcome,
-  EvaluationState,
+  EvaluationSpecSchema,
   EvaluationViewSchema,
   GenerateRunRequestSchema,
   GenerateRunResponseSchema,
@@ -20,8 +20,6 @@ import {
   RenewWarmRequestSchema,
   RetainWarmRequestSchema,
   RunEventSchema,
-  RunTerminal,
-  WarmState,
   RunViewSchema,
   WarmViewSchema,
   WatchRunRequestSchema,
@@ -48,6 +46,7 @@ import {
 } from "../generated/proto/inference/v1/inference_pb.js";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";
+export { InferenceProtocolError } from "./contract.js";
 
 /** Complete transport-neutral customer lifecycle contract. */
 export interface InferenceTransport {
@@ -74,39 +73,39 @@ export class InferenceClient {
   listModels(): Promise<ListModelsResponse> { return this.transport.listModels(); }
   async createContext(request: CreateContextRequest): Promise<MutationReceipt> {
     const receipt = await this.transport.createContext(request);
-    validateMutationReceipt(receipt);
+    await validateContract("mutation_receipt", MutationReceiptSchema, receipt);
     return receipt;
   }
   async inspectContext(revision: Uint8Array): Promise<ContextView> {
     requireFixed(revision, 32, "context revision");
     const view = await this.transport.inspectContext(create(InspectContextRequestSchema, { revision }));
-    validateContextView(view, revision);
+    await validateContract("context_view", ContextViewSchema, view, revision);
     return view;
   }
   async mutateContext(request: MutateContextRequest): Promise<MutationReceipt> {
     const receipt = await this.transport.mutateContext(request);
-    validateMutationReceipt(receipt);
+    await validateContract("mutation_receipt", MutationReceiptSchema, receipt);
     return receipt;
   }
   async retainWarm(request: RetainWarmRequest): Promise<WarmView> {
     const view = await this.transport.retainWarm(request);
-    validateWarmView(view, request.context, undefined);
+    await validateContract("warm_context", WarmViewSchema, view, request.context);
     return view;
   }
   async inspectWarm(commitment: Uint8Array): Promise<WarmView> {
     requireFixed(commitment, 32, "warm commitment");
     const view = await this.transport.inspectWarm(create(InspectWarmRequestSchema, { commitment }));
-    validateWarmView(view, undefined, commitment);
+    await validateContract("warm_commitment", WarmViewSchema, view, commitment);
     return view;
   }
   async renewWarm(request: RenewWarmRequest): Promise<WarmView> {
     const view = await this.transport.renewWarm(request);
-    validateWarmView(view, undefined, request.commitment);
+    await validateContract("warm_commitment", WarmViewSchema, view, request.commitment);
     return view;
   }
   async releaseWarm(request: ReleaseWarmRequest): Promise<WarmView> {
     const view = await this.transport.releaseWarm(request);
-    validateWarmView(view, undefined, request.commitment);
+    await validateContract("warm_commitment", WarmViewSchema, view, request.commitment);
     return view;
   }
   async generate(request: GenerateRunRequest): Promise<GenerateRunResponse> {
@@ -115,13 +114,13 @@ export class InferenceClient {
     requireFixed(request.identity.requestId, 16, "generate request ID");
     const response = await this.transport.generateRun(request);
     if (response.run === undefined) throw new InferenceProtocolError("generate response omitted its run");
-    validateRunView(response.run, request.identity.requestId, request.context);
+    await validateContract("generated_run_view", RunViewSchema, response.run, request.identity.requestId, request.context);
     return response;
   }
   async inspectRun(runId: Uint8Array): Promise<RunView> {
     requireFixed(runId, 16, "run ID");
     const view = await this.transport.inspectRun(create(InspectRunRequestSchema, { runId }));
-    validateRunView(view, runId);
+    await validateContract("run_view", RunViewSchema, view, runId);
     return view;
   }
   async *watchRun(runId: Uint8Array, fromSequence = 0n, signal?: AbortSignal): AsyncIterable<RunEvent> {
@@ -130,12 +129,12 @@ export class InferenceClient {
     let expected = fromSequence;
     let terminal = false;
     for await (const event of this.transport.watchRun(create(WatchRunRequestSchema, { runId, fromSequence }), signal)) {
-      if (terminal || event.sequence !== expected || event.event.case === undefined) {
+      if (terminal || event.sequence !== expected) {
         throw new InferenceProtocolError("run event order or shape differs");
       }
+      await validateContract("run_event", RunEventSchema, event);
       expected += 1n;
       if (event.event.case === "terminal") {
-        requireTerminal(event.event.value);
         terminal = true;
       }
       yield event;
@@ -145,7 +144,7 @@ export class InferenceClient {
   async cancelRun(runId: Uint8Array): Promise<RunView> {
     requireFixed(runId, 16, "run ID");
     const view = await this.transport.cancelRun(create(InspectRunRequestSchema, { runId }));
-    validateRunView(view, runId);
+    await validateContract("run_view", RunViewSchema, view, runId);
     return view;
   }
   async createEvaluation(request: CreateEvaluationRequest): Promise<EvaluationView> {
@@ -154,176 +153,17 @@ export class InferenceClient {
     requireFixed(request.identity.requestId, 16, "evaluation request ID");
     if (request.spec === undefined) throw new InferenceProtocolError("evaluation spec is absent");
     requireFixed(request.spec.specDigest, 32, "evaluation spec digest");
+    await validateContract("evaluation_spec", EvaluationSpecSchema, request.spec);
     const view = await this.transport.createEvaluation(request);
-    validateEvaluationView(view, request.identity.requestId, request.spec.specDigest);
+    await validateContract("evaluation_view", EvaluationViewSchema, view, request.identity.requestId,
+      toBinary(EvaluationSpecSchema, request.spec));
     return view;
   }
   async inspectEvaluation(evaluationId: Uint8Array): Promise<EvaluationView> {
     requireFixed(evaluationId, 16, "evaluation ID");
     const view = await this.transport.inspectEvaluation(create(InspectEvaluationRequestSchema, { evaluationId }));
-    validateEvaluationView(view, evaluationId);
+    await validateContract("evaluation_view", EvaluationViewSchema, view, evaluationId);
     return view;
-  }
-}
-
-export class InferenceProtocolError extends Error {}
-
-function validateRunView(view: RunView, expectedRunId?: Uint8Array, expectedInput?: Uint8Array): void {
-  requireFixed(view.runId, 16, "run ID");
-  requireFixed(view.input, 32, "run input revision");
-  if (expectedRunId !== undefined && !equalBytes(view.runId, expectedRunId)) {
-    throw new InferenceProtocolError("run identity differs from the request");
-  }
-  if (expectedInput !== undefined && !equalBytes(view.input, expectedInput)) {
-    throw new InferenceProtocolError("run input differs from the request");
-  }
-  if (view.model.length === 0 || view.model.length > 256) throw new InferenceProtocolError("run model is invalid");
-  if (view.result !== undefined) validateRunResult(view.result);
-}
-
-function validateMutationReceipt(receipt: MutationReceipt): void {
-  requireFixed(receipt.revision, 32, "mutation revision");
-  requireFixed(receipt.commandDigest, 32, "mutation command digest");
-  if (receipt.sequence === 0n) throw new InferenceProtocolError("mutation publication sequence is absent");
-}
-
-function validateContextView(view: ContextView, expectedRevision: Uint8Array): void {
-  requireFixed(view.revision, 32, "context revision");
-  if (!equalBytes(view.revision, expectedRevision)) throw new InferenceProtocolError("context revision differs from the request");
-  requireFixed(view.lineage, 32, "context lineage");
-  requireFixed(view.executionProfile, 32, "context execution profile");
-  requireFixed(view.contentDigest, 32, "context content digest");
-  if (view.parent !== undefined) requireFixed(view.parent, 32, "context parent");
-  if (view.model.length === 0 || view.model.length > 256) throw new InferenceProtocolError("context model is invalid");
-  if (view.provenance === undefined || view.provenance.origin.case === undefined) {
-    throw new InferenceProtocolError("context provenance is absent");
-  }
-  const origin = view.provenance.origin;
-  if (origin.case === "derived" || origin.case === "forked" || origin.case === "transferred") {
-    requireFixed(origin.value.source, 32, "context provenance source");
-  } else if (origin.case === "generated") {
-    requireFixed(origin.value.runId, 16, "context provenance run ID");
-    requireFixed(origin.value.terminalReceiptDigest, 32, "context terminal receipt digest");
-  } else if (origin.case === "runInput") {
-    requireFixed(origin.value.source, 32, "context provenance source");
-    requireFixed(origin.value.runId, 16, "context provenance run ID");
-    if (origin.value.maximumOutput === 0n) throw new InferenceProtocolError("run input output bound is zero");
-  }
-}
-
-function validateWarmView(view: WarmView, expectedContext?: Uint8Array, expectedCommitment?: Uint8Array): void {
-  requireFixed(view.commitment, 32, "warm commitment");
-  requireFixed(view.context, 32, "warm context");
-  requireFixed(view.modelProfile, 32, "warm model profile");
-  requireFixed(view.latencyProfile, 32, "warm latency profile");
-  requireFixed(view.evidenceDigest, 32, "warm evidence digest");
-  requireFixed(view.admissionReceiptId, 32, "warm admission receipt ID");
-  if (expectedContext !== undefined && !equalBytes(view.context, expectedContext)) throw new InferenceProtocolError("warm context differs from the request");
-  if (expectedCommitment !== undefined && !equalBytes(view.commitment, expectedCommitment)) throw new InferenceProtocolError("warm commitment differs from the request");
-  if (view.expiresAtMs === 0n || view.sequence === 0n || view.state === WarmState.UNSPECIFIED || !Object.values(WarmState).includes(view.state)) {
-    throw new InferenceProtocolError("warm commitment shape differs");
-  }
-}
-
-function validateRunResult(result: NonNullable<RunView["result"]>): void {
-  requireTerminal(result.terminal);
-  if (result.context !== undefined) requireFixed(result.context.revision, 32, "continuation revision");
-  if (result.receipt !== undefined) {
-    requireFixed(result.receipt.receiptId, 32, "receipt ID");
-    requireFixed(result.receipt.modelProfile, 32, "receipt model profile");
-    requireFixed(result.receipt.meterRevision, 32, "receipt meter revision");
-    requireFixed(result.receipt.rateCardRevision, 32, "receipt rate-card revision");
-    if (result.receipt.usage === undefined) throw new InferenceProtocolError("run receipt usage is absent");
-  }
-}
-
-function validateEvaluationView(view: EvaluationView, expectedId: Uint8Array, expectedSpecDigest?: Uint8Array): void {
-  requireFixed(view.evaluationId, 16, "evaluation ID");
-  if (!equalBytes(view.evaluationId, expectedId)) throw new InferenceProtocolError("evaluation identity differs from the request");
-  if (view.spec === undefined) throw new InferenceProtocolError("evaluation spec is absent");
-  requireFixed(view.spec.specDigest, 32, "evaluation spec digest");
-  if (expectedSpecDigest !== undefined && !equalBytes(view.spec.specDigest, expectedSpecDigest)) {
-    throw new InferenceProtocolError("evaluation spec differs from the request");
-  }
-  if (view.sequence === 0n || view.state === EvaluationState.UNSPECIFIED || !Object.values(EvaluationState).includes(view.state)) {
-    throw new InferenceProtocolError("evaluation state is invalid");
-  }
-  if ((view.state === EvaluationState.COMPLETED) !== (view.result !== undefined)) {
-    throw new InferenceProtocolError("evaluation state is inconsistent with its result");
-  }
-  if (view.result !== undefined) validateEvaluationResult(view.spec, view.result);
-}
-
-function validateEvaluationResult(
-  spec: NonNullable<EvaluationView["spec"]>,
-  result: NonNullable<EvaluationView["result"]>,
-): void {
-  requireFixed(result.specDigest, 32, "evaluation result spec digest");
-  requireFixed(result.resultDigest, 32, "evaluation result digest");
-  if (!equalBytes(result.specDigest, spec.specDigest)) {
-    throw new InferenceProtocolError("evaluation result differs from the admitted spec");
-  }
-  if (result.caseResults.length === 0 || BigInt(result.caseResults.length) !== spec.maximumCaseResults) {
-    throw new InferenceProtocolError("evaluation result coverage is invalid");
-  }
-  const suite = spec.suite;
-  if (suite === undefined) throw new InferenceProtocolError("evaluation suite is absent");
-  const candidates = new Set(spec.candidates.map(candidate => bytesKey(candidate.digest)));
-  const cases = new Set(suite.cases.map(item => bytesKey(item.caseId)));
-  const metrics = new Set(spec.metrics.map(metric => metric.identity));
-  const observations = new Set<string>();
-  for (const item of result.caseResults) {
-    requireFixed(item.candidateDigest, 32, "evaluation candidate digest");
-    requireFixed(item.caseId, 16, "evaluation case ID");
-    const observation = item.observation;
-    if (observation === undefined) throw new InferenceProtocolError("evaluation grader observation is absent");
-    requireFixed(observation.nativeOutputDigest, 32, "evaluation native output digest");
-    requireFixed(observation.observationDigest, 32, "evaluation observation digest");
-    requireFixed(observation.bindingDigest, 32, "evaluation observation binding digest");
-    const observationKey = `${bytesKey(item.candidateDigest)}:${bytesKey(item.caseId)}`;
-    if (!candidates.has(bytesKey(item.candidateDigest)) || !cases.has(bytesKey(item.caseId)) || observations.has(observationKey)
-      || item.outcome === EvaluationCaseOutcome.UNSPECIFIED || !Object.values(EvaluationCaseOutcome).includes(item.outcome)) {
-      throw new InferenceProtocolError("evaluation case result is invalid");
-    }
-    observations.add(observationKey);
-    const observedMetrics = new Set<string>();
-    for (const metric of item.metrics) {
-      if (!metrics.has(metric.metricIdentity) || observedMetrics.has(metric.metricIdentity) || metric.value === undefined || metric.value.denominator === 0n) {
-        throw new InferenceProtocolError("evaluation case metric is invalid");
-      }
-      observedMetrics.add(metric.metricIdentity);
-    }
-    if ((item.outcome === EvaluationCaseOutcome.SCORED && observedMetrics.size !== metrics.size)
-      || (item.outcome !== EvaluationCaseOutcome.SCORED && observedMetrics.size !== 0)) {
-      throw new InferenceProtocolError("evaluation case metric coverage is invalid");
-    }
-  }
-  const expectedAggregates = spec.candidates.length * spec.metrics.length;
-  const aggregates = new Set<string>();
-  const metricAggregations = new Map(spec.metrics.map(metric => [metric.identity, metric.aggregation]));
-  for (const aggregate of result.aggregates) {
-    requireFixed(aggregate.candidateDigest, 32, "evaluation aggregate candidate digest");
-    const candidate = bytesKey(aggregate.candidateDigest);
-    const aggregation = metricAggregations.get(aggregate.metricIdentity);
-    const key = `${candidate}:${aggregate.metricIdentity}`;
-    if (!candidates.has(candidate) || aggregation === undefined || aggregation !== aggregate.aggregation
-      || aggregates.has(key) || aggregate.value === undefined || aggregate.value.denominator === 0n) {
-      throw new InferenceProtocolError("evaluation aggregate is invalid");
-    }
-    aggregates.add(key);
-  }
-  if (aggregates.size !== expectedAggregates) {
-    throw new InferenceProtocolError("evaluation aggregate coverage is invalid");
-  }
-}
-
-function bytesKey(value: Uint8Array): string {
-  return Array.from(value, byte => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function requireTerminal(value: RunTerminal): void {
-  if (value === RunTerminal.UNSPECIFIED || !Object.values(RunTerminal).includes(value)) {
-    throw new InferenceProtocolError("run terminal is invalid");
   }
 }
 
@@ -331,10 +171,6 @@ function requireFixed(value: Uint8Array, length: number, name: string): void {
   if (!(value instanceof Uint8Array) || value.byteLength !== length) {
     throw new InferenceProtocolError(`${name} must be exactly ${length} bytes`);
   }
-}
-
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return left.byteLength === right.byteLength && left.every((value, index) => value === right[index]);
 }
 
 export type AuthorizationHeaders = () => HeadersInit | Promise<HeadersInit>;

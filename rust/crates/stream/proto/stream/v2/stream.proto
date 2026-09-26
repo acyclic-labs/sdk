@@ -40,6 +40,7 @@ message TailRequest {
 }
 message TailResponse {
   uint64 tail = 1;
+  optional uint64 trim_point = 2;
 }
 
 message ForkRequest {
@@ -104,6 +105,19 @@ message Child {
 }
 message ChildrenResponse {
   Child child = 1;
+}
+
+message ChildrenPageRequest {
+  optional string parent = 1;
+  optional string after = 2;
+  optional bytes hierarchy_version = 3;
+  uint32 limit = 4;
+}
+
+message ChildrenPageResponse {
+  bytes hierarchy_version = 1;
+  repeated Child children = 2;
+  optional string next_after = 3;
 }
 
 message TailCondition {
@@ -266,6 +280,7 @@ service StreamService {
   rpc Read(ReadRequest) returns (stream ReadResponse);
   rpc Follow(FollowRequest) returns (stream ReadResponse);
   rpc Children(ChildrenRequest) returns (stream ChildrenResponse);
+  rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse);
   rpc Commit(CommitRequest) returns (CommitResponse);
   rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope);
 }

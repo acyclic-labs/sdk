@@ -126,10 +126,10 @@ export class MountedView {
   async checkpointSnapshot(): Promise<MountedSnapshot> {
     return {
       mounts: await Promise.all(this.#mounts.map(async (mount) => ({
-        mountId: mount.mountId.slice(),
-        volumeId: mount.volumeId.slice(),
+        mountId: Uint8Array.from(mount.mountId),
+        volumeId: Uint8Array.from(mount.volumeId),
         path: mount.path,
-        generationId: (await mount.checkout.checkpoint()).generationId.slice(),
+        generationId: Uint8Array.from((await mount.checkout.checkpoint()).generationId),
       }))),
     };
   }
@@ -157,7 +157,7 @@ export class MountedView {
 
 function identity(value: Uint8Array, label: string): Uint8Array {
   if (value.byteLength !== 16) throw new RangeError(`${label} identity must be exactly 16 bytes`);
-  return value.slice();
+  return Uint8Array.from(value);
 }
 
 function mountPath(value: string): string {

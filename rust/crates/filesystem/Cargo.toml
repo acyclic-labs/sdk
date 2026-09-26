@@ -21,6 +21,7 @@ hex.workspace = true
 notify = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
+prost.workspace = true
 unicode-normalization.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -62,8 +63,8 @@ cap-primitives = "4.0.3"
 cap-fs-ext = "4.0.2"
 cap-std = "4.0.3"
 fs2 = { workspace = true, optional = true }
-prost.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }
+prost.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 serde_urlencoded = { workspace = true, optional = true }

@@ -7,8 +7,11 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 #[cfg(feature = "local")]
 use std::collections::BTreeSet;
@@ -28,6 +31,34 @@ const SYSTEM_METADATA_BYTES: usize = 2 * 1_024;
 const MAX_LISTING_VIEWS: usize = 1_024;
 const MAX_CONCURRENT_BATCH_READS: usize = 16;
 static PROVIDER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(not(target_arch = "wasm32"))]
+type ListingDeadline = Instant;
+#[cfg(target_arch = "wasm32")]
+type ListingDeadline = f64;
+
+fn listing_deadline() -> ListingDeadline {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Instant::now() + Duration::from_secs(limits::LISTING_VIEW_SECONDS)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let millis = Duration::from_secs(limits::LISTING_VIEW_SECONDS).as_millis();
+        js_sys::Date::now() + f64::from(u32::try_from(millis).unwrap_or(u32::MAX))
+    }
+}
+
+fn listing_expired(deadline: ListingDeadline) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Instant::now() >= deadline
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() >= deadline
+    }
+}
 
 async fn indexed<F: Future>(index: usize, future: F) -> (usize, F::Output) {
     (index, future.await)
@@ -127,6 +158,54 @@ pub struct GetRequest {
     pub maximum_bytes: u64,
 }
 
+/// One metadata-only selection. Ranges and body-capacity limits cannot be
+/// supplied because a head operation never transfers object bytes.
+#[derive(Clone, Debug)]
+pub struct HeadRequest {
+    /// Current bucket or immutable snapshot.
+    pub target: ReadTarget,
+    /// UTF-8 object key.
+    pub object_key: String,
+    /// Exact retained version, or the visible current version when absent.
+    pub version_id: Option<String>,
+    /// Optional representation validator that must match.
+    pub if_match: Option<String>,
+    /// Optional representation validator that must not match.
+    pub if_none_match: Option<String>,
+}
+
+struct ReadSelection<'a> {
+    target: &'a ReadTarget,
+    object_key: &'a str,
+    version_id: Option<&'a str>,
+    if_match: Option<&'a str>,
+    if_none_match: Option<&'a str>,
+}
+
+impl<'a> From<&'a GetRequest> for ReadSelection<'a> {
+    fn from(request: &'a GetRequest) -> Self {
+        Self {
+            target: &request.target,
+            object_key: &request.object_key,
+            version_id: request.version_id.as_deref(),
+            if_match: request.if_match.as_deref(),
+            if_none_match: request.if_none_match.as_deref(),
+        }
+    }
+}
+
+impl<'a> From<&'a HeadRequest> for ReadSelection<'a> {
+    fn from(request: &'a HeadRequest) -> Self {
+        Self {
+            target: &request.target,
+            object_key: &request.object_key,
+            version_id: request.version_id.as_deref(),
+            if_match: request.if_match.as_deref(),
+            if_none_match: request.if_none_match.as_deref(),
+        }
+    }
+}
+
 /// One immutable descriptor and its selected body bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BufferedObject {
@@ -224,6 +303,8 @@ pub trait ObjectsProvider: Send + Sync {
     }
     /// Read one immutable version or its visible current selection.
     async fn get(&self, request: GetRequest) -> Result<BufferedObject, ObjectsError>;
+    /// Resolve one exact version descriptor without reading its body.
+    async fn head(&self, request: HeadRequest) -> Result<wire::ObjectVersion, ObjectsError>;
     /// Reads an ordered bounded group of immutable versions.
     ///
     /// Providers without a native multi-get use the exact sequential semantics
@@ -646,7 +727,7 @@ enum ListingItem {
 struct ListingView {
     binding: ListingBinding,
     objects: OrdMap<String, Vec<wire::ObjectVersion>>,
-    expires_at: Instant,
+    expires_at: ListingDeadline,
     prefetched: Option<PrefetchedListingItem>,
 }
 
@@ -820,6 +901,14 @@ pub struct MemoryObjects {
 }
 
 impl MemoryObjects {
+    /// Resolve an object descriptor without reading or buffering its body.
+    pub async fn head(&self, request: HeadRequest) -> Result<wire::ObjectVersion, ObjectsError> {
+        let state = self.state.lock().await;
+        Ok(Self::resolve_version(&state, &(&request).into())?
+            .descriptor
+            .clone())
+    }
+
     #[cfg(feature = "local")]
     pub(crate) async fn local_body_references(&self) -> BTreeSet<LocalBodyReference> {
         let state = self.state.lock().await;
@@ -947,11 +1036,20 @@ impl MemoryObjects {
             },
             MutationOutcome::Version,
             |state| {
+                // Validate the complete upload identity before removing it.  Removing by
+                // upload ID first would let a request with the right ID but the wrong bucket
+                // or object key consume the retained upload even though the operation returns
+                // `NotFound`.
+                let matches = state.multiparts.get(&upload_id).is_some_and(|upload| {
+                    upload.bucket == bucket && upload.object_key == object_key
+                });
+                if !matches {
+                    return Err(ObjectsError::NotFound);
+                }
                 let upload = state
                     .multiparts
                     .remove(&upload_id)
-                    .filter(|upload| upload.bucket == bucket && upload.object_key == object_key)
-                    .ok_or(ObjectsError::NotFound)?;
+                    .ok_or(ObjectsError::Unavailable)?;
                 if !upload.completes_with(&parts) {
                     state.multiparts.insert(upload_id, upload);
                     return Err(ObjectsError::Invalid("multipart receipts do not match"));
@@ -1444,21 +1542,27 @@ impl MemoryObjects {
         }
     }
 
-    fn resolve_get(state: &State, request: &GetRequest) -> Result<ResolvedGet, ObjectsError> {
-        Self::validate_key(&request.object_key)?;
-        let bucket = Self::target_ref(state, &request.target)?;
-        let version = Self::visible(bucket, &request.object_key, request.version_id.as_deref())?;
+    fn resolve_version<'a>(
+        state: &'a State,
+        request: &ReadSelection<'_>,
+    ) -> Result<&'a Version, ObjectsError> {
+        Self::validate_key(request.object_key)?;
+        let bucket = Self::target_ref(state, request.target)?;
+        let version = Self::visible(bucket, request.object_key, request.version_id)?;
         if request
             .if_match
-            .as_ref()
-            .is_some_and(|etag| *etag != version.descriptor.etag)
+            .is_some_and(|etag| etag != version.descriptor.etag.as_str())
             || request
                 .if_none_match
-                .as_ref()
-                .is_some_and(|etag| *etag == version.descriptor.etag)
+                .is_some_and(|etag| etag == version.descriptor.etag.as_str())
         {
             return Err(ObjectsError::PreconditionFailed);
         }
+        Ok(version)
+    }
+
+    fn resolve_get(state: &State, request: &GetRequest) -> Result<ResolvedGet, ObjectsError> {
+        let version = Self::resolve_version(state, &request.into())?;
         let descriptor = version.descriptor.clone();
         let body = version.body.clone().ok_or(ObjectsError::NotFound)?;
         let (start, end) = match request.range {
@@ -2062,6 +2166,10 @@ impl ObjectsProvider for MemoryObjects {
         Self::read_resolved_get(resolved).await
     }
 
+    async fn head(&self, request: HeadRequest) -> Result<wire::ObjectVersion, ObjectsError> {
+        MemoryObjects::head(self, request).await
+    }
+
     async fn get_batch(
         &self,
         requests: Vec<GetRequest>,
@@ -2181,8 +2289,9 @@ impl ObjectsProvider for MemoryObjects {
         }
         let mut state = self.state.lock().await;
         if continuation.is_none() {
-            let now = Instant::now();
-            state.listings.retain(|_, view| now < view.expires_at);
+            state
+                .listings
+                .retain(|_, view| !listing_expired(view.expires_at));
         }
         let binding = ListingBinding {
             target: target.clone(),
@@ -2202,7 +2311,7 @@ impl ObjectsProvider for MemoryObjects {
                 ListingView {
                     binding: binding.clone(),
                     objects,
-                    expires_at: Instant::now() + Duration::from_secs(limits::LISTING_VIEW_SECONDS),
+                    expires_at: listing_deadline(),
                     prefetched: None,
                 },
             );
@@ -2218,7 +2327,7 @@ impl ObjectsProvider for MemoryObjects {
         if state
             .listings
             .get(&view_id)
-            .is_some_and(|view| Instant::now() >= view.expires_at)
+            .is_some_and(|view| listing_expired(view.expires_at))
         {
             state.listings.remove(&view_id);
             return Err(ObjectsError::Invalid("invalid continuation"));
@@ -2601,6 +2710,36 @@ mod tests {
                 .and_then(|value| value.as_ref().ok())
                 .map(|value| &value.body[..]),
             Some(b"abc".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn head_resolves_metadata_without_body_capacity() {
+        let (store, bucket) = MemoryObjects::with_default_bucket();
+        let version = put(&store, &bucket, "large", b"body", None).await;
+        let request = HeadRequest {
+            target: ReadTarget::Bucket(bucket.clone()),
+            object_key: "large".into(),
+            version_id: None,
+            if_match: None,
+            if_none_match: None,
+        };
+        assert_eq!(store.head(request.clone()).await, Ok(version.clone()));
+        let replaceable: Arc<dyn ObjectsProvider> = Arc::new(store.clone());
+        assert_eq!(replaceable.head(request.clone()).await, Ok(version.clone()));
+        assert_eq!(
+            store
+                .get(GetRequest {
+                    target: request.target,
+                    object_key: request.object_key,
+                    version_id: request.version_id,
+                    range: None,
+                    if_match: request.if_match,
+                    if_none_match: request.if_none_match,
+                    maximum_bytes: 0,
+                })
+                .await,
+            Err(ObjectsError::Capacity)
         );
     }
 

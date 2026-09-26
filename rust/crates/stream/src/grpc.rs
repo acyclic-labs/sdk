@@ -24,11 +24,12 @@ use crate::wire_codec::{
     required_key,
 };
 use crate::{
-    AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenRequest,
-    CommitConflict, CommitId, CommitOutcome, CommitRequest, CommittedAppend, CommittedDelete,
-    CommittedEnvelope, CommittedFork, CommittedMutation, CommittedTrim, DeleteReceipt, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, ReadRequest, Record,
-    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt, wire,
+    AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenPage,
+    ChildrenPageRequest, ChildrenRequest, CommitConflict, CommitId, CommitOutcome, CommitRequest,
+    CommittedAppend, CommittedDelete, CommittedEnvelope, CommittedFork, CommittedMutation,
+    CommittedTrim, DeleteReceipt, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
+    IdempotencyOutcome, ReadRequest, Record, RecordStream, StreamBounds, StreamError, StreamPath,
+    StreamProvider, TrimReceipt, wire,
 };
 
 const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -530,6 +531,25 @@ impl StreamProvider for Client {
         .map(|response| response.tail)
     }
 
+    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+        let response = self
+            .unary(
+                wire::TailRequest {
+                    path: path.to_string(),
+                },
+                |mut service, request| Box::pin(async move { service.tail(request).await }),
+            )
+            .await?;
+        let trim_point = response.trim_point.ok_or(StreamError::Unsupported)?;
+        if trim_point > response.tail {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(StreamBounds {
+            trim_point,
+            tail: response.tail,
+        })
+    }
+
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let idempotency_key = request.idempotency_key.map_or_else(
             || Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
@@ -665,6 +685,40 @@ impl StreamProvider for Client {
         Err(last.unwrap_or(StreamError::Unavailable))
     }
 
+    async fn children_page(
+        &self,
+        request: ChildrenPageRequest,
+    ) -> Result<ChildrenPage, StreamError> {
+        let response = self
+            .unary(
+                wire::ChildrenPageRequest {
+                    parent: request.parent.map(|path| path.to_string()),
+                    after: request.after.map(|path| path.to_string()),
+                    hierarchy_version: request
+                        .hierarchy_version
+                        .map(|version| Bytes::copy_from_slice(version.as_bytes())),
+                    limit: request.limit,
+                },
+                |mut service, request| {
+                    Box::pin(async move { service.children_page(request).await })
+                },
+            )
+            .await?;
+        Ok(ChildrenPage {
+            hierarchy_version: commit_id(&response.hierarchy_version)?,
+            children: response
+                .children
+                .into_iter()
+                .map(|child| {
+                    Ok(Child {
+                        path: path(child.path)?,
+                    })
+                })
+                .collect::<Result<_, StreamError>>()?,
+            next_after: response.next_after.map(path).transpose()?,
+        })
+    }
+
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let response = self
             .unary(
@@ -760,12 +814,15 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         request: Request<wire::TailRequest>,
     ) -> Result<Response<wire::TailResponse>, Status> {
         let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
-        let tail = self
+        let bounds = self
             .provider
-            .tail(path)
+            .bounds(path)
             .await
             .map_err(|error| error_status(&error))?;
-        Ok(Response::new(wire::TailResponse { tail }))
+        Ok(Response::new(wire::TailResponse {
+            tail: bounds.tail,
+            trim_point: Some(bounds.trim_point),
+        }))
     }
 
     async fn fork(
@@ -905,6 +962,47 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 })
                 .boxed(),
         ))
+    }
+
+    async fn children_page(
+        &self,
+        request: Request<wire::ChildrenPageRequest>,
+    ) -> Result<Response<wire::ChildrenPageResponse>, Status> {
+        let request = request.into_inner();
+        let page = self
+            .provider
+            .children_page(ChildrenPageRequest {
+                parent: request
+                    .parent
+                    .map(path)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
+                after: request
+                    .after
+                    .map(path)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
+                hierarchy_version: request
+                    .hierarchy_version
+                    .as_deref()
+                    .map(commit_id)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
+                limit: request.limit,
+            })
+            .await
+            .map_err(|error| error_status(&error))?;
+        Ok(Response::new(wire::ChildrenPageResponse {
+            hierarchy_version: Bytes::copy_from_slice(page.hierarchy_version.as_bytes()),
+            children: page
+                .children
+                .into_iter()
+                .map(|child| wire::Child {
+                    path: child.path.to_string(),
+                })
+                .collect(),
+            next_after: page.next_after.map(|path| path.to_string()),
+        }))
     }
 
     async fn commit(
@@ -1098,6 +1196,7 @@ fn error_status(error: &StreamError) -> Status {
         StreamError::NotFound => Status::not_found(error.to_string()),
         StreamError::AlreadyExists => Status::already_exists(error.to_string()),
         StreamError::OutOfRange => Status::out_of_range(error.to_string()),
+        StreamError::HierarchyChanged => Status::failed_precondition("hierarchy_changed"),
         StreamError::AccessDenied => Status::permission_denied(error.to_string()),
         StreamError::Capacity => Status::resource_exhausted(error.to_string()),
         StreamError::IdempotencyMismatch => Status::failed_precondition("idempotency_mismatch"),
@@ -1117,6 +1216,9 @@ fn status(error: &tonic::Status) -> StreamError {
         Code::NotFound => StreamError::NotFound,
         Code::AlreadyExists => StreamError::AlreadyExists,
         Code::OutOfRange => StreamError::OutOfRange,
+        Code::FailedPrecondition if error.message() == "hierarchy_changed" => {
+            StreamError::HierarchyChanged
+        }
         Code::PermissionDenied | Code::Unauthenticated => StreamError::AccessDenied,
         Code::ResourceExhausted => StreamError::Capacity,
         Code::FailedPrecondition if error.message() == "idempotency_mismatch" => {
@@ -1376,6 +1478,10 @@ mod tests {
         async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
             tokio::time::sleep(self.tail_delay).await;
             self.inner.tail(path).await
+        }
+
+        async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+            self.inner.bounds(path).await
         }
 
         async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {

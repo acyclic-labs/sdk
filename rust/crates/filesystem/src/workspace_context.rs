@@ -752,7 +752,7 @@ fn validate_record<E: std::error::Error + 'static>(
     Ok(())
 }
 
-fn record_is_valid(context: &WorkspaceContext, expected: WorkspaceContextId) -> bool {
+pub(crate) fn record_is_valid(context: &WorkspaceContext, expected: WorkspaceContextId) -> bool {
     !(context.version != WORKSPACE_CONTEXT_VERSION
         || context.context_id != expected
         || context.revision == 0
@@ -775,7 +775,7 @@ fn same_registration(left: &WorkspaceContext, right: &WorkspaceContext) -> bool 
         && left.roots == right.roots
 }
 
-fn is_canonical(path: &Path) -> bool {
+pub(crate) fn is_canonical(path: &Path) -> bool {
     path.is_absolute()
         && path
             .components()

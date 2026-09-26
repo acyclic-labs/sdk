@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { compatibilityArtifacts, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 
 const root = new URL("..", import.meta.url);
 const rootPath = resolve(fileURLToPath(root));
@@ -121,6 +122,7 @@ for (const path of [
   "rust/crates/filesystem/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
   "rust/crates/harness/Cargo.toml",
+  "rust/crates/harness-filesystem/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
@@ -140,7 +142,7 @@ if (
 }
 for (const path of [
   "rust/crates/conformance/Cargo.toml",
-  "rust/crates/harness/Cargo.toml",
+  "rust/crates/harness-machines/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-machines = \{ version = "([^"]+)"/)?.[1];
@@ -162,9 +164,14 @@ if ((await load("typescript/packages/sdk/package.json")).dependencies["@acyclic-
 const objectsVersion = compatibility.families.objects.version;
 const objectsCrateVersion = compatibility.families.objects.crateVersion ?? objectsVersion;
 const objectsManifest = await readFile(new URL("rust/crates/objects/Cargo.toml", root), "utf8");
+const harnessObjectsPackage = await load("typescript/packages/harness-objects/package.json");
 if (
   (await load("typescript/packages/objects/package.json")).version !== objectsVersion ||
-  sdkPackage.dependencies["@acyclic-labs/objects"] !== objectsVersion
+  sdkPackage.dependencies["@acyclic-labs/objects"] !== objectsVersion ||
+  harnessObjectsPackage.version !== harnessVersion ||
+  harnessObjectsPackage.peerDependencies["@acyclic-labs/harness"] !== harnessVersion ||
+  harnessObjectsPackage.peerDependencies["@acyclic-labs/objects"] !== objectsVersion ||
+  sdkPackage.dependencies["@acyclic-labs/harness-objects"] !== harnessVersion
 ) {
   throw new Error("Objects npm and umbrella dependency versions must match compatibility metadata");
 }
@@ -175,6 +182,7 @@ for (const path of [
   "rust/crates/conformance/Cargo.toml",
   "rust/crates/filesystem/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
+  "rust/crates/harness-objects/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-objects = \{ version = "([^"]+)"/)?.[1];
@@ -210,55 +218,29 @@ const nativePackageVersion = nativeSource.match(/const PACKAGE_VERSION = "([^"]+
 if (nativePackageVersion !== filesystemVersion) {
   throw new Error("filesystem native companion version does not match package metadata");
 }
-const familyArtifacts = {
-  harness: {
-    schemaDigest: "proto/harness/v1/harness.proto",
-    conformanceDigest: "conformance/vectors/core.json",
-  },
-  filesystem: {
-    schemaDigest: "proto/filesystem/v2/filesystem.proto",
-    descriptorDigest: "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",
-    conformanceDigest: "conformance/vectors/filesystem/dependency-content-range-v1.json",
-  },
-  stream: {
-    schemaDigest: "rust/crates/stream/proto/stream/v2/stream.proto",
-    descriptorDigest: "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
-    conformanceDigest: "conformance/vectors/stream.json",
-  },
-  objects: {
-    schemaDigest: "proto/objects/v1/objects.proto",
-    descriptorDigest: "rust/crates/objects/src/generated/acyclic-objects-v1.bin",
-    conformanceDigest: "conformance/vectors/objects.json",
-  },
-  machines: {
-    schemaDigest: "proto/machines/v1/machines.proto",
-    descriptorDigest: "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
-    conformanceDigest: "conformance/vectors/machines.json",
-  },
-  inference: {
-    schemaDigest: "proto/inference/v1/inference.proto",
-    descriptorDigest: "rust/crates/inference/inference_descriptor.bin",
-    conformanceDigest: "conformance/vectors/inference.json",
-  },
-};
-for (const [family, artifacts] of Object.entries(familyArtifacts)) {
+for (const [family, artifacts] of Object.entries(compatibilityArtifacts)) {
   for (const [field, path] of Object.entries(artifacts)) {
     if (compatibility.families[family][field] !== await digest(path)) {
       throw new Error(`${family} ${field} mismatch`);
     }
   }
 }
+for (const [stem, packages] of packagedTypeScriptBindings) {
+  const family = stem.split("/")[0];
+  if (!packages.includes(family)) continue;
+  const manifest = await load(`typescript/packages/${family}/package.json`);
+  const prefix = `./generated/proto/${stem}`;
+  if (manifest.exports?.["./proto"]?.types !== `${prefix}.d.ts`
+    || manifest.exports["./proto"].default !== `${prefix}.js`
+    || !manifest.files?.some(path => path === "generated" || path === "generated/proto")
+    || manifest.dependencies?.["@bufbuild/protobuf"] !== "2.14.1") {
+    throw new Error(`${family} generated protobuf package export mismatch`);
+  }
+}
 
-for (const [canonical, packaged] of [
-  ["conformance/vectors/core.json", "rust/crates/conformance/vectors/harness.json"],
-  ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
-  ["conformance/vectors/stream.json", "rust/crates/conformance/vectors/stream.json"],
-  ["conformance/vectors/objects.json", "rust/crates/conformance/vectors/objects.json"],
-  ["conformance/vectors/machines.json", "rust/crates/conformance/vectors/machines.json"],
-  ["conformance/vectors/filesystem/dependency-content-range-v1.json", "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
-]) {
+for (const [canonical, packaged] of packagedSourceCopies) {
   if (await digest(canonical) !== await digest(packaged)) {
-    throw new Error(`packaged conformance vector drift: ${packaged}`);
+    throw new Error(`packaged source drift: ${packaged}`);
   }
 }
 

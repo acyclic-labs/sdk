@@ -8,6 +8,7 @@ use crate::{
     store::StreamAggregate,
 };
 use acyclic_stream::{StreamClient, StreamProvider};
+use std::sync::Arc;
 
 macro_rules! durable_handle {
     ($name:ident, $id:ty, $kind:ident, $description:literal) => {
@@ -65,6 +66,25 @@ durable_handle!(
     Conversation,
     "Typed handle to one durable conversation."
 );
+
+impl<P: StreamProvider> Conversation<P> {
+    /// Requires exact content residency before admitting any message refs.
+    #[must_use]
+    pub fn with_content_verifier(
+        mut self,
+        verifier: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+    ) -> Self {
+        self.inner = self.inner.with_content_verifier(verifier);
+        self
+    }
+
+    /// Requires prepared child state to be resident before fork publication.
+    #[must_use]
+    pub fn with_fork_verifier(mut self, verifier: Arc<crate::fork::CompositeForkVerifier>) -> Self {
+        self.inner = self.inner.with_fork_verifier(verifier);
+        self
+    }
+}
 durable_handle!(
     Session,
     SessionId,

@@ -1,15 +1,21 @@
 //! Deterministic, host-neutral durable substrate semantics.
 
 use crate::{
-    Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, InteractionId, OperationId,
+    AgentId, Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, OperationId,
     PolicyLayer, Result,
-    fork::ForkManifest,
-    interaction::{Interaction, InteractionResponse},
+    conversation::{
+        ContentGrant, ConversationMessage, ConversationState, FileDescriptor, FileRef,
+        ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+        is_internal_path,
+    },
+    fork::{ForkSeed, InheritedConversationPrefix},
+    interaction::{InteractionOutcome, InteractionResolution, InteractionTicket},
+    merge::ProjectMergeReceipt,
     resolve_policy_layers,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -29,6 +35,7 @@ pub enum AggregateKind {
 
 /// Stable identity of one independently ordered history.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Authority {
     /// Aggregate kind.
     pub kind: AggregateKind,
@@ -56,23 +63,40 @@ impl Authority {
             AggregateKind::Turn => "turns",
             AggregateKind::Task => "tasks",
         };
-        Ok(format!("harness/{segment}/{}", self.id))
+        Ok(format!("harness/v2/{segment}/{}", self.id))
     }
 }
 
 /// Immutable authorization scope captured at admission.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Scope {
     /// Stable scope identity.
     id: String,
     /// Effective capabilities after policy intersection.
     capabilities: Capabilities,
+    /// Host-attested agent on whose behalf this operation runs, if any.
+    agent: Option<AgentId>,
     /// Trusted issuer identity.
     issuer: String,
     /// Parent proof, present for attenuated scopes.
     parent_proof: Option<[u8; 32]>,
     /// Keyed proof over the complete grant.
     proof: [u8; 32],
+}
+
+impl std::fmt::Debug for Scope {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Scope")
+            .field("id", &self.id)
+            .field("capabilities", &self.capabilities)
+            .field("agent", &self.agent)
+            .field("issuer", &self.issuer)
+            .field("attenuated", &self.parent_proof.is_some())
+            .field("proof", &"[redacted]")
+            .finish()
+    }
 }
 
 impl Scope {
@@ -88,9 +112,10 @@ impl Scope {
         &self.capabilities
     }
 
-    #[cfg(any(feature = "host", feature = "wasm"))]
-    pub(crate) fn wire_parts(&self) -> (&str, Option<[u8; 32]>, [u8; 32]) {
-        (&self.issuer, self.parent_proof, self.proof)
+    /// Agent identity inherited unchanged by every attenuated scope.
+    #[must_use]
+    pub const fn agent(&self) -> Option<AgentId> {
+        self.agent
     }
 
     #[cfg(any(feature = "host", feature = "wasm"))]
@@ -98,6 +123,7 @@ impl Scope {
         id: String,
         capabilities: Capabilities,
         issuer: String,
+        agent: Option<AgentId>,
         parent_proof: Option<[u8; 32]>,
         proof: [u8; 32],
     ) -> Self {
@@ -105,6 +131,7 @@ impl Scope {
             id,
             capabilities,
             issuer,
+            agent,
             parent_proof,
             proof,
         }
@@ -143,7 +170,19 @@ impl AuthorityIssuer {
     /// Issues one explicit root grant.
     #[must_use]
     pub fn root(&self, id: impl Into<String>, capabilities: Capabilities) -> Scope {
-        self.issue(id.into(), capabilities, None)
+        self.issue(id.into(), capabilities, None, None)
+    }
+
+    /// Issues a root grant for a host-authenticated agent. The agent identity
+    /// is part of the signed grant and cannot change during attenuation.
+    #[must_use]
+    pub fn root_for_agent(
+        &self,
+        agent: AgentId,
+        id: impl Into<String>,
+        capabilities: Capabilities,
+    ) -> Scope {
+        self.issue(id.into(), capabilities, Some(agent), None)
     }
 
     /// Issues a root grant after resolving all explicit hierarchy policy layers.
@@ -152,7 +191,17 @@ impl AuthorityIssuer {
         id: impl Into<String>,
         layers: &[PolicyLayer],
     ) -> Result<Scope> {
-        Ok(self.issue(id.into(), resolve_policy_layers(layers)?, None))
+        Ok(self.issue(id.into(), resolve_policy_layers(layers)?, None, None))
+    }
+
+    /// Resolves policy and signs the same acting-agent identity.
+    pub fn root_with_policies_for_agent(
+        &self,
+        agent: AgentId,
+        id: impl Into<String>,
+        layers: &[PolicyLayer],
+    ) -> Result<Scope> {
+        Ok(self.issue(id.into(), resolve_policy_layers(layers)?, Some(agent), None))
     }
 
     /// Issues a child grant that cannot widen its parent.
@@ -168,13 +217,79 @@ impl AuthorityIssuer {
                 "child scope cannot widen ancestor capabilities".into(),
             ));
         }
-        Ok(self.issue(id.into(), capabilities, Some(parent.proof)))
+        Ok(self.issue(id.into(), capabilities, parent.agent, Some(parent.proof)))
+    }
+
+    /// Delegates one pinned private file to another agent without a fork or
+    /// directory-wide grant. The original owner must already hold volume read
+    /// authority; the recipient receives only an exact-version read scope.
+    pub fn delegate_private_file_read(
+        &self,
+        owner_scope: &Scope,
+        reader: AgentId,
+        id: impl Into<String>,
+        file: &FileRef,
+    ) -> Result<Scope> {
+        file.validate()?;
+        if is_internal_path(file.path()) {
+            return Err(Error::Unauthorized(
+                "internal storage files cannot be delegated".into(),
+            ));
+        }
+        let volume = file.volume();
+        self.require_private_owner_read(owner_scope, volume)?;
+        Ok(self.issue(
+            id.into(),
+            Capabilities::new([file.read_capability()?]),
+            Some(reader),
+            Some(owner_scope.proof),
+        ))
+    }
+
+    /// Shares a private directory lazily with an agent outside any fork tree.
+    /// The prefix is segment-bounded; this grant cannot authorize writes.
+    pub fn delegate_private_directory_read(
+        &self,
+        owner_scope: &Scope,
+        reader: AgentId,
+        id: impl Into<String>,
+        volume: &crate::conversation::VolumeRef,
+        prefix: &str,
+    ) -> Result<Scope> {
+        self.require_private_owner_read(owner_scope, volume)?;
+        Ok(self.issue(
+            id.into(),
+            Capabilities::new([volume.directory_read_capability(prefix)?]),
+            Some(reader),
+            Some(owner_scope.proof),
+        ))
+    }
+
+    fn require_private_owner_read(
+        &self,
+        owner_scope: &Scope,
+        volume: &crate::conversation::VolumeRef,
+    ) -> Result<()> {
+        self.verifier().verify(owner_scope)?;
+        volume.validate()?;
+        if volume.class() != VolumeClass::AgentPrivate
+            || !matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == owner_scope.agent)
+            || !owner_scope
+                .capabilities
+                .contains(&volume.capability(VolumeOperation::Read)?)
+        {
+            return Err(Error::Unauthorized(
+                "private read delegation requires its original owner".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn issue(
         &self,
         id: String,
         capabilities: Capabilities,
+        agent: Option<AgentId>,
         parent_proof: Option<[u8; 32]>,
     ) -> Scope {
         let proof = scope_proof(
@@ -183,12 +298,14 @@ impl AuthorityIssuer {
             &self.id,
             &id,
             &capabilities,
+            agent,
             parent_proof,
         );
         Scope {
             id,
             capabilities,
             issuer: self.id.clone(),
+            agent,
             parent_proof,
             proof,
         }
@@ -228,14 +345,31 @@ impl AuthorityIssuer {
 }
 
 /// Reducer-side verifier for host-issued scopes.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct AuthorityVerifier {
     id: String,
     key: [u8; 32],
     audience: Authority,
 }
 
+impl std::fmt::Debug for AuthorityVerifier {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthorityVerifier")
+            .field("id", &self.id)
+            .field("audience", &self.audience)
+            .field("key", &"[redacted]")
+            .finish()
+    }
+}
+
 impl AuthorityVerifier {
+    /// Returns the one aggregate this verifier is allowed to authenticate.
+    #[must_use]
+    pub const fn audience(&self) -> &Authority {
+        &self.audience
+    }
+
     /// Verifies issuer identity and the complete immutable grant.
     pub fn verify(&self, scope: &Scope) -> Result<()> {
         let expected = scope_proof(
@@ -244,10 +378,37 @@ impl AuthorityVerifier {
             &scope.issuer,
             &scope.id,
             &scope.capabilities,
+            scope.agent,
             scope.parent_proof,
         );
         if scope.issuer != self.id || scope.proof != expected {
             return Err(Error::Unauthorized("scope proof is invalid".into()));
+        }
+        Ok(())
+    }
+
+    fn attest_event(&self, event: &Event) -> Result<[u8; 32]> {
+        let canonical = crate::contract::canonical_json_bytes(&(
+            &self.audience,
+            event.revision,
+            event.operation_id,
+            event.intent_digest,
+            &event.scope,
+            &event.causal_parent,
+            &event.payload,
+        ))?;
+        let mut hasher = blake3::Hasher::new_keyed(&self.key);
+        hasher.update(b"harness/v2/committed-event\0");
+        hasher.update(&(canonical.len() as u64).to_le_bytes());
+        hasher.update(&canonical);
+        Ok(*hasher.finalize().as_bytes())
+    }
+
+    fn verify_event(&self, event: &Event) -> Result<()> {
+        if event.scope.issuer != self.id || event.attestation != self.attest_event(event)? {
+            return Err(Error::Unauthorized(
+                "event admission attestation is invalid".into(),
+            ));
         }
         Ok(())
     }
@@ -323,6 +484,10 @@ impl LifecycleState {
 /// Current durable status of an effect.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "public ref-valued status keeps its stable serde and Rust shape"
+)]
 pub enum EffectStatus {
     /// Effect is durable but has not been dispatched.
     Planned,
@@ -330,8 +495,8 @@ pub enum EffectStatus {
     Dispatched,
     /// Effect completed successfully.
     Succeeded {
-        /// Schema-defined result.
-        result: Value,
+        /// Pinned schema-defined JSON result file.
+        result: FileRef,
     },
     /// Effect completed with a known failure.
     Failed {
@@ -380,13 +545,13 @@ pub struct EffectState {
     pub guarantee: EffectGuarantee,
     /// Namespaced effect kind.
     pub effect_kind: String,
-    /// Immutable provider request.
-    pub request: Value,
+    /// Immutable provider request file; the event carries no request body.
+    pub request: FileRef,
     /// Canonical digest binding provider, kind, guarantee, and request.
     pub request_digest: [u8; 32],
-    /// Immutable JSON Schema for successful results.
-    pub result_schema: Value,
-    /// Digest pinning the result schema.
+    /// Immutable JSON Schema file for successful results.
+    pub result_schema: FileRef,
+    /// SHA-256 digest pinning the result schema bytes.
     pub result_schema_digest: [u8; 32],
     /// Current semantic completion state.
     pub status: EffectStatus,
@@ -397,6 +562,10 @@ pub struct EffectState {
 /// Schema-validated event payload retained in canonical history.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "canonical events prioritize typed fields over enum stack size"
+)]
 pub enum EventPayload {
     /// Fixed aggregate lifecycle transition.
     LifecycleTransitioned {
@@ -409,14 +578,29 @@ pub enum EventPayload {
     },
     /// Namespaced extension event validated by its registered schema.
     Custom {
-        /// Namespaced schema identity.
-        schema: String,
-        /// Positive schema version.
-        version: u32,
-        /// Digest pinning the exact registered schema.
-        schema_digest: [u8; 32],
-        /// Schema-defined payload.
-        value: Value,
+        /// Complete typed and version-pinned extension record.
+        record: ExtensionRecord,
+    },
+    /// Explicit transition between exact retained extension state versions.
+    ExtensionStateMigrated {
+        /// Exact validated source and target revision pair.
+        migration: ExtensionStateMigration,
+    },
+    /// Agent-owned active extension selection, including its resolved dependencies.
+    ExtensionsSelected {
+        /// Exact predecessor needed for deterministic replay.
+        previous: Vec<ExtensionDependency>,
+        /// Dependency-first selected versions for new admissions only.
+        selected: Vec<ExtensionDependency>,
+        /// Exact validated configuration revisions pinned for this selection.
+        configurations: Vec<ExtensionConfiguration>,
+    },
+    /// Agent-owned, provider-validated configuration publication.
+    ExtensionConfigured {
+        /// Exact predecessor for replay and concurrent update detection.
+        previous: Option<ExtensionConfiguration>,
+        /// Immutable configuration revision.
+        record: ExtensionConfiguration,
     },
     /// Durable intent to perform one external effect.
     EffectPlanned {
@@ -428,12 +612,12 @@ pub enum EventPayload {
         guarantee: EffectGuarantee,
         /// Namespaced effect kind.
         effect_kind: String,
-        /// Schema-defined provider request.
-        request: Value,
+        /// Pinned provider request file.
+        request: FileRef,
         /// Canonical digest of the complete provider request identity.
         request_digest: [u8; 32],
-        /// JSON Schema for a successful provider result.
-        result_schema: Value,
+        /// Pinned JSON Schema file for a successful provider result.
+        result_schema: FileRef,
         /// Digest pinning the result schema.
         result_schema_digest: [u8; 32],
     },
@@ -449,29 +633,46 @@ pub enum EventPayload {
         /// Complete host-attested provider observation.
         observation: EffectAttestation,
     },
-    /// Durable typed interaction became available to participants.
-    InteractionOpened {
-        /// Stable interaction identity.
-        interaction_id: InteractionId,
-        /// Typed request.
-        interaction: Interaction,
-    },
-    /// Durable single response to an open interaction.
-    InteractionResolved {
-        /// Stable interaction identity.
-        interaction_id: InteractionId,
-        /// Validated typed response.
-        response: InteractionResponse,
-    },
     /// Prepared immutable environment references became atomically visible.
     ForkPublished {
         /// Complete child publication record.
-        manifest: Box<ForkManifest>,
+        seed: Box<ForkSeed>,
+    },
+    /// An inspected project join and its parent-conversation notice became visible.
+    ProjectMergePublished {
+        /// Exact provider result, bound to a previously published child fork.
+        receipt: Box<ProjectMergeReceipt>,
+    },
+    /// An agent acquired permanent ownership of this conversation.
+    ConversationBound {
+        /// Owning agent.
+        agent: crate::AgentId,
+    },
+    /// One ordered, ref-only conversation message was admitted.
+    ConversationMessageAppended {
+        /// Canonical record.
+        message: Box<ConversationMessage>,
+    },
+    /// An exact ordered history subset was selected for a model request.
+    ModelContextSelected {
+        /// Revision-pinned source identities; projected bytes remain outside history.
+        selection: ModelContextSelection,
+    },
+    /// A ref-only interaction became addressable to one granted responder.
+    InteractionOpened {
+        /// Admitted request identity and ref.
+        ticket: InteractionTicket,
+    },
+    /// A responder closed one exact open interaction version.
+    InteractionResolved {
+        /// Exact responder outcome.
+        resolution: InteractionResolution,
     },
 }
 
 /// Reference to an exact event in another aggregate.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventReference {
     /// Referenced authority.
     pub authority: Authority,
@@ -479,8 +680,69 @@ pub struct EventReference {
     pub revision: u64,
 }
 
+/// Non-bearer admission metadata retained in durable history. Its keyed
+/// attestation belongs to the complete event, never to a reusable scope.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedScope {
+    id: String,
+    capabilities: Capabilities,
+    issuer: String,
+    agent: Option<AgentId>,
+}
+
+impl RecordedScope {
+    fn from_scope(scope: &Scope) -> Self {
+        Self {
+            id: scope.id.clone(),
+            capabilities: scope.capabilities.clone(),
+            issuer: scope.issuer.clone(),
+            agent: scope.agent,
+        }
+    }
+
+    /// Capabilities authenticated for this one committed event.
+    #[must_use]
+    pub const fn capabilities(&self) -> &Capabilities {
+        &self.capabilities
+    }
+
+    /// Stable admission-scope label retained for audit only.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Host-attested actor, if the admission was agent-bound.
+    #[must_use]
+    pub const fn agent(&self) -> Option<AgentId> {
+        self.agent
+    }
+
+    #[cfg(any(feature = "host", feature = "wasm"))]
+    pub(crate) fn wire_parts(&self) -> (&str, Option<AgentId>) {
+        (&self.issuer, self.agent)
+    }
+
+    #[cfg(feature = "host")]
+    pub(crate) fn from_wire(
+        id: String,
+        capabilities: Capabilities,
+        issuer: String,
+        agent: Option<AgentId>,
+    ) -> Self {
+        Self {
+            id,
+            capabilities,
+            issuer,
+            agent,
+        }
+    }
+}
+
 /// One canonical event in an aggregate history.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Event {
     /// Gapless one-based aggregate revision.
     pub revision: u64,
@@ -488,8 +750,10 @@ pub struct Event {
     pub operation_id: OperationId,
     /// Digest that permanently binds the operation identity to its command.
     pub intent_digest: [u8; 32],
-    /// Complete authorization scope captured at admission.
-    pub scope: Scope,
+    /// Non-transferable admission metadata; never a reusable authorization scope.
+    pub scope: RecordedScope,
+    /// Keyed proof over this complete event, including its admission metadata.
+    pub attestation: [u8; 32],
     /// Optional causal predecessor in another aggregate.
     pub causal_parent: Option<EventReference>,
     /// Typed payload.
@@ -498,6 +762,7 @@ pub struct Event {
 
 /// Immutable command envelope accepted by the reducer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Command {
     /// Stable identity allocated before admission.
     pub operation_id: OperationId,
@@ -515,7 +780,7 @@ pub struct Command {
 
 /// Transitions supported by the substrate reducer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     /// Advances the fixed aggregate lifecycle.
     TransitionLifecycle {
@@ -530,8 +795,31 @@ pub enum Action {
         schema: String,
         /// Positive schema version.
         version: u32,
-        /// Schema-defined payload.
-        value: Value,
+        /// Staged, version-pinned JSON payload.
+        content: FileRef,
+    },
+    /// Publishes a validated state revision under another installed version.
+    MigrateExtensionState {
+        /// Namespaced state identity; the latest revision must match `previous`.
+        name: String,
+        /// Exact migration input event in this aggregate.
+        previous: EventReference,
+        /// Installed target schema and implementation version.
+        to_version: u32,
+        /// Staged target JSON, validated before event publication.
+        content: FileRef,
+    },
+    /// Selects installed extension versions for future agent admissions.
+    SelectExtensions {
+        /// Exact roots; dependencies are resolved from pinned registrations.
+        roots: Vec<ExtensionDependency>,
+    },
+    /// Publishes a staged configuration for one installed extension version.
+    ConfigureExtension {
+        /// Installed extension version.
+        extension: ExtensionDependency,
+        /// Owner-verified JSON file; bytes never enter the event.
+        content: FileRef,
     },
     /// Records intent for one external effect.
     PlanEffect {
@@ -543,10 +831,10 @@ pub enum Action {
         guarantee: EffectGuarantee,
         /// Namespaced effect kind.
         effect_kind: String,
-        /// Schema-defined provider request.
-        request: Value,
-        /// JSON Schema for a successful provider result.
-        result_schema: Value,
+        /// Pinned provider request file.
+        request: FileRef,
+        /// Pinned JSON Schema file for a successful provider result.
+        result_schema: FileRef,
     },
     /// Records that effect dispatch began.
     MarkEffectDispatched {
@@ -560,34 +848,41 @@ pub enum Action {
         /// Provider observation attested by the aggregate authority host.
         observation: EffectAttestation,
     },
-    /// Opens one typed interaction.
-    OpenInteraction {
-        /// Stable interaction identity.
-        interaction_id: InteractionId,
-        /// Typed request.
-        interaction: Interaction,
-    },
-    /// Resolves one typed interaction exactly once.
-    ResolveInteraction {
-        /// Stable interaction identity.
-        interaction_id: InteractionId,
-        /// Typed response.
-        response: InteractionResponse,
-    },
     /// Atomically publishes one fully prepared child environment.
     PublishFork {
         /// Immutable references prepared outside the reducer.
-        manifest: Box<ForkManifest>,
+        seed: Box<ForkSeed>,
     },
-}
-
-/// Current projection of one durable interaction.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct InteractionState {
-    /// Original typed request.
-    pub interaction: Interaction,
-    /// Single validated response, or `None` while open.
-    pub response: Option<InteractionResponse>,
+    /// Records an already-applied parent-controlled project join.
+    PublishProjectMerge {
+        /// Provider-verified merge result and ref-only notice.
+        receipt: Box<ProjectMergeReceipt>,
+    },
+    /// Binds an empty conversation to an agent exactly once.
+    BindConversation {
+        /// Owning agent.
+        agent: crate::AgentId,
+    },
+    /// Appends a version-pinned, payload-free message.
+    AppendConversationMessage {
+        /// Canonical record.
+        message: Box<ConversationMessage>,
+    },
+    /// Records a deliberate context selection separately from canonical messages.
+    SelectModelContext {
+        /// Exact ordered conversation subset.
+        selection: ModelContextSelection,
+    },
+    /// Admits a validated staged request without embedding its prompt or schema.
+    OpenInteraction {
+        /// Request identity and staged content ref.
+        ticket: InteractionTicket,
+    },
+    /// Resolves an open request with a responder-specific signed capability.
+    ResolveInteraction {
+        /// Expected version and explicit outcome.
+        resolution: InteractionResolution,
+    },
 }
 
 /// Result of applying a command.
@@ -608,6 +903,7 @@ pub enum ApplyResult {
 
 /// Versioned acceleration record; canonical events remain authoritative.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Snapshot {
     /// Snapshot format version.
     pub format_version: u32,
@@ -615,16 +911,231 @@ pub struct Snapshot {
     pub authority: Authority,
     /// Last included event revision.
     pub revision: u64,
-    /// Canonical events included in this portable v1 snapshot.
+    /// Canonical events included in this portable v2 snapshot.
     pub events: Vec<Event>,
     /// Digest over all preceding fields.
     pub state_digest: [u8; 32],
 }
 
-/// Immutable-version registry for namespaced extension payload schemas.
+/// Explicit treatment of one extension's state at a child fork.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionForkPolicy {
+    /// Retain the selected immutable state revision for the child.
+    Inherit,
+    /// Require a fresh child-owned state revision.
+    Reset,
+    /// Refuse to fork while this extension state is selected.
+    Reject,
+}
+
+/// One versioned extension state record. Bytes live only at `content`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionRecord {
+    /// Namespaced schema identity.
+    pub name: String,
+    /// Positive schema version.
+    pub version: u32,
+    /// Digest pinning the exact registered JSON Schema.
+    pub schema_digest: [u8; 32],
+    /// Digest pinning the admitted implementation.
+    pub implementation_digest: [u8; 32],
+    /// Fork treatment pinned at admission.
+    pub fork_policy: ExtensionForkPolicy,
+    /// Immutable JSON payload reference.
+    pub content: FileRef,
+}
+
+/// Version transition that never rewrites or removes its retained input.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionStateMigration {
+    /// Latest state event that was validated as the migration input.
+    pub previous: EventReference,
+    /// New schema-validated state revision.
+    pub record: ExtensionRecord,
+}
+
+impl ExtensionStateMigration {
+    /// Checks the portable envelope; the reducer additionally checks that
+    /// `previous` is the latest state event under the same authority.
+    pub fn validate(&self) -> Result<()> {
+        if self.previous.revision == 0 {
+            return Err(Error::Invalid("extension migration source is empty".into()));
+        }
+        self.previous.authority.stream_path()?;
+        self.record.validate()
+    }
+}
+
+impl ExtensionRecord {
+    /// Checks the envelope before consulting its pinned schema registry.
+    pub fn validate(&self) -> Result<()> {
+        validate_extension_name(&self.name)?;
+        if self.version == 0
+            || self.schema_digest == [0; 32]
+            || self.implementation_digest == [0; 32]
+            || self.content.descriptor().media_type() != "application/json"
+        {
+            return Err(Error::Invalid("extension record is invalid".into()));
+        }
+        self.content.validate()
+    }
+}
+
+pub(crate) fn validate_extension_name(name: &str) -> Result<()> {
+    if name.len() > 256
+        || !name.contains('.')
+        || name.starts_with("acyclic.")
+        || name.split('.').any(str::is_empty)
+        || !name
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '.' | '_' | '-'))
+    {
+        return Err(Error::Invalid(
+            "extension name must be a bounded namespace".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Exact installed version required by another extension at activation.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionDependency {
+    /// Namespaced extension identity.
+    pub name: String,
+    /// Required positive schema and implementation version.
+    pub version: u32,
+}
+
+impl ExtensionDependency {
+    /// Rejects ambiguous or unbounded dependency identities.
+    pub fn validate(&self) -> Result<()> {
+        validate_extension_name(&self.name)?;
+        if self.version == 0 {
+            return Err(Error::Invalid(
+                "extension dependency version is zero".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// File-backed configuration pinned to one installed extension schema.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionConfiguration {
+    /// Exact installed extension version.
+    pub extension: ExtensionDependency,
+    /// Digest of the immutable configuration JSON Schema.
+    pub schema_digest: [u8; 32],
+    /// Immutable provider-owned JSON configuration.
+    pub content: FileRef,
+}
+
+/// Immutable agent selection captured for task admission. The source points
+/// at the committed activation event, not the latest mutable agent revision.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionAdmission {
+    source: EventReference,
+    selected: Vec<ExtensionDependency>,
+    configurations: Vec<ExtensionConfiguration>,
+}
+
+impl ExtensionAdmission {
+    /// Exact committed selection event that supplied these bindings.
+    #[must_use]
+    pub const fn source(&self) -> &EventReference {
+        &self.source
+    }
+
+    /// Dependency-ordered installed versions frozen for this admission.
+    #[must_use]
+    pub fn selected(&self) -> &[ExtensionDependency] {
+        &self.selected
+    }
+
+    /// File-backed configuration revisions frozen for this admission.
+    #[must_use]
+    pub fn configurations(&self) -> &[ExtensionConfiguration] {
+        &self.configurations
+    }
+
+    /// Checks internal shape after decoding a host-owned admission record.
+    pub fn validate(&self) -> Result<()> {
+        if self.source.authority.kind != AggregateKind::Agent || self.source.revision == 0 {
+            return Err(Error::Invalid(
+                "extension admission source is invalid".into(),
+            ));
+        }
+        self.source.authority.stream_path()?;
+        let mut selected = BTreeSet::new();
+        let mut versions = BTreeMap::new();
+        for extension in &self.selected {
+            extension.validate()?;
+            if !selected.insert(extension.clone())
+                || versions
+                    .insert(&extension.name, extension.version)
+                    .is_some()
+            {
+                return Err(Error::Conflict("duplicate selected extension".into()));
+            }
+        }
+        let mut configured = BTreeSet::new();
+        let mut last_position = None;
+        for configuration in &self.configurations {
+            configuration.validate()?;
+            let position = self
+                .selected
+                .iter()
+                .position(|extension| extension == &configuration.extension);
+            if !selected.contains(&configuration.extension)
+                || !configured.insert(configuration.extension.clone())
+                || position
+                    .is_none_or(|position| last_position.is_some_and(|last| position <= last))
+            {
+                return Err(Error::Conflict(
+                    "extension admission configuration is not uniquely selected".into(),
+                ));
+            }
+            last_position = position;
+        }
+        Ok(())
+    }
+}
+
+impl ExtensionConfiguration {
+    /// Validates the envelope independently of the installed schema.
+    pub fn validate(&self) -> Result<()> {
+        self.extension.validate()?;
+        if self.schema_digest == [0; 32]
+            || self.content.descriptor().media_type() != "application/json"
+        {
+            return Err(Error::Invalid("extension configuration is invalid".into()));
+        }
+        self.content.validate()
+    }
+}
+
+/// Immutable schema and implementation binding for one extension version.
+#[derive(Clone, Debug, PartialEq)]
+struct ExtensionBinding {
+    schema: Value,
+    schema_digest: [u8; 32],
+    implementation_digest: [u8; 32],
+    fork_policy: ExtensionForkPolicy,
+    dependencies: BTreeSet<ExtensionDependency>,
+    configuration_schema: Option<Value>,
+    configuration_schema_digest: Option<[u8; 32]>,
+}
+
+/// Immutable-version registry for namespaced extension implementations and state schemas.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SchemaRegistry {
-    schemas: BTreeMap<(String, u32), (Value, [u8; 32])>,
+    schemas: BTreeMap<(String, u32), ExtensionBinding>,
 }
 
 impl SchemaRegistry {
@@ -637,52 +1148,272 @@ impl SchemaRegistry {
     }
 
     /// Registers one immutable namespaced JSON Schema version.
-    pub fn register(&mut self, name: impl Into<String>, version: u32, schema: Value) -> Result<()> {
+    pub fn register(
+        &mut self,
+        name: impl Into<String>,
+        version: u32,
+        schema: Value,
+        implementation_digest: [u8; 32],
+        fork_policy: ExtensionForkPolicy,
+    ) -> Result<()> {
+        self.register_with_dependencies(
+            name,
+            version,
+            schema,
+            implementation_digest,
+            fork_policy,
+            [],
+        )
+    }
+
+    /// Installs one immutable version and its exact dependency edges. Missing
+    /// dependencies may be installed later, but activation must resolve its
+    /// selected roots and cannot accept a missing, conflicting, or cyclic graph.
+    pub fn register_with_dependencies(
+        &mut self,
+        name: impl Into<String>,
+        version: u32,
+        schema: Value,
+        implementation_digest: [u8; 32],
+        fork_policy: ExtensionForkPolicy,
+        dependencies: impl IntoIterator<Item = ExtensionDependency>,
+    ) -> Result<()> {
+        self.register_configured(
+            name,
+            version,
+            schema,
+            implementation_digest,
+            fork_policy,
+            dependencies,
+            None,
+        )
+    }
+
+    /// Installs a version with a separately validated, file-backed configuration.
+    /// `None` declares that activation requires no configuration.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one immutable extension declaration"
+    )]
+    pub fn register_configured(
+        &mut self,
+        name: impl Into<String>,
+        version: u32,
+        schema: Value,
+        implementation_digest: [u8; 32],
+        fork_policy: ExtensionForkPolicy,
+        dependencies: impl IntoIterator<Item = ExtensionDependency>,
+        configuration_schema: Option<Value>,
+    ) -> Result<()> {
         let name = name.into();
-        if !name.contains('.') || name.starts_with("acyclic.") || version == 0 {
+        validate_extension_name(&name)?;
+        if version == 0 || implementation_digest == [0; 32] {
             return Err(Error::Invalid(
-                "extension schema requires a non-reserved namespaced name and positive version"
-                    .into(),
+                "extension binding needs a namespaced name, positive version, and implementation digest".into(),
             ));
         }
         jsonschema::validator_for(&schema)
             .map_err(|error| Error::Invalid(format!("invalid JSON Schema: {error}")))?;
-        let digest = json_digest(&schema)?;
+        if let Some(configuration_schema) = &configuration_schema {
+            jsonschema::validator_for(configuration_schema).map_err(|error| {
+                Error::Invalid(format!("invalid configuration JSON Schema: {error}"))
+            })?;
+        }
+        let mut required = BTreeSet::new();
+        for dependency in dependencies {
+            dependency.validate()?;
+            if dependency.name == name && dependency.version == version {
+                return Err(Error::Conflict("extension depends on itself".into()));
+            }
+            if !required.insert(dependency) {
+                return Err(Error::Conflict("duplicate extension dependency".into()));
+            }
+        }
+        let binding = ExtensionBinding {
+            schema_digest: json_digest(&schema)?,
+            schema,
+            implementation_digest,
+            fork_policy,
+            dependencies: required,
+            configuration_schema_digest: configuration_schema
+                .as_ref()
+                .map(json_digest)
+                .transpose()?,
+            configuration_schema,
+        };
         let key = (name, version);
-        if let Some((existing, _)) = self.schemas.get(&key) {
-            return if existing == &schema {
+        if let Some(existing) = self.schemas.get(&key) {
+            return if existing == &binding {
                 Ok(())
             } else {
                 Err(Error::Conflict(
-                    "schema identity is already pinned to another definition".into(),
+                    "extension identity is already pinned to another implementation".into(),
                 ))
             };
         }
-        self.schemas.insert(key, (schema, digest));
+        self.schemas.insert(key, binding);
         Ok(())
     }
 
-    fn validate(
+    /// Resolves only selected versions and their transitive dependencies in
+    /// deterministic dependency-first order. Unselected installed versions
+    /// cannot force an activation or make a valid selection fail.
+    pub fn activation_order(
+        &self,
+        selected: impl IntoIterator<Item = ExtensionDependency>,
+    ) -> Result<Vec<ExtensionDependency>> {
+        let mut chosen = BTreeMap::new();
+        let mut pending = selected.into_iter().collect::<Vec<_>>();
+        while let Some(extension) = pending.pop() {
+            extension.validate()?;
+            if let Some(version) = chosen.get(&extension.name) {
+                if *version != extension.version {
+                    return Err(Error::Conflict(format!(
+                        "extension {} requires conflicting versions",
+                        extension.name
+                    )));
+                }
+                continue;
+            }
+            let binding = self
+                .schemas
+                .get(&(extension.name.clone(), extension.version))
+                .ok_or_else(|| {
+                    Error::Unsupported(format!(
+                        "missing extension dependency {}@{}",
+                        extension.name, extension.version
+                    ))
+                })?;
+            chosen.insert(extension.name, extension.version);
+            pending.extend(binding.dependencies.iter().cloned());
+        }
+        let mut remaining = BTreeMap::new();
+        let mut dependents: BTreeMap<ExtensionDependency, Vec<ExtensionDependency>> =
+            BTreeMap::new();
+        for (name, version) in chosen {
+            let binding = self
+                .schemas
+                .get(&(name.clone(), version))
+                .ok_or_else(|| Error::Storage("selected extension binding disappeared".into()))?;
+            let extension = ExtensionDependency { name, version };
+            for dependency in &binding.dependencies {
+                dependents
+                    .entry(dependency.clone())
+                    .or_default()
+                    .push(extension.clone());
+            }
+            remaining.insert(extension, binding.dependencies.len());
+        }
+        let mut ready = remaining
+            .iter()
+            .filter_map(|(extension, count)| (*count == 0).then_some(extension.clone()))
+            .collect::<BTreeSet<_>>();
+        let mut order = Vec::with_capacity(remaining.len());
+        while let Some(extension) = ready.pop_first() {
+            order.push(extension.clone());
+            if let Some(children) = dependents.get(&extension) {
+                for child in children {
+                    let count = remaining.get_mut(child).ok_or_else(|| {
+                        Error::Storage("extension dependency graph changed".into())
+                    })?;
+                    *count -= 1;
+                    if *count == 0 {
+                        ready.insert(child.clone());
+                    }
+                }
+            }
+        }
+        if order.len() != remaining.len() {
+            return Err(Error::Conflict("extension dependency cycle".into()));
+        }
+        Ok(order)
+    }
+
+    fn pinned_binding(
         &self,
         name: &str,
         version: u32,
-        digest: Option<[u8; 32]>,
-        value: &Value,
-    ) -> Result<[u8; 32]> {
-        let (schema, registered_digest) = self
+        expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
+    ) -> Result<&ExtensionBinding> {
+        let binding = self
             .schemas
             .get(&(name.to_owned(), version))
-            .ok_or_else(|| Error::Unsupported(format!("extension schema {name}@{version}")))?;
-        if digest.is_some_and(|actual| actual != *registered_digest) {
-            return Err(Error::Conflict("extension schema digest mismatch".into()));
+            .ok_or_else(|| {
+                Error::Unsupported(format!("extension implementation {name}@{version}"))
+            })?;
+        if expected.is_some_and(|(schema, implementation, policy)| {
+            schema != binding.schema_digest
+                || implementation != binding.implementation_digest
+                || policy != binding.fork_policy
+        }) {
+            return Err(Error::Conflict("extension binding mismatch".into()));
         }
-        jsonschema::validator_for(schema)
+        Ok(binding)
+    }
+
+    fn validate_bytes(
+        &self,
+        name: &str,
+        version: u32,
+        content: &FileRef,
+        bytes: &[u8],
+    ) -> Result<()> {
+        content.validate()?;
+        if content.descriptor().media_type() != "application/json" {
+            return Err(Error::Invalid("extension content must be JSON".into()));
+        }
+        content.descriptor().verify(bytes)?;
+        let value: Value = serde_json::from_slice(bytes)
+            .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
+        let binding = self.pinned_binding(name, version, None)?;
+        jsonschema::validator_for(&binding.schema)
             .map_err(|error| Error::Invalid(format!("invalid registered JSON Schema: {error}")))?
-            .validate(value)
+            .validate(&value)
             .map_err(|error| {
                 Error::Invalid(format!("extension payload failed validation: {error}"))
             })?;
-        Ok(*registered_digest)
+        Ok(())
+    }
+
+    fn configuration_record(
+        &self,
+        extension: &ExtensionDependency,
+        content: &FileRef,
+    ) -> Result<ExtensionConfiguration> {
+        extension.validate()?;
+        let binding = self.pinned_binding(&extension.name, extension.version, None)?;
+        let schema_digest = binding
+            .configuration_schema_digest
+            .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
+        let record = ExtensionConfiguration {
+            extension: extension.clone(),
+            schema_digest,
+            content: content.clone(),
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    fn validate_configuration_bytes(
+        &self,
+        extension: &ExtensionDependency,
+        content: &FileRef,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let record = self.configuration_record(extension, content)?;
+        record.content.descriptor().verify(bytes)?;
+        let value: Value = serde_json::from_slice(bytes).map_err(|error| {
+            Error::Invalid(format!("extension configuration is not JSON: {error}"))
+        })?;
+        let binding = self.pinned_binding(&extension.name, extension.version, None)?;
+        let schema = binding
+            .configuration_schema
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
+        jsonschema::validator_for(schema)
+            .map_err(|error| Error::Invalid(format!("invalid configuration schema: {error}")))?
+            .validate(&value)
+            .map_err(|error| Error::Invalid(format!("configuration failed validation: {error}")))
     }
 }
 
@@ -694,11 +1425,18 @@ pub struct Reducer {
     schemas: SchemaRegistry,
     revision: u64,
     lifecycle: LifecycleState,
+    active_extensions: Vec<ExtensionDependency>,
+    extension_states: BTreeMap<String, (EventReference, ExtensionRecord)>,
+    configured_extensions: BTreeMap<ExtensionDependency, ExtensionConfiguration>,
+    active_configurations: Vec<ExtensionConfiguration>,
     events: Vec<Event>,
     operation_intents: BTreeMap<OperationId, ([u8; 32], Event)>,
     effects: BTreeMap<EffectId, EffectState>,
-    interactions: BTreeMap<InteractionId, InteractionState>,
-    forks: BTreeMap<Authority, ForkManifest>,
+    forks: BTreeMap<Authority, ForkSeed>,
+    published_merges: BTreeSet<(String, Vec<u8>)>,
+    conversation: ConversationState,
+    context_selections: Vec<ModelContextSelection>,
+    interactions: BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>,
 }
 
 impl Reducer {
@@ -715,11 +1453,18 @@ impl Reducer {
             schemas,
             revision: 0,
             lifecycle: LifecycleState::Pending,
+            active_extensions: Vec::new(),
+            extension_states: BTreeMap::new(),
+            configured_extensions: BTreeMap::new(),
+            active_configurations: Vec::new(),
             events: Vec::new(),
             operation_intents: BTreeMap::new(),
             effects: BTreeMap::new(),
-            interactions: BTreeMap::new(),
             forks: BTreeMap::new(),
+            published_merges: BTreeSet::new(),
+            conversation: ConversationState::default(),
+            context_selections: Vec::new(),
+            interactions: BTreeMap::new(),
         }
     }
 
@@ -735,10 +1480,201 @@ impl Reducer {
         self.revision
     }
 
+    /// Validates exact staged extension bytes at the provider admission boundary.
+    pub fn validate_custom_bytes(
+        &self,
+        schema: &str,
+        version: u32,
+        content: &FileRef,
+        bytes: &[u8],
+    ) -> Result<()> {
+        self.schemas.validate_bytes(schema, version, content, bytes)
+    }
+
+    /// Exact installed implementation that must execute a state migration
+    /// into this extension version. A staged target ref alone proves no code ran.
+    pub fn extension_implementation_digest(&self, name: &str, version: u32) -> Result<[u8; 32]> {
+        Ok(self
+            .schemas
+            .pinned_binding(name, version, None)?
+            .implementation_digest)
+    }
+
+    /// Authenticates and checks the exact migration boundary before a host
+    /// reads old state or stages new bytes. Event planning repeats these
+    /// checks at publication to close races with another aggregate writer.
+    pub(crate) fn preflight_extension_migration(
+        &self,
+        scope: &Scope,
+        expected_revision: u64,
+        previous: &EventReference,
+        name: &str,
+        to_version: u32,
+        destination: &VolumeRef,
+    ) -> Result<()> {
+        self.authority_verifier.verify_audience(&self.authority)?;
+        self.authority_verifier.verify(scope)?;
+        require_capability(scope, "extension:migrate")?;
+        ContentGrant::verify(
+            &self.authority_verifier,
+            scope,
+            destination,
+            VolumeOperation::Write,
+        )?;
+        if expected_revision != self.revision {
+            return Err(Error::Conflict(
+                "extension migration revision changed".into(),
+            ));
+        }
+        let (source, current) = self
+            .extension_states
+            .get(name)
+            .ok_or_else(|| Error::NotFound(format!("extension state {name}")))?;
+        if source != previous
+            || previous.authority != self.authority
+            || current.version == to_version
+        {
+            return Err(Error::Conflict(
+                "extension migration source or target is not exact".into(),
+            ));
+        }
+        self.schemas.pinned_binding(name, to_version, None)?;
+        Ok(())
+    }
+
+    /// Validates staged configuration bytes before an event can be admitted.
+    pub fn validate_configuration_bytes(
+        &self,
+        extension: &ExtensionDependency,
+        content: &FileRef,
+        bytes: &[u8],
+    ) -> Result<()> {
+        self.schemas
+            .validate_configuration_bytes(extension, content, bytes)
+    }
+
     /// Returns the fixed aggregate lifecycle projection.
     #[must_use]
     pub const fn lifecycle(&self) -> LifecycleState {
         self.lifecycle
+    }
+
+    /// Dependency-first extension versions selected for new agent admissions.
+    #[must_use]
+    pub fn active_extensions(&self) -> &[ExtensionDependency] {
+        &self.active_extensions
+    }
+
+    /// Latest retained state event for one namespace. Earlier revisions stay
+    /// in canonical history and admitted tasks keep their pinned references.
+    #[must_use]
+    pub fn extension_state(&self, name: &str) -> Option<&(EventReference, ExtensionRecord)> {
+        self.extension_states.get(name)
+    }
+
+    /// Exact configuration revisions pinned by the most recent activation.
+    #[must_use]
+    pub fn active_configurations(&self) -> &[ExtensionConfiguration] {
+        &self.active_configurations
+    }
+
+    /// Captures the last committed activation for immutable task admission.
+    /// `None` means this agent has never activated extensions.
+    pub fn extension_admission(&self) -> Result<Option<ExtensionAdmission>> {
+        if self.authority.kind != AggregateKind::Agent {
+            return Err(Error::Invalid(
+                "extension admission requires an agent aggregate".into(),
+            ));
+        }
+        let Some(event) = self
+            .events
+            .iter()
+            .rev()
+            .find(|event| matches!(&event.payload, EventPayload::ExtensionsSelected { .. }))
+        else {
+            return Ok(None);
+        };
+        let admission = ExtensionAdmission {
+            source: EventReference {
+                authority: self.authority.clone(),
+                revision: event.revision,
+            },
+            selected: self.active_extensions.clone(),
+            configurations: self.active_configurations.clone(),
+        };
+        admission.validate()?;
+        Ok(Some(admission))
+    }
+
+    fn selected_configurations(
+        &self,
+        selected: &[ExtensionDependency],
+    ) -> Result<Vec<ExtensionConfiguration>> {
+        let mut configurations = Vec::new();
+        for extension in selected {
+            let binding = self
+                .schemas
+                .pinned_binding(&extension.name, extension.version, None)?;
+            if binding.configuration_schema.is_some() {
+                configurations.push(
+                    self.configured_extensions
+                        .get(extension)
+                        .cloned()
+                        .ok_or_else(|| {
+                            Error::Conflict(format!(
+                                "extension {}@{} is not configured",
+                                extension.name, extension.version
+                            ))
+                        })?,
+                );
+            }
+        }
+        Ok(configurations)
+    }
+
+    /// Returns the built-in conversation projection for conversation aggregates.
+    #[must_use]
+    pub fn conversation(&self) -> Option<&ConversationState> {
+        (self.authority.kind == AggregateKind::Conversation).then_some(&self.conversation)
+    }
+
+    /// Returns revision-pinned model context selections in admission order.
+    #[must_use]
+    pub fn context_selections(&self) -> &[ModelContextSelection] {
+        &self.context_selections
+    }
+
+    /// Returns the exact selection committed for one operation, even after
+    /// later conversation messages changed the aggregate's current tail.
+    #[must_use]
+    pub fn context_selection_for_operation(
+        &self,
+        operation_id: OperationId,
+    ) -> Option<&ModelContextSelection> {
+        self.operation_intents
+            .get(&operation_id)
+            .and_then(|(_, event)| match &event.payload {
+                EventPayload::ModelContextSelected { selection } => Some(selection),
+                _ => None,
+            })
+    }
+
+    /// Exact aggregate revision committed for a stable operation identity.
+    /// Hosts use it to reconstruct the original CAS command on a lost-ack retry.
+    #[must_use]
+    pub fn operation_revision(&self, operation_id: OperationId) -> Option<u64> {
+        self.operation_intents
+            .get(&operation_id)
+            .map(|(_, event)| event.revision)
+    }
+
+    /// Returns the exact admitted request and its optional terminal resolution.
+    #[must_use]
+    pub fn interaction(
+        &self,
+        id: &uuid::Uuid,
+    ) -> Option<&(InteractionTicket, Option<InteractionResolution>)> {
+        self.interactions.get(id)
     }
 
     /// Applies one deterministic command.
@@ -762,8 +1698,32 @@ impl Reducer {
     /// Hosts append the returned event to Stream and call [`Self::apply_committed`]
     /// only after the append is known to have committed.
     pub fn plan(&self, command: &Command) -> Result<ApplyResult> {
+        self.plan_with_migration_boundary(command, false)
+    }
+
+    /// Provider admission has verified residency and independently executed
+    /// the exact pinned migration before requesting a publishable event.
+    pub(crate) fn plan_verified_migration(&self, command: &Command) -> Result<ApplyResult> {
+        if !matches!(&command.action, Action::MigrateExtensionState { .. }) {
+            return Err(Error::Invalid(
+                "verified migration planner requires a migration action".into(),
+            ));
+        }
+        self.plan_with_migration_boundary(command, true)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one deterministic admission transition"
+    )]
+    fn plan_with_migration_boundary(
+        &self,
+        command: &Command,
+        migration_verified: bool,
+    ) -> Result<ApplyResult> {
         self.authority_verifier.verify_audience(&self.authority)?;
         IdempotencyKey::new(command.idempotency_key.0.clone())?;
+        self.authority_verifier.verify(&command.scope)?;
         let intent = canonical_intent(command)?;
         if let Some((existing_intent, event)) = self.operation_intents.get(&command.operation_id) {
             if existing_intent == &intent {
@@ -781,8 +1741,27 @@ impl Reducer {
                 command.expected_revision, self.revision
             )));
         }
-        self.authority_verifier.verify(&command.scope)?;
         require_capability(&command.scope, command.action.required_capability())?;
+        if let Action::MigrateExtensionState { content, .. } = &command.action {
+            ContentGrant::verify(
+                &self.authority_verifier,
+                &command.scope,
+                content.volume(),
+                VolumeOperation::Write,
+            )?;
+            if !migration_verified {
+                return Err(Error::Unsupported(
+                    "extension migration requires an executing content-admission host".into(),
+                ));
+            }
+        }
+        if let Action::BindConversation { agent } = &command.action
+            && command.scope.agent().is_some_and(|acting| acting != *agent)
+        {
+            return Err(Error::Unauthorized(
+                "conversation binding does not match the authenticated agent".into(),
+            ));
+        }
         match &command.action {
             Action::PlanEffect { .. } => require_capability(&command.scope, "effect:plan")?,
             Action::MarkEffectDispatched { effect_id, .. } => {
@@ -805,16 +1784,41 @@ impl Reducer {
                     &format!("effect:provider:{}", effect.provider),
                 )?;
             }
+            Action::ResolveInteraction { resolution } => {
+                validate_interaction_operation(resolution, command.operation_id)?;
+                let (ticket, _) = self
+                    .interactions
+                    .get(&resolution.id)
+                    .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+                require_capability(&command.scope, &ticket.responder_grant())?;
+            }
             _ => {}
         }
-        if let Action::PublishFork { manifest } = &command.action
-            && (manifest.validate().is_err()
-                || manifest.operation_id != command.operation_id
-                || manifest.parent != self.authority
-                || manifest.parent_revision != self.revision)
+        if let Action::PublishFork { seed } = &command.action {
+            if self.conversation.agent.is_none() || command.scope.agent() != self.conversation.agent
+            {
+                return Err(Error::Unauthorized(
+                    "fork must be published by the parent agent".into(),
+                ));
+            }
+            if seed.validate().is_err()
+                || seed.operation_id != command.operation_id
+                || seed.parent != self.authority
+                || seed.parent_revision != self.revision
+                || self.validate_fork_reference_ownership(seed).is_err()
+            {
+                return Err(Error::Invalid(
+                    "fork manifest is not bound to its command and parent revision".into(),
+                ));
+            }
+            self.require_fresh_fork(seed)?;
+        }
+        if let Action::PublishProjectMerge { receipt } = &command.action
+            && (receipt.operation_id != command.operation_id
+                || command.scope.agent() != self.conversation.agent)
         {
-            return Err(Error::Invalid(
-                "fork manifest is not bound to its command and parent revision".into(),
+            return Err(Error::Unauthorized(
+                "merge receipt is not bound to the parent agent and operation".into(),
             ));
         }
         validate_causal_parent(
@@ -827,14 +1831,16 @@ impl Reducer {
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("aggregate revision exhausted".into()))?;
         let payload = self.transition(&command.action)?;
-        let event = Event {
+        let mut event = Event {
             revision,
             operation_id: command.operation_id,
             intent_digest: intent,
-            scope: command.scope.clone(),
+            scope: RecordedScope::from_scope(&command.scope),
+            attestation: [0; 32],
             causal_parent: command.causal_parent.clone(),
             payload,
         };
+        event.attestation = self.authority_verifier.attest_event(&event)?;
         Ok(ApplyResult::Applied { event })
     }
 
@@ -861,18 +1867,18 @@ impl Reducer {
                 event.revision
             )));
         }
-        self.authority_verifier.verify(&event.scope)?;
-        require_capability(&event.scope, event.payload.required_capability())?;
+        self.authority_verifier.verify_event(&event)?;
+        require_recorded_capability(&event.scope, event.payload.required_capability())?;
         match &event.payload {
             EventPayload::EffectPlanned { .. } => {
-                require_capability(&event.scope, "effect:plan")?;
+                require_recorded_capability(&event.scope, "effect:plan")?;
             }
             EventPayload::EffectDispatched { effect_id, .. } => {
                 let effect = self
                     .effects
                     .get(effect_id)
                     .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
-                require_capability(
+                require_recorded_capability(
                     &event.scope,
                     &format!("effect:provider:{}", effect.provider),
                 )?;
@@ -882,23 +1888,47 @@ impl Reducer {
                     .effects
                     .get(&observation.effect_id)
                     .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
-                require_capability(
+                require_recorded_capability(
                     &event.scope,
                     &format!("effect:provider:{}", effect.provider),
                 )?;
             }
+            EventPayload::InteractionResolved { resolution } => {
+                validate_interaction_operation(resolution, event.operation_id)?;
+                let (ticket, _) = self
+                    .interactions
+                    .get(&resolution.id)
+                    .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+                require_recorded_capability(&event.scope, &ticket.responder_grant())?;
+            }
             _ => {}
         }
         validate_causal_parent(&self.authority, self.revision, event.causal_parent.as_ref())?;
-        if let EventPayload::ForkPublished { manifest } = &event.payload
-            && (manifest.validate().is_err()
-                || manifest.operation_id != event.operation_id
-                || manifest.parent != self.authority
-                || manifest.parent_revision != self.revision)
+        if matches!(&event.payload, EventPayload::ForkPublished { .. })
+            && (self.conversation.agent.is_none() || event.scope.agent() != self.conversation.agent)
+        {
+            return Err(Error::Unauthorized(
+                "fork was not published by the parent agent".into(),
+            ));
+        }
+        if let EventPayload::ForkPublished { seed } = &event.payload
+            && (seed.validate().is_err()
+                || seed.operation_id != event.operation_id
+                || seed.parent != self.authority
+                || seed.parent_revision != self.revision
+                || self.validate_fork_reference_ownership(seed).is_err())
         {
             return Err(Error::Invalid("fork event binding is invalid".into()));
         }
-        self.apply_payload(&event.payload)?;
+        if let EventPayload::ProjectMergePublished { receipt } = &event.payload
+            && (receipt.operation_id != event.operation_id
+                || event.scope.agent() != self.conversation.agent)
+        {
+            return Err(Error::Unauthorized(
+                "project merge was not published by the parent agent".into(),
+            ));
+        }
+        self.apply_payload(&event.payload, event.revision)?;
         self.revision = event.revision;
         self.events.push(event.clone());
         self.operation_intents
@@ -926,22 +1956,250 @@ impl Reducer {
         self.effects.get(&effect_id)
     }
 
-    /// Returns an interaction's current projection.
-    #[must_use]
-    pub fn interaction(&self, interaction_id: InteractionId) -> Option<&InteractionState> {
-        self.interactions.get(&interaction_id)
-    }
-
     /// Returns a child only after its publication event committed.
     #[must_use]
-    pub fn fork(&self, child: &Authority) -> Option<&ForkManifest> {
+    pub fn fork(&self, child: &Authority) -> Option<&ForkSeed> {
         self.forks.get(child)
+    }
+
+    /// Published child seeds at this exact immutable reducer revision.
+    pub fn published_forks(&self) -> impl Iterator<Item = &ForkSeed> {
+        self.forks.values()
+    }
+
+    fn require_fresh_fork(&self, seed: &ForkSeed) -> Result<()> {
+        let child_project = seed.resources.iter().find_map(|resource| {
+            if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.revision {
+                Some(volume)
+            } else {
+                None
+            }
+        });
+        if seed.child == self.authority
+            || self.forks.contains_key(&seed.child)
+            || self.forks.values().any(|prior| {
+                prior.child_agent == seed.child_agent
+                    || prior.child_private_volume == seed.child_private_volume
+                    || prior.resources.iter().any(|resource| {
+                        matches!(
+                            (&resource.revision, child_project),
+                            (
+                                crate::fork::ResourceRevision::Project { volume, .. },
+                                Some(child_project)
+                            ) if volume == child_project
+                        )
+                    })
+            })
+        {
+            Err(Error::Conflict("invalid fork publication".into()))
+        } else {
+            Ok(())
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fork publication checks one complete seed"
+    )]
+    fn validate_fork_reference_ownership(&self, seed: &ForkSeed) -> Result<()> {
+        let inherited_count = usize::try_from(seed.inherited_through_sequence)
+            .map_err(|_| Error::Invalid("inherited conversation prefix is too large".into()))?;
+        let parent_agent = self
+            .conversation
+            .agent
+            .ok_or_else(|| Error::Conflict("fork parent conversation is unbound".into()))?;
+        if seed.child_agent == parent_agent {
+            return Err(Error::Invalid(
+                "fork child must have a distinct agent identity".into(),
+            ));
+        }
+        if seed.inherited_through_sequence > self.conversation.messages.len() as u64 {
+            return Err(Error::Invalid(
+                "fork inherited prefix exceeds parent conversation".into(),
+            ));
+        }
+        let materialized = seed
+            .inherited_context
+            .iter()
+            .find(|file| file.path() == ".system/inherited-conversation/prefix.json");
+        if seed.inherited_through_sequence > 0 && materialized.is_none() {
+            return Err(Error::Invalid(
+                "fork omitted its inherited conversation prefix".into(),
+            ));
+        }
+        if let Some(file) = materialized {
+            let prefix = InheritedConversationPrefix::select(
+                self.authority.clone(),
+                self.revision,
+                parent_agent,
+                seed.inherited_through_sequence,
+                &seed.attached_agents,
+                &self.conversation.messages,
+            )?;
+            let bytes = prefix.canonical_bytes()?;
+            let expected = FileDescriptor::from_bytes(
+                &bytes,
+                "application/vnd.acyclic.harness.inherited-conversation+json",
+            )?;
+            if file.descriptor() != &expected
+                || file.display_name() != "inherited-conversation.json"
+            {
+                return Err(Error::Invalid(
+                    "inherited conversation differs from authoritative parent history".into(),
+                ));
+            }
+        }
+        let mut published_refs = std::collections::BTreeMap::new();
+        let mut published_manifests = std::collections::BTreeSet::new();
+        for message in self.conversation.messages.iter().take(inherited_count) {
+            let mut retain = |file: &crate::conversation::FileRef| -> Result<()> {
+                published_refs.insert(file.read_capability()?, file.clone());
+                Ok(())
+            };
+            retain(&message.content)?;
+            match &message.attachments {
+                crate::conversation::ReferencedAttachments::Inline { items } => {
+                    for item in items {
+                        retain(&item.file)?;
+                    }
+                }
+                crate::conversation::ReferencedAttachments::Manifest { manifest, .. } => {
+                    published_manifests.insert(manifest.read_capability()?);
+                    retain(manifest)?;
+                }
+            }
+            for file in message.extensions.values() {
+                retain(file)?;
+            }
+        }
+        let selected_manifests = seed
+            .attachment_manifests
+            .iter()
+            .map(crate::conversation::FileRef::read_capability)
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        if selected_manifests != published_manifests {
+            return Err(Error::Invalid(
+                "fork attachment manifests do not match the parent transcript".into(),
+            ));
+        }
+        let granted = seed
+            .reference_grants
+            .iter()
+            .map(|grant| Ok((grant.capability()?, grant.reader)))
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        for reader in std::iter::once(seed.child_agent).chain(seed.attached_agents.iter().copied())
+        {
+            for (capability, file) in &published_refs {
+                if file.volume().class() == crate::conversation::VolumeClass::AgentPrivate
+                    && file.volume().owner() == &crate::conversation::VolumeOwner::Agent(reader)
+                {
+                    continue;
+                }
+                if !granted.contains(&(capability.clone(), reader)) {
+                    return Err(Error::Invalid(
+                        "fork omits a published reference grant".into(),
+                    ));
+                }
+            }
+        }
+        for grant in &seed.reference_grants {
+            let file = &grant.file;
+            if file.volume() == &seed.child_private_volume {
+                if grant.attachment_manifest.is_some() || !seed.inherited_context.contains(file) {
+                    return Err(Error::Invalid(
+                        "fork reference is not inherited context".into(),
+                    ));
+                }
+            } else if file.volume().owner()
+                == &crate::conversation::VolumeOwner::Agent(parent_agent)
+                || seed.resources.iter().any(|capture| match &capture.source {
+                    crate::fork::ResourceRevision::Project { volume, .. }
+                    | crate::fork::ResourceRevision::SharedVolume(volume) => {
+                        volume == file.volume()
+                    }
+                    _ => false,
+                })
+            {
+                let published =
+                    self.conversation
+                        .messages
+                        .iter()
+                        .take(inherited_count)
+                        .any(|message| {
+                            message.content == *file
+                                || match &message.attachments {
+                                    crate::conversation::ReferencedAttachments::Inline {
+                                        items,
+                                    } => items.iter().any(|item| item.file == *file),
+                                    crate::conversation::ReferencedAttachments::Manifest {
+                                        manifest,
+                                        ..
+                                    } => manifest == file,
+                                }
+                                || message.extensions.values().any(|value| value == file)
+                        });
+                match &grant.attachment_manifest {
+                    None if !published => {
+                        return Err(Error::Invalid(
+                            "fork reference was not published by parent".into(),
+                        ));
+                    }
+                    Some(manifest)
+                        if !published_manifests.contains(&manifest.read_capability()?) =>
+                    {
+                        return Err(Error::Invalid(
+                            "fork reference manifest is not a published attachment list".into(),
+                        ));
+                    }
+                    _ => {}
+                }
+            } else {
+                return Err(Error::Unauthorized(
+                    "fork cannot delegate another owner's file".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_extension_fork(&self, seed: &ForkSeed) -> Result<()> {
+        for capture in &seed.resources {
+            if let crate::fork::ResourceRevision::Extension {
+                name,
+                version,
+                implementation_digest,
+                ..
+            } = &capture.revision
+            {
+                let binding = self.schemas.pinned_binding(name, *version, None)?;
+                if binding.implementation_digest != *implementation_digest {
+                    return Err(Error::Conflict(
+                        "fork extension implementation mismatch".into(),
+                    ));
+                }
+                match binding.fork_policy {
+                    ExtensionForkPolicy::Inherit if capture.source == capture.revision => {}
+                    ExtensionForkPolicy::Reset if capture.source != capture.revision => {}
+                    ExtensionForkPolicy::Reject => {
+                        return Err(Error::Unsupported(format!(
+                            "extension {name}@{version} cannot be forked"
+                        )));
+                    }
+                    _ => {
+                        return Err(Error::Conflict(format!(
+                            "extension {name}@{version} capture violates its fork policy"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Creates a portable, integrity-checked restoration accelerator.
     pub fn snapshot(&self) -> Result<Snapshot> {
         let mut snapshot = Snapshot {
-            format_version: 1,
+            format_version: 2,
             authority: self.authority.clone(),
             revision: self.revision,
             events: self.events.clone(),
@@ -957,7 +2215,7 @@ impl Reducer {
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
     ) -> Result<Self> {
-        if snapshot.format_version != 1 {
+        if snapshot.format_version != 2 {
             return Err(Error::Unsupported(format!(
                 "snapshot format {}",
                 snapshot.format_version
@@ -998,14 +2256,120 @@ impl Reducer {
             Action::AppendCustom {
                 schema,
                 version,
-                value,
+                content,
             } => {
-                let schema_digest = self.schemas.validate(schema, *version, None, value)?;
-                Ok(EventPayload::Custom {
-                    schema: schema.clone(),
+                if self
+                    .extension_states
+                    .get(schema)
+                    .is_some_and(|(_, current)| current.version != *version)
+                {
+                    return Err(Error::Conflict(
+                        "extension state version change requires migration".into(),
+                    ));
+                }
+                content.validate()?;
+                if content.descriptor().media_type() != "application/json" {
+                    return Err(Error::Invalid("extension content must be JSON".into()));
+                }
+                let binding = self.schemas.pinned_binding(schema, *version, None)?;
+                let record = ExtensionRecord {
+                    name: schema.clone(),
                     version: *version,
-                    schema_digest,
-                    value: value.clone(),
+                    schema_digest: binding.schema_digest,
+                    implementation_digest: binding.implementation_digest,
+                    fork_policy: binding.fork_policy,
+                    content: content.clone(),
+                };
+                record.validate()?;
+                Ok(EventPayload::Custom { record })
+            }
+            Action::MigrateExtensionState {
+                name,
+                previous,
+                to_version,
+                content,
+            } => {
+                let (source, current) = self
+                    .extension_states
+                    .get(name)
+                    .ok_or_else(|| Error::NotFound(format!("extension state {name}")))?;
+                if source != previous
+                    || previous.authority != self.authority
+                    || current.version == *to_version
+                {
+                    return Err(Error::Conflict(
+                        "extension migration source or target is not exact".into(),
+                    ));
+                }
+                let binding = self.schemas.pinned_binding(name, *to_version, None)?;
+                let record = ExtensionRecord {
+                    name: name.clone(),
+                    version: *to_version,
+                    schema_digest: binding.schema_digest,
+                    implementation_digest: binding.implementation_digest,
+                    fork_policy: binding.fork_policy,
+                    content: content.clone(),
+                };
+                record.validate()?;
+                Ok(EventPayload::ExtensionStateMigrated {
+                    migration: ExtensionStateMigration {
+                        previous: previous.clone(),
+                        record,
+                    },
+                })
+            }
+            Action::SelectExtensions { roots } => {
+                if self.authority.kind != AggregateKind::Agent {
+                    return Err(Error::Invalid(
+                        "extension selection requires an agent aggregate".into(),
+                    ));
+                }
+                if !matches!(
+                    self.lifecycle,
+                    LifecycleState::Pending | LifecycleState::Waiting
+                ) {
+                    return Err(Error::Conflict(
+                        "extension selection requires a pending or waiting agent".into(),
+                    ));
+                }
+                let selected = self.schemas.activation_order(roots.iter().cloned())?;
+                for extension in &selected {
+                    if self
+                        .extension_states
+                        .get(&extension.name)
+                        .is_some_and(|(_, state)| state.version != extension.version)
+                    {
+                        return Err(Error::Conflict(format!(
+                            "extension {} state must migrate before activation",
+                            extension.name
+                        )));
+                    }
+                }
+                let configurations = self.selected_configurations(&selected)?;
+                Ok(EventPayload::ExtensionsSelected {
+                    previous: self.active_extensions.clone(),
+                    selected,
+                    configurations,
+                })
+            }
+            Action::ConfigureExtension { extension, content } => {
+                if self.authority.kind != AggregateKind::Agent {
+                    return Err(Error::Invalid(
+                        "extension configuration requires an agent aggregate".into(),
+                    ));
+                }
+                if !matches!(
+                    self.lifecycle,
+                    LifecycleState::Pending | LifecycleState::Waiting
+                ) {
+                    return Err(Error::Conflict(
+                        "extension configuration requires a pending or waiting agent".into(),
+                    ));
+                }
+                let record = self.schemas.configuration_record(extension, content)?;
+                Ok(EventPayload::ExtensionConfigured {
+                    previous: self.configured_extensions.get(extension).cloned(),
+                    record,
                 })
             }
             Action::PlanEffect {
@@ -1024,12 +2388,19 @@ impl Reducer {
                         "effect provider and kind must be non-empty".into(),
                     ));
                 }
+                request.validate()?;
+                if request.descriptor().media_type() != "application/json" {
+                    return Err(Error::Invalid("effect request must be JSON content".into()));
+                }
                 let request_digest =
                     effect_request_digest(provider, *guarantee, effect_kind, request)?;
-                jsonschema::validator_for(result_schema).map_err(|error| {
-                    Error::Invalid(format!("invalid effect result schema: {error}"))
-                })?;
-                let result_schema_digest = json_digest(result_schema)?;
+                result_schema.validate()?;
+                if result_schema.descriptor().media_type() != "application/schema+json" {
+                    return Err(Error::Invalid(
+                        "effect result schema must be JSON Schema content".into(),
+                    ));
+                }
+                let result_schema_digest = *result_schema.descriptor().sha256();
                 Ok(EventPayload::EffectPlanned {
                     effect_id: *effect_id,
                     provider: provider.clone(),
@@ -1089,53 +2460,103 @@ impl Reducer {
                 ) {
                     return Err(Error::Conflict("effect already has another result".into()));
                 }
-                validate_effect_result(&effect.result_schema, &observation.status)?;
+                validate_effect_result(&observation.status)?;
                 Ok(EventPayload::EffectResolved {
                     observation: observation.clone(),
                 })
             }
-            Action::OpenInteraction {
-                interaction_id,
-                interaction,
-            } => {
-                if self.interactions.contains_key(interaction_id) {
+            Action::PublishFork { seed } => {
+                seed.validate()?;
+                self.validate_fork_reference_ownership(seed)?;
+                self.validate_extension_fork(seed)?;
+                if self.forks.contains_key(&seed.child) {
+                    return Err(Error::Conflict("fork child is already published".into()));
+                }
+                Ok(EventPayload::ForkPublished { seed: seed.clone() })
+            }
+            Action::PublishProjectMerge { receipt } => {
+                self.require_conversation()?;
+                self.require_bound_conversation_if_applicable()?;
+                let seed = self
+                    .forks
+                    .get(&receipt.child)
+                    .ok_or_else(|| Error::NotFound("merge child was not published".into()))?;
+                receipt.validate(seed)?;
+                let key = (
+                    receipt.target_project.storage_name()?,
+                    receipt.provider_operation_id.clone(),
+                );
+                if self.published_merges.contains(&key) {
+                    return Err(Error::Conflict("project join was already published".into()));
+                }
+                let mut next = self.conversation.clone();
+                next.append(receipt.notice.clone())?;
+                Ok(EventPayload::ProjectMergePublished {
+                    receipt: receipt.clone(),
+                })
+            }
+            Action::BindConversation { agent } => {
+                self.require_conversation()?;
+                let mut next = self.conversation.clone();
+                next.bind(*agent)?;
+                Ok(EventPayload::ConversationBound { agent: *agent })
+            }
+            Action::AppendConversationMessage { message } => {
+                self.require_conversation()?;
+                let mut next = self.conversation.clone();
+                next.append((**message).clone())?;
+                Ok(EventPayload::ConversationMessageAppended {
+                    message: message.clone(),
+                })
+            }
+            Action::SelectModelContext { selection } => {
+                self.require_conversation()?;
+                selection.validate(&self.conversation)?;
+                Ok(EventPayload::ModelContextSelected {
+                    selection: selection.clone(),
+                })
+            }
+            Action::OpenInteraction { ticket } => {
+                self.require_bound_conversation_if_applicable()?;
+                ticket.validate()?;
+                if self.interactions.contains_key(&ticket.id) {
                     return Err(Error::Conflict(
                         "interaction identity already exists".into(),
                     ));
                 }
-                interaction.validate()?;
                 Ok(EventPayload::InteractionOpened {
-                    interaction_id: *interaction_id,
-                    interaction: interaction.clone(),
+                    ticket: ticket.clone(),
                 })
             }
-            Action::ResolveInteraction {
-                interaction_id,
-                response,
-            } => {
-                let state = self
+            Action::ResolveInteraction { resolution } => {
+                let (ticket, prior) = self
                     .interactions
-                    .get(interaction_id)
-                    .ok_or_else(|| Error::NotFound(format!("interaction {interaction_id}")))?;
-                if state.response.is_some() {
-                    return Err(Error::Conflict("interaction is already resolved".into()));
-                }
-                state.interaction.validate_response(response)?;
+                    .get(&resolution.id)
+                    .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+                validate_interaction_transition(ticket, prior.as_ref(), resolution)?;
                 Ok(EventPayload::InteractionResolved {
-                    interaction_id: *interaction_id,
-                    response: response.clone(),
-                })
-            }
-            Action::PublishFork { manifest } => {
-                manifest.validate()?;
-                if self.forks.contains_key(&manifest.child) {
-                    return Err(Error::Conflict("fork child is already published".into()));
-                }
-                Ok(EventPayload::ForkPublished {
-                    manifest: manifest.clone(),
+                    resolution: resolution.clone(),
                 })
             }
         }
+    }
+
+    fn require_conversation(&self) -> Result<()> {
+        if self.authority.kind != AggregateKind::Conversation {
+            return Err(Error::Invalid(
+                "conversation command targets another aggregate".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_bound_conversation_if_applicable(&self) -> Result<()> {
+        if self.authority.kind == AggregateKind::Conversation && self.conversation.agent.is_none() {
+            return Err(Error::Conflict(
+                "conversation is not bound to an agent".into(),
+            ));
+        }
+        Ok(())
     }
 
     #[allow(
@@ -1145,7 +2566,7 @@ impl Reducer {
                   would scatter one event's application across many functions without \
                   clarifying any of them"
     )]
-    fn apply_payload(&mut self, payload: &EventPayload) -> Result<()> {
+    fn apply_payload(&mut self, payload: &EventPayload, revision: u64) -> Result<()> {
         match payload {
             EventPayload::LifecycleTransitioned { from, to, .. } => {
                 if *from != self.lifecycle {
@@ -1154,14 +2575,121 @@ impl Reducer {
                 validate_lifecycle(*from, *to)?;
                 self.lifecycle = *to;
             }
-            EventPayload::Custom {
-                schema,
-                version,
-                schema_digest,
-                value,
+            EventPayload::Custom { record } => {
+                record.validate()?;
+                self.schemas.pinned_binding(
+                    &record.name,
+                    record.version,
+                    Some((
+                        record.schema_digest,
+                        record.implementation_digest,
+                        record.fork_policy,
+                    )),
+                )?;
+                if self
+                    .extension_states
+                    .get(&record.name)
+                    .is_some_and(|(_, current)| current.version != record.version)
+                {
+                    return Err(Error::Conflict(
+                        "extension state version change lacks migration".into(),
+                    ));
+                }
+                self.extension_states.insert(
+                    record.name.clone(),
+                    (
+                        EventReference {
+                            authority: self.authority.clone(),
+                            revision,
+                        },
+                        record.clone(),
+                    ),
+                );
+            }
+            EventPayload::ExtensionStateMigrated { migration } => {
+                migration.validate()?;
+                let ExtensionStateMigration { previous, record } = migration;
+                self.schemas.pinned_binding(
+                    &record.name,
+                    record.version,
+                    Some((
+                        record.schema_digest,
+                        record.implementation_digest,
+                        record.fork_policy,
+                    )),
+                )?;
+                let (source, current) = self
+                    .extension_states
+                    .get(&record.name)
+                    .ok_or_else(|| Error::NotFound(format!("extension state {}", record.name)))?;
+                if source != previous
+                    || previous.authority != self.authority
+                    || current.version == record.version
+                {
+                    return Err(Error::Conflict(
+                        "extension migration does not match retained state".into(),
+                    ));
+                }
+                self.extension_states.insert(
+                    record.name.clone(),
+                    (
+                        EventReference {
+                            authority: self.authority.clone(),
+                            revision,
+                        },
+                        record.clone(),
+                    ),
+                );
+            }
+            EventPayload::ExtensionsSelected {
+                previous,
+                selected,
+                configurations,
             } => {
-                self.schemas
-                    .validate(schema, *version, Some(*schema_digest), value)?;
+                if self.authority.kind != AggregateKind::Agent
+                    || !matches!(
+                        self.lifecycle,
+                        LifecycleState::Pending | LifecycleState::Waiting
+                    )
+                    || previous != &self.active_extensions
+                    || self
+                        .schemas
+                        .activation_order(selected.iter().cloned())?
+                        .as_slice()
+                        != selected.as_slice()
+                    || self.selected_configurations(selected)?.as_slice()
+                        != configurations.as_slice()
+                    || selected.iter().any(|extension| {
+                        self.extension_states
+                            .get(&extension.name)
+                            .is_some_and(|(_, state)| state.version != extension.version)
+                    })
+                {
+                    return Err(Error::Conflict(
+                        "extension activation does not match pinned agent state".into(),
+                    ));
+                }
+                self.active_extensions = selected.clone();
+                self.active_configurations = configurations.clone();
+            }
+            EventPayload::ExtensionConfigured { previous, record } => {
+                if self.authority.kind != AggregateKind::Agent
+                    || !matches!(
+                        self.lifecycle,
+                        LifecycleState::Pending | LifecycleState::Waiting
+                    )
+                    || self.configured_extensions.get(&record.extension) != previous.as_ref()
+                    || self
+                        .schemas
+                        .configuration_record(&record.extension, &record.content)?
+                        != *record
+                {
+                    return Err(Error::Conflict(
+                        "extension configuration does not match pinned agent state".into(),
+                    ));
+                }
+                self.configured_extensions
+                    .insert(record.extension.clone(), record.clone());
             }
             EventPayload::EffectPlanned {
                 effect_id,
@@ -1178,6 +2706,10 @@ impl Reducer {
                         "effect provider and kind must be non-empty".into(),
                     ));
                 }
+                request.validate()?;
+                if request.descriptor().media_type() != "application/json" {
+                    return Err(Error::Invalid("effect request must be JSON content".into()));
+                }
                 if self.effects.contains_key(effect_id) {
                     return Err(Error::Conflict("effect identity already exists".into()));
                 }
@@ -1186,10 +2718,10 @@ impl Reducer {
                 {
                     return Err(Error::Invalid("effect request digest mismatch".into()));
                 }
-                jsonschema::validator_for(result_schema).map_err(|error| {
-                    Error::Invalid(format!("invalid effect result schema: {error}"))
-                })?;
-                if *result_schema_digest != json_digest(result_schema)? {
+                result_schema.validate()?;
+                if result_schema.descriptor().media_type() != "application/schema+json"
+                    || *result_schema_digest != *result_schema.descriptor().sha256()
+                {
                     return Err(Error::Invalid(
                         "effect result schema digest mismatch".into(),
                     ));
@@ -1248,48 +2780,62 @@ impl Reducer {
                         "invalid effect resolution transition".into(),
                     ));
                 }
-                validate_effect_result(&effect.result_schema, &observation.status)?;
+                validate_effect_result(&observation.status)?;
                 effect.status = observation.status.clone();
             }
-            EventPayload::InteractionOpened {
-                interaction_id,
-                interaction,
-            } => {
-                interaction.validate()?;
-                if self.interactions.contains_key(interaction_id) {
+            EventPayload::ForkPublished { seed } => {
+                seed.validate()?;
+                self.validate_extension_fork(seed)?;
+                self.require_fresh_fork(seed)?;
+                self.forks.insert(seed.child.clone(), seed.as_ref().clone());
+            }
+            EventPayload::ProjectMergePublished { receipt } => {
+                self.require_conversation()?;
+                let seed = self
+                    .forks
+                    .get(&receipt.child)
+                    .ok_or_else(|| Error::NotFound("merge child was not published".into()))?;
+                receipt.validate(seed)?;
+                let key = (
+                    receipt.target_project.storage_name()?,
+                    receipt.provider_operation_id.clone(),
+                );
+                if self.published_merges.contains(&key) {
+                    return Err(Error::Conflict("project join was already published".into()));
+                }
+                self.conversation.append(receipt.notice.clone())?;
+                self.published_merges.insert(key);
+            }
+            EventPayload::ConversationBound { agent } => {
+                self.require_conversation()?;
+                self.conversation.bind(*agent)?;
+            }
+            EventPayload::ConversationMessageAppended { message } => {
+                self.require_conversation()?;
+                self.conversation.append((**message).clone())?;
+            }
+            EventPayload::ModelContextSelected { selection } => {
+                self.require_conversation()?;
+                selection.validate(&self.conversation)?;
+                self.context_selections.push(selection.clone());
+            }
+            EventPayload::InteractionOpened { ticket } => {
+                self.require_bound_conversation_if_applicable()?;
+                ticket.validate()?;
+                if self.interactions.contains_key(&ticket.id) {
                     return Err(Error::Conflict(
                         "interaction identity already exists".into(),
                     ));
                 }
-                self.interactions.insert(
-                    *interaction_id,
-                    InteractionState {
-                        interaction: interaction.clone(),
-                        response: None,
-                    },
-                );
+                self.interactions.insert(ticket.id, (ticket.clone(), None));
             }
-            EventPayload::InteractionResolved {
-                interaction_id,
-                response,
-            } => {
-                let state = self
+            EventPayload::InteractionResolved { resolution } => {
+                let (ticket, prior) = self
                     .interactions
-                    .get_mut(interaction_id)
-                    .ok_or_else(|| Error::NotFound(format!("interaction {interaction_id}")))?;
-                if state.response.is_some() {
-                    return Err(Error::Conflict("interaction is already resolved".into()));
-                }
-                state.interaction.validate_response(response)?;
-                state.response = Some(response.clone());
-            }
-            EventPayload::ForkPublished { manifest } => {
-                manifest.validate()?;
-                if manifest.child == self.authority || self.forks.contains_key(&manifest.child) {
-                    return Err(Error::Conflict("invalid fork publication".into()));
-                }
-                self.forks
-                    .insert(manifest.child.clone(), manifest.as_ref().clone());
+                    .get_mut(&resolution.id)
+                    .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+                validate_interaction_transition(ticket, prior.as_ref(), resolution)?;
+                *prior = Some(resolution.clone());
             }
         }
         Ok(())
@@ -1301,12 +2847,19 @@ impl Action {
         match self {
             Self::TransitionLifecycle { .. } => "lifecycle:manage",
             Self::AppendCustom { .. } => "event:append",
+            Self::MigrateExtensionState { .. } => "extension:migrate",
+            Self::SelectExtensions { .. } => "extension:activate",
+            Self::ConfigureExtension { .. } => "extension:configure",
             Self::PlanEffect { .. }
             | Self::MarkEffectDispatched { .. }
             | Self::ResolveEffect { .. } => "effect:run",
-            Self::OpenInteraction { .. } => "interaction:open",
-            Self::ResolveInteraction { .. } => "interaction:respond",
             Self::PublishFork { .. } => "fork:publish",
+            Self::PublishProjectMerge { .. } => "project:merge",
+            Self::BindConversation { .. } => "conversation:bind",
+            Self::AppendConversationMessage { .. } => "conversation:append",
+            Self::SelectModelContext { .. } => "conversation:select_context",
+            Self::OpenInteraction { .. } => "interaction:open",
+            Self::ResolveInteraction { .. } => "interaction:resolve",
         }
     }
 }
@@ -1316,14 +2869,58 @@ impl EventPayload {
         match self {
             Self::LifecycleTransitioned { .. } => "lifecycle:manage",
             Self::Custom { .. } => "event:append",
+            Self::ExtensionStateMigrated { .. } => "extension:migrate",
+            Self::ExtensionsSelected { .. } => "extension:activate",
+            Self::ExtensionConfigured { .. } => "extension:configure",
             Self::EffectPlanned { .. }
             | Self::EffectDispatched { .. }
             | Self::EffectResolved { .. } => "effect:run",
-            Self::InteractionOpened { .. } => "interaction:open",
-            Self::InteractionResolved { .. } => "interaction:respond",
             Self::ForkPublished { .. } => "fork:publish",
+            Self::ProjectMergePublished { .. } => "project:merge",
+            Self::ConversationBound { .. } => "conversation:bind",
+            Self::ConversationMessageAppended { .. } => "conversation:append",
+            Self::ModelContextSelected { .. } => "conversation:select_context",
+            Self::InteractionOpened { .. } => "interaction:open",
+            Self::InteractionResolved { .. } => "interaction:resolve",
         }
     }
+}
+
+fn validate_interaction_transition(
+    ticket: &InteractionTicket,
+    prior: Option<&InteractionResolution>,
+    resolution: &InteractionResolution,
+) -> Result<()> {
+    resolution.validate(ticket)?;
+    if prior.is_some_and(|value| value.outcome.is_terminal()) {
+        return Err(Error::Conflict("interaction is already resolved".into()));
+    }
+    let expected = prior.map_or(Ok(1_u64), |value| {
+        value
+            .expected_version
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("interaction revision exhausted".into()))
+    })?;
+    if resolution.expected_version != expected {
+        return Err(Error::Conflict(
+            "interaction resolution version mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_interaction_operation(
+    resolution: &InteractionResolution,
+    operation_id: OperationId,
+) -> Result<()> {
+    if matches!(&resolution.outcome,
+        InteractionOutcome::Indeterminate { operation_id: pending } if *pending != operation_id)
+    {
+        return Err(Error::Conflict(
+            "indeterminate interaction names another operation".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn require_capability(scope: &Scope, capability: &str) -> Result<()> {
@@ -1332,6 +2929,17 @@ fn require_capability(scope: &Scope, capability: &str) -> Result<()> {
     } else {
         Err(Error::Unauthorized(format!(
             "scope {} lacks capability {capability}",
+            scope.id
+        )))
+    }
+}
+
+fn require_recorded_capability(scope: &RecordedScope, capability: &str) -> Result<()> {
+    if scope.capabilities.contains(capability) {
+        Ok(())
+    } else {
+        Err(Error::Unauthorized(format!(
+            "recorded scope {} lacks capability {capability}",
             scope.id
         )))
     }
@@ -1386,6 +2994,7 @@ fn scope_proof(
     issuer: &str,
     id: &str,
     capabilities: &Capabilities,
+    agent: Option<AgentId>,
     parent_proof: Option<[u8; 32]>,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new_keyed(key);
@@ -1405,6 +3014,15 @@ fn scope_proof(
     for capability in capabilities.iter() {
         hasher.update(&(capability.len() as u64).to_le_bytes());
         hasher.update(capability.as_bytes());
+    }
+    match agent {
+        Some(agent) => {
+            hasher.update(&[1]);
+            hasher.update(&agent.into_bytes());
+        }
+        None => {
+            hasher.update(&[0]);
+        }
     }
     match parent_proof {
         Some(parent) => {
@@ -1430,7 +3048,7 @@ fn effect_attestation_proof(
     result_schema_digest: [u8; 32],
     status: &EffectStatus,
 ) -> Result<[u8; 32]> {
-    let bytes = serde_json::to_vec(&(
+    let bytes = crate::contract::canonical_json_bytes(&(
         audience,
         provider,
         effect_id,
@@ -1439,33 +3057,29 @@ fn effect_attestation_proof(
         guarantee,
         result_schema_digest,
         status,
-    ))
-    .map_err(|error| Error::Invalid(error.to_string()))?;
+    ))?;
     Ok(*blake3::keyed_hash(key, &bytes).as_bytes())
 }
 
 pub(crate) fn canonical_intent(command: &Command) -> Result<[u8; 32]> {
-    let bytes = serde_json::to_vec(command).map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(*blake3::hash(&bytes).as_bytes())
+    crate::contract::canonical_json_digest(command)
 }
 
 fn effect_request_digest(
     provider: &str,
     guarantee: EffectGuarantee,
     effect_kind: &str,
-    request: &Value,
+    request: &FileRef,
 ) -> Result<[u8; 32]> {
-    let bytes = serde_json::to_vec(&(provider, guarantee, effect_kind, request))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(*blake3::hash(&bytes).as_bytes())
+    crate::contract::canonical_json_digest(&(provider, guarantee, effect_kind, request))
 }
 
-fn validate_effect_result(schema: &Value, status: &EffectStatus) -> Result<()> {
+fn validate_effect_result(status: &EffectStatus) -> Result<()> {
     if let EffectStatus::Succeeded { result } = status {
-        jsonschema::validator_for(schema)
-            .map_err(|error| Error::Invalid(format!("invalid effect result schema: {error}")))?
-            .validate(result)
-            .map_err(|error| Error::Invalid(format!("effect result failed validation: {error}")))?;
+        result.validate()?;
+        if result.descriptor().media_type() != "application/json" {
+            return Err(Error::Invalid("effect result must be JSON content".into()));
+        }
     }
     Ok(())
 }
@@ -1487,19 +3101,16 @@ fn validate_effect_observation(
 }
 
 fn snapshot_digest(snapshot: &Snapshot) -> Result<[u8; 32]> {
-    let bytes = serde_json::to_vec(&(
+    crate::contract::canonical_json_digest(&(
         snapshot.format_version,
         &snapshot.authority,
         snapshot.revision,
         &snapshot.events,
     ))
-    .map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(*blake3::hash(&bytes).as_bytes())
 }
 
 fn json_digest(value: &Value) -> Result<[u8; 32]> {
-    let bytes = serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(*blake3::hash(&bytes).as_bytes())
+    crate::contract::canonical_json_digest(value)
 }
 
 #[cfg(test)]
@@ -1507,8 +3118,401 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn v2_extension_record_fixture_round_trips_canonically() -> Result<()> {
+        let fixture = include_str!("../fixtures/v2/extension-record.json").trim();
+        let record: ExtensionRecord =
+            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
+        record.validate()?;
+        let encoded =
+            serde_json::to_string(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(encoded, fixture);
+        Ok(())
+    }
+
+    #[test]
+    fn v2_extension_dependency_fixture_round_trips_canonically() -> Result<()> {
+        let fixture = include_str!("../fixtures/v2/extension-dependency.json").trim();
+        let dependency: ExtensionDependency =
+            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
+        dependency.validate()?;
+        let encoded = serde_json::to_string(&dependency)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(encoded, fixture);
+        Ok(())
+    }
+
+    #[test]
+    fn v2_extension_configuration_fixture_round_trips_canonically() -> Result<()> {
+        let fixture = include_str!("../fixtures/v2/extension-configuration.json").trim();
+        let record: ExtensionConfiguration =
+            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
+        record.validate()?;
+        let encoded =
+            serde_json::to_string(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(encoded, fixture);
+        Ok(())
+    }
+
+    #[test]
+    fn v2_extension_admission_fixture_round_trips_canonically() -> Result<()> {
+        let fixture = include_str!("../fixtures/v2/extension-admission.json").trim();
+        let record: ExtensionAdmission =
+            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
+        record.validate()?;
+        let encoded =
+            serde_json::to_string(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(encoded, fixture);
+        Ok(())
+    }
+
+    #[test]
+    fn extension_activation_requires_validated_configuration_and_pins_revision() -> Result<()> {
+        let authority = Authority {
+            kind: AggregateKind::Agent,
+            id: "agent-configuration".into(),
+        };
+        let issuer = AuthorityIssuer::new("extension-host", [45; 32], authority.clone());
+        let extension = ExtensionDependency {
+            name: "example.configured".into(),
+            version: 1,
+        };
+        let mut registry = SchemaRegistry::new();
+        registry.register_configured(
+            extension.name.clone(),
+            extension.version,
+            json!({"type":"object"}),
+            [1; 32],
+            ExtensionForkPolicy::Inherit,
+            [],
+            Some(json!({"type":"object","required":["enabled"],"properties":{"enabled":{"type":"boolean"}},"additionalProperties":false})),
+        )?;
+        let scope = issuer.root(
+            "owner",
+            Capabilities::new(["extension:configure", "extension:activate"]),
+        );
+        let mut reducer = Reducer::new(authority, issuer.verifier(), registry.clone());
+        let select = |operation_id, key, revision| -> Result<Command> {
+            Ok(Command {
+                operation_id,
+                idempotency_key: IdempotencyKey::new(key)?,
+                expected_revision: revision,
+                scope: scope.clone(),
+                causal_parent: None,
+                action: Action::SelectExtensions {
+                    roots: vec![extension.clone()],
+                },
+            })
+        };
+        assert!(matches!(
+            reducer.apply(select(operation(71), "before-configuration", 0)?),
+            Err(Error::Conflict(_))
+        ));
+        let first = request_file(br#"{"enabled":true}"#)?;
+        let invalid = request_file(br#"{"enabled":false,"extra":1}"#)?;
+        assert!(
+            reducer
+                .validate_configuration_bytes(
+                    &extension,
+                    &invalid,
+                    br#"{"enabled":false,"extra":1}"#
+                )
+                .is_err()
+        );
+        reducer.validate_configuration_bytes(&extension, &first, br#"{"enabled":true}"#)?;
+        reducer.apply(Command {
+            operation_id: operation(72),
+            idempotency_key: IdempotencyKey::new("configure-first")?,
+            expected_revision: 0,
+            scope: scope.clone(),
+            causal_parent: None,
+            action: Action::ConfigureExtension {
+                extension: extension.clone(),
+                content: first.clone(),
+            },
+        })?;
+        reducer.apply(select(operation(73), "activate-first", 1)?)?;
+        assert_eq!(reducer.active_configurations()[0].content, first);
+        let Some(admitted) = reducer.extension_admission()? else {
+            return Err(Error::NotFound("committed selection".into()));
+        };
+        assert_eq!(admitted.source().revision, 2);
+        assert_eq!(admitted.configurations()[0].content, first);
+        let runtime_scope = crate::runtime::RuntimeScope::new(
+            Capabilities::new(["extension:activate"]),
+            crate::conversation::Limits::default(),
+        )?
+        .with_extensions_from(&reducer)?;
+        assert_eq!(runtime_scope.extensions(), Some(&admitted));
+        assert!(
+            runtime_scope
+                .narrow(
+                    Capabilities::new(std::iter::empty::<&str>()),
+                    crate::conversation::Limits::default(),
+                )?
+                .with_extensions_from(&reducer)
+                .is_err()
+        );
+        let second = request_file(br#"{"enabled":false}"#)?;
+        reducer.validate_configuration_bytes(&extension, &second, br#"{"enabled":false}"#)?;
+        reducer.apply(Command {
+            operation_id: operation(74),
+            idempotency_key: IdempotencyKey::new("configure-second")?,
+            expected_revision: 2,
+            scope: scope.clone(),
+            causal_parent: None,
+            action: Action::ConfigureExtension {
+                extension: extension.clone(),
+                content: second,
+            },
+        })?;
+        assert_eq!(reducer.active_configurations()[0].content, first);
+        assert_eq!(reducer.extension_admission()?, Some(admitted));
+        let restored = Reducer::restore(reducer.snapshot()?, issuer.verifier(), registry)?;
+        assert_eq!(
+            restored.active_configurations(),
+            reducer.active_configurations()
+        );
+        assert_eq!(
+            restored.extension_admission()?,
+            reducer.extension_admission()?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn extension_registry_and_records_share_a_bounded_name_policy() -> Result<()> {
+        for invalid in [
+            "plain",
+            "example.",
+            ".example",
+            "example..state",
+            "example. state",
+            "example.\0state",
+            "example../private",
+            "example.state/path",
+            "example.state\\path",
+            "example.state:other",
+        ] {
+            assert!(validate_extension_name(invalid).is_err());
+            assert!(
+                SchemaRegistry::new()
+                    .register(
+                        invalid,
+                        1,
+                        json!({"type":"object"}),
+                        [1; 32],
+                        ExtensionForkPolicy::Inherit
+                    )
+                    .is_err()
+            );
+        }
+        assert!(validate_extension_name(&format!("example.{}", "x".repeat(256))).is_err());
+        validate_extension_name("example.state")?;
+        Ok(())
+    }
+
+    #[test]
+    fn extension_activation_requires_exact_acyclic_dependencies() -> Result<()> {
+        let alpha = ExtensionDependency {
+            name: "example.alpha".into(),
+            version: 1,
+        };
+        let beta = ExtensionDependency {
+            name: "example.beta".into(),
+            version: 2,
+        };
+        let mut registry = SchemaRegistry::new();
+        registry.register_with_dependencies(
+            alpha.name.clone(),
+            alpha.version,
+            json!({"type":"object"}),
+            [1; 32],
+            ExtensionForkPolicy::Inherit,
+            [beta.clone()],
+        )?;
+        assert!(matches!(
+            registry.activation_order([alpha.clone()]),
+            Err(Error::Unsupported(_))
+        ));
+        registry.register_with_dependencies(
+            beta.name.clone(),
+            beta.version,
+            json!({"type":"object"}),
+            [2; 32],
+            ExtensionForkPolicy::Reset,
+            [],
+        )?;
+        assert_eq!(
+            registry.activation_order([alpha.clone()])?,
+            vec![beta.clone(), alpha.clone()]
+        );
+        let other_beta = ExtensionDependency {
+            name: beta.name.clone(),
+            version: 3,
+        };
+        registry.register(
+            other_beta.name.clone(),
+            other_beta.version,
+            json!({"type":"object"}),
+            [3; 32],
+            ExtensionForkPolicy::Reset,
+        )?;
+        assert!(matches!(
+            registry.activation_order([alpha.clone(), other_beta]),
+            Err(Error::Conflict(_))
+        ));
+        let mut cyclic = SchemaRegistry::new();
+        cyclic.register_with_dependencies(
+            alpha.name.clone(),
+            alpha.version,
+            json!({"type":"object"}),
+            [1; 32],
+            ExtensionForkPolicy::Inherit,
+            [beta.clone()],
+        )?;
+        cyclic.register_with_dependencies(
+            beta.name.clone(),
+            beta.version,
+            json!({"type":"object"}),
+            [2; 32],
+            ExtensionForkPolicy::Reset,
+            [alpha],
+        )?;
+        assert!(matches!(
+            cyclic.activation_order([beta]),
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn agent_extension_selection_replays_and_does_not_retarget_old_events() -> Result<()> {
+        let authority = Authority {
+            kind: AggregateKind::Agent,
+            id: "agent-extension-selection".into(),
+        };
+        let issuer = AuthorityIssuer::new("extension-host", [44; 32], authority.clone());
+        let mut registry = SchemaRegistry::new();
+        let base = ExtensionDependency {
+            name: "example.base".into(),
+            version: 1,
+        };
+        let feature = ExtensionDependency {
+            name: "example.feature".into(),
+            version: 2,
+        };
+        registry.register(
+            base.name.clone(),
+            base.version,
+            json!({"type":"object"}),
+            [1; 32],
+            ExtensionForkPolicy::Inherit,
+        )?;
+        registry.register_with_dependencies(
+            feature.name.clone(),
+            feature.version,
+            json!({"type":"object"}),
+            [2; 32],
+            ExtensionForkPolicy::Reset,
+            [base.clone()],
+        )?;
+        let scope = issuer.root("owner", Capabilities::new(["extension:activate"]));
+        let select = Command {
+            operation_id: operation(61),
+            idempotency_key: IdempotencyKey::new("select-extensions")?,
+            expected_revision: 0,
+            scope: scope.clone(),
+            causal_parent: None,
+            action: Action::SelectExtensions {
+                roots: vec![feature.clone()],
+            },
+        };
+        let mut reducer = Reducer::new(authority, issuer.verifier(), registry.clone());
+        assert!(matches!(
+            reducer.apply(select.clone())?,
+            ApplyResult::Applied { .. }
+        ));
+        assert_eq!(reducer.active_extensions(), &[base, feature]);
+        let mut restored = Reducer::restore(reducer.snapshot()?, issuer.verifier(), registry)?;
+        assert_eq!(restored.active_extensions(), reducer.active_extensions());
+        assert!(matches!(
+            restored.apply(select.clone())?,
+            ApplyResult::Replayed { .. }
+        ));
+        restored.apply(Command {
+            operation_id: operation(62),
+            idempotency_key: IdempotencyKey::new("disable-extensions")?,
+            expected_revision: 1,
+            scope,
+            causal_parent: None,
+            action: Action::SelectExtensions { roots: Vec::new() },
+        })?;
+        assert!(restored.active_extensions().is_empty());
+        assert!(matches!(
+            restored.apply(select)?,
+            ApplyResult::Replayed { .. }
+        ));
+        assert!(restored.active_extensions().is_empty());
+        let active_scope = issuer.root(
+            "owner-active",
+            Capabilities::new(["extension:activate", "lifecycle:manage"]),
+        );
+        restored.apply(Command {
+            operation_id: operation(63),
+            idempotency_key: IdempotencyKey::new("activate-agent")?,
+            expected_revision: 2,
+            scope: active_scope.clone(),
+            causal_parent: None,
+            action: Action::TransitionLifecycle {
+                to: LifecycleState::Active,
+                reason: None,
+            },
+        })?;
+        assert!(matches!(
+            restored.apply(Command {
+                operation_id: operation(64),
+                idempotency_key: IdempotencyKey::new("unsafe-extension-switch")?,
+                expected_revision: 3,
+                scope: active_scope,
+                causal_parent: None,
+                action: Action::SelectExtensions { roots: Vec::new() },
+            }),
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
     fn operation(value: u8) -> OperationId {
         OperationId::from_bytes([value; 16])
+    }
+    fn request_file(bytes: &[u8]) -> Result<FileRef> {
+        use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
+        use crate::resources::ProviderRef;
+        FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("test", "filesystem", "2")?,
+                "effects",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
+            )?,
+            "requests/request.json",
+            "generation-1",
+            FileDescriptor::from_bytes(bytes, "application/json")?,
+            "request.json",
+        )
+    }
+    fn schema_file(schema: &Value) -> Result<FileRef> {
+        use crate::conversation::FileDescriptor;
+        let bytes =
+            serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?;
+        FileRef::new(
+            request_file(b"null")?.volume().clone(),
+            "schemas/result.json",
+            "generation-1",
+            FileDescriptor::from_bytes(&bytes, "application/schema+json")?,
+            "result.json",
+        )
     }
     fn issuer() -> AuthorityIssuer {
         AuthorityIssuer::new(
@@ -1532,32 +3536,217 @@ mod tests {
                         "properties": {"text": {"type": "string"}},
                         "additionalProperties": true
                     }),
+                    [9; 32],
+                    ExtensionForkPolicy::Inherit,
                 )
                 .is_ok()
         );
         schemas
     }
     fn command(operation_id: OperationId, expected_revision: u64, action: Action) -> Command {
+        let capabilities = Capabilities::new([
+            "event:append",
+            "lifecycle:manage",
+            "effect:run",
+            "effect:plan",
+            "effect:provider:example.provider",
+            "interaction:open",
+            "interaction:respond",
+            "fork:publish",
+            "conversation:bind",
+            "conversation:append",
+            "conversation:select_context",
+        ]);
+        let scope = if matches!(&action, Action::PublishFork { .. }) {
+            issuer().root_for_agent(crate::AgentId::from_bytes([1; 16]), "root", capabilities)
+        } else {
+            issuer().root("root", capabilities)
+        };
         Command {
             operation_id,
             idempotency_key: IdempotencyKey(format!("key-{operation_id}")),
             expected_revision,
-            scope: issuer().root(
-                "root",
-                Capabilities::new([
-                    "event:append",
-                    "lifecycle:manage",
-                    "effect:run",
-                    "effect:plan",
-                    "effect:provider:example.provider",
-                    "interaction:open",
-                    "interaction:respond",
-                    "fork:publish",
-                ]),
-            ),
+            scope,
             causal_parent: None,
             action,
         }
+    }
+
+    #[test]
+    fn committed_events_attest_admission_without_persisting_bearer_scopes() -> Result<()> {
+        let verifier_debug = format!("{:?}", issuer().verifier());
+        assert!(verifier_debug.contains("[redacted]"));
+        assert!(!verifier_debug.contains("[7, 7, 7"));
+        let authority = Authority {
+            kind: AggregateKind::Conversation,
+            id: "conversation-1".into(),
+        };
+        let mut reducer = Reducer::new(authority, issuer().verifier(), schemas());
+        let planned = reducer.plan(&command(
+            operation(19),
+            0,
+            Action::BindConversation {
+                agent: AgentId::from_bytes([19; 16]),
+            },
+        ))?;
+        let ApplyResult::Applied { event } = planned else {
+            return Err(Error::Storage("fresh event replayed".into()));
+        };
+        let json =
+            serde_json::to_value(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(json["scope"].get("proof").is_none());
+        assert!(json["scope"].get("parent_proof").is_none());
+        assert!(serde_json::from_value::<Scope>(json["scope"].clone()).is_err());
+        let mut tampered = event.clone();
+        tampered.scope.capabilities = Capabilities::new(["conversation:bind", "effect:run"]);
+        assert!(matches!(
+            reducer.apply_committed(tampered),
+            Err(Error::Unauthorized(_))
+        ));
+        reducer.apply_committed(event)?;
+        assert_eq!(reducer.revision(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
+        use crate::interaction::{Interaction, InteractionKind, InteractionOutcome};
+        let mut reducer = Reducer::new(
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "conversation-1".into(),
+            },
+            issuer().verifier(),
+            schemas(),
+        );
+        let request = Interaction::approval("approve exact effect", operation(12), [3; 32])?;
+        let request_bytes =
+            serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
+        let ticket = InteractionTicket {
+            id: uuid::Uuid::from_bytes([5; 16]),
+            kind: InteractionKind::Approval,
+            request: request_file(&request_bytes)?,
+            deadline_unix_ms: Some(1_000),
+            approval: Some(crate::interaction::ApprovalBinding {
+                operation_id: operation(12),
+                action_digest: [3; 32],
+            }),
+        };
+        ticket.validate_request_bytes(&request_bytes)?;
+        reducer.apply(command(
+            operation(19),
+            0,
+            Action::BindConversation {
+                agent: crate::AgentId::from_bytes([1; 16]),
+            },
+        ))?;
+        let opened = command(
+            operation(20),
+            1,
+            Action::OpenInteraction {
+                ticket: ticket.clone(),
+            },
+        );
+        assert!(matches!(
+            reducer.apply(opened)?,
+            ApplyResult::Applied { .. }
+        ));
+        let resolution = InteractionResolution {
+            id: ticket.id,
+            expected_version: 2,
+            outcome: InteractionOutcome::Approved,
+            detail: None,
+        };
+        let ungranted = command(
+            operation(21),
+            2,
+            Action::ResolveInteraction {
+                resolution: resolution.clone(),
+            },
+        );
+        assert!(matches!(
+            reducer.plan(&ungranted),
+            Err(Error::Unauthorized(_))
+        ));
+        let mut unknown = command(
+            operation(24),
+            2,
+            Action::ResolveInteraction {
+                resolution: InteractionResolution {
+                    id: ticket.id,
+                    expected_version: 1,
+                    outcome: InteractionOutcome::Indeterminate {
+                        operation_id: operation(24),
+                    },
+                    detail: None,
+                },
+            },
+        );
+        unknown.scope = issuer().root(
+            "responder",
+            Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]),
+        );
+        let mut misattributed = unknown.clone();
+        if let Action::ResolveInteraction { resolution } = &mut misattributed.action {
+            resolution.outcome = InteractionOutcome::Indeterminate {
+                operation_id: operation(30),
+            };
+        }
+        assert!(matches!(
+            reducer.plan(&misattributed),
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            reducer.apply(unknown)?,
+            ApplyResult::Applied { .. }
+        ));
+        let mut granted = command(
+            operation(21),
+            3,
+            Action::ResolveInteraction {
+                resolution: resolution.clone(),
+            },
+        );
+        granted.scope = issuer().root(
+            "responder",
+            Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]),
+        );
+        let committed = crate::interaction::ResolutionReceipt::from_apply_result(
+            reducer.apply(granted.clone())?,
+        )?;
+        assert_eq!(committed.id, ticket.id);
+        assert_eq!(committed.version, 2);
+        assert_eq!(committed.conversation_revision, 4);
+        assert!(!committed.replayed);
+        assert_eq!(reducer.operation_revision(operation(21)), Some(4));
+        let replayed =
+            crate::interaction::ResolutionReceipt::from_apply_result(reducer.apply(granted)?)?;
+        assert!(replayed.replayed);
+        assert_eq!(
+            replayed.conversation_revision,
+            committed.conversation_revision
+        );
+        assert_eq!(
+            reducer
+                .interaction(&ticket.id)
+                .and_then(|(_, outcome)| outcome.as_ref()),
+            Some(&resolution)
+        );
+        let mut stale = command(operation(22), 4, Action::ResolveInteraction { resolution });
+        stale.scope = issuer().root(
+            "responder",
+            Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]),
+        );
+        assert!(matches!(reducer.plan(&stale), Err(Error::Conflict(_))));
+        let snapshot = reducer.snapshot()?;
+        let restored = Reducer::restore(snapshot, issuer().verifier(), schemas())?;
+        assert!(
+            restored
+                .interaction(&ticket.id)
+                .and_then(|(_, outcome)| outcome.as_ref())
+                .is_some()
+        );
+        Ok(())
     }
 
     #[test]
@@ -1576,7 +3765,7 @@ mod tests {
             Action::AppendCustom {
                 schema: "example.message".into(),
                 version: 1,
-                value: json!({"text": "hello"}),
+                content: request_file(br#"{"text":"hello"}"#)?,
             },
         );
         assert!(matches!(
@@ -1594,11 +3783,181 @@ mod tests {
             Action::AppendCustom {
                 schema: "example.message".into(),
                 version: 1,
-                value: json!({"text": "different"}),
+                content: request_file(br#"{"text":"different"}"#)?,
             },
         );
         assert!(matches!(
             reducer.apply(conflicting),
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn extension_state_version_change_requires_exact_migration_event() -> Result<()> {
+        let authority = Authority {
+            kind: AggregateKind::Conversation,
+            id: "conversation-1".into(),
+        };
+        let mut registry = schemas();
+        registry.register(
+            "example.message",
+            2,
+            json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}),
+            [10; 32],
+            ExtensionForkPolicy::Reset,
+        )?;
+        let mut reducer = Reducer::new(authority.clone(), issuer().verifier(), registry.clone());
+        reducer.apply(command(
+            operation(110),
+            0,
+            Action::AppendCustom {
+                schema: "example.message".into(),
+                version: 1,
+                content: request_file(br#"{"text":"old"}"#)?,
+            },
+        ))?;
+        let previous = EventReference {
+            authority,
+            revision: 1,
+        };
+        assert!(matches!(
+            reducer.apply(command(
+                operation(111),
+                1,
+                Action::AppendCustom {
+                    schema: "example.message".into(),
+                    version: 2,
+                    content: request_file(br#"{"text":"new"}"#)?,
+                },
+            )),
+            Err(Error::Conflict(_))
+        ));
+        let mut migrate = command(
+            operation(112),
+            1,
+            Action::MigrateExtensionState {
+                name: "example.message".into(),
+                previous,
+                to_version: 2,
+                content: request_file(br#"{"text":"new"}"#)?,
+            },
+        );
+        migrate.scope = issuer().root_for_agent(
+            crate::AgentId::from_bytes([8; 16]),
+            "owner",
+            Capabilities::new([
+                "extension:migrate".to_owned(),
+                request_file(b"null")?
+                    .volume()
+                    .capability(VolumeOperation::Write)?,
+            ]),
+        );
+        let mut stale = migrate.clone();
+        if let Action::MigrateExtensionState { previous, .. } = &mut stale.action {
+            previous.revision = 0;
+        }
+        assert!(matches!(
+            reducer.plan_verified_migration(&stale),
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            reducer.apply(migrate.clone()),
+            Err(Error::Unsupported(_))
+        ));
+        let ApplyResult::Applied { event } = reducer.plan_verified_migration(&migrate)? else {
+            return Err(Error::Conflict("migration unexpectedly replayed".into()));
+        };
+        reducer.apply_committed(event)?;
+        assert!(matches!(
+            reducer.apply(migrate)?,
+            ApplyResult::Replayed { .. }
+        ));
+        assert_eq!(
+            reducer
+                .extension_state("example.message")
+                .map(|(_, state)| state.version),
+            Some(2)
+        );
+        let restored = Reducer::restore(reducer.snapshot()?, issuer().verifier(), registry)?;
+        assert_eq!(
+            restored.extension_state("example.message"),
+            reducer.extension_state("example.message")
+        );
+        assert_eq!(restored.events_after(0, 10)?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn extension_migration_fixture_round_trips_canonically() -> Result<()> {
+        let fixture = include_str!("../fixtures/v2/extension-state-migration.json").trim();
+        let migration: ExtensionStateMigration =
+            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
+        migration.validate()?;
+        let actual =
+            serde_json::to_string(&migration).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(actual, fixture);
+        Ok(())
+    }
+
+    #[test]
+    fn extension_replay_requires_exact_implementation_and_fork_policy() -> Result<()> {
+        let authority = Authority {
+            kind: AggregateKind::Conversation,
+            id: "conversation-1".into(),
+        };
+        let mut original = Reducer::new(authority.clone(), issuer().verifier(), schemas());
+        let ApplyResult::Applied { event } = original.apply(command(
+            operation(70),
+            0,
+            Action::AppendCustom {
+                schema: "example.message".into(),
+                version: 1,
+                content: request_file(br#"{"text":"hello"}"#)?,
+            },
+        ))?
+        else {
+            return Err(Error::Conflict("first extension append replayed".into()));
+        };
+        let schema = json!({
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "additionalProperties": true
+        });
+        for (digest, policy) in [
+            ([8; 32], ExtensionForkPolicy::Inherit),
+            ([9; 32], ExtensionForkPolicy::Reset),
+        ] {
+            let mut bindings = SchemaRegistry::new();
+            bindings.register("example.message", 1, schema.clone(), digest, policy)?;
+            let mut restored = Reducer::new(authority.clone(), issuer().verifier(), bindings);
+            assert!(matches!(
+                restored.apply_committed(event.clone()),
+                Err(Error::Conflict(_))
+            ));
+        }
+        let mut missing = Reducer::new(
+            authority.clone(),
+            issuer().verifier(),
+            SchemaRegistry::new(),
+        );
+        assert!(matches!(
+            missing.apply_committed(event.clone()),
+            Err(Error::Unsupported(_))
+        ));
+        let mut exact = Reducer::new(authority, issuer().verifier(), schemas());
+        assert!(matches!(
+            exact.apply_committed(event)?,
+            ApplyResult::Applied { .. }
+        ));
+        assert!(matches!(
+            exact.schemas.register(
+                "example.message",
+                1,
+                schema,
+                [8; 32],
+                ExtensionForkPolicy::Inherit
+            ),
             Err(Error::Conflict(_))
         ));
         Ok(())
@@ -1677,10 +4036,15 @@ mod tests {
                 provider: "example.provider".into(),
                 guarantee: EffectGuarantee::IdempotentRetry,
                 effect_kind: "example.send".into(),
-                request: json!({"value": 1}),
-                result_schema: json!({"type": "object", "required": ["receipt"]}),
+                request: request_file(br#"{"value":1}"#)?,
+                result_schema: schema_file(&json!({"type": "object", "required": ["receipt"]}))?,
             },
         ))?;
+        assert!(
+            !serde_json::to_string(&reducer.snapshot()?)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .contains("\\\"value\\\"")
+        );
         reducer.apply(command(
             operation(2),
             1,
@@ -1723,7 +4087,7 @@ mod tests {
                 .ok_or_else(|| Error::NotFound("effect".into()))?,
             retry_attempt,
             EffectStatus::Succeeded {
-                result: json!({"receipt": "confirmed"}),
+                result: request_file(br#"{"receipt":"confirmed"}"#)?,
             },
         )?;
         reducer.apply(command(
@@ -1766,8 +4130,8 @@ mod tests {
                 provider: "example.provider".into(),
                 guarantee: EffectGuarantee::AtMostOnce,
                 effect_kind: "example.send".into(),
-                request: Value::Null,
-                result_schema: json!({}),
+                request: request_file(b"null")?,
+                result_schema: schema_file(&json!({}))?,
             },
         ))?;
         reducer.apply(command(
@@ -1808,7 +4172,7 @@ mod tests {
     }
 
     #[test]
-    fn forged_or_schema_invalid_effect_observations_are_rejected() -> Result<()> {
+    fn forged_or_malformed_effect_observations_are_rejected() -> Result<()> {
         let effect_id = EffectId::from_bytes([30; 16]);
         let attempt_id = EffectAttemptId::from_bytes([31; 16]);
         let mut reducer = Reducer::new(
@@ -1827,8 +4191,8 @@ mod tests {
                 provider: "example.provider".into(),
                 guarantee: EffectGuarantee::ExactlyOnce,
                 effect_kind: "example.send".into(),
-                request: json!({"value": 1}),
-                result_schema: json!({"type": "string"}),
+                request: request_file(br#"{"value":1}"#)?,
+                result_schema: schema_file(&json!({"type": "string"}))?,
             },
         ))?;
         reducer.apply(command(
@@ -1846,7 +4210,15 @@ mod tests {
             effect_id,
             effect,
             attempt_id,
-            EffectStatus::Succeeded { result: json!(1) },
+            EffectStatus::Succeeded {
+                result: FileRef::new(
+                    request_file(b"1")?.volume().clone(),
+                    "results/invalid.txt",
+                    "generation-1",
+                    crate::conversation::FileDescriptor::from_bytes(b"1", "text/plain")?,
+                    "invalid.txt",
+                )?,
+            },
         )?;
         assert!(matches!(
             reducer.apply(command(
@@ -1922,7 +4294,7 @@ mod tests {
             Action::AppendCustom {
                 schema: "example.message".into(),
                 version: 1,
-                value: json!({"text": "hello"}),
+                content: request_file(br#"{"text":"hello"}"#)?,
             },
         );
         empty_key.idempotency_key = IdempotencyKey(String::new());
@@ -1934,7 +4306,7 @@ mod tests {
             Action::AppendCustom {
                 schema: "example.message".into(),
                 version: 1,
-                value: json!({"text": "hello"}),
+                content: request_file(br#"{"text":"hello"}"#)?,
             },
         );
         future_cause.causal_parent = Some(EventReference {
@@ -1964,7 +4336,7 @@ mod tests {
             Action::AppendCustom {
                 schema: "example.message".into(),
                 version: 1,
-                value: json!({"text": "hello"}),
+                content: request_file(br#"{"text":"hello"}"#)?,
             },
         ))?;
         assert!(matches!(planned, ApplyResult::Applied { .. }));
@@ -1973,8 +4345,10 @@ mod tests {
     }
 
     #[test]
-    fn fork_is_invisible_until_one_manifest_event_commits() -> Result<()> {
-        use crate::resources::{GenerationRef, ProviderRef, StreamRef};
+    fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
+        use crate::conversation::{VolumeClass, VolumeOwner, VolumeRef};
+        use crate::fork::{CapturedResource, ResourceRevision};
+        use crate::resources::{GenerationRef, ProviderRef, ResourceKind, ResourceRef, StreamRef};
 
         let stream_provider = ProviderRef::new("acyclic", "stream", "1")?;
         let filesystem_provider = ProviderRef::new("acyclic", "filesystem", "2")?;
@@ -1982,18 +4356,196 @@ mod tests {
             kind: AggregateKind::Conversation,
             id: "conversation-2".into(),
         };
-        let manifest = ForkManifest {
-            operation_id: operation(8),
-            parent: Authority {
-                kind: AggregateKind::Conversation,
-                id: "conversation-1".into(),
-            },
-            parent_revision: 0,
-            child: child.clone(),
-            stream: StreamRef::new(stream_provider, [1; 16], Some("3".into()))?,
-            workspace: GenerationRef::new(filesystem_provider, [2; 32], Some("7".into()))?,
-            machine: None,
+        let parent = Authority {
+            kind: AggregateKind::Conversation,
+            id: "conversation-1".into(),
         };
+        let child_agent = crate::AgentId::from_bytes([6; 16]);
+        let child_project = VolumeRef::new(
+            filesystem_provider.clone(),
+            "child-project",
+            VolumeClass::Project,
+            VolumeOwner::Project("project-1".into()),
+        )?;
+        let seed = ForkSeed {
+            operation_id: operation(8),
+            parent: parent.clone(),
+            parent_revision: 1,
+            child: child.clone(),
+            child_agent,
+            resources: vec![
+                CapturedResource {
+                    source: ResourceRevision::History(StreamRef::new(
+                        stream_provider,
+                        parent.stream_path()?.into_bytes(),
+                        Some("1".into()),
+                    )?),
+                    revision: ResourceRevision::History(StreamRef::new(
+                        ProviderRef::new("acyclic", "stream", "1")?,
+                        parent.stream_path()?.into_bytes(),
+                        Some("1".into()),
+                    )?),
+                },
+                CapturedResource {
+                    source: ResourceRevision::Project {
+                        volume: VolumeRef::new(
+                            filesystem_provider.clone(),
+                            "parent-project",
+                            VolumeClass::Project,
+                            VolumeOwner::Project("project-1".into()),
+                        )?,
+                        generation: GenerationRef::new(
+                            filesystem_provider.clone(),
+                            [1; 32],
+                            Some("6".into()),
+                        )?,
+                    },
+                    revision: ResourceRevision::Project {
+                        volume: child_project,
+                        generation: GenerationRef::new(
+                            filesystem_provider.clone(),
+                            [2; 32],
+                            Some("7".into()),
+                        )?,
+                    },
+                },
+            ],
+            omissions: Vec::new(),
+            child_private_volume: VolumeRef::new(
+                filesystem_provider.clone(),
+                "child-private",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(child_agent),
+            )?,
+            child_private_generation: GenerationRef::new(filesystem_provider, [3; 32], None)?,
+            inherited_context: Vec::new(),
+            shared_grants: Vec::new(),
+            attached_agents: Vec::new(),
+            reference_grants: Vec::new(),
+            attachment_manifests: Vec::new(),
+            inherited_through_sequence: 0,
+            boundary: None,
+        };
+        let extension = ResourceRevision::Extension {
+            name: "example.message".into(),
+            version: 1,
+            implementation_digest: [9; 32],
+            reference: ResourceRef::new(
+                ResourceKind::Artifact,
+                ProviderRef::new("test", "objects", "1")?,
+                b"extension-state".to_vec(),
+                Some("immutable-1".into()),
+            )?,
+        };
+        let mut extension_seed = seed.clone();
+        extension_seed.resources.push(CapturedResource {
+            source: extension.clone(),
+            revision: extension,
+        });
+        for (policy, allowed) in [
+            (ExtensionForkPolicy::Inherit, true),
+            (ExtensionForkPolicy::Reset, false),
+            (ExtensionForkPolicy::Reject, false),
+        ] {
+            let mut bindings = SchemaRegistry::new();
+            bindings.register(
+                "example.message",
+                1,
+                json!({"type": "object"}),
+                [9; 32],
+                policy,
+            )?;
+            let mut candidate = Reducer::new(parent.clone(), issuer().verifier(), bindings);
+            candidate.apply(command(
+                operation(1),
+                0,
+                Action::BindConversation {
+                    agent: crate::AgentId::from_bytes([1; 16]),
+                },
+            ))?;
+            let result = candidate.plan(&command(
+                operation(8),
+                1,
+                Action::PublishFork {
+                    seed: Box::new(extension_seed.clone()),
+                },
+            ));
+            assert_eq!(
+                result.is_ok(),
+                allowed,
+                "fork policy {policy:?}: {result:?}"
+            );
+        }
+        let mut reset_seed = extension_seed.clone();
+        if let ResourceRevision::Extension { reference, .. } = &mut reset_seed.resources[2].revision
+        {
+            *reference = ResourceRef::new(
+                ResourceKind::Artifact,
+                ProviderRef::new("test", "objects", "1")?,
+                b"child-extension-state".to_vec(),
+                Some("immutable-1".into()),
+            )?;
+        }
+        for (policy, allowed) in [
+            (ExtensionForkPolicy::Inherit, false),
+            (ExtensionForkPolicy::Reset, true),
+        ] {
+            let mut bindings = SchemaRegistry::new();
+            bindings.register(
+                "example.message",
+                1,
+                json!({"type": "object"}),
+                [9; 32],
+                policy,
+            )?;
+            let mut candidate = Reducer::new(parent.clone(), issuer().verifier(), bindings);
+            candidate.apply(command(
+                operation(1),
+                0,
+                Action::BindConversation {
+                    agent: crate::AgentId::from_bytes([1; 16]),
+                },
+            ))?;
+            let result = candidate.plan(&command(
+                operation(8),
+                1,
+                Action::PublishFork {
+                    seed: Box::new(reset_seed.clone()),
+                },
+            ));
+            assert_eq!(
+                result.is_ok(),
+                allowed,
+                "reset policy {policy:?}: {result:?}"
+            );
+        }
+        let mut mismatched = extension_seed;
+        if let ResourceRevision::Extension {
+            implementation_digest,
+            ..
+        } = &mut mismatched.resources[2].revision
+        {
+            *implementation_digest = [8; 32];
+        }
+        mismatched.resources[2].source = mismatched.resources[2].revision.clone();
+        let mut candidate = Reducer::new(parent.clone(), issuer().verifier(), schemas());
+        candidate.apply(command(
+            operation(1),
+            0,
+            Action::BindConversation {
+                agent: crate::AgentId::from_bytes([1; 16]),
+            },
+        ))?;
+        assert!(matches!(
+            candidate.plan(&command(
+                operation(8),
+                1,
+                Action::PublishFork {
+                    seed: Box::new(mismatched)
+                },
+            )),
+            Err(Error::Conflict(_))
+        ));
         let mut reducer = Reducer::new(
             Authority {
                 kind: AggregateKind::Conversation,
@@ -2002,19 +4554,84 @@ mod tests {
             issuer().verifier(),
             schemas(),
         );
+        reducer.apply(command(
+            operation(1),
+            0,
+            Action::BindConversation {
+                agent: crate::AgentId::from_bytes([1; 16]),
+            },
+        ))?;
+        let mut foreign_command = command(
+            operation(8),
+            1,
+            Action::PublishFork {
+                seed: Box::new(seed.clone()),
+            },
+        );
+        foreign_command.scope = issuer().root_for_agent(
+            crate::AgentId::from_bytes([2; 16]),
+            "foreign-agent",
+            Capabilities::new(["event:append", "fork:publish"]),
+        );
+        assert!(matches!(
+            reducer.plan(&foreign_command),
+            Err(Error::Unauthorized(_))
+        ));
+        foreign_command.scope = issuer().root(
+            "agentless-root",
+            Capabilities::new(["event:append", "fork:publish"]),
+        );
+        assert!(matches!(
+            reducer.plan(&foreign_command),
+            Err(Error::Unauthorized(_))
+        ));
         let planned = reducer.plan(&command(
             operation(8),
-            0,
+            1,
             Action::PublishFork {
-                manifest: Box::new(manifest.clone()),
+                seed: Box::new(seed.clone()),
             },
         ))?;
         assert!(reducer.fork(&child).is_none());
         let ApplyResult::Applied { event } = planned else {
             return Err(Error::Invalid("new fork unexpectedly replayed".into()));
         };
+        let mut foreign_event = event.clone();
+        foreign_event.scope = RecordedScope::from_scope(&issuer().root_for_agent(
+            crate::AgentId::from_bytes([2; 16]),
+            "foreign-agent",
+            Capabilities::new(["event:append", "fork:publish"]),
+        ));
+        foreign_event.attestation = issuer().verifier().attest_event(&foreign_event)?;
+        assert!(matches!(
+            reducer.apply_committed(foreign_event),
+            Err(Error::Unauthorized(_))
+        ));
         reducer.apply_committed(event)?;
-        assert_eq!(reducer.fork(&child), Some(&manifest));
+        assert_eq!(reducer.fork(&child), Some(&seed));
+        let mut reused_private = seed;
+        reused_private.operation_id = operation(9);
+        reused_private.child.id = "conversation-3".into();
+        reused_private.parent_revision = 2;
+        let next_history = ResourceRevision::History(StreamRef::new(
+            ProviderRef::new("acyclic", "stream", "1")?,
+            parent.stream_path()?.into_bytes(),
+            Some("2".into()),
+        )?);
+        reused_private.resources[0].source = next_history.clone();
+        reused_private.resources[0].revision = next_history;
+        reused_private.validate()?;
+        let duplicate = reducer.plan(&command(
+            operation(9),
+            2,
+            Action::PublishFork {
+                seed: Box::new(reused_private),
+            },
+        ));
+        assert!(
+            matches!(duplicate, Err(Error::Conflict(_))),
+            "{duplicate:?}"
+        );
         Ok(())
     }
 
@@ -2035,7 +4652,7 @@ mod tests {
             Action::AppendCustom {
                 schema: "example.message".into(),
                 version: 1,
-                value: json!({"text": "hello"}),
+                content: request_file(br#"{"text":"hello"}"#)?,
             },
         ))?;
         let snapshot = reducer.snapshot()?;
@@ -2086,7 +4703,7 @@ mod tests {
             action: Action::AppendCustom {
                 schema: "example.message".into(),
                 version: 1,
-                value: json!({}),
+                content: request_file(b"{}")?,
             },
         };
         assert!(matches!(
@@ -2112,7 +4729,7 @@ mod tests {
             action: Action::AppendCustom {
                 schema: "example.message".into(),
                 version: 1,
-                value: json!({}),
+                content: request_file(b"{}")?,
             },
         };
         assert!(matches!(reducer.plan(&forged), Err(Error::Unauthorized(_))));
@@ -2120,67 +4737,115 @@ mod tests {
     }
 
     #[test]
-    fn typed_approval_is_bound_and_resolved_once() -> Result<()> {
-        let interaction_id = InteractionId::from_bytes([8; 16]);
-        let mut reducer = Reducer::new(
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "conversation-1".into(),
-            },
-            issuer().verifier(),
-            schemas(),
-        );
-        reducer.apply(command(
-            operation(1),
-            0,
-            Action::OpenInteraction {
-                interaction_id,
-                interaction: Interaction::approval("Allow send?", operation(9), [4; 32])?,
-            },
-        ))?;
+    fn conversation_binding_and_messages_replay_through_snapshot() -> Result<()> {
+        use crate::conversation::{
+            FileDescriptor, FileRef, MessageKind, VolumeClass, VolumeOwner, VolumeRef,
+        };
+        use crate::resources::ProviderRef;
+
+        let agent = crate::AgentId::from_bytes([9; 16]);
+        let volume = VolumeRef::new(
+            ProviderRef::new("acyclic", "filesystem", "2")?,
+            "agent-9",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+        )?;
+        let content = FileRef::new(
+            volume,
+            "messages/one.txt",
+            "generation-1",
+            FileDescriptor::from_bytes(b"hello", "text/plain")?,
+            "one.txt",
+        )?;
+        let authority = Authority {
+            kind: AggregateKind::Conversation,
+            id: "conversation-1".into(),
+        };
+        let verifier = issuer().verifier();
+        let mut reducer = Reducer::new(authority, verifier.clone(), schemas());
         assert!(matches!(
             reducer.plan(&command(
-                operation(2),
-                1,
-                Action::ResolveInteraction {
-                    interaction_id,
-                    response: InteractionResponse::Question { value: json!(true) },
-                },
-            )),
-            Err(Error::Invalid(_))
-        ));
-        reducer.apply(command(
-            operation(3),
-            1,
-            Action::ResolveInteraction {
-                interaction_id,
-                response: InteractionResponse::Approval {
-                    approved: true,
-                    reason: None,
-                },
-            },
-        ))?;
-        assert!(matches!(
-            reducer.interaction(interaction_id),
-            Some(InteractionState {
-                response: Some(InteractionResponse::Approval { approved: true, .. }),
-                ..
-            })
-        ));
-        assert!(matches!(
-            reducer.apply(command(
-                operation(4),
-                2,
-                Action::ResolveInteraction {
-                    interaction_id,
-                    response: InteractionResponse::Approval {
-                        approved: false,
-                        reason: None,
-                    },
-                },
+                operation(1),
+                0,
+                Action::AppendConversationMessage {
+                    message: Box::new(crate::conversation::ConversationMessage {
+                        id: uuid::Uuid::from_bytes([1; 16]),
+                        sequence: 1,
+                        kind: MessageKind::User,
+                        content: content.clone(),
+                        attachments: Vec::new().into(),
+                        reply_to: None,
+                        tool_call_id: None,
+                        extensions: BTreeMap::new(),
+                    }),
+                }
             )),
             Err(Error::Conflict(_))
         ));
+        reducer.apply(command(operation(1), 0, Action::BindConversation { agent }))?;
+        let message = crate::conversation::ConversationMessage {
+            id: uuid::Uuid::from_bytes([1; 16]),
+            sequence: 1,
+            kind: MessageKind::User,
+            content,
+            attachments: Vec::new().into(),
+            reply_to: None,
+            tool_call_id: None,
+            extensions: BTreeMap::new(),
+        };
+        let admitted = reducer.apply(command(
+            operation(2),
+            1,
+            Action::AppendConversationMessage {
+                message: Box::new(message.clone()),
+            },
+        ))?;
+        if let ApplyResult::Applied { event } = admitted {
+            let canonical =
+                serde_json::to_string(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(
+                !canonical.contains("hello"),
+                "durable events must contain refs, not file bodies"
+            );
+        } else {
+            return Err(Error::Invalid(
+                "conversation append was not admitted".into(),
+            ));
+        }
+        assert_eq!(
+            reducer
+                .conversation()
+                .map(|state| state.messages.as_slice()),
+            Some(&[message.clone()][..])
+        );
+        let selection = ModelContextSelection {
+            conversation_revision: 1,
+            message_ids: vec![message.id],
+        };
+        reducer.apply(command(
+            operation(3),
+            2,
+            Action::SelectModelContext {
+                selection: selection.clone(),
+            },
+        ))?;
+        assert_eq!(reducer.context_selections(), &[selection]);
+        assert!(matches!(
+            reducer.plan(&command(
+                operation(4),
+                3,
+                Action::SelectModelContext {
+                    selection: ModelContextSelection {
+                        conversation_revision: 0,
+                        message_ids: vec![message.id]
+                    },
+                }
+            )),
+            Err(Error::Conflict(_))
+        ));
+        let restored = Reducer::restore(reducer.snapshot()?, verifier, schemas())?;
+        assert_eq!(restored.conversation(), reducer.conversation());
+        assert_eq!(restored.context_selections(), reducer.context_selections());
         Ok(())
     }
 }

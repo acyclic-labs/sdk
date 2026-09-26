@@ -19,7 +19,9 @@ use std::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+#[cfg(feature = "grpc")]
 mod grpc;
+#[cfg(feature = "grpc")]
 pub use grpc::Tls;
 
 /// Generated revision-one public transport. Service implementations consume this module;

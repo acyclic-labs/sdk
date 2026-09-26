@@ -132,30 +132,77 @@ dependencies = [
 name = "acyclic-harness"
 version = "0.1.5"
 dependencies = [
- "acyclic-fs",
- "acyclic-machines",
  "acyclic-stream",
- "axum",
  "blake3",
  "bytes",
  "futures",
+ "js-sys",
  "jsonschema",
  "prost",
  "prost-build",
- "prost-reflect",
  "protoc-bin-vendored",
- "reqwest",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
+ "tokio",
+ "uuid",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "acyclic-harness-filesystem"
+version = "0.1.5"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-harness",
+ "acyclic-stream",
+ "blake3",
+ "bytes",
+ "futures",
+ "hex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "acyclic-harness-grpc"
+version = "0.1.5"
+dependencies = [
+ "acyclic-harness",
+ "futures",
+ "protoc-bin-vendored",
  "tokio",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
- "tower",
+]
+
+[[package]]
+name = "acyclic-harness-machines"
+version = "0.1.5"
+dependencies = [
+ "acyclic-harness",
+ "acyclic-machines",
+ "blake3",
+ "tokio",
  "uuid",
- "wasm-bindgen",
+]
+
+[[package]]
+name = "acyclic-harness-objects"
+version = "0.1.5"
+dependencies = [
+ "acyclic-harness",
+ "acyclic-objects",
+ "bytes",
+ "futures",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -163,8 +210,8 @@ name = "acyclic-inference"
 version = "0.1.5"
 dependencies = [
  "prost",
+ "prost-build",
  "prost-types",
- "protoc-bin-vendored",
  "sha2 0.10.9",
  "thiserror",
  "tokio",
@@ -173,6 +220,14 @@ dependencies = [
  "tonic-prost-build",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "acyclic-inference-wasm"
+version = "0.1.5"
+dependencies = [
+ "acyclic-inference",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -214,6 +269,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-machines-wasm"
+version = "0.1.5"
+dependencies = [
+ "acyclic-machines",
+ "futures",
+ "js-sys",
+ "prost",
+ "sha2 0.10.9",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "acyclic-native-runtime"
 version = "0.1.5"
 dependencies = [
@@ -239,6 +308,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "imbl",
+ "js-sys",
  "libc",
  "prost",
  "prost-types",
@@ -249,6 +319,18 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
+]
+
+[[package]]
+name = "acyclic-objects-wasm"
+version = "0.1.5"
+dependencies = [
+ "acyclic-objects",
+ "bytes",
+ "js-sys",
+ "prost",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -301,6 +383,20 @@ dependencies = [
  "tonic-prost-build",
  "tower",
  "uuid",
+]
+
+[[package]]
+name = "acyclic-stream-wasm"
+version = "0.1.5"
+dependencies = [
+ "acyclic-stream",
+ "bytes",
+ "futures",
+ "js-sys",
+ "prost",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -2460,15 +2556,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
-name = "ordered-float"
-version = "2.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2686,19 +2773,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "prost-reflect"
-version = "0.16.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01b80ea363c31af2de2b92e3c07ed1156628f7838c4afb4df75ee78a37fedbd1"
-dependencies = [
- "base64 0.22.1",
- "prost",
- "prost-types",
- "serde",
- "serde-value",
 ]
 
 [[package]]
@@ -3368,16 +3442,6 @@ checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
  "serde_derive",
-]
-
-[[package]]
-name = "serde-value"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
-dependencies = [
- "ordered-float",
- "serde",
 ]
 
 [[package]]

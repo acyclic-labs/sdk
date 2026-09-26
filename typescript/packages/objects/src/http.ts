@@ -1,4 +1,4 @@
-import type { BucketId, BucketRef, ByteRange, Condition, ETag, IdempotencyKey, ListPage, MultipartProvider, MultipartUpload, ObjectMetadata, ObjectsProvider, ObjectVersion, ReadTarget, SnapshotId, SnapshotRef, StoredObject, UploadedPart, UploadId, VersionId } from "./index.js";
+import type { BucketId, BucketRef, ByteRange, Condition, ETag, HeadOptions, IdempotencyKey, ListPage, MultipartProvider, MultipartUpload, ObjectMetadata, ObjectsProvider, ObjectVersion, ReadTarget, SnapshotId, SnapshotRef, StoredObject, UploadedPart, UploadId, VersionId } from "./index.js";
 
 export interface HttpObjectsOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
 
@@ -10,19 +10,19 @@ export class HttpObjectsProvider implements ObjectsProvider, MultipartProvider {
   headBucket(value: BucketRef) { return this.#call("buckets/head", { bucket: value }, bucket); }
   deleteBucket(value: BucketRef, idempotencyKey?: IdempotencyKey) { return this.#call("buckets/delete", { bucket: value, idempotencyKey }, bool); }
   put(value: BucketRef, objectKey: string, body: Uint8Array, metadata: ObjectMetadata, condition?: Condition, idempotencyKey?: IdempotencyKey) { return this.#call("objects/put", { bucket: value, objectKey, body, metadata, condition, idempotencyKey }, version); }
-  head(target: ReadTarget, objectKey: string, versionId?: VersionId) { return this.#call("objects/head", { target, objectKey, versionId }, version); }
+  head(target: ReadTarget, objectKey: string, options: HeadOptions = {}) { return this.#call("objects/head", { target, objectKey, ...options }, version); }
   get(target: ReadTarget, objectKey: string, versionId?: VersionId, range?: Omit<ByteRange, "total">) { return this.#call("objects/get", { target, objectKey, versionId, range }, stored); }
   delete(value: BucketRef, objectKey: string, versionId?: VersionId, condition?: Condition, idempotencyKey?: IdempotencyKey) { return this.#call("objects/delete", { bucket: value, objectKey, versionId, condition, idempotencyKey }, deleted); }
   list(target: ReadTarget, prefix: string, delimiter: string | undefined, versions: boolean, pageSize: number, continuation?: string) { return this.#call("objects/list", { target, prefix, delimiter, versions, pageSize, continuation }, page); }
   snapshot(value: BucketRef, idempotencyKey?: IdempotencyKey) { return this.#call("snapshots/create", { bucket: value, idempotencyKey }, snapshot); }
   destroySnapshot(value: SnapshotRef, idempotencyKey?: IdempotencyKey) { return this.#call("snapshots/destroy", { snapshot: value, idempotencyKey }, bool); }
   fork(source: ReadTarget, destinationName: string, idempotencyKey?: IdempotencyKey) { return this.#call("snapshots/fork", { source, destinationName, idempotencyKey }, bucket); }
-  createMultipart(value: BucketRef, objectKey: string, metadata: ObjectMetadata, idempotencyKey?: IdempotencyKey) { return this.#call("multipart/create", { bucket: value, objectKey, metadata, idempotencyKey }, multipart); }
+  createMultipart(value: BucketRef, objectKey: string, metadata: ObjectMetadata, condition?: Condition, idempotencyKey?: IdempotencyKey) { return this.#call("multipart/create", { bucket: value, objectKey, metadata, condition, idempotencyKey }, multipart); }
   uploadPart(upload: MultipartUpload, partNumber: number, body: Uint8Array, idempotencyKey?: IdempotencyKey) { return this.#call("multipart/upload-part", { upload, partNumber, body, idempotencyKey }, part); }
   listParts(upload: MultipartUpload) { return this.#call("multipart/list-parts", { upload }, value => array(value, part)); }
-  completeMultipart(upload: MultipartUpload, parts: readonly UploadedPart[], condition?: Condition, idempotencyKey?: IdempotencyKey) { return this.#call("multipart/complete", { upload, parts, condition, idempotencyKey }, version); }
+  completeMultipart(upload: MultipartUpload, parts: readonly UploadedPart[], idempotencyKey?: IdempotencyKey) { return this.#call("multipart/complete", { upload, parts, idempotencyKey }, version); }
   abortMultipart(upload: MultipartUpload, idempotencyKey?: IdempotencyKey) { return this.#call("multipart/abort", { upload, idempotencyKey }, bool); }
-  async #call<Value>(route: string, request: unknown, project: Decoder<Value>): Promise<Value> { const response = await this.#fetcher(new URL(`v1/objects/${route}`, this.#endpoint), { method: "POST", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: encode(request) }); const bytes = await boundedBytes(response, this.#maximum); const text = new TextDecoder().decode(bytes); if (!response.ok) throw new ObjectsTransportError(text || `HTTP ${response.status}`, response.status); try { return project(decode(text)); } catch (error) { if (error instanceof ObjectsTransportError) throw error; throw new ObjectsTransportError(`invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); } }
+  async #call<Value>(route: string, request: unknown, project: Decoder<Value>): Promise<Value> { const response = await this.#fetcher(new URL(`v1/objects/${route}`, this.#endpoint), { method: "POST", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: encode(request) }); const bytes = await boundedBytes(response, this.#maximum); if (!response.ok) throw new ObjectsTransportError(`HTTP ${response.status}`, response.status); try { return project(decode(new TextDecoder().decode(bytes))); } catch { throw new ObjectsTransportError(`invalid ${route} response`, response.status); } }
 }
 export class ObjectsTransportError extends Error { constructor(message: string, readonly status: number) { super(message); } }
 async function boundedBytes(response: Response, maximum: number): Promise<Uint8Array> {

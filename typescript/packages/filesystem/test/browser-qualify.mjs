@@ -11,6 +11,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +20,14 @@ const PAGES = ["browser-smoke.html", "browser-multitab.html"];
 // The one deadline a page has; pages wait on their own actors without one.
 const PAGE_DEADLINE_MS = 600_000;
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const require = createRequire(import.meta.url);
+// Resolve dependencies through Node's package resolver instead of assuming
+// that Bun has exposed a workspace-level node_modules symlink. The browser
+// import map uses the stable /node_modules URL; this table makes that URL
+// work with both isolated and hoisted installs.
+const dependencyRoots = new Map([
+  ["/node_modules/@bufbuild/protobuf/", resolve(require.resolve("@bufbuild/protobuf"), "../../..")],
+]);
 const types = {
   ".html": "text/html",
   ".js": "text/javascript",
@@ -45,8 +54,13 @@ function chromeExecutable() {
 
 async function serve() {
   const server = createServer((request, response) => {
-    const path = normalize(join(root, decodeURIComponent(new URL(request.url, "http://host").pathname)));
-    if (!path.startsWith(root + sep) || !existsSync(path) || !statSync(path).isFile()) {
+    const pathname = decodeURIComponent(new URL(request.url, "http://host").pathname);
+    const dependency = [...dependencyRoots].find(([prefix]) => pathname.startsWith(prefix));
+    const base = dependency?.[1] ?? root;
+    const relative = dependency === undefined ? pathname : pathname.slice(dependency[0].length);
+    const path = normalize(join(base, relative));
+    const boundary = base.endsWith(sep) ? base : `${base}${sep}`;
+    if (!path.startsWith(boundary) || !existsSync(path) || !statSync(path).isFile()) {
       response.writeHead(404).end();
       return;
     }

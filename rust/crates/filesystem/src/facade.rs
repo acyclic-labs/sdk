@@ -31,17 +31,18 @@ use crate::kernel::{
     apply_attribute_mutations_async, apply_generation_mutations_retaining_async,
     apply_regular_mutation_async, authenticate_generation_export_manifest_async, build_blob_async,
     build_checkpoint_async, build_generation_export_manifest_async, classify_rebase_async,
-    decode_file_metadata, decode_published_generation, decode_volume_created,
-    decode_workspace_deleted, diff_file_records_async, diff_tree_entries_async,
-    encode_attribute_page, encode_file_metadata, encode_file_table_page, encode_generation_root,
-    encode_retention_created, encode_tree_page, encode_volume_created, encode_workspace_deleted,
-    export_generation_batch_async, generation_root_parent_count, import_generation_batch_async,
-    list_attributes_async, list_tree_entries_async, list_tree_entries_at_or_after_async,
-    lookup_attribute_async, lookup_file_record_async, lookup_file_records_async,
-    merge_generation_async, plan_extent_range_async, prove_generation_closure_async,
-    publish_generation_async, publish_generation_async_with_context,
-    publish_generation_async_with_permit, read_blob_range_async, read_file_range_async,
-    retention_authority_id, seek_extent_async, volume_authority_id,
+    contextual_publication_fingerprint, decode_file_metadata, decode_published_generation,
+    decode_volume_created, decode_workspace_deleted, diff_file_records_async,
+    diff_tree_entries_async, encode_attribute_page, encode_file_metadata, encode_file_table_page,
+    encode_generation_root, encode_retention_created, encode_tree_page, encode_volume_created,
+    encode_workspace_deleted, export_generation_batch_async, generation_root_parent_count,
+    import_generation_batch_async, list_attributes_async, list_tree_entries_async,
+    list_tree_entries_at_or_after_async, lookup_attribute_async, lookup_file_record_async,
+    lookup_file_records_async, merge_generation_async, plan_extent_range_async,
+    prove_generation_closure_async, publish_generation_async,
+    publish_generation_async_with_context, publish_generation_async_with_permit,
+    read_blob_range_async, read_file_range_async, retention_authority_id, seek_extent_async,
+    volume_authority_id,
 };
 #[cfg(test)]
 use crate::kernel::{
@@ -67,7 +68,7 @@ use crate::performance::{
 use crate::storage::{
     AppendOutcome, AuthorityStoreError, ByteRange, FenceOutcome, HashedObject,
     OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest, ObjectReadRetention,
-    ObjectStoreError, PublicationPermit, ReplayLimit,
+    ObjectStoreError, PublicationPermit, ReplayLimit, object_digest,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use acyclic_native_runtime::OwnershipAnchor;
@@ -75,6 +76,7 @@ use acyclic_native_runtime::OwnershipAnchor;
 use acyclic_objects::ObjectsProvider as _;
 use bytes::Bytes;
 use futures::{StreamExt as _, stream};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 #[cfg(feature = "native-mount")]
 use std::marker::PhantomData;
@@ -130,6 +132,8 @@ const WORKSPACE_JOIN_OPERATION_DOMAIN: &[u8] = b"acyclic-fs-workspace-join-opera
 pub(crate) enum WorkspaceJoinOutcome {
     Applied(GenerationId),
     AlreadyApplied(GenerationId),
+    Joined(GenerationId, Digest),
+    AlreadyJoined(GenerationId, Digest),
     NoChanges(GenerationId),
     Stale(GenerationId),
     Conflicted(Vec<MergeConflict>, bool),
@@ -154,44 +158,166 @@ pub(crate) struct WorkspaceJoinRequest<'a, A, O> {
 
 impl<A, O> WorkspaceJoinRequest<'_, A, O> {
     fn operation_context(&self) -> Digest {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(WORKSPACE_JOIN_OPERATION_DOMAIN);
-        hasher.update(&self.source.workspace.volume.id.into_bytes());
-        hasher.update(self.source.id.digest().as_bytes());
-        hasher.update(&self.target.id.into_bytes());
-        hasher.update(self.expected_target.digest().as_bytes());
-        hasher.update(&self.base.volume_id.into_bytes());
-        hasher.update(self.base.id.digest().as_bytes());
-        hasher.update(&[match self.history {
-            crate::workspace::JoinHistory::Merge => 1,
-            crate::workspace::JoinHistory::Rebase => 2,
-            crate::workspace::JoinHistory::Squash => 3,
-            crate::workspace::JoinHistory::CherryPick => 4,
-        }]);
-        hasher.update(&self.maximum_generations.to_le_bytes());
-        hasher.update(&self.maximum_changes.to_le_bytes());
-        hasher.update(&self.maximum_conflicts.to_le_bytes());
-        for (conflict, resolution) in &self.resolutions {
-            match conflict {
-                MergeConflict::File(file_id) => {
-                    hasher.update(&[0]);
-                    hasher.update(&file_id.into_bytes());
-                }
-                MergeConflict::Binding { directory_id, name } => {
-                    hasher.update(&[1]);
-                    hasher.update(&directory_id.into_bytes());
-                    hasher.update(&[match name.encoding() {
-                        NameEncoding::Utf8 => 0,
-                        NameEncoding::PosixBytes => 1,
-                        NameEncoding::WindowsUtf16Le => 2,
-                    }]);
-                    hasher.update(&(name.as_bytes().len() as u64).to_le_bytes());
-                    hasher.update(name.as_bytes());
-                }
+        let resolutions = hash_join_resolutions(&self.resolutions);
+        workspace_join_context(
+            self.source.workspace.volume.id,
+            self.source.id,
+            self.target.id,
+            self.expected_target,
+            self.base,
+            self.history,
+            self.maximum_generations,
+            self.maximum_changes,
+            self.maximum_conflicts,
+            resolutions,
+        )
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "join digest binds every checked Filesystem generation and limit"
+)]
+fn workspace_join_context(
+    source_workspace: VolumeId,
+    source_generation: GenerationId,
+    target_workspace: VolumeId,
+    expected_target: GenerationId,
+    base: WorkspaceCommonAncestor,
+    history: crate::workspace::JoinHistory,
+    maximum_generations: u32,
+    maximum_changes: u32,
+    maximum_conflicts: u32,
+    resolutions: Digest,
+) -> Digest {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(WORKSPACE_JOIN_OPERATION_DOMAIN);
+    hasher.update(&source_workspace.into_bytes());
+    hasher.update(source_generation.digest().as_bytes());
+    hasher.update(&target_workspace.into_bytes());
+    hasher.update(expected_target.digest().as_bytes());
+    hasher.update(&base.volume_id.into_bytes());
+    hasher.update(base.id.digest().as_bytes());
+    hasher.update(&[match history {
+        crate::workspace::JoinHistory::Merge => 1,
+        crate::workspace::JoinHistory::Rebase => 2,
+        crate::workspace::JoinHistory::Squash => 3,
+        crate::workspace::JoinHistory::CherryPick => 4,
+    }]);
+    hasher.update(&maximum_generations.to_le_bytes());
+    hasher.update(&maximum_changes.to_le_bytes());
+    hasher.update(&maximum_conflicts.to_le_bytes());
+    hasher.update(resolutions.as_bytes());
+    Digest::from_bytes(*hasher.finalize().as_bytes())
+}
+
+fn hash_join_resolutions(resolutions: &BTreeMap<MergeConflict, MergeConflictResolution>) -> Digest {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"acyclic-fs-workspace-join-resolutions-v1\0");
+    for (conflict, resolution) in resolutions {
+        match conflict {
+            MergeConflict::File(file_id) => {
+                hasher.update(&[0]);
+                hasher.update(&file_id.into_bytes());
             }
-            hash_merge_resolution(&mut hasher, resolution);
+            MergeConflict::Binding { directory_id, name } => {
+                hasher.update(&[1]);
+                hasher.update(&directory_id.into_bytes());
+                hasher.update(&[match name.encoding() {
+                    NameEncoding::Utf8 => 0,
+                    NameEncoding::PosixBytes => 1,
+                    NameEncoding::WindowsUtf16Le => 2,
+                }]);
+                hasher.update(&(name.as_bytes().len() as u64).to_le_bytes());
+                hasher.update(name.as_bytes());
+            }
         }
-        Digest::from_bytes(*hasher.finalize().as_bytes())
+        hash_merge_resolution(&mut hasher, resolution);
+    }
+    Digest::from_bytes(*hasher.finalize().as_bytes())
+}
+
+/// Restart-safe proof inputs for one committed workspace join. Verification
+/// compares the provider's durable operation fingerprint, so serializing this
+/// value never grants authority or makes a forged claim self-attesting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JoinCommitWitness {
+    pub(crate) source_workspace: VolumeId,
+    pub(crate) source_generation: GenerationId,
+    pub(crate) target_workspace: VolumeId,
+    pub(crate) expected_target: GenerationId,
+    pub(crate) base_workspace: VolumeId,
+    pub(crate) base_generation: GenerationId,
+    pub(crate) history: crate::workspace::JoinHistory,
+    pub(crate) maximum_generations: u32,
+    pub(crate) maximum_changes: u32,
+    pub(crate) maximum_conflicts: u32,
+    pub(crate) resolutions_digest: Digest,
+    pub(crate) expected_head: Head,
+    pub(crate) operation_id: OperationId,
+    pub(crate) result_generation: GenerationId,
+}
+
+impl JoinCommitWitness {
+    /// Exact source workspace recorded by the join.
+    #[must_use]
+    pub const fn source_workspace(self) -> VolumeId {
+        self.source_workspace
+    }
+
+    /// Exact source generation recorded by the join.
+    #[must_use]
+    pub const fn source_generation(self) -> GenerationId {
+        self.source_generation
+    }
+
+    /// Exact target workspace recorded by the join.
+    #[must_use]
+    pub const fn target_workspace(self) -> VolumeId {
+        self.target_workspace
+    }
+
+    /// CAS target observed when the join was planned.
+    #[must_use]
+    pub const fn expected_target(self) -> GenerationId {
+        self.expected_target
+    }
+
+    /// Immutable generation published by the join.
+    #[must_use]
+    pub const fn result_generation(self) -> GenerationId {
+        self.result_generation
+    }
+
+    /// Stable Filesystem retry identity bound to the committed join.
+    #[must_use]
+    pub const fn operation_id(self) -> OperationId {
+        self.operation_id
+    }
+
+    /// Exact history form used to publish the result.
+    #[must_use]
+    pub const fn history(self) -> crate::workspace::JoinHistory {
+        self.history
+    }
+
+    fn operation_context(self) -> Digest {
+        workspace_join_context(
+            self.source_workspace,
+            self.source_generation,
+            self.target_workspace,
+            self.expected_target,
+            WorkspaceCommonAncestor {
+                volume_id: self.base_workspace,
+                id: self.base_generation,
+            },
+            self.history,
+            self.maximum_generations,
+            self.maximum_changes,
+            self.maximum_conflicts,
+            self.resolutions_digest,
+        )
     }
 }
 
@@ -3249,6 +3375,68 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await
     }
 
+    /// Computes the immutable source-parent identity used by a true merge
+    /// into this target. An ordinary target mutation cannot manufacture this
+    /// second parent without passing through Filesystem's join publication.
+    pub(crate) async fn workspace_normalized_join_parent(
+        &self,
+        source: &crate::Generation<A, O>,
+        target: &crate::Generation<A, O>,
+    ) -> Result<GenerationId, crate::workspace::WorkspaceError> {
+        if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
+            || !Arc::ptr_eq(&self.inner, &target.workspace.volume.fs.inner)
+            || source.workspace.volume.config != target.workspace.volume.config
+        {
+            return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace);
+        }
+        let cancellation = CancellationToken::new();
+        let source_object = ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: source.id.digest(),
+        };
+        let target_object = ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: target.id.digest(),
+        };
+        let (source_root, _) = read_generation_root(
+            &self.inner.objects,
+            source_object,
+            source.workspace.volume.config,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        let (target_root, _) = read_generation_root(
+            &self.inner.objects,
+            target_object,
+            target.workspace.volume.config,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(crate::workspace::WorkspaceError::engine)?;
+        if source_root.volume_id != source.workspace.volume.id
+            || target_root.volume_id != target.workspace.volume.id
+            || source_root.root_file_id != target_root.root_file_id
+        {
+            return Err(crate::workspace::WorkspaceError::IncompatibleWorkspace);
+        }
+        let normalized = GenerationRoot {
+            volume_id: target.workspace.volume.id,
+            root_file_id: target_root.root_file_id,
+            file_table: source_root.file_table,
+            parents: source_root.parents,
+            required_features: source_root.required_features,
+        };
+        let encoded = encode_generation_root(&normalized)
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        Ok(GenerationId::new(object_digest(
+            ObjectKind::GenerationRoot,
+            &encoded,
+        )))
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn workspace_join_changes(
         &self,
@@ -3363,6 +3551,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     .map_err(crate::workspace::WorkspaceError::engine)
             })
             .transpose()
+    }
+
+    pub(crate) async fn verify_workspace_join_commit(
+        &self,
+        target: &Volume<A, O>,
+        witness: &JoinCommitWitness,
+    ) -> Result<bool, crate::workspace::WorkspaceError> {
+        if target.id != witness.target_workspace
+            || witness.maximum_generations == 0
+            || witness.maximum_changes == 0
+            || witness.maximum_conflicts == 0
+            || witness.source_workspace == witness.target_workspace
+            || witness.expected_target == witness.result_generation
+        {
+            return Ok(false);
+        }
+        let observed = self
+            .observe_volume_operation(
+                target.id,
+                witness.operation_id,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        let Some(commit) = observed.value else {
+            return Ok(false);
+        };
+        let committed_generation = generation_from_record(&commit, target.id, observed.work)
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        if committed_generation.digest != witness.result_generation.digest() {
+            return Ok(false);
+        }
+        let expected = contextual_publication_fingerprint(
+            PublishGenerationRequest {
+                authority_id: volume_authority_id(target.id),
+                volume_id: target.id,
+                epoch: witness.expected_head.epoch,
+                expected: witness.expected_head,
+                operation_id: witness.operation_id,
+                generation_root: ObjectId {
+                    kind: ObjectKind::GenerationRoot,
+                    digest: witness.result_generation.digest(),
+                },
+            },
+            witness.operation_context(),
+        );
+        Ok(commit.fingerprint == expected)
     }
 
     pub(crate) async fn workspace_conflict_record(
@@ -3877,6 +4113,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         request: WorkspaceJoinRequest<'_, A, O>,
     ) -> Result<WorkspaceJoinOutcome, crate::workspace::WorkspaceError> {
+        let resolutions_digest = hash_join_resolutions(&request.resolutions);
         let operation_context = request.operation_context();
         let WorkspaceJoinRequest {
             target,
@@ -4042,11 +4279,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .map_err(crate::workspace::WorkspaceError::engine)?;
         Ok(match publication.outcome {
             AppendOutcome::Committed(_) => {
-                WorkspaceJoinOutcome::Applied(publication.proof.generation_id)
+                WorkspaceJoinOutcome::Joined(publication.proof.generation_id, resolutions_digest)
             }
-            AppendOutcome::AlreadyCommitted(_) => {
-                WorkspaceJoinOutcome::AlreadyApplied(publication.proof.generation_id)
-            }
+            AppendOutcome::AlreadyCommitted(_) => WorkspaceJoinOutcome::AlreadyJoined(
+                publication.proof.generation_id,
+                resolutions_digest,
+            ),
             AppendOutcome::Conflict { .. } => {
                 let (actual, _, _) = target
                     .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)

@@ -1,7 +1,7 @@
 syntax = "proto3";
 package acyclic.filesystem.v2;
 
-import "harness/v1/harness.proto";
+import "harness/v2/harness.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/filesystem/v2;filesystemv2";
 
@@ -15,6 +15,38 @@ message WorkspaceRef {
 message GenerationRef {
   WorkspaceRef workspace = 1;
   bytes generation_id = 2;
+}
+
+// Durable context control-plane records. Paths are UTF-8 native absolute paths;
+// file contents and credentials never travel in these records. The repeated
+// roots are ordered by root_id, and duplicate IDs are invalid.
+message WorkspaceContextRoot {
+  bytes root_id = 1;
+  string source_path = 2;
+  bytes workspace_id = 3;
+  string workspace_name = 4;
+  optional bytes parent_workspace_id = 5;
+  optional string mount_path = 6;
+}
+message WorkspaceContextRoots {
+  repeated WorkspaceContextRoot roots = 1;
+}
+enum WorkspaceContextState {
+  WORKSPACE_CONTEXT_STATE_UNSPECIFIED = 0;
+  WORKSPACE_CONTEXT_STATE_ACTIVE = 1;
+  WORKSPACE_CONTEXT_STATE_FROZEN = 2;
+  WORKSPACE_CONTEXT_STATE_DISCARDED = 3;
+}
+message WorkspaceContextSnapshot {
+  uint32 version = 1;
+  uint64 revision = 2;
+  bytes context_id = 3;
+  optional bytes parent_context_id = 4;
+  repeated WorkspaceContextRoot roots = 5;
+  WorkspaceContextState state = 6;
+}
+message WorkspaceContextDiscard {
+  repeated bytes context_ids = 1;
 }
 message OperationOptions {
   bytes idempotency_key = 1;
@@ -198,10 +230,10 @@ message Workspace {
 }
 
 message HandshakeRequest {
-  acyclic.harness.v1.HandshakeRequest harness = 1;
+  acyclic.harness.v2.HandshakeRequest harness = 1;
 }
 message HandshakeResponse {
-  acyclic.harness.v1.HandshakeResponse harness = 1;
+  acyclic.harness.v2.HandshakeResponse harness = 1;
   Capabilities capabilities = 2;
 }
 message CreateWorkspaceRequest {

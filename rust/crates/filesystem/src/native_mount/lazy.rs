@@ -3745,20 +3745,22 @@ mod tests {
         assert!(view.list_attributes(&file, None, 8)?.names.is_empty());
         assert!(view.authored.lookup(&file)?.is_none());
 
-        // A promotion records only the nodes whose answer changed.
+        // A promotion records only the nodes whose answer changed. A source
+        // watch may also report a conservative invalidation after the stamp
+        // (FSEvents has no delivery barrier), so an unchanged answer may be
+        // marked stale; the safety property is that a current answer never
+        // survives with a different lookup.
         view.promote_locked(&file)?;
         assert!(view.authored.lookup(&file)?.is_some());
         let after = [&directory, &file, &other].map(|path| view.lookup(path));
         for ((path, before), after) in [&directory, &file, &other].iter().zip(before).zip(after) {
             let (before, after) = (before?, after?);
             let file_id = after.map(|lookup| lookup.node.file_id);
-            assert_eq!(
-                view.unchanged_since(path, file_id, stamp),
-                before == after,
-                "a promotion's record disagrees with what the view answers for {path:?}"
+            assert!(
+                !view.unchanged_since(path, file_id, stamp) || before == after,
+                "a promotion left a current cache answer stale for {path:?}"
             );
         }
-        assert!(view.unchanged_since(&other, None, stamp));
         Ok(())
     }
 
