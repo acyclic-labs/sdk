@@ -232,6 +232,12 @@ message SchedulerEventEnvelope {
   string idempotency_key = 4;
   bytes canonical_event_json = 5;
   bytes event_digest = 6;
+  // Wall-clock time captured before the first durable append attempt. Old
+  // records have no value and must not be assigned a billing time on replay.
+  optional uint64 committed_at_ms = 7;
+  // Binds the new commit time and record identity to the event digest. Legacy
+  // untimed records omit this field; timed records must carry it.
+  bytes record_digest = 8;
 }
 
 service HarnessService {

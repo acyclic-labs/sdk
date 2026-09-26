@@ -863,6 +863,22 @@ export declare type SchedulerEventEnvelope = Message<"acyclic.harness.v1.Schedul
    * @generated from field: bytes event_digest = 6;
    */
   eventDigest: Uint8Array;
+
+  /**
+   * Wall-clock time captured before the first durable append attempt. Old
+   * records have no value and must not be assigned a billing time on replay.
+   *
+   * @generated from field: optional uint64 committed_at_ms = 7;
+   */
+  committedAtMs?: bigint | undefined;
+
+  /**
+   * Binds the new commit time and record identity to the event digest. Legacy
+   * untimed records omit this field; timed records must carry it.
+   *
+   * @generated from field: bytes record_digest = 8;
+   */
+  recordDigest: Uint8Array;
 };
 
 /**

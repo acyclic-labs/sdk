@@ -315,6 +315,14 @@ pub struct SchedulerEventEnvelope {
     pub canonical_event_json: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "6")]
     pub event_digest: ::prost::alloc::vec::Vec<u8>,
+    /// Wall-clock time captured before the first durable append attempt. Old
+    /// records have no value and must not be assigned a billing time on replay.
+    #[prost(uint64, optional, tag = "7")]
+    pub committed_at_ms: ::core::option::Option<u64>,
+    /// Binds the new commit time and record identity to the event digest. Legacy
+    /// untimed records omit this field; timed records must carry it.
+    #[prost(bytes = "vec", tag = "8")]
+    pub record_digest: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

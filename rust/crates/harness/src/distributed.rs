@@ -19,12 +19,24 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 const COORDINATOR_PATH: &str = "harness/coordinator/events";
 const READ_PAGE_SIZE: u32 = 1_024;
 const COORDINATOR_WIRE_VERSION: &str = "1";
 const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v1";
+type DecodedCoordinatorEvent = (
+    u64,
+    OperationId,
+    String,
+    [u8; 32],
+    Option<u64>,
+    SchedulerEvent,
+);
 
 /// Pull worker capacity and placement identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -114,6 +126,9 @@ pub struct CommittedSchedulerEvent {
     pub operation_id: OperationId,
     /// Digest of the exact canonical event bytes retained by the coordinator.
     pub event_digest: [u8; 32],
+    /// Time captured for the durable append. Absent on records written before
+    /// this field existed; consumers must not invent a time during replay.
+    pub committed_at_ms: Option<u64>,
     /// Decoded scheduler transition.
     pub event: SchedulerEvent,
 }
@@ -155,7 +170,8 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
                 "coordinator event page has a cursor gap".into(),
             ));
         }
-        let (revision, operation_id, _, event_digest, event) = decode(&record.value)?;
+        let (revision, operation_id, _, event_digest, committed_at_ms, event) =
+            decode(&record.value)?;
         if revision != expected.saturating_add(1)
             || scheduler_event_operation(&event) != operation_id
         {
@@ -167,6 +183,7 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
             revision,
             operation_id,
             event_digest,
+            committed_at_ms,
             event,
         });
         expected = revision;
@@ -213,7 +230,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 break;
             }
             for record in &page {
-                let (revision, operation_id, key, digest, event) = decode(&record.value)?;
+                let (revision, operation_id, key, digest, _, event) = decode(&record.value)?;
                 if revision != record.sequence + 1 {
                     return Err(Error::Storage("coordinator revision is not gapless".into()));
                 }
@@ -390,12 +407,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .revision
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("coordinator revision exhausted".into()))?;
+        let committed_at_ms = current_time_millis()?;
         let bytes = encode(
             revision,
             operation_id,
             idempotency_key.as_str(),
             digest,
             canonical,
+            Some(committed_at_ms),
         );
         let stream_key = stream_key(idempotency_key.as_str())?;
         let outcome = match self
@@ -644,28 +663,78 @@ fn encode(
     key: &str,
     digest: [u8; 32],
     canonical: Vec<u8>,
+    committed_at_ms: Option<u64>,
 ) -> Vec<u8> {
-    wire::SchedulerEventEnvelope {
+    let mut envelope = wire::SchedulerEventEnvelope {
         protocol: Some(coordinator_protocol_identity()),
         revision,
         operation_id: operation_id.to_string(),
         idempotency_key: key.into(),
         canonical_event_json: canonical,
         event_digest: digest.to_vec(),
+        committed_at_ms,
+        record_digest: Vec::new(),
+    };
+    if let Some(time) = committed_at_ms {
+        envelope.record_digest = coordinator_record_digest(&envelope, time).to_vec();
     }
-    .encode_to_vec()
+    envelope.encode_to_vec()
 }
 
-fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], SchedulerEvent)> {
+fn coordinator_record_digest(envelope: &wire::SchedulerEventEnvelope, time: u64) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"acyclic.harness.coordinator.record.v1\0");
+    hasher.update(&envelope.revision.to_le_bytes());
+    for value in [
+        envelope.operation_id.as_bytes(),
+        envelope.idempotency_key.as_bytes(),
+    ] {
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    }
+    hasher.update(&envelope.event_digest);
+    hasher.update(&time.to_le_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+fn current_time_millis() -> Result<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Error::Invalid("coordinator clock predates Unix epoch".into()))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| Error::Invalid("coordinator clock exceeds supported range".into()))
+}
+
+fn decode(bytes: &[u8]) -> Result<DecodedCoordinatorEvent> {
     let envelope = wire::SchedulerEventEnvelope::decode(bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
     validate_coordinator_protocol(envelope.protocol.as_ref())?;
-    let digest: [u8; 32] = envelope
+    let digest: &[u8; 32] = envelope
         .event_digest
+        .as_slice()
         .try_into()
         .map_err(|_| Error::Storage("scheduler digest must be 32 bytes".into()))?;
-    if *blake3::hash(&envelope.canonical_event_json).as_bytes() != digest {
+    if blake3::hash(&envelope.canonical_event_json).as_bytes() != digest {
         return Err(Error::Storage("scheduler event digest mismatch".into()));
+    }
+    match envelope.committed_at_ms {
+        Some(0) => {
+            return Err(Error::Storage(
+                "scheduler event has a zero commit time".into(),
+            ));
+        }
+        Some(time)
+            if envelope.record_digest.as_slice() != coordinator_record_digest(&envelope, time) =>
+        {
+            return Err(Error::Storage("scheduler record digest mismatch".into()));
+        }
+        None if !envelope.record_digest.is_empty() => {
+            return Err(Error::Storage(
+                "untimed scheduler event has a record digest".into(),
+            ));
+        }
+        Some(_) | None => {}
     }
     let event = serde_json::from_slice(&envelope.canonical_event_json)
         .map_err(|error| Error::Storage(error.to_string()))?;
@@ -673,7 +742,8 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], Scheduler
         envelope.revision,
         OperationId::parse(&envelope.operation_id)?,
         envelope.idempotency_key,
-        digest,
+        *digest,
+        envelope.committed_at_ms,
         event,
     ))
 }
@@ -778,9 +848,63 @@ mod tests {
         };
         assert_eq!(event.revision, 1);
         assert_eq!(event.operation_id, operation_id);
+        assert!(event.committed_at_ms.is_some_and(|time| time > 0));
         assert!(matches!(event.event, SchedulerEvent::Declared { .. }));
+        let replayed = read_coordinator_event_page(&client, 0, 1).await?;
+        assert_eq!(
+            replayed.first().and_then(|item| item.committed_at_ms),
+            event.committed_at_ms
+        );
         assert!(read_coordinator_event_page(&client, 1, 1).await?.is_empty());
         assert!(read_coordinator_event_page(&client, 0, 0).await.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn older_coordinator_records_have_no_billing_time() -> Result<()> {
+        let operation_id = OperationId::from_bytes([42; 16]);
+        let event = SchedulerEvent::Declared {
+            spec: Box::new(spec(operation_id, 1)),
+        };
+        let canonical =
+            serde_json::to_vec(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+        let digest = *blake3::hash(&canonical).as_bytes();
+        let old = encode(1, operation_id, "old", digest, canonical, None);
+        let (_, _, _, _, committed_at_ms, decoded) = decode(&old)?;
+        assert_eq!(committed_at_ms, None);
+        assert_eq!(decoded, event);
+        Ok(())
+    }
+
+    #[test]
+    fn committed_time_is_bound_to_verified_record_identity() -> Result<()> {
+        let operation_id = OperationId::from_bytes([43; 16]);
+        let event = SchedulerEvent::Declared {
+            spec: Box::new(spec(operation_id, 1)),
+        };
+        let canonical =
+            serde_json::to_vec(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+        let digest = *blake3::hash(&canonical).as_bytes();
+        let bytes = encode(
+            1,
+            operation_id,
+            "timed",
+            digest,
+            canonical,
+            Some(1_700_000_000_000),
+        );
+        let original = wire::SchedulerEventEnvelope::decode(bytes.as_slice())
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(decode(&bytes).is_ok());
+        let mut changed = original.clone();
+        changed.committed_at_ms = Some(1_700_000_000_001);
+        assert!(decode(&changed.encode_to_vec()).is_err());
+        let mut changed = original.clone();
+        changed.operation_id = OperationId::from_bytes([44; 16]).to_string();
+        assert!(decode(&changed.encode_to_vec()).is_err());
+        let mut changed = original;
+        changed.record_digest.clear();
+        assert!(decode(&changed.encode_to_vec()).is_err());
         Ok(())
     }
 
