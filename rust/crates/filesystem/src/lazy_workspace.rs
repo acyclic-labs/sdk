@@ -2930,7 +2930,7 @@ where
         work: &mut WorkCounters,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> Result<bool, LazyWorkspaceError> {
+    ) -> Result<MountedDirectory, LazyWorkspaceError> {
         in_heap(move || async move {
             let candidate = checkout
                 .lookup_no_follow(directory, remaining_work(*work, budget)?, cancellation)
@@ -2941,9 +2941,9 @@ where
                 .tombstoned_measured(overlay, path, remaining_work(*work, budget)?, cancellation)
                 .await?;
             *work = account_work(*work, tombstoned.work, budget)?;
-            match candidate.value.record {
-                None if tombstoned.value => Err(LazyWorkspaceError::NotFound),
-                Some(_) if tombstoned.value => Ok(true),
+            let replaces_source = match candidate.value.record {
+                None if tombstoned.value => return Err(LazyWorkspaceError::NotFound),
+                Some(_) if tombstoned.value => true,
                 Some(record) => {
                     let source = self
                         .source
@@ -2951,12 +2951,16 @@ where
                         .await
                         .map_err(|failure| failure.error)?;
                     *work = account_work(*work, source.work, budget)?;
-                    Ok(source
+                    source
                         .value
-                        .is_none_or(|node| self.source_file_id(&node) != record.file_id))
+                        .is_none_or(|node| self.source_file_id(&node) != record.file_id)
                 }
-                None => Ok(false),
-            }
+                None => false,
+            };
+            Ok(MountedDirectory {
+                replaces_source,
+                authored: candidate.value.record.is_some(),
+            })
         })
         .await
     }
@@ -3025,10 +3029,14 @@ where
             {
                 phase = LazyDirectoryPhase::Authored(None);
             }
+            // Whether the checkout holds the directory: a child can be
+            // authored only in a directory that is.
+            let mut directory_authored = None;
             if matches!(phase, LazyDirectoryPhase::Source(None))
                 && !directory.is_root()
                 && let Some(checkout) = mounted.as_deref_mut()
-                && self
+            {
+                let mounted_directory = self
                     .mounted_directory_replaces_source(
                         path,
                         &directory,
@@ -3039,9 +3047,11 @@ where
                         budget,
                         cancellation,
                     )
-                    .await?
-            {
-                phase = LazyDirectoryPhase::Authored(None);
+                    .await?;
+                directory_authored = Some(mounted_directory.authored);
+                if mounted_directory.replaces_source {
+                    phase = LazyDirectoryPhase::Authored(None);
+                }
             }
             let mut source_absent = false;
             loop {
@@ -3159,6 +3169,47 @@ where
                             live_bytes,
                             budget,
                         )?;
+                        // A child's own fact is read only when the overlay
+                        // records anything beneath the directory at all.
+                        let facts_beneath = self
+                            .overlay_has_beneath(
+                                state.overlay,
+                                path,
+                                remaining_work(work, budget)?,
+                                cancellation,
+                            )
+                            .await?;
+                        work = account_nested_with_live_memory(
+                            work,
+                            facts_beneath.work,
+                            live_bytes,
+                            budget,
+                        )?;
+                        let directory_authored = match directory_authored {
+                            Some(authored) => authored,
+                            None => match mounted.as_deref_mut() {
+                                Some(checkout) if !directory.is_root() => {
+                                    let record = checkout
+                                        .lookup_no_follow(
+                                            &directory,
+                                            remaining_work(work, budget)?,
+                                            cancellation,
+                                        )
+                                        .await
+                                        .map_err(|failure| {
+                                            LazyWorkspaceError::Workspace(failure.error.to_string())
+                                        })?;
+                                    work = account_nested_with_live_memory(
+                                        work,
+                                        record.work,
+                                        live_bytes,
+                                        budget,
+                                    )?;
+                                    record.value.record.is_some()
+                                }
+                                _ => true,
+                            },
+                        };
                         for entry in &page.entries {
                             let child_path = logical_child_path(path, &entry.name);
                             if let Some(child) = child_path.as_ref() {
@@ -3171,19 +3222,28 @@ where
                                     slots.push((true, None));
                                     continue;
                                 }
-                                let fact = self
-                                    .overlay_fact_measured(
-                                        state.overlay,
-                                        &self.canonical_path(child)?,
-                                        remaining_work(work, budget)?,
-                                        cancellation,
-                                    )
-                                    .await?;
-                                work = account_nested_with_live_memory(
-                                    work, fact.work, live_bytes, budget,
-                                )?;
-                                if matches!(fact.value, Some(LazyOverlayChange::Tombstone)) {
+                                let tombstoned = if facts_beneath.value {
+                                    let fact = self
+                                        .overlay_fact_measured(
+                                            state.overlay,
+                                            &self.canonical_path(child)?,
+                                            remaining_work(work, budget)?,
+                                            cancellation,
+                                        )
+                                        .await?;
+                                    work = account_nested_with_live_memory(
+                                        work, fact.work, live_bytes, budget,
+                                    )?;
+                                    matches!(fact.value, Some(LazyOverlayChange::Tombstone))
+                                } else {
+                                    false
+                                };
+                                if tombstoned {
                                     slots.push((true, None));
+                                    continue;
+                                }
+                                if !directory_authored {
+                                    slots.push((false, None));
                                     continue;
                                 }
                                 let child = self.namespace_path(child)?;
@@ -3202,7 +3262,7 @@ where
                                 )
                             })?;
                         authored.resize(source_paths.len(), false);
-                        if !source_paths.is_empty() {
+                        if directory_authored && !source_paths.is_empty() {
                             let generation = if mounted.is_some() {
                                 None
                             } else {
@@ -4467,6 +4527,50 @@ where
         }
     }
 
+    /// Whether the overlay records a fact for any path strictly beneath
+    /// `directory`: such paths are exactly those after `directory/` in the
+    /// overlay's order that start with it, so one descent to the first of
+    /// them decides.
+    async fn overlay_has_beneath(
+        &self,
+        mut root: LazyOverlayId,
+        directory: &str,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<OperationReceipt<bool>, LazyWorkspaceError> {
+        let directory = self.canonical_path(directory)?;
+        let prefix = if directory.ends_with('/') {
+            directory
+        } else {
+            format!("{directory}/")
+        };
+        let mut work = WorkCounters::default();
+        let mut first_after: Option<String> = None;
+        loop {
+            let receipt = self
+                .store
+                .load_lazy_overlay_measured(root, remaining_work(work, budget)?, cancellation)
+                .await?;
+            work = account_work(work, receipt.work, budget)?;
+            let Some(LazyOverlay::Node {
+                path, left, right, ..
+            }) = receipt.value
+            else {
+                break;
+            };
+            if path.as_str() >= prefix.as_str() {
+                first_after = Some(path);
+                root = left;
+            } else {
+                root = right;
+            }
+        }
+        Ok(OperationReceipt {
+            value: first_after.is_some_and(|path| path.starts_with(&prefix)),
+            work,
+        })
+    }
+
     async fn shadow_record_measured(
         &self,
         mut root: LazyShadowId,
@@ -4628,6 +4732,14 @@ where
         )
         .map_err(|error| LazyWorkspaceError::Workspace(error.to_string()))
     }
+}
+
+/// What a mounted checkout holds for a listed directory.
+struct MountedDirectory {
+    /// Whether the checkout's directory stands in for the source's.
+    replaces_source: bool,
+    /// Whether the checkout holds the directory at all.
+    authored: bool,
 }
 
 fn store_error(error: impl std::fmt::Display) -> LazyWorkspaceError {
