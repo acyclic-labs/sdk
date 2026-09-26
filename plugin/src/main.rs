@@ -6982,6 +6982,11 @@ fn public_tools(commandless: bool) -> Value {
 
 const MAXIMUM_CONTROL_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_CONCURRENT_CONTROL_REQUESTS: usize = 64;
+/// How long a response may take to reach a client that still holds its end.
+/// A client that gave up closes it, which ends the write at once, so this
+/// bounds only a client that stopped reading: the longest any client waits.
+const CONTROL_RESPONSE_DELIVERY: std::time::Duration = CONTROL_COMMAND_WAIT;
+/// How long a stopping service still delivers responses in flight.
 const CONTROL_RESPONSE_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const CONTROL_PROBE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 const CONTROL_HOOK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -7235,9 +7240,13 @@ async fn serve_linux_control_mailbox(
 
     let mut requests = tokio::task::JoinSet::new();
     let mut result = loop {
-        if let Err(error) =
-            claim_linux_mailbox_requests(&mailbox_directory, &control, &ledger, &mut requests)
-        {
+        if let Err(error) = claim_linux_mailbox_requests(
+            &mailbox_directory,
+            &control,
+            &ledger,
+            &shutdown,
+            &mut requests,
+        ) {
             break Err(error);
         }
         tokio::select! {
@@ -7281,6 +7290,7 @@ fn claim_linux_mailbox_requests(
     mailbox_directory: &Arc<rustix::fd::OwnedFd>,
     control: &Arc<impl ConcurrentControlRequestDispatcher + 'static>,
     ledger: &Arc<ControlLedger>,
+    shutdown: &watch::Receiver<bool>,
     requests: &mut tokio::task::JoinSet<()>,
 ) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt as _;
@@ -7319,7 +7329,12 @@ fn claim_linux_mailbox_requests(
         };
         let control = Arc::clone(control);
         let ledger = Arc::clone(ledger);
-        requests.spawn(handle_linux_mailbox_request(exchange, control, ledger));
+        requests.spawn(handle_linux_mailbox_request(
+            exchange,
+            control,
+            ledger,
+            shutdown.clone(),
+        ));
     }
     Ok(())
 }
@@ -7329,6 +7344,7 @@ async fn handle_linux_mailbox_request(
     exchange: LinuxMailboxExchange,
     control: Arc<impl ConcurrentControlRequestDispatcher>,
     ledger: Arc<ControlLedger>,
+    shutdown: watch::Receiver<bool>,
 ) {
     if let Some(directory) = &exchange.exchange {
         let mut response = match read_linux_control_file_at(directory, LINUX_EXCHANGE_CLAIMED) {
@@ -7357,8 +7373,8 @@ async fn handle_linux_mailbox_request(
         .map_err(errno_to_io)
         .and_then(tokio::net::unix::pipe::Sender::from_owned_fd);
         if let Ok(mut sender) = sender {
-            let _ = tokio::time::timeout(CONTROL_RESPONSE_DRAIN_GRACE, sender.write_all(&response))
-                .await;
+            let write = async { sender.write_all(&response).await.map_err(display) };
+            let _ = deliver_control_response(write, shutdown).await;
         }
     }
     exchange.remove();
@@ -7734,9 +7750,25 @@ where
         stream.write_all(b"\n").await.map_err(display)?;
         stream.flush().await.map_err(display)
     };
-    tokio::time::timeout(CONTROL_RESPONSE_DRAIN_GRACE, write)
-        .await
-        .map_err(|_| "Acyclic control response exceeded its drain deadline".to_owned())?
+    deliver_control_response(write, shutdown).await
+}
+
+/// Delivers one response while its client still reads it: up to
+/// [`CONTROL_RESPONSE_DELIVERY`], or [`CONTROL_RESPONSE_DRAIN_GRACE`] once
+/// the service stops.
+async fn deliver_control_response(
+    write: impl std::future::Future<Output = Result<(), String>>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let stopped = async {
+        let _ = shutdown.wait_for(|stopping| *stopping).await;
+        tokio::time::sleep(CONTROL_RESPONSE_DRAIN_GRACE).await;
+    };
+    tokio::select! {
+        delivered = tokio::time::timeout(CONTROL_RESPONSE_DELIVERY, write) => delivered
+            .map_err(|_| "Acyclic control response exceeded its delivery deadline".to_owned())?,
+        () = stopped => Err("Acyclic control response exceeded its drain deadline".to_owned()),
+    }
 }
 
 async fn dispatch_control_request(
@@ -15728,6 +15760,28 @@ mod tests {
             .expect("test thread")
             .join()
             .expect("plugin lifecycle e2e thread");
+    }
+
+    /// A response reaches a client that is slow to read it, for as long as a
+    /// client can wait; a stopping service stops waiting after its grace.
+    #[tokio::test]
+    async fn responses_reach_slow_readers_until_the_service_stops() {
+        let (_running, shutdown) = watch::channel(false);
+        let slow = async {
+            tokio::time::sleep(CONTROL_RESPONSE_DRAIN_GRACE * 3 / 2).await;
+            Ok(())
+        };
+        assert_eq!(deliver_control_response(slow, shutdown).await, Ok(()));
+
+        let (stopping, shutdown) = watch::channel(false);
+        let never = std::future::pending::<Result<(), String>>();
+        let delivering = tokio::spawn(deliver_control_response(never, shutdown));
+        stopping.send(true).expect("stop the service");
+        let error = delivering
+            .await
+            .expect("delivery task")
+            .expect_err("a stopping service stops delivering");
+        assert!(error.contains("drain deadline"), "{error}");
     }
 
     /// A client accepts a pipe only from a server running as its own user.
