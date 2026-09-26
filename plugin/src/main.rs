@@ -12207,6 +12207,14 @@ async fn drain_service(
             verify_service_drain_completion(data, &marker.instance_id)?;
             return Ok(lock);
         }
+        // A replacement that took the lock first holds what this drain was
+        // for; waiting would only time out.
+        if ServiceMarker::read(data).is_some_and(|next| next.instance_id != marker.instance_id) {
+            return Err(
+                "a replacement Acyclic service started before this drain could take its place"
+                    .to_owned(),
+            );
+        }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     Err("Acyclic service did not drain; durable state and executable were preserved".to_owned())
