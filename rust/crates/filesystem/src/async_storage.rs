@@ -598,6 +598,26 @@ pub trait AsyncObjectStore: StorageProvider {
         }
     }
 
+    /// Asynchronously admits an ordered bounded group of objects whose
+    /// identities their construction already proved. A store that verifies
+    /// digests on admission may skip hashing the same bytes again; the
+    /// default verifies through [`Self::put_many`].
+    fn put_many_hashed(
+        &self,
+        objects: &[crate::storage::HashedObject],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
+        let writes = objects
+            .iter()
+            .map(|object| ObjectWrite {
+                object_id: object.object_id(),
+                bytes: object.bytes().clone(),
+            })
+            .collect::<Vec<_>>();
+        async move { self.put_many(&writes, budget, cancellation).await }
+    }
+
     /// Makes every admitted object in `scope` crash-durable before an
     /// authority record may reference it. Ordinary stores already provide
     /// that guarantee from `put`/`put_many`; a bounded staging adapter overrides

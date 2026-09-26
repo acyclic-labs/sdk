@@ -14,8 +14,8 @@ use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{
-    ByteRange, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention,
-    ObjectReceipt, ObjectStore, ObjectStoreError, object_digest,
+    ByteRange, HashedObject, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest,
+    ObjectReadRetention, ObjectReceipt, ObjectStore, ObjectStoreError, object_digest,
 };
 use bytes::Bytes;
 use std::future::Future;
@@ -619,13 +619,10 @@ async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
             return Err(build_failed(BlobBuildError::TooLarge, prospective));
         }
         let first_offset = logical_bytes - retained_capacity;
-        let chunk_id = ObjectId {
-            kind: ObjectKind::BlobChunk,
-            digest: object_digest(ObjectKind::BlobChunk, &chunk),
-        };
+        let chunk = HashedObject::new(ObjectKind::BlobChunk, chunk);
+        let chunk_id = chunk.object_id();
         let mut work = build_put(
             batching,
-            chunk_id,
             chunk,
             PutAllocation {
                 retained: retained_capacity,
@@ -713,7 +710,7 @@ const BLOB_BATCH_OBJECTS: usize = 4;
 const BLOB_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 
 struct BlobBatchState {
-    writes: Vec<crate::storage::ObjectWrite>,
+    writes: Vec<HashedObject>,
     bytes: u64,
 }
 
@@ -729,9 +726,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             allocation_operations: 1,
             peak_allocation_bytes: u64::try_from(BLOB_BATCH_OBJECTS)
                 .unwrap_or(u64::MAX)
-                .saturating_mul(
-                    u64::try_from(size_of::<crate::storage::ObjectWrite>()).unwrap_or(u64::MAX),
-                ),
+                .saturating_mul(u64::try_from(size_of::<HashedObject>()).unwrap_or(u64::MAX)),
             ..WorkCounters::default()
         };
         minimum
@@ -743,9 +738,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             .map_err(|_| build_failed(BlobBuildError::AllocationFailed, WorkCounters::default()))?;
         let vector_bytes = u64::try_from(writes.capacity())
             .unwrap_or(u64::MAX)
-            .saturating_mul(
-                u64::try_from(size_of::<crate::storage::ObjectWrite>()).unwrap_or(u64::MAX),
-            );
+            .saturating_mul(u64::try_from(size_of::<HashedObject>()).unwrap_or(u64::MAX));
         let admitted = WorkCounters {
             allocation_operations: 1,
             peak_allocation_bytes: vector_bytes,
@@ -783,7 +776,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         }
         let receipt = self
             .inner
-            .put_many(&self.state.writes, backend_budget, cancellation)
+            .put_many_hashed(&self.state.writes, backend_budget, cancellation)
             .await?;
         self.state.writes.clear();
         self.state.bytes = 0;
@@ -803,8 +796,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
 
     async fn put_with_retained(
         &mut self,
-        object_id: ObjectId,
-        bytes: Bytes,
+        object: HashedObject,
         retained_bytes: u64,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -823,9 +815,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
                     ),
                 )
             })?;
-        self.state
-            .writes
-            .push(crate::storage::ObjectWrite { object_id, bytes });
+        self.state.writes.push(object);
         if self.state.writes.len() >= BLOB_BATCH_OBJECTS || self.state.bytes >= BLOB_BATCH_BYTES {
             return self.flush_locked(budget, cancellation).await;
         }
@@ -1200,10 +1190,6 @@ async fn put_blob_page<S: AsyncObjectStore>(
             *work,
         ));
     }
-    let page_id = ObjectId {
-        kind: ObjectKind::Blob,
-        digest: object_digest(ObjectKind::Blob, &encoded),
-    };
     let encoded_bytes = u64::try_from(encoded.capacity()).unwrap_or(u64::MAX);
     let simultaneous = live_allocation_bytes
         .checked_add(encoded_bytes)
@@ -1220,10 +1206,11 @@ async fn put_blob_page<S: AsyncObjectStore>(
     )?;
     encoded_work.peak_allocation_bytes = encoded_work.peak_allocation_bytes.max(simultaneous);
     build_verify(encoded_work, budget)?;
+    let page = HashedObject::new(ObjectKind::Blob, Bytes::from(encoded));
+    let page_id = page.object_id();
     *work = build_put(
         store,
-        page_id,
-        Bytes::from(encoded),
+        page,
         PutAllocation {
             retained: encoded_bytes,
             live: simultaneous,
@@ -1244,8 +1231,7 @@ struct PutAllocation {
 
 async fn build_put<S: AsyncObjectStore>(
     store: &mut BlobBatchStore<'_, S>,
-    object: ObjectId,
-    bytes: Bytes,
+    object: HashedObject,
     allocation: PutAllocation,
     budget: WorkBudget,
     work: WorkCounters,
@@ -1259,7 +1245,7 @@ async fn build_put<S: AsyncObjectStore>(
         .checked_sub(allocation.live)
         .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
     match store
-        .put_with_retained(object, bytes, allocation.retained, remaining, cancellation)
+        .put_with_retained(object, allocation.retained, remaining, cancellation)
         .await
     {
         Ok(receipt) => {

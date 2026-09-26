@@ -473,6 +473,12 @@ impl HashedObject {
         u64::try_from(self.bytes.len()).unwrap_or(u64::MAX)
     }
 
+    /// The canonical bytes.
+    #[must_use]
+    pub const fn bytes(&self) -> &Bytes {
+        &self.bytes
+    }
+
     /// Releases the identity and bytes.
     #[must_use]
     pub fn into_parts(self) -> (ObjectId, Bytes) {

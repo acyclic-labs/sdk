@@ -737,6 +737,35 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         Ok(ObjectReceipt { value: (), work })
     }
 
+    async fn put_many_hashed(
+        &self,
+        objects: &[HashedObject],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        if objects.is_empty() {
+            return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
+                "object write batch is empty".to_owned(),
+            )));
+        }
+        let mut work = WorkCounters::default();
+        for object in objects {
+            let receipt = self
+                .put_hashed(
+                    object.clone(),
+                    work.remaining(budget)
+                        .map_err(|error| ObjectFailure::new(error.into(), work))?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = work
+                .checked_add(receipt.work)
+                .map_err(|error| ObjectFailure::new(error.into(), work))?;
+        }
+        Ok(ObjectReceipt { value: (), work })
+    }
+
     async fn flush_before_publish(
         &self,
         scope: PublicationScope<'_>,
