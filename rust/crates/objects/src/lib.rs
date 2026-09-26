@@ -15,6 +15,13 @@ pub mod wire {
     include!("generated/acyclic.objects.v1.rs");
 }
 
+/// Generated current-value Objects v2 schema. The v1 wire module remains
+/// available for migration compatibility; new hosted integrations use v2.
+#[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
+pub mod wire_v2 {
+    include!("generated/acyclic/objects/v2/acyclic.objects.v2.rs");
+}
+
 /// Canonical public descriptor set used by compatibility and conformance gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-objects-v1.bin");
 

@@ -55,6 +55,7 @@ export const packagedRustBindings = [
   ["acyclic/filesystem/v2/acyclic.filesystem.v2.tonic.rs", "rust/crates/filesystem/src/generated/acyclic/filesystem/v2/acyclic.filesystem.v2.tonic.rs"],
   ["acyclic/objects/v1/acyclic.objects.v1.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.rs"],
   ["acyclic/objects/v1/acyclic.objects.v1.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.tonic.rs"],
+  ["acyclic/objects/v2/acyclic.objects.v2.rs", "rust/crates/objects/src/generated/acyclic/objects/v2/acyclic.objects.v2.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.tonic.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.tonic.rs"],
   ["acyclic/harness/v2/acyclic.harness.v2.rs", "rust/crates/filesystem/src/generated/acyclic/harness/v2/acyclic.harness.v2.rs"],
