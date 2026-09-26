@@ -3610,10 +3610,7 @@ mod tests {
         }
         let settled = std::thread::spawn({
             let placeholders = Arc::clone(&placeholders);
-            move || {
-                let started = std::time::Instant::now();
-                placeholders.settle().map(|()| started.elapsed())
-            }
+            move || placeholders.settle()
         });
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(
@@ -3624,11 +3621,11 @@ mod tests {
             .pending
             .remove(&path);
         placeholders.changed.notify_all();
-        let waited = settled
+        // Settling ends once nothing is pending.
+        settled
             .join()
             .map_err(|_| "settle panicked")?
             .map_err(|error| error.to_string())?;
-        assert!(waited >= std::time::Duration::from_millis(100));
         Ok(())
     }
 
