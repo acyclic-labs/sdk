@@ -48,6 +48,9 @@ pub struct GenerationProof {
     pub object_count: u64,
     /// Reachable path-independent file records.
     pub file_count: u64,
+    /// Logical regular-file bytes in this generation, counting each file
+    /// identity once even when it has multiple hard links. Sparse holes count.
+    pub logical_file_bytes: u128,
     /// Stable sorted identities in the complete authenticated closure.
     pub objects: Vec<ObjectId>,
     /// Exact proof work.
@@ -193,6 +196,16 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 maximum: self.limits.maximum_files,
             });
         }
+        let logical_file_bytes = records.values().try_fold(0_u128, |total, record| {
+            let bytes = match record.payload {
+                FilePayload::InlineRegular(data) => data.as_bytes().len() as u128,
+                FilePayload::Regular { logical_bytes, .. } => u128::from(logical_bytes),
+                _ => 0,
+            };
+            total
+                .checked_add(bytes)
+                .ok_or(ClosureError::LogicalBytesOverflow)
+        })?;
         self.prove_records_and_namespace(root.root_file_id, &records)
             .await?;
         let mut objects: Vec<ObjectId> = self.objects.iter().copied().collect();
@@ -223,6 +236,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             generation_id,
             object_count: u64::try_from(self.objects.len()).unwrap_or(u64::MAX),
             file_count,
+            logical_file_bytes,
             objects,
             work: self.work,
         })
@@ -742,6 +756,9 @@ pub enum ClosureError {
         /// Admitted maximum.
         maximum: u64,
     },
+    /// The sum of logical regular-file sizes cannot be represented.
+    #[error("generation logical file byte total overflowed")]
+    LogicalBytesOverflow,
     /// Closure exceeds its cumulative canonical-byte bound.
     #[error("generation closure read {observed} bytes; maximum is {maximum}")]
     ClosureBytesExceeded {

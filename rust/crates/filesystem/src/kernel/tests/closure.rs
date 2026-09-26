@@ -291,8 +291,69 @@ fn minimal_generation_has_a_complete_authenticated_closure()
     let (generation, _, _) = minimal_generation(&store, None)?;
     let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
     assert_eq!(proof.file_count, 1);
+    assert_eq!(proof.logical_file_bytes, 0);
     assert_eq!(proof.object_count, 4);
     assert_eq!(proof.root.root_file_id, FileId::from_bytes([1; 16]));
+    Ok(())
+}
+
+#[test]
+fn authenticated_generation_counts_sparse_logical_bytes() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store = MemoryObjectStore::default();
+    let generation = generation_with_regular_extent(&store, ExtentKind::Hole, 4096)?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    assert_eq!(proof.file_count, 2);
+    assert_eq!(proof.logical_file_bytes, 4096);
+    Ok(())
+}
+
+#[test]
+fn authenticated_generation_counts_hardlinked_inline_file_once()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let metadata_id = put(
+        &store,
+        ObjectKind::Metadata,
+        encode_file_metadata(metadata())?,
+    )?;
+    let root_id = FileId::from_bytes([1; 16]);
+    let file_id = FileId::from_bytes([2; 16]);
+    let entries = put(
+        &store,
+        ObjectKind::TreePage,
+        encode_tree_page(
+            &TreePage::Leaf(vec![
+                TreeEntry {
+                    name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
+                    file_id,
+                    kind: FileKind::Regular,
+                },
+                TreeEntry {
+                    name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
+                    file_id,
+                    kind: FileKind::Regular,
+                },
+            ]),
+            8,
+        )?,
+    )?;
+    let generation = generation_with_records(
+        &store,
+        root_id,
+        vec![
+            directory_record(root_id, 1, metadata_id, entries),
+            FileRecord {
+                file_id,
+                kind: FileKind::Regular,
+                link_count: 2,
+                metadata: metadata_id,
+                payload: FilePayload::InlineRegular(InlineFileData::new(b"hello")?),
+            },
+        ],
+    )?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    assert_eq!(proof.logical_file_bytes, 5);
     Ok(())
 }
 
