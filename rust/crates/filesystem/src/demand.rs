@@ -1748,12 +1748,23 @@ pub mod native {
         SourceVersion(*hash.finalize().as_bytes())
     }
 
+    /// A file's identity: its device and inode, and its birth time, which
+    /// tells a new file apart from a removed one whose inode the host reused.
+    /// Every name of one file shares it. A file system that records no birth
+    /// time (a few do not) cannot tell reuse apart by identity alone.
     #[cfg(unix)]
     fn file_identity(metadata: &HostStat) -> [u8; 32] {
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic-fs-native-source-file-v1\0");
         hash.update(&metadata.dev().to_le_bytes());
         hash.update(&metadata.ino().to_le_bytes());
+        if let Some(born) = metadata
+            .created()
+            .ok()
+            .and_then(|born| born.into_std().duration_since(std::time::UNIX_EPOCH).ok())
+        {
+            hash.update(&born.as_nanos().to_le_bytes());
+        }
         *hash.finalize().as_bytes()
     }
 
@@ -2022,6 +2033,66 @@ mod tests {
             )),
             "{changes:?}"
         );
+        Ok(())
+    }
+
+    /// A file created where a removed one was, on the inode the host
+    /// reused for it, is a different file: its birth time tells them apart.
+    /// Both names of one file share its identity.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reused_inode_is_a_new_identity_and_hard_links_share_one()
+    -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let root = tempfile::tempdir()?;
+        let source = NativeDemandSource::open(
+            root.path(),
+            FilesystemProfile::Posix,
+            VolumeLimits::default(),
+        )
+        .await?;
+        let reference = source.reference();
+        let cancellation = CancellationToken::new();
+        let identity = |name: &'static str| {
+            let source = &source;
+            let cancellation = &cancellation;
+            async move {
+                Ok::<_, Box<dyn Error>>(
+                    source
+                        .lookup(reference, &path(name)?, cancellation)
+                        .await?
+                        .value
+                        .ok_or("file was absent")?
+                        .file_identity,
+                )
+            }
+        };
+        std::fs::write(root.path().join("first"), b"first")?;
+        std::fs::hard_link(root.path().join("first"), root.path().join("alias"))?;
+        let first = identity("/first").await?;
+        assert_eq!(identity("/alias").await?, first);
+
+        let inode = std::fs::metadata(root.path().join("first"))?.ino();
+        let born = std::fs::metadata(root.path().join("first"))?.created().ok();
+        std::fs::remove_file(root.path().join("first"))?;
+        std::fs::remove_file(root.path().join("alias"))?;
+        // Hosts reuse a freed inode soon, but not always at once.
+        for attempt in 0..64 {
+            let name = format!("later-{attempt}");
+            std::fs::write(root.path().join(&name), b"later")?;
+            let metadata = std::fs::metadata(root.path().join(&name))?;
+            if metadata.ino() == inode && born.is_some() && metadata.created().ok() != born {
+                let later = source
+                    .lookup(reference, &path(&format!("/{name}"))?, &cancellation)
+                    .await?
+                    .value
+                    .ok_or("file was absent")?
+                    .file_identity;
+                assert_ne!(later, first, "the reused inode names a new file");
+                break;
+            }
+        }
         Ok(())
     }
 
