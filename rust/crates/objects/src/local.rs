@@ -2350,6 +2350,9 @@ fn persist_segment(
     let destination = segment_path(root, &id);
     if destination.exists() {
         validate_segment_file(&destination, &id, position)?;
+        // Another put may have published it and not yet synchronized its
+        // directory entry; this put's acknowledgement depends on that entry.
+        sync_parent(&parent, durability)?;
         return Ok((id, offsets));
     }
     let identity = hex(&id);
@@ -3081,6 +3084,8 @@ fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Dur
 }
 
 fn sync_parent(path: &Path, durability: LocalDurability) -> Result<(), LocalObjectsError> {
+    #[cfg(test)]
+    tests::PARENT_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
     acyclic_native_runtime::sync_parent(path, native_durability(durability))?;
     Ok(())
 }
@@ -3088,6 +3093,30 @@ fn sync_parent(path: &Path, durability: LocalDurability) -> Result<(), LocalObje
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Directory synchronizations issued on this thread.
+        pub(super) static PARENT_SYNCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A put that finds its segment already published still makes the
+    /// segment's directory entry durable before it is acknowledged: the put
+    /// that published it may not have synchronized the directory yet.
+    #[test]
+    fn a_segment_found_already_published_is_made_durable_again() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        fs::create_dir_all(root.path().join("segments")).unwrap_or_else(|_| unreachable!());
+        let body = bytes::Bytes::from(vec![7_u8; 1_024]);
+        let digest = *blake3::hash(&body).as_bytes();
+        let bodies = [(digest, body)];
+        let first = persist_segment(root.path(), &bodies, LocalDurability::FullFlush)
+            .unwrap_or_else(|_| unreachable!());
+        let before = PARENT_SYNCS.with(std::cell::Cell::get);
+        let again = persist_segment(root.path(), &bodies, LocalDurability::FullFlush)
+            .unwrap_or_else(|_| unreachable!());
+        assert_eq!(again, first);
+        assert_eq!(PARENT_SYNCS.with(std::cell::Cell::get), before + 1);
+    }
 
     fn small_put(bucket: &wire::BucketRef, key: &str, body: &'static [u8]) -> PutRequest {
         PutRequest {
