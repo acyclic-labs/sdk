@@ -1,5 +1,6 @@
 //! Version-pinned runtime registrations with drain-before-replacement lifecycle.
 
+pub(crate) use crate::contract::validate_component_label;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,7 +12,7 @@ use std::{
 /// Immutable component implementation identity.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ComponentIdentity {
-    /// Stable namespaced logical name.
+    /// Stable local or namespaced logical name.
     pub name: String,
     /// Semantic implementation version.
     pub version: String,
@@ -28,6 +29,7 @@ struct Entry<T> {
 struct RegistryState<T> {
     current: BTreeMap<String, ComponentIdentity>,
     versions: BTreeMap<ComponentIdentity, Entry<T>>,
+    version_digests: BTreeMap<(String, String), [u8; 32]>,
 }
 
 /// Explicit registry that pins active work and drains replaced versions.
@@ -38,6 +40,7 @@ impl<T> Default for PinnedRegistry<T> {
         Self(Arc::new(Mutex::new(RegistryState {
             current: BTreeMap::new(),
             versions: BTreeMap::new(),
+            version_digests: BTreeMap::new(),
         })))
     }
 }
@@ -51,11 +54,8 @@ impl<T> Clone for PinnedRegistry<T> {
 impl<T> PinnedRegistry<T> {
     /// Installs a version for new work and begins draining the previous version.
     pub fn install(&self, identity: ComponentIdentity, value: T) -> Result<()> {
-        if identity.name.trim().is_empty() || identity.version.trim().is_empty() {
-            return Err(Error::Invalid(
-                "component name and version are required".into(),
-            ));
-        }
+        validate_component_label(&identity.name, "component name")?;
+        validate_component_label(&identity.version, "component version")?;
         let mut state = self
             .0
             .lock()
@@ -65,6 +65,17 @@ impl<T> PinnedRegistry<T> {
                 "component version is already installed".into(),
             ));
         }
+        let version_key = (identity.name.clone(), identity.version.clone());
+        if state
+            .version_digests
+            .get(&version_key)
+            .is_some_and(|digest| digest != &identity.digest)
+        {
+            return Err(Error::Conflict(
+                "component version is pinned to another digest".into(),
+            ));
+        }
+        state.version_digests.insert(version_key, identity.digest);
         if let Some(previous) = state
             .current
             .insert(identity.name.clone(), identity.clone())
@@ -82,6 +93,11 @@ impl<T> PinnedRegistry<T> {
         );
         reap(&mut state);
         Ok(())
+    }
+
+    /// Alias for callers treating registrations as native executable links.
+    pub fn register(&self, identity: ComponentIdentity, value: T) -> Result<()> {
+        self.install(identity, value)
     }
 
     /// Pins the current version for the lifetime of one active invocation.
@@ -108,6 +124,78 @@ impl<T> PinnedRegistry<T> {
             identity,
             value: Arc::clone(&entry.value),
         })
+    }
+
+    /// Pins an exact retained version rather than resolving the current one.
+    pub fn pin_exact(&self, identity: &ComponentIdentity) -> Result<ComponentLease<T>> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| Error::Storage("component registry lock poisoned".into()))?;
+        let entry = state.versions.get_mut(identity).ok_or_else(|| {
+            Error::NotFound(format!("component {}@{}", identity.name, identity.version))
+        })?;
+        entry.active = entry
+            .active
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("component active count exhausted".into()))?;
+        Ok(ComponentLease {
+            registry: self.clone(),
+            identity: identity.clone(),
+            value: Arc::clone(&entry.value),
+        })
+    }
+
+    /// Reports whether a logical component currently accepts new work.
+    pub fn accepting(&self, name: &str) -> Result<bool> {
+        self.0
+            .lock()
+            .map(|state| state.current.contains_key(name))
+            .map_err(|_| Error::Storage("component registry lock poisoned".into()))
+    }
+
+    /// Stops accepting new work for one logical component while preserving
+    /// every active exact-version lease until it is released.
+    pub fn disable(&self, name: &str) -> Result<()> {
+        validate_component_label(name, "component name")?;
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| Error::Storage("component registry lock poisoned".into()))?;
+        state.current.remove(name);
+        for (identity, entry) in &mut state.versions {
+            if identity.name == name {
+                entry.accepting = false;
+            }
+        }
+        reap(&mut state);
+        Ok(())
+    }
+
+    /// Removes a disabled version only after all retained invocations drain.
+    pub fn remove(&self, identity: &ComponentIdentity) -> Result<Arc<T>> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| Error::Storage("component registry lock poisoned".into()))?;
+        if state.current.get(&identity.name) == Some(identity) {
+            return Err(Error::Conflict(
+                "current component must be disabled before removal".into(),
+            ));
+        }
+        let entry = state.versions.get(identity).ok_or_else(|| {
+            Error::NotFound(format!("component {}@{}", identity.name, identity.version))
+        })?;
+        if entry.active != 0 {
+            return Err(Error::Conflict(
+                "component still has retained invocations".into(),
+            ));
+        }
+        let entry = state
+            .versions
+            .remove(identity)
+            .ok_or_else(|| Error::Storage("component disappeared during removal".into()))?;
+        Ok(entry.value)
     }
 
     /// Returns whether a specific version is still installed or draining.
@@ -184,6 +272,17 @@ mod tests {
         drop(pinned);
         assert!(!registry.contains(&first)?);
         assert!(registry.contains(&second)?);
+        assert!(matches!(
+            registry.install(
+                ComponentIdentity {
+                    name: "example.model".into(),
+                    version: "1".into(),
+                    digest: [3; 32],
+                },
+                "different"
+            ),
+            Err(Error::Conflict(_))
+        ));
         Ok(())
     }
 }

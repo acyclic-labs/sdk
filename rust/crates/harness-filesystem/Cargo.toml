@@ -1,0 +1,39 @@
+[package]
+name = "acyclic-harness-filesystem"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Acyclic Harness adapter for versioned Filesystem workspaces"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-harness-filesystem"
+
+[features]
+default = ["memory"]
+memory = ["acyclic-fs/memory"]
+local = ["acyclic-fs/local", "acyclic-stream/local"]
+
+[dependencies]
+acyclic-fs = { version = "=0.1.5", path = "../filesystem", default-features = false }
+acyclic-harness = { version = "0.1.5", path = "../harness", default-features = false, features = ["host"] }
+acyclic-stream = { version = "=0.1.5", path = "../stream", default-features = false }
+blake3.workspace = true
+bytes.workspace = true
+hex.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+acyclic-harness = { version = "0.1.5", path = "../harness", features = ["host"] }
+acyclic-stream = { version = "=0.1.5", path = "../stream" }
+tokio.workspace = true
+uuid.workspace = true
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

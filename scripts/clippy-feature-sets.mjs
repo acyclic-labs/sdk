@@ -16,9 +16,9 @@ const fsOnly = features => [...fs, "--no-default-features", ...(features ? ["--f
 const withTests = [
   // The crates.io default, which the plugin and the Node addon build on.
   fs,
-  // The browser build and the Harness `filesystem` adapter.
+  // The browser build and the Filesystem Harness adapter.
   fsOnly("memory"),
-  // The Harness `filesystem-local` adapter.
+  // The local Filesystem Harness adapter.
   fsOnly("memory,local"),
   // The Windows lane's portable test set.
   fsOnly("local,memory,native-watch"),
@@ -30,11 +30,9 @@ const withTests = [
   ["-p", "acyclic-stream"],
   ["-p", "acyclic-stream", "--no-default-features"],
   ["-p", "acyclic-stream", "--no-default-features", "--features", "local"],
-  // Each Harness adapter its README documents, alone.
+  // Harness host runtime. Adapters are separate workspace crates and covered
+  // by the workspace-wide all-features run.
   ["-p", "acyclic-harness"],
-  ...["filesystem", "filesystem-local", "machines", "models", "http", "grpc"].map(
-    feature => ["-p", "acyclic-harness", "--features", feature],
-  ),
   // The conformance runner and its native-mount qualification binaries.
   ["-p", "acyclic-conformance"],
   ["-p", "acyclic-conformance", "--features", "local-runner"],

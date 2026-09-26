@@ -6,10 +6,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let descriptors = prost_types::FileDescriptorSet::decode(
         include_bytes!("src/generated/acyclic-filesystem-v2.bin").as_slice(),
     )?;
+    let mut prost = tonic_prost_build::Config::new();
+    prost.extern_path(".acyclic.harness.v2", "crate::wire::harness::v2");
+    let native_transport = std::env::var("CARGO_CFG_TARGET_ARCH")?.as_str() != "wasm32";
     tonic_prost_build::configure()
-        .build_client(true)
-        .build_server(true)
-        .compile_fds(descriptors)?;
+        .build_client(native_transport)
+        .build_server(native_transport)
+        .compile_fds_with_config(descriptors, prost)?;
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/generated/acyclic-filesystem-v2.bin");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NATIVE_MOUNT");

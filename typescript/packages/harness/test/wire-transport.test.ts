@@ -16,7 +16,7 @@ import {
   OperationStatusSchema,
   ResumeRequestSchema,
   ServerFrameSchema,
-} from "../src/proto.js";
+} from "../generated/proto/harness/v2/harness_pb.js";
 import {
   EmbeddedWireTransport,
   GrpcWireTransport,
@@ -27,11 +27,12 @@ import {
   TerminalAdmissionError,
   WireError,
   type JsonlChannel,
+  type HttpFetcher,
 } from "../src/index.js";
 
 const resume = create(ResumeRequestSchema, {});
 const negotiation = create(HandshakeRequestSchema, {
-  protocol: { version: "1", descriptorDigest: "digest" },
+  protocol: { version: "2", descriptorDigest: "digest" },
   required: { capabilities: [] },
 });
 const handshake = create(HandshakeResponseSchema, {
@@ -108,7 +109,7 @@ test("embedded, JSONL, WebSocket and gRPC bridges expose the same wire delivery"
   }
   const socket = new FakeSocket();
   const websocket = new WebSocketWireTransport(
-    "ws://example.test/v1/harness",
+    "ws://example.test/v2/harness/ws",
     negotiation,
     () => socket as unknown as WebSocket,
   );
@@ -187,7 +188,7 @@ test("gRPC control validates echoed operation, owner, protocol, error, and retry
 
 test("HTTP rejection is terminal only with an authoritative admission", async () => {
   const encoder = new TextEncoder();
-  const fetcher: typeof fetch = async input => {
+  const fetcher: HttpFetcher = async input => {
     const url = String(input);
     if (url.endsWith("/handshake")) {
       return new Response(toJsonString(HandshakeResponseSchema, handshake));
@@ -209,7 +210,7 @@ test("HTTP rejection is terminal only with an authoritative admission", async ()
 });
 
 test("HTTP admission requires a complete echoed identity", async () => {
-  const fetcher: typeof fetch = async input => {
+  const fetcher: HttpFetcher = async input => {
     const url = String(input);
     if (url.endsWith("/handshake")) {
       return new Response(toJsonString(HandshakeResponseSchema, handshake));
@@ -230,7 +231,7 @@ test("HTTP admission requires a complete echoed identity", async () => {
 });
 
 test("HTTP throttling remains indeterminate", async () => {
-  const fetcher: typeof fetch = async input => {
+  const fetcher: HttpFetcher = async input => {
     const url = String(input);
     if (url.endsWith("/handshake")) {
       return new Response(toJsonString(HandshakeResponseSchema, handshake));
@@ -257,7 +258,7 @@ test("HTTP observe and cancel preserve protocol, owner, and retry identity", asy
     issuer: "runtime",
     proof: new Uint8Array(32).fill(1),
   };
-  const fetcher: typeof fetch = async (input, init) => {
+  const fetcher: HttpFetcher = async (input, init) => {
     const url = String(input);
     if (url.endsWith("/handshake")) return new Response(toJsonString(HandshakeResponseSchema, handshake));
     if (url.endsWith("/replay")) return new Response(new ReadableStream());
@@ -316,7 +317,7 @@ test("framed status mismatch rejects instead of stranding observation", async ()
     close() {}
   }
   const connection = await new WebSocketWireTransport(
-    "ws://example.test/v1/harness",
+    "ws://example.test/v2/harness/ws",
     negotiation,
     () => new FakeSocket() as unknown as WebSocket,
   ).connect(resume);
@@ -383,7 +384,7 @@ test("framed control serializes observe and cancel for the same operation", asyn
     close() {}
   }
   const connection = await new WebSocketWireTransport(
-    "ws://example.test/v1/harness",
+    "ws://example.test/v2/harness/ws",
     negotiation,
     () => new FakeSocket() as unknown as WebSocket,
   ).connect(resume);
@@ -432,7 +433,7 @@ test("correlated framed errors do not abort another operation", async () => {
     close() {}
   }
   const connection = await new WebSocketWireTransport(
-    "ws://example.test/v1/harness",
+    "ws://example.test/v2/harness/ws",
     negotiation,
     () => new FakeSocket() as unknown as WebSocket,
   ).connect(resume);
@@ -448,7 +449,7 @@ test("correlated framed errors do not abort another operation", async () => {
 });
 
 test("HTTP operation-control errors retain their canonical code", async () => {
-  const fetcher: typeof fetch = async input => {
+  const fetcher: HttpFetcher = async input => {
     const url = String(input);
     if (url.endsWith("/handshake")) return new Response(toJsonString(HandshakeResponseSchema, handshake));
     if (url.endsWith("/replay")) return new Response(new ReadableStream());
@@ -465,6 +466,26 @@ test("HTTP operation-control errors retain their canonical code", async () => {
   }));
   await expect(observed).rejects.toMatchObject({ code: ErrorCode.UNAUTHORIZED });
 });
+
+for (const code of [ErrorCode.INTERACTION_DECLINED, ErrorCode.INTERACTION_CANCELLED,
+  ErrorCode.INTERACTION_EXPIRED, ErrorCode.INTERACTION_DENIED] as const) {
+  test(`HTTP interaction rejection retains distinct code ${code}`, async () => {
+    const fetcher: HttpFetcher = async input => {
+      const url = String(input);
+      if (url.endsWith("/handshake")) return new Response(toJsonString(HandshakeResponseSchema, handshake));
+      if (url.endsWith("/replay")) return new Response(new ReadableStream());
+      return new Response(toJsonString(ErrorSchema, create(ErrorSchema, {
+        code, message: "interaction rejected",
+      })), { status: 409, headers: { "content-type": "application/json" } });
+    };
+    const connection = await new HttpSseWireTransport("https://example.test", negotiation, fetcher).connect(resume);
+    await expect(connection.observe(create(ObserveRequestSchema, {
+      owner: { kind: 5, id: "owner" },
+      operationId: "01010101-0101-0101-0101-010101010101",
+      scope: { id: "control", capabilities: ["operation:observe"], issuer: "runtime", proof: new Uint8Array(32) },
+    }))).rejects.toMatchObject({ code });
+  });
+}
 
 test("clean JSONL EOF makes an unanswered command indeterminate", async () => {
   let finish!: () => void;

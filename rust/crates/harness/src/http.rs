@@ -49,18 +49,18 @@ pub fn router(api: Arc<dyn HarnessWireApi>, maximum_frame_bytes: usize) -> Route
         maximum_frame_bytes: maximum_frame_bytes.max(1),
     };
     Router::new()
-        .route("/v1/harness/handshake", post(handshake))
-        .route("/v1/harness/commands", post(submit))
-        .route("/v1/harness/replay", post(replay))
-        .route("/v1/harness/operations/observe", post(observe))
-        .route("/v1/harness/operations/cancel", post(cancel))
-        .route("/v1/harness/ws", get(websocket))
+        .route("/v2/harness/handshake", post(handshake))
+        .route("/v2/harness/commands", post(submit))
+        .route("/v2/harness/replay", post(replay))
+        .route("/v2/harness/operations/observe", post(observe))
+        .route("/v2/harness/operations/cancel", post(cancel))
+        .route("/v2/harness/ws", get(websocket))
         .with_state(state)
 }
 
 async fn handshake(State(state): State<AppState>, body: Bytes) -> Response {
     let request = match decode_json::<wire::HandshakeRequest>(
-        "acyclic.harness.v1.HandshakeRequest",
+        "acyclic.harness.v2.HandshakeRequest",
         &body,
         state.maximum_frame_bytes,
     ) {
@@ -68,14 +68,14 @@ async fn handshake(State(state): State<AppState>, body: Bytes) -> Response {
         Err(error) => return error_response(&error),
     };
     match state.api.handshake(request).await {
-        Ok(response) => message_response("acyclic.harness.v1.HandshakeResponse", &response),
+        Ok(response) => message_response("acyclic.harness.v2.HandshakeResponse", &response),
         Err(error) => error_response(&error),
     }
 }
 
 async fn submit(State(state): State<AppState>, body: Bytes) -> Response {
     let command = match decode_json::<wire::CommandEnvelope>(
-        "acyclic.harness.v1.CommandEnvelope",
+        "acyclic.harness.v2.CommandEnvelope",
         &body,
         state.maximum_frame_bytes,
     ) {
@@ -92,12 +92,12 @@ async fn submit(State(state): State<AppState>, body: Bytes) -> Response {
     if let Err(error) = validate_admission(&command, &admission) {
         return error_response(&error);
     }
-    message_response("acyclic.harness.v1.Admission", &admission)
+    message_response("acyclic.harness.v2.Admission", &admission)
 }
 
 async fn replay(State(state): State<AppState>, body: Bytes) -> Response {
     let request = match decode_json::<wire::ResumeRequest>(
-        "acyclic.harness.v1.ResumeRequest",
+        "acyclic.harness.v2.ResumeRequest",
         &body,
         state.maximum_frame_bytes,
     ) {
@@ -123,7 +123,7 @@ async fn replay(State(state): State<AppState>, body: Bytes) -> Response {
             },
         };
         let encoded =
-            encode_json("acyclic.harness.v1.ServerFrame", &frame).unwrap_or_else(|error| {
+            encode_json("acyclic.harness.v2.ServerFrame", &frame).unwrap_or_else(|error| {
                 format!(
                     "{{\"error\":{}}}",
                     serde_json::to_string(&error.to_string())
@@ -142,7 +142,7 @@ async fn replay(State(state): State<AppState>, body: Bytes) -> Response {
 
 async fn observe(State(state): State<AppState>, body: Bytes) -> Response {
     let request = match decode_json::<wire::ObserveRequest>(
-        "acyclic.harness.v1.ObserveRequest",
+        "acyclic.harness.v2.ObserveRequest",
         &body,
         state.maximum_frame_bytes,
     ) {
@@ -158,7 +158,7 @@ async fn observe(State(state): State<AppState>, body: Bytes) -> Response {
     }
     match state.api.observe(request.clone()).await {
         Ok(status) => match validate_operation_status(&request, &status) {
-            Ok(()) => message_response("acyclic.harness.v1.OperationStatus", &status),
+            Ok(()) => message_response("acyclic.harness.v2.OperationStatus", &status),
             Err(error) => wire_error_response(&error),
         },
         Err(error) => wire_error_response(&error),
@@ -167,7 +167,7 @@ async fn observe(State(state): State<AppState>, body: Bytes) -> Response {
 
 async fn cancel(State(state): State<AppState>, body: Bytes) -> Response {
     let request = match decode_json::<wire::CancelRequest>(
-        "acyclic.harness.v1.CancelRequest",
+        "acyclic.harness.v2.CancelRequest",
         &body,
         state.maximum_frame_bytes,
     ) {
@@ -183,7 +183,7 @@ async fn cancel(State(state): State<AppState>, body: Bytes) -> Response {
     }
     match state.api.cancel(request.clone()).await {
         Ok(response) => match validate_cancel_response(&request, &response) {
-            Ok(()) => message_response("acyclic.harness.v1.CancelResponse", &response),
+            Ok(()) => message_response("acyclic.harness.v2.CancelResponse", &response),
             Err(error) => wire_error_response(&error),
         },
         Err(error) => wire_error_response(&error),
@@ -255,7 +255,7 @@ async fn websocket_session(state: AppState, mut socket: WebSocket) {
             {
                 continue;
             }
-            let Ok(value) = encode_json("acyclic.harness.v1.ServerFrame", &outbound.frame) else {
+            let Ok(value) = encode_json("acyclic.harness.v2.ServerFrame", &outbound.frame) else {
                 break;
             };
             if sender.send(Message::Text(value.into())).await.is_err() {
@@ -460,7 +460,7 @@ fn control_error(error: &Error, operation_id: &str) -> wire::Error {
 fn decode_ws(message: &Message, maximum: usize) -> Result<wire::ClientFrame, Error> {
     match message {
         Message::Text(value) => {
-            decode_json("acyclic.harness.v1.ClientFrame", value.as_bytes(), maximum)
+            decode_json("acyclic.harness.v2.ClientFrame", value.as_bytes(), maximum)
         }
         Message::Binary(value) if value.len() <= maximum => {
             wire::ClientFrame::decode(value.as_ref())
@@ -471,7 +471,7 @@ fn decode_ws(message: &Message, maximum: usize) -> Result<wire::ClientFrame, Err
 }
 
 async fn send_ws(socket: &mut WebSocket, frame: &wire::ServerFrame) -> Result<(), Error> {
-    let value = encode_json("acyclic.harness.v1.ServerFrame", frame)?;
+    let value = encode_json("acyclic.harness.v2.ServerFrame", frame)?;
     socket
         .send(Message::Text(value.into()))
         .await
@@ -529,7 +529,7 @@ fn error_response(error: &Error) -> Response {
 fn wire_error_response(error: &Error) -> Response {
     let status = error_status(error);
     match encode_json(
-        "acyclic.harness.v1.Error",
+        "acyclic.harness.v2.Error",
         &acyclic_harness::encode_error(error),
     ) {
         Ok(body) => (status, [(header::CONTENT_TYPE, "application/json")], body).into_response(),
@@ -541,6 +541,12 @@ fn error_status(error: &Error) -> StatusCode {
     match error {
         Error::Invalid(_) => StatusCode::BAD_REQUEST,
         Error::Unauthorized(_) => StatusCode::FORBIDDEN,
+        Error::InteractionRejected(reason) => match reason {
+            acyclic_harness::InteractionRejection::Declined
+            | acyclic_harness::InteractionRejection::Denied => StatusCode::FORBIDDEN,
+            acyclic_harness::InteractionRejection::Cancelled => StatusCode::CONFLICT,
+            acyclic_harness::InteractionRejection::Expired => StatusCode::REQUEST_TIMEOUT,
+        },
         Error::NotFound(_) => StatusCode::NOT_FOUND,
         Error::Unsupported(_) => StatusCode::UNPROCESSABLE_ENTITY,
         Error::Conflict(_) => StatusCode::CONFLICT,
@@ -682,9 +688,9 @@ mod tests {
         let response = app
             .clone()
             .oneshot(
-                axum::http::Request::post("/v1/harness/handshake")
+                axum::http::Request::post("/v2/harness/handshake")
                     .body(Body::from(encode_json(
-                        "acyclic.harness.v1.HandshakeRequest",
+                        "acyclic.harness.v2.HandshakeRequest",
                         &request,
                     )?))
                     .map_err(|error| Error::Invalid(error.to_string()))?,
@@ -696,7 +702,7 @@ mod tests {
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
         let decoded: wire::HandshakeResponse = decode_json(
-            "acyclic.harness.v1.HandshakeResponse",
+            "acyclic.harness.v2.HandshakeResponse",
             &body,
             DEFAULT_MAX_FRAME_BYTES,
         )?;
@@ -704,9 +710,9 @@ mod tests {
 
         let response = app
             .oneshot(
-                axum::http::Request::post("/v1/harness/replay")
+                axum::http::Request::post("/v2/harness/replay")
                     .body(Body::from(encode_json(
-                        "acyclic.harness.v1.ResumeRequest",
+                        "acyclic.harness.v2.ResumeRequest",
                         &wire::ResumeRequest {
                             protocol: Some(current_protocol()),
                             cursors: Vec::new(),
@@ -739,6 +745,7 @@ mod tests {
             id: "control".into(),
             capabilities: vec!["operation:observe".into(), "operation:cancel".into()],
             issuer: "runtime".into(),
+            agent_id: String::new(),
             parent_proof: Vec::new(),
             proof: vec![1; 32],
         };
@@ -751,9 +758,9 @@ mod tests {
         let response = app
             .clone()
             .oneshot(
-                axum::http::Request::post("/v1/harness/operations/observe")
+                axum::http::Request::post("/v2/harness/operations/observe")
                     .body(Body::from(encode_json(
-                        "acyclic.harness.v1.ObserveRequest",
+                        "acyclic.harness.v2.ObserveRequest",
                         &observe,
                     )?))
                     .map_err(|error| Error::Invalid(error.to_string()))?,
@@ -776,9 +783,9 @@ mod tests {
         };
         let response = app
             .oneshot(
-                axum::http::Request::post("/v1/harness/operations/cancel")
+                axum::http::Request::post("/v2/harness/operations/cancel")
                     .body(Body::from(encode_json(
-                        "acyclic.harness.v1.CancelRequest",
+                        "acyclic.harness.v2.CancelRequest",
                         &cancel,
                     )?))
                     .map_err(|error| Error::Invalid(error.to_string()))?,
@@ -790,7 +797,7 @@ mod tests {
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
         let decoded: wire::CancelResponse = decode_json(
-            "acyclic.harness.v1.CancelResponse",
+            "acyclic.harness.v2.CancelResponse",
             &body,
             DEFAULT_MAX_FRAME_BYTES,
         )?;
@@ -811,6 +818,7 @@ mod tests {
                 id: "control".into(),
                 capabilities: vec!["operation:observe".into()],
                 issuer: "runtime".into(),
+                agent_id: String::new(),
                 parent_proof: Vec::new(),
                 proof: vec![1; 32],
             }),
@@ -820,9 +828,9 @@ mod tests {
             DEFAULT_MAX_FRAME_BYTES,
         )
         .oneshot(
-            axum::http::Request::post("/v1/harness/operations/observe")
+            axum::http::Request::post("/v2/harness/operations/observe")
                 .body(Body::from(encode_json(
-                    "acyclic.harness.v1.ObserveRequest",
+                    "acyclic.harness.v2.ObserveRequest",
                     &request,
                 )?))
                 .map_err(|error| Error::Invalid(error.to_string()))?,
@@ -834,7 +842,7 @@ mod tests {
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
         let error: wire::Error =
-            decode_json("acyclic.harness.v1.Error", &body, DEFAULT_MAX_FRAME_BYTES)?;
+            decode_json("acyclic.harness.v2.Error", &body, DEFAULT_MAX_FRAME_BYTES)?;
         assert_eq!(error.code, wire::ErrorCode::Unauthorized as i32);
         Ok(())
     }
@@ -847,7 +855,7 @@ mod tests {
     async fn oversized_frames_fail_before_the_api() -> Result<()> {
         let response = router(Arc::new(FakeApi::default()), 2)
             .oneshot(
-                axum::http::Request::post("/v1/harness/handshake")
+                axum::http::Request::post("/v2/harness/handshake")
                     .body(Body::from("{}\n"))
                     .map_err(|error| Error::Invalid(error.to_string()))?,
             )
@@ -860,7 +868,7 @@ mod tests {
     #[test]
     fn canonical_json_rejects_trailing_content() {
         let result = decode_json::<wire::HandshakeRequest>(
-            "acyclic.harness.v1.HandshakeRequest",
+            "acyclic.harness.v2.HandshakeRequest",
             b"{} {}",
             DEFAULT_MAX_FRAME_BYTES,
         );

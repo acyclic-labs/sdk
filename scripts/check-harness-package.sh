@@ -15,7 +15,9 @@ else
 fi
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 archive="$work/acyclic-harness.tgz"
-wasm_output="$work/generated-wasm"
+# TypeScript resolves the Rust-generated declarations from the package tree.
+# Build there once, then stage those exact bytes into the archive below.
+wasm_output="$root/typescript/packages/harness/generated/wasm"
 bun_archive="$archive"
 bun_archive_url="$archive"
 bun_wasm_output="$wasm_output"
@@ -30,58 +32,16 @@ elif [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; the
 fi
 
 cd "$root"
-source_sha=$(git rev-parse --verify HEAD)
+git_bin="git"
+if [[ "$bun_platform" == "win32" ]] && command -v git.exe >/dev/null 2>&1; then
+  git_bin="git.exe"
+fi
+source_sha=$("$git_bin" rev-parse --verify HEAD)
 cargo_bin="cargo"
-rustup_bin="rustup"
-wasm_bindgen_bin="wasm-bindgen"
 if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   cargo_bin="cargo.exe"
-  rustup_bin="rustup.exe"
-  wasm_bindgen_bin="wasm-bindgen.exe"
 fi
-if [[ -n "${CARGO_HOME:-}" ]]; then
-  wasm_bindgen_bin="$CARGO_HOME/bin/wasm-bindgen"
-  [[ "$bun_platform" == "win32" ]] && wasm_bindgen_bin="${wasm_bindgen_bin}.exe"
-fi
-wasm_target=wasm32-unknown-unknown
-rustc_bin=rustc
-[[ "$rustup_bin" == *.exe ]] && rustc_bin=rustc.exe
-bash "$root/scripts/ensure-rust-target.sh" "$wasm_target" "$rustup_bin" "$rustc_bin"
-if [[ "$("$wasm_bindgen_bin" --version 2>/dev/null || true)" != "wasm-bindgen 0.2.117" ]]; then
-  if [[ "$bun_platform" != "win32" && "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
-    wasm_bindgen_archive="${TOOLS_DIR:-$work/tools}/wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz"
-    mkdir -p "$(dirname "$wasm_bindgen_archive")"
-    if [[ ! -f "$wasm_bindgen_archive" ]] ||
-      ! echo "97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240  $wasm_bindgen_archive" | sha256sum --check --status; then
-      temporary_archive="$(mktemp "${wasm_bindgen_archive}.XXXXXXXX")"
-      if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-        --max-time 30 \
-        https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.117/wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz \
-        --output "$temporary_archive" ||
-        ! echo "97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240  $temporary_archive" | sha256sum --check --status; then
-        rm -f -- "$temporary_archive"
-        exit 1
-      fi
-      mv -- "$temporary_archive" "$wasm_bindgen_archive"
-    fi
-    echo "97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240  $wasm_bindgen_archive" | sha256sum --check
-    wasm_bindgen_root="$work/wasm-bindgen-cli"
-    mkdir "$wasm_bindgen_root"
-    tar --extract --gzip --file "$wasm_bindgen_archive" --directory "$wasm_bindgen_root" --strip-components=1
-    wasm_bindgen_bin="$wasm_bindgen_root/wasm-bindgen"
-  else
-    "$cargo_bin" install --locked wasm-bindgen-cli --version 0.2.117
-  fi
-fi
-[[ "$("$wasm_bindgen_bin" --version)" == "wasm-bindgen 0.2.117" ]]
-bun_wasm_bindgen_bin="$wasm_bindgen_bin"
-if [[ "$bun_platform" == "win32" && "$bun_wasm_bindgen_bin" == /* ]]; then
-  if command -v cygpath >/dev/null 2>&1; then
-    bun_wasm_bindgen_bin="$(cygpath -w "$bun_wasm_bindgen_bin")"
-  elif command -v wslpath >/dev/null 2>&1; then
-    bun_wasm_bindgen_bin="$(wslpath -w "$bun_wasm_bindgen_bin")"
-  fi
-fi
+bun_wasm_bindgen_bin="$(bash "$root/scripts/ensure-wasm-bindgen.sh")"
 bun scripts/check-metadata.mjs
 mkdir -p "$wasm_output"
 bun scripts/build-harness-wasm.mjs "$bun_wasm_output" "$cargo_bin" "$bun_wasm_bindgen_bin"
@@ -105,14 +65,21 @@ cat >"$work/consumer/package.json" <<EOF
 EOF
 cd "$work/consumer"
 bun install --ignore-scripts
-mkdir -p src test generated/wasm
-install -m 0644 "$root/scripts/fixtures/installed-harness/src/index.js" src/index.js
-install -m 0644 "$root/scripts/fixtures/installed-harness/src/proto.js" src/proto.js
+mkdir -p test
 install -m 0644 "$root/scripts/fixtures/installed-harness/test/"*.test.ts test/
-install -m 0644 "$root/typescript/packages/harness/test/"*.test.ts test/
-install -m 0644 "$root/conformance/vectors/harness/native-wasm-event-v1.json" native-wasm-event-v1.json
-install -m 0644 node_modules/@acyclic-labs/harness/generated/wasm/acyclic_harness_wasm_bg.wasm \
-  generated/wasm/acyclic_harness_wasm_bg.wasm
+# The workspace runs the full source suite separately. Reuse the client and
+# transport conformance cases here against the installed public exports.
+for source_test in client wire-transport; do
+  sed \
+    -e 's#../src/index.js#@acyclic-labs/harness#g' \
+    -e 's#../generated/proto/harness/v2/harness_pb.js#@acyclic-labs/harness/proto#g' \
+    "$root/typescript/packages/harness/test/$source_test.test.ts" >"test/$source_test.test.ts"
+  ! grep -Eq '\.\./(src|generated)/' "test/$source_test.test.ts" || {
+    echo "installed consumer test still imports Harness internals: $source_test" >&2
+    exit 1
+  }
+done
+install -m 0644 "$root/conformance/vectors/harness/native-wasm-event-v2.json" native-wasm-event-v2.json
 bun test test 2>&1 | tee "$work/typescript-package-test.log"
 
 cd "$root"

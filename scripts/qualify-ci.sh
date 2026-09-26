@@ -189,6 +189,8 @@ case "$lane" in
   linux)
     bash scripts/test-ensure-rust-target.sh
     source scripts/ensure-bun.sh
+    wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
+    export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
     # Package validation runs with --offline; populate every locked crate even
     # when the Blacksmith dependency cache is cold.
@@ -217,7 +219,17 @@ case "$lane" in
       base="$(jq -er '.pull_request.base.sha' "$GITHUB_EVENT_PATH")"
       git cat-file -e "$base^{commit}" 2>/dev/null ||
         git fetch --no-tags --depth=1 origin "$base"
+      # Harness v2 deliberately replaces the v1 handshake message types. Waive
+      # only this Filesystem schema during the v1-to-v2 transition; once the
+      # base contains v2, its wire/JSON compatibility is checked normally.
+      breaking_exclusions=()
+      if git show "$base:proto/filesystem/v2/filesystem.proto" |
+          grep -Fq 'acyclic.harness.v1.HandshakeRequest' &&
+          grep -Fq 'acyclic.harness.v2.HandshakeRequest' proto/filesystem/v2/filesystem.proto; then
+        breaking_exclusions+=(--exclude-path proto/filesystem/v2/filesystem.proto)
+      fi
       bun x buf breaking --against ".git#ref=$base" \
+        "${breaking_exclusions[@]}" \
         --exclude-path proto/inference/v1/inference.proto \
         --exclude-path proto/filesystem/v1 \
         --exclude-path proto/filesystem/daemon/v2
@@ -317,6 +329,8 @@ case "$lane" in
     # The shipped browser package end to end in headless Chrome: one tab, then
     # concurrent tabs sharing one database.
     source scripts/ensure-bun.sh
+    wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
+    export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
     bun run --filter '@acyclic-labs/fs' build
     CHROME="$(command -v google-chrome || command -v chromium)" \

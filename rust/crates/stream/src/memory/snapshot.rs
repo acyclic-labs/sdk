@@ -44,6 +44,7 @@ impl MemoryStream {
 fn encode(state: &State) -> Vec<u8> {
     let mut out = Vec::new();
     put_u64(&mut out, state.decision);
+    out.extend_from_slice(state.hierarchy_version.as_bytes());
     // Each node after every node it reaches, so decoding links backwards.
     let mut indices = HashMap::new();
     let mut nodes = Vec::new();
@@ -135,19 +136,19 @@ fn encode(state: &State) -> Vec<u8> {
 fn decode(encoded: &[u8]) -> Option<State> {
     let mut input = Input(encoded);
     let decision = input.u64()?;
+    let hierarchy_version = CommitId::from_bytes(input.array()?);
     let nodes = decode_nodes(&mut input)?;
     let (paths, path_bytes) = decode_paths(&mut input, &nodes)?;
     let mut retired = BTreeSet::new();
     for _ in 0..input.len()? {
         retired.insert(input.path()?);
     }
-    let mut state = State {
-        paths,
-        retired,
-        path_bytes,
-        decision,
-        ..State::default()
-    };
+    let mut state = State::default();
+    state.paths = paths;
+    state.retired = retired;
+    state.path_bytes = path_bytes;
+    state.decision = decision;
+    state.hierarchy_version = hierarchy_version;
     decode_retained(&mut input, &mut state)?;
     if !input.0.is_empty() {
         return None;

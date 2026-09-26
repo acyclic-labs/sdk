@@ -73,35 +73,47 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     ///
     /// Authorities are native direct children in Stream; no filesystem record or object is read.
     pub async fn authorities(&self, maximum: u32) -> Result<Vec<AuthorityId>, AuthorityStoreError> {
+        /// Restarts tolerated when authorities come and go mid-listing.
+        const RESTARTS: usize = 16;
         let parent = acyclic_stream::StreamPath::new("fs/authorities").map_err(map_stream_error)?;
         let page = u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX);
-        let mut after = None;
-        let mut authorities = Vec::new();
-        loop {
-            let mut children = self
-                .provider
-                .children(acyclic_stream::ChildrenRequest {
-                    parent: Some(parent.clone()),
-                    limit: page,
-                    after: after.take(),
-                })
-                .await
-                .map_err(map_stream_error)?;
-            let listed = authorities.len();
-            while let Some(child) = children.next().await {
-                let child = child.map_err(map_stream_error)?;
-                authorities.push(authority_child(&child.path)?);
-                after = Some(child.path);
+        'listing: for _ in 0..RESTARTS {
+            let mut authorities = Vec::new();
+            let mut after = None;
+            let mut hierarchy_version = None;
+            loop {
+                let listed = match self
+                    .provider
+                    .children_page(acyclic_stream::ChildrenPageRequest {
+                        parent: Some(parent.clone()),
+                        after: after.take(),
+                        hierarchy_version,
+                        limit: page,
+                    })
+                    .await
+                {
+                    Ok(listed) => listed,
+                    Err(acyclic_stream::StreamError::HierarchyChanged) => continue 'listing,
+                    Err(error) => return Err(map_stream_error(error)),
+                };
+                for child in &listed.children {
+                    authorities.push(authority_child(&child.path)?);
+                }
                 if authorities.len() > maximum as usize {
                     return Err(AuthorityStoreError::Rejected(
                         "authority listing bound exceeded".to_owned(),
                     ));
                 }
-            }
-            if authorities.len() - listed < page as usize {
-                return Ok(authorities);
+                let Some(next) = listed.next_after else {
+                    return Ok(authorities);
+                };
+                after = Some(next);
+                hierarchy_version = Some(listed.hierarchy_version);
             }
         }
+        Err(AuthorityStoreError::Rejected(
+            "authorities kept changing while they were listed".to_owned(),
+        ))
     }
 
     async fn snapshot(
@@ -373,7 +385,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     .children(acyclic_stream::ChildrenRequest {
                         parent: Some(path.clone()),
                         limit: u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX),
-                        after: None,
                     })
                     .await
                     .map_err(map_stream_error)?

@@ -59,6 +59,19 @@ export function validateArchive(archive, name, version, directory) {
     || metadata.license !== "Apache-2.0"
     || JSON.stringify(metadata.repository) !== JSON.stringify(expectedRepository)
   ) fail("npm manifest does not match the qualified package");
+  const exportedFiles = value => typeof value === "string"
+    ? [value]
+    : value && typeof value === "object"
+      ? Object.values(value).flatMap(exportedFiles)
+      : [];
+  for (const target of exportedFiles(metadata.exports)) {
+    if (!target.startsWith("./") || !seen.has(`package/${target.slice(2)}`)) {
+      fail(`npm archive lacks exported file: ${target}`);
+    }
+  }
+  if (metadata.types && !seen.has(`package/${metadata.types.replace(/^\.\//, "")}`)) {
+    fail(`npm archive lacks package types: ${metadata.types}`);
+  }
   if (readme.toString("utf8").split(/\r?\n/, 1)[0].trim() !== `# ${name}`) {
     fail("npm README does not match the qualified package");
   }

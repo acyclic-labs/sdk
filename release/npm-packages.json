@@ -1,6 +1,7 @@
 [
   { "slug": "harness", "directory": "harness", "name": "@acyclic-labs/harness", "source": "typescript" },
   { "slug": "objects", "directory": "objects", "name": "@acyclic-labs/objects", "source": "typescript" },
+  { "slug": "harness-objects", "directory": "harness-objects", "name": "@acyclic-labs/harness-objects", "source": "typescript" },
   { "slug": "stream", "directory": "stream", "name": "@acyclic-labs/stream", "source": "typescript" },
   { "slug": "inference", "directory": "inference", "name": "@acyclic-labs/inference", "source": "typescript" },
   { "slug": "machines", "directory": "machines", "name": "@acyclic-labs/machines", "source": "typescript" },

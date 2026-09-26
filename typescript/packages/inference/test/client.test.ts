@@ -5,6 +5,8 @@ import {
   contextRevision,
   CreateContextRequestSchema,
   CreateEvaluationRequestSchema,
+  EvaluationAggregation,
+  EvaluationSpecSchema,
   EvaluationResultSchema,
   EvaluationState,
   EvaluationViewSchema,
@@ -60,9 +62,17 @@ const warmView = (commitment: Uint8Array, context = revision(1), expiresAtMs = 1
   admissionReceiptId: revision(26),
   sequence: 1n,
 });
+const evaluationSpec = (specDigest = revision(30)) => create(EvaluationSpecSchema, {
+  candidates: [{ digest: revision(32), mediaType: "text/plain", logicalSize: 1n }],
+  suite: { identity: "suite", digest: revision(33), cases: [{ caseId: runIdentity(34), input: bytes(1) }] },
+  grader: { handle: bytes(2), artifactDigest: revision(35) },
+  metrics: [{ identity: "score", aggregation: EvaluationAggregation.MEAN }],
+  maximumCaseResults: 1n,
+  specDigest,
+});
 const evaluationView = (evaluationId = runIdentity(5), specDigest = revision(30)) => create(EvaluationViewSchema, {
   evaluationId,
-  spec: { specDigest },
+  spec: evaluationSpec(specDigest),
   state: EvaluationState.ADMITTED,
   sequence: 1n,
 });
@@ -102,7 +112,7 @@ test("generated lifecycle client covers contexts, warm commitments, runs, watch,
   const specDigest = revision(30);
   await client.createEvaluation(create(CreateEvaluationRequestSchema, {
     identity: { clientInstance: runIdentity(6), requestId: evaluationId },
-    spec: { specDigest },
+    spec: evaluationSpec(specDigest),
   }));
   await client.inspectEvaluation(evaluationId);
   expect(called).toEqual(["models", "create", "inspect:1", "mutate", "retain", "inspect-warm", "renew", "release", "generate", "inspect-run", "watch:7", "cancel", "create-evaluation", "inspect-evaluation"]);
@@ -169,10 +179,17 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   expect(result.terminal).toBe("completed");
 
   const substituted = new InferenceClient({ ...transport, async inspectRun() { return create(RunViewSchema, { runId: runIdentity(9), input: revision(1), model: "model" }); } });
-  await expect(substituted.inspectRun(id)).rejects.toThrow("run identity differs");
+  await expect(substituted.inspectRun(id)).rejects.toThrow("identity differs");
 
   const substitutedGeneration = new InferenceClient({ ...transport, async generateRun(request) { return create(GenerateRunResponseSchema, { run: { runId: runIdentity(9), input: request.context, model: "model" } }); } });
-  await expect(substitutedGeneration.generate(create(GenerateRunRequestSchema, { identity: { clientInstance: runIdentity(2), requestId: id }, context: revision(1) }))).rejects.toThrow("run identity differs");
+  await expect(substitutedGeneration.generate(create(GenerateRunRequestSchema, { identity: { clientInstance: runIdentity(2), requestId: id }, context: revision(1) }))).rejects.toThrow("identity differs");
+
+  const emptyContext = new InferenceClient({ ...transport, async generateRun(request) {
+    return create(GenerateRunResponseSchema, { run: { runId: request.identity!.requestId, input: revision(1), model: "model" } });
+  } });
+  await expect(emptyContext.generate(create(GenerateRunRequestSchema, {
+    identity: { clientInstance: runIdentity(2), requestId: id },
+  }))).rejects.toThrow("identity length differs");
 
   const malformed = new InferenceClient({ ...transport, async *watchRun() { yield create(RunEventSchema, { sequence: 2n }); } });
   await expect(async () => { for await (const _event of malformed.watchRun(id)) { /* exhaust */ } }).toThrow("run event order or shape differs");
@@ -182,11 +199,34 @@ test("run recovery rejects substituted or malformed streams and observes an incl
 
   expect(() => contextRevision(bytes(1))).toThrow("exactly 32 bytes");
   const substitutedContext = new InferenceClient({ ...transport, async inspectContext() { return contextView(revision(9)); } });
-  await expect(substitutedContext.inspectContext(revision(1))).rejects.toThrow("context revision differs");
+  await expect(substitutedContext.inspectContext(revision(1))).rejects.toThrow("revision differs");
   const substitutedWarm = new InferenceClient({ ...transport, async inspectWarm() { return warmView(revision(9)); } });
-  await expect(substitutedWarm.inspectWarm(revision(8))).rejects.toThrow("warm commitment differs");
+  await expect(substitutedWarm.inspectWarm(revision(8))).rejects.toThrow("warm commitment shape differs");
   const malformedReceipt = new InferenceClient({ ...transport, async createContext() { return create(MutationReceiptSchema); } });
-  await expect(malformedReceipt.createContext(create(CreateContextRequestSchema))).rejects.toThrow("mutation revision");
+  await expect(malformedReceipt.createContext(create(CreateContextRequestSchema))).rejects.toThrow("identity length differs");
+
+  const zeroIdentity = new InferenceClient({ ...transport, async inspectRun(request) {
+    return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model" });
+  } });
+  await expect(zeroIdentity.inspectRun(new Uint8Array(16))).rejects.toThrow("identity");
+
+  const malformedContinuation = new InferenceClient({ ...transport, async inspectRun(request) {
+    return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model",
+      result: { terminal: RunTerminal.COMPLETED, context: { revision: bytes(1) } } });
+  } });
+  await expect(malformedContinuation.inspectRun(id)).rejects.toThrow("identity length differs");
+
+  let admitted = false;
+  const invalidSpec = new InferenceClient({ ...transport, async createEvaluation() {
+    admitted = true;
+    return evaluationView();
+  } });
+  const unbounded = evaluationSpec();
+  unbounded.maximumCaseResults = 0n;
+  await expect(invalidSpec.createEvaluation(create(CreateEvaluationRequestSchema, {
+    identity: { clientInstance: runIdentity(6), requestId: runIdentity(5) }, spec: unbounded,
+  }))).rejects.toThrow("evaluation result bound is invalid");
+  expect(admitted).toBeFalse();
 
   const substitutedEvaluation = new InferenceClient({
     ...transport,
@@ -194,8 +234,8 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   });
   await expect(substitutedEvaluation.createEvaluation(create(CreateEvaluationRequestSchema, {
     identity: { clientInstance: runIdentity(6), requestId: runIdentity(5) },
-    spec: { specDigest: revision(30) },
-  }))).rejects.toThrow("evaluation spec differs");
+    spec: evaluationSpec(),
+  }))).rejects.toThrow("evaluation admission spec differs");
 
   const completedWithoutResult = new InferenceClient({
     ...transport,
@@ -205,7 +245,7 @@ test("run recovery rejects substituted or malformed streams and observes an incl
       return view;
     },
   });
-  await expect(completedWithoutResult.inspectEvaluation(runIdentity(5))).rejects.toThrow("inconsistent with its result");
+  await expect(completedWithoutResult.inspectEvaluation(runIdentity(5))).rejects.toThrow("evaluation state is invalid");
 
   const runningWithResult = new InferenceClient({
     ...transport,
@@ -216,7 +256,17 @@ test("run recovery rejects substituted or malformed streams and observes an incl
       return view;
     },
   });
-  await expect(runningWithResult.inspectEvaluation(runIdentity(5))).rejects.toThrow("inconsistent with its result");
+  await expect(runningWithResult.inspectEvaluation(runIdentity(5))).rejects.toThrow("evaluation state is invalid");
+
+  const forgedObservation = new InferenceClient({ ...transport, async inspectEvaluation(request) {
+    const view = evaluationView(request.evaluationId);
+    view.state = EvaluationState.COMPLETED;
+    view.result = create(EvaluationResultSchema, { specDigest: revision(30), resultDigest: revision(31),
+      caseResults: [{ candidateDigest: revision(32), caseId: runIdentity(34),
+        observation: { nativeOutputDigest: revision(36), observationDigest: revision(37), bindingDigest: revision(38) } }] });
+    return view;
+  } });
+  await expect(forgedObservation.inspectEvaluation(runIdentity(5))).rejects.toThrow("observation binding differs");
 });
 
 test("HTTP lifecycle transport requires authorization and parses bounded run events", async () => {

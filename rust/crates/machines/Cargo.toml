@@ -12,21 +12,25 @@ documentation = "https://docs.rs/acyclic-machines"
 keywords = ["machines", "compute", "grpc"]
 categories = ["api-bindings"]
 
+[features]
+default = ["grpc"]
+grpc = ["dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/fs", "tokio/macros", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
+
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true
 hex.workspace = true
-hyper-util.workspace = true
+hyper-util = { workspace = true, optional = true }
 prost.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, optional = true }
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
-tonic.workspace = true
-tonic-prost.workspace = true
-tower.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]
