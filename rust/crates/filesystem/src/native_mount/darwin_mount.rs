@@ -3493,7 +3493,9 @@ mod tests {
 
         // An NFS NULL call, as any local process could send it.
         let mut stream = std::os::unix::net::UnixStream::connect(&socket)?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        // macOS refuses socket options (EINVAL) once the peer has closed, as
+        // this server may already have done; the read then ends at once.
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let call: [u32; 11] = [0x8000_0028, 1, 0, 2, 100_003, 4, 0, 0, 0, 0, 0];
         let bytes = call
             .iter()
