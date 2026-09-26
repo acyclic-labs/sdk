@@ -2550,6 +2550,28 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             .value)
     }
 
+    /// Whether the workspace `volume_id` was deleted; one never created was
+    /// not.
+    pub(crate) async fn local_volume_deleted(
+        &self,
+        volume_id: VolumeId,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, FsError> {
+        match self
+            .inner
+            .authority
+            .head(
+                volume_authority_id(volume_id),
+                WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+            .await
+        {
+            Err(failure) if matches!(failure.error, AuthorityStoreError::Missing) => Ok(false),
+            _ => self.local_volume_ended(volume_id, cancellation).await,
+        }
+    }
+
     /// Whether the workspace `volume_id` ended: deleted, or never created.
     async fn local_volume_ended(
         &self,

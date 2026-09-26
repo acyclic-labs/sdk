@@ -2463,6 +2463,53 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
         main.read("/churn.txt", 1 << 20).await?,
         "23".repeat(20_000).as_str()
     );
-    assert_eq!(fs.collect_local_garbage(None, &cancellation).await?.removed, 0);
+    assert_eq!(
+        fs.collect_local_garbage(None, &cancellation).await?.removed,
+        0
+    );
+    Ok(())
+}
+
+/// A collection forgets a deleted workspace's core-state records, and only
+/// its: the lineage of a live workspace stays.
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let fs = Fs::local(crate::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await?;
+    let store = crate::LocalCoreStateStore::open_owned(directory.path().join("core-state"))?;
+    let distributed = crate::DistributedFs::new(fs.clone(), store.clone());
+    let main = fs.create_workspace("repo").await?;
+    main.write_text("/base.txt", "base").await?;
+    let mut children = Vec::new();
+    for name in ["kept", "deleted"] {
+        let base = main.head().await?;
+        let child = main
+            .fork(
+                name,
+                ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+            )
+            .await?;
+        distributed
+            .lineage()
+            .register_existing_child(&main, &child, base.id())
+            .await?;
+        children.push(child);
+    }
+    let deleted = children.pop().ok_or("deleted child")?;
+    let kept = children.pop().ok_or("kept child")?;
+    deleted.delete(IdempotencyKey::new()).await?;
+    let records = store.workspace_records().await?;
+    assert!(records.contains(&deleted.id()) && records.contains(&kept.id()));
+
+    distributed
+        .collect_garbage(&CancellationToken::new())
+        .await?;
+    let records = store.workspace_records().await?;
+    assert!(!records.contains(&deleted.id()));
+    assert!(records.contains(&kept.id()));
     Ok(())
 }

@@ -2044,6 +2044,77 @@ impl LocalCoreStateStore {
 }
 
 impl LocalCoreStateStore {
+    /// Every workspace this store keeps a lineage, lazy binding, or
+    /// Git-compatibility record for.
+    pub(crate) async fn workspace_records(
+        &self,
+    ) -> Result<BTreeSet<WorkspaceId>, LocalCoreStateStoreError> {
+        self.transaction(|root| {
+            root.with_log(|log| {
+                let mut workspaces = log
+                    .resident_keys(|key| match key {
+                        RecordKey::Lineage(id) | RecordKey::LazyWorkspace(id) => Some(id),
+                        _ => None,
+                    })
+                    .into_iter()
+                    .collect::<BTreeSet<_>>();
+                for family in [LINEAGE_FAMILY, LAZY_WORKSPACE_FAMILY, GIT_COMPAT_NAMESPACE] {
+                    for stem in family_stems(root, family)? {
+                        if let Ok(bytes) = <[u8; 16]>::try_from(stem.as_slice()) {
+                            workspaces.insert(WorkspaceId::from_bytes(bytes));
+                        }
+                    }
+                }
+                // A logged absence stays on disk as `null`.
+                let mut recorded = BTreeSet::new();
+                for workspace in workspaces {
+                    if log
+                        .get::<WorkspaceLineageRecord>(root, workspace)?
+                        .is_some()
+                        || log.get::<LazyWorkspaceState>(root, workspace)?.is_some()
+                        || read_locked::<GitCompatState>(
+                            &root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes()),
+                        )?
+                        .is_some()
+                    {
+                        recorded.insert(workspace);
+                    }
+                }
+                Ok(recorded)
+            })
+        })
+        .await
+    }
+
+    /// Forgets every record of a deleted workspace: its lineage, its lazy
+    /// binding, and its Git-compatibility state.
+    pub(crate) async fn forget_workspace(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Result<(), LocalCoreStateStoreError> {
+        self.transaction(move |root| {
+            root.with_log(|log| {
+                let mut change = Change::default();
+                change.put::<WorkspaceLineageRecord>(workspace, None);
+                change.put::<LazyWorkspaceState>(workspace, None);
+                log.commit(root, change)
+            })?;
+            // Unsynchronized: a removal a crash undoes is found again by the
+            // next collection.
+            let paths = root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes());
+            for path in [
+                &paths.temporary,
+                &paths.previous,
+                &paths.current,
+                &paths.lock,
+            ] {
+                remove_if_present(path)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
     /// Removes every lazy overlay and shadow node no lazy workspace reaches,
     /// and returns how many it removed.
     ///

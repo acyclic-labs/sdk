@@ -133,6 +133,7 @@ impl BackgroundCollection {
     }
 
     fn start(&self, fs: LocalFs, store: LocalCoreStateStore) {
+        let collection = LocalDistributedFs::new(fs, store);
         let cancellation = acyclic_fs::CancellationToken::new();
         let deletions = Arc::clone(&self.deletions);
         let wake = Arc::clone(&self.wake);
@@ -145,12 +146,9 @@ impl BackgroundCollection {
                     () = token.cancelled() => return,
                 }
                 deletions.store(0, std::sync::atomic::Ordering::Release);
-                // Lazy nodes first: a shadow they drop no longer keeps the
-                // objects its record names. A failed collection sweeps
-                // nothing it should not; the next one starts over.
-                if store.collect_lazy_nodes().await.is_ok() {
-                    let _ = fs.collect_local_garbage(Some(&store), &token).await;
-                }
+                // A failed collection sweeps nothing it should not; the next
+                // one starts over.
+                let _ = collection.collect_garbage(&token).await;
             }
         });
         if let Some(previous) = self
