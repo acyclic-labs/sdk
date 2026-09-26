@@ -304,13 +304,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "batch cancellation history is not exactly retained".into(),
             ));
         }
-        let records = stream
-            .read(0, 2)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        let records = stream.read(0, 2).await?.try_collect::<Vec<_>>().await?;
         let [record] = records.as_slice() else {
             return Err(Error::Storage(
                 "batch cancellation record is missing".into(),
@@ -363,13 +357,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "batch manifest history is not exactly retained".into(),
             ));
         }
-        let records = stream
-            .read(0, 2)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        let records = stream.read(0, 2).await?.try_collect::<Vec<_>>().await?;
         let [record] = records.as_slice() else {
             return Err(Error::Storage("batch manifest record is missing".into()));
         };
@@ -512,11 +500,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             AppendOutcome::Committed(receipt) if receipt.end == receipt.start + 1 => {
                 let records = stream
                     .read(receipt.start, 1)
-                    .await
-                    .map_err(|error| Error::Storage(error.to_string()))?
+                    .await?
                     .try_collect::<Vec<_>>()
-                    .await
-                    .map_err(|error| Error::Storage(error.to_string()))?;
+                    .await?;
                 let [record] = records.as_slice() else {
                     return Err(Error::Conflict(
                         "control publication differs from its committed record".into(),
@@ -1055,10 +1041,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let page_limit = u32::try_from(limit)
                 .map_err(|_| Error::Invalid("inbox page bound is invalid".into()))?;
             let page = match mailbox.read(after, page_limit).await {
-                Ok(records) => records
-                    .try_collect::<Vec<_>>()
-                    .await
-                    .map_err(|error| Error::Storage(error.to_string()))?,
+                Ok(records) => records.try_collect::<Vec<_>>().await?,
                 Err(StreamError::NotFound) => return Ok(Vec::new()),
                 Err(StreamError::PrefixNotRetained) => {
                     return Err(Error::Conflict(
@@ -1071,10 +1054,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             for record in page {
                 let value: Value = serde_json::from_slice(&record.value)
                     .map_err(|error| Error::Storage(error.to_string()))?;
-                if crate::contract::canonical_json_bytes(&value)
-                    .map_err(|error| Error::Storage(error.to_string()))?
-                    != record.value.as_ref()
-                {
+                if crate::contract::canonical_json_bytes(&value)? != record.value.as_ref() {
                     return Err(Error::Storage("mail event is not canonical JSON".into()));
                 }
                 let event: MailEvent = serde_json::from_value(value)
@@ -1526,21 +1506,8 @@ mod tests {
             root_request.canonical_value()
         );
         let manifest = reopened.batch_stream(request.batch_id)?;
-        assert_eq!(
-            manifest
-                .bounds()
-                .await
-                .map_err(|error| Error::Storage(error.to_string()))?
-                .tail,
-            1
-        );
-        let records = manifest
-            .read(0, 2)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(manifest.bounds().await?.tail, 1);
+        let records = manifest.read(0, 2).await?.try_collect::<Vec<_>>().await?;
         assert_eq!(records.len(), 1);
         assert!(
             !std::str::from_utf8(&records[0].value)
@@ -1653,8 +1620,7 @@ mod tests {
             reopened
                 .batch_cancellation_stream(cancelled.batch_id)?
                 .bounds()
-                .await
-                .map_err(|error| Error::Storage(error.to_string()))?
+                .await?
                 .tail,
             1
         );

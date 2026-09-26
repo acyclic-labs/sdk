@@ -399,6 +399,13 @@ pub enum Error {
     Indeterminate(OperationId),
 }
 
+/// A Stream failure below the harness is a durable-storage failure.
+impl From<acyclic_stream::StreamError> for Error {
+    fn from(error: acyclic_stream::StreamError) -> Self {
+        Self::Storage(error.to_string())
+    }
+}
+
 /// Harness result type.
 pub type Result<T> = std::result::Result<T, Error>;
 

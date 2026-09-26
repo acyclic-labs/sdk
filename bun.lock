@@ -37,19 +37,12 @@
         "fake-indexeddb": "6.2.4",
         "typescript": "7.0.2",
       },
-    },
-    "typescript/packages/harness-objects": {
-      "name": "@acyclic-labs/harness-objects",
-      "version": "0.1.5",
-      "devDependencies": {
-        "@acyclic-labs/harness": "workspace:*",
-        "@acyclic-labs/objects": "workspace:*",
-        "typescript": "7.0.2",
-      },
       "peerDependencies": {
-        "@acyclic-labs/harness": "0.1.5",
         "@acyclic-labs/objects": "0.1.5",
       },
+      "optionalPeers": [
+        "@acyclic-labs/objects",
+      ],
     },
     "typescript/packages/inference": {
       "name": "@acyclic-labs/inference",
@@ -100,7 +93,6 @@
       "dependencies": {
         "@acyclic-labs/fs": "0.1.5",
         "@acyclic-labs/harness": "0.1.5",
-        "@acyclic-labs/harness-objects": "0.1.5",
         "@acyclic-labs/inference": "0.1.5",
         "@acyclic-labs/machines": "0.1.5",
         "@acyclic-labs/objects": "0.1.5",
@@ -125,8 +117,6 @@
     "@acyclic-labs/fs": ["@acyclic-labs/fs@workspace:typescript/packages/filesystem"],
 
     "@acyclic-labs/harness": ["@acyclic-labs/harness@workspace:typescript/packages/harness"],
-
-    "@acyclic-labs/harness-objects": ["@acyclic-labs/harness-objects@workspace:typescript/packages/harness-objects"],
 
     "@acyclic-labs/inference": ["@acyclic-labs/inference@workspace:typescript/packages/inference"],
 

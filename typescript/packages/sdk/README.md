@@ -15,6 +15,6 @@ await events.append({ type: "created" });
 console.log(bucket.reference.name);
 ```
 
-Namespaces: `harness` (agent runtime), `filesystem` (versioned workspaces), `stream` (append-only records), `objects` (immutable object versions), `harnessObjects` (Harness object adapter), `machines` (machine lifecycle), and `inference` (contexts and runs). Each service has its own authentication and deployment requirements; the in-memory providers shown above are for local use, not durable hosting.
+Namespaces: `harness` (agent runtime), `filesystem` (versioned workspaces), `stream` (append-only records), `objects` (immutable object versions), `harnessObjects` (`@acyclic-labs/harness/objects`), `machines` (machine lifecycle), and `inference` (contexts and runs). Each service has its own authentication and deployment requirements; the in-memory providers shown above are for local use, not durable hosting.
 
 [Package guides](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages) · [Repository overview](https://github.com/acyclic-labs/sdk#readme)

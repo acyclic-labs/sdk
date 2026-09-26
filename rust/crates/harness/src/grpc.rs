@@ -1,7 +1,6 @@
-#![deny(unsafe_code)]
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/grpc.md")]
 
-use acyclic_harness::{
+use crate::{
     Error, wire,
     wire_api::{
         HarnessWireApi, validate_admission, validate_cancel_request, validate_cancel_response,
@@ -16,7 +15,7 @@ use tonic::{Request, Response, Status};
 /// Generated tonic client and server surfaces using the canonical Harness messages.
 #[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
 pub mod transport {
-    include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v2.rs"));
+    include!(concat!(env!("OUT_DIR"), "/grpc/acyclic.harness.v2.rs"));
 }
 
 /// Thin tonic service; all admission and replay semantics belong to [`HarnessWireApi`].
@@ -118,16 +117,11 @@ fn status(error: Error) -> Status {
         Error::Invalid(message) => Status::invalid_argument(message),
         Error::Unauthorized(message) => Status::permission_denied(message),
         Error::InteractionRejected(reason) => match reason {
-            acyclic_harness::InteractionRejection::Declined
-            | acyclic_harness::InteractionRejection::Denied => {
+            crate::InteractionRejection::Declined | crate::InteractionRejection::Denied => {
                 Status::permission_denied(reason.to_string())
             }
-            acyclic_harness::InteractionRejection::Cancelled => {
-                Status::cancelled(reason.to_string())
-            }
-            acyclic_harness::InteractionRejection::Expired => {
-                Status::deadline_exceeded(reason.to_string())
-            }
+            crate::InteractionRejection::Cancelled => Status::cancelled(reason.to_string()),
+            crate::InteractionRejection::Expired => Status::deadline_exceeded(reason.to_string()),
         },
         Error::Storage(message) => Status::unavailable(message),
         Error::Indeterminate(operation) => {
@@ -139,7 +133,7 @@ fn status(error: Error) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_harness::{
+    use crate::{
         Result,
         wire_api::{current_protocol, negotiate},
     };
@@ -150,7 +144,7 @@ mod tests {
     impl HarnessWireApi for FakeApi {
         fn authorize_operation_control<'a>(
             &'a self,
-            _: &'a acyclic_harness::wire_api::OperationControlRequest,
+            _: &'a crate::wire_api::OperationControlRequest,
         ) -> futures::future::BoxFuture<'a, Result<()>> {
             async { Ok(()) }.boxed()
         }
@@ -279,7 +273,7 @@ mod tests {
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert!(replay.live);
 
-        let operation_id = acyclic_harness::OperationId::from_bytes([12; 16]).to_string();
+        let operation_id = crate::OperationId::from_bytes([12; 16]).to_string();
         let owner = wire::Authority {
             kind: wire::AggregateKind::Task as i32,
             id: "owner".into(),

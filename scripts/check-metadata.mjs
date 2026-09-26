@@ -122,7 +122,6 @@ for (const path of [
   "rust/crates/filesystem/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
   "rust/crates/harness/Cargo.toml",
-  "rust/crates/harness-filesystem/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
@@ -142,7 +141,7 @@ if (
 }
 for (const path of [
   "rust/crates/conformance/Cargo.toml",
-  "rust/crates/harness-machines/Cargo.toml",
+  "rust/crates/harness/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-machines = \{ version = "([^"]+)"/)?.[1];
@@ -164,14 +163,10 @@ if ((await load("typescript/packages/sdk/package.json")).dependencies["@acyclic-
 const objectsVersion = compatibility.families.objects.version;
 const objectsCrateVersion = compatibility.families.objects.crateVersion ?? objectsVersion;
 const objectsManifest = await readFile(new URL("rust/crates/objects/Cargo.toml", root), "utf8");
-const harnessObjectsPackage = await load("typescript/packages/harness-objects/package.json");
 if (
   (await load("typescript/packages/objects/package.json")).version !== objectsVersion ||
   sdkPackage.dependencies["@acyclic-labs/objects"] !== objectsVersion ||
-  harnessObjectsPackage.version !== harnessVersion ||
-  harnessObjectsPackage.peerDependencies["@acyclic-labs/harness"] !== harnessVersion ||
-  harnessObjectsPackage.peerDependencies["@acyclic-labs/objects"] !== objectsVersion ||
-  sdkPackage.dependencies["@acyclic-labs/harness-objects"] !== harnessVersion
+  harnessPackage.peerDependencies["@acyclic-labs/objects"] !== objectsVersion
 ) {
   throw new Error("Objects npm and umbrella dependency versions must match compatibility metadata");
 }
@@ -182,7 +177,7 @@ for (const path of [
   "rust/crates/conformance/Cargo.toml",
   "rust/crates/filesystem/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
-  "rust/crates/harness-objects/Cargo.toml",
+  "rust/crates/harness/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-objects = \{ version = "([^"]+)"/)?.[1];

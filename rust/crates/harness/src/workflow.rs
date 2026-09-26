@@ -1,13 +1,10 @@
 //! Explicit versioned resumable state machines for durable authoring.
 
-#[cfg(feature = "host")]
 use crate::IdempotencyKey;
 use crate::{Error, OperationId, Result, conversation::FileRef};
-#[cfg(feature = "host")]
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(feature = "host")]
 use std::sync::Mutex;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -187,7 +184,6 @@ impl MachineRegistry {
 }
 
 /// One atomic durable state-machine transition and its complete command outbox.
-#[cfg(feature = "host")]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowRecord {
@@ -207,7 +203,6 @@ pub struct WorkflowRecord {
     pub next: MachineCheckpoint,
 }
 
-#[cfg(feature = "host")]
 impl WorkflowRecord {
     /// Identities reserved atomically by this transition, including its outbox.
     pub fn operation_ids(&self) -> impl Iterator<Item = OperationId> + '_ {
@@ -270,7 +265,6 @@ fn validate_commands(commands: &[WorkflowCommand]) -> Result<()> {
 }
 
 /// Outcome of an atomic workflow journal commit.
-#[cfg(feature = "host")]
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkflowCommitOutcome {
     /// A new record committed.
@@ -306,7 +300,6 @@ impl WorkflowAdmission {
 }
 
 /// Durable journal boundary; one commit atomically stores checkpoint and commands.
-#[cfg(feature = "host")]
 pub trait WorkflowJournal: Send + Sync {
     /// Atomically retains one exact workflow admission. Providers must return
     /// the existing admission on retries and reject an identity conflict.
@@ -334,20 +327,17 @@ pub trait WorkflowJournal: Send + Sync {
 /// tests. Admission, checkpoint transitions, and command outboxes are retained
 /// under one lock; production providers can implement the same contract on
 /// durable storage.
-#[cfg(feature = "host")]
 #[derive(Default)]
 pub struct MemoryWorkflowJournal {
     state: Mutex<MemoryWorkflowState>,
 }
 
-#[cfg(feature = "host")]
 #[derive(Default)]
 struct MemoryWorkflowState {
     admission: Option<WorkflowAdmission>,
     records: Vec<(IdempotencyKey, WorkflowRecord)>,
 }
 
-#[cfg(feature = "host")]
 impl WorkflowJournal for MemoryWorkflowJournal {
     fn admit<'a>(
         &'a self,
@@ -493,7 +483,6 @@ impl WorkflowJournal for MemoryWorkflowJournal {
 }
 
 /// Replay-safe async authoring host compiled onto explicit state-machine records.
-#[cfg(feature = "host")]
 pub struct DurableWorkflowHost {
     registry: MachineRegistry,
     checkpoint: MachineCheckpoint,
@@ -503,7 +492,6 @@ pub struct DurableWorkflowHost {
     terminal: bool,
 }
 
-#[cfg(feature = "host")]
 impl DurableWorkflowHost {
     /// Opens a workflow by replaying and validating every atomic transition.
     pub async fn open(
@@ -677,7 +665,6 @@ impl DurableWorkflowHost {
     }
 }
 
-#[cfg(feature = "host")]
 fn input_digest(input: &Value) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(input)
 }
@@ -689,7 +676,7 @@ fn validate_state(schema: &Value, state: &Value) -> Result<()> {
         .map_err(|error| Error::Invalid(format!("machine state failed validation: {error}")))
 }
 
-#[cfg(all(test, feature = "host"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;

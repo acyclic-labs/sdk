@@ -11,14 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
-#[cfg(feature = "host")]
 use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey as StreamIdempotencyKey, MAX_RECORD_BYTES,
     ReadRequest, StreamError, StreamPath, StreamProvider,
 };
-#[cfg(feature = "host")]
 use bytes::Bytes;
-#[cfg(feature = "host")]
 use futures::StreamExt as _;
 
 /// Immutable reference proving which pre-compaction context was summarized.
@@ -50,7 +47,6 @@ pub struct ContextRevision {
 }
 
 /// Stream-backed context source shared by memory, retrieval, skills, and compaction stages.
-#[cfg(feature = "host")]
 pub struct DurableContextProvider {
     provider: Arc<dyn StreamProvider>,
     path: StreamPath,
@@ -60,7 +56,6 @@ pub struct DurableContextProvider {
     content_verifier: Arc<dyn ContentResidencyVerifier>,
 }
 
-#[cfg(feature = "host")]
 impl DurableContextProvider {
     /// Creates a bounded durable provider over one permanent Stream path.
     pub fn new(
@@ -265,7 +260,6 @@ impl DurableContextProvider {
     }
 }
 
-#[cfg(feature = "host")]
 fn validate_compaction(
     reference: &CompactionReference,
     source: &Context,
@@ -288,7 +282,6 @@ fn validate_compaction(
     Ok(())
 }
 
-#[cfg(feature = "host")]
 async fn validate_context_refs(
     context: &Context,
     verifier: &dyn ContentResidencyVerifier,
@@ -328,7 +321,6 @@ async fn validate_context_refs(
     Ok(())
 }
 
-#[cfg(feature = "host")]
 impl ContextSource for DurableContextProvider {
     fn load<'a>(&'a self, _: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
         Box::pin(async move { Ok(self.latest().await?.messages) })
@@ -559,7 +551,7 @@ impl ContextPipeline {
     }
 }
 
-#[cfg(all(test, feature = "host"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{

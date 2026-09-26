@@ -16,7 +16,6 @@
     { "path": "../filesystem" },
     { "path": "../stream" },
     { "path": "../objects" },
-    { "path": "../harness-objects" },
     { "path": "../machines" },
     { "path": "../inference" }
   ],

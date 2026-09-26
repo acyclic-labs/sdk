@@ -16,14 +16,12 @@ use acyclic_stream::{
     StreamClient, StreamError, StreamProvider,
 };
 use bytes::Bytes;
-use futures::TryStreamExt as _;
 use futures::future::BoxFuture;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
 const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";
-const READ_PAGE_SIZE: u32 = 1_024;
 const COORDINATOR_WIRE_VERSION: &str = "2";
 const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v2";
 const MAX_CHILD_PAGE: usize = 1_024;
@@ -225,9 +223,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         client: &StreamClient<P>,
         content_verifier: Arc<dyn ContentResidencyVerifier>,
     ) -> Result<Self> {
-        let stream = client
-            .stream(COORDINATOR_PATH)
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        let stream = client.stream(COORDINATOR_PATH)?;
         let mut value = Self {
             client: client.clone(),
             stream,
@@ -245,21 +241,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     /// observed revision. A long-lived host must refresh before observing a
     /// remote completion or planning another event against its local reducer.
     pub async fn refresh(&mut self) -> Result<()> {
-        let mut from = self.revision;
-        loop {
-            let records = match self.stream.read(from, READ_PAGE_SIZE).await {
-                Ok(records) => records,
-                Err(StreamError::NotFound) if from == 0 => break,
-                Err(error) => return Err(Error::Storage(error.to_string())),
-            };
-            let page = records
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(|error| Error::Storage(error.to_string()))?;
-            if page.is_empty() {
-                break;
-            }
-            for record in &page {
+        let mut replay = self.stream.replay(self.revision);
+        while let Some(page) = replay.next_page().await? {
+            for record in page {
                 let (revision, operation_id, key, digest, event) = decode(&record.value)?;
                 if revision != record.sequence + 1 {
                     return Err(Error::Storage("coordinator revision is not gapless".into()));
@@ -270,9 +254,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 self.verify_published_result(&event).await?;
                 self.apply_committed(revision, operation_id, key, digest, event)?;
             }
-            from = from
-                .checked_add(page.len() as u64)
-                .ok_or_else(|| Error::Storage("coordinator cursor exhausted".into()))?;
         }
         Ok(())
     }

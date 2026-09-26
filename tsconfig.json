@@ -5,7 +5,6 @@
     { "path": "./typescript/packages/filesystem" },
     { "path": "./typescript/packages/stream" },
     { "path": "./typescript/packages/objects" },
-    { "path": "./typescript/packages/harness-objects" },
     { "path": "./typescript/packages/machines" },
     { "path": "./typescript/packages/inference" },
     { "path": "./typescript/packages/sdk" }

@@ -61,10 +61,15 @@ async function serve() {
     const path = normalize(join(base, relative));
     const boundary = base.endsWith(sep) ? base : `${base}${sep}`;
     if (!path.startsWith(boundary) || !existsSync(path) || !statSync(path).isFile()) {
-      response.writeHead(404).end();
+      response.writeHead(404, { connection: "close" }).end();
       return;
     }
-    response.writeHead(200, { "content-type": types[extname(path)] ?? "application/octet-stream" });
+    // One request per connection: a reused keep-alive socket that Node is
+    // closing as Chrome sends on it surfaces in the page as "Failed to fetch".
+    response.writeHead(200, {
+      connection: "close",
+      "content-type": types[extname(path)] ?? "application/octet-stream",
+    });
     response.end(readFileSync(path));
   });
   await new Promise((resolveListen, reject) => {
