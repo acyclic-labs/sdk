@@ -393,6 +393,12 @@ where
     }
 }
 
+/// Whether a source node has more than one name. A source that cannot count
+/// names (a Windows listing) reports none.
+fn linked(node: &SourceNode) -> bool {
+    node.link_count.is_some_and(|count| count > 1)
+}
+
 /// One native callback adapter over a source-backed sparse workspace.
 ///
 /// Reads demand only the addressed source facts. Mutations promote the exact
@@ -419,6 +425,11 @@ pub struct LazyMountSource<A, O, D, S> {
     /// The source's reports of its own changes; `None` when it cannot make
     /// them. Chosen once, when the view is created.
     source_watch: Option<Box<dyn SourceWatch>>,
+    /// Source nodes seen with more than one name, which a host reports a
+    /// change to only under the name it was made through: one made through
+    /// a name outside the source goes unreported, so these are read afresh
+    /// and never cached, as an unwatched source's are.
+    linked: Mutex<std::collections::HashSet<FileId>>,
 }
 
 impl<A, O, D, S> LazyMountSource<A, O, D, S>
@@ -463,7 +474,17 @@ where
             detached: Arc::new(Mutex::new(BTreeMap::new())),
             open_sources: Arc::new(Mutex::new(BTreeMap::new())),
             source_watch,
+            linked: Mutex::default(),
         })
+    }
+
+    /// Whether facts about `file_id` may be reused on the source's reports.
+    fn reported(&self, file_id: FileId) -> bool {
+        !self
+            .linked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&file_id)
     }
 
     /// Whether the source still reports every change made to it.
@@ -1280,6 +1301,14 @@ where
         A: AsyncAuthorityStore + Send + Sync + 'static,
         O: AsyncObjectStore + Send + Sync + 'static,
     {
+        if let LazyLookup::Source(node) = &lookup
+            && linked(node)
+        {
+            self.linked
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(self.lazy.source_file_id(node));
+        }
         let pin = match (&lookup, source) {
             (LazyLookup::Source(node), Some(source))
                 if node.kind == SourceNodeKind::RegularFile =>
@@ -1919,11 +1948,15 @@ where
     }
 
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
-        self.source_view.is_stable() && self.authored.unchanged_since(path, file_id, stamp)
+        self.source_view.is_stable()
+            && file_id.is_none_or(|file_id| self.reported(file_id))
+            && self.authored.unchanged_since(path, file_id, stamp)
     }
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
-        self.source_view.is_stable() && self.authored.node_unchanged_since(file_id, stamp)
+        self.source_view.is_stable()
+            && self.reported(file_id)
+            && self.authored.node_unchanged_since(file_id, stamp)
     }
 
     fn binding_epoch(&self) -> Option<u64> {
@@ -4779,6 +4812,43 @@ mod tests {
             std::fs::write(source.path().join("a"), format!("round {round}"))?;
             drop(view);
         }
+        Ok(())
+    }
+
+    /// A file with a name outside the watched root changes unreported when
+    /// written through that name, so the view reads it afresh, never from
+    /// what it remembered, and no driver may cache it.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_linked_outside_the_source_is_read_afresh() -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let (source, outside) = (parent.path().join("source"), parent.path().join("outside"));
+        std::fs::create_dir_all(&source)?;
+        std::fs::create_dir_all(&outside)?;
+        std::fs::write(source.join("linked"), b"short")?;
+        std::fs::hard_link(source.join("linked"), outside.join("alias"))?;
+        std::fs::write(source.join("single"), b"single")?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let view = runtime.block_on(mounted_view(&source, "linked-outside"))?;
+        let (linked_path, single) = (mounted(&["linked"]), mounted(&["single"]));
+        let stamp = view.view_stamp().ok_or("a local source is watched")?;
+        let linked_file = view.lookup(&linked_path)?.ok_or("linked")?.node;
+        let single_file = view.lookup(&single)?.ok_or("single")?.node;
+        assert_eq!(linked_file.logical_bytes, 5);
+        assert!(!view.unchanged_since(&linked_path, Some(linked_file.file_id), stamp));
+        assert!(!view.node_unchanged_since(linked_file.file_id, stamp));
+        assert!(view.unchanged_since(&single, Some(single_file.file_id), stamp));
+
+        // Written in place through the name outside the source: unreported.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(outside.join("alias"))
+            .and_then(|mut file| std::io::Write::write_all(&mut file, b" and longer"))?;
+        assert_eq!(
+            view.lookup(&linked_path)?
+                .map(|lookup| lookup.node.logical_bytes),
+            Some(16)
+        );
         Ok(())
     }
 

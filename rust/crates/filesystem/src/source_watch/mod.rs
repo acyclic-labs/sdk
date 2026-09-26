@@ -49,6 +49,21 @@
 //! writer closes (or flushes) the file, which is NFS close-to-open
 //! consistency.
 //!
+//! # What no host reports
+//!
+//! Every host reports a change under the name it was made through, and only
+//! beneath the watched root (on Linux, beneath the directories watched). So
+//! a file with another name outside the root, written through that name,
+//! changes unreported. A view therefore never relies on reports for a node
+//! the source says has more than one name: it reads such a node afresh on
+//! every use, and drivers cache nothing of it. What remains unreported are
+//! the changes to a node with one name when it was read: a name added to it
+//! outside the root, and writes through that name; and, on Windows, whose
+//! listings do not count names, writes through any name outside the root.
+//! Writes through a shared memory mapping raise no report of their own and
+//! are reported when the writer closes the file, which is NFS close-to-open
+//! consistency.
+//!
 //! Where the host names only the path it changed (Linux and macOS), the
 //! node is the one the path binds when the report is handled: a change
 //! through one hard link reaches every name of the node, but removing one

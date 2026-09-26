@@ -21,7 +21,9 @@
 //! on the way to it: once that name is removed, replaced, or moved, the
 //! watch becomes inexact.
 //!
-//! Writes through a shared memory mapping are not reported by inotify.
+//! Writes through a shared memory mapping raise no event of their own; the
+//! writer's close of a descriptor opened for writing does, so they are
+//! reported then, as NFS reports them (close-to-open).
 
 #![allow(unsafe_code)]
 
@@ -40,6 +42,7 @@ use std::thread::JoinHandle;
 const WATCHED: u32 = libc::IN_CREATE
     | libc::IN_DELETE
     | libc::IN_MODIFY
+    | libc::IN_CLOSE_WRITE
     | libc::IN_ATTRIB
     | libc::IN_MOVED_FROM
     | libc::IN_MOVED_TO
