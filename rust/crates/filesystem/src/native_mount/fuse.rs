@@ -466,6 +466,103 @@ struct FileHandle {
     claim: Option<crate::FileId>,
 }
 
+/// A read-only handle to a file whose pages the kernel already holds at the
+/// version this handle opens. Reads come from those pages, so the source file
+/// opens only when a use reaches it, and serves that use only while it is
+/// still the file and version the handle opened.
+struct DeferredOpenFile {
+    source: Arc<dyn MountFilesystem>,
+    path: MountPath,
+    opened: MountLookup,
+    file: Mutex<Option<Arc<dyn MountOpenFile>>>,
+}
+
+impl DeferredOpenFile {
+    fn file(&self) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
+        let mut file = self.file.lock().map_err(|_| MountSourceError::Stale)?;
+        if let Some(file) = file.as_ref() {
+            return Ok(Arc::clone(file));
+        }
+        let opened = self.source.open_file(&self.path)?;
+        let current = opened.lookup()?;
+        if current.node.file_id != self.opened.node.file_id
+            || ContentVersion::of(&current) != ContentVersion::of(&self.opened)
+        {
+            return Err(MountSourceError::Stale);
+        }
+        *file = Some(Arc::clone(&opened));
+        Ok(opened)
+    }
+}
+
+impl MountOpenFile for DeferredOpenFile {
+    fn lookup(&self) -> Result<MountLookup, MountSourceError> {
+        self.file()?.lookup()
+    }
+
+    fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
+        self.file()?.read_range(offset, length)
+    }
+
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
+        self.file()?.read_up_to(offset, maximum_bytes)
+    }
+
+    fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
+        self.file()?.seek(offset, target)
+    }
+
+    fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
+        self.file()?.write_range(offset, bytes)
+    }
+
+    fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
+        self.file()?.resize(logical_bytes)
+    }
+
+    fn allocate_range(
+        &self,
+        offset: u64,
+        length: u64,
+        operation: super::MountRangeAllocation,
+    ) -> Result<(), MountSourceError> {
+        self.file()?.allocate_range(offset, length, operation)
+    }
+
+    fn set_attributes(
+        &self,
+        metadata: FileMetadata,
+        logical_bytes: Option<u64>,
+    ) -> Result<(), MountSourceError> {
+        self.file()?.set_attributes(metadata, logical_bytes)
+    }
+
+    fn read_attribute(&self, name: &[u8]) -> Result<Option<Bytes>, MountSourceError> {
+        self.file()?.read_attribute(name)
+    }
+
+    fn list_attributes(
+        &self,
+        cursor: Option<&[u8]>,
+        maximum_entries: u32,
+    ) -> Result<super::MountAttributePage, MountSourceError> {
+        self.file()?.list_attributes(cursor, maximum_entries)
+    }
+
+    fn write_attribute(
+        &self,
+        name: &[u8],
+        value: Bytes,
+        mode: super::MountAttributeWriteMode,
+    ) -> Result<(), MountSourceError> {
+        self.file()?.write_attribute(name, value, mode)
+    }
+
+    fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError> {
+        self.file()?.remove_attribute(name)
+    }
+}
+
 /// Whether an open with `flags` may change the file's content.
 fn changes_content(flags: i32) -> bool {
     flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_TRUNC != 0
@@ -2705,48 +2802,45 @@ impl FuseProjection {
     fn open_node(&self, inode: u64, flags: i32) -> Result<(u64, FopenFlags), i32> {
         let source = self.source();
         let _names = self.core.names()?;
-        let (path, file_id, stamp_before, binding_before) = {
+        let (path, file_id, stamp_before, binding_before, held) = {
             let state = self.core.state()?;
             admit_open(state.defaults.writable, flags)?;
             let node = state.node(inode)?;
             if node.kind != MountNodeKind::Regular {
                 return Err(libc::EISDIR);
             }
+            // Facts a read-only open can stand on without the source: pages
+            // the kernel holds at the version these facts describe.
+            let held = (!changes_content(flags) && flags & libc::O_DIRECT == 0)
+                .then(|| state.by_inode.get(&inode))
+                .flatten()
+                .filter(|entry| entry.cached_content == Some(ContentVersion::of(&entry.lookup)))
+                .and_then(|entry| Some((entry.lookup, entry.facts?)));
             (
                 state.path(inode)?.clone(),
                 node.file_id,
                 source.view_stamp(),
                 source.binding_epoch(),
+                held,
             )
         };
         let _claim = changes_content(flags)
             .then(|| self.core.claim_content(file_id))
             .transpose()?;
-        let open_file = source.open_file(&path).map_err(errno)?;
-        // The inode may have outlived its path binding. Check the attached
-        // file before O_TRUNC can mutate a replacement at that path.
-        let opened = match open_file.lookup() {
-            Ok(lookup) if lookup.node.file_id == file_id => lookup,
-            _ => return Err(libc::ESTALE),
-        };
-        let truncated = flags & libc::O_TRUNC != 0;
-        if truncated {
-            open_file.resize(0).map_err(errno)?;
-        }
-        // O_TRUNC (and a lazy-file promotion during open) legitimately
-        // changes the node. Validate the attached handle instead of treating
-        // that authored mutation as an external rebind.
-        let unchanged = !truncated
-            && stamp_before
-                .is_some_and(|stamp| source.unchanged_since(&path, Some(file_id), stamp));
-        let (refreshed, stamp) = if unchanged {
-            (opened, stamp_before)
-        } else {
-            let stamp = source.view_stamp();
-            match open_file.lookup() {
-                Ok(lookup) if lookup.node.file_id == file_id => (lookup, stamp),
-                _ => return Err(libc::ESTALE),
+        let held = held.filter(|(lookup, facts)| {
+            lookup.node.file_id == file_id && source.unchanged_since(&path, Some(file_id), *facts)
+        });
+        let (open_file, refreshed, stamp, truncated) = match held {
+            Some((lookup, facts)) => {
+                let deferred: Arc<dyn MountOpenFile> = Arc::new(DeferredOpenFile {
+                    source: Arc::clone(&self.core.source),
+                    path: path.clone(),
+                    opened: lookup,
+                    file: Mutex::new(None),
+                });
+                (deferred, lookup, Some(facts), false)
             }
+            None => self.open_source(source, &path, file_id, flags, stamp_before)?,
         };
         // Lazy promotion and O_TRUNC may write while opening, so pin the
         // external binding only after those operations have completed.
@@ -2780,6 +2874,46 @@ impl FuseProjection {
         )?;
         drop(state);
         Ok((handle, self.store_pages(store, open_flags)))
+    }
+
+    /// Opens `path` in the source for an open with `flags` and returns the
+    /// file with its facts, the position they were read after, and whether
+    /// the open truncated it.
+    #[allow(clippy::type_complexity)]
+    fn open_source(
+        &self,
+        source: &dyn MountFilesystem,
+        path: &MountPath,
+        file_id: crate::FileId,
+        flags: i32,
+        stamp_before: Option<ViewStamp>,
+    ) -> Result<(Arc<dyn MountOpenFile>, MountLookup, Option<ViewStamp>, bool), i32> {
+        let open_file = source.open_file(path).map_err(errno)?;
+        // The inode may have outlived its path binding. Check the attached
+        // file before O_TRUNC can mutate a replacement at that path.
+        let opened = match open_file.lookup() {
+            Ok(lookup) if lookup.node.file_id == file_id => lookup,
+            _ => return Err(libc::ESTALE),
+        };
+        let truncated = flags & libc::O_TRUNC != 0;
+        if truncated {
+            open_file.resize(0).map_err(errno)?;
+        }
+        // O_TRUNC (and a lazy-file promotion during open) legitimately
+        // changes the node. Validate the attached handle instead of treating
+        // that authored mutation as an external rebind.
+        let unchanged = !truncated
+            && stamp_before.is_some_and(|stamp| source.unchanged_since(path, Some(file_id), stamp));
+        let (refreshed, stamp) = if unchanged {
+            (opened, stamp_before)
+        } else {
+            let stamp = source.view_stamp();
+            match open_file.lookup() {
+                Ok(lookup) if lookup.node.file_id == file_id => (lookup, stamp),
+                _ => return Err(libc::ESTALE),
+            }
+        };
+        Ok((open_file, refreshed, stamp, truncated))
     }
 
     /// Completes `store`, if any, for an open replying with `open_flags`.
