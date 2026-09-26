@@ -19,12 +19,24 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 const COORDINATOR_PATH: &str = "harness/coordinator/events";
 const READ_PAGE_SIZE: u32 = 1_024;
 const COORDINATOR_WIRE_VERSION: &str = "1";
 const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v1";
+type DecodedCoordinatorEvent = (
+    u64,
+    OperationId,
+    String,
+    [u8; 32],
+    Option<u64>,
+    SchedulerEvent,
+);
 
 /// Pull worker capacity and placement identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -105,6 +117,80 @@ pub enum CoordinatorApply {
     Replayed,
 }
 
+/// One verified durable coordinator event for an asynchronous projector.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommittedSchedulerEvent {
+    /// Dense one-based coordinator revision.
+    pub revision: u64,
+    /// Operation named by the canonical event.
+    pub operation_id: OperationId,
+    /// Digest of the exact canonical event bytes retained by the coordinator.
+    pub event_digest: [u8; 32],
+    /// Time captured for the durable append. Absent on records written before
+    /// this field existed; consumers must not invent a time during replay.
+    pub committed_at_ms: Option<u64>,
+    /// Decoded scheduler transition.
+    pub event: SchedulerEvent,
+}
+
+/// Reads one bounded page of verified coordinator events without replaying the
+/// complete scheduler. A projector can resume from the last durable revision.
+///
+/// # Errors
+///
+/// Rejects an invalid bound, missing history after a nonzero cursor, a corrupt
+/// envelope, a gap, or a mismatch between the event and its operation identity.
+pub async fn read_coordinator_event_page<P: StreamProvider>(
+    client: &StreamClient<P>,
+    after_revision: u64,
+    limit: u32,
+) -> Result<Vec<CommittedSchedulerEvent>> {
+    if limit == 0 || limit > READ_PAGE_SIZE {
+        return Err(Error::Invalid(
+            "coordinator page limit is out of bounds".into(),
+        ));
+    }
+    let stream = client
+        .stream(COORDINATOR_PATH)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let records = match stream.read(after_revision, limit).await {
+        Ok(records) => records,
+        Err(StreamError::NotFound) if after_revision == 0 => return Ok(Vec::new()),
+        Err(error) => return Err(Error::Storage(error.to_string())),
+    };
+    let page = records
+        .try_collect::<Vec<_>>()
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let mut expected = after_revision;
+    let mut events = Vec::with_capacity(page.len());
+    for record in page {
+        if record.sequence != expected {
+            return Err(Error::Storage(
+                "coordinator event page has a cursor gap".into(),
+            ));
+        }
+        let (revision, operation_id, _, event_digest, committed_at_ms, event) =
+            decode(&record.value)?;
+        if revision != expected.saturating_add(1)
+            || scheduler_event_operation(&event) != operation_id
+        {
+            return Err(Error::Storage(
+                "coordinator event page has invalid identity".into(),
+            ));
+        }
+        events.push(CommittedSchedulerEvent {
+            revision,
+            operation_id,
+            event_digest,
+            committed_at_ms,
+            event,
+        });
+        expected = revision;
+    }
+    Ok(events)
+}
+
 /// One logical coordinator whose entire semantic history is a Stream.
 pub struct DistributedCoordinator<P> {
     client: StreamClient<P>,
@@ -144,7 +230,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 break;
             }
             for record in &page {
-                let (revision, operation_id, key, digest, event) = decode(&record.value)?;
+                let (revision, operation_id, key, digest, _, event) = decode(&record.value)?;
                 if revision != record.sequence + 1 {
                     return Err(Error::Storage("coordinator revision is not gapless".into()));
                 }
@@ -290,6 +376,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the append and observed-retry paths share one committed-record verification gate"
+    )]
     pub(crate) async fn apply_internal(
         &mut self,
         operation_id: OperationId,
@@ -321,15 +411,17 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .revision
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("coordinator revision exhausted".into()))?;
+        let committed_at_ms = current_time_millis()?;
         let bytes = encode(
             revision,
             operation_id,
             idempotency_key.as_str(),
             digest,
             canonical,
+            Some(committed_at_ms),
         );
         let stream_key = stream_key(idempotency_key.as_str())?;
-        let outcome = match self
+        let (outcome, observed_retry) = match self
             .stream
             .append_batch(
                 vec![Bytes::copy_from_slice(&bytes)],
@@ -338,22 +430,22 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             )
             .await
         {
-            Ok(outcome) => outcome,
-            Err(StreamError::Unavailable) => {
+            Ok(outcome) => (outcome, false),
+            Err(error @ (StreamError::Unavailable | StreamError::IdempotencyMismatch)) => {
                 match self.client.inspect_idempotency(stream_key).await {
                     Ok(Some(observation)) => match observation.outcome {
-                        IdempotencyOutcome::Append(outcome) => outcome,
+                        IdempotencyOutcome::Append(outcome) => (outcome, true),
                         _ => {
                             return Err(Error::Conflict(
                                 "coordinator retry identity has another operation kind".into(),
                             ));
                         }
                     },
+                    Ok(None) if matches!(error, StreamError::IdempotencyMismatch) => {
+                        return Err(Error::Conflict("coordinator retry identity reused".into()));
+                    }
                     Ok(None) | Err(_) => return Err(Error::Indeterminate(operation_id)),
                 }
-            }
-            Err(StreamError::IdempotencyMismatch) => {
-                return Err(Error::Conflict("coordinator retry identity reused".into()));
             }
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
@@ -374,7 +466,29 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 let record = records.first().ok_or_else(|| {
                     Error::Storage("committed coordinator record is unavailable".into())
                 })?;
-                if record.sequence != receipt.start || record.value.as_ref() != bytes.as_slice() {
+                if record.sequence != receipt.start {
+                    return Err(Error::Conflict(
+                        "coordinator observation does not match submitted event".into(),
+                    ));
+                }
+                if observed_retry {
+                    let (
+                        observed_revision,
+                        observed_operation,
+                        observed_key,
+                        observed_digest,
+                        _,
+                        observed_event,
+                    ) = decode(&record.value)?;
+                    if observed_revision != revision
+                        || observed_operation != operation_id
+                        || observed_key != idempotency_key.as_str()
+                        || observed_digest != digest
+                        || observed_event != event
+                    {
+                        return Err(Error::Conflict("coordinator retry identity reused".into()));
+                    }
+                } else if record.value.as_ref() != bytes.as_slice() {
                     return Err(Error::Conflict(
                         "coordinator observation does not match submitted event".into(),
                     ));
@@ -575,28 +689,78 @@ fn encode(
     key: &str,
     digest: [u8; 32],
     canonical: Vec<u8>,
+    committed_at_ms: Option<u64>,
 ) -> Vec<u8> {
-    wire::SchedulerEventEnvelope {
+    let mut envelope = wire::SchedulerEventEnvelope {
         protocol: Some(coordinator_protocol_identity()),
         revision,
         operation_id: operation_id.to_string(),
         idempotency_key: key.into(),
         canonical_event_json: canonical,
         event_digest: digest.to_vec(),
+        committed_at_ms,
+        record_digest: Vec::new(),
+    };
+    if let Some(time) = committed_at_ms {
+        envelope.record_digest = coordinator_record_digest(&envelope, time).to_vec();
     }
-    .encode_to_vec()
+    envelope.encode_to_vec()
 }
 
-fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], SchedulerEvent)> {
+fn coordinator_record_digest(envelope: &wire::SchedulerEventEnvelope, time: u64) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"acyclic.harness.coordinator.record.v1\0");
+    hasher.update(&envelope.revision.to_le_bytes());
+    for value in [
+        envelope.operation_id.as_bytes(),
+        envelope.idempotency_key.as_bytes(),
+    ] {
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    }
+    hasher.update(&envelope.event_digest);
+    hasher.update(&time.to_le_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+fn current_time_millis() -> Result<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Error::Invalid("coordinator clock predates Unix epoch".into()))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| Error::Invalid("coordinator clock exceeds supported range".into()))
+}
+
+fn decode(bytes: &[u8]) -> Result<DecodedCoordinatorEvent> {
     let envelope = wire::SchedulerEventEnvelope::decode(bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
     validate_coordinator_protocol(envelope.protocol.as_ref())?;
-    let digest: [u8; 32] = envelope
+    let digest: &[u8; 32] = envelope
         .event_digest
+        .as_slice()
         .try_into()
         .map_err(|_| Error::Storage("scheduler digest must be 32 bytes".into()))?;
-    if *blake3::hash(&envelope.canonical_event_json).as_bytes() != digest {
+    if blake3::hash(&envelope.canonical_event_json).as_bytes() != digest {
         return Err(Error::Storage("scheduler event digest mismatch".into()));
+    }
+    match envelope.committed_at_ms {
+        Some(0) => {
+            return Err(Error::Storage(
+                "scheduler event has a zero commit time".into(),
+            ));
+        }
+        Some(time)
+            if envelope.record_digest.as_slice() != coordinator_record_digest(&envelope, time) =>
+        {
+            return Err(Error::Storage("scheduler record digest mismatch".into()));
+        }
+        None if !envelope.record_digest.is_empty() => {
+            return Err(Error::Storage(
+                "untimed scheduler event has a record digest".into(),
+            ));
+        }
+        Some(_) | None => {}
     }
     let event = serde_json::from_slice(&envelope.canonical_event_json)
         .map_err(|error| Error::Storage(error.to_string()))?;
@@ -604,7 +768,8 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], Scheduler
         envelope.revision,
         OperationId::parse(&envelope.operation_id)?,
         envelope.idempotency_key,
-        digest,
+        *digest,
+        envelope.committed_at_ms,
         event,
     ))
 }
@@ -688,6 +853,191 @@ mod tests {
             orchestration: Orchestration::Leaf,
             state: Value::Null,
         }
+    }
+
+    #[tokio::test]
+    async fn projector_reads_bounded_verified_coordinator_pages() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        assert!(read_coordinator_event_page(&client, 0, 1).await?.is_empty());
+        let operation_id = OperationId::from_bytes([41; 16]);
+        let mut coordinator = DistributedCoordinator::open(&client).await?;
+        coordinator
+            .apply(
+                operation_id,
+                IdempotencyKey::new("projector-declare")?,
+                coordinator.scheduler().declare(spec(operation_id, 1))?,
+            )
+            .await?;
+        let page = read_coordinator_event_page(&client, 0, 1).await?;
+        let [event] = page.as_slice() else {
+            return Err(Error::Storage("expected one committed event".into()));
+        };
+        assert_eq!(event.revision, 1);
+        assert_eq!(event.operation_id, operation_id);
+        assert!(event.committed_at_ms.is_some_and(|time| time > 0));
+        assert!(matches!(event.event, SchedulerEvent::Declared { .. }));
+        let replayed = read_coordinator_event_page(&client, 0, 1).await?;
+        assert_eq!(
+            replayed.first().and_then(|item| item.committed_at_ms),
+            event.committed_at_ms
+        );
+        let second = OperationId::from_bytes([46; 16]);
+        coordinator
+            .apply(
+                second,
+                IdempotencyKey::new("projector-second")?,
+                coordinator.scheduler().declare(spec(second, 1))?,
+            )
+            .await?;
+        let continuation = read_coordinator_event_page(&client, 1, 1).await?;
+        let [continued] = continuation.as_slice() else {
+            return Err(Error::Storage(
+                "expected one continued coordinator event".into(),
+            ));
+        };
+        assert_eq!(continued.revision, 2);
+        assert_eq!(continued.operation_id, second);
+        assert!(read_coordinator_event_page(&client, 2, 1).await?.is_empty());
+        assert!(read_coordinator_event_page(&client, 0, 0).await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retry_recognizes_committed_event_with_original_timestamp() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let operation_id = OperationId::from_bytes([45; 16]);
+        let event = SchedulerEvent::Declared {
+            spec: Box::new(spec(operation_id, 1)),
+        };
+        let key = IdempotencyKey::new("ambiguous-append")?;
+        let canonical =
+            serde_json::to_vec(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+        let digest = *blake3::hash(&canonical).as_bytes();
+        let bytes = encode(1, operation_id, key.as_str(), digest, canonical, Some(1));
+        let mut coordinator = DistributedCoordinator::open(&client).await?;
+        assert!(matches!(
+            coordinator
+                .stream
+                .append_batch(
+                    vec![Bytes::from(bytes)],
+                    Some(0),
+                    Some(stream_key(key.as_str())?)
+                )
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            AppendOutcome::Committed(_)
+        ));
+        assert_eq!(
+            coordinator
+                .apply(operation_id, key.clone(), event.clone())
+                .await?,
+            CoordinatorApply::Applied
+        );
+        assert_eq!(
+            coordinator.apply(operation_id, key, event).await?,
+            CoordinatorApply::Replayed
+        );
+        let page = read_coordinator_event_page(&client, 0, 1).await?;
+        let [committed] = page.as_slice() else {
+            return Err(Error::Storage(
+                "expected one committed coordinator event".into(),
+            ));
+        };
+        assert_eq!(committed.committed_at_ms, Some(1));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retry_rejects_a_different_event_under_the_same_key() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let first = OperationId::from_bytes([47; 16]);
+        let second = OperationId::from_bytes([48; 16]);
+        let key = IdempotencyKey::new("conflicting-append")?;
+        let event = SchedulerEvent::Declared {
+            spec: Box::new(spec(first, 1)),
+        };
+        let canonical =
+            serde_json::to_vec(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+        let digest = *blake3::hash(&canonical).as_bytes();
+        let mut coordinator = DistributedCoordinator::open(&client).await?;
+        coordinator
+            .stream
+            .append_batch(
+                vec![Bytes::from(encode(
+                    1,
+                    first,
+                    key.as_str(),
+                    digest,
+                    canonical,
+                    Some(1),
+                ))],
+                Some(0),
+                Some(stream_key(key.as_str())?),
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            coordinator
+                .apply(
+                    second,
+                    key,
+                    SchedulerEvent::Declared {
+                        spec: Box::new(spec(second, 1))
+                    }
+                )
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(coordinator.revision, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn older_coordinator_records_have_no_billing_time() -> Result<()> {
+        let operation_id = OperationId::from_bytes([42; 16]);
+        let event = SchedulerEvent::Declared {
+            spec: Box::new(spec(operation_id, 1)),
+        };
+        let canonical =
+            serde_json::to_vec(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+        let digest = *blake3::hash(&canonical).as_bytes();
+        let old = encode(1, operation_id, "old", digest, canonical, None);
+        let (_, _, _, _, committed_at_ms, decoded) = decode(&old)?;
+        assert_eq!(committed_at_ms, None);
+        assert_eq!(decoded, event);
+        Ok(())
+    }
+
+    #[test]
+    fn committed_time_is_bound_to_verified_record_identity() -> Result<()> {
+        let operation_id = OperationId::from_bytes([43; 16]);
+        let event = SchedulerEvent::Declared {
+            spec: Box::new(spec(operation_id, 1)),
+        };
+        let canonical =
+            serde_json::to_vec(&event).map_err(|error| Error::Invalid(error.to_string()))?;
+        let digest = *blake3::hash(&canonical).as_bytes();
+        let bytes = encode(
+            1,
+            operation_id,
+            "timed",
+            digest,
+            canonical,
+            Some(1_700_000_000_000),
+        );
+        let original = wire::SchedulerEventEnvelope::decode(bytes.as_slice())
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(decode(&bytes).is_ok());
+        let mut changed = original.clone();
+        changed.committed_at_ms = Some(1_700_000_000_001);
+        assert!(decode(&changed.encode_to_vec()).is_err());
+        let mut changed = original.clone();
+        changed.operation_id = OperationId::from_bytes([44; 16]).to_string();
+        assert!(decode(&changed.encode_to_vec()).is_err());
+        let mut changed = original;
+        changed.record_digest.clear();
+        assert!(decode(&changed.encode_to_vec()).is_err());
+        Ok(())
     }
 
     #[tokio::test]
