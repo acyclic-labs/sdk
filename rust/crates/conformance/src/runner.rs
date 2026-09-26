@@ -442,11 +442,13 @@ mod tests {
 
     #[test]
     fn complete_exact_report_produces_a_bound_qualification_receipt() -> Result<(), ReportError> {
-        let bytes = encode(&report());
+        let report = report();
+        let expected_cases = report.cases.len();
+        let bytes = encode(&report);
         let receipt = validate_harness_report(&bytes)?;
         assert!(receipt.qualified);
-        assert_eq!(receipt.passed, 23);
-        assert_eq!(receipt.total, 23);
+        assert_eq!(receipt.passed, expected_cases);
+        assert_eq!(receipt.total, expected_cases);
         assert_eq!(receipt.report_digest, digest(&bytes));
         Ok(())
     }

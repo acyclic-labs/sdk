@@ -1405,6 +1405,27 @@ impl crate::ObjectsProvider for Client {
         })
     }
 
+    async fn head(
+        &self,
+        request: crate::HeadRequest,
+    ) -> std::result::Result<wire::ObjectVersion, crate::ObjectsError> {
+        head_from(
+            &self.channel,
+            &self.authorization,
+            provider_target(request.target),
+            request.object_key,
+            GetOptions {
+                version_id: request.version_id.unwrap_or_default(),
+                range: None,
+                if_match: request.if_match.unwrap_or_default(),
+                if_none_match: request.if_none_match.unwrap_or_default(),
+                maximum_bytes: 0,
+            },
+        )
+        .await
+        .map_err(provider_error)
+    }
+
     async fn delete(
         &self,
         bucket: wire::BucketRef,

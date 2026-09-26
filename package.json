@@ -4,9 +4,10 @@
   "version": "0.0.0",
   "workspaces": ["typescript/packages/*"],
   "scripts": {
-    "build": "tsc -b --force",
-    "check": "tsc -b --force --pretty false",
-    "generate": "bun x buf generate && bun x buf build --path proto/filesystem -o rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin && bun x buf build --path proto/objects -o rust/crates/objects/src/generated/acyclic-objects-v1.bin && bun x buf build --path proto/machines -o rust/crates/machines/src/generated/acyclic-machines-v1.bin && bun scripts/sync-filesystem-generated.mjs",
+    "build:wasm": "bun scripts/build-wasm.mjs",
+    "build": "bun run build:wasm && tsc -b --force",
+    "check": "bun run build:wasm && tsc -b --force --pretty false",
+    "generate": "bun scripts/generate.mjs",
     "check:generated": "bun scripts/check-generated.mjs",
     "test": "bun run check && bun test --parallel=4 typescript/packages && bun run --filter '@acyclic-labs/fs' test",
     "licenses": "bun scripts/check-js-licenses.mjs"

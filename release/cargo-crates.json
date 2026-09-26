@@ -6,5 +6,9 @@
   "acyclic-stream",
   "acyclic-fs",
   "acyclic-harness",
+  "acyclic-harness-filesystem",
+  "acyclic-harness-grpc",
+  "acyclic-harness-machines",
+  "acyclic-harness-objects",
   "acyclic-plugin"
 ]

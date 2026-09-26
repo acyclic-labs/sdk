@@ -4,7 +4,7 @@
 
 import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
-import type { HandshakeRequest as HandshakeRequest$1, HandshakeResponse as HandshakeResponse$1 } from "../../harness/v1/harness_pb.js";
+import type { HandshakeRequest as HandshakeRequest$1, HandshakeResponse as HandshakeResponse$1 } from "../../harness/v2/harness_pb.js";
 
 /**
  * Describes the file filesystem/v2/filesystem.proto.
@@ -52,6 +52,124 @@ export declare type GenerationRef = Message<"acyclic.filesystem.v2.GenerationRef
  * Use `create(GenerationRefSchema)` to create a new message.
  */
 export declare const GenerationRefSchema: GenMessage<GenerationRef>;
+
+/**
+ * Durable context control-plane records. Paths are UTF-8 native absolute paths;
+ * file contents and credentials never travel in these records. The repeated
+ * roots are ordered by root_id, and duplicate IDs are invalid.
+ *
+ * @generated from message acyclic.filesystem.v2.WorkspaceContextRoot
+ */
+export declare type WorkspaceContextRoot = Message<"acyclic.filesystem.v2.WorkspaceContextRoot"> & {
+  /**
+   * @generated from field: bytes root_id = 1;
+   */
+  rootId: Uint8Array;
+
+  /**
+   * @generated from field: string source_path = 2;
+   */
+  sourcePath: string;
+
+  /**
+   * @generated from field: bytes workspace_id = 3;
+   */
+  workspaceId: Uint8Array;
+
+  /**
+   * @generated from field: string workspace_name = 4;
+   */
+  workspaceName: string;
+
+  /**
+   * @generated from field: optional bytes parent_workspace_id = 5;
+   */
+  parentWorkspaceId?: Uint8Array | undefined;
+
+  /**
+   * @generated from field: optional string mount_path = 6;
+   */
+  mountPath?: string | undefined;
+};
+
+/**
+ * Describes the message acyclic.filesystem.v2.WorkspaceContextRoot.
+ * Use `create(WorkspaceContextRootSchema)` to create a new message.
+ */
+export declare const WorkspaceContextRootSchema: GenMessage<WorkspaceContextRoot>;
+
+/**
+ * @generated from message acyclic.filesystem.v2.WorkspaceContextRoots
+ */
+export declare type WorkspaceContextRoots = Message<"acyclic.filesystem.v2.WorkspaceContextRoots"> & {
+  /**
+   * @generated from field: repeated acyclic.filesystem.v2.WorkspaceContextRoot roots = 1;
+   */
+  roots: WorkspaceContextRoot[];
+};
+
+/**
+ * Describes the message acyclic.filesystem.v2.WorkspaceContextRoots.
+ * Use `create(WorkspaceContextRootsSchema)` to create a new message.
+ */
+export declare const WorkspaceContextRootsSchema: GenMessage<WorkspaceContextRoots>;
+
+/**
+ * @generated from message acyclic.filesystem.v2.WorkspaceContextSnapshot
+ */
+export declare type WorkspaceContextSnapshot = Message<"acyclic.filesystem.v2.WorkspaceContextSnapshot"> & {
+  /**
+   * @generated from field: uint32 version = 1;
+   */
+  version: number;
+
+  /**
+   * @generated from field: uint64 revision = 2;
+   */
+  revision: bigint;
+
+  /**
+   * @generated from field: bytes context_id = 3;
+   */
+  contextId: Uint8Array;
+
+  /**
+   * @generated from field: optional bytes parent_context_id = 4;
+   */
+  parentContextId?: Uint8Array | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.filesystem.v2.WorkspaceContextRoot roots = 5;
+   */
+  roots: WorkspaceContextRoot[];
+
+  /**
+   * @generated from field: acyclic.filesystem.v2.WorkspaceContextState state = 6;
+   */
+  state: WorkspaceContextState;
+};
+
+/**
+ * Describes the message acyclic.filesystem.v2.WorkspaceContextSnapshot.
+ * Use `create(WorkspaceContextSnapshotSchema)` to create a new message.
+ */
+export declare const WorkspaceContextSnapshotSchema: GenMessage<WorkspaceContextSnapshot>;
+
+/**
+ * @generated from message acyclic.filesystem.v2.WorkspaceContextDiscard
+ */
+export declare type WorkspaceContextDiscard = Message<"acyclic.filesystem.v2.WorkspaceContextDiscard"> & {
+  /**
+   * @generated from field: repeated bytes context_ids = 1;
+   */
+  contextIds: Uint8Array[];
+};
+
+/**
+ * Describes the message acyclic.filesystem.v2.WorkspaceContextDiscard.
+ * Use `create(WorkspaceContextDiscardSchema)` to create a new message.
+ */
+export declare const WorkspaceContextDiscardSchema: GenMessage<WorkspaceContextDiscard>;
 
 /**
  * @generated from message acyclic.filesystem.v2.OperationOptions
@@ -525,7 +643,7 @@ export declare const WorkspaceSchema: GenMessage<Workspace>;
  */
 export declare type HandshakeRequest = Message<"acyclic.filesystem.v2.HandshakeRequest"> & {
   /**
-   * @generated from field: acyclic.harness.v1.HandshakeRequest harness = 1;
+   * @generated from field: acyclic.harness.v2.HandshakeRequest harness = 1;
    */
   harness?: HandshakeRequest$1 | undefined;
 };
@@ -541,7 +659,7 @@ export declare const HandshakeRequestSchema: GenMessage<HandshakeRequest>;
  */
 export declare type HandshakeResponse = Message<"acyclic.filesystem.v2.HandshakeResponse"> & {
   /**
-   * @generated from field: acyclic.harness.v1.HandshakeResponse harness = 1;
+   * @generated from field: acyclic.harness.v2.HandshakeResponse harness = 1;
    */
   harness?: HandshakeResponse$1 | undefined;
 
@@ -2652,6 +2770,36 @@ export declare type CancelResponse = Message<"acyclic.filesystem.v2.CancelRespon
 export declare const CancelResponseSchema: GenMessage<CancelResponse>;
 
 /**
+ * @generated from enum acyclic.filesystem.v2.WorkspaceContextState
+ */
+export enum WorkspaceContextState {
+  /**
+   * @generated from enum value: WORKSPACE_CONTEXT_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: WORKSPACE_CONTEXT_STATE_ACTIVE = 1;
+   */
+  ACTIVE = 1,
+
+  /**
+   * @generated from enum value: WORKSPACE_CONTEXT_STATE_FROZEN = 2;
+   */
+  FROZEN = 2,
+
+  /**
+   * @generated from enum value: WORKSPACE_CONTEXT_STATE_DISCARDED = 3;
+   */
+  DISCARDED = 3,
+}
+
+/**
+ * Describes the enum acyclic.filesystem.v2.WorkspaceContextState.
+ */
+export declare const WorkspaceContextStateSchema: GenEnum<WorkspaceContextState>;
+
+/**
  * @generated from enum acyclic.filesystem.v2.FilesystemProfile
  */
 export enum FilesystemProfile {
@@ -3376,4 +3524,3 @@ export declare const FilesystemService: GenService<{
     output: typeof CancelResponseSchema;
   },
 }>;
-

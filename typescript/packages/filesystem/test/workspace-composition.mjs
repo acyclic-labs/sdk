@@ -1,5 +1,8 @@
 export async function exerciseWorkspace(engine) {
   const workspace = await engine.createWorkspace("main");
+  if ("listDirectory" in workspace) {
+    throw new Error("moving workspace head exposes unsafe paginated directory reads");
+  }
   const payload = Uint8Array.of(0, 255, 1, 0, 128);
   const commit = await workspace.write("/binary", payload);
   if (commit.status !== "committed") {
@@ -54,14 +57,18 @@ export async function exerciseWorkspace(engine) {
   ) {
     throw new Error("workspace stat lost hard-link identity or exact size");
   }
-  const firstDirectoryPage = await workspace.listDirectory("/shapes", undefined, 1);
-  const remainingDirectoryPage = await workspace.listDirectory(
+  const directoryGeneration = await workspace.sync();
+  const firstDirectoryPage = await directoryGeneration.listDirectory("/shapes", undefined, 1);
+  if ((await workspace.write("/shapes/late", Uint8Array.of(1))).status !== "committed") {
+    throw new Error("concurrent directory mutation did not publish");
+  }
+  const remainingDirectoryPage = await directoryGeneration.listDirectory(
     "/shapes",
     firstDirectoryPage.entries[0].name,
     16,
   );
   if (!firstDirectoryPage.hasMore || remainingDirectoryPage.entries.length !== 3) {
-    throw new Error("bounded directory cursor did not cover each child exactly once");
+    throw new Error("generation-pinned directory cursor changed after a concurrent write");
   }
   if (new TextDecoder().decode(await workspace.readSymbolicLink("/shapes/symlink")) !== "source") {
     throw new Error("symbolic-link target bytes changed at the SDK boundary");

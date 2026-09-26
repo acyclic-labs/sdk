@@ -19,7 +19,11 @@ expected_source="${CI_HEAD_SHA:-${GITHUB_SHA:-}}"
 source_sha=$(git rev-parse --verify HEAD)
 [[ -z "$expected_source" || "$source_sha" == "$expected_source" ]] || { echo 'package checkout differs from the selected source commit' >&2; exit 1; }
 git status --porcelain=v1 --untracked-files=all >"$work/git-status"
-[[ ! -s "$work/git-status" ]] || { echo 'package checkout is not clean' >&2; exit 1; }
+if [[ -s "$work/git-status" ]]; then
+  echo 'package checkout is not clean; changed paths:' >&2
+  sed -n '1,40p' "$work/git-status" >&2
+  exit 1
+fi
 git ls-files -v >"$work/git-index"
 ! grep -Eq '^[a-zS] ' "$work/git-index" || { echo 'package checkout contains concealed index changes' >&2; exit 1; }
 
@@ -77,6 +81,7 @@ file_url() {
 }
 version=$(node -p "require('./typescript/packages/sdk/package.json').version")
 harness_url=$(file_url "$output/acyclic-labs-harness-${version}.tgz")
+harness_objects_url=$(file_url "$output/acyclic-labs-harness-objects-${version}.tgz")
 objects_url=$(file_url "$output/acyclic-labs-objects-${version}.tgz")
 stream_url=$(file_url "$output/acyclic-labs-stream-${version}.tgz")
 inference_url=$(file_url "$output/acyclic-labs-inference-${version}.tgz")
@@ -85,7 +90,7 @@ filesystem_url=$(file_url "$output/acyclic-labs-fs-${version}.tgz")
 sdk_url=$(file_url "$output/acyclic-labs-sdk-${version}.tgz")
 mkdir "$work/consumer"
 cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","dependencies":{"@acyclic-labs/sdk":"file:$sdk_url"},"overrides":{"@acyclic-labs/harness":"file:$harness_url","@acyclic-labs/objects":"file:$objects_url","@acyclic-labs/stream":"file:$stream_url","@acyclic-labs/inference":"file:$inference_url","@acyclic-labs/machines":"file:$machines_url","@acyclic-labs/fs":"file:$filesystem_url"}}
+{"private":true,"type":"module","dependencies":{"@acyclic-labs/sdk":"file:$sdk_url"},"overrides":{"@acyclic-labs/harness":"file:$harness_url","@acyclic-labs/harness-objects":"file:$harness_objects_url","@acyclic-labs/objects":"file:$objects_url","@acyclic-labs/stream":"file:$stream_url","@acyclic-labs/inference":"file:$inference_url","@acyclic-labs/machines":"file:$machines_url","@acyclic-labs/fs":"file:$filesystem_url"}}
 EOF
 cat >"$work/consumer/smoke.mjs" <<'EOF'
 import { filesystem, harness, inference, machines, objects, stream } from "@acyclic-labs/sdk";

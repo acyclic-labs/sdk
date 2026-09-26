@@ -1,0 +1,25 @@
+[package]
+name = "acyclic-machines-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Browser binding for the canonical Machines simulator"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+acyclic-machines = { path = "../machines", default-features = false }
+futures.workspace = true
+js-sys.workspace = true
+prost.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+
+[lints]
+workspace = true

@@ -2,6 +2,8 @@
 
 Versioned, forkable workspaces backed by browser, memory, hosted, or native providers. The import path selects the environment and its guarantees.
 
+Directory pagination is available on an immutable generation, not the moving workspace head. Call `const generation = await workspace.sync()` once, then page through `generation.listDirectory(path, after, maximumEntries)`; retain or pin that generation for a longer-lived walk. This prevents concurrent writes from changing the set between pages.
+
 ```sh
 npm install @acyclic-labs/fs
 ```

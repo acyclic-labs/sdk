@@ -668,6 +668,14 @@ impl DarwinMountContext {
     /// holds a label for is read again, and the wait follows only if one no
     /// longer matches what its label was issued for.
     fn revalidate(&self) {
+        self.revalidate_with_wait();
+    }
+
+    /// Revalidates the mount and reports whether a client-cache expiry wait
+    /// was required. The result is kept private to the driver; tests use it
+    /// to verify the selective unconfirmed-fence policy without making
+    /// assertions about scheduler timing.
+    fn revalidate_with_wait(&self) -> bool {
         let unconfirmed = self.around.unconfirmed.load(Ordering::Acquire);
         if self.around.verified.load(Ordering::Acquire) < unconfirmed && !self.verify_labels() {
             self.around.made.fetch_add(1, Ordering::AcqRel);
@@ -677,7 +685,7 @@ impl DarwinMountContext {
             .fetch_max(unconfirmed, Ordering::AcqRel);
         let made = self.around.made.load(Ordering::Acquire);
         if self.around.settled.load(Ordering::Acquire) >= made {
-            return;
+            return false;
         }
         self.callbacks.drain();
         let arrived_by = uptime() + REPLY_DELIVERY_SLACK;
@@ -692,6 +700,7 @@ impl DarwinMountContext {
             std::thread::sleep(expired - now);
         }
         self.around.settled.fetch_max(made, Ordering::AcqRel);
+        true
     }
 
     /// Whether every object the client holds a label for still shows what
@@ -2933,7 +2942,6 @@ mod tests {
     #[test]
     fn an_unconfirmed_fence_waits_only_for_what_changed() -> TestResult {
         use super::super::view_ledger::ViewChange;
-        use std::time::{Duration, Instant};
 
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let context = Arc::new(context);
@@ -2948,11 +2956,9 @@ mod tests {
         let label = context.attributes(&path, 0).map_err(os)?.change;
 
         source.record_projection_change(&ViewChange::Unconfirmed);
-        let started = Instant::now();
-        context.revalidate();
         assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "nothing changed, so nothing is waited out"
+            !context.revalidate_with_wait(),
+            "unchanged labels do not require waiting out the attribute timeout"
         );
         assert_eq!(context.attributes(&path, 0).map_err(os)?.change, label);
 
@@ -2967,11 +2973,9 @@ mod tests {
             issued.observed.lookup.node.logical_bytes += 1;
         }
         source.record_projection_change(&ViewChange::Unconfirmed);
-        let started = Instant::now();
-        context.revalidate();
         assert!(
-            started.elapsed() >= Duration::from_millis(500),
-            "a change the fence could not confirm is waited out"
+            context.revalidate_with_wait(),
+            "a change the fence could not confirm requires waiting out the attribute timeout"
         );
         Ok(())
     }

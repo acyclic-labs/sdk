@@ -2,6 +2,7 @@
 
 use crate::{
     EffectAttemptId, EffectId, Error, Result,
+    conversation::{ContentResidencyVerifier, FileRef},
     core::{AuthorityIssuer, EffectAttestation},
     core::{EffectGuarantee, EffectState, EffectStatus},
 };
@@ -25,7 +26,7 @@ pub struct EffectDispatch {
     /// Namespaced provider operation kind.
     pub effect_kind: String,
     /// Stable provider request.
-    pub request: Value,
+    pub request: FileRef,
     /// Pinned delivery guarantee.
     pub guarantee: EffectGuarantee,
     /// Canonical digest of the immutable provider request.
@@ -95,28 +96,70 @@ pub trait EffectProvider: Send + Sync {
 
 /// Explicit registry; no ambient or process-global provider catalog exists.
 #[derive(Clone, Default)]
-pub struct EffectRegistry(BTreeMap<String, Arc<dyn EffectProvider>>);
+pub struct EffectRegistry {
+    providers: BTreeMap<String, Arc<dyn EffectProvider>>,
+    result_resolver: Option<Arc<dyn ContentResidencyVerifier>>,
+}
+
+/// Single admission check for a pinned successful JSON result.
+pub(crate) fn validate_result_bytes(schema: &Value, result: &FileRef, bytes: &[u8]) -> Result<()> {
+    result.validate()?;
+    if result.descriptor().media_type() != "application/json" {
+        return Err(Error::Invalid("effect result must be JSON content".into()));
+    }
+    result.descriptor().verify(bytes)?;
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|error| Error::Invalid(format!("effect result is not JSON: {error}")))?;
+    jsonschema::validator_for(schema)
+        .map_err(|error| Error::Invalid(format!("invalid effect result schema: {error}")))?
+        .validate(&value)
+        .map_err(|error| Error::Invalid(format!("effect result failed validation: {error}")))?;
+    Ok(())
+}
+
+/// Parses one pinned schema and rejects invalid or mismatched bytes before publication.
+pub(crate) fn validate_schema_bytes(reference: &FileRef, bytes: &[u8]) -> Result<Value> {
+    reference.validate()?;
+    if reference.descriptor().media_type() != "application/schema+json" {
+        return Err(Error::Invalid(
+            "effect result schema must be JSON Schema content".into(),
+        ));
+    }
+    reference.descriptor().verify(bytes)?;
+    let schema: Value = serde_json::from_slice(bytes)
+        .map_err(|error| Error::Invalid(format!("effect result schema is not JSON: {error}")))?;
+    jsonschema::validator_for(&schema)
+        .map_err(|error| Error::Invalid(format!("invalid effect result schema: {error}")))?;
+    Ok(schema)
+}
 
 impl EffectRegistry {
+    /// Installs the owner-mediated byte boundary required to validate successful results.
+    #[must_use]
+    pub fn with_result_resolver(mut self, resolver: Arc<dyn ContentResidencyVerifier>) -> Self {
+        self.result_resolver = Some(resolver);
+        self
+    }
+
     /// Registers one provider identity.
     pub fn register(&mut self, provider: Arc<dyn EffectProvider>) -> Result<()> {
         let id = provider.id().to_owned();
         if id.trim().is_empty() {
             return Err(Error::Invalid("effect provider identity is empty".into()));
         }
-        if self.0.contains_key(&id) {
+        if self.providers.contains_key(&id) {
             return Err(Error::Conflict(format!(
                 "effect provider {id} is already registered"
             )));
         }
-        self.0.insert(id, provider);
+        self.providers.insert(id, provider);
         Ok(())
     }
 
     /// Resolves and validates the provider-owned guarantee pinned by durable state.
     pub fn resolve(&self, effect: &EffectState) -> Result<&Arc<dyn EffectProvider>> {
         let provider = self
-            .0
+            .providers
             .get(&effect.provider)
             .ok_or_else(|| Error::Unsupported(format!("effect provider {}", effect.provider)))?;
         if !provider
@@ -172,6 +215,7 @@ impl EffectRegistry {
         self.validate_dispatch(effect_id, effect, &dispatch)?;
         let observation = provider.dispatch(dispatch).await?;
         self.attest_provider_observation(issuer, effect_id, effect, observation)
+            .await
     }
 
     /// Reconciles through the pinned provider without redispatching the attempt.
@@ -187,13 +231,13 @@ impl EffectRegistry {
             .last()
             .copied()
             .ok_or_else(|| Error::Conflict("effect has no durable dispatch attempt".into()))?;
-        provider
-            .reconcile(attempt_id)
-            .await?
-            .map(|observation| {
+        match provider.reconcile(attempt_id).await? {
+            Some(observation) => Ok(Some(
                 self.attest_provider_observation(issuer, effect_id, effect, observation)
-            })
-            .transpose()
+                    .await?,
+            )),
+            None => Ok(None),
+        }
     }
 
     fn validate_dispatch(
@@ -217,7 +261,7 @@ impl EffectRegistry {
         Ok(())
     }
 
-    fn attest_provider_observation(
+    async fn attest_provider_observation(
         &self,
         issuer: &AuthorityIssuer,
         effect_id: EffectId,
@@ -226,12 +270,13 @@ impl EffectRegistry {
     ) -> Result<EffectAttestation> {
         self.validate_observation(effect_id, effect, &observation)?;
         if let EffectStatus::Succeeded { result } = &observation.status {
-            jsonschema::validator_for(&effect.result_schema)
-                .map_err(|error| Error::Invalid(format!("invalid effect result schema: {error}")))?
-                .validate(result)
-                .map_err(|error| {
-                    Error::Invalid(format!("effect result failed validation: {error}"))
-                })?;
+            let resolver = self.result_resolver.as_ref().ok_or_else(|| {
+                Error::Unsupported("effect result content resolver is not bound".into())
+            })?;
+            let bytes = resolver.read(result).await?;
+            let schema_bytes = resolver.read(&effect.result_schema).await?;
+            let schema = validate_schema_bytes(&effect.result_schema, &schema_bytes)?;
+            validate_result_bytes(&schema, result, &bytes)?;
         }
         issuer.attest_effect(
             effect_id,
@@ -246,8 +291,73 @@ impl EffectRegistry {
 mod tests {
     use super::*;
     use crate::core::{AggregateKind, Authority};
+    use crate::{
+        AgentId,
+        conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
+        resources::ProviderRef,
+    };
     use futures::FutureExt as _;
     use serde_json::json;
+    use std::{future::Future, pin::Pin};
+
+    fn request_file(bytes: &[u8]) -> Result<FileRef> {
+        FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("test", "filesystem", "2")?,
+                "effects",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([8; 16])),
+            )?,
+            "requests/request.json",
+            "generation-1",
+            FileDescriptor::from_bytes(bytes, "application/json")?,
+            "request.json",
+        )
+    }
+    fn schema_file(schema: &Value) -> Result<FileRef> {
+        let bytes =
+            serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?;
+        FileRef::new(
+            request_file(b"null")?.volume().clone(),
+            "schemas/result.json",
+            "generation-1",
+            FileDescriptor::from_bytes(&bytes, "application/schema+json")?,
+            "result.json",
+        )
+    }
+
+    struct ResultResolver;
+    impl ContentResidencyVerifier for ResultResolver {
+        fn verify<'a>(
+            &'a self,
+            reference: &'a FileRef,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+            Box::pin(async move {
+                let bytes = if reference.descriptor().media_type() == "application/schema+json" {
+                    serde_json::to_vec(&json!({"type": "object", "required": ["receipt"]}))
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                } else {
+                    br#"{"receipt":"ok"}"#.to_vec()
+                };
+                reference.descriptor().verify(&bytes)
+            })
+        }
+        fn read<'a>(
+            &'a self,
+            reference: &'a FileRef,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+            Box::pin(async move {
+                let bytes = if reference.descriptor().media_type() == "application/schema+json" {
+                    serde_json::to_vec(&json!({"type": "object", "required": ["receipt"]}))
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                } else {
+                    br#"{"receipt":"ok"}"#.to_vec()
+                };
+                reference.descriptor().verify(&bytes)?;
+                Ok(bytes)
+            })
+        }
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Provider(AtomicUsize);
@@ -278,7 +388,7 @@ mod tests {
                     request_digest: request.request_digest,
                     guarantee: request.guarantee,
                     status: EffectStatus::Succeeded {
-                        result: json!({"receipt": "ok"}),
+                        result: request_file(br#"{"receipt":"ok"}"#)?,
                     },
                 })
             }
@@ -296,7 +406,7 @@ mod tests {
     #[tokio::test]
     async fn only_an_exact_provider_dispatch_can_be_attested() -> Result<()> {
         let provider = Arc::new(Provider(AtomicUsize::new(0)));
-        let mut registry = EffectRegistry::default();
+        let mut registry = EffectRegistry::default().with_result_resolver(Arc::new(ResultResolver));
         registry.register(provider.clone())?;
         let effect_id = EffectId::from_bytes([1; 16]);
         let attempt_id = EffectAttemptId::from_bytes([2; 16]);
@@ -305,13 +415,10 @@ mod tests {
             provider: "example.provider".into(),
             guarantee: EffectGuarantee::IdempotentRetry,
             effect_kind: "example.write".into(),
-            request: json!({"value": 1}),
+            request: request_file(br#"{"value":1}"#)?,
             request_digest: [3; 32],
-            result_schema_digest: *blake3::hash(
-                &serde_json::to_vec(&schema).map_err(|error| Error::Invalid(error.to_string()))?,
-            )
-            .as_bytes(),
-            result_schema: schema,
+            result_schema: schema_file(&schema)?,
+            result_schema_digest: *schema_file(&schema)?.descriptor().sha256(),
             status: EffectStatus::Dispatched,
             attempts: vec![attempt_id],
         };
@@ -334,7 +441,7 @@ mod tests {
         };
 
         let mut changed = dispatch.clone();
-        changed.request = json!({"value": 2});
+        changed.request = request_file(br#"{"value":2}"#)?;
         assert!(matches!(
             registry
                 .dispatch_and_attest(&issuer, effect_id, &state, changed)

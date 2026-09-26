@@ -5,21 +5,21 @@
   "families": {
     "harness": {
       "version": "0.1.5",
-      "schemaDigest": "sha256:fbdb2ccaf9a7fdf64d5959f4b01d471bf23524ddf6cb5355aac6741d6be9a8b3",
-      "conformanceDigest": "sha256:aa8c338e694ba2e9d31beec258a64fe12358d78981eaf08143c7909e2ce2220d"
+      "schemaDigest": "sha256:f877d1ac72ef0956968f65be595514daf1e641ff25429f537e2ea673a8f0f9eb",
+      "conformanceDigest": "sha256:a9393a84e51ec9d0e77b59fe2dda327054d56ffb420db1ff7c038f5e7aa9ced0"
     },
     "filesystem": {
       "version": "0.1.5",
       "crateVersion": "0.1.5",
-      "schemaDigest": "sha256:a71f48d93e5eb2f1e980bb2979ec929a442e7e17dc9b0a5f252ee3f6ea7515f9",
-      "descriptorDigest": "sha256:c8ae65d452115ba2a4f890ff765c9de3f0487f3ef7d19aaaa34384a76ffa3fea",
+      "schemaDigest": "sha256:a94a88f8d8edd76e854a1bb27daceb7600f8db28bad14339345b4728b60c3256",
+      "descriptorDigest": "sha256:d2ec8c8e6e7b1a8197c58e85106f57cd1978b69d2a2bfa0cd664b1473b9238f0",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
       "version": "0.1.5",
       "crateVersion": "0.1.5",
-      "schemaDigest": "sha256:3d7b3687599ec66f74939a924255ccd93b31985328ea4284068075c883a5f816",
-      "descriptorDigest": "sha256:c3411078dabd655f679fd17eed7805b2d25bbd40ea14b0aa816753f0b32085b0",
+      "schemaDigest": "sha256:a565f4cc3aefcd6314af161a94f3aec78ef4c0f02a8adc9dae2e0cfca2b8c961",
+      "descriptorDigest": "sha256:51fffc15a1baa405d91feccfbaf4e5a5bea75d651209c1bb7b013cf15b0187bf",
       "conformanceDigest": "sha256:2b66f3df94ff080c6c9935ee23f8259e05c433c9a4b24c2d4529e2bac4784c37"
     },
     "objects": {
@@ -31,8 +31,8 @@
     },
     "machines": {
       "version": "0.1.5",
-      "schemaDigest": "sha256:dd3de364fbbca2d43a090c3b43915be14eeffddbde1266e2084b59f0995e8fee",
-      "descriptorDigest": "sha256:6b6dc68700b07247580641787b5464360ff80c272af08184b461c41de9250183",
+      "schemaDigest": "sha256:1620d70c638584b29e76bcdf7e50aa3585b456d2f31a9a38f58c0eea4e1ab287",
+      "descriptorDigest": "sha256:59492735a5aaec6598c21fe91a0873772d7f3f1c36e9fedfb384d4d8abff154c",
       "conformanceDigest": "sha256:78ce0d6b9c5226aad67d96de4a4a4f9c9723a144ce58c5dcad63590b88d5d682"
     },
     "inference": {

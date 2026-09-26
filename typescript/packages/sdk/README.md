@@ -9,14 +9,12 @@ npm install @acyclic-labs/sdk
 ```ts
 import { objects, stream } from "@acyclic-labs/sdk";
 
-const bucket = await new objects.Objects(new objects.MemoryObjectsProvider())
-  .createBucket("example");
-const events = new stream.StreamClient(new stream.MemoryStreamProvider())
-  .json<{ type: string }>("example/events");
+const bucket = await objects.Objects.memory().createBucket("example");
+const events = stream.StreamClient.memory().json("example/events");
 await events.append({ type: "created" });
 console.log(bucket.reference.name);
 ```
 
-Namespaces: `harness` (agent runtime), `filesystem` (versioned workspaces), `stream` (append-only records), `objects` (immutable object versions), `machines` (machine lifecycle), and `inference` (contexts and runs). Each service has its own authentication and deployment requirements; the in-memory providers shown above are for local use, not durable hosting.
+Namespaces: `harness` (agent runtime), `filesystem` (versioned workspaces), `stream` (append-only records), `objects` (immutable object versions), `harnessObjects` (Harness object adapter), `machines` (machine lifecycle), and `inference` (contexts and runs). Each service has its own authentication and deployment requirements; the in-memory providers shown above are for local use, not durable hosting.
 
 [Package guides](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages) · [Repository overview](https://github.com/acyclic-labs/sdk#readme)

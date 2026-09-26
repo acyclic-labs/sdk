@@ -156,7 +156,6 @@ pub(crate) use persistent_diff::{
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes,
 };
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) use publication::contextual_publication_fingerprint;
 #[cfg(test)]
 pub(crate) use publication::encode_publication_payload;

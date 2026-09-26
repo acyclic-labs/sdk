@@ -11,13 +11,23 @@ import {
   type Connection,
   type CursorStore,
   type Delivery,
+  type FileRef,
+  type OfflinePayload,
   type OperationId,
+  type Page,
   type ReplayCursor,
   type Transport,
 } from "../src/index.js";
 
 const operationId = "01010101-0101-0101-0101-010101010101" as OperationId;
 const authority = { kind: "conversation" as const, id: "conversation-1" };
+const content: FileRef = {
+  volume: { provider: { namespace: "test", family: "filesystem", version: "2" },
+    id: "project", class: "project", owner: { kind: "project", id: "project" } },
+  path: "messages/committed.txt", version: "generation-1",
+  descriptor: { sha256: Array(32).fill(0), byte_length: 0, media_type: "text/plain" },
+  display_name: "committed.txt",
+};
 
 test("offline outbox accepts only explicitly safe non-approval commands", async () => {
   const outbox = new MemoryOutbox();
@@ -27,7 +37,7 @@ test("offline outbox accepts only explicitly safe non-approval commands", async 
     operationId,
     authority,
     kind: "message.append",
-    payload: { text: "hello" },
+    payload: { content },
     offlineSafe: true,
   };
   await client.submit(safe);
@@ -45,7 +55,7 @@ test("IndexedDB atomically persists outbox acknowledgements and replay cursors a
     operationId,
     authority,
     kind: "message.append",
-    payload: { text: "durable" },
+    payload: { content },
     offlineSafe: true,
   };
   await first.put(command);
@@ -81,11 +91,11 @@ test("IndexedDB outbox enforces configured command and byte bounds", async () =>
   })).rejects.toThrow("capacity exceeded");
   const customArray: unknown[] & { extra?: string } = [];
   customArray.extra = "x".repeat(10_000);
-  await expect(store.put({ operationId, authority, kind: "message.append", payload: customArray }))
+  await expect(store.put({ operationId, authority, kind: "message.append", payload: customArray as unknown as OfflinePayload, offlineSafe: true }))
     .rejects.toThrow("custom properties");
   const accessor = {} as { value: string };
   Object.defineProperty(accessor, "value", { enumerable: true, get: () => "x".repeat(10_000) });
-  await expect(store.put({ operationId, authority, kind: "message.append", payload: accessor }))
+  await expect(store.put({ operationId, authority, kind: "message.append", payload: accessor as unknown as OfflinePayload, offlineSafe: true }))
     .rejects.toThrow("accessor");
 });
 
@@ -100,7 +110,7 @@ test("IndexedDB rejects non-canonical structured-clone payloads", async () => {
       operationId,
       authority,
       kind: "message.append",
-      payload,
+      payload: payload as unknown as OfflinePayload,
       offlineSafe: true,
     })).rejects.toThrow("non-canonical structured value");
   }
@@ -108,20 +118,44 @@ test("IndexedDB rejects non-canonical structured-clone payloads", async () => {
     operationId,
     authority,
     kind: "message.append",
-    payload: Number.POSITIVE_INFINITY,
+    payload: Number.POSITIVE_INFINITY as unknown as OfflinePayload,
+    offlineSafe: true,
   })).rejects.toThrow("non-finite number");
   await expect(store.put({
     operationId,
     authority,
     kind: "message.append",
-    payload: { toJSON: () => ({}) },
+    payload: { toJSON: () => ({}) } as unknown as OfflinePayload,
+    offlineSafe: true,
   })).rejects.toThrow("non-data value");
   await expect(store.put({
     operationId,
     authority,
     kind: "message.append",
-    payload: new ArrayBuffer(1_024),
-  })).rejects.toThrow("capacity exceeded");
+    payload: new ArrayBuffer(1_024) as unknown as OfflinePayload,
+    offlineSafe: true,
+  })).rejects.toThrow("inline bytes or credentials");
+});
+
+test("offline outboxes never retain bearer scopes, inline bodies, or mutable caller objects", async () => {
+  const outbox = new MemoryOutbox();
+  const safe: ClientCommand = { operationId, authority, kind: "message.append",
+    payload: { content, metadata: { sequence: 1 } }, offlineSafe: true };
+  await outbox.put(safe);
+  (safe.payload.metadata as { sequence: number }).sequence = 2;
+  expect((await outbox.load())[0]?.payload).toEqual({ content, metadata: { sequence: 1 } });
+  await expect(outbox.put({ ...safe, payload: { scope: { id: "signed", proof: [1] } } as unknown as OfflinePayload }))
+    .rejects.toThrow("inline bytes or credentials");
+  await expect(outbox.put({ ...safe, payload: { text: "uncommitted body" } as unknown as OfflinePayload }))
+    .rejects.toThrow("inline bytes or credentials");
+  await expect(outbox.put({ ...safe, payload: { content: new Uint8Array([1]) } as unknown as OfflinePayload }))
+    .rejects.toThrow("inline bytes or credentials");
+  await expect(outbox.put({ ...safe, payload: { metadata: { sequence: Number.MAX_SAFE_INTEGER + 1 } } }))
+    .rejects.toThrow("inexact integer");
+  const credentialField = { ...safe, authorization: "Bearer secret" };
+  await expect(outbox.put(credentialField)).rejects.toThrow("unsupported field");
+  const bearerAuthority = { ...safe, authority: { ...authority, proof: [1] } };
+  await expect(outbox.put(bearerAuthority)).rejects.toThrow("unsupported field");
 });
 
 test("IndexedDB preserves enqueue order across restart and isolates database namespaces", async () => {
@@ -132,12 +166,14 @@ test("IndexedDB preserves enqueue order across restart and isolates database nam
     authority,
     kind: "first",
     payload: {},
+    offlineSafe: true,
   };
   const earlierKey: ClientCommand = {
     operationId: "00000000-0000-0000-0000-000000000000" as OperationId,
     authority,
     kind: "second",
     payload: {},
+    offlineSafe: true,
   };
   await first.put(laterKey);
   await first.put(earlierKey);
@@ -148,20 +184,46 @@ test("IndexedDB preserves enqueue order across restart and isolates database nam
   expect(await new IndexedDbClientStore({ indexedDB, databaseName: "other-client" }).load()).toEqual([]);
 });
 
-test("IndexedDB refuses an outbox database of another schema version", async () => {
+test("v2 IndexedDB refuses legacy outbox records without reading or rewriting them", async () => {
   const indexedDB = new IDBFactory();
-  const opening = indexedDB.open("other-schema-client", 1);
+  const opening = indexedDB.open("legacy-client", 1);
   opening.onupgradeneeded = () => {
     opening.result.createObjectStore("outbox", { keyPath: "operationId" });
+    opening.result.createObjectStore("cursors", { keyPath: "authority" });
   };
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
     opening.onsuccess = () => resolve(opening.result);
     opening.onerror = () => reject(opening.error);
   });
+  const legacy: ClientCommand = {
+    operationId: "ffffffff-ffff-ffff-ffff-ffffffffffff" as OperationId,
+    authority,
+    kind: "legacy",
+    payload: {},
+    offlineSafe: true,
+  };
+  const transaction = database.transaction("outbox", "readwrite");
+  transaction.objectStore("outbox").put({ operationId: legacy.operationId, bytes: 1, command: legacy });
+  await new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
   database.close();
 
-  const store = new IndexedDbClientStore({ indexedDB, databaseName: "other-schema-client" });
-  await expect(store.load()).rejects.toBeDefined();
+  const migrated = new IndexedDbClientStore({ indexedDB, databaseName: "legacy-client" });
+  await expect(migrated.load()).rejects.toThrow("pre-v2 Harness outbox state is unsupported");
+  const reopened = indexedDB.open("legacy-client", 1);
+  const preserved = await new Promise<IDBDatabase>((resolve, reject) => {
+    reopened.onsuccess = () => resolve(reopened.result);
+    reopened.onerror = () => reject(reopened.error);
+  });
+  const records = await new Promise<unknown[]>((resolve, reject) => {
+    const read = preserved.transaction("outbox").objectStore("outbox").getAll();
+    read.onsuccess = () => resolve(read.result);
+    read.onerror = () => reject(read.error);
+  });
+  expect(records).toHaveLength(1);
+  preserved.close();
 });
 
 test("rebase waits for an in-flight submit before publishing the new replay epoch", async () => {
@@ -599,7 +661,7 @@ test("page reset fences an older in-flight response", async () => {
   }) => void) | undefined;
   const window = new PageWindow(
     (item: { id: string }) => item.id,
-    () => new Promise(resolve => { release = resolve; }),
+    () => new Promise<Page<{ id: string }, unknown>>(resolve => { release = resolve; }),
     10,
   );
   const stale = window.load("before");

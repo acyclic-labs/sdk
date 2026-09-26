@@ -5,6 +5,10 @@
 /.tools/
 node_modules/
 /typescript/packages/*/dist/
+# WASM is built for the target platform before TypeScript checking or packaging.
+/typescript/packages/*/generated/wasm/*
+!/typescript/packages/filesystem/generated/wasm/.npmignore
+!/typescript/packages/filesystem/generated/wasm/package.json
 *.tsbuildinfo
 *.log
 .DS_Store

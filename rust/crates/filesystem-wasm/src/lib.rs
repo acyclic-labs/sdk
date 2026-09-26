@@ -30,6 +30,7 @@ mod bindings {
         VolumeConfig, VolumeConfigError, VolumeLimits,
     };
     use acyclic_fs::path::PortablePath;
+    use acyclic_fs::workspace_context_wire;
     use acyclic_fs::{
         ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,
         Checkout, CheckoutCommitOutcome, Digest, EmbeddedCapabilities, FileCloneRequest, FileId,
@@ -44,10 +45,9 @@ mod bindings {
         StreamAuthorityStore, Transaction, TransactionCommit, TransactionConflict,
         TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
         TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace, WorkspaceContextId,
-        WorkspaceContextRegistry, WorkspaceContextRoot, WorkspaceDelete, WorkspaceDirectoryPage,
-        WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase,
-        WorkspaceRootId, WorkspaceStat, decode_generation_export_manifest,
-        encode_generation_export_manifest,
+        WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind,
+        WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase, WorkspaceRootId,
+        WorkspaceStat, decode_generation_export_manifest, encode_generation_export_manifest,
     };
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
@@ -599,35 +599,6 @@ mod bindings {
             }
             .map_err(js_error)?;
             serde_wasm_bindgen::to_value(&browser_workspace_stat(value)).map_err(js_error)
-        }
-
-        #[wasm_bindgen(js_name = listDirectory)]
-        pub async fn list_directory(
-            &self,
-            path: String,
-            after: Option<JsValue>,
-            maximum_entries: u32,
-        ) -> Result<JsValue, JsValue> {
-            let after = after.map(browser_workspace_name).transpose()?;
-            let value = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => {
-                    value
-                        .list_directory(&path, after.as_ref(), maximum_entries)
-                        .await
-                }
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    value
-                        .list_directory(&path, after.as_ref(), maximum_entries)
-                        .await
-                }
-                BrowserWorkspaceEngine::Memory(value) => {
-                    value
-                        .list_directory(&path, after.as_ref(), maximum_entries)
-                        .await
-                }
-            }
-            .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&browser_workspace_directory_page(value)).map_err(js_error)
         }
 
         #[wasm_bindgen(js_name = readSymbolicLink)]
@@ -2607,14 +2578,13 @@ mod bindings {
         }
 
         /// Registers one root context from the shared serde contract.
-        #[wasm_bindgen(js_name = registerRootJson)]
-        pub async fn register_root_json(
+        #[wasm_bindgen(js_name = registerRoot)]
+        pub async fn register_root(
             &self,
             context_id: Vec<u8>,
-            roots_json: String,
-        ) -> Result<String, JsValue> {
-            let roots: Vec<WorkspaceContextRoot> =
-                serde_json::from_str(&roots_json).map_err(js_error)?;
+            roots_wire: Vec<u8>,
+        ) -> Result<Vec<u8>, JsValue> {
+            let roots = workspace_context_wire::decode_roots(&roots_wire).map_err(js_error)?;
             let context = self
                 .inner
                 .register_root(
@@ -2623,19 +2593,18 @@ mod bindings {
                 )
                 .await
                 .map_err(js_error)?;
-            workspace_context_json(&context)
+            workspace_context_wire::encode_context(&context).map_err(js_error)
         }
 
         /// Registers an exact direct child from the shared serde contract.
-        #[wasm_bindgen(js_name = registerChildJson)]
-        pub async fn register_child_json(
+        #[wasm_bindgen(js_name = registerChild)]
+        pub async fn register_child(
             &self,
             context_id: Vec<u8>,
             parent_context_id: Vec<u8>,
-            roots_json: String,
-        ) -> Result<String, JsValue> {
-            let roots: Vec<WorkspaceContextRoot> =
-                serde_json::from_str(&roots_json).map_err(js_error)?;
+            roots_wire: Vec<u8>,
+        ) -> Result<Vec<u8>, JsValue> {
+            let roots = workspace_context_wire::decode_roots(&roots_wire).map_err(js_error)?;
             let context = self
                 .inner
                 .register_child(
@@ -2645,32 +2614,32 @@ mod bindings {
                 )
                 .await
                 .map_err(js_error)?;
-            workspace_context_json(&context)
+            workspace_context_wire::encode_context(&context).map_err(js_error)
         }
 
         /// Adopts one parent-authorized root without enumerating its contents.
-        #[wasm_bindgen(js_name = adoptRootJson)]
-        pub async fn adopt_root_json(
+        #[wasm_bindgen(js_name = adoptRoot)]
+        pub async fn adopt_root(
             &self,
             context_id: Vec<u8>,
-            root_json: String,
-        ) -> Result<String, JsValue> {
-            let root: WorkspaceContextRoot = serde_json::from_str(&root_json).map_err(js_error)?;
+            root_wire: Vec<u8>,
+        ) -> Result<Vec<u8>, JsValue> {
+            let root = workspace_context_wire::decode_root(&root_wire).map_err(js_error)?;
             let context = self
                 .inner
                 .adopt_root(WorkspaceContextId::from_bytes(fixed_16(&context_id)?), root)
                 .await
                 .map_err(js_error)?;
-            workspace_context_json(&context)
+            workspace_context_wire::encode_context(&context).map_err(js_error)
         }
 
         /// Releases one root after callers have settled its filesystem changes.
-        #[wasm_bindgen(js_name = removeRootJson)]
-        pub async fn remove_root_json(
+        #[wasm_bindgen(js_name = removeRoot)]
+        pub async fn remove_root(
             &self,
             context_id: Vec<u8>,
             root_id: Vec<u8>,
-        ) -> Result<String, JsValue> {
+        ) -> Result<Vec<u8>, JsValue> {
             let context = self
                 .inner
                 .remove_root(
@@ -2679,27 +2648,27 @@ mod bindings {
                 )
                 .await
                 .map_err(js_error)?;
-            workspace_context_json(&context)
+            workspace_context_wire::encode_context(&context).map_err(js_error)
         }
 
         /// Resolves one context as stable JSON.
-        #[wasm_bindgen(js_name = resolveJson)]
-        pub async fn resolve_json(&self, context_id: Vec<u8>) -> Result<String, JsValue> {
+        #[wasm_bindgen(js_name = resolve)]
+        pub async fn resolve(&self, context_id: Vec<u8>) -> Result<Vec<u8>, JsValue> {
             let context = self
                 .inner
                 .resolve(WorkspaceContextId::from_bytes(fixed_16(&context_id)?))
                 .await
                 .map_err(js_error)?;
-            workspace_context_json(&context)
+            workspace_context_wire::encode_context(&context).map_err(js_error)
         }
 
         /// Freezes or resumes one durable context.
-        #[wasm_bindgen(js_name = setActiveJson)]
-        pub async fn set_active_json(
+        #[wasm_bindgen(js_name = setActive)]
+        pub async fn set_active(
             &self,
             context_id: Vec<u8>,
             active: bool,
-        ) -> Result<String, JsValue> {
+        ) -> Result<Vec<u8>, JsValue> {
             let context = self
                 .inner
                 .set_active(
@@ -2708,19 +2677,19 @@ mod bindings {
                 )
                 .await
                 .map_err(js_error)?;
-            workspace_context_json(&context)
+            workspace_context_wire::encode_context(&context).map_err(js_error)
         }
 
         /// Advances one root binding after a compatibility branch switch.
-        #[wasm_bindgen(js_name = setWorkspaceJson)]
-        pub async fn set_workspace_json(
+        #[wasm_bindgen(js_name = setWorkspace)]
+        pub async fn set_workspace(
             &self,
             context_id: Vec<u8>,
             root_id: Vec<u8>,
             workspace_id: Vec<u8>,
             workspace_name: String,
             parent_workspace_id: Option<Vec<u8>>,
-        ) -> Result<String, JsValue> {
+        ) -> Result<Vec<u8>, JsValue> {
             let parent = parent_workspace_id
                 .as_ref()
                 .map(|value| fixed_16(value).map(WorkspaceId::from_bytes))
@@ -2736,17 +2705,17 @@ mod bindings {
                 )
                 .await
                 .map_err(js_error)?;
-            workspace_context_json(&context)
+            workspace_context_wire::encode_context(&context).map_err(js_error)
         }
 
         /// Recursively tombstones a direct-child subtree.
-        #[wasm_bindgen(js_name = discardSubtreeJson)]
-        pub async fn discard_subtree_json(
+        #[wasm_bindgen(js_name = discardSubtree)]
+        pub async fn discard_subtree(
             &self,
             parent_context_id: Vec<u8>,
             child_context_id: Vec<u8>,
             maximum: u32,
-        ) -> Result<String, JsValue> {
+        ) -> Result<Vec<u8>, JsValue> {
             let discarded = self
                 .inner
                 .discard_subtree(
@@ -2756,7 +2725,7 @@ mod bindings {
                 )
                 .await
                 .map_err(js_error)?;
-            serde_json::to_string(&discarded).map_err(js_error)
+            workspace_context_wire::encode_discard(&discarded).map_err(js_error)
         }
     }
 
@@ -6472,22 +6441,6 @@ mod bindings {
         })
     }
 
-    fn workspace_context_json(context: &acyclic_fs::WorkspaceContext) -> Result<String, JsValue> {
-        let mut value = serde_json::to_value(context).map_err(js_error)?;
-        let revision = value
-            .get("revision")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| JsValue::from_str("workspace context revision is invalid"))?;
-        value
-            .as_object_mut()
-            .ok_or_else(|| JsValue::from_str("workspace context is invalid"))?
-            .insert(
-                "revision".to_owned(),
-                serde_json::Value::String(revision.to_string()),
-            );
-        serde_json::to_string(&value).map_err(js_error)
-    }
-
     fn fixed_16(bytes: &[u8]) -> Result<[u8; 16], JsValue> {
         bytes
             .try_into()
@@ -6637,8 +6590,10 @@ mod bindings {
             truncated: false,
         };
         match outcome {
-            JoinOutcome::Applied(value) => generation("applied", value),
-            JoinOutcome::AlreadyApplied(value) => generation("already-applied", value),
+            JoinOutcome::Applied(value) => generation("applied", value.into_generation()),
+            JoinOutcome::AlreadyApplied(value) => {
+                generation("already-applied", value.into_generation())
+            }
             JoinOutcome::NoChanges(value) => generation("no-changes", value),
             JoinOutcome::StaleTarget(value) => generation("stale-target", value),
             JoinOutcome::Conflicted {

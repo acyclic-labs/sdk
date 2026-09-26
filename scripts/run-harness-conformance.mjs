@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { harnessPackageClosure } from "./harness-package-closure.mjs";
+import { compatibilityArtifacts } from "./generated-bindings.mjs";
 
 if (process.argv.length !== 5) {
   throw new Error("usage: run-harness-conformance.mjs ARTIFACT_DIR REPORT.json RECEIPT.json");
@@ -46,23 +46,20 @@ if (
 ) {
   throw new Error("package test transcript digests do not match the executed cases");
 }
-const suiteBytes = readFileSync("conformance/vectors/core.json");
+const suiteBytes = readFileSync(compatibilityArtifacts.harness.conformanceDigest);
 const suite = JSON.parse(suiteBytes.toString("utf8"));
-const command = (executable, args, input) => {
-  const result = spawnSync(executable, args, { encoding: "utf8", input });
-  if (result.status !== 0) throw new Error(`${executable} failed: ${result.stderr || result.stdout}`);
-  return result.stdout.trim();
-};
-const expectedArtifacts = [
-  "acyclic-harness.tgz",
-  ...harnessPackageClosure().map(({ name, version }) => `${name}-${version}.crate`),
-].sort();
 
 const artifacts = readdirSync(artifactDirectory)
   .filter(name => name.endsWith(".crate") || name.endsWith(".tgz"))
   .sort();
-if (JSON.stringify(artifacts) !== JSON.stringify(expectedArtifacts)) {
-  throw new Error(`expected exact Harness dependency archives: ${expectedArtifacts.join(", ")}`);
+if (
+  artifacts.length !== 4
+  || !artifacts.includes("acyclic-harness.tgz")
+  || artifacts.filter(name => /^acyclic-harness-[^-].*\.crate$/.test(name)).length !== 1
+  || artifacts.filter(name => /^acyclic-native-runtime-[^-].*\.crate$/.test(name)).length !== 1
+  || artifacts.filter(name => /^acyclic-stream-[^-].*\.crate$/.test(name)).length !== 1
+) {
+  throw new Error("expected exact native runtime, Stream, Harness, and npm archives");
 }
 const artifactEvidence = artifacts.map(name => ({
   name,
@@ -78,9 +75,9 @@ const markers = new Map([
   ["authority-scopes-cannot-cross-aggregate-audiences", [["rust", "core::tests::mutated_or_foreign_scopes_are_rejected"]]],
   ["stream-append-uncertainty-is-queryable", [["rust", "store::tests::reconciliation_observes_a_commit_without_redispatch"]]],
   ["trimmed-history-restores-from-checked-snapshot", [["rust", "store::tests::snapshot_reopens_a_trimmed_stream_suffix"]]],
-  ["fork-publication-is-atomic", [["rust", "core::tests::fork_is_invisible_until_one_manifest_event_commits"]]],
+  ["fork-publication-is-atomic", [["rust", "core::tests::fork_is_invisible_until_one_seed_event_commits"]]],
   ["effect-attempts-respect-provider-guarantees", [["rust", "core::tests::at_most_once_effect_is_never_redispatched_after_uncertainty"]]],
-  ["typed-approvals-bind-the-exact-action", [["rust", "core::tests::typed_approval_is_bound_and_resolved_once"]]],
+  ["typed-approvals-bind-the-exact-action", [["rust", "interaction::tests::approval_binding_cannot_change_with_display_json"], ["rust", "runtime::tests::tool_approval_keeps_terminal_outcomes_distinct"]]],
   ["structured-parent-waits-release-capacity", [["rust", "scheduler::tests::waiting_parent_releases_execution_capacity"]]],
   ["join-preserves-child-slot-order", [["rust", "scheduler::tests::reduction_is_bound_to_the_exact_contract_and_inputs"]]],
   ["race-uses-first-authoritative-success", [["rust", "scheduler::tests::race_uses_first_observed_success_and_cancels_losers"]]],
@@ -88,7 +85,7 @@ const markers = new Map([
   ["stock-executor-replay-does-not-repeat-tools", [["rust", "executor::tests::stock_loop_replays_without_reinvoking_models_or_tools"]]],
   ["custom-executor-owns-the-whole-turn-loop", [["rust", "executor::tests::interrupted_model_stream_reconciles_without_redispatch"]]],
   ["client-replay-is-generation-fenced", [["typescript", "a replay generation cannot change without an explicit rebase"], ["typescript", "client hydrates a durable cursor before its first reconnect"], ["typescript", "rebase fences a delivery buffered by the previous replay connection"]]],
-  ["client-outbox-clears-only-after-authority", [["typescript", "reconnect delivery is contiguous and clears authoritative outbox entries"], ["typescript", "IndexedDB atomically persists outbox acknowledgements and replay cursors across restart"], ["typescript", "IndexedDB preserves enqueue order across restart and isolates database namespaces"], ["typescript", "IndexedDB refuses an outbox database of another schema version"]]],
+  ["client-outbox-clears-only-after-authority", [["typescript", "reconnect delivery is contiguous and clears authoritative outbox entries"], ["typescript", "IndexedDB atomically persists outbox acknowledgements and replay cursors across restart"], ["typescript", "IndexedDB preserves enqueue order across restart and isolates database namespaces"], ["typescript", "terminal admission removes a safe command from the retry outbox"]]],
   ["pagination-is-bounded-and-rebase-safe", [["typescript", "page reset fences an older in-flight response"]]],
   ["operation-control-is-protocol-scope-and-owner-bound", [["rust", "wire_api::tests::operation_control_is_protocol_scope_and_response_identity_bound"], ["typescript", "gRPC control validates echoed operation, owner, protocol, error, and retry identity"]]],
   ["recursive-cancellation-is-atomic-and-exactly-replayable", [["rust", "distributed::tests::authenticated_recursive_cancel_is_atomic_durable_and_exactly_replayable"]]],
@@ -96,10 +93,38 @@ const markers = new Map([
   ["transport-control-errors-remain-request-correlated", [["typescript", "framed control serializes observe and cancel for the same operation"], ["typescript", "correlated framed errors do not abort another operation"]]],
   ["durable-context-providers-reopen-compaction-exactly", [["rust", "context::tests::durable_sources_and_compaction_reopen_exactly"]]],
   ["coding-bundle-host-adapter-is-complete-and-executable", [["rust", "bundle::tests::coding_factory_builds_an_executable_complete_registry"]]],
+  ["recursive-fork-isolation-attachments-and-project-only-merge", [["e2e", "thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_project"]]],
+  ["durable-local-conversation-fork-and-merge-reopens", [["e2e", "local_reopen_preserves_ref_only_history_fork_and_parent_merge"]]],
 ]);
 
 const harnessCases = suite.cases.filter(item => item.family === "harness");
 if (harnessCases.length !== markers.size) throw new Error("executable marker map does not exactly cover the Harness suite");
+const command = (executable, args, input) => {
+  const result = spawnSync(executable, args, { encoding: "utf8", input });
+  if (result.status !== 0) throw new Error(`${executable} failed: ${result.stderr || result.stdout}`);
+  return result.stdout.trim();
+};
+// Execute each provider-backed scenario once; package-unit transcripts alone
+// cannot prove recursive stress or durable-local restart behavior.
+const e2e = [
+  ["recursive-fork-isolation-attachments-and-project-only-merge", "recursive_fork",
+    "thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_project", []],
+  ["durable-local-conversation-fork-and-merge-reopens", "local_conversation_fork",
+    "local_reopen_preserves_ref_only_history_fork_and_parent_merge", ["--features", "local"]],
+];
+const e2eTranscripts = new Map();
+executed.e2e = new Set();
+for (const [marker, target, name, features] of e2e) {
+  const transcript = command("cargo", [
+    "test", "--locked", "-p", "acyclic-harness-filesystem", ...features,
+    "--test", target, "--", "--exact", name,
+  ]);
+  if (!transcript.split(/\r?\n/).some(line => line === `test ${name} ... ok`)) {
+    throw new Error(`${name} E2E was not actually executed`);
+  }
+  executed.e2e.add(name);
+  e2eTranscripts.set(marker, createHash("sha256").update(transcript).digest("hex"));
+}
 command("cargo", ["build", "--quiet", "--locked", "-p", "acyclic-conformance", "--bin", "harness-conformance"]);
 const metadata = JSON.parse(command("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]));
 const runnerBinary = resolve(metadata.target_directory, `debug/harness-conformance${process.platform === "win32" ? ".exe" : ""}`);
@@ -116,6 +141,9 @@ const cases = harnessCases.map(item => {
       case: item.name,
       evidence_digest: hash(evidenceBytes),
       required,
+      ...(e2eTranscripts.has(item.name)
+        ? { e2e_transcript_sha256: e2eTranscripts.get(item.name) }
+        : {}),
     }))),
   };
 });

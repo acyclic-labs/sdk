@@ -8,11 +8,20 @@ export type IdempotencyKey = Uint8Array & { readonly [streamIdentityBrand]: "Ide
 
 export function commitId(value: Uint8Array): CommitId {
   if (!(value instanceof Uint8Array) || value.byteLength !== 32) throw new RangeError("commit ID must contain exactly 32 bytes");
-  return value.slice() as CommitId;
+  return Uint8Array.from(value) as CommitId;
 }
 export function idempotencyKey(value: Uint8Array): IdempotencyKey {
   if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > 256) throw new RangeError("idempotency key must contain 1..256 bytes");
-  return value.slice() as IdempotencyKey;
+  return Uint8Array.from(value) as IdempotencyKey;
+}
+/** Rust-compatible UTF-8 path ordering for pages and cursors. */
+export function compareStreamPaths(left: string, right: string): number {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  for (let index = 0; index < Math.min(leftBytes.length, rightBytes.length); index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index]! - rightBytes[index]!;
+  }
+  return leftBytes.length - rightBytes.length;
 }
 
 export interface Record<Value = Uint8Array> {
@@ -27,7 +36,20 @@ export type AppendResult =
 export interface AppendOptions { readonly ifTail?: Sequence; readonly idempotencyKey?: IdempotencyKey }
 export interface ForkOptions { readonly atTail?: Sequence; readonly idempotencyKey?: IdempotencyKey }
 export interface ReadOptions { readonly from: Sequence; readonly limit: number }
+/** Atomic retained replay window for one stream. */
+export interface StreamBounds { readonly trimPoint: Sequence; readonly tail: Sequence }
 export interface FollowOptions { readonly from: Sequence; readonly signal?: AbortSignal }
+export interface StreamChild { readonly path: string }
+/** A continuation always carries the revision that made its cursor meaningful. */
+export type ChildrenPageRequest = Readonly<{ parent?: string; limit: number }> & (
+  | Readonly<{ after?: undefined; hierarchyVersion?: CommitId }>
+  | Readonly<{ after: string; hierarchyVersion: CommitId }>
+);
+export interface ChildrenPage {
+  readonly hierarchyVersion: CommitId;
+  readonly children: readonly StreamChild[];
+  readonly nextAfter?: string;
+}
 export interface ForkReceipt { readonly source: string; readonly destination: string; readonly forkedAt: Sequence; readonly tail: Sequence; readonly commitId: CommitId }
 export interface TrimReceipt { readonly path: string; readonly trimPoint: Sequence; readonly commitId: CommitId }
 export interface DeleteReceipt { readonly path: string; readonly commitId: CommitId }
@@ -53,6 +75,7 @@ export type CommitConflict =
 export type CommitResult =
   | { readonly ok: true; readonly commitId: CommitId; readonly tails: Readonly<{ readonly [path: string]: Sequence }>; readonly forks: readonly { readonly path: string; readonly tail: Sequence }[] }
   | { readonly ok: false; readonly code: "conflict"; readonly conflicts: readonly CommitConflict[] };
+/** Atomic v2 command: every mutation needs a matching condition, and both lists must be nonempty. */
 export interface CommitRequest { readonly conditions: readonly CommitCondition[]; readonly mutations: readonly CommitMutation[] }
 export interface CommitOptions { readonly idempotencyKey: IdempotencyKey }
 export type IdempotencyOutcome =
@@ -68,6 +91,7 @@ export interface CreateTokenRequest { readonly expiresIn: string; readonly allow
 export interface AccessToken { readonly token: string; readonly expiresAt: Date }
 
 export interface ProviderCommitRequest {
+  /** Rust v2 requires at least one condition and one mutation, with a matching condition for each mutated path. */
   readonly conditions: readonly ({ readonly path: string; readonly ifTail: Sequence } | { readonly path: string; readonly ifAbsent: true })[];
   readonly mutations: readonly (
     | { readonly append: { readonly path: string; readonly values: readonly Uint8Array[] } }
@@ -79,13 +103,14 @@ export interface ProviderCommitRequest {
 export interface StreamProvider {
   inspectIdempotency(idempotencyKey: IdempotencyKey): Promise<IdempotencyObservation | undefined>;
   tail(path: string): Promise<Sequence>;
+  bounds(path: string): Promise<StreamBounds>;
   append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult>;
   fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt>;
   trim(path: string, before: Sequence, idempotencyKey?: IdempotencyKey): Promise<TrimReceipt>;
   delete(path: string, idempotencyKey?: IdempotencyKey): Promise<DeleteReceipt>;
   read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord>;
   follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord>;
-  children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }>;
+  childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage>;
   commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult>;
   readCommit(commitId: CommitId): Promise<CommittedEnvelope>;
   createToken?(request: CreateTokenRequest): Promise<AccessToken>;

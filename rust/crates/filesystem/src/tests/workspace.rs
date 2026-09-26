@@ -939,10 +939,12 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
         Bytes::from_static(b"a")
     );
 
-    let first = workspace.list_directory("/tree", None, 1).await?;
+    let listing = workspace.sync().await?.into_generation();
+    let first = listing.list_directory("/tree", None, 1).await?;
     assert_eq!(first.entries.len(), 1);
     assert!(first.has_more);
-    let second = workspace
+    workspace.write_text("/tree/late", "new").await?;
+    let second = listing
         .list_directory("/tree", Some(&first.entries[0].name), 16)
         .await?;
     assert_eq!(second.entries.len(), 3);
@@ -1064,6 +1066,13 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     let JoinOutcome::Applied(joined) = outcome else {
         return Err("join did not publish".into());
     };
+    let witness = plan.commit_witness(&joined, idempotency_key)?;
+    assert!(main.verify_join_commit(&witness).await?);
+    let mut forged = serde_json::to_value(witness)?;
+    forged["source_generation"] =
+        serde_json::to_value(crate::GenerationId::new(crate::Digest::ZERO))?;
+    let forged: crate::JoinCommitWitness = serde_json::from_value(forged)?;
+    assert!(!main.verify_join_commit(&forged).await?);
     assert_eq!(
         main.operation_generation(idempotency_key)
             .await?
@@ -1091,6 +1100,24 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
         .await?,
         JoinOutcome::AlreadyApplied(_)
     ));
+    main.write_text("/after-join", "later").await?;
+    assert!(main.verify_join_commit(&witness).await?);
+    let ordinary_key = IdempotencyKey::new();
+    let mut ordinary = main.begin_transaction(ordinary_key).await?;
+    ordinary.write_text("/ordinary", "not a join").await?;
+    assert!(matches!(
+        ordinary.commit().await?,
+        TransactionCommit::Committed(_)
+    ));
+    let ordinary_generation = main
+        .operation_generation(ordinary_key)
+        .await?
+        .ok_or("ordinary operation was not recoverable")?;
+    let mut impostor = serde_json::to_value(witness)?;
+    impostor["operation_id"] = serde_json::to_value(ordinary_key.operation_id())?;
+    impostor["result_generation"] = serde_json::to_value(ordinary_generation.id())?;
+    let impostor: crate::JoinCommitWitness = serde_json::from_value(impostor)?;
+    assert!(!main.verify_join_commit(&impostor).await?);
     Ok(())
 }
 
@@ -1395,18 +1422,25 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
     registry.register("theirs", Arc::new(SelectTheirsDriver))?;
     registry.set_default("theirs")?;
     let mut cache = crate::MemoryMergeResolutionCache::default();
+    let join_key = IdempotencyKey::new();
     let outcome = plan
         .apply_with_drivers(
             ApplyOptions {
                 if_target: plan.target_head(),
-                idempotency_key: IdempotencyKey::new(),
+                idempotency_key: join_key,
             },
             &registry,
             &mut cache,
             false,
         )
         .await?;
-    assert!(matches!(outcome, JoinOutcome::Applied(_)));
+    let JoinOutcome::Applied(application) = outcome else {
+        return Err("resolved join did not publish".into());
+    };
+    assert!(
+        main.verify_join_commit(&plan.commit_witness(&application, join_key)?)
+            .await?
+    );
     assert_eq!(
         main.read("/shared", 16).await?,
         Bytes::from_static(b"agent")
@@ -1828,6 +1862,16 @@ impl acyclic_stream::StreamProvider for CutStream {
             return Err(acyclic_stream::StreamError::Unavailable);
         }
         self.inner.tail(path).await
+    }
+
+    async fn bounds(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.bounds(path).await
     }
 
     async fn append(

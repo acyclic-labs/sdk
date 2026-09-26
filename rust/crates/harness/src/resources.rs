@@ -62,6 +62,7 @@ impl ProviderRef {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProviderRefWire {
     namespace: String,
     family: String,
@@ -107,6 +108,7 @@ pub struct ResourceRef {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ResourceRefWire {
     kind: ResourceKind,
     provider: ProviderRef,
@@ -295,5 +297,14 @@ mod tests {
             "version":null
         }"#;
         assert!(serde_json::from_str::<WorkspaceRef>(wrong_kind).is_err());
+
+        let unknown_field = r#"{
+            "kind":"workspace",
+            "provider":{"namespace":"acyclic","family":"filesystem","version":"2"},
+            "key":[1],
+            "version":null,
+            "endpoint":"https://should-not-enter-a-reference.invalid"
+        }"#;
+        assert!(serde_json::from_str::<ResourceRef>(unknown_field).is_err());
     }
 }

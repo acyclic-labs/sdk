@@ -11,6 +11,7 @@ use acyclic_fs::model::{
     GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeLimits,
 };
 use acyclic_fs::path::PortablePath;
+use acyclic_fs::workspace_context_wire;
 use acyclic_fs::{
     ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, CheckoutCommitOutcome,
     ConflictSide, Digest, FileCloneRequest, FileId, ForkOptions, Generation,
@@ -28,8 +29,8 @@ use acyclic_fs::{
     TransactionCommit, TransactionConflict, TransactionConflictRegion, TransactionDependencyUse,
     TransactionRebase, TransactionSparseSeek, VolumeId, WatchBatch, WatchChange,
     WatchInvalidationReason, WorkBudget, Workspace, WorkspaceContextId, WorkspaceContextRegistry,
-    WorkspaceContextRoot, WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind,
-    WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord, WorkspaceMetadata,
+    WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan,
+    WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord, WorkspaceMetadata,
     WorkspaceOperationFinish, WorkspaceRebase, WorkspaceRootId, WorkspaceStat,
     decode_generation_export_manifest, encode_generation_export_manifest,
     native_watch_capabilities as sdk_native_watch_capabilities,
@@ -1942,23 +1943,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    #[napi(js_name = listDirectory)]
-    pub async fn list_directory(
-        &self,
-        path: String,
-        after: Option<NativeWorkspaceName>,
-        maximum_entries: u32,
-    ) -> Result<NativeWorkspaceDirectoryPage> {
-        let after = after.map(native_workspace_name).transpose()?;
-        Box::pin(
-            self.inner
-                .list_directory(&path, after.as_ref(), maximum_entries),
-        )
-        .await
-        .map(native_workspace_directory_page)
-        .map_err(napi_error)
-    }
-
     #[napi(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
         Box::pin(self.inner.read_symbolic_link(&path))
@@ -2487,8 +2471,10 @@ fn native_join_result(
         truncated: false,
     };
     match outcome {
-        JoinOutcome::Applied(value) => generation("applied", value),
-        JoinOutcome::AlreadyApplied(value) => generation("already-applied", value),
+        JoinOutcome::Applied(value) => generation("applied", value.into_generation()),
+        JoinOutcome::AlreadyApplied(value) => {
+            generation("already-applied", value.into_generation())
+        }
         JoinOutcome::NoChanges(value) => generation("no-changes", value),
         JoinOutcome::StaleTarget(value) => generation("stale-target", value),
         JoinOutcome::Conflicted {
@@ -3281,13 +3267,8 @@ impl NativeWorkspaceContextRegistry {
 
     /// Registers a root context without enumerating its physical roots.
     #[napi]
-    pub async fn register_root_json(
-        &self,
-        context_id: Buffer,
-        roots_json: String,
-    ) -> Result<String> {
-        let roots: Vec<WorkspaceContextRoot> =
-            serde_json::from_str(&roots_json).map_err(napi_error)?;
+    pub async fn register_root(&self, context_id: Buffer, roots_wire: Buffer) -> Result<Buffer> {
+        let roots = workspace_context_wire::decode_roots(&roots_wire).map_err(napi_wire_error)?;
         let context = self
             .inner
             .register_root(
@@ -3296,19 +3277,20 @@ impl NativeWorkspaceContextRegistry {
             )
             .await
             .map_err(napi_error)?;
-        workspace_context_json(&context)
+        workspace_context_wire::encode_context(&context)
+            .map(Buffer::from)
+            .map_err(napi_wire_error)
     }
 
     /// Registers a child whose roots point at its exact direct parent.
     #[napi]
-    pub async fn register_child_json(
+    pub async fn register_child(
         &self,
         context_id: Buffer,
         parent_context_id: Buffer,
-        roots_json: String,
-    ) -> Result<String> {
-        let roots: Vec<WorkspaceContextRoot> =
-            serde_json::from_str(&roots_json).map_err(napi_error)?;
+        roots_wire: Buffer,
+    ) -> Result<Buffer> {
+        let roots = workspace_context_wire::decode_roots(&roots_wire).map_err(napi_wire_error)?;
         let context = self
             .inner
             .register_child(
@@ -3318,24 +3300,28 @@ impl NativeWorkspaceContextRegistry {
             )
             .await
             .map_err(napi_error)?;
-        workspace_context_json(&context)
+        workspace_context_wire::encode_context(&context)
+            .map(Buffer::from)
+            .map_err(napi_wire_error)
     }
 
     /// Adopts one parent-authorized root without enumerating its contents.
     #[napi]
-    pub async fn adopt_root_json(&self, context_id: Buffer, root_json: String) -> Result<String> {
-        let root: WorkspaceContextRoot = serde_json::from_str(&root_json).map_err(napi_error)?;
+    pub async fn adopt_root(&self, context_id: Buffer, root_wire: Buffer) -> Result<Buffer> {
+        let root = workspace_context_wire::decode_root(&root_wire).map_err(napi_wire_error)?;
         let context = self
             .inner
             .adopt_root(WorkspaceContextId::from_bytes(fixed_16(&context_id)?), root)
             .await
             .map_err(napi_error)?;
-        workspace_context_json(&context)
+        workspace_context_wire::encode_context(&context)
+            .map(Buffer::from)
+            .map_err(napi_wire_error)
     }
 
     /// Releases one root after callers have settled its filesystem changes.
     #[napi]
-    pub async fn remove_root_json(&self, context_id: Buffer, root_id: Buffer) -> Result<String> {
+    pub async fn remove_root(&self, context_id: Buffer, root_id: Buffer) -> Result<Buffer> {
         let context = self
             .inner
             .remove_root(
@@ -3344,23 +3330,27 @@ impl NativeWorkspaceContextRegistry {
             )
             .await
             .map_err(napi_error)?;
-        workspace_context_json(&context)
+        workspace_context_wire::encode_context(&context)
+            .map(Buffer::from)
+            .map_err(napi_wire_error)
     }
 
     /// Resolves one durable context as stable JSON.
     #[napi]
-    pub async fn resolve_json(&self, context_id: Buffer) -> Result<String> {
+    pub async fn resolve(&self, context_id: Buffer) -> Result<Buffer> {
         let context = self
             .inner
             .resolve(WorkspaceContextId::from_bytes(fixed_16(&context_id)?))
             .await
             .map_err(napi_error)?;
-        workspace_context_json(&context)
+        workspace_context_wire::encode_context(&context)
+            .map(Buffer::from)
+            .map_err(napi_wire_error)
     }
 
     /// Freezes or resumes a retained context.
     #[napi]
-    pub async fn set_active_json(&self, context_id: Buffer, active: bool) -> Result<String> {
+    pub async fn set_active(&self, context_id: Buffer, active: bool) -> Result<Buffer> {
         let context = self
             .inner
             .set_active(
@@ -3369,19 +3359,21 @@ impl NativeWorkspaceContextRegistry {
             )
             .await
             .map_err(napi_error)?;
-        workspace_context_json(&context)
+        workspace_context_wire::encode_context(&context)
+            .map(Buffer::from)
+            .map_err(napi_wire_error)
     }
 
     /// Advances one root binding after a compatibility branch switch.
     #[napi]
-    pub async fn set_workspace_json(
+    pub async fn set_workspace(
         &self,
         context_id: Buffer,
         root_id: Buffer,
         workspace_id: Buffer,
         workspace_name: String,
         parent_workspace_id: Option<Buffer>,
-    ) -> Result<String> {
+    ) -> Result<Buffer> {
         let parent = parent_workspace_id
             .as_ref()
             .map(|value| fixed_16(value).map(WorkspaceId::from_bytes))
@@ -3397,17 +3389,19 @@ impl NativeWorkspaceContextRegistry {
             )
             .await
             .map_err(napi_error)?;
-        workspace_context_json(&context)
+        workspace_context_wire::encode_context(&context)
+            .map(Buffer::from)
+            .map_err(napi_wire_error)
     }
 
     /// Recursively tombstones a direct-child context subtree.
     #[napi]
-    pub async fn discard_subtree_json(
+    pub async fn discard_subtree(
         &self,
         parent_context_id: Buffer,
         child_context_id: Buffer,
         maximum: u32,
-    ) -> Result<String> {
+    ) -> Result<Buffer> {
         let discarded = self
             .inner
             .discard_subtree(
@@ -3417,7 +3411,9 @@ impl NativeWorkspaceContextRegistry {
             )
             .await
             .map_err(napi_error)?;
-        serde_json::to_string(&discarded).map_err(napi_error)
+        workspace_context_wire::encode_discard(&discarded)
+            .map(Buffer::from)
+            .map_err(napi_wire_error)
     }
 }
 
@@ -6426,27 +6422,6 @@ fn napi_wire_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::InvalidArg, error.to_string())
 }
 
-fn workspace_context_json(context: &acyclic_fs::WorkspaceContext) -> Result<String> {
-    let mut value = serde_json::to_value(context).map_err(napi_error)?;
-    let revision = value
-        .get("revision")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| {
-            Error::new(
-                Status::GenericFailure,
-                "workspace context revision is invalid",
-            )
-        })?;
-    value
-        .as_object_mut()
-        .ok_or_else(|| Error::new(Status::GenericFailure, "workspace context is invalid"))?
-        .insert(
-            "revision".to_owned(),
-            serde_json::Value::String(revision.to_string()),
-        );
-    serde_json::to_string(&value).map_err(napi_error)
-}
-
 fn watcher_poisoned() -> Error {
     Error::new(Status::GenericFailure, "native watcher state poisoned")
 }
@@ -8134,14 +8109,22 @@ mod tests {
                 .as_ref(),
             b"source"
         );
-        let first_page = workspace
+        let listing = workspace.sync().await?;
+        let first_page = listing
             .list_directory("/shapes".to_owned(), None, 1)
             .await?;
         assert!(first_page.has_more);
         let Some(first_entry) = first_page.entries.first() else {
             unreachable!("a page reporting has_more must contain at least one entry");
         };
-        let remaining_page = workspace
+        assert_eq!(
+            workspace
+                .write("/shapes/late".to_owned(), Buffer::from(vec![1]))
+                .await?
+                .status,
+            "committed"
+        );
+        let remaining_page = listing
             .list_directory(
                 "/shapes".to_owned(),
                 Some(NativeWorkspaceName {

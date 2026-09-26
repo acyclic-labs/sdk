@@ -1,7 +1,0 @@
-data: {"id":"chatcmpl-3","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
-
-data: {"id":"chatcmpl-3","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"acyclic_shell","arguments":"{\"command\": \"ls\"}"}}]},"finish_reason":null}]}
-
-data: {"id":"chatcmpl-3","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
-
-data: [DONE]

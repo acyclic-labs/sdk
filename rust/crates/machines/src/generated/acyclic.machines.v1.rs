@@ -390,6 +390,63 @@ pub mod recovered_admission {
         ForkMachine(super::ForkMachineAdmission),
     }
 }
+/// Terminal simulator result. Unlike an admission, this contains the checked
+/// observations produced after the operation has completed.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ForkedMachines {
+    #[prost(message, repeated, tag = "1")]
+    pub machines: ::prost::alloc::vec::Vec<MachineState>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ForkedLiveMachines {
+    #[prost(message, optional, tag = "1")]
+    pub source: ::core::option::Option<MachineId>,
+    #[prost(enumeration = "ForkFidelity", tag = "2")]
+    pub fidelity: i32,
+    #[prost(message, repeated, tag = "3")]
+    pub children: ::prost::alloc::vec::Vec<MachineState>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PolicySet {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(message, optional, tag = "2")]
+    pub policy: ::core::option::Option<SuspensionPolicy>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MutationOutcome {
+    #[prost(oneof = "mutation_outcome::Result", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    pub result: ::core::option::Option<mutation_outcome::Result>,
+}
+/// Nested message and enum types in `MutationOutcome`.
+pub mod mutation_outcome {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        Created(super::MachineState),
+        #[prost(message, tag = "2")]
+        Checkpointed(super::CheckpointState),
+        #[prost(message, tag = "3")]
+        Forked(super::ForkedMachines),
+        #[prost(message, tag = "4")]
+        Suspended(super::MachineId),
+        #[prost(message, tag = "5")]
+        Woken(super::MachineId),
+        #[prost(message, tag = "6")]
+        SuspensionPolicySet(super::PolicySet),
+        #[prost(message, tag = "7")]
+        MachineDestroyed(super::MachineId),
+        #[prost(message, tag = "8")]
+        CheckpointDestroyed(super::CheckpointId),
+        #[prost(message, tag = "9")]
+        MachineForked(super::ForkedLiveMachines),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OperationPage {
+    #[prost(message, repeated, tag = "1")]
+    pub operations: ::prost::alloc::vec::Vec<OperationState>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MachineEvent {
     #[prost(message, optional, tag = "1")]
@@ -814,5 +871,6 @@ impl EventKind {
         }
     }
 }
+#[cfg(feature = "grpc")]
 include!("acyclic.machines.v1.tonic.rs");
 // @@protoc_insertion_point(module)
