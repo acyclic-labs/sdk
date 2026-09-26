@@ -105,6 +105,75 @@ pub enum CoordinatorApply {
     Replayed,
 }
 
+/// One verified durable coordinator event for an asynchronous projector.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommittedSchedulerEvent {
+    /// Dense one-based coordinator revision.
+    pub revision: u64,
+    /// Operation named by the canonical event.
+    pub operation_id: OperationId,
+    /// Digest of the exact canonical event bytes retained by the coordinator.
+    pub event_digest: [u8; 32],
+    /// Decoded scheduler transition.
+    pub event: SchedulerEvent,
+}
+
+/// Reads one bounded page of verified coordinator events without replaying the
+/// complete scheduler. A projector can resume from the last durable revision.
+///
+/// # Errors
+///
+/// Rejects an invalid bound, missing history after a nonzero cursor, a corrupt
+/// envelope, a gap, or a mismatch between the event and its operation identity.
+pub async fn read_coordinator_event_page<P: StreamProvider>(
+    client: &StreamClient<P>,
+    after_revision: u64,
+    limit: u32,
+) -> Result<Vec<CommittedSchedulerEvent>> {
+    if limit == 0 || limit > READ_PAGE_SIZE {
+        return Err(Error::Invalid(
+            "coordinator page limit is out of bounds".into(),
+        ));
+    }
+    let stream = client
+        .stream(COORDINATOR_PATH)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let records = match stream.read(after_revision, limit).await {
+        Ok(records) => records,
+        Err(StreamError::NotFound) if after_revision == 0 => return Ok(Vec::new()),
+        Err(error) => return Err(Error::Storage(error.to_string())),
+    };
+    let page = records
+        .try_collect::<Vec<_>>()
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let mut expected = after_revision;
+    let mut events = Vec::with_capacity(page.len());
+    for record in page {
+        if record.sequence != expected {
+            return Err(Error::Storage(
+                "coordinator event page has a cursor gap".into(),
+            ));
+        }
+        let (revision, operation_id, _, event_digest, event) = decode(&record.value)?;
+        if revision != expected.saturating_add(1)
+            || scheduler_event_operation(&event) != operation_id
+        {
+            return Err(Error::Storage(
+                "coordinator event page has invalid identity".into(),
+            ));
+        }
+        events.push(CommittedSchedulerEvent {
+            revision,
+            operation_id,
+            event_digest,
+            event,
+        });
+        expected = revision;
+    }
+    Ok(events)
+}
+
 /// One logical coordinator whose entire semantic history is a Stream.
 pub struct DistributedCoordinator<P> {
     client: StreamClient<P>,
@@ -688,6 +757,29 @@ mod tests {
             orchestration: Orchestration::Leaf,
             state: Value::Null,
         }
+    }
+
+    #[tokio::test]
+    async fn projector_reads_bounded_verified_coordinator_pages() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        assert!(read_coordinator_event_page(&client, 0, 1).await?.is_empty());
+        let operation_id = OperationId::from_bytes([41; 16]);
+        let mut coordinator = DistributedCoordinator::open(&client).await?;
+        coordinator
+            .apply(
+                operation_id,
+                IdempotencyKey::new("projector-declare")?,
+                coordinator.scheduler().declare(spec(operation_id, 1))?,
+            )
+            .await?;
+        let page = read_coordinator_event_page(&client, 0, 1).await?;
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].revision, 1);
+        assert_eq!(page[0].operation_id, operation_id);
+        assert!(matches!(page[0].event, SchedulerEvent::Declared { .. }));
+        assert!(read_coordinator_event_page(&client, 1, 1).await?.is_empty());
+        assert!(read_coordinator_event_page(&client, 0, 0).await.is_err());
+        Ok(())
     }
 
     #[tokio::test]
