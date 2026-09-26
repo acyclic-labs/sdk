@@ -16,7 +16,7 @@
 struct fuse_operations;
 typedef struct dfuse_inode_table_s dfuse_inode_table_t;
 
-/* Server configuration passed from fuse_main shim */
+/* Server configuration passed from fuse_mount() */
 typedef struct {
     const struct fuse_operations *ops;
     void       *user_data;
@@ -67,33 +67,12 @@ void nfs4_server_restart(darwinfuse_server_t *srv);
 void nfs4_server_destroy(darwinfuse_server_t *srv);
 
 /*
- * Close all file descriptors that do NOT belong to the server.
- * Used after daemonizing to release inherited pipes/fds from the parent.
- * Keeps: listen_fd, wakeup_pipe, client fds, and stdin/stdout/stderr.
- */
-void nfs4_server_close_inherited_fds(darwinfuse_server_t *srv);
-
-/*
- * Close only inherited PIPE-type FDs (not regular files or sockets).
- * This is used by the daemon child to release Process::Execute's
- * exceptionPipe without closing the volume's file descriptor.
- * Keeps: server's wakeup_pipe, stdin/stdout/stderr, all non-pipe FDs.
- */
-void nfs4_server_close_inherited_pipes(darwinfuse_server_t *srv);
-
-/*
  * Update the FUSE operations and user_data on a running server.
  * Used by the component API (fuse_new) to attach real ops after mount.
  */
 void nfs4_server_set_ops(darwinfuse_server_t *srv,
                           const struct fuse_operations *ops,
                           void *user_data);
-
-/*
- * Update the inode table on the server config.
- */
-void nfs4_server_set_inode_table(darwinfuse_server_t *srv,
-                                  struct dfuse_inode_table_s *tbl);
 
 /*
  * Enable multi-threaded request processing with a thread pool.

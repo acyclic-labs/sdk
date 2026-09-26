@@ -2674,9 +2674,6 @@ fn metadata_time(field: MetadataField<i64>) -> (i64, u32) {
 }
 
 fn errno(error: &MountSourceError) -> i32 {
-    if std::env::var_os("ACYCLIC_FS_DARWIN_MOUNT_DEBUG").is_some() {
-        eprintln!("acyclic-fs Darwin mount callback error: {error}");
-    }
     match error {
         MountSourceError::NotFound => libc::ENOENT,
         MountSourceError::AlreadyExists => libc::EEXIST,

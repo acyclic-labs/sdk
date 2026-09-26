@@ -16,14 +16,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=src/generated/acyclic-filesystem-v2.bin");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NATIVE_MOUNT");
 
-    #[cfg(target_os = "macos")]
-    if std::env::var_os("CARGO_FEATURE_NATIVE_MOUNT").is_some() {
+    // A build script runs on the host, so the target comes from Cargo.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
+        && std::env::var_os("CARGO_FEATURE_NATIVE_MOUNT").is_some()
+    {
         build_darwin_mount();
     }
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 fn build_darwin_mount() {
     const SOURCES: &[&str] = &[
         "vendor/darwinfuse/src/nfs4_xdr.c",
