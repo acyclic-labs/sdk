@@ -122,7 +122,6 @@ for (const path of [
   "rust/crates/filesystem/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
   "rust/crates/harness/Cargo.toml",
-  "rust/crates/harness-filesystem/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
@@ -142,7 +141,7 @@ if (
 }
 for (const path of [
   "rust/crates/conformance/Cargo.toml",
-  "rust/crates/harness-machines/Cargo.toml",
+  "rust/crates/harness/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-machines = \{ version = "([^"]+)"/)?.[1];
@@ -182,7 +181,7 @@ for (const path of [
   "rust/crates/conformance/Cargo.toml",
   "rust/crates/filesystem/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
-  "rust/crates/harness-objects/Cargo.toml",
+  "rust/crates/harness/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-objects = \{ version = "([^"]+)"/)?.[1];

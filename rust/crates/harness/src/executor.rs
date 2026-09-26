@@ -1114,10 +1114,7 @@ pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
     reference.descriptor().verify(&bytes)?;
     let parsed: Value = serde_json::from_slice(&bytes)
         .map_err(|error| Error::Storage(format!("execution journal JSON is invalid: {error}")))?;
-    if crate::contract::canonical_json_bytes(&parsed)
-        .map_err(|error| Error::Storage(error.to_string()))?
-        != bytes
-    {
+    if crate::contract::canonical_json_bytes(&parsed)? != bytes {
         return Err(Error::Storage(
             "execution journal JSON is not canonical".into(),
         ));

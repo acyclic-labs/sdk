@@ -110,13 +110,13 @@ const e2e = [
   ["recursive-fork-isolation-attachments-and-project-only-merge", "recursive_fork",
     "thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_project", []],
   ["durable-local-conversation-fork-and-merge-reopens", "local_conversation_fork",
-    "local_reopen_preserves_ref_only_history_fork_and_parent_merge", ["--features", "local"]],
+    "local_reopen_preserves_ref_only_history_fork_and_parent_merge", ["--features", "filesystem-local"]],
 ];
 const e2eTranscripts = new Map();
 executed.e2e = new Set();
 for (const [marker, target, name, features] of e2e) {
   const transcript = command("cargo", [
-    "test", "--locked", "-p", "acyclic-harness-filesystem", ...features,
+    "test", "--locked", "-p", "acyclic-harness", "--features", "filesystem", ...features,
     "--test", target, "--", "--exact", name,
   ]);
   if (!transcript.split(/\r?\n/).some(line => line === `test ${name} ... ok`)) {

@@ -33,6 +33,8 @@ pub use memory::{MemoryLimits, MemoryStream};
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
 /// Maximum records, participants, mutations, or path segments in one request.
 pub const MAX_ITEMS: usize = 1_024;
+const REPLAY_PAGE: u32 = 1_024;
+const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = 1024 * 1024 + 8 * 1024;
 /// Minimum durable replay window required from a provider.
@@ -829,9 +831,60 @@ impl<P: StreamProvider> Stream<P> {
             .await
     }
 
+    /// Pages every record from `from` to the tail. See [`Replay`].
+    #[must_use]
+    pub fn replay(&self, from: u64) -> Replay<P> {
+        Replay {
+            stream: self.clone(),
+            next: from,
+            done: false,
+        }
+    }
+
     /// Replays from `from`, then remains live.
     pub async fn follow(&self, from: u64) -> Result<RecordStream, StreamError> {
         self.client.provider.follow(self.path.clone(), from).await
+    }
+}
+
+/// Gapless, paged replay of one stream up to its tail.
+///
+/// A path that does not exist reads as empty from zero. Every record's
+/// sequence is checked here, so callers never re-verify it; a provider that
+/// returns one out of order fails as [`StreamError::Unavailable`], like any
+/// other malformed reply.
+pub struct Replay<P> {
+    stream: Stream<P>,
+    next: u64,
+    done: bool,
+}
+
+impl<P: StreamProvider> Replay<P> {
+    /// The next page in order, or `None` once the tail is reached.
+    pub async fn next_page(&mut self) -> Result<Option<Vec<Record>>, StreamError> {
+        use futures::TryStreamExt as _;
+        if self.done {
+            return Ok(None);
+        }
+        let page = match self.stream.read(self.next, REPLAY_PAGE).await {
+            Ok(records) => records.try_collect::<Vec<_>>().await?,
+            Err(StreamError::NotFound) if self.next == 0 => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        for record in &page {
+            if record.sequence != self.next {
+                return Err(StreamError::Unavailable);
+            }
+            self.next = self.next.checked_add(1).ok_or(StreamError::LimitExceeded)?;
+        }
+        self.done = page.is_empty();
+        Ok((!self.done).then_some(page))
+    }
+
+    /// The sequence after the last record returned.
+    #[must_use]
+    pub fn cursor(&self) -> u64 {
+        self.next
     }
 }
 

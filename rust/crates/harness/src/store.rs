@@ -25,8 +25,6 @@ use futures::TryStreamExt as _;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
-const READ_PAGE_SIZE: u32 = 1_024;
-
 /// Native, deterministic migration implementation selected by the exact
 /// installed target digest. External-effect migrations belong in an effect
 /// journal, not this pre-publication transformation boundary.
@@ -575,9 +573,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<Self> {
         authority_verifier.verify_audience(&authority)?;
         let path = authority.stream_path()?;
-        let stream = client
-            .stream(path)
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        let stream = client.stream(path)?;
         let mut reducer = if let Some(snapshot) = snapshot {
             if snapshot.authority != authority {
                 return Err(Error::Invalid(
@@ -588,21 +584,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
         } else {
             Reducer::new(authority, authority_verifier, schemas)
         };
-        let mut from = reducer.revision();
-        loop {
-            let records = match stream.read(from, READ_PAGE_SIZE).await {
-                Ok(records) => records,
-                Err(StreamError::NotFound) if from == 0 => break,
-                Err(error) => return Err(Error::Storage(error.to_string())),
-            };
-            let page = records
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(|error| Error::Storage(error.to_string()))?;
-            if page.is_empty() {
-                break;
-            }
-            for record in &page {
+        let mut replay = stream.replay(reducer.revision());
+        while let Some(page) = replay.next_page().await? {
+            for record in page {
                 let (event_authority, event) = decode_event(&record.value)?;
                 if &event_authority != reducer.authority() {
                     return Err(Error::Storage(
@@ -616,9 +600,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 }
                 reducer.apply_committed(event)?;
             }
-            from = from
-                .checked_add(page.len() as u64)
-                .ok_or_else(|| Error::Storage("Stream cursor exhausted".into()))?;
         }
         Ok(Self {
             client: client.clone(),
@@ -1068,12 +1049,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return planned.map(Some);
         }
         let key = stream_idempotency_key(self.stream.path().as_str(), &command.idempotency_key)?;
-        let Some(observation) = self
-            .client
-            .inspect_idempotency(key)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?
-        else {
+        let Some(observation) = self.client.inspect_idempotency(key).await? else {
             return Ok(None);
         };
         let IdempotencyOutcome::Append(outcome) = observation.outcome else {
@@ -1113,11 +1089,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let records = self
             .stream
             .read(receipt.start, 1)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?
+            .await?
             .try_collect::<Vec<_>>()
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         let record = records
             .first()
             .ok_or_else(|| Error::Storage("reconciled append record is unavailable".into()))?;
@@ -1146,17 +1120,12 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if reference.authority == *self.reducer.authority() {
             return Ok(());
         }
-        let stream = self
-            .client
-            .stream(reference.authority.stream_path()?)
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        let stream = self.client.stream(reference.authority.stream_path()?)?;
         let records = stream
             .read(reference.revision.saturating_sub(1), 1)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?
+            .await?
             .try_collect::<Vec<_>>()
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         let record = records
             .first()
             .ok_or_else(|| Error::NotFound("causal event".into()))?;
@@ -1461,14 +1430,11 @@ mod tests {
         );
         valid.execute(command(1)?).await?;
         let records = client
-            .stream(authority().stream_path()?)
-            .map_err(|error| Error::Storage(error.to_string()))?
+            .stream(authority().stream_path()?)?
             .read(0, 1)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?
+            .await?
             .try_collect::<Vec<_>>()
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         assert_eq!(records.len(), 1);
         assert!(
             !records[0]
@@ -1906,14 +1872,11 @@ mod tests {
         };
         aggregate.execute(resolve).await?;
         let records = client
-            .stream(authority().stream_path()?)
-            .map_err(|error| Error::Storage(error.to_string()))?
+            .stream(authority().stream_path()?)?
             .read(0, 3)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?
+            .await?
             .try_collect::<Vec<_>>()
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         assert_eq!(records.len(), 3);
         assert!(records.iter().all(|record| {
             !record
@@ -2089,11 +2052,9 @@ mod tests {
         third.expected_revision = 2;
         aggregate.execute(third).await?;
         client
-            .stream(authority().stream_path()?)
-            .map_err(|error| Error::Storage(error.to_string()))?
+            .stream(authority().stream_path()?)?
             .trim(2, None)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
 
         let reopened = StreamAggregate::open_from_snapshot(
             &client,

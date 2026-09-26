@@ -30,9 +30,13 @@ const withTests = [
   ["-p", "acyclic-stream"],
   ["-p", "acyclic-stream", "--no-default-features"],
   ["-p", "acyclic-stream", "--no-default-features", "--features", "local"],
-  // Harness host runtime. Adapters are separate workspace crates and covered
-  // by the workspace-wide all-features run.
+  // Harness host runtime alone, then each provider adapter feature alone.
   ["-p", "acyclic-harness"],
+  ["-p", "acyclic-harness", "--features", "filesystem"],
+  ["-p", "acyclic-harness", "--features", "filesystem-local"],
+  ["-p", "acyclic-harness", "--features", "objects"],
+  ["-p", "acyclic-harness", "--features", "machines"],
+  ["-p", "acyclic-harness", "--features", "grpc"],
   // The conformance runner and its native-mount qualification binaries.
   ["-p", "acyclic-conformance"],
   ["-p", "acyclic-conformance", "--features", "local-runner"],

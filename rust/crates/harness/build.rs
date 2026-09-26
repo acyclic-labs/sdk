@@ -1,4 +1,5 @@
-//! Builds the canonical harness Protobuf messages and descriptor set.
+//! Builds the canonical harness Protobuf messages and descriptor set, plus
+//! the tonic service glue under the `grpc` feature.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
@@ -19,5 +20,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("harness_descriptor.bin"),
     );
     config.compile_protos(&[proto], &[include])?;
+    #[cfg(feature = "grpc")]
+    {
+        // Tonic service glue reuses the canonical messages generated above;
+        // it lives in its own directory because it shares the package name.
+        let out = std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("grpc");
+        std::fs::create_dir_all(&out)?;
+        let mut prost = tonic_prost_build::Config::new();
+        prost.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
+        tonic_prost_build::configure()
+            .build_client(true)
+            .build_server(true)
+            .out_dir(out)
+            .extern_path(".acyclic.harness.v2", "crate::wire")
+            .compile_with_config(prost, &[proto], &[include])?;
+    }
     Ok(())
 }

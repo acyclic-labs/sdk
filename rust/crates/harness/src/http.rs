@@ -502,8 +502,7 @@ fn encode_json<M: prost::Message>(name: &str, message: &M) -> Result<String, Err
     let descriptor = pool()
         .get_message_by_name(name)
         .ok_or_else(|| Error::Storage("protobuf descriptor is missing".into()))?;
-    let dynamic = DynamicMessage::decode(descriptor, message.encode_to_vec().as_slice())
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    let dynamic = DynamicMessage::decode(descriptor, message.encode_to_vec().as_slice())?;
     serde_json::to_string(&dynamic).map_err(|error| Error::Storage(error.to_string()))
 }
 
@@ -695,12 +694,10 @@ mod tests {
                     )?))
                     .map_err(|error| Error::Invalid(error.to_string()))?,
             )
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), DEFAULT_MAX_FRAME_BYTES)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         let decoded: wire::HandshakeResponse = decode_json(
             "acyclic.harness.v2.HandshakeResponse",
             &body,
@@ -720,15 +717,13 @@ mod tests {
                     )?))
                     .map_err(|error| Error::Invalid(error.to_string()))?,
             )
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         assert_eq!(
             response.headers().get(header::CONTENT_TYPE),
             Some(&HeaderValue::from_static("text/event-stream"))
         );
         let body = axum::body::to_bytes(response.into_body(), DEFAULT_MAX_FRAME_BYTES)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         assert!(body.starts_with(b"data: "));
         Ok(())
     }
@@ -765,8 +760,7 @@ mod tests {
                     )?))
                     .map_err(|error| Error::Invalid(error.to_string()))?,
             )
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         assert_eq!(response.status(), StatusCode::OK);
 
         let operation = wire::OperationIdentity {
@@ -790,12 +784,10 @@ mod tests {
                     )?))
                     .map_err(|error| Error::Invalid(error.to_string()))?,
             )
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), DEFAULT_MAX_FRAME_BYTES)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         let decoded: wire::CancelResponse = decode_json(
             "acyclic.harness.v2.CancelResponse",
             &body,
@@ -835,12 +827,10 @@ mod tests {
                 )?))
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         )
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
+        .await?;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let body = axum::body::to_bytes(response.into_body(), DEFAULT_MAX_FRAME_BYTES)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         let error: wire::Error =
             decode_json("acyclic.harness.v2.Error", &body, DEFAULT_MAX_FRAME_BYTES)?;
         assert_eq!(error.code, wire::ErrorCode::Unauthorized as i32);
@@ -859,8 +849,7 @@ mod tests {
                     .body(Body::from("{}\n"))
                     .map_err(|error| Error::Invalid(error.to_string()))?,
             )
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .await?;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         Ok(())
     }

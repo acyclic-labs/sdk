@@ -132,10 +132,14 @@ dependencies = [
 name = "acyclic-harness"
 version = "0.1.5"
 dependencies = [
+ "acyclic-fs",
+ "acyclic-machines",
+ "acyclic-objects",
  "acyclic-stream",
  "blake3",
  "bytes",
  "futures",
+ "hex",
  "js-sys",
  "jsonschema",
  "prost",
@@ -145,64 +149,14 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "sha2 0.10.9",
- "thiserror",
- "tokio",
- "uuid",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "acyclic-harness-filesystem"
-version = "0.1.5"
-dependencies = [
- "acyclic-fs",
- "acyclic-harness",
- "acyclic-stream",
- "blake3",
- "bytes",
- "futures",
- "hex",
- "serde",
- "serde_json",
  "tempfile",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "acyclic-harness-grpc"
-version = "0.1.5"
-dependencies = [
- "acyclic-harness",
- "futures",
- "protoc-bin-vendored",
+ "thiserror",
  "tokio",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
-]
-
-[[package]]
-name = "acyclic-harness-machines"
-version = "0.1.5"
-dependencies = [
- "acyclic-harness",
- "acyclic-machines",
- "blake3",
- "tokio",
  "uuid",
-]
-
-[[package]]
-name = "acyclic-harness-objects"
-version = "0.1.5"
-dependencies = [
- "acyclic-harness",
- "acyclic-objects",
- "bytes",
- "futures",
- "serde_json",
- "tokio",
+ "wasm-bindgen",
 ]
 
 [[package]]

@@ -307,7 +307,7 @@ case "$lane" in
     # compiles or omits, so lint each browser build as it ships.
     cargo clippy -p acyclic-fs-wasm --target wasm32-unknown-unknown \
       --all-targets --all-features --locked -- -D warnings
-    cargo clippy -p acyclic-harness --no-default-features --features wasm \
+    cargo clippy -p acyclic-harness --features wasm \
       --target wasm32-unknown-unknown --locked -- -D warnings
     if [[ "$(wasm-bindgen-test-runner --version 2>/dev/null)" != "wasm-bindgen-test-runner 0.2.117" ]]; then
       # The pinned release archive avoids compiling wasm-bindgen-cli on a cold cache.

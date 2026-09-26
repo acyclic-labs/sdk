@@ -21,7 +21,6 @@ run(cargo, [
   "build",
   "--manifest-path", "Cargo.toml",
   "-p", "acyclic-harness",
-  "--no-default-features",
   "--features", "wasm",
   "--target", "wasm32-unknown-unknown",
   "--profile", "wasm-release",

@@ -1,4 +1,3 @@
-#[cfg(any(feature = "host", test))]
 use crate::core::RecordedScope;
 use crate::{
     AgentId, Capabilities, Error, OperationId, Result,
@@ -43,7 +42,6 @@ pub(crate) fn encode_event(authority: &Authority, event: &Event) -> Result<Vec<u
     .encode_to_vec())
 }
 
-#[cfg(feature = "host")]
 pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
     let envelope =
         wire::EventEnvelope::decode(bytes).map_err(|error| Error::Storage(error.to_string()))?;
@@ -298,7 +296,6 @@ fn decode_reference(reference: wire::EventReference) -> Result<EventReference> {
     })
 }
 
-#[cfg(any(feature = "host", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) fn decode_scope(scope: wire::Scope) -> Result<Scope> {
     let parent_proof = if scope.parent_proof.is_empty() {
         None
@@ -332,7 +329,7 @@ fn parse_scope_agent(value: &str) -> Result<Option<AgentId>> {
     }
 }
 
-#[cfg(all(test, feature = "host"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::conversation::{

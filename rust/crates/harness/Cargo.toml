@@ -15,15 +15,23 @@ build = "build.rs"
 crate-type = ["rlib", "cdylib"]
 
 [features]
-default = ["host"]
-host = ["dep:acyclic-stream", "dep:bytes", "dep:futures", "dep:tokio"]
-wasm = ["host", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:wasm-bindgen"]
+wasm = ["dep:js-sys", "dep:serde-wasm-bindgen", "dep:wasm-bindgen"]
+# Provider adapters. Each pulls only its own SDK family.
+filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex"]
+filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
+objects = ["dep:acyclic-objects"]
+machines = ["dep:acyclic-machines"]
+grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
-acyclic-stream = { version = "=0.1.5", path = "../stream", default-features = false, optional = true }
+acyclic-fs = { version = "=0.1.5", path = "../filesystem", default-features = false, optional = true }
+acyclic-machines = { version = "=0.1.5", path = "../machines", optional = true }
+acyclic-objects = { version = "=0.1.5", path = "../objects", default-features = false, optional = true }
+acyclic-stream = { version = "=0.1.5", path = "../stream", default-features = false }
 blake3.workspace = true
-bytes = { workspace = true, optional = true }
-futures = { workspace = true, optional = true }
+bytes.workspace = true
+futures.workspace = true
+hex = { workspace = true, optional = true }
 jsonschema.workspace = true
 js-sys = { workspace = true, optional = true }
 prost.workspace = true
@@ -31,14 +39,22 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"], optional = true }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 serde-wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 
+[dev-dependencies]
+acyclic-stream = { version = "=0.1.5", path = "../stream" }
+tempfile = "3.27.0"
+tokio.workspace = true
+
 [build-dependencies]
 prost-build.workspace = true
 protoc-bin-vendored.workspace = true
+tonic-prost-build = { workspace = true, optional = true }
 
 [lints]
 workspace = true

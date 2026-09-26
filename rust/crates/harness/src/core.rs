@@ -118,7 +118,6 @@ impl Scope {
         self.agent
     }
 
-    #[cfg(any(feature = "host", feature = "wasm"))]
     pub(crate) fn from_wire(
         id: String,
         capabilities: Capabilities,
@@ -312,7 +311,6 @@ impl AuthorityIssuer {
     }
 
     /// Attests a provider observation after the host validates it against its registry.
-    #[cfg(feature = "host")]
     pub(crate) fn attest_effect(
         &self,
         effect_id: EffectId,
@@ -719,12 +717,10 @@ impl RecordedScope {
         self.agent
     }
 
-    #[cfg(any(feature = "host", feature = "wasm"))]
     pub(crate) fn wire_parts(&self) -> (&str, Option<AgentId>) {
         (&self.issuer, self.agent)
     }
 
-    #[cfg(feature = "host")]
     pub(crate) fn from_wire(
         id: String,
         capabilities: Capabilities,
