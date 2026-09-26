@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto = "proto/harness/v2/harness.proto";
     let include = "proto";
     println!("cargo:rerun-if-changed={proto}");
+    println!("cargo:rerun-if-changed={include}/protocol/v1/protocol.proto");
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
     config.boxed(".acyclic.harness.v2.ClientFrame.command");
@@ -33,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build_server(true)
             .out_dir(out)
             .extern_path(".acyclic.harness.v2", "crate::wire")
+            .extern_path(".acyclic.protocol.v1", "crate::wire")
             .compile_with_config(prost, &[proto], &[include])?;
     }
     Ok(())

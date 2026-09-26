@@ -1,0 +1,27 @@
+syntax = "proto3";
+package acyclic.protocol.v1;
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/protocol/v1;protocolv1";
+
+// Version negotiation shared by every Acyclic service family. Each family
+// names its own contract in ProtocolIdentity; nothing here depends on one.
+
+message ProtocolIdentity {
+  string version = 1;
+  string descriptor_digest = 2;
+}
+message Capability {
+  string name = 1;
+  string version = 2;
+}
+message CapabilitySet {
+  repeated Capability capabilities = 1;
+}
+message HandshakeRequest {
+  ProtocolIdentity protocol = 1;
+  CapabilitySet required = 2;
+}
+message HandshakeResponse {
+  ProtocolIdentity protocol = 1;
+  CapabilitySet supported = 2;
+}

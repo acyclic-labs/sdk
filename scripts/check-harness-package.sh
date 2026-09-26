@@ -73,6 +73,7 @@ for source_test in client wire-transport; do
   sed \
     -e 's#../src/index.js#@acyclic-labs/harness#g' \
     -e 's#../generated/proto/harness/v2/harness_pb.js#@acyclic-labs/harness/proto#g' \
+    -e 's#../generated/proto/protocol/v1/protocol_pb.js#@acyclic-labs/harness/protocol#g' \
     "$root/typescript/packages/harness/test/$source_test.test.ts" >"test/$source_test.test.ts"
   ! grep -Eq '\.\./(src|generated)/' "test/$source_test.test.ts" || {
     echo "installed consumer test still imports Harness internals: $source_test" >&2

@@ -13,11 +13,11 @@
 /// Generated public gRPC schema and client/server bindings.
 #[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
 pub mod wire {
-    /// Shared operation and capability messages used by Filesystem.
-    pub mod harness {
-        /// Version 2 of the shared harness contract.
-        pub mod v2 {
-            include!("generated/acyclic/harness/v2/acyclic.harness.v2.rs");
+    /// Protocol negotiation shared by every Acyclic service family.
+    pub mod protocol {
+        /// Version 1 of the shared handshake.
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
         }
     }
 

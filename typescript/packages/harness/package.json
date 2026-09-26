@@ -11,7 +11,8 @@
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
     "./objects": { "types": "./dist/objects.d.ts", "default": "./dist/objects.js" },
-    "./proto": { "types": "./generated/proto/harness/v2/harness_pb.d.ts", "default": "./generated/proto/harness/v2/harness_pb.js" }
+    "./proto": { "types": "./generated/proto/harness/v2/harness_pb.d.ts", "default": "./generated/proto/harness/v2/harness_pb.js" },
+    "./protocol": { "types": "./generated/proto/protocol/v1/protocol_pb.d.ts", "default": "./generated/proto/protocol/v1/protocol_pb.js" }
   },
   "scripts": {
     "build:wasm": "bun ../../../scripts/build-harness-wasm.mjs",

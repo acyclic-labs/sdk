@@ -1,8 +1,9 @@
 // Canonical generation inputs and their published copies live here.
-// Filesystem also ships Harness because its generated schema imports Harness messages.
+// Every family that negotiates a protocol ships the shared handshake schema.
 export const packagedTypeScriptBindings = [
   ["filesystem/v2/filesystem_pb", ["filesystem"]],
-  ["harness/v2/harness_pb", ["filesystem", "harness"]],
+  ["harness/v2/harness_pb", ["harness"]],
+  ["protocol/v1/protocol_pb", ["filesystem", "harness"]],
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
   ["objects/v1/objects_pb", ["objects"]],
@@ -50,13 +51,10 @@ export const generatedDescriptors = [
 ];
 
 export const packagedRustBindings = [
-  ["acyclic/filesystem/v2/acyclic.filesystem.v2.rs", "rust/crates/filesystem/src/generated/acyclic/filesystem/v2/acyclic.filesystem.v2.rs"],
-  ["acyclic/filesystem/v2/acyclic.filesystem.v2.tonic.rs", "rust/crates/filesystem/src/generated/acyclic/filesystem/v2/acyclic.filesystem.v2.tonic.rs"],
   ["acyclic/objects/v1/acyclic.objects.v1.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.rs"],
   ["acyclic/objects/v1/acyclic.objects.v1.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.tonic.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.tonic.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.tonic.rs"],
-  ["acyclic/harness/v2/acyclic.harness.v2.rs", "rust/crates/filesystem/src/generated/acyclic/harness/v2/acyclic.harness.v2.rs"],
 ];
 
 export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";
@@ -67,6 +65,7 @@ export const packagedSourceCopies = [
     "interaction-resolution", "resolution-receipt", "project-merge-receipt",
   ].map(name => [`fixtures/harness/v2/${name}.json`, `rust/crates/harness/fixtures/v2/${name}.json`]),
   [compatibilityArtifacts.harness.schemaDigest, "rust/crates/harness/proto/harness/v2/harness.proto"],
+  ["proto/protocol/v1/protocol.proto", "rust/crates/harness/proto/protocol/v1/protocol.proto"],
   [compatibilityArtifacts.harness.conformanceDigest, "rust/crates/conformance/vectors/harness.json"],
   [nativeWasmVector, "rust/crates/harness/conformance/native-wasm-event-v2.json"],
   ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],

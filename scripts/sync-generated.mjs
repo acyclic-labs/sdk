@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,22 @@ for (const [relative, packaged] of packagedRustBindings) {
   writeFileSync(source, normalized);
   writeFileSync(destination, normalized);
 }
+
+// Every generated Rust file is kept normalized, packaged into a crate or not,
+// so the committed tree matches what check:generated regenerates.
+const generatedRust = join(root, "generated/rust");
+const normalizeTree = directory => {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      normalizeTree(path);
+    } else if (entry.name.endsWith(".rs")) {
+      const relative = path.slice(generatedRust.length + 1).replaceAll("\\", "/");
+      writeFileSync(path, normalizeGeneratedRust(relative, readFileSync(path, "utf8")));
+    }
+  }
+};
+normalizeTree(generatedRust);
 
 const packageRoot = resolve(root, "typescript/packages");
 for (const [stem] of packagedTypeScriptBindings) {

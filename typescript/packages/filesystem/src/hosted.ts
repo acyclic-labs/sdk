@@ -81,7 +81,7 @@ export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts
 const DEFAULT_MAXIMUM_RESPONSE_BYTES = 24 * 1024 * 1024;
 const DEFAULT_MAXIMUM_CONFLICTS = 1_024;
 const PROTOCOL_VERSION = "1";
-const FILESYSTEM_DESCRIPTOR_DIGEST = "371d83258cb3ff55f97e01011ded1b0222e586df09c229c4f42dfb9a37952d4e";
+const FILESYSTEM_DESCRIPTOR_DIGEST = "83c50f0de80d2e1b73094283b8b54f8b37684327660c6f77b02311e9721f32c8";
 
 export class HostedFsError extends Error {
   constructor(readonly code: string, message: string) {
@@ -127,12 +127,12 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     fetch: boundedFetch(send, maximumResponseBytes),
   }));
   const handshake = await call(rpcClient.handshake({
-    harness: {
+    protocol: {
       protocol: { version: PROTOCOL_VERSION, descriptorDigest: FILESYSTEM_DESCRIPTOR_DIGEST },
       required: { capabilities: [{ name: "filesystem", version: PROTOCOL_VERSION }] },
     },
   }));
-  const negotiated = required(handshake.harness, "handshake response");
+  const negotiated = required(handshake.protocol, "handshake response");
   const protocol = required(negotiated.protocol, "handshake protocol");
   if (protocol.version !== PROTOCOL_VERSION) throw new HostedFsError("protocol", "filesystem protocol version is unsupported");
   if (protocol.descriptorDigest !== FILESYSTEM_DESCRIPTOR_DIGEST) throw new HostedFsError("protocol", "filesystem descriptor digest does not match");

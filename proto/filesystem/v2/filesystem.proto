@@ -1,7 +1,7 @@
 syntax = "proto3";
 package acyclic.filesystem.v2;
 
-import "harness/v2/harness.proto";
+import "protocol/v1/protocol.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/filesystem/v2;filesystemv2";
 
@@ -230,10 +230,10 @@ message Workspace {
 }
 
 message HandshakeRequest {
-  acyclic.harness.v2.HandshakeRequest harness = 1;
+  acyclic.protocol.v1.HandshakeRequest protocol = 1;
 }
 message HandshakeResponse {
-  acyclic.harness.v2.HandshakeResponse harness = 1;
+  acyclic.protocol.v1.HandshakeResponse protocol = 1;
   Capabilities capabilities = 2;
 }
 message CreateWorkspaceRequest {

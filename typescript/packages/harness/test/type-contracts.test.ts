@@ -5,7 +5,8 @@ import type {
   SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef,
 } from "../src/index.js";
 import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool, parseIdentity, resourceRef } from "../src/index.js";
-import type { ClientFrame, HandshakeRequest } from "../generated/proto/harness/v2/harness_pb.js";
+import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
+import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
 
 const provider = { namespace: "type-test", family: "filesystem", version: "2" } as const;
 const project: VolumeRef<"project"> = {

@@ -9,9 +9,11 @@ import {
   EventReferenceSchema,
   EventEnvelopeSchema,
   OperationIdentitySchema,
-  ProtocolIdentitySchema,
   ScopeSchema,
 } from "../generated/proto/harness/v2/harness_pb.js";
+import {
+  ProtocolIdentitySchema,
+} from "../generated/proto/protocol/v1/protocol_pb.js";
 import { AgentHarness, HarnessBuilder, type AgentHarnessHost } from "./runtime.js";
 import type { ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, FileDescriptor, FileRef, Limits, VolumeRef, Attachment } from "./conversation.js";
 import type { ToolJsonSchema } from "./model.js";
