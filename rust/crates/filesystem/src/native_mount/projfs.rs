@@ -614,7 +614,7 @@ impl NegativePaths {
 }
 
 /// One placeholder `ProjFS` keeps on disk, as a source lookup wrote it.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct WrittenPlaceholder {
     file_id: FileId,
     basis: ReadBasis,
@@ -632,11 +632,14 @@ struct WrittenPlaceholder {
 /// placeholder the user has since modified is authored state, which
 /// `ProjFS` refuses to update, and is left alone.
 ///
-/// A placeholder another process holds open cannot be replaced until the
-/// handle closes. It stays pending, retried as handles close and every
-/// [`PLACEHOLDER_RETRY`], and revalidation waits for it (at most
-/// [`PLACEHOLDER_SETTLE_LIMIT`], then fails naming it) rather than
-/// return while it still describes a superseded source.
+/// A superseded placeholder is pending from the moment the worker finds it
+/// until it is replaced, released, or fails, including while the worker is
+/// replacing it, so revalidation never returns while one still describes a
+/// superseded source. One another process holds open cannot be replaced
+/// until the handle closes: it stays pending, retried as handles close and
+/// every [`PLACEHOLDER_RETRY`], and revalidation waits for it at most
+/// [`PLACEHOLDER_SETTLE_LIMIT`] once every change has been served, then
+/// fails naming it.
 struct Placeholders {
     state: Mutex<PlaceholderState>,
     changed: Condvar,
@@ -645,13 +648,14 @@ struct Placeholders {
 
 /// How often a placeholder held open is tried again.
 const PLACEHOLDER_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
-/// How long revalidation waits for placeholders held open.
+/// How long revalidation waits for placeholders held open, once every
+/// change has been served.
 const PLACEHOLDER_SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Default)]
 struct PlaceholderState {
     written: HashMap<MountPath, WrittenPlaceholder>,
-    /// Superseded placeholders held open, not yet replaced.
+    /// Superseded placeholders not yet replaced, released, or failed.
     pending: HashMap<MountPath, WrittenPlaceholder>,
     /// Whether a handle closed since pending placeholders were last tried.
     retry: bool,
@@ -762,7 +766,7 @@ impl Placeholders {
             }
             state.retry = false;
             let through = state.notified;
-            let mut superseded = state
+            let superseded = state
                 .written
                 .iter()
                 .filter(|(path, written)| {
@@ -772,10 +776,17 @@ impl Placeholders {
                 })
                 .map(|(path, written)| (path.clone(), *written))
                 .collect::<Vec<_>>();
-            for (path, _) in &superseded {
-                state.written.remove(path);
+            for (path, written) in superseded {
+                state.written.remove(&path);
+                state.pending.insert(path, written);
             }
-            superseded.extend(state.pending.drain());
+            // Attempted as a snapshot: each stays pending until its outcome
+            // is recorded.
+            let mut attempted = state
+                .pending
+                .iter()
+                .map(|(path, written)| (path.clone(), *written))
+                .collect::<Vec<_>>();
             drop(state);
             let mut failure = absences.and_then(|absences| {
                 lock_recover(absences)
@@ -784,19 +795,31 @@ impl Placeholders {
                     .map(|code| format!("clearing absences failed: {code}"))
             });
             // A directory can be deleted only once what it holds is.
-            superseded.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().len()));
-            let (mut kept, mut busy) = (Vec::new(), Vec::new());
-            for (path, written) in superseded {
+            attempted.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().len()));
+            let (mut settled, mut kept) = (Vec::new(), Vec::new());
+            for (path, written) in attempted {
                 match replace_placeholder(source, context, &path) {
-                    Ok(Replaced::Rewritten(Some(current))) => kept.push((path, current)),
-                    Ok(Replaced::Rewritten(None) | Replaced::Released) => {}
-                    Ok(Replaced::Busy) => busy.push((path, written)),
+                    Ok(Replaced::Rewritten(Some(current))) => {
+                        kept.push((path.clone(), current));
+                        settled.push((path, written));
+                    }
+                    Ok(Replaced::Rewritten(None) | Replaced::Released) => {
+                        settled.push((path, written));
+                    }
+                    Ok(Replaced::Busy) => {}
                     Err(error) => {
                         failure.get_or_insert(error);
+                        settled.push((path, written));
                     }
                 }
             }
             state = lock_recover(&self.state);
+            for (path, written) in settled {
+                // Superseded again meanwhile, it stays pending as that.
+                if state.pending.get(&path) == Some(&written) {
+                    state.pending.remove(&path);
+                }
+            }
             for (path, placeholder) in kept {
                 // A lookup may have written it again meanwhile, from a later
                 // basis.
@@ -805,7 +828,6 @@ impl Placeholders {
                     *entry = placeholder;
                 }
             }
-            state.pending.extend(busy);
             state.processed = state.processed.max(through);
             if let Some(failure) = failure {
                 state.failure.get_or_insert(failure);
@@ -826,12 +848,21 @@ impl Placeholders {
 
     /// Waits until every change reported so far has been served and no
     /// superseded placeholder remains; fails, naming one, when one is still
-    /// held open after [`PLACEHOLDER_SETTLE_LIMIT`].
+    /// held open [`PLACEHOLDER_SETTLE_LIMIT`] after every change was served.
     fn settle(&self) -> Result<(), NativeMountError> {
-        let deadline = std::time::Instant::now() + PLACEHOLDER_SETTLE_LIMIT;
         let mut state = lock_recover(&self.state);
         let target = state.notified;
+        let mut deadline = None;
         while !state.stopping && (state.processed < target || !state.pending.is_empty()) {
+            if state.processed < target {
+                state = self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                continue;
+            }
+            let deadline = *deadline
+                .get_or_insert_with(|| std::time::Instant::now() + PLACEHOLDER_SETTLE_LIMIT);
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 let held = state.pending.keys().next().cloned();
@@ -3548,6 +3579,54 @@ mod tests {
         mount.advance_to_head().await?;
         assert_eq!(std::fs::read(&added)?, b"added");
         mount.unmount().await?;
+        Ok(())
+    }
+
+    /// Revalidation waits while a superseded placeholder is pending, which
+    /// it is until its outcome is recorded, even once every change has been
+    /// served, and returns as soon as it is settled.
+    #[test]
+    fn settling_waits_for_every_pending_placeholder() -> Result<(), Box<dyn std::error::Error>> {
+        use super::{Placeholders, WrittenPlaceholder};
+        use crate::FileId;
+        use crate::native_mount::ViewStamp;
+
+        let placeholders = Arc::new(Placeholders::new());
+        let path = MountPath::root().child(b"held".to_vec());
+        {
+            let mut state = super::lock_recover(&placeholders.state);
+            state.pending.insert(
+                path.clone(),
+                WrittenPlaceholder {
+                    file_id: FileId::new(),
+                    basis: ReadBasis {
+                        stamp: ViewStamp::current(),
+                        binding: 0,
+                    },
+                },
+            );
+        }
+        let settled = std::thread::spawn({
+            let placeholders = Arc::clone(&placeholders);
+            move || {
+                let started = std::time::Instant::now();
+                placeholders.settle().map(|()| started.elapsed())
+            }
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !settled.is_finished(),
+            "settled while a placeholder is pending"
+        );
+        super::lock_recover(&placeholders.state)
+            .pending
+            .remove(&path);
+        placeholders.changed.notify_all();
+        let waited = settled
+            .join()
+            .map_err(|_| "settle panicked")?
+            .map_err(|error| error.to_string())?;
+        assert!(waited >= std::time::Duration::from_millis(100));
         Ok(())
     }
 

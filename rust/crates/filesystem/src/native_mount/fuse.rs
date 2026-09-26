@@ -707,6 +707,21 @@ impl ProjectionState {
                 .get(&previous)
                 .is_some_and(|entry| entry.lookup.node.file_id != lookup.node.file_id)
         {
+            // The kernel's entry for the name still names the old node.
+            let held = self
+                .by_inode
+                .get(&previous)
+                .and_then(|entry| entry.binding(&path))
+                .is_some_and(|binding| binding.kernel.is_some());
+            if held
+                && let Some((parent, name)) = split_parent(&path)
+                && let Some(parent) = self.inode_by_path.get(&parent).copied()
+            {
+                self.invalidation.deferred.push(KernelCacheItem::Entry {
+                    parent,
+                    name: name.to_vec(),
+                });
+            }
             self.remove_binding(previous, &path);
         }
         if let Some(inode) = self.inode_by_file.get(&lookup.node.file_id).copied() {
@@ -1627,9 +1642,6 @@ fn intern_projected(
         if let Some(binding) = entry.binding_mut(&path) {
             binding.verified = stamp;
         } else {
-            if u64::try_from(entry.bindings.len()).unwrap_or(u64::MAX) >= lookup.node.link_count {
-                return Err(libc::EIO);
-            }
             entry.bindings.try_reserve(1).map_err(|_| libc::ENOMEM)?;
             entry.bindings.push(Binding::new(path.clone(), stamp));
         }
@@ -2345,24 +2357,26 @@ impl FuseProjection {
     /// identity shows that the node the inode stands for still exists, and
     /// so is the node resolved now. Those names are resolved here, outside
     /// the state's lock, into `confirmed`; a node with one name has no other
-    /// name to keep.
+    /// name to keep, and a node no inode stands for has no recorded name.
+    ///
+    /// Only a resolution that finds the name absent or naming another node
+    /// counts against it; one that fails fails the operation, which the
+    /// kernel repeats, rather than forget a name that may still be bound.
     fn confirm_names<'a>(
         &self,
         mut confirmed: ConfirmedNames,
         resolved: impl IntoIterator<Item = (&'a MountPath, MountNode)>,
-    ) -> ConfirmedNames {
+    ) -> Result<ConfirmedNames, i32> {
         let source = self.source();
         let linked = resolved
             .into_iter()
             .filter(|(_, node)| node.link_count > 1)
             .collect::<Vec<_>>();
         if linked.is_empty() {
-            return confirmed;
+            return Ok(confirmed);
         }
         let unvouched = {
-            let Ok(state) = self.core.state() else {
-                return confirmed;
-            };
+            let state = self.core.state()?;
             linked
                 .iter()
                 .flat_map(|(path, node)| {
@@ -2374,13 +2388,13 @@ impl FuseProjection {
                 .collect::<Vec<_>>()
         };
         for (file_id, name) in unvouched {
-            if let Ok((Some(found), stamp)) = resolve_path(source, &name)
+            if let (Some(found), stamp) = resolve_path(source, &name)?
                 && found.node.file_id == file_id
             {
                 confirmed.confirm(file_id, name, stamp);
             }
         }
-        confirmed
+        Ok(confirmed)
     }
 
     fn lookup_entry(&self, parent: u64, name: &OsStr) -> Result<Entry, i32> {
@@ -2397,9 +2411,12 @@ impl FuseProjection {
             child
         };
         let (found, stamp) = resolve_path(source, &child.spelled)?;
-        let confirmed = found.map_or_else(ConfirmedNames::default, |lookup| {
-            self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)])
-        });
+        let confirmed = match found {
+            Some(lookup) => {
+                self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)])?
+            }
+            None => ConfirmedNames::default(),
+        };
         let mut state = self.core.state()?;
         let Some(lookup) = found else {
             state.remove_path_cache(child.key());
@@ -2527,7 +2544,9 @@ impl FuseProjection {
         };
         let stamp = source.view_stamp();
         let lookup = create(&child.spelled).map_err(errno)?;
-        let confirmed = self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)]);
+        // A node just created has no recorded name to confirm.
+        let confirmed =
+            self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)])?;
         let mut state = self.core.state()?;
         let inode = state.intern(
             source,
@@ -2813,7 +2832,7 @@ impl FuseProjection {
                 .then(|| self.core.claim_content(file_id))
                 .transpose()
         };
-        let (lookup, open_file, dirty, _claim) =
+        let (lookup, open_file, dirty, _claim, confirmed) =
             if let Some(existing) = source.lookup(path).map_err(errno)? {
                 {
                     if flags & libc::O_EXCL != 0 {
@@ -2822,6 +2841,9 @@ impl FuseProjection {
                     if existing.node.kind != MountNodeKind::Regular {
                         return Err(libc::EISDIR);
                     }
+                    // Confirmed before the open changes anything.
+                    let confirmed = self
+                        .confirm_names(ConfirmedNames::default(), [(child.key(), existing.node)])?;
                     let claimed = claim(existing.node.file_id)?;
                     let open_file = source.open_file(path).map_err(errno)?;
                     let opened = open_file.lookup().map_err(errno)?;
@@ -2829,10 +2851,11 @@ impl FuseProjection {
                         return Err(libc::ESTALE);
                     }
                     if flags & libc::O_TRUNC == 0 {
-                        (opened, open_file, false, claimed)
+                        (opened, open_file, false, claimed, confirmed)
                     } else {
                         open_file.resize(0).map_err(errno)?;
-                        (open_file.lookup().map_err(errno)?, open_file, true, claimed)
+                        let resized = open_file.lookup().map_err(errno)?;
+                        (resized, open_file, true, claimed, confirmed)
                     }
                 }
             } else {
@@ -2844,9 +2867,10 @@ impl FuseProjection {
                     source.open_file(path).map_err(errno)?,
                     true,
                     claimed,
+                    // A file just created has no other name.
+                    ConfirmedNames::default(),
                 )
             };
-        let confirmed = self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)]);
         let mut state = self.core.state()?;
         let inode = state.intern(
             source,
@@ -3030,7 +3054,7 @@ impl FuseProjection {
             stream.exhausted = page.next_cursor.is_none();
             stream.cursor = page.next_cursor;
             drop(lease);
-            stream.confirmed = self.confirm_listed_names(&stream.path, &page.entries, stamp);
+            stream.confirmed = self.confirm_listed_names(&stream.path, &page.entries, stamp)?;
             stream.entries.extend(page.entries);
             stream.entries_stamp = stamp;
         }
@@ -3046,7 +3070,7 @@ impl FuseProjection {
         directory: &MountPath,
         entries: &[MountDirectoryEntry],
         stamp: Option<ViewStamp>,
-    ) -> ConfirmedNames {
+    ) -> Result<ConfirmedNames, i32> {
         let source = self.source();
         let listed = entries
             .iter()
@@ -3059,11 +3083,11 @@ impl FuseProjection {
         let mut confirmed = self.confirm_names(
             ConfirmedNames::default(),
             listed.iter().map(|(path, node)| (path, *node)),
-        );
+        )?;
         for (path, node) in listed {
             confirmed.confirm(node.file_id, path, stamp);
         }
-        confirmed
+        Ok(confirmed)
     }
 
     fn attributes_to_write(&self, inode: u64) -> Result<AttributeTarget, i32> {
@@ -4196,6 +4220,45 @@ mod tests {
     /// against the new file's links, which would refuse the new name, nor
     /// stays in the kernel, and the old inode, which the kernel may still
     /// hold, names no file any more.
+    /// A name joins its node's inode on the identity rule alone: facts that
+    /// still count fewer links than the names shown bound (a link made in
+    /// the source since they were read) never refuse it.
+    #[test]
+    fn a_name_joins_its_node_whatever_link_count_its_facts_carry() -> Result<(), i32> {
+        let [before, after] = positions();
+        let stale = regular(FileId::new(), 3);
+        let mut next_inode = ROOT_INODE + 1;
+        let mut by_inode = HashMap::from([(
+            ROOT_INODE,
+            InodeEntry::new(MountPath::root(), directory(FileId::new()), Some(before), 1),
+        )]);
+        let mut by_path = HashMap::from([(MountPath::root(), ROOT_INODE)]);
+        let mut by_file = HashMap::new();
+        let first = intern_projected(
+            &mut next_inode,
+            &mut by_inode,
+            &mut by_path,
+            &mut by_file,
+            name("a"),
+            &stale,
+            Some(before),
+            true,
+        )?;
+        let second = intern_projected(
+            &mut next_inode,
+            &mut by_inode,
+            &mut by_path,
+            &mut by_file,
+            name("b"),
+            &stale,
+            Some(after),
+            true,
+        )?;
+        assert_eq!(first, second);
+        assert_eq!(by_inode[&first].bindings.len(), 2);
+        Ok(())
+    }
+
     #[test]
     fn a_reused_identity_gets_a_fresh_inode() -> Result<(), i32> {
         let [before, after] = positions();
@@ -4223,20 +4286,6 @@ mod tests {
         {
             binding.kernel = Some(before);
         }
-        // Before the stale name is forgotten, the new one exceeds the links.
-        assert_eq!(
-            intern_projected(
-                &mut next_inode,
-                &mut by_inode,
-                &mut by_path,
-                &mut by_file,
-                name("created"),
-                &reused,
-                Some(after),
-                true,
-            ),
-            Err(libc::EIO)
-        );
         let forgotten = forget_unbound_names(
             &mut by_inode,
             &mut by_path,

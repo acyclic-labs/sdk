@@ -120,19 +120,27 @@ static char *fh_to_path(const darwinfuse_config_t *config,
     return dfuse_itable_path_dup(config->inode_table, ino);
 }
 
+/* Fileids of synthetic objects (named attributes) where the filesystem
+ * names nodes: disjoint from every st_ino it reports. */
+#define DFUSE_SYNTHETIC_FILEID (UINT64_C(1) << 63)
+
 /*
  * The fileid of the object `st` describes, reached through `fh`: the node's
  * own st_ino where the filesystem names nodes by it (so every name of a hard
  * link reports one fileid), and otherwise the handle's inode, which names a
- * path. A synthetic object without an st_ino keeps its handle's inode.
+ * path. A synthetic object without an st_ino takes its handle's inode, moved
+ * out of the filesystem's range where the filesystem names nodes.
  */
 static uint64_t object_fileid(const darwinfuse_config_t *config,
                               const struct stat *st,
                               const uint8_t *fh, uint32_t fh_len)
 {
-    if (config && config->node_identity && st->st_ino != 0)
+    uint64_t handle = (uint64_t)fh_get_ino(fh, fh_len);
+    if (!config || !config->node_identity)
+        return handle;
+    if (st->st_ino != 0)
         return (uint64_t)st->st_ino;
-    return (uint64_t)fh_get_ino(fh, fh_len);
+    return handle | DFUSE_SYNTHETIC_FILEID;
 }
 
 /*
@@ -4076,8 +4084,10 @@ int nfs4_test_node_identity(void)
          node_identity_test_fileid(&config, "/d/a", 42) != 42 ||
          node_identity_test_fileid(&config, "/b", 43) != 43))
         status = 3;
-    /* A synthetic object without an st_ino keeps its handle's inode. */
-    if (status == 0 && node_identity_test_fileid(&config, "/a", 0) != first)
+    /* A synthetic object without an st_ino takes its handle's inode, out of
+     * the filesystem's range. */
+    if (status == 0 &&
+        node_identity_test_fileid(&config, "/a", 0) != (first | DFUSE_SYNTHETIC_FILEID))
         status = 4;
     dfuse_itable_destroy(config.inode_table);
     return status;
