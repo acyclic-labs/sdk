@@ -227,6 +227,17 @@ pub(super) struct ViewEffect {
     pub(super) everything: bool,
 }
 
+impl ViewEffect {
+    /// Whether the effect changes nothing.
+    pub(super) fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+            && self.names.is_empty()
+            && self.subtrees.is_empty()
+            && self.listings.is_empty()
+            && !self.everything
+    }
+}
+
 /// Change positions of one checkout's view.
 ///
 /// Keys are 64-bit hashes, so distinct keys share a position only through a

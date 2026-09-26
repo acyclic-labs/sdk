@@ -391,7 +391,9 @@ where
                 SourceChange::Unconfirmed => unconfirmed = true,
             }
         }
-        authored.record_projection_change(&ViewChange::Effect(&effect));
+        if !effect.is_empty() {
+            authored.record_projection_change(&ViewChange::Effect(&effect));
+        }
         if unconfirmed {
             authored.record_projection_change(&ViewChange::Unconfirmed);
         }
