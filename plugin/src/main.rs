@@ -11039,9 +11039,9 @@ async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bo
     // through the same contract.
     match ServiceMarker::read(data) {
         Some(marker) if marker.binary_identity != identity => {
-            let fence = drain_service(data, Some(&marker.instance_id)).await?;
-            clear_obsolete_runtime_state(data)?;
-            drop(fence);
+            // Only the service is replaced: its state belongs to the stores,
+            // each of which refuses a format it does not know.
+            drop(drain_service(data, Some(&marker.instance_id)).await?);
             Ok(false)
         }
         // This binary's service, or one still starting: it answers soon.
@@ -11052,13 +11052,6 @@ async fn service_is_ready_for_identity(data: &Path, identity: &str) -> Result<bo
             )),
         },
     }
-}
-
-fn clear_obsolete_runtime_state(data: &Path) -> Result<(), String> {
-    for name in ["core-state", "filesystem", "sessions", "w"] {
-        remove_tree_checked(data, &data.join(name))?;
-    }
-    Ok(())
 }
 
 async fn ensure_service(data: &Path) -> Result<(), String> {
@@ -15827,6 +15820,14 @@ mod tests {
                             .expect("service instance identity")
                             .instance_id;
                         assert!(uuid::Uuid::parse_str(&instance_id).is_ok());
+                        // Workspace state outlives the binary that wrote it.
+                        let kept = ["core-state", "filesystem", "sessions", "w"]
+                            .map(|name| data.join(name).join("kept"));
+                        for path in &kept {
+                            std::fs::create_dir_all(path.parent().expect("state directory"))
+                                .expect("state directory");
+                            std::fs::write(path, b"kept").expect("state file");
+                        }
                         assert!(
                             !service_is_ready_for_identity(&data, "replacement-service-binary")
                                 .await
@@ -15839,6 +15840,7 @@ mod tests {
                             .expect("clean service shutdown");
                         assert!(service_drain_completion_path(&data).exists());
                         assert!(acquire_service_lock(&data).expect("service lock").is_some());
+                        assert!(kept.iter().all(|path| path.exists()));
                     });
             })
             .expect("test thread")
