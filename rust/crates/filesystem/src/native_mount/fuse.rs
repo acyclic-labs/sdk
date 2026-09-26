@@ -1731,7 +1731,8 @@ struct ProjectionCore {
 /// watched reports none).
 struct StateGuard<'a> {
     state: Option<MutexGuard<'a, ProjectionState>>,
-    invalidation: &'a Condvar,
+    /// The invalidator's condition.
+    wake: &'a Condvar,
 }
 
 impl std::ops::Deref for StateGuard<'_> {
@@ -1771,21 +1772,48 @@ impl Drop for StateGuard<'_> {
             .take()
             .is_some_and(|state| !state.invalidation.deferred.is_empty());
         if deferred {
-            self.invalidation.notify_all();
+            self.wake.notify_all();
         }
     }
 }
 
 impl ProjectionCore {
+    fn new(source: Arc<dyn MountFilesystem>, state: ProjectionState) -> Self {
+        Self {
+            source,
+            state: Mutex::new(state),
+            names: RwLock::new(()),
+            invalidation: Condvar::new(),
+            page_stored: Condvar::new(),
+            stopping: AtomicBool::new(false),
+            origin: ViewOrigin::new(),
+            notifier: OnceLock::new(),
+            #[cfg(test)]
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The state for a callback serving a request.
     fn state(&self) -> Result<StateGuard<'_>, i32> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(libc::ENODEV);
         }
         let state = self.state.lock().map_err(|_| libc::EIO)?;
-        Ok(StateGuard {
+        Ok(self.guard(state))
+    }
+
+    /// The state for a callback that must finish what it started, such as
+    /// landing a page store or releasing a claim, even while the session
+    /// stops or after another callback panicked.
+    fn state_to_finish(&self) -> StateGuard<'_> {
+        self.guard(self.state.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    fn guard<'a>(&'a self, state: MutexGuard<'a, ProjectionState>) -> StateGuard<'a> {
+        StateGuard {
             state: Some(state),
-            invalidation: &self.invalidation,
-        })
+            wake: &self.invalidation,
+        }
     }
 
     fn names(&self) -> Result<RwLockReadGuard<'_, ()>, i32> {
@@ -1834,9 +1862,7 @@ struct ContentClaim<'a> {
 impl Drop for ContentClaim<'_> {
     fn drop(&mut self) {
         self.core
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .state_to_finish()
             .page_stores
             .release(self.file_id);
     }
@@ -2145,18 +2171,7 @@ impl FuseSession {
             invalidation: InvalidationQueue::default(),
             page_stores: PageStores::default(),
         };
-        let core = Arc::new(ProjectionCore {
-            source,
-            state: Mutex::new(state),
-            names: RwLock::new(()),
-            invalidation: Condvar::new(),
-            page_stored: Condvar::new(),
-            stopping: AtomicBool::new(false),
-            origin: ViewOrigin::new(),
-            notifier: OnceLock::new(),
-            #[cfg(test)]
-            requests: Mutex::new(Vec::new()),
-        });
+        let core = Arc::new(ProjectionCore::new(source, state));
         let observer: Weak<ProjectionCore> = Arc::downgrade(&core);
         core.source.observe_view(observer);
         // Even with `noatime`, a writable mount pays one GETATTR per file
@@ -2756,11 +2771,7 @@ impl FuseProjection {
                 .read_up_to(0, store.length)
                 .is_ok_and(|bytes| notifier.store(INodeNo(store.inode), 0, &bytes).is_ok())
         });
-        let mut state = self
-            .core
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.core.state_to_finish();
         state.page_stores.land(store.file_id);
         let admitted = state.admissible(
             self.source(),
@@ -2916,12 +2927,7 @@ impl FuseProjection {
     }
 
     fn flush_handle(&self, inode: u64, handle: u64, force: bool, release: bool) -> Result<(), i32> {
-        let operation = self
-            .core
-            .state
-            .lock()
-            .map_err(|_| libc::EIO)?
-            .open_handle_operation(inode, handle)?;
+        let operation = self.core.state()?.open_handle_operation(inode, handle)?;
         let _operation = operation.lock().map_err(|_| libc::EIO)?;
         let should_flush = {
             let state = self.core.state()?;
@@ -3396,9 +3402,9 @@ impl Filesystem for FuseProjection {
     fn forget(&self, request: &Request, inode: INodeNo, nlookup: u64) {
         let _ = request;
         let _request = self.core.request("forget");
-        if let Ok(mut state) = self.core.state.lock() {
-            state.release_lookup_reference(inode.0, nlookup);
-        }
+        self.core
+            .state_to_finish()
+            .release_lookup_reference(inode.0, nlookup);
     }
 
     fn readlink(&self, request: &Request, inode: INodeNo, reply: ReplyData) {
@@ -4436,6 +4442,69 @@ mod tests {
     /// reused identity is never kept on the inode of the node it replaced;
     /// one confirmed without a position, by a source that cannot be watched,
     /// counts with the facts it was resolved with.
+    /// A callback that leaves kernel items for the invalidator wakes it as it
+    /// releases the state, whether it serves a request or finishes one (a
+    /// page store landing), so the items drop, and a revalidation waiting on
+    /// them returns, without a further change to the source.
+    #[test]
+    fn releasing_deferred_items_wakes_the_invalidator() -> Result<(), Box<dyn std::error::Error>> {
+        use super::{
+            AttributeDefaults, DirectoryStreams, InvalidationQueue, PageStores, ProjectionCore,
+            ProjectionState,
+        };
+        use std::sync::PoisonError;
+        let state = || ProjectionState {
+            defaults: AttributeDefaults {
+                writable: true,
+                mount_uid: 0,
+                mount_gid: 0,
+            },
+            next_inode: ROOT_INODE + 1,
+            next_handle: 1,
+            by_inode: HashMap::new(),
+            inode_by_path: HashMap::new(),
+            inode_by_file: HashMap::new(),
+            files: HashMap::new(),
+            streams: DirectoryStreams::default(),
+            invalidation: InvalidationQueue::default(),
+            page_stores: PageStores::default(),
+        };
+        for finishing in [false, true] {
+            let (source, _) = shared_sources()?;
+            let core = Arc::new(ProjectionCore::new(Arc::new(source), state()));
+            let waiting = core.state.lock().map_err(|_| "poisoned")?;
+            let invalidator = std::thread::spawn({
+                let core = Arc::clone(&core);
+                move || {
+                    // Waits once: only a notification ends it before the
+                    // deadline.
+                    let state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
+                    let (state, waited) = core
+                        .invalidation
+                        .wait_timeout(state, std::time::Duration::from_secs(20))
+                        .unwrap_or_else(PoisonError::into_inner);
+                    (state.invalidation.deferred.len(), waited.timed_out())
+                }
+            });
+            drop(waiting);
+            // Let the invalidator sleep before the item is deferred.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let mut state = if finishing {
+                core.state_to_finish()
+            } else {
+                core.state().map_err(|_| "stopped")?
+            };
+            state
+                .invalidation
+                .deferred
+                .push(KernelCacheItem::Inode(ROOT_INODE));
+            drop(state);
+            let (deferred, timed_out) = invalidator.join().map_err(|_| "invalidator panicked")?;
+            assert_eq!((deferred, timed_out), (1, false), "finishing: {finishing}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn a_confirmation_at_a_position_lapses_when_its_name_changes()
     -> Result<(), Box<dyn std::error::Error>> {
