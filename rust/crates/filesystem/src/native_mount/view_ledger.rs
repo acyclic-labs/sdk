@@ -375,6 +375,17 @@ impl ViewLedger {
             })
     }
 
+    /// Whether `path` still names what it named after `stamp`: no component
+    /// of it was rebound since. Changes beneath it, its listing's among
+    /// them, do not count.
+    pub(super) fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
+        stamp.precedes_none_of(&self.unconfirmed)
+            && stamp.precedes_none_of(&self.everything)
+            && self
+                .bindings
+                .unchanged_since(stamp, |unchanged| PathKeys::new(path).all(unchanged))
+    }
+
     /// Whether facts read about the node `file_id` after `stamp` still
     /// describe it: nothing changed the node itself since. A directory's
     /// listing is keyed by its path, so only [`Self::unchanged_since`] covers

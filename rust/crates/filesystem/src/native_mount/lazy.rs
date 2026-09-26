@@ -316,6 +316,28 @@ impl Resolutions {
     }
 }
 
+/// Directories a source lacks; see [`LazyMountSource::source_lacks`].
+#[derive(Default)]
+struct SourceAbsentDirectories(Mutex<HashMap<MountPath, (ViewStamp, SourceReference)>>);
+
+impl SourceAbsentDirectories {
+    fn get(&self, path: &MountPath) -> Option<(ViewStamp, SourceReference)> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(path)
+            .copied()
+    }
+
+    fn remember(&self, path: &MountPath, stamp: ViewStamp, source: SourceReference) {
+        let mut entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if entries.len() >= MAXIMUM_REMEMBERED_RESOLUTIONS {
+            entries.clear();
+        }
+        entries.insert(path.clone(), (stamp, source));
+    }
+}
+
 #[derive(Default)]
 struct MountedRemovals {
     paths: BTreeMap<String, FileId>,
@@ -425,6 +447,10 @@ pub struct LazyMountSource<A, O, D, S> {
     root: String,
     runtime: Arc<CallbackRuntime>,
     resolutions: Resolutions,
+    /// Directories the source was found without, each with the stamp
+    /// sampled before and the source it was read from: nothing beneath one
+    /// needs the source while the view records no change to its name.
+    source_absent: SourceAbsentDirectories,
     unstaged: UnstagedIdentities,
     cursors: CursorTable<(ViewStamp, LazyDirectoryCursor)>,
     source_view: Arc<SourceViewGate>,
@@ -476,6 +502,7 @@ where
             root,
             runtime: Arc::new(CallbackRuntime::create()?),
             resolutions: Resolutions::default(),
+            source_absent: SourceAbsentDirectories::default(),
             unstaged: Arc::default(),
             cursors: CursorTable::new(MAXIMUM_LAZY_DIRECTORY_CURSORS),
             source_view: Arc::new(SourceViewGate::new()),
@@ -1250,6 +1277,13 @@ where
             if self.is_removed(text)? {
                 return Ok(Resolution::Absent);
             }
+            let parent = path.parent();
+            if parent
+                .as_ref()
+                .is_some_and(|parent| self.source_lacks(parent))
+            {
+                return Ok(Resolution::Absent);
+            }
             let resolved = match self.lazy.inspect_unauthored(text, None).await {
                 Ok(resolved) => resolved,
                 Err(LazyWorkspaceError::NotFound) => {
@@ -1263,6 +1297,9 @@ where
                                 node,
                             },
                         );
+                        if let Some(parent) = parent {
+                            self.observe_source_absence(&parent, stamp, source).await?;
+                        }
                     }
                     return Ok(Resolution::Absent);
                 }
@@ -1282,6 +1319,47 @@ where
             Ok(Resolution::Unauthored(resolved.0, resolved.1))
         })
         .await
+    }
+
+    /// Whether the source lacks `directory`, as a watched source read after
+    /// a stamp the view records no change to the directory's name since.
+    fn source_lacks(&self, directory: &MountPath) -> bool {
+        self.source_observed()
+            && self
+                .source_absent
+                .get(directory)
+                .is_some_and(|(stamp, source)| {
+                    source == self.lazy.source_reference()
+                        && self.source_view.is_stable()
+                        && self.authored.binding_unchanged_since(directory, stamp)
+                })
+    }
+
+    /// Remembers that the source lacks `directory`, which a name beneath it
+    /// was just found absent in after `stamp`, if the source says so.
+    async fn observe_source_absence(
+        &self,
+        directory: &MountPath,
+        stamp: ViewStamp,
+        source: SourceReference,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        if directory.components().is_empty()
+            || !self.source_observed()
+            || self.source_absent.get(directory).is_some()
+        {
+            return Ok(());
+        }
+        let text = self.path(directory)?;
+        match self.lazy.source_lookup(source, &text).await {
+            Ok(None) => self.source_absent.remember(directory, stamp, source),
+            Ok(Some(_)) | Err(LazyWorkspaceError::StaleSource) => {}
+            Err(error) => return Err(lazy_error(error)),
+        }
+        Ok(())
     }
 
     /// What a lookup reports for an authored `lookup`: a detached

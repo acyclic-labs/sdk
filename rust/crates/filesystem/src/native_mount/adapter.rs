@@ -790,6 +790,10 @@ impl<A, O> SharedCheckout<A, O> {
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
         self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp)
     }
+
+    fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
+        self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp)
+    }
 }
 
 impl<A, O> Deref for SharedCheckoutGuard<'_, A, O> {
@@ -2356,6 +2360,13 @@ impl<A, O> CheckoutMountSource<A, O> {
             capture_gate: StdMutex::new(CaptureSourceGate::default()),
             runtime,
         })
+    }
+
+    /// Whether `path` still names what it named after `stamp`, whatever
+    /// changed beneath it.
+    pub(super) fn binding_unchanged_since(&self, path: &MountPath, stamp: ViewStamp) -> bool {
+        self.path(path)
+            .is_ok_and(|path| self.checkout.binding_unchanged_since(&path, stamp))
     }
 
     /// Returns the checkout's owning volume without filesystem I/O.
