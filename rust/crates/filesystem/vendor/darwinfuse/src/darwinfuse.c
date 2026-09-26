@@ -468,10 +468,13 @@ int fuse_loop(struct fuse *f)
                             | FUSE_CAP_VOL_RENAME | FUSE_CAP_ALLOCATE
                             | FUSE_CAP_EXCHANGE_DATA
 #endif
-                            | FUSE_CAP_DURABLE_WRITES;
+                            | FUSE_CAP_DURABLE_WRITES
+                            | FUSE_CAP_NODE_IDENTITY;
         f->init_result = f->ops->init(&conn_info);
         nfs4_server_set_durable_writes(
             f->chan->server, (conn_info.want & FUSE_CAP_DURABLE_WRITES) != 0);
+        nfs4_server_set_node_identity(
+            f->chan->server, (conn_info.want & FUSE_CAP_NODE_IDENTITY) != 0);
     }
 
     /* Set private_data to init() return value (or keep user_data) */

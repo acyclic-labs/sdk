@@ -2588,6 +2588,7 @@ mod tests {
         fn nfs4_test_change_attribute() -> c_int;
         fn nfs4_test_access_rights() -> c_int;
         fn nfs4_test_verify_attributes() -> c_int;
+        fn nfs4_test_node_identity() -> c_int;
         fn nfs4_test_release_open_files() -> c_int;
     }
 
@@ -2961,6 +2962,13 @@ mod tests {
     fn nfs_read_answers_short_reads_as_eof_in_place() {
         // SAFETY: the test hook owns all callback state.
         assert_eq!(unsafe { nfs4_test_read_reply() }, 0);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn nfs_fileids_name_nodes_so_hard_links_share_one() {
+        // SAFETY: the test hook owns all callback state.
+        assert_eq!(unsafe { nfs4_test_node_identity() }, 0);
     }
 
     #[test]

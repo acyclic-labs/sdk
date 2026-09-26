@@ -121,6 +121,21 @@ static char *fh_to_path(const darwinfuse_config_t *config,
 }
 
 /*
+ * The fileid of the object `st` describes, reached through `fh`: the node's
+ * own st_ino where the filesystem names nodes by it (so every name of a hard
+ * link reports one fileid), and otherwise the handle's inode, which names a
+ * path. A synthetic object without an st_ino keeps its handle's inode.
+ */
+static uint64_t object_fileid(const darwinfuse_config_t *config,
+                              const struct stat *st,
+                              const uint8_t *fh, uint32_t fh_len)
+{
+    if (config && config->node_identity && st->st_ino != 0)
+        return (uint64_t)st->st_ino;
+    return (uint64_t)fh_get_ino(fh, fh_len);
+}
+
+/*
  * Build child path from parent path + name.
  * Handles the root case (parent="/") to avoid double slashes.
  */
@@ -509,7 +524,7 @@ static void encode_fattr4(xdr_buf_t *xdr,
     }
 
     if (ATTR_SET(FATTR4_FILEID)) {
-        xdr_encode_uint64(&attr, (uint64_t)fh_get_ino(fh, fh_len));
+        xdr_encode_uint64(&attr, object_fileid(config, st, fh, fh_len));
     }
 
     if (ATTR_SET(FATTR4_FILES_AVAIL)) {
@@ -643,7 +658,7 @@ static void encode_fattr4(xdr_buf_t *xdr,
     }
 
     if (ATTR_SET(FATTR4_MOUNTED_ON_FILEID)) {
-        xdr_encode_uint64(&attr, (uint64_t)fh_get_ino(fh, fh_len));
+        xdr_encode_uint64(&attr, object_fileid(config, st, fh, fh_len));
     }
 
     #undef ATTR_SET
@@ -4007,6 +4022,63 @@ int nfs4_test_verify_attributes(void)
         status = 4;
     else if (verify_test_run(&config, &conn, &ctx, 0, 1234, 0600) != NFS4_OK)
         status = 5;
+    dfuse_itable_destroy(config.inode_table);
+    return status;
+}
+
+/* The fileid GETATTR reports for `path`, whose object has inode `ino`;
+ * 0 when the reply cannot be read. */
+static uint64_t node_identity_test_fileid(const darwinfuse_config_t *config,
+                                          const char *path, ino_t ino)
+{
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    st.st_mode = S_IFREG | 0644;
+    st.st_nlink = 2;
+    st.st_ino = ino;
+    dfuse_ino_t handle = dfuse_itable_get_or_create(config->inode_table, path);
+    uint8_t fh[DFUSE_FH_LEN];
+    uint32_t fh_len = 0;
+    fh_set_ino(fh, &fh_len, handle);
+    uint32_t bitmap[1] = { 1u << FATTR4_FILEID };
+    uint8_t buf[256];
+    xdr_buf_t xdr;
+    xdr_init(&xdr, buf, sizeof(buf));
+    encode_fattr4(&xdr, &st, bitmap, 1, fh, fh_len, config, 0);
+    xdr_buf_t reply;
+    xdr_init(&reply, buf, xdr_getpos(&xdr));
+    if (xdr_decode_uint32(&reply) != 1 || xdr_decode_uint32(&reply) != bitmap[0] ||
+        xdr_decode_uint32(&reply) != 8)
+        return 0;
+    return xdr_decode_uint64(&reply);
+}
+
+/* Once the filesystem names nodes by st_ino, every name of a hard link
+ * reports its node's fileid; otherwise each path's handle names it. */
+int nfs4_test_node_identity(void)
+{
+    struct fuse_operations ops;
+    darwinfuse_config_t config;
+    memset(&ops, 0, sizeof(ops));
+    memset(&config, 0, sizeof(config));
+    config.ops = &ops;
+    config.inode_table = dfuse_itable_create();
+    if (!config.inode_table)
+        return 1;
+    int status = 0;
+    uint64_t first = node_identity_test_fileid(&config, "/a", 42);
+    uint64_t second = node_identity_test_fileid(&config, "/d/a", 42);
+    if (first == 0 || second == 0 || first == second)
+        status = 2;
+    config.node_identity = 1;
+    if (status == 0 &&
+        (node_identity_test_fileid(&config, "/a", 42) != 42 ||
+         node_identity_test_fileid(&config, "/d/a", 42) != 42 ||
+         node_identity_test_fileid(&config, "/b", 43) != 43))
+        status = 3;
+    /* A synthetic object without an st_ino keeps its handle's inode. */
+    if (status == 0 && node_identity_test_fileid(&config, "/a", 0) != first)
+        status = 4;
     dfuse_itable_destroy(config.inode_table);
     return status;
 }
