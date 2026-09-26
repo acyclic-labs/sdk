@@ -145,9 +145,12 @@ impl BackgroundCollection {
                     () = token.cancelled() => return,
                 }
                 deletions.store(0, std::sync::atomic::Ordering::Release);
-                // A failed collection sweeps nothing it should not; the next
-                // one starts over.
-                let _ = fs.collect_local_garbage(Some(&store), &token).await;
+                // Lazy nodes first: a shadow they drop no longer keeps the
+                // objects its record names. A failed collection sweeps
+                // nothing it should not; the next one starts over.
+                if store.collect_lazy_nodes().await.is_ok() {
+                    let _ = fs.collect_local_garbage(Some(&store), &token).await;
+                }
             }
         });
         if let Some(previous) = self

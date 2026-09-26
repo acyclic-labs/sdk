@@ -144,6 +144,10 @@ pub struct LazyWorkspaceState {
 pub struct LazyShadowId([u8; 32]);
 
 impl LazyShadowId {
+    pub(crate) const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// Stable raw identifier.
     #[must_use]
     pub const fn into_bytes(self) -> [u8; 32] {
