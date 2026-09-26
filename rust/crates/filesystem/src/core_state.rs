@@ -1763,6 +1763,9 @@ struct Generations<K, V> {
     /// The size at which expired put times are next pruned: twice what the
     /// last pruning kept, so pruning stays amortized constant per put.
     prune_at: usize,
+    /// Counts nodes collected; a load memoizes what it read only if none was
+    /// collected since it began, so the memo never outlives a node's file.
+    collected: u64,
 }
 
 /// How long a node that was put stays safe from collection: long enough for
@@ -1780,6 +1783,7 @@ impl<K: Copy + Eq + Hash, V: Clone> Generations<K, V> {
             previous: HashMap::new(),
             put: HashMap::new(),
             prune_at: NODE_CACHE_GENERATION,
+            collected: 0,
         }
     }
 
@@ -1805,6 +1809,7 @@ impl<K: Copy + Eq + Hash, V: Clone> Generations<K, V> {
         self.put.remove(key);
         self.current.remove(key);
         self.previous.remove(key);
+        self.collected += 1;
         true
     }
 
@@ -1894,16 +1899,24 @@ impl LocalCoreStateStore {
         if T::address(id) == content_address(&T::default())? {
             return Ok(Some(T::default()));
         }
-        if let Some(value) = T::memo(&self.nodes).get(&id) {
-            return Ok(Some(value));
-        }
+        let collected = {
+            let mut memo = T::memo(&self.nodes);
+            if let Some(value) = memo.get(&id) {
+                return Ok(Some(value));
+            }
+            memo.collected
+        };
         let value = self
             .transaction(move |namespace| {
                 load_content_addressed::<T>(namespace, T::FAMILY, T::address(id))
             })
             .await?;
         if let Some(value) = &value {
-            T::memo(&self.nodes).insert(id, value.clone());
+            let mut memo = T::memo(&self.nodes);
+            // A node collected since the read began may be this one.
+            if memo.collected == collected {
+                memo.insert(id, value.clone());
+            }
         }
         Ok(value)
     }
@@ -2045,10 +2058,10 @@ impl LocalCoreStateStore {
 
 impl LocalCoreStateStore {
     /// Every workspace this store keeps a lineage, lazy binding, or
-    /// Git-compatibility record for.
+    /// Git-compatibility record for, with the parents those records name.
     pub(crate) async fn workspace_records(
         &self,
-    ) -> Result<BTreeSet<WorkspaceId>, LocalCoreStateStoreError> {
+    ) -> Result<BTreeMap<WorkspaceId, Vec<WorkspaceId>>, LocalCoreStateStoreError> {
         self.transaction(|root| {
             root.with_log(|log| {
                 let mut workspaces = log
@@ -2066,19 +2079,22 @@ impl LocalCoreStateStore {
                     }
                 }
                 // A logged absence stays on disk as `null`.
-                let mut recorded = BTreeSet::new();
+                let mut recorded = BTreeMap::new();
                 for workspace in workspaces {
-                    if log
-                        .get::<WorkspaceLineageRecord>(root, workspace)?
-                        .is_some()
-                        || log.get::<LazyWorkspaceState>(root, workspace)?.is_some()
-                        || read_locked::<GitCompatState>(
-                            &root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes()),
-                        )?
-                        .is_some()
-                    {
-                        recorded.insert(workspace);
+                    let lineage = log.get::<WorkspaceLineageRecord>(root, workspace)?;
+                    let lazy = log.get::<LazyWorkspaceState>(root, workspace)?;
+                    let git = read_locked::<GitCompatState>(
+                        &root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes()),
+                    )?;
+                    if lineage.is_none() && lazy.is_none() && git.is_none() {
+                        continue;
                     }
+                    let parents = lineage
+                        .and_then(|record| record.parent_workspace_id)
+                        .into_iter()
+                        .chain(lazy.and_then(|state| state.parent_workspace_id))
+                        .collect();
+                    recorded.insert(workspace, parents);
                 }
                 Ok(recorded)
             })

@@ -64,14 +64,21 @@ impl<'a, S> OperationReadCache<'a, S> {
             .ok_or_else(|| {
                 OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
             })?;
-        let requested = u64::try_from(slot_count)
+        let table = u64::try_from(slot_count)
             .unwrap_or(u64::MAX)
             .checked_mul(u64::try_from(size_of::<Option<CachedObject>>()).unwrap_or(u64::MAX))
             .ok_or_else(|| {
                 OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
             })?;
+        // Charged for the table's whole life up front: growing to its
+        // limit holds the last half-size table beside the full one, and
+        // allocates once per doubling.
+        let requested = table.saturating_add(table / 2);
+        let allocations = 1 + u64::from(
+            (slot_count / INITIAL_CACHE_SLOTS.min(slot_count).max(1)).trailing_zeros(),
+        );
         WorkCounters {
-            allocation_operations: 1,
+            allocation_operations: allocations,
             peak_allocation_bytes: requested,
             ..WorkCounters::default()
         }
@@ -85,7 +92,7 @@ impl<'a, S> OperationReadCache<'a, S> {
         slots.resize_with(initial, || None);
         let metadata_bytes = requested;
         let work = WorkCounters {
-            allocation_operations: 1,
+            allocation_operations: allocations,
             peak_allocation_bytes: metadata_bytes,
             ..WorkCounters::default()
         };

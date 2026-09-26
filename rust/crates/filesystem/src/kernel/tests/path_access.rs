@@ -469,7 +469,8 @@ fn observation_dependency_storage_is_admitted_with_cache_residency()
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store)?;
     let cache_entries = maximum_cache_entries(&path, config())?;
-    let (cache, _) = OperationReadCache::new(&store, cache_entries, WorkBudget::UNBOUNDED)?;
+    let (cache, cache_work) =
+        OperationReadCache::new(&store, cache_entries, WorkBudget::UNBOUNDED)?;
     let dependency_bytes = u64::try_from(path.depth().saturating_add(1))?
         .checked_mul(u64::try_from(size_of::<Dependency>())?)
         .ok_or("dependency byte count overflowed")?;
@@ -501,7 +502,10 @@ fn observation_dependency_storage_is_admitted_with_cache_residency()
         }) if observed == required_peak && maximum == required_peak - 1
     ));
     assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.allocation_operations, 2);
+    assert_eq!(
+        failure.work.allocation_operations,
+        cache_work.allocation_operations + 1
+    );
 
     let first_name_bytes = u64::try_from(path.components()[0].as_bytes().len())?;
     let required_name_peak = required_peak

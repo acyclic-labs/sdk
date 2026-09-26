@@ -503,6 +503,8 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     ObjectWrite { object_id, bytes }
                 }));
             }
+            self.collection
+                .writing(writes.iter().map(|write| write.object_id));
             let receipt = self
                 .inner
                 .put_many(
@@ -691,6 +693,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         // so a resident admission, which almost every page write is, never
         // builds or moves their larger futures.
         if object.length() > MAXIMUM_DRAIN_BYTES {
+            self.collection.writing([object.object_id()]);
             return in_heap(|| self.inner.put_hashed(object, budget, cancellation)).await;
         }
         // The object's hash is its identity: an equal identity already

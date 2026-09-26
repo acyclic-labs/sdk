@@ -4560,13 +4560,25 @@ where
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<OperationReceipt<bool>, LazyWorkspaceError> {
+        // The canonical copy and the prefix built from it are this search's
+        // own allocations, admitted before they are made.
+        let bytes = u64::try_from(directory.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let mut work = WorkCounters {
+            allocation_operations: 2,
+            peak_allocation_bytes: bytes.saturating_mul(2),
+            bytes_copied: bytes.saturating_mul(2),
+            ..WorkCounters::default()
+        };
+        work.verify(budget)
+            .map_err(|error| LazyWorkspaceError::Work(error.to_string()))?;
         let directory = self.canonical_path(directory)?;
         let prefix = if directory.ends_with('/') {
             directory
         } else {
             format!("{directory}/")
         };
-        let mut work = WorkCounters::default();
         let mut first_after: Option<String> = None;
         loop {
             let receipt = self

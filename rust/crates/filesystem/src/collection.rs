@@ -39,6 +39,8 @@ const REMEMBERED_COLLECTIONS: usize = 4;
 #[derive(Default)]
 pub struct Collection {
     gate: Arc<tokio::sync::RwLock<()>>,
+    /// Held by the one collection that runs at a time.
+    running: Arc<tokio::sync::Mutex<()>>,
     state: Mutex<State>,
     holds: Mutex<HashMap<u64, Held>>,
     next_hold: AtomicU64,
@@ -98,6 +100,7 @@ impl PublicationHold {
 /// A collection in progress; see [`Collection::begin`].
 pub(crate) struct Collecting {
     collection: Arc<Collection>,
+    _running: tokio::sync::OwnedMutexGuard<()>,
 }
 
 impl Collection {
@@ -150,6 +153,8 @@ impl Collection {
     /// Starts a collection once every publication admitted before it has
     /// written its record: every closure admitted while it runs is kept.
     pub(crate) async fn begin(self: &Arc<Self>) -> Collecting {
+        // One at a time: a collection owns the admitted set until it ends.
+        let running = Arc::clone(&self.running).lock_owned().await;
         let _admitted_before = self.gate.write().await;
         let mut state = self.state();
         let began = state.sweeps;
@@ -163,6 +168,17 @@ impl Collection {
         state.admitted = Some(HashSet::new());
         Collecting {
             collection: Arc::clone(self),
+            _running: running,
+        }
+    }
+
+    /// Records `objects`, about to be written to the durable store, so a
+    /// running collection keeps them: an object written while a collection
+    /// runs is kept by it, whoever names it next. A sweep that removed one
+    /// first is undone by the write itself.
+    pub(crate) fn writing(&self, objects: impl IntoIterator<Item = ObjectId>) {
+        if let Some(admitted) = &mut self.state().admitted {
+            admitted.extend(objects);
         }
     }
 

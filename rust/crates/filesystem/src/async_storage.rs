@@ -624,7 +624,9 @@ pub trait AsyncObjectStore: StorageProvider {
     /// Asynchronously admits an ordered bounded group of objects whose
     /// identities their construction already proved. A store that verifies
     /// digests on admission may skip hashing the same bytes again; the
-    /// default verifies through [`Self::put_many`].
+    /// default verifies through [`Self::put_many`]. `budget` is what is
+    /// left after the caller's own allocations, which include one write
+    /// per object for this conversion.
     fn put_many_hashed(
         &self,
         objects: &[crate::storage::HashedObject],

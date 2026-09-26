@@ -2470,8 +2470,8 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-/// A collection forgets a deleted workspace's core-state records, and only
-/// its: the lineage of a live workspace stays.
+/// A collection forgets a deleted workspace's core-state records unless a
+/// live workspace descends from it.
 #[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<dyn Error>> {
@@ -2501,15 +2501,32 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
     }
     let deleted = children.pop().ok_or("deleted child")?;
     let kept = children.pop().ok_or("kept child")?;
+    // A deleted parent of a live child keeps its records.
+    let grandchild_base = kept.head().await?;
+    let grandchild = kept
+        .fork(
+            "grandchild",
+            ForkOptions::from_generation(grandchild_base.clone(), IdempotencyKey::new()),
+        )
+        .await?;
+    distributed
+        .lineage()
+        .register_existing_child(&kept, &grandchild, grandchild_base.id())
+        .await?;
+    kept.delete(IdempotencyKey::new()).await?;
     deleted.delete(IdempotencyKey::new()).await?;
     let records = store.workspace_records().await?;
-    assert!(records.contains(&deleted.id()) && records.contains(&kept.id()));
+    assert!(records.contains_key(&deleted.id()) && records.contains_key(&kept.id()));
 
     distributed
         .collect_garbage(&CancellationToken::new())
         .await?;
     let records = store.workspace_records().await?;
-    assert!(!records.contains(&deleted.id()));
-    assert!(records.contains(&kept.id()));
+    assert!(!records.contains_key(&deleted.id()));
+    assert!(
+        records.contains_key(&kept.id()),
+        "a live child descends from it"
+    );
+    assert!(records.contains_key(&grandchild.id()));
     Ok(())
 }

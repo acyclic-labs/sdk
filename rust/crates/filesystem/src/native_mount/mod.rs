@@ -881,7 +881,8 @@ pub trait MountFilesystem: Send + Sync + 'static {
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError>;
-    /// Creates one empty regular file.
+    /// Creates one empty regular file, failing with
+    /// [`MountSourceError::AlreadyExists`] when `path` names anything.
     ///
     /// # Errors
     ///
@@ -891,6 +892,23 @@ pub trait MountFilesystem: Send + Sync + 'static {
         path: &MountPath,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError>;
+    /// Creates one empty regular file at `path`, which the caller found
+    /// absent in the view as of `absent_since`; the source verifies the
+    /// absence still holds as it creates, and fails with
+    /// [`MountSourceError::AlreadyExists`] otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed source failure without partial mutation.
+    fn create_absent_file(
+        &self,
+        path: &MountPath,
+        metadata: FileMetadata,
+        absent_since: ViewStamp,
+    ) -> Result<MountLookup, MountSourceError> {
+        let _ = absent_since;
+        self.create_file(path, metadata)
+    }
     /// Creates one empty directory.
     ///
     /// # Errors

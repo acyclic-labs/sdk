@@ -167,18 +167,34 @@ impl
         let store_error = |error: crate::LocalCoreStateStoreError| {
             crate::FsError::Object(crate::ObjectStoreError::Rejected(error.to_string()))
         };
-        for workspace in self.store.workspace_records().await.map_err(store_error)? {
+        let records = self.store.workspace_records().await.map_err(store_error)?;
+        let mut deleted = std::collections::BTreeSet::new();
+        for workspace in records.keys() {
             cancellation.check()?;
             if self
                 .fs
                 .local_volume_deleted(workspace.volume_id(), cancellation)
                 .await?
             {
-                self.store
-                    .forget_workspace(workspace)
-                    .await
-                    .map_err(store_error)?;
+                deleted.insert(*workspace);
             }
+        }
+        // A deleted workspace's records stay while a live one descends
+        // from it: its lineage walks through them.
+        let mut ancestors = std::collections::BTreeSet::new();
+        for workspace in records.keys().filter(|id| !deleted.contains(id)) {
+            let mut pending = records.get(workspace).cloned().unwrap_or_default();
+            while let Some(parent) = pending.pop() {
+                if ancestors.insert(parent) {
+                    pending.extend(records.get(&parent).cloned().unwrap_or_default());
+                }
+            }
+        }
+        for workspace in deleted.difference(&ancestors) {
+            self.store
+                .forget_workspace(*workspace)
+                .await
+                .map_err(store_error)?;
         }
         self.store.collect_lazy_nodes().await.map_err(store_error)?;
         self.fs

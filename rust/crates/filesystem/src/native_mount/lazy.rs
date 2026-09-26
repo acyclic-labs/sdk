@@ -2290,6 +2290,21 @@ where
         Ok(created)
     }
 
+    fn create_absent_file(
+        &self,
+        path: &MountPath,
+        metadata: FileMetadata,
+        absent_since: ViewStamp,
+    ) -> Result<MountLookup, MountSourceError> {
+        let _mutation = self.mutation_lease(None)?;
+        self.promote_parents_locked(path)?;
+        let created = self
+            .authored
+            .create_absent_file(path, metadata, absent_since)?;
+        self.record_rebound(&self.path(path)?)?;
+        Ok(created)
+    }
+
     fn open_created(
         &self,
         path: &MountPath,

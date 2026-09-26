@@ -2324,32 +2324,37 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         let provider = self.inner.objects.inner().inner().provider();
         let bucket = self.inner.objects.inner().inner().bucket().clone();
         let examined = u64::try_from(unmarked.len()).unwrap_or(u64::MAX);
-        let mut versions = unmarked
-            .into_iter()
-            .collect::<std::collections::HashMap<_, _>>();
+        // Every listed version of an object goes with it.
+        let mut versions = std::collections::HashMap::<ObjectId, Vec<String>>::new();
+        for (object, version) in unmarked {
+            versions.entry(object).or_default().push(version);
+        }
         let mut removed = 0_u64;
         let objects = versions.keys().copied().collect::<Vec<_>>();
         for batch in objects.chunks(BATCH) {
             cancellation.check()?;
             let (_gate, sweepable) = collecting.sweepable(batch.to_vec()).await;
             for object in sweepable {
-                let Some(version) = versions.remove(&object) else {
+                let Some(listed) = versions.remove(&object) else {
                     continue;
                 };
                 collecting.sweeping(object);
-                // Each collection lists its candidates afresh, so an exact
-                // version is deleted at most once and needs no retry identity.
-                provider
-                    .delete(
-                        bucket.clone(),
-                        crate::distributed::object_key(object),
-                        Some(version),
-                        None,
-                        None,
-                    )
-                    .await
-                    .map_err(FsError::LocalObjectsBucket)?;
-                removed = removed.saturating_add(1);
+                for version in listed {
+                    // Each collection lists its candidates afresh, so an
+                    // exact version is deleted at most once and needs no
+                    // retry identity.
+                    provider
+                        .delete(
+                            bucket.clone(),
+                            crate::distributed::object_key(object),
+                            Some(version),
+                            None,
+                            None,
+                        )
+                        .await
+                        .map_err(FsError::LocalObjectsBucket)?;
+                    removed = removed.saturating_add(1);
+                }
             }
             // A cached copy of a swept object must not stand in for it.
             self.inner.objects.inner().clear()?;

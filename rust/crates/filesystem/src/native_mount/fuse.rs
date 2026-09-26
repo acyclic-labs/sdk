@@ -3123,9 +3123,12 @@ impl FuseProjection {
         };
         // The kernel looks a name up before it creates it: an absence it was
         // told of that nothing has changed since needs no second lookup.
-        let existing = match absent_since {
-            Some(held) if source.unchanged_since(child.key(), None, held) => None,
-            _ => source.lookup(path).map_err(errno)?,
+        // The absence the creation relies on, which the source checks again
+        // as it creates: the kernel's, or this lookup's, whose stamp was
+        // sampled before it.
+        let (existing, proof) = match absent_since {
+            Some(held) if source.unchanged_since(child.key(), None, held) => (None, Some(held)),
+            _ => (source.lookup(path).map_err(errno)?, stamp),
         };
         let (lookup, open_file, dirty, _claim, confirmed) = if let Some(existing) = existing {
             {
@@ -3154,7 +3157,11 @@ impl FuseProjection {
             }
         } else {
             let metadata = create_metadata(request, mode, S_IFREG);
-            let created = source.create_file(path, metadata).map_err(errno)?;
+            let created = match proof {
+                Some(proof) => source.create_absent_file(path, metadata, proof),
+                None => source.create_file(path, metadata),
+            }
+            .map_err(errno)?;
             let claimed = claim(created.node.file_id)?;
             (
                 created,

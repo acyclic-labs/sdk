@@ -645,16 +645,24 @@ impl<A, O> SharedCheckout<A, O> {
 
     /// Records `pending` as created: its name changed now, though its
     /// creation is applied later (see [`PendingCreate`]).
-    fn hold_pending(&self, pending: Arc<PendingCreate>) {
+    /// Registers a pending creation, atomically with checking that no other
+    /// pending creation holds its path and, given `absent_since`, that
+    /// nothing rebound the path since it was found absent. Answers whether
+    /// it registered.
+    fn hold_pending(&self, pending: Arc<PendingCreate>, absent_since: Option<ViewStamp>) -> bool {
+        let mut held = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        if held.iter().any(|other| other.path == pending.path)
+            || absent_since.is_some_and(|stamp| !self.binding_unchanged_since(&pending.path, stamp))
+        {
+            return false;
+        }
         {
             let _origin = pending.origin.enter();
             self.ledger.record(&ViewChange::Bound(&pending.path));
         }
         self.revision.fetch_add(1, Ordering::AcqRel);
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(pending);
+        held.push(pending);
+        true
     }
 
     /// The pending creation of `path`, reported as it stands.
@@ -3252,6 +3260,21 @@ where
         path: &MountPath,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError> {
+        // Sampled before the lookup, so it proves what the lookup found.
+        let absent_since = self.checkout.ledger.stamp();
+        if self.lookup(path)?.is_some() {
+            return Err(MountSourceError::AlreadyExists);
+        }
+        self.create_absent_file(path, metadata, absent_since)
+    }
+
+    fn create_absent_file(
+        &self,
+        path: &MountPath,
+        metadata: FileMetadata,
+        absent_since: ViewStamp,
+    ) -> Result<MountLookup, MountSourceError> {
+        let mount_path = path;
         let path = self.path(path)?;
         // A creation waits to be applied, but not for publication to resolve.
         self.runtime.wait(|| async {
@@ -3274,16 +3297,25 @@ where
             })?;
         }
         let file_id = FileId::new();
-        self.checkout.hold_pending(Arc::new(PendingCreate {
-            path,
-            file_id,
-            origin: ViewOrigin::current(),
-            maximum_bytes: PENDING_CREATE_BYTES.min(self.limits.maximum_read_bytes),
-            state: StdMutex::new(PendingState::Pending {
-                metadata: Box::new(metadata),
-                bytes: Vec::new(),
-            }),
-        }));
+        let pending = || {
+            Arc::new(PendingCreate {
+                path: path.clone(),
+                file_id,
+                origin: ViewOrigin::current(),
+                maximum_bytes: PENDING_CREATE_BYTES.min(self.limits.maximum_read_bytes),
+                state: StdMutex::new(PendingState::Pending {
+                    metadata: Box::new(metadata),
+                    bytes: Vec::new(),
+                }),
+            })
+        };
+        if !self.checkout.hold_pending(pending(), Some(absent_since)) {
+            // Something rebound the path since the caller looked, or another
+            // creation holds it: this lookup decides instead.
+            if self.lookup(mount_path)?.is_some() || !self.checkout.hold_pending(pending(), None) {
+                return Err(MountSourceError::AlreadyExists);
+            }
+        }
         Ok(MountLookup {
             node: MountNode {
                 file_id,
@@ -4501,6 +4533,31 @@ mod tests {
     /// A file created through the mount holds its first bytes until its
     /// handle settles; anything else that reads the checkout meanwhile
     /// applies the creation first, and bytes past the bound apply it too.
+    /// A creation proves its path absent as it registers: a second creation
+    /// of a path another holds pending, or one already applied, fails, and
+    /// a stale proof of absence is checked again.
+    #[test]
+    fn creating_an_existing_path_fails() -> Result<(), Box<dyn std::error::Error>> {
+        let source = source(FilesystemProfile::Portable)?;
+        let path = native_test_path("once");
+        let stale = source.view_stamp().ok_or("ledger stamp")?;
+        source.create_file(&path, metadata())?;
+        assert!(matches!(
+            source.create_file(&path, metadata()),
+            Err(MountSourceError::AlreadyExists)
+        ));
+        assert!(matches!(
+            source.create_absent_file(&path, metadata(), stale),
+            Err(MountSourceError::AlreadyExists)
+        ));
+        source.sync()?;
+        assert!(matches!(
+            source.create_absent_file(&path, metadata(), stale),
+            Err(MountSourceError::AlreadyExists)
+        ));
+        Ok(())
+    }
+
     #[test]
     fn a_created_file_is_applied_with_its_first_bytes() -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
