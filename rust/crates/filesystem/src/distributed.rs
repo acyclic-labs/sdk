@@ -1992,6 +1992,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
 }
 
 /// The object an [`object_key`] names.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) fn object_id_from_key(key: &str) -> Option<ObjectId> {
     let (tag, digest) = key.strip_prefix("fs/v1/")?.split_once('/')?;
     let kind = crate::storage::ObjectKind::from_canonical_tag(tag.parse().ok()?).ok()?;

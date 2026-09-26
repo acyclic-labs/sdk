@@ -18,6 +18,11 @@
 //! - Objects written after a collection listed its candidates are not
 //!   candidates, and a later write of a swept object stores it again.
 
+#![cfg_attr(
+    not(all(feature = "local", not(target_arch = "wasm32"))),
+    allow(dead_code, reason = "only a local store collects")
+)]
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};

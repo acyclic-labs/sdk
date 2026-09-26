@@ -358,7 +358,7 @@ pub trait AsyncAuthorityStore: StorageProvider {
     ) -> impl Future<Output = AuthorityResult<CreateAuthorityOutcome>> + StorageFuture;
 
     /// Releases every durable fact of `authority_id`, whose workspace or
-    /// retention ended for good, and answers [`AuthorityStoreError::Retired`]
+    /// retention ended for good, and answers [`crate::storage::AuthorityStoreError::Retired`]
     /// for it from then on. Retiring a retired authority succeeds. Backends
     /// that keep every authority answer from its last record instead.
     fn retire_authority(
@@ -670,7 +670,8 @@ pub trait AsyncObjectStore: StorageProvider {
     /// The count a proof records before it starts, for
     /// [`PublicationScope::Closure`].
     fn collection_sweeps(&self) -> u64 {
-        self.collection().map_or(0, |collection| collection.sweeps())
+        self.collection()
+            .map_or(0, |collection| collection.sweeps())
     }
 
     /// Asynchronously reads one complete bounded object.

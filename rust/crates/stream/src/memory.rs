@@ -2192,7 +2192,10 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(listed, vec![path("tree/a")?, path("tree/b")?, path("tree/c")?]);
+        assert_eq!(
+            listed,
+            vec![path("tree/a")?, path("tree/b")?, path("tree/c")?]
+        );
         Ok(())
     }
 }

@@ -144,6 +144,7 @@ pub struct LazyWorkspaceState {
 pub struct LazyShadowId([u8; 32]);
 
 impl LazyShadowId {
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(crate) const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
