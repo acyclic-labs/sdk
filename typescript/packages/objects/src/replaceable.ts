@@ -1,3 +1,4 @@
+import { blake3 } from "@noble/hashes/blake3.js";
 import type { ETag, IdempotencyKey, ObjectMetadata } from "./index.js";
 
 declare const replaceableBrand: unique symbol;
@@ -151,7 +152,13 @@ export class HttpReplaceableObjectsProvider implements ReplaceableObjectsProvide
       if (mutation) throw new AmbiguousMutationError("Objects PUT outcome is ambiguous; retry the same idempotency key", error);
       throw error;
     }
-    const bytes = await boundedBytes(response, this.#maximum);
+    let bytes: Uint8Array;
+    try {
+      bytes = await boundedBytes(response, this.#maximum);
+    } catch (error) {
+      if (mutation) throw new AmbiguousMutationError("Objects PUT response was incomplete; retry the same idempotency key", error);
+      throw error;
+    }
     if (!response.ok) {
       if (mutation && (response.status === 408 || response.status === 429 || response.status >= 500)) {
         throw new AmbiguousMutationError(`Objects PUT returned HTTP ${response.status}; retry the same idempotency key`);
@@ -256,10 +263,11 @@ function validateRange(value: CurrentGetOptions["range"], total: number): { star
   if (!Number.isSafeInteger(value.start) || !Number.isSafeInteger(value.endExclusive) || value.start < 0 || value.endExclusive <= value.start || value.endExclusive > total) throw new ReplaceableObjectError("invalid_range", "range is invalid");
   return value;
 }
-async function digest(value: Uint8Array): Promise<ETag> { const owned = Uint8Array.from(value); const hash = await crypto.subtle.digest("SHA-256", owned.buffer as ArrayBuffer); return `\"${bytes(new Uint8Array(hash))}\"` as ETag; }
+async function digest(value: Uint8Array): Promise<ETag> { return `\"${hex(blake3(value))}\"` as ETag; }
 function encode(value: unknown): string { return JSON.stringify(value, (_key, item) => typeof item === "bigint" ? { $bigint: item.toString() } : item instanceof Uint8Array ? { $bytes: bytes(item) } : item instanceof Map ? { $map: [...item] } : item); }
 function decode(value: string): unknown { return JSON.parse(value, (_key, item: unknown) => { if (item !== null && typeof item === "object" && "$bigint" in item && typeof item.$bigint === "string") return BigInt(item.$bigint); if (item !== null && typeof item === "object" && "$bytes" in item && typeof item.$bytes === "string") return fromBytes(item.$bytes); if (item !== null && typeof item === "object" && "$map" in item && Array.isArray(item.$map)) return new Map(item.$map as readonly (readonly [unknown, unknown])[]); return item; }); }
 function bytes(value: Uint8Array): string { let binary = ""; for (const byte of value) binary += String.fromCharCode(byte); return btoa(binary); }
+function hex(value: Uint8Array): string { return Array.from(value, byte => byte.toString(16).padStart(2, "0")).join(""); }
 function fromBytes(value: string): Uint8Array { return Uint8Array.from(atob(value), character => character.charCodeAt(0)); }
 function record(value: unknown): Record<string, unknown> { if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("expected object"); return value as Record<string, unknown>; }
 function text(value: unknown, name: string): string { if (typeof value !== "string" || !value) throw new TypeError(`${name} must be a non-empty string`); return value; }
