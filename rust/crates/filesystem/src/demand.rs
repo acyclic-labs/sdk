@@ -1738,13 +1738,8 @@ pub mod native {
             hash.update(&metadata.file_attributes().to_le_bytes());
             hash.update(&metadata.last_write_time().to_le_bytes());
             hash.update(&metadata.creation_time().to_le_bytes());
-            hash.update(
-                &metadata
-                    .volume_serial_number()
-                    .unwrap_or_default()
-                    .to_le_bytes(),
-            );
-            hash.update(&metadata.file_index().unwrap_or_default().to_le_bytes());
+            hash.update(&metadata.volume_serial_number().to_le_bytes());
+            hash.update(&metadata.file_index().to_le_bytes());
         }
         SourceVersion(*hash.finalize().as_bytes())
     }
@@ -1772,8 +1767,8 @@ pub mod native {
     #[cfg(windows)]
     fn file_identity(metadata: &HostStat) -> [u8; 32] {
         windows_file_identity(
-            u64::from(metadata.volume_serial_number().unwrap_or_default()),
-            metadata.file_index().unwrap_or_default(),
+            u64::from(metadata.volume_serial_number()),
+            metadata.file_index(),
         )
     }
 
