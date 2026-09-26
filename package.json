@@ -13,7 +13,7 @@
   },
   "devDependencies": {
     "@bufbuild/buf": "1.72.0",
-    "@bufbuild/protoc-gen-es": "2.14.1",
+    "@bufbuild/protoc-gen-es": "2.15.0",
     "@types/bun": "1.4.0",
     "ajv": "8.20.0",
     "typescript": "7.0.2"
