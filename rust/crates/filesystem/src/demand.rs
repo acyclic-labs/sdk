@@ -891,6 +891,16 @@ pub mod native {
             }
         }
 
+        /// This source as if its root were not local, so tests cover the
+        /// path host I/O beneath a remote root takes.
+        #[cfg(test)]
+        pub(crate) fn remote(mut self) -> Self {
+            if let Some(inner) = Arc::get_mut(&mut self.inner) {
+                inner.inline = false;
+            }
+            self
+        }
+
         fn observe_directory(&self, directory: &NamespacePath) -> Result<(), DemandError> {
             self.admit_to_watches(directory)?;
             self.inner
@@ -1217,14 +1227,26 @@ pub mod native {
     /// the held file and then proves, exactly as a path-based read does, that
     /// the file is unmodified, that its source path still names it, and that
     /// the source root and reference are still current.
+    #[derive(Clone)]
     struct NativeDemandFile {
         provider: NativeDemandSource,
         source: SourceReference,
         relative: PathBuf,
         expected: SourceVersion,
         logical_bytes: u64,
-        file: std::fs::File,
+        file: Arc<std::fs::File>,
     }
+
+    /// How long a read of a file under a root that is not local may take
+    /// before its caller is answered, well inside a native callback's own
+    /// deadline: a callback thread runs the read and cannot be interrupted.
+    const REMOTE_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
+    /// Most reads of files under roots that are not local that may be
+    /// blocked at once: a hung share holds one thread per read until the host
+    /// gives up, and beyond this every such read fails at once.
+    const MAXIMUM_BLOCKED_REMOTE_READS: usize = 16;
+    static BLOCKED_REMOTE_READS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
 
     impl NativeDemandFile {
         fn open(
@@ -1258,7 +1280,7 @@ pub mod native {
                 relative,
                 expected,
                 logical_bytes: opened.len(),
-                file,
+                file: Arc::new(file),
             })
         }
 
@@ -1310,7 +1332,44 @@ pub mod native {
             cancellation: &CancellationToken,
         ) -> DemandResult<Bytes> {
             let range = ReadRange::new(offset, length).map_err(OperationFailure::before_work)?;
-            measured(|work| self.read(range, cancellation, work))
+            // A local root answers promptly, so its read runs in place; any
+            // other runs on a thread of its own, bounded by a deadline.
+            if self.provider.inner.inline {
+                return measured(|work| self.read(range, cancellation, work));
+            }
+            self.read_remote(range, cancellation)
+        }
+    }
+
+    impl NativeDemandFile {
+        fn read_remote(
+            &self,
+            range: ReadRange,
+            cancellation: &CancellationToken,
+        ) -> DemandResult<Bytes> {
+            use std::sync::atomic::Ordering;
+
+            let unavailable = || OperationFailure::before_work(DemandError::SourceUnavailable);
+            if BLOCKED_REMOTE_READS.fetch_add(1, Ordering::AcqRel) >= MAXIMUM_BLOCKED_REMOTE_READS {
+                BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
+                return Err(unavailable());
+            }
+            let (file, cancellation) = (self.clone(), cancellation.clone());
+            let (answer, answered) = std::sync::mpsc::sync_channel(1);
+            let spawned = std::thread::Builder::new()
+                .name("acyclic-remote-read".to_owned())
+                .spawn(move || {
+                    let read = measured(|work| file.read(range, &cancellation, work));
+                    BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
+                    let _ = answer.send(read);
+                });
+            if spawned.is_err() {
+                BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
+                return Err(unavailable());
+            }
+            answered
+                .recv_timeout(REMOTE_READ_DEADLINE)
+                .unwrap_or_else(|_| Err(unavailable()))
         }
     }
 
@@ -2341,6 +2400,42 @@ mod tests {
         file.read_range(0, 6, &CancellationToken::new())
             .err()
             .map(|failure| failure.error)
+    }
+
+    /// A held file under a root that is not local is read on a thread of
+    /// its own, bounded by a deadline, with the same result and the same
+    /// proof that the bytes are still the opened version.
+    #[tokio::test]
+    async fn held_files_under_remote_roots_read_off_the_callback_thread()
+    -> Result<(), Box<dyn Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::write(temporary.path().join("file"), b"remote")?;
+        let source = NativeDemandSource::open(
+            temporary.path(),
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+        )
+        .await?
+        .remote();
+        let reference = source.reference();
+        let cancellation = CancellationToken::new();
+        let node = source
+            .lookup(reference, &path("/file")?, &cancellation)
+            .await?
+            .value
+            .ok_or("file absent")?;
+        let file = source
+            .open_file(reference, &path("/file")?, node.version, &cancellation)
+            .await?
+            .value;
+        let read = file.read_range(0, 6, &CancellationToken::new())?;
+        assert_eq!(read.value.as_ref(), b"remote");
+        std::fs::write(temporary.path().join("file"), b"edited")?;
+        assert!(matches!(
+            read_failure(file.as_ref()),
+            Some(DemandError::StaleVersion)
+        ));
+        Ok(())
     }
 
     #[tokio::test]
