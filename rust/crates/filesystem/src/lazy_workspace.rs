@@ -118,6 +118,7 @@ impl LazyOverlayId {
 
 /// Durable constant-size binding for one sparse workspace.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LazyWorkspaceState {
     /// Serialization schema.
     pub schema_version: u32,
@@ -183,6 +184,7 @@ impl LazyShadow {
 
 /// Durable intent that makes authored removal and source tombstoning recoverable.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PendingLazyRemove {
     /// Overlay visible before the removal began.
     pub prior_overlay: LazyOverlayId,

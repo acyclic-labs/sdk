@@ -13,6 +13,7 @@ use thiserror::Error;
 
 /// Opaque identity and invalidation epoch of an attached source.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceReference {
     /// Provider-scoped opaque identity; no local path is encoded here.
     pub identity: [u8; 16],

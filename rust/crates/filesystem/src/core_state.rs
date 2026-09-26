@@ -661,6 +661,10 @@ pub enum LocalCoreStateStoreError {
     /// A durable workspace-context transaction was malformed or incompatible.
     #[error("workspace-context transaction is incompatible: {0}")]
     ContextTransaction(String),
+    /// The core-state log holds an intact frame that does not decode, so it
+    /// may commit changes this store cannot apply.
+    #[error("core state log holds an undecodable intact frame: {}", .0.display())]
+    Corrupt(PathBuf),
 }
 
 impl WorkspaceLineageStore for LocalCoreStateStore {
@@ -1136,6 +1140,7 @@ fn index_change(
 
 /// One log line: `<blake3 hex> <frame json>`.
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LogFrame<C> {
     epoch: Uuid,
     sequence: u64,
@@ -1227,7 +1232,9 @@ impl CoreLog {
         if bytes.is_empty() {
             return Ok(log);
         }
-        for change in replayable_changes(&bytes) {
+        let changes = replayable_changes(&bytes)
+            .map_err(|_| LocalCoreStateStoreError::Corrupt(paths.current.clone()))?;
+        for change in changes {
             log.apply(change);
         }
         log.checkpoint(root)?;
@@ -1391,7 +1398,11 @@ impl CoreLog {
 
 /// Decodes the log's valid prefix: frames of the first frame's epoch in
 /// consecutive sequence, each intact.
-fn replayable_changes(bytes: &[u8]) -> Vec<Change> {
+///
+/// A torn frame ends the prefix, but an intact frame that does not decode
+/// fails: its checksum proves it was written whole, so it may be a committed
+/// change, and treating it as torn would let the next checkpoint discard it.
+fn replayable_changes(bytes: &[u8]) -> Result<Vec<Change>, serde_json::Error> {
     let mut changes = Vec::new();
     let mut epoch = None;
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
@@ -1407,9 +1418,7 @@ fn replayable_changes(bytes: &[u8]) -> Vec<Change> {
         if blake3::hash(frame).to_hex().as_bytes() != checksum {
             break;
         }
-        let Ok(frame) = serde_json::from_slice::<LogFrame<Change>>(frame) else {
-            break;
-        };
+        let frame = serde_json::from_slice::<LogFrame<Change>>(frame)?;
         if *epoch.get_or_insert(frame.epoch) != frame.epoch
             || frame.sequence != changes.len() as u64
         {
@@ -1417,7 +1426,7 @@ fn replayable_changes(bytes: &[u8]) -> Vec<Change> {
         }
         changes.push(frame.change);
     }
-    changes
+    Ok(changes)
 }
 
 /// Aborts the process at the configured crash point of a crash-atomicity test,
@@ -2957,6 +2966,69 @@ mod tests {
         );
     }
 
+    /// Rewrites the log's only frame with `edit` and a matching checksum.
+    fn rewrite_intact_frame(root: &Path, edit: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
+        let log = {
+            let store = LocalCoreStateStore::new(root);
+            let namespace = store.namespace().expect("admitted namespace");
+            core_log_paths(&namespace).current
+        };
+        let bytes = std::fs::read(&log).expect("read core log");
+        let line = bytes.strip_suffix(b"\n").expect("one complete frame");
+        let mut frame: serde_json::Value = serde_json::from_slice(&line[65..]).expect("frame json");
+        edit(&mut frame);
+        let frame = serde_json::to_vec(&frame).expect("encode frame");
+        let mut rewritten = blake3::hash(&frame).to_hex().as_bytes().to_vec();
+        rewritten.push(b' ');
+        rewritten.extend_from_slice(&frame);
+        rewritten.push(b'\n');
+        std::fs::write(&log, &rewritten).expect("rewrite core log");
+        rewritten
+    }
+
+    #[tokio::test]
+    async fn intact_undecodable_frame_fails_closed_and_is_kept() {
+        type Edit = fn(&mut serde_json::Value);
+        let edits: [(&str, Edit); 3] = [
+            ("unknown record key", |frame| {
+                frame["change"][0][0] = serde_json::json!({ "Future": [0] });
+            }),
+            ("unknown frame field", |frame| {
+                frame["future"] = serde_json::json!(1);
+            }),
+            ("unknown payload field", |frame| {
+                frame["change"][0][1]["LazyWorkspace"]["future"] = serde_json::json!(1);
+            }),
+        ];
+        for (case, edit) in edits {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let owner = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
+            assert!(
+                owner
+                    .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1))
+                    .await
+                    .expect("commit")
+            );
+            // The owner leaves its committed frame in the log for replay.
+            drop(owner);
+            let log = rewrite_intact_frame(directory.path(), edit);
+            let store = LocalCoreStateStore::new(directory.path());
+            assert!(
+                matches!(
+                    store.load_lazy_workspace(workspace()).await,
+                    Err(LocalCoreStateStoreError::Corrupt(_))
+                ),
+                "{case}: an intact frame that does not decode is corruption"
+            );
+            let namespace = store.namespace().expect("admitted namespace");
+            assert_eq!(
+                std::fs::read(core_log_paths(&namespace).current).expect("read core log"),
+                log,
+                "{case}: a failed replay must not checkpoint the log away"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn deferred_commits_are_visible_at_once_and_durable_on_commit() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -2988,7 +3060,7 @@ mod tests {
         };
         let bytes = std::fs::read(&log).expect("read core log");
         assert_eq!(
-            replayable_changes(&bytes).len(),
+            replayable_changes(&bytes).expect("decodable log").len(),
             2,
             "both frames are in the log"
         );
@@ -3172,7 +3244,9 @@ mod tests {
         let torn = flushed + (bytes.len().saturating_sub(flushed)) / 2;
         bytes.truncate(torn);
         std::fs::write(&log, &bytes).expect("tear unflushed frames");
-        for change in replayable_changes(bytes.get(..flushed).unwrap_or(&bytes)) {
+        for change in
+            replayable_changes(bytes.get(..flushed).unwrap_or(&bytes)).expect("decodable log")
+        {
             for (key, _) in change.0 {
                 let paths = key.paths(&namespace);
                 std::fs::create_dir_all(&paths.directory).expect("record directory");
