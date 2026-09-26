@@ -43,7 +43,6 @@ export class HttpStreamProvider implements StreamProvider {
       if (!records.length) await delay(250, options.signal);
     }
   }
-  async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> { for (const item of await this.#request("children", { parent, limit }, value => array(value, child))) yield item; }
   childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     return this.#request("children/page", {
       ...(request.parent === undefined ? {} : { parent: request.parent }),

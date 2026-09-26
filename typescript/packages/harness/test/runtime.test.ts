@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   Batch,
   AgentHarness,
+  AdmissionUncertainError,
   ExecutionScope,
   GroupPolicies,
   Harness,
@@ -22,6 +23,13 @@ import {
   type GroupId,
   type EffectiveScope,
   type HarnessRuntimeHost,
+  type HarnessExecutionProvider,
+  type HostBatchReplay,
+  type HarnessRuntimeSpawner,
+  type HarnessRuntimeState,
+  type TaskAdmissionRecord,
+  type TaskAdmissionWire,
+  type WorkflowAdmissionWire,
   type MessageId,
   type Outcome,
   type OperationId,
@@ -30,10 +38,44 @@ import {
   type ModelMessage,
   type ModelToolDefinition,
   type FileRef,
+  type VolumeRef,
   type ConversationMessageId,
 } from "../src/index.js";
 
 const contracts = await NativeContracts.create();
+
+test("Rust and TypeScript share strict v2 task admission and execution placement fixtures", async () => {
+  const admissionText = (await Bun.file(new URL("../../../../fixtures/harness/v2/task-admission.json", import.meta.url)).text()).trim();
+  const admission = JSON.parse(admissionText) as TaskAdmissionWire;
+  expect(new TextDecoder().decode(contracts.encodeCanonicalJson(contracts.validate("task_admission", admission))))
+    .toBe(admissionText);
+  expect(() => contracts.validate("task_admission", { ...admission, input: "wrong" })).toThrow();
+  const placementText = (await Bun.file(new URL("../../../../fixtures/harness/v2/execution-placement.json", import.meta.url)).text()).trim();
+  const placement = JSON.parse(placementText) as import("../src/index.js").ExecutionPlacementWire;
+  expect(contracts.validate("execution_placement", placement)).toEqual(placement);
+  expect(() => contracts.validate("execution_placement", { ...placement, readiness_revision: [] })).toThrow();
+});
+
+test("Rust and TypeScript share the pinned v2 workflow admission fixture", async () => {
+  const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/workflow-admission.json", import.meta.url)).text()).trim();
+  const admission = JSON.parse(fixture) as WorkflowAdmissionWire;
+  expect(new TextDecoder().decode(contracts.encodeCanonicalJson(contracts.validate("workflow_admission", admission))))
+    .toBe(fixture);
+  expect(() => contracts.validate("workflow_admission", { ...admission, request_digest: Array(32).fill(0) })).toThrow();
+});
+
+test("native task and workflow admissions preserve Rust u64 values as BigInt", async () => {
+  const taskText = (await Bun.file(new URL("../../../../fixtures/harness/v2/task-admission.json", import.meta.url)).text()).trim();
+  const task = contracts.validate("task_admission", {
+    ...JSON.parse(taskText), run_limits: { concurrency: 2, max_steps: 3, deadline_epoch_ms: 4 },
+  });
+  expect(typeof task.limits.file_bytes).toBe("bigint");
+  expect(task.run_limits.max_steps).toBe(3n);
+  const workflowText = (await Bun.file(new URL("../../../../fixtures/harness/v2/workflow-admission.json", import.meta.url)).text()).trim();
+  const workflow = contracts.validate("workflow_admission", JSON.parse(workflowText));
+  expect(workflow.initial.revision).toBe(0n);
+});
+const testModel = { provider: "fixture", name: "fixture", revision: "1", options: {} } as const;
 const fixtureMessageId = (value: string): ConversationMessageId => value as ConversationMessageId;
 
 const durableDigest = "ab".repeat(32);
@@ -43,6 +85,31 @@ const scopedPolicyIdentity = policyIdentity("scoped-policy", "1", new Uint8Array
 const numberSchema = defineRuntimeSchema("number", { type: "number" }, (value: unknown): number => {
   if (typeof value !== "number") throw new TypeError("invalid result");
   return value;
+});
+
+test("fork capture binding requires parent publication authority", () => {
+  const preparer = { parentSnapshot: () => ({ parent: { kind: "conversation" as const, id: "parent" }, revision: 1n }),
+    async prepare() { throw new Error("unused"); }, async reconcile() { return null; } };
+  expect(() => Harness.builder(contracts).forkPreparer(preparer).build()).toThrow("fork:publish");
+  const bound = Harness.builder(contracts).forkPreparer(preparer).grant("fork:publish").build();
+  expect(bound).toBeInstanceOf(AgentHarness);
+  expect(() => bound.scoped(ExecutionScope.create().onlyGrants("fork:publish")).atParentSnapshot(preparer)).toThrow("not bound");
+  expect(() => bound.atParentSnapshot(preparer)).toThrow("advance");
+  expect(() => bound.atParentSnapshot({ ...preparer,
+    parentSnapshot: () => ({ parent: { kind: "conversation" as const, id: "other" }, revision: 2n }) })).toThrow("another parent");
+  expect(bound.atParentSnapshot({ ...preparer,
+    parentSnapshot: () => ({ parent: { kind: "conversation" as const, id: "parent" }, revision: 2n }) })).toBeInstanceOf(AgentHarness);
+});
+
+test("grouped provider bindings use the same authority and limit admission", () => {
+  const preparer = { parentSnapshot: () => ({ parent: { kind: "conversation" as const, id: "parent" }, revision: 1n }),
+    async prepare() { throw new Error("unused"); }, async reconcile() { return null; } };
+  expect(() => Harness.builder(contracts).bindings({ forkPreparer: preparer }).build()).toThrow("fork:publish");
+  const runtime = Harness.builder(contracts).bindings({
+    forkPreparer: preparer, grants: ["fork:publish"], limits: { attachments: 1 },
+  }).build();
+  expect(runtime.scope.grants).toContain("fork:publish");
+  expect(runtime.components.limits?.attachments).toBe(1);
 });
 const parseNumber = numberSchema.parse;
 const parseString = (value: unknown): string => {
@@ -94,6 +161,35 @@ test("task and tool schemas enter the registry only as strict Rust JSON", () => 
   expect(() => Harness.builder(contracts).tool(tool)).toThrow();
 });
 
+test("resumable tools are pinned at registration and execute only through durable owner state", async () => {
+  const definition = { name: "resumable-file-tool", revision: "1", description: "read a pinned file",
+    inputSchema: { type: "number" }, outputSchema: { type: "number" },
+    parseInput: parseNumber, parseOutput: parseNumber };
+  const machine = { name: definition.name, version: definition.revision, digest: Array(32).fill(7) as number[] };
+  expect(() => Harness.builder(contracts).resumableTool(definition, machine).build()).toThrow("owner-host");
+  expect(() => Harness.builder(contracts).resumableTool(definition, { ...machine, digest: Array(32).fill(0) })).toThrow();
+  const operation = "12345678-1234-4234-8234-123456789abc" as OperationId;
+  const taskId = "22345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
+  const state: HarnessRuntimeState = {
+    policyIdentity: () => null,
+    async attach() { throw new Error("not used"); },
+    async reconcileEffect() { return { state: "indeterminate" }; },
+    async executeTool(observedTask, observedOperation, tool, input) {
+      expect(observedTask).toBe(taskId);
+      expect(observedOperation).toBe(operation);
+      expect(tool.machine).toEqual(machine);
+      return { kind: "succeeded", value: input };
+    },
+    async send(message) { return { accepted: true, messageId: message.id }; },
+    async *inbox() { yield* []; },
+  };
+  const runtime = Harness.builder(contracts).state(state).resumableTool(definition, machine)
+    .grant("tool:call:resumable-file-tool").build();
+  const tool = runtime.tool(definition);
+  await expect(runtime.call(tool, 2)).rejects.toThrow("requires callDurable");
+  expect(await runtime.callDurable(operation, tool, 2, taskId)).toEqual({ kind: "succeeded", value: 2 });
+});
+
 test("content routing distinguishes owner volumes on one provider and keeps one writer", async () => {
   const file = await mailboxFile(2);
   const other = { ...file, volume: { ...file.volume,
@@ -132,6 +228,27 @@ test("content routing distinguishes owner volumes on one provider and keeps one 
     { volume: { provider: other.volume.provider, id: other.volume.id, class: "agent_private",
       owner: { kind: "agent", id: "01010101010101010101010101010101" as AgentId } }, content: second },
   ])).toThrow("registered twice");
+  const attached = { ...file, volume: { ...file.volume,
+    class: "agent_private" as const,
+    owner: { kind: "agent", id: "03030303-0303-0303-0303-030303030303" as AgentId } } } as FileRef;
+  let granted = true;
+  const lazy = composeContentBindings(contracts, [{ volume: file.volume, content: first }], {
+    mount(volume) {
+      if (!granted || volume.owner.kind !== "agent" || volume.owner.id !== attached.volume.owner.id) {
+        throw new Error("owner read grant is unavailable");
+      }
+      return { ...binding(3), requireDirectoryPath() { throw new Error("directory was not granted"); }, requireFileRead(reference: FileRef) {
+        if (reference.path !== attached.path) throw new Error("exact file was not granted");
+      } };
+    },
+  });
+  expect([...await lazy.read(attached)]).toEqual([3, 3]);
+  await expect(lazy.directory!.list(attached.volume as VolumeRef<"agent_private">,
+    "", "", null, null, 1)).rejects.toThrow("directory was not granted");
+  await expect(lazy.read({ ...attached, path: "other.txt" })).rejects.toThrow("exact file was not granted");
+  expect(lazy.writer).toBeUndefined();
+  granted = false;
+  await expect(lazy.read(attached)).rejects.toThrow("owner read grant is unavailable");
 });
 
 test("builder snapshots owner content and writer callbacks at admission", async () => {
@@ -160,6 +277,36 @@ test("builder snapshots owner content and writer callbacks at admission", async 
   expect(await runtime.content!.writer!.stage("operation", file.path, Uint8Array.of(1), "application/octet-stream", file.display_name)).toBe(file);
   expect(Object.isFrozen(runtime.content)).toBe(true);
   expect(Object.isFrozen(runtime.content!.writer)).toBe(true);
+});
+
+test("artifact binding is independent of conversation content and retains owner grants", async () => {
+  const file = await mailboxFile(1);
+  const bytes = new Uint8Array(1);
+  const artifacts = {
+    validate: () => {}, verify: () => {},
+    read: async () => bytes,
+    fileReadCapability: () => "artifact:read",
+    volumeReadCapability: () => "artifact:read",
+    directoryReadCapability: () => "artifact:read",
+    writer: { volume: file.volume, writeCapability: () => "artifact:write", stage: async () => file },
+  };
+  const content = { ...artifacts, read: async () => { throw new Error("wrong content provider"); } };
+  const runtime = Harness.builder(contracts).content(content).artifacts(artifacts)
+    .grant("artifact:read", "artifact:write").build();
+  const context = new TaskContext(runtime, new AbortController().signal);
+  expect([...await context.readArtifact(file)]).toEqual([0]);
+  await expect(context.readFile(file)).rejects.toThrow("wrong content provider");
+  expect(await context.stageArtifact("artifact-operation", file.path, bytes,
+    file.descriptor.media_type, file.display_name)).toEqual(file);
+  const denied = Harness.builder(contracts).artifacts(artifacts).build();
+  await expect(new TaskContext(denied, new AbortController().signal).readArtifact(file))
+    .rejects.toThrow("task scope cannot read this file");
+  const needsArtifact = TaskDefinition.live("artifact-task", "1", () => 1,
+    { requirements: ["artifacts:write"] });
+  expect(() => Harness.builder(contracts).artifacts(artifacts).task(needsArtifact).build())
+    .toThrow("unsatisfied task requirement");
+  expect(() => Harness.builder(contracts).artifacts(artifacts).grant("artifact:write")
+    .task(needsArtifact).build()).not.toThrow();
 });
 
 async function mailboxFile(byteLength: number): Promise<FileRef> {
@@ -213,7 +360,7 @@ describe("typed agent runtime", () => {
     expect(await ambiguous.call(ambiguous.tool("versioned-tool@1"), null)).toBe(1);
     expect(await ambiguous.call(ambiguous.tool("versioned-tool@2"), null)).toBe(2);
     let visible: readonly ModelToolDefinition[] = [];
-    const selected = builder.selectModelTool("versioned-tool", "2").model({
+    const selected = builder.selectModelTool("versioned-tool", "2").model(testModel, {
       async *generate(request) { visible = request.tools; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
@@ -298,6 +445,7 @@ describe("typed agent runtime", () => {
     expect(transitions).toBe(0);
 
     let admitted: { readonly input: number; readonly revision: string } | undefined;
+    const admissionId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
     const host: HarnessRuntimeHost = {
       policyIdentity: () => null,
       async admitResumable(_operationId, task, input) {
@@ -305,13 +453,13 @@ describe("typed agent runtime", () => {
         admitted = { input, revision: task.revision };
         return { kind: "accepted" as const, task: new Task("task:durable" as RuntimeTaskId, async () => 6) };
       },
-      async attach(id) { return { task: new Task(id, async () => 6), operationId: "admission:durable", taskName: "durable", revision: "1", implementationDigest: durableDigest }; },
+      async attach(id) { return { task: new Task(id, async () => 6), operationId: admissionId, taskName: "durable", revision: "1", implementationDigest: durableDigest }; },
       async reconcileEffect() { return { state: "indeterminate" } as const; },
       async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
       async *inbox() { yield* [] as TaskMessage[]; },
     };
     const hosted = Harness.builder(contracts).host(host).task(definition).build();
-    const result = await hosted.admit(definition, 3, "admission:durable");
+    const result = await hosted.admit(definition, 3, admissionId);
     expect(result.kind).toBe("accepted");
     if (result.kind !== "accepted") throw new Error("expected admission");
     expect(await result.task.result()).toEqual({ kind: "succeeded", value: 6 });
@@ -332,6 +480,33 @@ describe("typed agent runtime", () => {
     expect(transitions).toBe(0);
     expect(await definition.implementation.component.transition(context, 4)).toEqual({ kind: "finish", output: 8 });
     expect(transitions).toBe(1);
+  });
+
+  test("resumable transitions validate newly saved state and explicit waits", async () => {
+    const context = new TaskContext(Harness.builder(contracts).build(), new AbortController().signal);
+    const invalid = TaskDefinition.resumable<number, number, number>("invalid-checkpoint", "1", {
+      state: numberSchema,
+      initial: () => "invalid" as unknown as number,
+      async transition() { return { kind: "continue", state: "invalid" as unknown as number }; },
+    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    if (invalid.implementation.kind !== "resumable") throw new TypeError("expected resumable definition");
+    await expect(Promise.resolve(invalid.implementation.component.initial(1))).rejects.toThrow();
+    await expect(invalid.implementation.component.transition(context, 1)).rejects.toThrow();
+
+    const wait = TaskDefinition.resumable<number, number, number>("timer-checkpoint", "1", {
+      state: numberSchema,
+      initial: input => input,
+      async transition(_context, state) {
+        return { kind: "wait", state: state + 1,
+          operationId: "11111111-1111-1111-1111-111111111111" as OperationId,
+          deadline: new Date("2030-01-01T00:00:00.000Z") };
+      },
+    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    if (wait.implementation.kind !== "resumable") throw new TypeError("expected resumable definition");
+    expect(await wait.implementation.component.transition(context, 1)).toEqual({
+      kind: "wait", state: 2, operationId: "11111111-1111-1111-1111-111111111111",
+      deadline: new Date("2030-01-01T00:00:00.000Z"),
+    });
   });
 
   test("host-backed handles preserve authoritative events and cancellation", async () => {
@@ -411,6 +586,10 @@ describe("typed agent runtime", () => {
       async transition(_context, state) { return { kind: "finish", output: state }; },
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
     const observed = new Map<string, Task<number>>();
+    const onceId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const missingId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const rejectedId = "12345678-1234-4234-8234-123456789abc";
+    const invalidId = "12345678-1234-4234-8234-123456789abd";
     let loseAcknowledgement = true;
     let reject = false;
     const host: HarnessRuntimeHost = {
@@ -419,18 +598,26 @@ describe("typed agent runtime", () => {
         if (reject) return { kind: "rejected" as const, reason: { code: "unsupported" as const, message: "policy" } };
         let task = observed.get(operationId);
         if (!task) { task = new Task("task:once" as RuntimeTaskId, async () => "wrong type" as unknown as number); observed.set(operationId, task); }
-        if (loseAcknowledgement) { loseAcknowledgement = false; throw new Error("ack lost"); }
+        if (loseAcknowledgement) { loseAcknowledgement = false; throw new AdmissionUncertainError(operationId, new Error("ack lost")); }
         return { kind: "accepted" as const, task };
       },
-      async attach(id) { return { task: observed.values().next().value as Task<unknown>, operationId: "operation:once", taskName: "retryable", revision: "1", implementationDigest: durableDigest }; },
+      async reconcileAdmission(operationId) {
+        const task = observed.get(operationId);
+        return task ? { task, operationId, taskName: "retryable", revision: "1",
+          implementationDigest: durableDigest } : null;
+      },
+      async attach(id) { return { task: observed.values().next().value as Task<unknown>, operationId: onceId, taskName: "retryable", revision: "1", implementationDigest: durableDigest }; },
       async reconcileEffect() { return { state: "indeterminate" } as const; },
       async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
       async *inbox() { yield* [] as TaskMessage[]; },
     };
     const runtime = Harness.builder(contracts).host(host).task(definition).build();
-    const first = await runtime.admit(definition, 1, "operation:once");
-    expect(first).toEqual({ kind: "indeterminate", operationId: "operation:once" });
-    const second = await runtime.admit(definition, 1, "operation:once");
+    const first = await runtime.admit(definition, 1, onceId);
+    expect(first).toEqual({ kind: "indeterminate", operationId: onceId });
+    expect(await runtime.reconcileAdmission(missingId)).toBeNull();
+    expect(await (await runtime.reconcileAdmission(onceId))?.result())
+      .toMatchObject({ kind: "failed", error: { message: expect.stringContaining("tool value failed validation") } });
+    const second = await runtime.admit(definition, 1, onceId);
     expect(second.kind).toBe("accepted");
     if (second.kind !== "accepted") throw new Error("expected accepted retry");
     expect(observed.size).toBe(1);
@@ -442,7 +629,127 @@ describe("typed agent runtime", () => {
     expect(await (await reconnected.attach(definition, "task:once" as RuntimeTaskId)).result())
       .toMatchObject({ kind: "failed", error: { message: expect.stringContaining("tool value failed validation") } });
     reject = true;
-    expect(await runtime.admit(definition, 2, "operation:rejected")).toMatchObject({ kind: "rejected", reason: { code: "unsupported" } });
+    expect(await runtime.admit(definition, 2, rejectedId)).toMatchObject({ kind: "rejected", reason: { code: "unsupported" } });
+    reject = false;
+    host.admitResumable = async () => { throw new TypeError("invalid admission request"); };
+    await expect(runtime.admit(definition, 2, invalidId)).rejects.toThrow("invalid admission request");
+  });
+
+  test("separate state and spawner bind without a combined host", async () => {
+    const definition = TaskDefinition.resumable<number, number, number>("split", "1", {
+      state: numberSchema,
+      initial: input => input,
+      async transition(_context, value) { return { kind: "finish", output: value }; },
+    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    const id = "task:split" as RuntimeTaskId;
+    const admissionId = "12345678-1234-4234-8234-123456789abe";
+    let retained: TaskAdmissionRecord | undefined;
+    let corruptAdmission = false;
+    const operation = "03030303-0303-0303-0303-030303030303" as OperationId;
+    const tool = defineTool<number, number>({ name: "split-tool", revision: "1", description: "split",
+      inputSchema: { type: "number" }, outputSchema: { type: "number" }, parseInput: parseNumber,
+      parseOutput: parseNumber }, () => { throw new Error("local tool must not run"); });
+    const ownerTask = new Task(id, async () => 7);
+    const untrustedTask = new Task(id, async () => 99);
+    const state: HarnessRuntimeState = {
+      policyIdentity: () => null,
+      async attach(taskId) {
+        if (taskId !== id) throw new Error("unknown task");
+        return { task: ownerTask, operationId: admissionId, taskName: "split",
+          revision: "1", implementationDigest: durableDigest,
+          admission: corruptAdmission && retained ? { ...retained, input: 4 } : retained };
+      },
+      async reconcileEffect() { return { state: "indeterminate" }; },
+      async executeTool(taskId, effectId, _tool, input) {
+        expect(taskId).toBe(id);
+        expect(effectId).toBe(operation);
+        return { kind: "succeeded", value: input };
+      },
+      async send(message) { return { accepted: true, messageId: message.id }; },
+      async *inbox() { yield* []; },
+    };
+    const spawner: HarnessRuntimeSpawner = {
+      policyIdentity: () => null,
+      async admitResumable(_operationId, _definition, _input, _harness, _parentTaskId, admission) {
+        retained = admission;
+        return { kind: "accepted", task: untrustedTask };
+      },
+      async reconcileAdmission() { return { task: untrustedTask, operationId: admissionId,
+        taskName: "split", revision: "1", implementationDigest: durableDigest, admission: retained }; },
+    };
+    const runtime = Harness.builder(contracts).state(state).spawner(spawner).task(definition)
+      .tool(tool).grant("tool:call:split-tool").build();
+    const admitted = await runtime.admit(definition, 3, admissionId);
+    expect(admitted.kind).toBe("accepted");
+    if (admitted.kind !== "accepted") throw new Error("split task was not admitted");
+    expect(await admitted.task.result()).toEqual({ kind: "succeeded", value: 7 });
+    expect(await (await runtime.reconcileAdmission(admissionId))?.result())
+      .toEqual({ kind: "succeeded", value: 7 });
+    expect(await new TaskContext(runtime, new AbortController().signal, id, true)
+      .callDurable(operation, runtime.tool(tool), 3)).toEqual({ kind: "succeeded", value: 3 });
+    corruptAdmission = true;
+    await expect(runtime.admit(definition, 3, admissionId)).rejects.toThrow("exact spawner request");
+  });
+
+  test("qualified execution is pinned and retries use the retained placement", async () => {
+    const definition = TaskDefinition.resumable<number, number, number>("placed", "1", {
+      state: numberSchema, initial: input => input,
+      async transition(_context, value) { return { kind: "finish", output: value }; },
+    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    const localClosure = TaskDefinition.live<number, number>("local-closure", "1", (_context, value) => value);
+    const routeIdentity = policyIdentity("test.execution", "1", Uint8Array.from({ length: 32 }, () => 7));
+    const placement = {
+      provider: routeIdentity,
+      build: { kind: "artifact" as const,
+        provider: { namespace: "test", family: "objects", version: "1" }, key: [1], version: null },
+      environment: { kind: "sandbox" as const,
+        provider: { namespace: "test", family: "machines", version: "1" }, key: [2], version: null },
+      readiness_revision: Array.from({ length: 32 }, () => 3),
+    };
+    const operationId = "12345678-1234-4234-8234-123456789abc";
+    const taskId = "task:placed" as RuntimeTaskId;
+    const ownerTask = new Task(taskId, async () => 7);
+    let retained: TaskAdmissionRecord | undefined;
+    let qualifications = 0;
+    let corruptOwner = false;
+    const attachment = () => ({ task: ownerTask, operationId, taskName: "placed", revision: "1",
+      implementationDigest: durableDigest, admission: retained });
+    const state: HarnessRuntimeState = {
+      policyIdentity: () => null, executionIdentity: () => routeIdentity,
+      async attach() { return corruptOwner && retained
+        ? { ...attachment(), admission: { ...retained, execution: { ...placement, readiness_revision: Array.from({ length: 32 }, () => 4) } } }
+        : attachment(); },
+      async reconcileEffect() { return { state: "indeterminate" }; },
+      async send(message) { return { accepted: true, messageId: message.id }; },
+      async *inbox() { yield* []; },
+    };
+    const spawner: HarnessRuntimeSpawner = {
+      policyIdentity: () => null, executionIdentity: () => routeIdentity,
+      async admitResumable(_id, _definition, _input, _harness, _parent, admission) {
+        retained = admission;
+        return { kind: "accepted", task: ownerTask };
+      },
+      async reconcileAdmission() { return retained ? attachment() : null; },
+    };
+    const execution: HarnessExecutionProvider = {
+      identity: () => routeIdentity, spawner: () => spawner, state: () => state,
+      async qualifyTask() { qualifications++; return placement; },
+      async qualifyBatch() { throw new Error("batch route is not registered"); },
+    };
+    const runtime = Harness.builder(contracts).execution(execution).task(definition).task(localClosure).build();
+    expect(() => runtime.spawn(localClosure, 3)).toThrow("live task closures cannot cross an execution provider");
+    expect((await runtime.admit(definition, 3, operationId)).kind).toBe("accepted");
+    // The full task-admission envelope owns the canonical representation of
+    // nested resource keys and byte vectors.
+    expect(retained?.execution).toEqual(contracts.validate("task_admission", retained!).execution);
+    expect(retained).toEqual(contracts.validate("task_admission", retained!));
+    expect(retained?.operation_id).toBe(operationId);
+    expect(retained?.run_limits).toEqual({ concurrency: null, max_steps: null, deadline_epoch_ms: null });
+    expect(qualifications).toBe(1);
+    expect((await runtime.admit(definition, 3, operationId)).kind).toBe("accepted");
+    expect(qualifications).toBe(1);
+    corruptOwner = true;
+    await expect(runtime.admit(definition, 3, operationId)).rejects.toThrow("exact spawner request");
   });
 
   test("preserves unresolved batch admission and stable scoped entry identities", async () => {
@@ -452,28 +759,156 @@ describe("typed agent runtime", () => {
       async transition(_context, state) { return { kind: "finish", output: state }; },
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
     const ids: string[] = [];
+    let admittedManifests = 0;
+    let retainedBatch: import("../src/index.js").BatchAdmissionRequest | undefined;
     const host: HarnessRuntimeHost = {
       policyIdentity: () => null,
-      async admitResumable(operationId) { ids.push(operationId); return { kind: "indeterminate", operationId }; },
-      async reconcileBatch(groupId, batchId, inputDigest) { return { taskName: "batch-work", revision: "2", implementationDigest: durableDigest, inputDigest, entries: [0, 1].map(index => ({ key: { batchId, index }, admission: { kind: "indeterminate" as const, operationId: `${groupId}:batch-work@2#${durableDigest}:${batchId}:${index}` } })) }; },
+      async admitBatch(request) {
+        admittedManifests++;
+        retainedBatch = request;
+        expect(request.canonical.contract).toBe("harness.batch.v2");
+        expect(request.canonical.group_policy).toBe("collect-all");
+        expect(request.canonical.parent).toBeNull();
+        expect(request.canonical.inputs).toEqual([1n, 2n]);
+        expect(request.inputDigest).toEqual(Array.from(contracts.digestCanonicalJson(request.canonical)));
+        expect(Object.isFrozen(request.inputDigest)).toBeTrue();
+        ids.push(...request.members.map(member => member.operation_id));
+        return { taskName: request.taskName, revision: request.revision,
+          implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
+          entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
+            admission: { kind: "indeterminate" as const, operationId: member.operation_id } })) };
+      },
+      async reconcileBatch(request) { return { taskName: "batch-work", revision: "2", implementationDigest: durableDigest,
+        inputDigest: request.inputDigest, entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
+          admission: { kind: "indeterminate" as const, operationId: member.operation_id } })) }; },
+      async loadBatch(batchId) { return retainedBatch?.batchId === batchId ? retainedBatch.canonical : null; },
+      async cancelBatch(batchId) {
+        if (retainedBatch?.batchId !== batchId) return null;
+        return { groupId: retainedBatch.groupId, batchId,
+          entries: retainedBatch.members.map((member, index) => ({
+            key: { batchId, index },
+            status: { kind: "indeterminate" as const, operationId: member.operation_id },
+          })) };
+      },
       async attach(id) { return { task: new Task(id, async () => undefined), operationId: "operation:batch", taskName: "batch-work", revision: "2", implementationDigest: durableDigest }; },
       async reconcileEffect() { return { state: "indeterminate" } as const; },
       async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
       async *inbox() { yield* [] as TaskMessage[]; },
     };
-    const group = Harness.builder(contracts).host(host).task(definition).build().group<number>(GroupPolicies.collectAll, "group:stable" as GroupId);
-    const batch = new Batch("batch:stable" as BatchId, [1, 2]);
+    const groupId = "11111111-1111-4111-8111-111111111111" as GroupId;
+    const batch = new Batch("22222222-2222-4222-8222-222222222222" as BatchId, [1, 2]);
+    const group = Harness.builder(contracts).host(host).task(definition).build().group<number>(GroupPolicies.collectAll, groupId);
     expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
     expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
-    expect(ids).toEqual([0, 1, 0, 1].map(index => `group:stable:batch-work@2#${durableDigest}:batch:stable:${index}`));
+    expect(admittedManifests).toBe(1);
+    expect(ids).toEqual([0, 1].map(index => contracts.batchMemberOperationId(groupId, batch.id, index)));
     const completed = [];
     for await (const entry of group.asCompleted()) completed.push(entry);
     expect(completed).toHaveLength(2);
     expect(completed.map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
     expect((await group.join()).complete).toBeFalse();
-    const reconstructed = Harness.builder(contracts).host(host).task(definition).build().group<number>(GroupPolicies.collectAll, "group:stable" as GroupId);
-    expect((await reconstructed.reconcileBatch(definition, batch)).map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
+    const reconstructed = Harness.builder(contracts).host(host).task(definition).build().group<number>(GroupPolicies.collectAll, groupId);
+    expect((await reconstructed.reconcileBatchId(definition, batch.id))?.map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
+    expect(await reconstructed.reconcileBatchId(definition, "33333333-3333-4333-8333-333333333333" as BatchId)).toBeNull();
     expect((await reconstructed.join()).entries).toHaveLength(2);
+    const cancellation = await reconstructed.cancelBatchId(definition, batch.id);
+    expect(cancellation?.entries.map(entry => entry.status.kind)).toEqual(["indeterminate", "indeterminate"]);
+  });
+
+  test("asks the durable batch owner to retain cancellation after a failed member", async () => {
+    const definition = TaskDefinition.resumable<number, number, number>("cancel-batch", "1", {
+      state: numberSchema, initial: input => input,
+      async transition(_context, state) { return { kind: "finish", output: state }; },
+    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
+    let replay: HostBatchReplay | undefined;
+    let declarations = 0;
+    let requested = 0;
+    const tasks = new Map<string, Task<number>>();
+    const host: HarnessRuntimeHost = {
+      policyIdentity: () => null,
+      async admitBatch(request) {
+        retained = request;
+        expect(request.canonical.group_policy).toBe("cancel-on-failure");
+        const [first, second] = request.members;
+        if (!first || !second) throw new Error("expected two batch members");
+        tasks.set(first.operation_id, new Task<number>(first.operation_id as RuntimeTaskId,
+          async () => { throw new Error("first member failed"); }));
+        tasks.set(second.operation_id, new Task<number>(second.operation_id as RuntimeTaskId,
+          async signal => new Promise<number>((_resolve, reject) => {
+            signal.addEventListener("abort", () => { requested++; reject(new Error("owner cancelled sibling")); }, { once: true });
+          })));
+        replay = { taskName: request.taskName, revision: request.revision,
+          implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
+          entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
+            admission: { kind: "accepted" as const, task: tasks.get(member.operation_id)! } })) };
+        return replay;
+      },
+      async reconcileBatch() { if (!replay) throw new Error("batch was not retained"); return replay; },
+      async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
+      async cancelBatch(batchId) {
+        if (retained?.batchId !== batchId) return null;
+        declarations++;
+        await tasks.get(retained.members[1]!.operation_id)!.cancel();
+        return { groupId: retained.groupId, batchId,
+          entries: retained.members.map((_member, index) => ({ key: { batchId, index },
+            status: { kind: "requested" as const } })) };
+      },
+      async attach(id) {
+        const member = retained?.members.find(candidate => candidate.operation_id === id);
+        const task = tasks.get(id);
+        if (!member || !task) throw new Error("unknown batch member");
+        return { task, operationId: member.operation_id, taskName: definition.name,
+          revision: definition.revision, implementationDigest: durableDigest };
+      },
+      async reconcileEffect() { return { state: "indeterminate" } as const; },
+      async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
+      async *inbox() { yield* [] as TaskMessage[]; },
+    };
+    const groupId = "11111111-1111-4111-8111-111111111112" as GroupId;
+    const batchId = "22222222-2222-4222-8222-222222222223" as BatchId;
+    const group = Harness.builder(contracts).host(host).task(definition).build()
+      .group<number>(GroupPolicies.cancelOnFailure, groupId);
+    const admitted = await group.spawnMany(definition, new Batch(batchId, [1, 2]));
+    expect(admitted.map(entry => entry.admission.kind)).toEqual(["accepted", "accepted"]);
+    const completed = await group.join();
+    expect(completed.entries.map(entry => entry.outcome?.kind)).toEqual(["failed", "cancelled"]);
+    expect(completed.cancellation).toBe("requested");
+    expect(completed.complete).toBeTrue();
+    expect(declarations).toBe(1);
+    expect(requested).toBe(1);
+  });
+
+  test("keeps every batch slot reconcilable after a lost manifest acknowledgement", async () => {
+    const definition = TaskDefinition.resumable<number, number, number>("batch-lost-ack", "1", {
+      state: numberSchema, initial: input => input,
+      async transition(_context, state) { return { kind: "finish", output: state }; },
+    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
+    const host: HarnessRuntimeHost = {
+      policyIdentity: () => null,
+      async admitBatch(request) { retained = request; throw new AdmissionUncertainError(request.batchId); },
+      async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
+      async reconcileBatch(request) {
+        expect(request.inputDigest).toEqual(retained?.inputDigest);
+        return { taskName: request.taskName, revision: request.revision,
+          implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
+          entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
+            admission: { kind: "indeterminate" as const, operationId: member.operation_id } })) };
+      },
+      async attach() { throw new Error("no member accepted"); },
+      async reconcileEffect() { return { state: "indeterminate" }; },
+      async send(message) { return { accepted: true, messageId: message.id }; },
+      async *inbox() { yield* []; },
+    };
+    const batch = new Batch("33333333-3333-4333-8333-333333333333" as BatchId, [1, 2, 3]);
+    const group = Harness.builder(contracts).host(host).task(definition).build()
+      .group<number>(GroupPolicies.collectAll, "44444444-4444-4444-8444-444444444444" as GroupId);
+    expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind))
+      .toEqual(["indeterminate", "indeterminate", "indeterminate"]);
+    expect(retained?.members).toHaveLength(3);
+    expect((await group.reconcileBatch(definition, batch)).map(entry => entry.admission.kind))
+      .toEqual(["indeterminate", "indeterminate", "indeterminate"]);
   });
 
   test("rejects incomplete and unrelated host batch replay without retaining it", async () => {
@@ -481,21 +916,31 @@ describe("typed agent runtime", () => {
       state: numberSchema, initial: input => input,
       async transition(_context, state) { return { kind: "finish", output: state }; },
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    const batch = new Batch("batch:replay" as BatchId, [1, 2]);
-    let entries: { key: { batchId: BatchId; index: number }; admission: { kind: "indeterminate"; operationId: string } }[] = [];
+    const batch = new Batch("55555555-5555-4555-8555-555555555555" as BatchId, [1, 2]);
+    let entries: HostBatchReplay["entries"] = [];
+    let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
     let wrongDigest = false;
     const host: HarnessRuntimeHost = {
       policyIdentity: () => null,
-      async reconcileBatch(_groupId, _batchId, inputDigest) { return { taskName: "replay", revision: "1", implementationDigest: durableDigest,
-        inputDigest: wrongDigest ? new Uint8Array(inputDigest.length) : inputDigest, entries }; },
+      async admitBatch(request) {
+        retained = request;
+        return { taskName: request.taskName, revision: request.revision,
+          implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
+          entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
+            admission: { kind: "indeterminate" as const, operationId: member.operation_id } })) };
+      },
+      async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
+      async reconcileBatch(request) { return { taskName: "replay", revision: "1", implementationDigest: durableDigest,
+        inputDigest: wrongDigest ? Array(request.inputDigest.length).fill(0) as number[] : request.inputDigest, entries }; },
       async attach() { throw new Error("unused"); },
       async reconcileEffect() { return { state: "indeterminate" }; },
       async send(message) { return { accepted: true, messageId: message.id }; },
       async *inbox() { yield* []; },
     };
     const group = Harness.builder(contracts).host(host).task(definition).build()
-      .group<number>(GroupPolicies.collectAll, "group:replay" as GroupId);
-    const entry = (index: number, operationId = `group:replay:replay@1#${durableDigest}:batch:replay:${index}`) =>
+      .group<number>(GroupPolicies.collectAll, "66666666-6666-4666-8666-666666666666" as GroupId);
+    await group.spawnMany(definition, batch);
+    const entry = (index: number, operationId: string = contracts.batchMemberOperationId(group.id, batch.id, index)) =>
       ({ key: { batchId: batch.id, index }, admission: { kind: "indeterminate" as const, operationId } });
     entries = [entry(0)];
     await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("incomplete batch");
@@ -511,9 +956,14 @@ describe("typed agent runtime", () => {
     wrongDigest = true;
     await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("input digest differs");
     wrongDigest = false;
+    entries = [{ key: { batchId: batch.id, index: 0 },
+      admission: { kind: "rejected", reason: { code: "unsupported", message: "denied" } },
+      outcome: { kind: "succeeded", value: 1 } }, entry(1)];
+    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("outcome cannot precede");
+    entries = [entry(1), entry(0)];
     expect((await group.reconcileBatch(definition, batch)).map(value => value.key.index)).toEqual([0, 1]);
     await expect(group.reconcileBatch(definition, new Batch(batch.id, [1, 3])))
-      .rejects.toThrow("another input list");
+      .rejects.toThrow("another admission request");
     expect((await group.join()).entries).toHaveLength(2);
   });
 
@@ -525,16 +975,16 @@ describe("typed agent runtime", () => {
     let admitted = 0;
     const host: HarnessRuntimeHost = {
       policyIdentity: () => null,
-      async admitResumable() { admitted++; throw new Error("must not admit"); },
+      async admitBatch() { admitted++; throw new Error("must not admit"); },
       async attach() { throw new Error("unused"); },
       async reconcileEffect() { return { state: "indeterminate" }; },
       async send(message) { return { accepted: true, messageId: message.id }; },
       async *inbox() { yield* []; },
     };
     const group = Harness.builder(contracts).host(host).task(definition).build()
-      .group<number>(GroupPolicies.collectAll, "group:canonical" as GroupId);
+      .group<number>(GroupPolicies.collectAll, "77777777-7777-4777-8777-777777777777" as GroupId);
     const inputs = [1, undefined] as unknown as number[];
-    const entries = await group.spawnMany(definition, new Batch("batch:invalid-json" as BatchId, inputs));
+    const entries = await group.spawnMany(definition, new Batch("88888888-8888-4888-8888-888888888888" as BatchId, inputs));
     expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected"]);
     expect(entries.every(entry => entry.admission.kind === "rejected"
       && entry.admission.reason.code === "invalid_input")).toBeTrue();
@@ -547,19 +997,28 @@ describe("typed agent runtime", () => {
       async transition(_context, state) { return { kind: "finish", output: state }; },
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
     let currentIdentity: ReturnType<HarnessRuntimeHost["policyIdentity"]> = null;
+    let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
     const host: HarnessRuntimeHost = {
       policyIdentity: () => currentIdentity,
+      async admitBatch(request) {
+        retained = request;
+        return { taskName: request.taskName, revision: request.revision,
+          implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
+          entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
+            admission: { kind: "indeterminate" as const, operationId: member.operation_id } })) };
+      },
+      async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
       async attach(id) {
         currentIdentity = approvalPolicyIdentity;
         return { task: new Task(id, async () => 1), operationId: "drift-op", taskName: "drift-replay",
           revision: "1", implementationDigest: durableDigest };
       },
-      async reconcileBatch(groupId, batchId, inputDigest) {
+      async reconcileBatch(request) {
         currentIdentity = approvalPolicyIdentity;
         return { taskName: "drift-replay", revision: "1", implementationDigest: durableDigest,
-          inputDigest,
-          entries: [{ key: { batchId, index: 0 }, admission: { kind: "indeterminate" as const,
-            operationId: `${groupId}:drift-replay@1#${durableDigest}:${batchId}:0` } }] };
+          inputDigest: request.inputDigest,
+          entries: [{ key: { batchId: request.batchId, index: 0 }, admission: { kind: "indeterminate" as const,
+            operationId: request.members[0]!.operation_id } }] };
       },
       async reconcileEffect() { return { state: "indeterminate" }; },
       async send(message) { return { accepted: true, messageId: message.id }; },
@@ -568,13 +1027,15 @@ describe("typed agent runtime", () => {
     const runtime = Harness.builder(contracts).host(host).task(definition).build();
     await expect(runtime.attach(definition, "task:drift" as RuntimeTaskId)).rejects.toThrow("policy implementation changed");
     currentIdentity = null;
-    const group = runtime.group<number>(GroupPolicies.collectAll, "group:drift" as GroupId);
-    await expect(group.reconcileBatch(definition, new Batch("batch:drift" as BatchId, [1])))
+    const group = runtime.group<number>(GroupPolicies.collectAll, "99999999-9999-4999-8999-999999999999" as GroupId);
+    const batch = new Batch("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" as BatchId, [1]);
+    await group.spawnMany(definition, batch);
+    await expect(group.reconcileBatch(definition, batch))
       .rejects.toThrow("policy implementation changed");
-    expect((await group.join()).entries).toHaveLength(0);
+    expect((await group.join()).entries).toHaveLength(1);
   });
 
-  test("records valid batch admissions even when another input is invalid", async () => {
+  test("rejects the entire immutable batch before publication when an input is invalid", async () => {
     const definition = TaskDefinition.resumable<number, number, number>("validate-input", "1", {
       state: numberSchema,
       initial: input => input,
@@ -586,17 +1047,18 @@ describe("typed agent runtime", () => {
     const admitted: string[] = [];
     const host: HarnessRuntimeHost = {
       policyIdentity: () => null,
-      async admitResumable(operationId: string) { admitted.push(operationId); return { kind: "indeterminate", operationId }; },
+      async admitBatch(request) { admitted.push(...request.members.map(member => member.operation_id)); throw new Error("must not admit"); },
       async attach(id) { return { task: new Task(id, async () => undefined), operationId: "operation:partial", taskName: "validate-input", revision: "1", implementationDigest: durableDigest }; },
       async reconcileEffect() { return { state: "indeterminate" } as const; },
       async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
       async *inbox() { yield* [] as TaskMessage[]; },
     };
-    const group = Harness.builder(contracts).host(host).task(definition).build().group<number>(GroupPolicies.collectAll, "group:partial" as GroupId);
-    const entries = await group.spawnMany(definition, new Batch("batch:partial" as BatchId, [1, -1, 2]));
-    expect(entries.map(entry => entry.admission.kind)).toEqual(["indeterminate", "rejected", "indeterminate"]);
-    expect(admitted).toHaveLength(2);
-    expect((await group.join()).entries).toHaveLength(3);
+    const group = Harness.builder(contracts).host(host).task(definition).build().group<number>(GroupPolicies.collectAll,
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" as GroupId);
+    const entries = await group.spawnMany(definition, new Batch("cccccccc-cccc-4ccc-8ccc-cccccccccccc" as BatchId, [1, -1, 2]));
+    expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected", "rejected"]);
+    expect(admitted).toHaveLength(0);
+    expect((await group.join()).entries).toHaveLength(0);
   });
 
   test("routes typed tools through policy and interaction boundaries", async () => {
@@ -654,9 +1116,12 @@ describe("typed agent runtime", () => {
     expect(seen).toHaveLength(2);
     expect(seen[0]).not.toEqual(seen[1]);
     const signal = new AbortController().signal;
-    expect(await approved.call(approved.tool(tool), 4, signal, undefined, "model-tool:turn:0", "provider-call")).toBe(4);
-    expect(await approved.call(approved.tool(tool), 4, signal, undefined, "model-tool:turn:0", "provider-call")).toBe(4);
+    const operationId = "78eb6d34-0b1d-46e9-b282-9f0379b2b25e";
+    expect(await approved.call(approved.tool(tool), 4, signal, undefined, operationId, "provider-call")).toBe(4);
+    expect(await approved.call(approved.tool(tool), 4, signal, undefined, operationId, "provider-call")).toBe(4);
     expect(seen[2]).toEqual(seen[3]);
+    await expect(approved.call(approved.tool(tool), 4, signal, undefined, "model-tool:turn:0", "provider-call"))
+      .rejects.toThrow();
     const unapproved = builder.interactions({ route: async () => ({ kind: "accepted", text: "not an approval" }) }).build();
     await expect(unapproved.call(unapproved.tool(tool), 3)).rejects.toMatchObject({ kind: "invalid_response" });
     for (const kind of ["declined", "cancelled", "expired", "denied"] as const) {
@@ -864,6 +1329,24 @@ describe("typed agent runtime", () => {
     expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected"]);
   });
 
+  test("pins live batch requests and never starts a duplicate entry", async () => {
+    let runs = 0;
+    const task = TaskDefinition.live<number, number>("live-batch", "1", async (_context, value) => {
+      runs++;
+      return value;
+    });
+    const group = Harness.builder(contracts).task(task).build().group<number>(GroupPolicies.collectAll,
+      "group:live-stable" as GroupId);
+    const batch = new Batch("batch:live-stable" as BatchId, [1, 2]);
+    const first = await group.spawnMany(task, batch);
+    const repeated = await group.spawnMany(task, batch);
+    expect(repeated.map(entry => entry.admission)).toEqual(first.map(entry => entry.admission));
+    await expect(group.spawnMany(task, new Batch(batch.id, [1, 3])))
+      .rejects.toThrow("another admission request");
+    await group.join();
+    expect(runs).toBe(2);
+  });
+
   test("streams thousands of completed tasks once without rebuilding pending races", async () => {
     const task = TaskDefinition.live<number, number>("bulk", "1", async (_context, value) => value);
     const group = Harness.builder(contracts).task(task).build().group<number>(GroupPolicies.collectAll);
@@ -936,13 +1419,15 @@ describe("typed agent runtime", () => {
     await group.spawnMany(task, new Batch("batch:race" as BatchId, [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }]));
     const first = await group.race();
     expect(first.outcome?.kind).toBe("failed");
+    expect((await group.join()).entries.at(-1)?.outcome).toEqual({ kind: "succeeded", value: "late" });
     const succeeding = runtime.group<string>(GroupPolicies.collectAll);
     await succeeding.spawnMany(task, new Batch("batch:first-success" as BatchId, [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }]));
     expect((await succeeding.firstSuccess()).value).toBe("winner");
+    expect((await succeeding.join()).entries.at(-1)?.outcome).toEqual({ kind: "succeeded", value: "late" });
   });
 
   test("executes model tool calls with durable task ownership and typed receipts", async () => {
-    let modelStep = 0; let sender: RuntimeTaskId | undefined;
+    let modelStep = 0; let sender: RuntimeTaskId | undefined; let toolOperationId: string | undefined;
     const payload = await mailboxFile(3);
     const host: HarnessRuntimeHost = {
       policyIdentity: () => null,
@@ -952,11 +1437,12 @@ describe("typed agent runtime", () => {
       async *inbox() { yield* [] as TaskMessage[]; },
     };
     const tool = defineTool<number, number>({ name: "double", revision: "1", description: "double", inputSchema: {}, outputSchema: {}, parseInput: parseNumber, parseOutput: parseNumber }, async (context, input) => {
+      toolOperationId = context.operationId;
       const effect = await context.reconcileEffect("effect:tool" as EffectId);
       await context.send(context.taskId!, payload);
       return effect.state === "succeeded" ? input * 4 : 0;
     });
-    const runtime = Harness.builder(contracts).host(host).tool(tool).grant("tool:call:double").model({
+    const runtime = Harness.builder(contracts).host(host).tool(tool).grant("tool:call:double").model(testModel, {
       async *generate() { if (modelStep++ === 0) { yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; } },
       async reconcile() { return undefined; },
     }).build();
@@ -964,6 +1450,7 @@ describe("typed agent runtime", () => {
     expect(output.text).toBe("done");
     expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, callId: "call", name: "double", arguments: 3, value: 12, projection: 12 }, { kind: "model-completed", metadata: { tokens: 1 } }]);
     expect(sender).toBe(output.taskId);
+    expect(toolOperationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
     expect(await (await runtime.attach(output.taskId)).result()).toMatchObject({ kind: "succeeded", value: { text: "done" } });
   });
 
@@ -973,7 +1460,7 @@ describe("typed agent runtime", () => {
       volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "project", class: "project" as const, owner: { kind: "project" as const, id: "project" } },
       path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
     };
-    const runtime = Harness.builder(contracts).model({
+    const runtime = Harness.builder(contracts).model(testModel, {
       async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
@@ -981,9 +1468,26 @@ describe("typed agent runtime", () => {
     expect(observed[0]?.content).toEqual([{ kind: "text", text: "describe" }, { kind: "file", file, policy: "native" }]);
   });
 
+  test("model identity and options are pinned at binding, including scoped overrides", async () => {
+    const rootIdentity = { provider: "root", name: "model", revision: "3", options: { mode: "original" } };
+    const seen: unknown[] = [];
+    const provider = { async *generate(request: { model: unknown }) { seen.push(request.model); yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; } };
+    const runtime = Harness.builder(contracts).model(rootIdentity, provider).build();
+    rootIdentity.options.mode = "mutated";
+    await runtime.run("root");
+    expect(seen[0]).toEqual({ provider: "root", name: "model", revision: "3", options: { mode: "original" } });
+    const childIdentity = { provider: "child", name: "model", revision: "4", options: { mode: "scoped" } };
+    const scoped = runtime.scoped(ExecutionScope.create().model(childIdentity, provider));
+    childIdentity.options.mode = "mutated";
+    await scoped.run("child");
+    expect(seen[1]).toEqual({ provider: "child", name: "model", revision: "4", options: { mode: "scoped" } });
+    expect(() => Harness.builder(contracts).model({ provider: "", name: "model", revision: "1", options: {} }, provider)).toThrow("identity");
+  });
+
   test("selected context preserves canonical roles without a synthetic user duplicate", async () => {
     let observed: readonly ModelMessage[] = [];
-    const runtime = Harness.builder(contracts).model({
+    const runtime = Harness.builder(contracts).model(testModel, {
       async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
@@ -1007,7 +1511,7 @@ describe("typed agent runtime", () => {
 
   test("builder limits bound selected history and direct input before model dispatch", async () => {
     let dispatched = 0;
-    const runtime = Harness.builder(contracts).limits({ context_messages: 1, render_bytes: 8 }).model({
+    const runtime = Harness.builder(contracts).limits({ context_messages: 1, render_bytes: 8 }).model(testModel, {
       async *generate() { dispatched++; yield { kind: "completed" as const, metadata: null }; },
       async reconcile() { return undefined; },
     }).build();
@@ -1023,7 +1527,7 @@ describe("typed agent runtime", () => {
 
   test("stream event limits stop an unbounded provider before further dispatch", async () => {
     let produced = 0;
-    const runtime = Harness.builder(contracts).limits({ model_events_per_step: 2, tool_calls_per_step: 1 }).model({
+    const runtime = Harness.builder(contracts).limits({ model_events_per_step: 2, tool_calls_per_step: 1 }).model(testModel, {
       async *generate() {
         while (true) { produced++; yield { kind: "content" as const, delta: "." }; }
       },
@@ -1037,7 +1541,7 @@ describe("typed agent runtime", () => {
     let dispatched = 0;
     const runtime = Harness.builder(contracts).limits({ render_bytes: 8 }).context({
       async build() { return [{ role: "user" as const, content: "too much context" }]; },
-    }).model({
+    }).model(testModel, {
       async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
@@ -1051,7 +1555,7 @@ describe("typed agent runtime", () => {
       async build() { return [{ role: "assistant" as const, content: {
         kind: "tool_call" as const, callId: "call", name: "tool", arguments: { unsafe: Number.POSITIVE_INFINITY },
       } }, { role: "user" as const, content: "safe" }]; },
-    }).model({
+    }).model(testModel, {
       async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
@@ -1087,7 +1591,7 @@ describe("typed agent runtime", () => {
       return input;
     });
     let step = 0;
-    const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:again").model({
+    const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:again").model(testModel, {
       async *generate() {
         if (step++ < 2) {
           yield { kind: "tool_call" as const, callId: "provider-call", name: "again", arguments: step };

@@ -405,6 +405,12 @@ impl StockExecutor {
                 prior_messages: prior_messages.to_vec(),
             })
             .await?;
+        if context.messages.len() > self.limits.context_messages {
+            return Err(Error::Invalid("model context exceeds message limit".into()));
+        }
+        for message in &context.messages {
+            message.content.validate_limits(self.limits)?;
+        }
         let mut replayed_model = Vec::new();
         let mut admission = ModelEventAdmission::default();
         for record in &records {
@@ -610,6 +616,27 @@ impl StockExecutor {
             &invocation.arguments,
             "tool input",
         )?;
+        let capability = format!("tool:call:{}", tool.definition.name);
+        if !self.tool_scope.grants().contains(&capability) {
+            return Err(Error::Unauthorized(format!("scope lacks {capability}")));
+        }
+        tool.executor
+            .authorize(Some(&self.tool_scope), &invocation)?;
+        let started = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ToolStarted {
+                step: event_step,
+                call_id,
+                invocation: existing,
+            } if *event_step == step && call_id == &invocation.call_id => Some(existing),
+            _ => None,
+        });
+        if let Some(existing) = started
+            && load_json::<ToolInvocation>(journal, existing).await? != invocation
+        {
+            return Err(Error::Conflict(
+                "tool call identity is bound to another invocation".into(),
+            ));
+        }
         if let Some(reason) = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolFailed {
                 step: event_step,
@@ -631,6 +658,11 @@ impl StockExecutor {
             }
             _ => None,
         });
+        if completed_tool.is_some() && started.is_none() {
+            return Err(Error::Invalid(
+                "completed tool has no admitted invocation".into(),
+            ));
+        }
         let (result, projection) = if let Some(completed) = completed_tool {
             (
                 load_json::<ToolResult>(journal, &completed.0).await?,
@@ -639,10 +671,6 @@ impl StockExecutor {
         } else {
             {
                 let scope = &self.tool_scope;
-                let capability = format!("tool:call:{}", tool.definition.name);
-                if !scope.grants().contains(&capability) {
-                    return Err(Error::Unauthorized(format!("scope lacks {capability}")));
-                }
                 if let Some(policy) = &self.policy {
                     if self.policy_identity.as_ref() != Some(&policy.identity()) {
                         return Err(Error::Conflict("stock policy changed after binding".into()));
@@ -700,20 +728,7 @@ impl StockExecutor {
                     }
                 }
             }
-            let started = records.iter().find_map(|record| match &record.event {
-                ExecutionEvent::ToolStarted {
-                    step: event_step,
-                    call_id,
-                    invocation: existing,
-                } if *event_step == step && call_id == &invocation.call_id => Some(existing),
-                _ => None,
-            });
-            let claimed = if let Some(existing) = started {
-                if load_json::<ToolInvocation>(journal, existing).await? != invocation {
-                    return Err(Error::Conflict(
-                        "tool call identity is bound to another invocation".into(),
-                    ));
-                }
+            let claimed = if started.is_some() {
                 false
             } else {
                 let invocation_ref = stage_json(
@@ -810,7 +825,20 @@ impl StockExecutor {
                     ToolFailureKind::InvalidOutput.message().into(),
                 ));
             }
-            let Ok(projection) = tool.projection.project(&invocation, &result) else {
+            let Ok(projection) = tool
+                .projection
+                .project(&invocation, &result)
+                .and_then(|value| {
+                    if crate::contract::canonical_json_bytes(&value)?.len() as u64
+                        > self.limits.render_bytes
+                    {
+                        return Err(Error::Invalid(
+                            "tool projection exceeds render limit".into(),
+                        ));
+                    }
+                    Ok(value)
+                })
+            else {
                 self.record_tool_failure(
                     journal,
                     operation_id,
@@ -911,14 +939,52 @@ impl StockExecutor {
             (result, projection)
         };
         validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
-        prior_messages.push(ModelMessage {
+        let message = ModelMessage {
             role: ModelRole::Tool,
             content: ModelContent::Part(ModelContentPart::ToolResult {
                 call_id: invocation.call_id.clone(),
                 name: invocation.name.clone(),
                 value: projection,
             }),
-        });
+        };
+        message.content.validate_limits(self.limits)?;
+        prior_messages.push(message);
+        Ok(())
+    }
+
+    async fn validate_turn_input(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+    ) -> Result<()> {
+        self.limits.validate()?;
+        if input.max_steps == 0 || input.max_steps as usize > self.limits.model_steps {
+            return Err(Error::Invalid(
+                "max_steps exceeds configured model step bound".into(),
+            ));
+        }
+        input.input.validate_user_input()?;
+        input.input.validate_limits(self.limits)?;
+        if let Some(selected) = &input.selected_context {
+            selected.validate_for_input(&input.input)?;
+            if selected.messages.len() > self.limits.context_messages {
+                return Err(Error::Invalid(
+                    "selected context exceeds configured message limit".into(),
+                ));
+            }
+            journal
+                .verify_selected_context(input.operation_id, selected)
+                .await?;
+            for message in &selected.messages {
+                message.content.validate_limits(self.limits)?;
+                for reference in message.content.file_refs() {
+                    journal.verify_input_file(reference).await?;
+                }
+            }
+        }
+        for reference in input.input.file_refs() {
+            journal.verify_input_file(reference).await?;
+        }
         Ok(())
     }
 }
@@ -930,34 +996,7 @@ impl Executor for StockExecutor {
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>> {
         Box::pin(async move {
-            self.limits.validate()?;
-            if input.max_steps == 0 || input.max_steps as usize > self.limits.model_steps {
-                return Err(Error::Invalid(
-                    "max_steps exceeds configured model step bound".into(),
-                ));
-            }
-            input.input.validate_user_input()?;
-            input.input.validate_limits(self.limits)?;
-            if let Some(selected) = &input.selected_context {
-                selected.validate_for_input(&input.input)?;
-                if selected.messages.len() > self.limits.context_messages {
-                    return Err(Error::Invalid(
-                        "selected context exceeds configured message limit".into(),
-                    ));
-                }
-                journal
-                    .verify_selected_context(input.operation_id, selected)
-                    .await?;
-                for message in &selected.messages {
-                    message.content.validate_limits(self.limits)?;
-                    for reference in message.content.file_refs() {
-                        journal.verify_input_file(reference).await?;
-                    }
-                }
-            }
-            for reference in input.input.file_refs() {
-                journal.verify_input_file(reference).await?;
-            }
+            self.validate_turn_input(journal, &input).await?;
             self.ensure_started(journal, &input).await?;
             let mut prior_messages = Vec::new();
             let mut text = String::new();
@@ -986,11 +1025,13 @@ impl Executor for StockExecutor {
                             name,
                             arguments,
                         } => {
-                            calls.push(ToolInvocation {
+                            calls.push(ToolInvocation::for_model_call(
+                                input.operation_id,
+                                step,
                                 call_id,
                                 name,
                                 arguments,
-                            });
+                            ));
                         }
                         ModelEvent::Completed { metadata } => completed = Some(metadata),
                         ModelEvent::Reasoning { .. } => {}
@@ -1008,14 +1049,16 @@ impl Executor for StockExecutor {
                     });
                 }
                 for invocation in calls {
-                    prior_messages.push(ModelMessage {
+                    let message = ModelMessage {
                         role: ModelRole::Assistant,
                         content: ModelContent::Part(ModelContentPart::ToolCall {
                             call_id: invocation.call_id.clone(),
                             name: invocation.name.clone(),
                             arguments: invocation.arguments.clone(),
                         }),
-                    });
+                    };
+                    message.content.validate_limits(self.limits)?;
+                    prior_messages.push(message);
                     self.resolve_tool_call(
                         journal,
                         input.operation_id,
@@ -1084,14 +1127,14 @@ pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
 }
 
 #[derive(Default)]
-struct ModelEventAdmission {
+pub(crate) struct ModelEventAdmission {
     count: usize,
     calls: BTreeSet<String>,
     completed: bool,
 }
 
 impl ModelEventAdmission {
-    fn observe(&mut self, event: &ModelEvent, limits: Limits) -> Result<()> {
+    pub(crate) fn observe(&mut self, event: &ModelEvent, limits: Limits) -> Result<()> {
         if self.count >= limits.model_events_per_step {
             return Err(Error::Invalid("model event limit exceeded".into()));
         }
@@ -1116,6 +1159,10 @@ impl ModelEventAdmission {
         }
         self.count += 1;
         Ok(())
+    }
+
+    pub(crate) const fn completed(&self) -> bool {
+        self.completed
     }
 }
 
@@ -1530,6 +1577,27 @@ mod tests {
             max_steps: 4,
         };
         let first = executor.execute(input.clone(), &journal).await?;
+        let mut replay_context = Vec::new();
+        let changed_call = ToolInvocation::for_model_call(
+            input.operation_id,
+            0,
+            "call-1".into(),
+            "example.echo".into(),
+            json!({"value": "changed"}),
+        );
+        assert!(matches!(
+            executor
+                .resolve_tool_call(
+                    &journal,
+                    input.operation_id,
+                    0,
+                    changed_call,
+                    &mut replay_context,
+                )
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(replay_context.is_empty());
         let replayed = executor.execute(input, &journal).await?;
         assert_eq!(first, replayed);
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);

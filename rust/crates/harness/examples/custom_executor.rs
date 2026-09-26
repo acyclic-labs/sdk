@@ -2,6 +2,7 @@
 
 use acyclic_harness::{
     Result,
+    conversation::Attachment,
     executor::{ExecutionEvent, ExecutionJournal, Executor, TurnInput, TurnOutput},
     model::{ModelContent, ModelEvent},
 };
@@ -42,6 +43,16 @@ impl Executor for FullControlExecutor {
                     },
                 )
                 .await?;
+            // Inputs contain immutable refs rather than attachment bytes. A
+            // custom loop may retain or publish those refs explicitly; it
+            // must not copy their bytes into a durable event.
+            let attachments = input
+                .input
+                .file_refs()
+                .into_iter()
+                .cloned()
+                .map(|file| Attachment { file, label: None })
+                .collect();
             Ok(TurnOutput {
                 text: match input.input {
                     ModelContent::Text(text) => text,
@@ -49,7 +60,7 @@ impl Executor for FullControlExecutor {
                         "Custom executor accepted typed input".into()
                     }
                 },
-                attachments: Vec::new(),
+                attachments,
                 metadata: json!({"owned_by": "application"}),
                 steps: 1,
             })

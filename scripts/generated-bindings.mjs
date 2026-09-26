@@ -62,9 +62,9 @@ export const packagedRustBindings = [
 export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";
 export const packagedSourceCopies = [
   ...[
-    "conversation-message", "conversation-kinds", "file-ref", "task-outcome",
-    "extension-record", "resource-revision", "fork-seed", "reference-grant",
-    "interaction-resolution", "project-merge-receipt",
+    "conversation-message", "conversation-kinds", "file-ref", "file-ref-security-cases", "private-directory-page", "task-outcome",
+    "extension-record", "extension-state-migration", "extension-dependency", "extension-configuration", "extension-admission", "resource-revision", "fork-request", "fork-seed", "reference-grant", "execution-placement", "task-admission", "workflow-admission",
+    "interaction-resolution", "resolution-receipt", "project-merge-receipt",
   ].map(name => [`fixtures/harness/v2/${name}.json`, `rust/crates/harness/fixtures/v2/${name}.json`]),
   [compatibilityArtifacts.harness.schemaDigest, "rust/crates/harness/proto/harness/v2/harness.proto"],
   [compatibilityArtifacts.harness.conformanceDigest, "rust/crates/conformance/vectors/harness.json"],

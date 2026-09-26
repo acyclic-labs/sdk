@@ -4,14 +4,124 @@
 //! immutable result and a ref-only conversation notice, in one Stream event.
 
 use crate::{
-    Error, OperationId, Result,
+    Error, IdempotencyKey, OperationId, Result,
     conversation::{ConversationMessage, MessageKind, VolumeClass, VolumeRef},
-    core::Authority,
+    core::{Authority, Scope},
     fork::{ForkSeed, ResourceRevision},
     resources::{GenerationRef, ProviderRef},
 };
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
+
+/// Stable provider-owned identity of one inspected conflict region. Its bytes
+/// are deliberately opaque to Harness; a provider validates every selection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectConflict {
+    /// Provider that interprets the conflict identity.
+    pub provider: ProviderRef,
+    /// Bounded stable identity within the exact inspected join plan.
+    pub key: Vec<u8>,
+}
+
+impl ProjectConflict {
+    /// Rejects empty or unbounded provider conflict identities.
+    pub fn validate(&self) -> Result<()> {
+        self.provider.validate()?;
+        if self.key.is_empty() || self.key.len() > 4_096 {
+            return Err(Error::Invalid("project conflict key is invalid".into()));
+        }
+        Ok(())
+    }
+}
+
+/// Declarative choice of an immutable side, never an implicit write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectConflictSide {
+    /// The common ancestor generation.
+    Base,
+    /// The current parent target generation.
+    Target,
+    /// The child source generation being joined.
+    Source,
+}
+
+/// One exact conflict choice admitted by its owning inspected plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectConflictSelection {
+    /// Provider-owned conflict identity from the inspected join plan.
+    pub conflict: ProjectConflict,
+    /// Immutable side whose value the parent selected.
+    pub side: ProjectConflictSide,
+}
+
+/// Explicit result of an inspected project-only join attempt.
+pub enum ProjectJoinOutcome {
+    /// An immutable target generation was published and may be noticed in history.
+    Applied(ProjectMergeReceipt),
+    /// An exact retry of the same provider operation already published it.
+    AlreadyApplied(ProjectMergeReceipt),
+    /// The selected source introduced no changes to the target.
+    NoChanges(GenerationRef),
+    /// The target changed after inspection; callers must prepare a new plan.
+    StaleTarget(GenerationRef),
+    /// Exact conflicts need explicit parent choices or registered drivers.
+    Conflicted {
+        /// Provider-owned conflicts that still require a selection.
+        conflicts: Vec<ProjectConflict>,
+        /// Whether the provider omitted additional conflicts due to a bound.
+        truncated: bool,
+    },
+    /// The target writer changed, so no publication occurred.
+    Fenced,
+    /// The provider retry identity was previously bound to different inputs.
+    IdempotencyConflict,
+}
+
+/// Opaque inspected plan. Its implementation and conflict interpretation stay
+/// with the workspace provider; a lost acknowledgement must be reconciled by
+/// the stable provider operation, never blindly retried with a new key.
+pub trait ProjectJoinPlan: Send + Sync {
+    /// Returns the exact child generation captured during inspection.
+    fn source_generation(&self) -> &GenerationRef;
+    /// Returns the target generation required by the compare-and-swap join.
+    fn expected_target_generation(&self) -> &GenerationRef;
+    /// Applies the inspected project-only join under the parent's authority.
+    fn apply<'a>(
+        &'a self,
+        scope: &'a Scope,
+        operation_id: OperationId,
+        child: &'a Authority,
+        notice: &'a ConversationMessage,
+        selections: &'a [ProjectConflictSelection],
+    ) -> BoxFuture<'a, Result<ProjectJoinOutcome>>;
+}
+
+/// Parent-bound project workspace operations. A child cannot obtain this
+/// binding merely by possessing a project or generation reference.
+pub trait ProjectWorkspaceProvider: Send + Sync {
+    /// Returns the provider identity that owns workspace generations.
+    fn provider(&self) -> &ProviderRef;
+    /// Returns the parent-controlled project volume handled by this provider.
+    fn project(&self) -> &VolumeRef;
+    /// Creates a child project generation from one exact immutable source.
+    fn fork_project<'a>(
+        &'a self,
+        scope: &'a Scope,
+        source_generation: &'a GenerationRef,
+        child: &'a VolumeRef,
+        key: &'a IdempotencyKey,
+    ) -> BoxFuture<'a, Result<GenerationRef>>;
+    /// Inspect against the caller's current parent reducer, so a provider
+    /// bound before child publication cannot retain a stale fork registry.
+    fn prepare_project_merge<'a>(
+        &'a self,
+        scope: &'a Scope,
+        parent: &'a crate::core::Reducer,
+        child: &'a Authority,
+        child_project: &'a VolumeRef,
+    ) -> BoxFuture<'a, Result<Box<dyn ProjectJoinPlan>>>;
+}
 
 /// Provider-owned metadata proving one exact immutable merge publication.
 /// The statement is bounded and contains no message or file bodies; its owner
@@ -88,8 +198,8 @@ pub struct ProjectMergeReceipt {
     pub expected_target_generation: GenerationRef,
     /// Immutable generation produced by the join.
     pub result_generation: GenerationRef,
-    /// Provider-side idempotency identity for the join.
-    pub filesystem_operation_id: [u8; 16],
+    /// Bounded provider-side idempotency identity for the join.
+    pub provider_operation_id: Vec<u8>,
     /// Provider-owned proof binding this receipt to the join operation.
     pub provider_proof: ProviderJoinProof,
     /// Parent-conversation notice appended atomically with this receipt.
@@ -99,7 +209,8 @@ pub struct ProjectMergeReceipt {
 impl ProjectMergeReceipt {
     /// Checks ref-only shape and provider identities without fork lineage.
     pub fn validate_shape(&self) -> Result<()> {
-        if self.source_project.class() != VolumeClass::Project
+        if self.child.kind != crate::core::AggregateKind::Conversation
+            || self.source_project.class() != VolumeClass::Project
             || self.target_project.class() != VolumeClass::Project
             || self.source_project == self.target_project
             || self.source_project.provider() != self.target_project.provider()
@@ -110,11 +221,15 @@ impl ProjectMergeReceipt {
                 != self.target_project.provider()
             || self.result_generation.as_resource().provider() != self.target_project.provider()
             || self.provider_proof.provider != *self.target_project.provider()
+            || self.provider_operation_id.is_empty()
+            || self.provider_operation_id.len() > 64
+            || self.provider_operation_id.iter().all(|byte| *byte == 0)
         {
             return Err(Error::Invalid(
                 "project merge receipt has inconsistent identities".into(),
             ));
         }
+        self.child.stream_path()?;
         self.source_project.validate()?;
         self.target_project.validate()?;
         self.source_generation.validate()?;

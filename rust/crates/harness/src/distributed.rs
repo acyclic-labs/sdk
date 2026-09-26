@@ -26,6 +26,92 @@ const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";
 const READ_PAGE_SIZE: u32 = 1_024;
 const COORDINATOR_WIRE_VERSION: &str = "2";
 const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v2";
+const MAX_CHILD_PAGE: usize = 1_024;
+
+fn validate_child_page_request(
+    parent: OperationId,
+    after_slot: Option<&str>,
+    maximum: usize,
+) -> Result<()> {
+    if parent.into_bytes() == [0; 16]
+        || maximum == 0
+        || maximum > MAX_CHILD_PAGE
+        || after_slot.is_some_and(|slot| slot.len() > 255 || slot.chars().any(char::is_control))
+    {
+        return Err(Error::Invalid(
+            "child hierarchy page request is invalid".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_child_page(
+    page: &ChildOperationPage,
+    expected_revision: Option<u64>,
+    after_slot: Option<&str>,
+    maximum: usize,
+) -> Result<()> {
+    if expected_revision.is_some_and(|revision| revision != page.revision)
+        || page.entries.len() > maximum
+        || page
+            .next_after
+            .as_ref()
+            .is_some_and(|next| page.entries.last().is_none_or(|last| &last.slot != next))
+    {
+        return Err(Error::Invalid(
+            "child hierarchy page does not match its request".into(),
+        ));
+    }
+    let mut previous = after_slot;
+    let mut ids = std::collections::BTreeSet::new();
+    for entry in &page.entries {
+        if entry.operation_id.into_bytes() == [0; 16]
+            || entry.slot.trim().is_empty()
+            || entry.slot.len() > 255
+            || entry.slot.chars().any(char::is_control)
+            || previous.is_some_and(|slot| entry.slot.as_str() <= slot)
+            || !ids.insert(entry.operation_id)
+        {
+            return Err(Error::Invalid(
+                "child hierarchy entries are not in stable slot order".into(),
+            ));
+        }
+        previous = Some(&entry.slot);
+    }
+    Ok(())
+}
+
+/// One direct, same-owner child in stable declared-slot order.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ChildOperationLink {
+    /// Parent-owned slot, independent of execution or completion order.
+    pub slot: String,
+    /// Exact child operation identity.
+    pub operation_id: OperationId,
+}
+
+/// Bounded hierarchy observation at one coordinator revision. A changed
+/// revision makes continuation fail explicitly instead of skipping children.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ChildOperationPage {
+    /// Coordinator revision this page was observed from.
+    pub revision: u64,
+    /// Direct same-owner children, ordered by slot.
+    pub entries: Vec<ChildOperationLink>,
+    /// Pass this slot with `revision` to continue, if present.
+    pub next_after: Option<String>,
+}
+
+/// Cursor and bound for one direct-child observation page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChildOperationPageRequest<'a> {
+    /// Require the coordinator to remain at this revision while paging.
+    pub expected_revision: Option<u64>,
+    /// Resume strictly after this parent-local child slot.
+    pub after_slot: Option<&'a str>,
+    /// Maximum direct children to return.
+    pub maximum: usize,
+}
 
 /// Pull worker capacity and placement identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -272,6 +358,61 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .cloned()
     }
 
+    /// Discovers direct children without fork lineage or an arbitrary graph
+    /// scan. A foreign-owner child is never disclosed by a parent grant.
+    pub async fn observe_children(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        parent: OperationId,
+        request: ChildOperationPageRequest<'_>,
+    ) -> Result<ChildOperationPage> {
+        validate_child_page_request(parent, request.after_slot, request.maximum)?;
+        self.refresh().await?;
+        self.authorize_operation(owner, scope, verifier, parent, "operation:observe")?;
+        if request
+            .expected_revision
+            .is_some_and(|revision| revision != self.revision)
+        {
+            return Err(Error::Conflict("child hierarchy revision changed".into()));
+        }
+        let mut entries = Vec::with_capacity(request.maximum);
+        let mut has_more = false;
+        for (slot, child) in self.scheduler.children(parent) {
+            if request.after_slot.is_some_and(|after| slot <= after)
+                || child.spec.owner.authority() != owner
+            {
+                continue;
+            }
+            if entries.len() == request.maximum {
+                has_more = true;
+                break;
+            }
+            entries.push(ChildOperationLink {
+                slot: slot.to_owned(),
+                operation_id: child.spec.operation_id,
+            });
+        }
+        let next_after = if has_more {
+            entries.last().map(|entry| entry.slot.clone())
+        } else {
+            None
+        };
+        let page = ChildOperationPage {
+            revision: self.revision,
+            entries,
+            next_after,
+        };
+        validate_child_page(
+            &page,
+            request.expected_revision,
+            request.after_slot,
+            request.maximum,
+        )?;
+        Ok(page)
+    }
+
     /// Durably requests cancellation with exact retry and optional subtree propagation.
     pub async fn cancel_operation(
         &mut self,
@@ -377,6 +518,16 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Err(Error::Unauthorized(
                 "declaration owner does not match authenticated owner".into(),
             ));
+        }
+        if let Some(parent) = &spec.parent {
+            self.refresh().await?;
+            self.authorize_operation(
+                owner,
+                scope,
+                verifier,
+                parent.operation_id,
+                "operation:declare",
+            )?;
         }
         let operation_id = spec.operation_id;
         let event = SchedulerEvent::Declared {
@@ -1106,6 +1257,146 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         assert!(coordinator.scheduler().operation(operation_id).is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn another_owner_cannot_attach_a_child_to_a_foreign_parent() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let parent = OperationId::from_bytes([54; 16]);
+        let child = OperationId::from_bytes([55; 16]);
+        declare(&mut coordinator, spec(parent, 0)?, "owned-parent").await?;
+        let mut foreign_child = spec(child, 0)?;
+        foreign_child.owner = DurableOwner::Detached {
+            authority: Authority {
+                kind: AggregateKind::Task,
+                id: "foreign".into(),
+            },
+        };
+        foreign_child.parent = Some(ParentLink {
+            operation_id: parent,
+            slot: "uninvited-child".into(),
+        });
+        assert!(matches!(
+            declare(&mut coordinator, foreign_child, "foreign-parent-link").await,
+            Err(Error::NotFound(_))
+        ));
+        assert!(coordinator.scheduler().operation(child).is_none());
+        assert_eq!(coordinator.scheduler().children(parent).count(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn owner_observes_bounded_children_with_revision_checked_continuation() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let owner = Authority {
+            kind: AggregateKind::Task,
+            id: "owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
+        let scope = issuer.root("observe", Capabilities::new(["operation:observe"]));
+        let parent = OperationId::from_bytes([56; 16]);
+        declare(&mut coordinator, spec(parent, 0)?, "hierarchy-parent").await?;
+        for (id, slot) in [(57_u8, "a"), (58_u8, "b")] {
+            let mut child = spec(OperationId::from_bytes([id; 16]), 0)?;
+            child.parent = Some(ParentLink {
+                operation_id: parent,
+                slot: slot.into(),
+            });
+            declare(&mut coordinator, child, &format!("hierarchy-{slot}")).await?;
+        }
+        let first = coordinator
+            .observe_children(
+                &owner,
+                &scope,
+                &issuer.verifier(),
+                parent,
+                ChildOperationPageRequest {
+                    expected_revision: None,
+                    after_slot: None,
+                    maximum: 1,
+                },
+            )
+            .await?;
+        assert_eq!(first.entries.len(), 1);
+        assert_eq!(first.entries[0].slot, "a");
+        assert_eq!(first.next_after.as_deref(), Some("a"));
+        let second = coordinator
+            .observe_children(
+                &owner,
+                &scope,
+                &issuer.verifier(),
+                parent,
+                ChildOperationPageRequest {
+                    expected_revision: Some(first.revision),
+                    after_slot: first.next_after.as_deref(),
+                    maximum: 1,
+                },
+            )
+            .await?;
+        assert_eq!(second.entries.len(), 1);
+        assert_eq!(second.entries[0].slot, "b");
+        assert!(second.next_after.is_none());
+        let mut late = spec(OperationId::from_bytes([59; 16]), 0)?;
+        late.parent = Some(ParentLink {
+            operation_id: parent,
+            slot: "c".into(),
+        });
+        let mut peer = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        declare(&mut peer, late, "hierarchy-c").await?;
+        assert!(matches!(
+            coordinator
+                .observe_children(
+                    &owner,
+                    &scope,
+                    &issuer.verifier(),
+                    parent,
+                    ChildOperationPageRequest {
+                        expected_revision: Some(first.revision),
+                        after_slot: first.next_after.as_deref(),
+                        maximum: 1,
+                    }
+                )
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn child_page_validation_rejects_invalid_ids_and_continuations() -> Result<()> {
+        let parent = OperationId::from_bytes([1; 16]);
+        assert!(validate_child_page_request(OperationId::from_bytes([0; 16]), None, 1).is_err());
+        assert!(validate_child_page_request(parent, None, 0).is_err());
+        assert!(validate_child_page_request(parent, None, MAX_CHILD_PAGE + 1).is_err());
+        assert!(validate_child_page_request(parent, Some("\u{7f}"), 1).is_err());
+        assert!(validate_child_page_request(parent, Some(&"x".repeat(256)), 1).is_err());
+        validate_child_page_request(parent, Some("résumé"), 1)?;
+
+        let page = ChildOperationPage {
+            revision: 4,
+            entries: vec![ChildOperationLink {
+                slot: "a".into(),
+                operation_id: OperationId::from_bytes([2; 16]),
+            }],
+            next_after: Some("a".into()),
+        };
+        validate_child_page(&page, Some(4), None, 1)?;
+        assert!(validate_child_page(&page, Some(5), None, 1).is_err());
+        assert!(validate_child_page(&page, None, Some("a"), 1).is_err());
+        let mut invalid = page;
+        invalid.next_after = Some("b".into());
+        assert!(validate_child_page(&invalid, None, None, 1).is_err());
+        invalid.next_after = Some("a".into());
+        invalid.entries[0].operation_id = OperationId::from_bytes([0; 16]);
+        assert!(validate_child_page(&invalid, None, None, 1).is_err());
+        invalid.entries[0].operation_id = OperationId::from_bytes([2; 16]);
+        invalid.entries[0].slot = "".into();
+        assert!(validate_child_page(&invalid, None, None, 1).is_err());
         Ok(())
     }
 

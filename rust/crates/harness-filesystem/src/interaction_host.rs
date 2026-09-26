@@ -7,8 +7,10 @@ use acyclic_harness::{
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{Action, ApplyResult, Authority, AuthorityVerifier, Command, SchemaRegistry, Scope},
     interaction::{
-        ApprovalBinding, Interaction, InteractionOutcome, InteractionResolution, InteractionTicket,
+        ApprovalBinding, Interaction, InteractionKind, InteractionOutcome, InteractionResolution,
+        InteractionResponse, InteractionTicket, ResolutionReceipt,
     },
+    runtime::InteractionResolver,
     store::StreamAggregate,
 };
 use acyclic_stream::{StreamClient, StreamProvider};
@@ -25,6 +27,74 @@ pub struct FilesystemInteractionHost<P, A, O> {
     owner_scope: Scope,
     private_volume: VolumeRef,
     maximum_bytes: u64,
+}
+
+impl<P, A, O> InteractionResolver for FilesystemInteractionHost<P, A, O>
+where
+    P: StreamProvider + Send + Sync,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    fn inspect<'a>(
+        &'a self,
+        scope: Scope,
+        id: InteractionId,
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<Option<(InteractionTicket, Option<InteractionResolution>)>>,
+    > {
+        Box::pin(async move {
+            self.verifier.verify(&scope)?;
+            let result = self.read(id).await?;
+            if let Some((ticket, _)) = &result
+                && !scope.capabilities().contains(&ticket.viewer_grant())
+                && !scope.capabilities().contains(&ticket.responder_grant())
+            {
+                return Err(Error::Unauthorized(
+                    "scope lacks interaction view grant".into(),
+                ));
+            }
+            Ok(result)
+        })
+    }
+
+    fn resolve_answer<'a>(
+        &'a self,
+        operation_id: OperationId,
+        scope: Scope,
+        id: InteractionId,
+        expected_version: u64,
+        response: InteractionResponse,
+    ) -> futures::future::BoxFuture<'a, Result<ResolutionReceipt>> {
+        Box::pin(FilesystemInteractionHost::resolve_answer(
+            self,
+            operation_id,
+            scope,
+            id,
+            expected_version,
+            response,
+        ))
+    }
+
+    fn resolve_approval<'a>(
+        &'a self,
+        operation_id: OperationId,
+        scope: Scope,
+        id: InteractionId,
+        expected_version: u64,
+        approved: bool,
+        reason: Option<String>,
+    ) -> futures::future::BoxFuture<'a, Result<ResolutionReceipt>> {
+        Box::pin(FilesystemInteractionHost::resolve_approval(
+            self,
+            operation_id,
+            scope,
+            id,
+            expected_version,
+            approved,
+            reason,
+        ))
+    }
 }
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
@@ -119,6 +189,7 @@ where
         &self,
         id: InteractionId,
         expected_version: u64,
+        operation_id: OperationId,
         response: &acyclic_harness::interaction::InteractionResponse,
     ) -> Result<FileRef> {
         if expected_version == 0 {
@@ -126,8 +197,12 @@ where
                 "interaction answer version must be positive".into(),
             ));
         }
-        self.stage(id, &format!("answer-{expected_version}"), response)
-            .await
+        self.stage(
+            id,
+            &format!("answer-{expected_version}-{operation_id}"),
+            response,
+        )
+        .await
     }
 
     /// Replays the exact conversation and admits one typed open event.
@@ -154,6 +229,114 @@ where
             Action::ResolveInteraction { resolution },
         )
         .await
+    }
+
+    /// Authenticates a responder, validates one typed answer against the
+    /// admitted request, stages its bytes, then CAS-resolves the conversation.
+    /// A lost acknowledgement is retried with the same operation ID.
+    pub async fn resolve_answer(
+        &self,
+        operation_id: OperationId,
+        scope: Scope,
+        id: InteractionId,
+        expected_version: u64,
+        response: InteractionResponse,
+    ) -> Result<ResolutionReceipt> {
+        let ticket = self.open_resolution(&scope, id, expected_version).await?;
+        if ticket.kind == InteractionKind::Approval {
+            return Err(Error::Invalid("approval requires a decision".into()));
+        }
+        let request = self
+            .read_request(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
+        request.validate_response(&response)?;
+        let answer = self
+            .stage_answer(id, expected_version, operation_id, &response)
+            .await?;
+        let resolution = InteractionResolution {
+            id: ticket.id,
+            expected_version,
+            outcome: InteractionOutcome::Answered {
+                answer: Box::new(answer),
+            },
+            detail: None,
+        };
+        resolution.validate(&ticket)?;
+        ResolutionReceipt::from_apply_result(self.resolve(operation_id, scope, resolution).await?)
+    }
+
+    /// Resolves an approval of the ticket's exact operation and argument digest.
+    /// The complete decision, including an optional explanation, is staged as
+    /// a ref so exact retries can compare it without guessing intent.
+    pub async fn resolve_approval(
+        &self,
+        operation_id: OperationId,
+        scope: Scope,
+        id: InteractionId,
+        expected_version: u64,
+        approved: bool,
+        reason: Option<String>,
+    ) -> Result<ResolutionReceipt> {
+        let ticket = self.open_resolution(&scope, id, expected_version).await?;
+        if ticket.kind != InteractionKind::Approval {
+            return Err(Error::Invalid("interaction is not an approval".into()));
+        }
+        let outcome = if approved {
+            InteractionOutcome::Approved
+        } else {
+            InteractionOutcome::Declined
+        };
+        let response = InteractionResponse::Approval { approved, reason };
+        let detail = Some(
+            self.stage_answer(id, expected_version, operation_id, &response)
+                .await?,
+        );
+        let resolution = InteractionResolution {
+            id: ticket.id,
+            expected_version,
+            outcome,
+            detail,
+        };
+        resolution.validate(&ticket)?;
+        ResolutionReceipt::from_apply_result(self.resolve(operation_id, scope, resolution).await?)
+    }
+
+    async fn open_resolution(
+        &self,
+        scope: &Scope,
+        id: InteractionId,
+        expected_version: u64,
+    ) -> Result<InteractionTicket> {
+        self.verifier.verify(scope)?;
+        if !scope.capabilities().contains("interaction:resolve") {
+            return Err(Error::Unauthorized(
+                "scope lacks interaction:resolve".into(),
+            ));
+        }
+        let (ticket, prior) = self
+            .read(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
+        if !scope.capabilities().contains(&ticket.responder_grant()) {
+            return Err(Error::Unauthorized(
+                "scope lacks interaction responder grant".into(),
+            ));
+        }
+        let next = match &prior {
+            Some(prior) if prior.outcome.is_terminal() => prior.expected_version,
+            Some(prior) => prior
+                .expected_version
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("interaction revision exhausted".into()))?,
+            None => 1,
+        };
+        if expected_version != next {
+            return Err(Error::Conflict(
+                "interaction resolution version mismatch".into(),
+            ));
+        }
+        Ok(ticket)
     }
 
     /// Reads the authoritative ticket and latest resolution from its conversation.
@@ -237,10 +420,16 @@ where
         action: Action,
     ) -> Result<ApplyResult> {
         let mut aggregate = self.aggregate().await?;
+        let expected_revision = match aggregate.reducer().operation_revision(operation_id) {
+            Some(revision) => revision
+                .checked_sub(1)
+                .ok_or_else(|| Error::Invalid("committed interaction revision is zero".into()))?,
+            None => aggregate.reducer().revision(),
+        };
         let command = Command {
             operation_id,
             idempotency_key: IdempotencyKey::new(format!("interaction:{operation_id}"))?,
-            expected_revision: aggregate.reducer().revision(),
+            expected_revision,
             scope,
             causal_parent: None,
             action,

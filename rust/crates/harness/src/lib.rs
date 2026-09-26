@@ -9,6 +9,7 @@
 )]
 #![doc = include_str!("../README.md")]
 
+pub mod agent_loop;
 #[cfg(feature = "host")]
 pub mod bundle;
 #[cfg(feature = "host")]
@@ -28,6 +29,8 @@ pub mod effect_host;
 pub mod effects;
 #[cfg(feature = "host")]
 pub mod executor;
+#[cfg(feature = "host")]
+pub mod extension;
 pub mod fork;
 #[cfg(feature = "host")]
 mod handles;
@@ -75,11 +78,18 @@ pub mod wire {
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/harness_descriptor.bin"));
 
+#[cfg(feature = "host")]
+pub use bundle::{HarnessBuilder, HarnessBundle as Harness};
 pub use contract::{
-    Admission, AgentId, AuthorityLevel, AuthorityPolicy, Capabilities, ConversationId,
-    EffectAttemptId, EffectId, Error, IdempotencyKey, InteractionId, InteractionRejection,
+    Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, Capabilities, ConversationId,
+    EffectAttemptId, EffectId, Error, GroupId, IdempotencyKey, InteractionId, InteractionRejection,
     OperationId, Outcome, PolicyLayer, ProtocolIdentity, Result, SessionId, TaskId, TurnId,
     resolve_policies, resolve_policy_layers,
+};
+#[cfg(feature = "host")]
+pub use extension::{
+    ExtensionIdentity, ExtensionLease, ExtensionLeases, ExtensionLinker, ExtensionRegistry,
+    ExtensionRuntime, NativeExtension, NativeExtensionBundle,
 };
 #[cfg(feature = "host")]
 pub use handles::{Agent, Conversation, Session, Task, Turn};

@@ -155,6 +155,11 @@ uuid_id!(ConversationId, "Identity of one durable conversation.");
 uuid_id!(SessionId, "Identity of one live conversation session.");
 uuid_id!(TurnId, "Identity of one user-driven turn.");
 uuid_id!(TaskId, "Identity of one general task.");
+uuid_id!(GroupId, "Identity of one stable task group.");
+uuid_id!(
+    BatchId,
+    "Caller-retained identity of one ordered task batch."
+);
 uuid_id!(
     OperationId,
     "Identity assigned before an operation is admitted."

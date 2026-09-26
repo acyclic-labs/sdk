@@ -6,25 +6,72 @@
 
 use crate::wire_codec::{decode_command, encode_apply_result, protocol_identity};
 use crate::{
-    AgentId, Capabilities, ConversationId, EffectId, OperationId, PolicyLayer, SessionId, TaskId,
-    TurnId,
+    AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
+    SessionId, TaskId, TurnId,
     conversation::{
         Attachment, ContentGrant, ConversationMessage, FileDescriptor, FileRef, Limits,
         ReferencedAttachments, TaskOutcomeRecord, VolumeOperation, VolumeRef,
         decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
-        ApplyResult, Authority, AuthorityIssuer, Command, ExtensionForkPolicy, ExtensionRecord,
-        Reducer, SchemaRegistry, Scope, Snapshot,
+        ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
+        ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
+        ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
     },
     fork::{ForkReport, ForkRequest, ForkSeed, ReferenceGrant, ResourceRevision},
-    interaction::{ApprovalBinding, InteractionResolution, InteractionTicket},
+    interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
     merge::ProjectMergeReceipt,
     resources::{ProviderRef, ResourceRef},
+    runtime::{DurableBatchRequest, batch_member_operation_id, task_definition_digest},
 };
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use wasm_bindgen::prelude::*;
+
+/// Derives the same immutable per-slot operation as Rust durable admission.
+#[wasm_bindgen(js_name = batchMemberOperationId)]
+pub fn batch_member_operation_id_wasm(
+    group: &str,
+    batch: &str,
+    index: u32,
+) -> Result<String, JsValue> {
+    let group = GroupId::parse(group).map_err(js_error)?;
+    let batch = BatchId::parse(batch).map_err(js_error)?;
+    Ok(batch_member_operation_id(group, batch, index as usize).to_string())
+}
+
+/// Derives the same pinned task registration digest used by native admission.
+#[wasm_bindgen(js_name = taskIdentityDigest)]
+pub fn task_identity_digest_wasm(
+    name: &str,
+    version: &str,
+    input_schema: JsValue,
+    output_schema: JsValue,
+    requirements: JsValue,
+    machine_digest: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    let input_schema: serde_json::Value = from_js(input_schema)?;
+    let output_schema: serde_json::Value = from_js(output_schema)?;
+    let requirements: Vec<String> = from_js(requirements)?;
+    let machine_digest: Option<[u8; 32]> = match machine_digest {
+        [] => None,
+        bytes => Some(
+            bytes
+                .try_into()
+                .map_err(|_| JsValue::from_str("machine digest must contain exactly 32 bytes"))?,
+        ),
+    };
+    task_definition_digest(
+        name,
+        version,
+        &input_schema,
+        &output_schema,
+        &requirements.into_iter().collect(),
+        machine_digest,
+    )
+    .map(|digest| digest.to_vec())
+    .map_err(js_error)
+}
 
 /// Derives a stable child operation/message identity from one admitted operation
 /// and a local role label without duplicating UUID bit manipulation in hosts.
@@ -199,6 +246,8 @@ pub fn validate_identity(kind: &str, value: &str) -> Result<String, JsValue> {
         "session" => SessionId::parse(value).map_err(js_error)?.to_string(),
         "turn" => TurnId::parse(value).map_err(js_error)?.to_string(),
         "task" => TaskId::parse(value).map_err(js_error)?.to_string(),
+        "group" => GroupId::parse(value).map_err(js_error)?.to_string(),
+        "batch" => BatchId::parse(value).map_err(js_error)?.to_string(),
         "operation" => OperationId::parse(value).map_err(js_error)?.to_string(),
         "effect" => EffectId::parse(value).map_err(js_error)?.to_string(),
         "interaction" => {
@@ -500,8 +549,39 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
             value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
+        "execution_placement" => {
+            let value: crate::runtime::ExecutionPlacement = from_js(value)?;
+            value.validate().map_err(js_error)?;
+            to_js_admitted(&value)
+        }
+        "task_admission" => {
+            let value: serde_json::Value = from_js(value)?;
+            let request = crate::runtime::TaskAdmissionRecord::from_canonical_value(value)
+                .map_err(js_error)?;
+            to_js_admitted(&request.canonical_value())
+        }
+        "machine_identity" => {
+            let value: crate::workflow::MachineIdentity = from_js(value)?;
+            value.validate().map_err(js_error)?;
+            to_js_admitted(&value)
+        }
+        "workflow_admission" => {
+            let value: crate::workflow::WorkflowAdmission = from_js(value)?;
+            value.validate().map_err(js_error)?;
+            to_js_admitted(&value)
+        }
+        "durable_batch_request" => {
+            let value: serde_json::Value = from_js(value)?;
+            let request = DurableBatchRequest::from_canonical_value(value).map_err(js_error)?;
+            to_js_admitted(&request.canonical_value())
+        }
         "resource_ref" => {
             let value: ResourceRef = from_js(value)?;
+            value.validate().map_err(js_error)?;
+            to_js_admitted(&value)
+        }
+        "private_directory_page" => {
+            let value: crate::conversation::PrivateDirectoryPage = from_js(value)?;
             value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
@@ -535,6 +615,26 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
             value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
+        "extension_state_migration" => {
+            let value: ExtensionStateMigration = from_js(value)?;
+            value.validate().map_err(js_error)?;
+            to_js_admitted(&value)
+        }
+        "extension_dependency" => {
+            let value: ExtensionDependency = from_js(value)?;
+            value.validate().map_err(js_error)?;
+            to_js_admitted(&value)
+        }
+        "extension_configuration" => {
+            let value: ExtensionConfiguration = from_js(value)?;
+            value.validate().map_err(js_error)?;
+            to_js_admitted(&value)
+        }
+        "extension_admission" => {
+            let value: ExtensionAdmission = from_js(value)?;
+            value.validate().map_err(js_error)?;
+            to_js_admitted(&value)
+        }
         "interaction_ticket" => {
             let value: InteractionTicket = from_js(value)?;
             value.validate().map_err(js_error)?;
@@ -545,6 +645,11 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
             let ticket: InteractionTicket = from_js(context)?;
             ticket.validate().map_err(js_error)?;
             value.validate(&ticket).map_err(js_error)?;
+            to_js_admitted(&value)
+        }
+        "resolution_receipt" => {
+            let value: ResolutionReceipt = from_js(value)?;
+            value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
         _ => Err(JsValue::from_str("unknown Harness v2 contract kind")),
@@ -780,6 +885,30 @@ impl WasmReducer {
         Ok(())
     }
 
+    /// Authenticates lazy directory and named-path access against the
+    /// owner's signed, segment-bounded private-volume read grant.
+    #[wasm_bindgen(js_name = verifyPrivateDirectoryRead)]
+    pub fn verify_private_directory_read(
+        &self,
+        scope: JsValue,
+        volume: JsValue,
+        granted_prefix: String,
+        path: String,
+    ) -> Result<(), JsValue> {
+        let scope: Scope = from_js(scope)?;
+        let volume: VolumeRef = from_js(volume)?;
+        let grant = ContentGrant::verify_directory_read(
+            &self.issuer.verifier(),
+            &scope,
+            &volume,
+            &granted_prefix,
+        )
+        .map_err(js_error)?;
+        grant
+            .require_directory_path(&volume, &path)
+            .map_err(js_error)
+    }
+
     /// Authenticates the signed scope before provider discovery or routing.
     #[wasm_bindgen(js_name = verifyScope)]
     pub fn verify_scope(&self, scope: JsValue) -> Result<(), JsValue> {
@@ -918,14 +1047,16 @@ impl WasmReducer {
         to_js_admitted(&page)
     }
 
-    /// Applies one command through the same deterministic Rust reducer as native hosts.
+    /// Applies a deterministic command. Fresh extension migrations require the
+    /// native content-admission host and cannot be synthesized by this reducer.
     pub fn apply(&mut self, command: JsValue) -> Result<JsValue, JsValue> {
         let command: Command = from_js(command)?;
         let result: ApplyResult = self.reducer.apply(command).map_err(js_error)?;
         to_js(&result)
     }
 
-    /// Applies one canonical Protobuf command and returns a Protobuf response.
+    /// Applies one canonical Protobuf command, excluding fresh migrations
+    /// that require executable content admission, and returns a response.
     #[wasm_bindgen(js_name = applyWire)]
     pub fn apply_wire(&mut self, command: Vec<u8>) -> Result<Vec<u8>, JsValue> {
         let (authority, command) = decode_command(&command).map_err(js_error)?;

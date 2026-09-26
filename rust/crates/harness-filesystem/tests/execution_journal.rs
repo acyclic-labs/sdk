@@ -3,15 +3,18 @@
 
 use acyclic_fs::Fs;
 use acyclic_harness::{
-    AgentId, Capabilities, IdempotencyKey, InteractionId, OperationId, Outcome, Result, TaskId,
+    AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Outcome, Result,
+    TaskId,
     context::ContextPipeline,
     conversation::{
-        ContentGrant, FileDescriptor, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+        ContentGrant, FileDescriptor, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner,
+        VolumeRef,
     },
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry},
     durable_tool::DurableToolRunner,
     executor::{
-        ExecutionEvent, ExecutionJournal, Executor, StockExecutor, ToolFailureKind, TurnInput,
+        ExecutionEvent, ExecutionJournal, ExecutionRecord, Executor, StockExecutor,
+        ToolFailureKind, TurnInput,
     },
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{
@@ -19,13 +22,16 @@ use acyclic_harness::{
         ModelProvider, ModelRequest,
     },
     resources::ProviderRef,
+    runtime::{Bindings, RuntimeScope, TaskAdmissionRecord, TaskStateProvider, ToolContext},
     store::StreamAggregate,
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
         ToolResult,
     },
 };
-use acyclic_harness_filesystem::{FilesystemExecutionJournal, FilesystemHost};
+use acyclic_harness_filesystem::{
+    FilesystemExecutionJournal, FilesystemHost, FilesystemInteractionHost,
+};
 use acyclic_stream::{MemoryStream, StreamClient};
 use futures::{
     future::BoxFuture,
@@ -69,6 +75,121 @@ async fn bind_conversation(
 }
 
 struct NoopTool;
+
+struct CountingNoopTool {
+    executions: Arc<AtomicUsize>,
+    reconciliations: Arc<AtomicUsize>,
+}
+
+impl ToolExecutor for CountingNoopTool {
+    fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(ToolResult { value: Value::Null }) })
+    }
+
+    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        self.reconciliations.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(None) })
+    }
+}
+
+/// Simulates a terminal race: the committed winner is observable, but this
+/// caller receives the losing CAS outcome and must replay without redispatch.
+struct TerminalCasLoser {
+    inner: Arc<dyn ExecutionJournal>,
+    losses: AtomicUsize,
+}
+
+impl ExecutionJournal for TerminalCasLoser {
+    fn replay<'a>(&'a self, operation: OperationId) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
+        self.inner.replay(operation)
+    }
+
+    fn append<'a>(
+        &'a self,
+        operation: OperationId,
+        key: String,
+        event: ExecutionEvent,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.inner.append(operation, key, event)
+    }
+
+    fn append_if_tail<'a>(
+        &'a self,
+        operation: OperationId,
+        tail: u64,
+        key: String,
+        event: ExecutionEvent,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            let terminal = matches!(
+                &event,
+                ExecutionEvent::ToolCompleted { .. } | ExecutionEvent::ToolFailed { .. }
+            );
+            let committed = self
+                .inner
+                .append_if_tail(operation, tail, key, event)
+                .await?;
+            if terminal && committed && self.losses.fetch_add(1, Ordering::SeqCst) < 2 {
+                return Ok(false);
+            }
+            Ok(committed)
+        })
+    }
+
+    fn stage<'a>(
+        &'a self,
+        operation: OperationId,
+        key: String,
+        bytes: Vec<u8>,
+        media_type: &'static str,
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        self.inner.stage(operation, key, bytes, media_type)
+    }
+
+    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        self.inner.load(file)
+    }
+
+    fn open_interaction<'a>(
+        &'a self,
+        id: InteractionId,
+        interaction: Interaction,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.inner.open_interaction(id, interaction)
+    }
+
+    fn interaction_outcome<'a>(
+        &'a self,
+        id: InteractionId,
+    ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
+        self.inner.interaction_outcome(id)
+    }
+}
+
+struct TestTaskState(RuntimeScope);
+impl TaskStateProvider for TestTaskState {
+    fn policy_identity(&self) -> Option<acyclic_harness::registry::ComponentIdentity> {
+        None
+    }
+    fn observe_admission<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
+        Box::pin(async { Err(Error::Unsupported("not used by this journal test".into())) })
+    }
+    fn resume_scope<'a>(
+        &'a self,
+        _: TaskId,
+        _: OperationId,
+    ) -> BoxFuture<'a, Result<RuntimeScope>> {
+        Box::pin(async move { Ok(self.0.clone()) })
+    }
+    fn outcome<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn cancel<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 impl ToolExecutor for NoopTool {
     fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async { Ok(ToolResult { value: Value::Null }) })
@@ -258,10 +379,16 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         input_schema: json!({"type":"object"}),
         output_schema: json!({}),
     };
+    let executions = Arc::new(AtomicUsize::new(0));
+    let reconciliations = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::new(CountingNoopTool {
+        executions: executions.clone(),
+        reconciliations: reconciliations.clone(),
+    });
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         definition: definition.clone(),
-        executor: Arc::new(NoopTool),
+        executor: counted.clone(),
         projection: Arc::new(NoopTool),
     })?;
     let invalid_output = ToolDefinition {
@@ -273,47 +400,101 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     };
     registry.register(Tool {
         definition: invalid_output.clone(),
-        executor: Arc::new(NoopTool),
+        executor: counted,
         projection: Arc::new(NoopTool),
     })?;
-    let runner = DurableToolRunner::new(registry, journal.clone());
+    let racing_journal = Arc::new(TerminalCasLoser {
+        inner: journal.clone(),
+        losses: AtomicUsize::new(0),
+    });
+    let runner = DurableToolRunner::new(registry, racing_journal.clone());
     let operation = OperationId::from_bytes([59; 16]);
     let first_task = TaskId::from_bytes([60; 16]);
     let other_task = TaskId::from_bytes([61; 16]);
+    let task_scope = RuntimeScope::new(
+        Capabilities::new(["tool:call:example.noop", "tool:call:example.invalid-output"]),
+        Limits::default(),
+    )?;
+    let mut bindings = Bindings::local();
+    bindings.scope = task_scope.clone();
+    bindings.state = Some(Arc::new(TestTaskState(task_scope)));
+    let runtime = bindings.build()?;
+    let first_context = runtime
+        .durable_context(first_task, OperationId::from_bytes([63; 16]))
+        .await?;
+    let other_context = runtime
+        .durable_context(other_task, OperationId::from_bytes([64; 16]))
+        .await?;
     assert!(matches!(
         runner
-            .run(first_task, operation, definition.clone(), json!({}))
+            .run_with_context(
+                first_task,
+                operation,
+                definition.clone(),
+                json!({}),
+                ToolContext::new(first_context.clone(), operation, operation.to_string())?
+            )
             .await?,
         Outcome::Succeeded(Value::Null)
     ));
     assert!(matches!(
         runner
-            .run(first_task, operation, definition.clone(), json!({}))
+            .run_with_context(
+                first_task,
+                operation,
+                definition.clone(),
+                json!({}),
+                ToolContext::new(first_context.clone(), operation, operation.to_string())?
+            )
             .await?,
         Outcome::Succeeded(Value::Null)
     ));
     assert!(
         runner
-            .run(other_task, operation, definition, json!({}))
+            .run_with_context(
+                other_task,
+                operation,
+                definition,
+                json!({}),
+                ToolContext::new(other_context, operation, operation.to_string())?
+            )
             .await
             .is_err()
     );
     let failure_operation = OperationId::from_bytes([62; 16]);
     let first_failure = runner
-        .run(
+        .run_with_context(
             first_task,
             failure_operation,
             invalid_output.clone(),
             json!({}),
+            ToolContext::new(
+                first_context.clone(),
+                failure_operation,
+                failure_operation.to_string(),
+            )?,
         )
         .await?;
     assert!(matches!(&first_failure, Outcome::Failed { .. }));
     assert_eq!(
         first_failure,
         runner
-            .run(first_task, failure_operation, invalid_output, json!({}))
+            .run_with_context(
+                first_task,
+                failure_operation,
+                invalid_output,
+                json!({}),
+                ToolContext::new(
+                    first_context,
+                    failure_operation,
+                    failure_operation.to_string()
+                )?
+            )
             .await?
     );
+    assert_eq!(racing_journal.losses.load(Ordering::SeqCst), 2);
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     assert!(matches!(
         journal
             .replay(failure_operation)
@@ -448,6 +629,19 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
         AgentId::from_bytes([43; 16]),
     )
     .await?;
+    let interaction_host = FilesystemInteractionHost::new(
+        stream.clone(),
+        Arc::clone(&host),
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "interaction-owner".into(),
+        },
+        issuer.verifier(),
+        SchemaRegistry::new(),
+        scope.clone(),
+        private.clone(),
+        4_096,
+    )?;
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host,
@@ -460,6 +654,27 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
     journal.open_interaction(id, request.clone()).await?;
     journal.open_interaction(id, request).await?;
     assert!(journal.interaction_outcome(id).await?.is_none());
+    let first_staged = interaction_host
+        .stage_answer(
+            id,
+            1,
+            OperationId::from_bytes([60; 16]),
+            &InteractionResponse::Question {
+                value: json!("orphaned first attempt"),
+            },
+        )
+        .await?;
+    let second_staged = interaction_host
+        .stage_answer(
+            id,
+            1,
+            OperationId::from_bytes([61; 16]),
+            &InteractionResponse::Question {
+                value: json!("competing answer"),
+            },
+        )
+        .await?;
+    assert_ne!(first_staged.path(), second_staged.path());
     let response = InteractionResponse::Question {
         value: json!("private answer"),
     };

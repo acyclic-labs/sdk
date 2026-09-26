@@ -326,6 +326,39 @@ message ExtensionRecord {
   FileRef content = 6;
 }
 
+message ExtensionStateMigration {
+  EventReference previous = 1;
+  ExtensionRecord record = 2;
+}
+
+message ExtensionDependency {
+  string name = 1;
+  uint32 version = 2;
+}
+
+message ExtensionConfiguration {
+  ExtensionDependency extension = 1;
+  bytes schema_digest = 2;
+  FileRef content = 3;
+}
+
+message ExtensionSelection {
+  repeated ExtensionDependency previous = 1;
+  repeated ExtensionDependency selected = 2;
+  repeated ExtensionConfiguration configurations = 3;
+}
+
+message ExtensionConfigured {
+  ExtensionConfiguration previous = 1;
+  ExtensionConfiguration record = 2;
+}
+
+message ExtensionAdmission {
+  EventReference source = 1;
+  repeated ExtensionDependency selected = 2;
+  repeated ExtensionConfiguration configurations = 3;
+}
+
 message ModelContextSelection {
   uint64 conversation_revision = 1;
   repeated string message_ids = 2;
@@ -371,6 +404,15 @@ message InteractionResolution {
   uint64 expected_version = 2;
   InteractionOutcome outcome = 3;
   FileRef detail = 4;
+}
+
+message ResolutionReceipt {
+  string id = 1;
+  uint64 version = 2;
+  string operation_id = 3;
+  uint64 conversation_revision = 4;
+  bool replayed = 5;
+  InteractionOutcome outcome = 6;
 }
 
 message Attachment {
@@ -437,9 +479,144 @@ message ResourceRef {
   ResourceKind kind = 4;
 }
 
+// Durable task and execution contracts. JSON fields are canonical bounded
+// schema/value documents, never file bodies, credentials, or event payloads.
+message ComponentIdentity {
+  string name = 1;
+  string version = 2;
+  bytes digest = 3;
+}
+
+message MachineIdentity {
+  string name = 1;
+  string version = 2;
+  bytes digest = 3;
+}
+
+// A resumable tool is admitted before any transition or effect. Its exact
+// initial state and implementation pin survive a lost admission reply.
+message MachineCheckpoint {
+  MachineIdentity machine = 1;
+  uint64 revision = 2;
+  bytes canonical_state_json = 3;
+}
+
+message WorkflowAdmission {
+  string operation_id = 1;
+  bytes request_digest = 2;
+  MachineCheckpoint initial = 3;
+}
+
+message WorkflowCommand {
+  string operation_id = 1;
+  string kind = 2;
+  FileRef payload = 3;
+}
+
+message WorkflowTransition {
+  bytes canonical_state_json = 1;
+  repeated WorkflowCommand commands = 2;
+  oneof status {
+    bool suspended = 3;
+    bytes canonical_completed_value_json = 4;
+    string failure_message = 5;
+  }
+}
+
+message WorkflowRecord {
+  string operation_id = 1;
+  string idempotency_key = 2;
+  bytes input_digest = 3;
+  MachineCheckpoint prior = 4;
+  bytes canonical_input_json = 5;
+  WorkflowTransition transition = 6;
+  MachineCheckpoint next = 7;
+}
+
+message RuntimeLimits {
+  uint64 file_bytes = 1;
+  uint64 path_bytes = 2;
+  uint64 attachments = 3;
+  uint64 render_bytes = 4;
+  uint64 model_steps = 5;
+  uint64 model_events_per_step = 6;
+  uint64 tool_calls_per_step = 7;
+  uint64 context_messages = 8;
+}
+
+message TaskRunLimits {
+  optional uint64 concurrency = 1;
+  optional uint64 max_steps = 2;
+  optional uint64 deadline_epoch_ms = 3;
+}
+
+message ExecutionPlacement {
+  ComponentIdentity provider = 1;
+  ResourceRef build = 2; // ARTIFACT
+  ResourceRef environment = 3; // SANDBOX when present
+  bytes readiness_revision = 4;
+}
+
+message TaskAdmissionRecord {
+  string operation_id = 1;
+  ComponentIdentity task = 2;
+  MachineIdentity machine = 3;
+  bytes canonical_input_json = 4;
+  bytes canonical_input_schema_json = 5;
+  bytes canonical_output_schema_json = 6;
+  optional string parent_task_id = 7;
+  repeated string grants = 8;
+  RuntimeLimits limits = 9;
+  ComponentIdentity policy = 10;
+  ExtensionAdmission extensions = 11;
+  ExecutionPlacement execution = 12;
+  TaskRunLimits run_limits = 13;
+}
+
+enum BatchGroupPolicy {
+  BATCH_GROUP_POLICY_UNSPECIFIED = 0;
+  BATCH_GROUP_POLICY_COLLECT_ALL = 1;
+  BATCH_GROUP_POLICY_CANCEL_ON_FAILURE = 2;
+}
+
+message DurableBatchRequest {
+  string group_id = 1;
+  string batch_id = 2;
+  BatchGroupPolicy group_policy = 3;
+  ComponentIdentity task = 4;
+  MachineIdentity machine = 5;
+  repeated bytes canonical_input_json = 6;
+  bytes canonical_input_schema_json = 7;
+  bytes canonical_output_schema_json = 8;
+  optional string parent_task_id = 9;
+  repeated string grants = 10;
+  RuntimeLimits limits = 11;
+  ExtensionAdmission extensions = 12;
+  ComponentIdentity policy = 13;
+  ExecutionPlacement execution = 14;
+  TaskRunLimits run_limits = 15;
+}
+
 // Narrows a provider-owned resource to an immutable Filesystem generation.
 message GenerationRef {
   ResourceRef resource = 1;
+}
+
+// One owner-authenticated lazy listing of an agent-private directory.
+message PrivateDirectoryEntry {
+  string name = 1;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_FILE = 1;
+    KIND_DIRECTORY = 2;
+  }
+  Kind kind = 2;
+}
+
+message PrivateDirectoryPage {
+  GenerationRef generation = 1;
+  repeated PrivateDirectoryEntry entries = 2;
+  bool has_more = 3;
 }
 
 message ProjectRevision {
@@ -508,6 +685,15 @@ message ForkSelection {
   ResourceRevision revision = 2;
 }
 
+message ForkPreparation {
+  VolumeRef child_project_volume = 1;
+  VolumeRef child_private_volume = 2;
+  uint64 inherited_through_sequence = 3;
+  uint64 maximum_inherited_messages = 4;
+  uint64 maximum_inherited_bytes = 5;
+  uint32 maximum_inherited_references = 6;
+}
+
 message ForkRequest {
   OperationIdentity operation = 1;
   Authority parent = 2;
@@ -517,6 +703,7 @@ message ForkRequest {
   repeated ForkSelection selections = 6;
   AttestedBoundary boundary = 7;
   repeated string attached_agent_ids = 8;
+  ForkPreparation preparation = 9;
 }
 
 message Capture {
@@ -575,7 +762,7 @@ message ProjectMergeReceipt {
   VolumeRef target_project = 5;
   GenerationRef expected_target_generation = 6;
   GenerationRef result_generation = 7;
-  bytes filesystem_operation_id = 8; // exactly 16 bytes
+  bytes provider_operation_id = 8; // bounded opaque provider retry identity
   ProviderJoinProof provider_proof = 9;
   ConversationMessage notice = 10;
 }

@@ -208,6 +208,9 @@ fn event_type(payload: &EventPayload) -> &'static str {
     match payload {
         EventPayload::LifecycleTransitioned { .. } => "lifecycle_transitioned",
         EventPayload::Custom { .. } => "custom",
+        EventPayload::ExtensionStateMigrated { .. } => "extension_state_migrated",
+        EventPayload::ExtensionsSelected { .. } => "extensions_selected",
+        EventPayload::ExtensionConfigured { .. } => "extension_configured",
         EventPayload::EffectPlanned { .. } => "effect_planned",
         EventPayload::EffectDispatched { .. } => "effect_dispatched",
         EventPayload::EffectResolved { .. } => "effect_resolved",
@@ -226,6 +229,9 @@ fn action_type(action: &Action) -> &'static str {
     match action {
         Action::TransitionLifecycle { .. } => "transition_lifecycle",
         Action::AppendCustom { .. } => "append_custom",
+        Action::MigrateExtensionState { .. } => "migrate_extension_state",
+        Action::SelectExtensions { .. } => "select_extensions",
+        Action::ConfigureExtension { .. } => "configure_extension",
         Action::PlanEffect { .. } => "plan_effect",
         Action::MarkEffectDispatched { .. } => "mark_effect_dispatched",
         Action::ResolveEffect { .. } => "resolve_effect",

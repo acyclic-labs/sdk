@@ -6,7 +6,7 @@
 use crate::{
     AgentId, Error, OperationId, Result,
     core::{AuthorityVerifier, Scope},
-    resources::ProviderRef,
+    resources::{GenerationRef, ProviderRef},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -14,6 +14,11 @@ use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
 use std::{future::Future, pin::Pin};
+
+/// Borrowed asynchronous result returned by content-provider extension hooks.
+pub type ContentFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+/// A freshly authorized content grant paired with its residency verifier.
+pub type ContentMount = (ContentGrant, Arc<dyn ContentResidencyVerifier>);
 
 const MAX_PATH_BYTES: usize = 4_096;
 const MAX_LABEL_BYTES: usize = 255;
@@ -256,7 +261,7 @@ impl VolumeRef {
             ));
         }
         if !prefix.is_empty() {
-            validate_path(prefix)?;
+            validate_content_path(prefix)?;
         }
         if is_internal_path(prefix) {
             return Err(Error::Invalid(
@@ -322,6 +327,11 @@ impl ContentGrant {
         file: &FileRef,
     ) -> Result<Self> {
         file.validate()?;
+        if is_internal_path(file.path()) && !is_inherited_context_path(file.path()) {
+            return Err(Error::Unauthorized(
+                "internal storage file is not public content".into(),
+            ));
+        }
         verifier.verify(scope)?;
         if scope
             .capabilities()
@@ -398,8 +408,9 @@ impl ContentGrant {
         })
     }
 
-    /// Verifies a signed, reader-bound private-directory grant. Resolution is
-    /// lazy and independent of fork or workspace ancestry.
+    /// Verifies a signed private-directory or whole-volume read grant. A
+    /// whole-volume reader may discover subdirectories lazily; a delegated
+    /// directory reader remains segment-bounded. Neither grants writes.
     pub fn verify_directory_read(
         verifier: &AuthorityVerifier,
         scope: &Scope,
@@ -407,10 +418,11 @@ impl ContentGrant {
         prefix: &str,
     ) -> Result<Self> {
         verifier.verify(scope)?;
+        let directory_capability = volume.directory_read_capability(prefix)?;
+        let volume_capability = volume.capability(VolumeOperation::Read)?;
         if scope.agent().is_none()
-            || !scope
-                .capabilities()
-                .contains(&volume.directory_read_capability(prefix)?)
+            || (!scope.capabilities().contains(&directory_capability)
+                && !scope.capabilities().contains(&volume_capability))
         {
             return Err(Error::Unauthorized(
                 "private directory read is not granted".into(),
@@ -432,6 +444,11 @@ impl ContentGrant {
         file: &FileRef,
     ) -> Result<Self> {
         file.validate()?;
+        if is_internal_path(file.path()) && !is_inherited_context_path(file.path()) {
+            return Err(Error::Unauthorized(
+                "internal storage file is not public content".into(),
+            ));
+        }
         verifier.verify(scope)?;
         if !scope.capabilities().contains(&file.read_capability()?) {
             return Err(Error::Unauthorized("exact file read is not granted".into()));
@@ -492,8 +509,12 @@ impl ContentGrant {
     }
 }
 
-fn is_internal_path(path: &str) -> bool {
+pub(crate) fn is_internal_path(path: &str) -> bool {
     path == ".system" || path.starts_with(".system/")
+}
+
+fn is_inherited_context_path(path: &str) -> bool {
+    path.starts_with(".system/inherited-conversation/")
 }
 
 fn path_below(path: &str, prefix: &str) -> bool {
@@ -657,7 +678,7 @@ impl FileRef {
     /// Validates a ref decoded at any external boundary.
     pub fn validate(&self) -> Result<()> {
         self.volume.validate()?;
-        validate_path(&self.path)?;
+        validate_content_path(&self.path)?;
         validate_label(&self.version, MAX_LABEL_BYTES)?;
         validate_label(&self.display_name, MAX_LABEL_BYTES)?;
         self.descriptor.validate()
@@ -751,6 +772,64 @@ impl TaskOutcomeRecord {
 ///
 /// Implementations must verify exact byte residency and access before Stream
 /// publishes references. The provider retains admitted versions independently.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivateDirectoryEntryKind {
+    /// A named regular file; resolve its current immutable ref by path.
+    File,
+    /// A named child directory.
+    Directory,
+}
+
+/// One lazily discovered name, without eager byte or ref transfer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateDirectoryEntry {
+    /// One normalized child name relative to the listed directory.
+    pub name: String,
+    /// Whether the name resolves to a regular file or another directory.
+    pub kind: PrivateDirectoryEntryKind,
+}
+
+/// A bounded page from one exact owner-private generation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PrivateDirectoryPage {
+    /// Exact immutable generation from which this page was read.
+    pub generation: GenerationRef,
+    /// Ordered entries returned for the requested directory segment.
+    pub entries: Vec<PrivateDirectoryEntry>,
+    /// Whether another page may be requested with the returned cursor.
+    pub has_more: bool,
+}
+
+impl PrivateDirectoryPage {
+    /// Rejects malformed, duplicate, or out-of-order names independently of
+    /// the concrete Filesystem page implementation.
+    pub fn validate(&self) -> Result<()> {
+        self.generation.validate()?;
+        if self.entries.len() > 4096 {
+            return Err(Error::Invalid(
+                "private directory page exceeds protocol limit".into(),
+            ));
+        }
+        let mut previous: Option<&[u8]> = None;
+        for entry in &self.entries {
+            validate_content_path(&entry.name)?;
+            if entry.name.contains('/')
+                || previous.is_some_and(|name| entry.name.as_bytes() <= name)
+            {
+                return Err(Error::Invalid(
+                    "private directory page names are not ordered".into(),
+                ));
+            }
+            previous = Some(entry.name.as_bytes());
+        }
+        Ok(())
+    }
+}
+
+/// Provider boundary that authenticates and reads immutable content refs.
 pub trait ContentResidencyVerifier: Send + Sync {
     /// Resolves and checks the exact referenced file version.
     fn verify<'a>(
@@ -770,13 +849,46 @@ pub trait ContentResidencyVerifier: Send + Sync {
         })
     }
 
+    /// Lazily discovers an owner-private directory under an authenticated
+    /// subtree boundary; the generation must remain stable across pages.
+    fn list_private_directory<'a>(
+        &'a self,
+        _volume: &'a VolumeRef,
+        _granted_prefix: &'a str,
+        _path: &'a str,
+        _expected_generation: Option<&'a GenerationRef>,
+        _after: Option<&'a str>,
+        _maximum_entries: u32,
+    ) -> ContentFuture<'a, Result<PrivateDirectoryPage>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "private directory discovery is unavailable".into(),
+            ))
+        })
+    }
+
+    /// Resolves the current named private file to verified immutable bytes.
+    fn read_private_path<'a>(
+        &'a self,
+        _volume: &'a VolumeRef,
+        _granted_prefix: &'a str,
+        _path: &'a str,
+        _expected_generation: Option<&'a GenerationRef>,
+    ) -> ContentFuture<'a, Result<(FileRef, Vec<u8>)>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "private path resolution is unavailable".into(),
+            ))
+        })
+    }
+
     /// Resolves a complete referenced list and enforces configured limits on every member.
     fn verify_manifest<'a>(
         &'a self,
         _reference: &'a FileRef,
         _item_count: u32,
         _limits: &'a Limits,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    ) -> ContentFuture<'a, Result<()>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "attachment manifest verification is unavailable".into(),
@@ -789,7 +901,7 @@ pub trait ContentResidencyVerifier: Send + Sync {
         &'a self,
         _reference: &'a FileRef,
         _item_count: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Attachment>>> + Send + 'a>> {
+    ) -> ContentFuture<'a, Result<Vec<Attachment>>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "attachment manifest resolution is unavailable".into(),
@@ -816,10 +928,35 @@ pub trait ContentPublisher: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<FileRef>> + Send + 'a>>;
 }
 
+/// Resolves an owner-mediated reader when a volume has not been explicitly
+/// bound. Implementations authenticate the caller's current read grant at
+/// resolution time; knowing a volume or file ref is not authorization.
+pub trait ContentMountResolver: Send + Sync {
+    /// Lazily opens the owner for one exact ref and returns its independently
+    /// verified caller grant. Each call must reauthenticate the current scope.
+    fn mount<'a>(&'a self, reference: &'a FileRef) -> ContentFuture<'a, Result<ContentMount>>;
+
+    /// Lazily opens an unseen owner's directory without requiring a `FileRef`.
+    fn mount_directory<'a>(
+        &'a self,
+        _volume: &'a VolumeRef,
+        _granted_prefix: &'a str,
+        _path: &'a str,
+    ) -> ContentFuture<'a, Result<ContentMount>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "private directory mount is unavailable".into(),
+            ))
+        })
+    }
+}
+
 /// Routes admission reads by exact owner volume, including several agents on
-/// one provider and members stored separately from their manifests.
+/// one provider and members stored separately from their manifests. An
+/// optional mount resolves previously unseen volumes lazily under fresh grants.
 pub struct CompositeContentVerifier {
     volumes: BTreeMap<String, Arc<dyn ContentResidencyVerifier>>,
+    mount: Option<Arc<dyn ContentMountResolver>>,
 }
 
 impl CompositeContentVerifier {
@@ -833,7 +970,17 @@ impl CompositeContentVerifier {
                 return Err(Error::Invalid("content volume is registered twice".into()));
             }
         }
-        Ok(Self { volumes })
+        Ok(Self {
+            volumes,
+            mount: None,
+        })
+    }
+
+    /// Adds lazy owner routing without eagerly enumerating agent directories.
+    #[must_use]
+    pub fn with_mount_resolver(mut self, mount: Arc<dyn ContentMountResolver>) -> Self {
+        self.mount = Some(mount);
+        self
     }
 
     fn key(volume: &VolumeRef) -> Result<String> {
@@ -841,26 +988,93 @@ impl CompositeContentVerifier {
         serde_json::to_string(volume).map_err(|error| Error::Invalid(error.to_string()))
     }
 
-    fn owner(&self, reference: &FileRef) -> Result<&Arc<dyn ContentResidencyVerifier>> {
-        self.volumes
-            .get(&Self::key(reference.volume())?)
-            .ok_or_else(|| Error::Unsupported("content volume is not registered".into()))
+    async fn owner(&self, reference: &FileRef) -> Result<Arc<dyn ContentResidencyVerifier>> {
+        reference.validate()?;
+        if let Some(reader) = self.volumes.get(&Self::key(reference.volume())?) {
+            return Ok(reader.clone());
+        }
+        let (grant, reader) = self
+            .mount
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("content volume is not registered".into()))?
+            .mount(reference)
+            .await?;
+        grant.require_file_read(reference)?;
+        Ok(reader)
+    }
+
+    async fn directory_owner(
+        &self,
+        volume: &VolumeRef,
+        granted_prefix: &str,
+        path: &str,
+    ) -> Result<Arc<dyn ContentResidencyVerifier>> {
+        if let Some(reader) = self.volumes.get(&Self::key(volume)?) {
+            return Ok(reader.clone());
+        }
+        let (grant, reader) = self
+            .mount
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("content volume is not registered".into()))?
+            .mount_directory(volume, granted_prefix, path)
+            .await?;
+        grant.require_directory_path(volume, path)?;
+        Ok(reader)
     }
 }
 
 impl ContentResidencyVerifier for CompositeContentVerifier {
+    fn list_private_directory<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a GenerationRef>,
+        after: Option<&'a str>,
+        maximum_entries: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<PrivateDirectoryPage>> + Send + 'a>> {
+        Box::pin(async move {
+            self.directory_owner(volume, granted_prefix, path)
+                .await?
+                .list_private_directory(
+                    volume,
+                    granted_prefix,
+                    path,
+                    expected_generation,
+                    after,
+                    maximum_entries,
+                )
+                .await
+        })
+    }
+
+    fn read_private_path<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a GenerationRef>,
+    ) -> Pin<Box<dyn Future<Output = Result<(FileRef, Vec<u8>)>> + Send + 'a>> {
+        Box::pin(async move {
+            self.directory_owner(volume, granted_prefix, path)
+                .await?
+                .read_private_path(volume, granted_prefix, path, expected_generation)
+                .await
+        })
+    }
+
     fn verify<'a>(
         &'a self,
         reference: &'a FileRef,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(async move { self.owner(reference)?.verify(reference).await })
+        Box::pin(async move { self.owner(reference).await?.verify(reference).await })
     }
 
     fn read<'a>(
         &'a self,
         reference: &'a FileRef,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
-        Box::pin(async move { self.owner(reference)?.read(reference).await })
+        Box::pin(async move { self.owner(reference).await?.read(reference).await })
     }
 
     fn load_manifest<'a>(
@@ -869,7 +1083,8 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         item_count: u32,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<Attachment>>> + Send + 'a>> {
         Box::pin(async move {
-            self.owner(reference)?
+            self.owner(reference)
+                .await?
                 .load_manifest(reference, item_count)
                 .await
         })
@@ -882,18 +1097,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         limits: &'a Limits,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            limits.validate_file(reference)?;
-            let items = self.load_manifest(reference, item_count).await?;
-            if items.len() != item_count as usize || items.len() > limits.attachments {
-                return Err(Error::Invalid(
-                    "attachment manifest count exceeds limits".into(),
-                ));
-            }
-            for item in items {
-                item.validate()?;
-                limits.validate_file(&item.file)?;
-                self.verify(&item.file).await?;
-            }
+            verified_attachment_manifest(self, reference, item_count, limits).await?;
             Ok(())
         })
     }
@@ -968,6 +1172,41 @@ pub fn decode_complete_attachment_manifest(
         return Err(Error::Invalid(
             "attachment manifest is not canonical or complete".into(),
         ));
+    }
+    Ok(items)
+}
+
+/// The core admission boundary checks actual owner-resolved bytes, rather
+/// than trusting a provider's metadata-only residency assertion.
+pub async fn verified_content_bytes(
+    verifier: &dyn ContentResidencyVerifier,
+    reference: &FileRef,
+) -> Result<Vec<u8>> {
+    let bytes = verifier.read(reference).await?;
+    reference.descriptor().verify(&bytes)?;
+    Ok(bytes)
+}
+
+/// Resolves one pinned manifest and all of its members through their owning
+/// providers. The manifest's canonical bytes, not a provider-supplied list,
+/// determine the attachment identities admitted to history.
+pub async fn verified_attachment_manifest(
+    verifier: &dyn ContentResidencyVerifier,
+    reference: &FileRef,
+    item_count: u32,
+    limits: &Limits,
+) -> Result<Vec<Attachment>> {
+    limits.validate_file(reference)?;
+    if item_count as usize > limits.attachments {
+        return Err(Error::Invalid(
+            "attachment manifest count exceeds limits".into(),
+        ));
+    }
+    let bytes = verified_content_bytes(verifier, reference).await?;
+    let items = decode_attachment_manifest(reference, &bytes, item_count)?;
+    for item in &items {
+        limits.validate_file(&item.file)?;
+        verified_content_bytes(verifier, &item.file).await?;
     }
     Ok(items)
 }
@@ -1252,7 +1491,9 @@ fn validate_label(value: &str, limit: usize) -> Result<()> {
     Ok(())
 }
 
-fn validate_path(path: &str) -> Result<()> {
+/// Checks a normalized volume-relative content path at every provider boundary.
+/// Backslashes, traversal segments, control characters, and oversized paths are rejected.
+pub fn validate_content_path(path: &str) -> Result<()> {
     if path.is_empty()
         || path.len() > MAX_PATH_BYTES
         || path.starts_with('/')
@@ -1339,6 +1580,26 @@ mod tests {
             issuer.delegate_private_file_read(&scope, attached, "attached-read", &exact_file)?;
         assert_eq!(delegated.agent(), Some(attached));
         ContentGrant::verify_file_read(&issuer.verifier(), &delegated, &exact_file)?;
+        let internal = file(owner, ".system/execution/state.json")?;
+        assert!(matches!(
+            ContentGrant::verify_read(&issuer.verifier(), &scope, &internal),
+            Err(Error::Unauthorized(_))
+        ));
+        let internal_exact = issuer.root_for_agent(
+            owner,
+            "internal-exact",
+            crate::Capabilities::new([internal.read_capability()?]),
+        );
+        assert!(matches!(
+            ContentGrant::verify_file_read(&issuer.verifier(), &internal_exact, &internal),
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            issuer.delegate_private_file_read(&scope, attached, "internal", &internal),
+            Err(Error::Unauthorized(_))
+        ));
+        let inherited_context = file(owner, ".system/inherited-conversation/prefix.json")?;
+        ContentGrant::verify_read(&issuer.verifier(), &scope, &inherited_context)?;
         let directory = issuer.delegate_private_directory_read(
             &scope,
             attached,
@@ -1513,6 +1774,62 @@ mod tests {
     }
 
     #[test]
+    fn v2_file_reference_security_cases_match_the_shared_fixture() -> Result<()> {
+        let base: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/v2/file-ref.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/v2/file-ref-security-cases.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        let cases = corpus["cases"]
+            .as_array()
+            .ok_or_else(|| Error::Invalid("security cases array missing".into()))?;
+        assert_eq!(cases.len(), 13);
+        for case in cases {
+            let name = case["name"]
+                .as_str()
+                .ok_or_else(|| Error::Invalid("security case name missing".into()))?;
+            let pointer = case["pointer"]
+                .as_str()
+                .ok_or_else(|| Error::Invalid("security case JSON pointer missing".into()))?;
+            let (parent, key) = pointer
+                .rsplit_once('/')
+                .ok_or_else(|| Error::Invalid("security case pointer segment missing".into()))?;
+            let mut modified = base.clone();
+            let parent = modified
+                .pointer_mut(parent)
+                .ok_or_else(|| Error::Invalid("security fixture parent missing".into()))?
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("security fixture parent is not an object".into()))?;
+            parent.insert(key.to_owned(), case["value"].clone());
+            if case["check"] == "decode" {
+                assert!(
+                    serde_json::from_value::<FileRef>(modified).is_err(),
+                    "{name}"
+                );
+            } else {
+                assert_eq!(case["check"], "bytes", "{name}");
+                let reference: FileRef = serde_json::from_value(modified)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                assert!(reference.descriptor().verify(b"hello").is_err(), "{name}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn v2_private_directory_page_fixture_round_trips_canonically() -> Result<()> {
+        let fixture = include_str!("../fixtures/v2/private-directory-page.json").trim();
+        let page: PrivateDirectoryPage =
+            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
+        page.validate()?;
+        let encoded =
+            serde_json::to_string(&page).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(encoded, fixture);
+        Ok(())
+    }
+
+    #[test]
     fn v2_task_outcome_fixture_round_trips_canonically() -> Result<()> {
         let fixture = include_str!("../fixtures/v2/task-outcome.json").trim();
         let outcome: TaskOutcomeRecord =
@@ -1528,7 +1845,7 @@ mod tests {
     async fn composite_manifest_admission_routes_members_to_exact_providers() -> Result<()> {
         struct StaticContent {
             file: FileRef,
-            items: Option<Vec<Attachment>>,
+            bytes: Vec<u8>,
         }
         impl ContentResidencyVerifier for StaticContent {
             fn verify<'a>(
@@ -1543,21 +1860,24 @@ mod tests {
                     }
                 })
             }
-            fn load_manifest<'a>(
+            fn read<'a>(
                 &'a self,
                 reference: &'a FileRef,
-                item_count: u32,
-            ) -> Pin<Box<dyn Future<Output = Result<Vec<Attachment>>> + Send + 'a>> {
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
                 Box::pin(async move {
-                    let items = self
-                        .items
-                        .as_ref()
-                        .ok_or_else(|| Error::Unsupported("manifest".into()))?;
-                    if reference != &self.file || items.len() != item_count as usize {
-                        return Err(Error::Invalid("manifest identity or count mismatch".into()));
+                    if reference != &self.file {
+                        return Err(Error::NotFound("file".into()));
                     }
-                    Ok(items.clone())
+                    Ok(self.bytes.clone())
                 })
+            }
+            fn load_manifest<'a>(
+                &'a self,
+                _reference: &'a FileRef,
+                _item_count: u32,
+            ) -> Pin<Box<dyn Future<Output = Result<Vec<Attachment>>> + Send + 'a>> {
+                // A provider's parsed list must not replace the pinned bytes.
+                Box::pin(async { Ok(Vec::new()) })
             }
         }
         let owner = VolumeOwner::Agent(AgentId::from_bytes([1; 16]));
@@ -1595,15 +1915,15 @@ mod tests {
         )?;
         let first = Arc::new(StaticContent {
             file: manifest.clone(),
-            items: Some(items),
+            bytes,
         });
         let second = Arc::new(StaticContent {
             file: member.clone(),
-            items: None,
+            bytes: vec![b'x'; 1_024],
         });
         let composite = CompositeContentVerifier::new(vec![
             (manifest.volume().clone(), first.clone()),
-            (member.volume().clone(), second),
+            (member.volume().clone(), second.clone()),
         ])?;
         composite
             .verify_manifest(&manifest, 1, &Limits::default())
@@ -1616,12 +1936,70 @@ mod tests {
             composite.verify_manifest(&manifest, 1, &narrow).await,
             Err(Error::Invalid(_))
         ));
-        let incomplete = CompositeContentVerifier::new(vec![(manifest.volume().clone(), first)])?;
+        let incomplete =
+            CompositeContentVerifier::new(vec![(manifest.volume().clone(), first.clone())])?;
         assert!(matches!(
             incomplete
                 .verify_manifest(&manifest, 1, &Limits::default())
                 .await,
             Err(Error::Unsupported(_))
+        ));
+        struct StaticMount {
+            volume: VolumeRef,
+            reader: Arc<dyn ContentResidencyVerifier>,
+            grant: ContentGrant,
+        }
+        impl ContentMountResolver for StaticMount {
+            fn mount<'a>(
+                &'a self,
+                reference: &'a FileRef,
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = Result<(ContentGrant, Arc<dyn ContentResidencyVerifier>)>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move {
+                    if reference.volume() != &self.volume {
+                        return Err(Error::Unauthorized("foreign volume was not granted".into()));
+                    }
+                    Ok((self.grant.clone(), self.reader.clone()))
+                })
+            }
+        }
+        let issuer = crate::core::AuthorityIssuer::new(
+            "mount-owner",
+            [18; 32],
+            crate::core::Authority {
+                kind: crate::core::AggregateKind::Agent,
+                id: AgentId::from_bytes([1; 16]).to_string(),
+            },
+        );
+        let scope = issuer.root_for_agent(
+            AgentId::from_bytes([1; 16]),
+            "exact-member",
+            crate::Capabilities::new([member.read_capability()?]),
+        );
+        let grant = ContentGrant::verify_file_read(&issuer.verifier(), &scope, &member)?;
+        let lazy = CompositeContentVerifier::new(vec![(manifest.volume().clone(), first)])?
+            .with_mount_resolver(Arc::new(StaticMount {
+                volume: member.volume().clone(),
+                reader: second,
+                grant,
+            }));
+        lazy.verify_manifest(&manifest, 1, &Limits::default())
+            .await?;
+        let unauthorized = FileRef::new(
+            member.volume().clone(),
+            "attachments/another.txt",
+            "one",
+            FileDescriptor::from_bytes(b"another", "text/plain")?,
+            "another.txt",
+        )?;
+        assert!(matches!(
+            lazy.verify(&unauthorized).await,
+            Err(Error::Unauthorized(_))
         ));
         let same_provider_member = FileRef::new(
             VolumeRef::new(
@@ -1656,14 +2034,14 @@ mod tests {
                 same_provider_manifest.volume().clone(),
                 Arc::new(StaticContent {
                     file: same_provider_manifest.clone(),
-                    items: Some(same_provider_items),
+                    bytes: same_provider_bytes,
                 }),
             ),
             (
                 same_provider_member.volume().clone(),
                 Arc::new(StaticContent {
                     file: same_provider_member,
-                    items: None,
+                    bytes: b"other-owner".to_vec(),
                 }),
             ),
         ])?;

@@ -233,7 +233,7 @@ describe("website Stream contract", () => {
     const conflict = await provider.append("parent/phantom", [new Uint8Array([1])], { ifTail: 1n });
     expect(conflict).toEqual({ ok: false, code: "tail_conflict", actualTail: 0n });
     const children = [];
-    for await (const child of provider.children("parent", 10)) children.push(child);
+    for await (const child of new StreamClient(provider).children("parent", 10)) children.push(child);
     expect(children).toEqual([]);
     await expect(provider.tail("parent/phantom")).rejects.toMatchObject({ code: "stream_not_found" });
   });
@@ -252,6 +252,9 @@ describe("website Stream contract", () => {
     for await (const child of client.childrenAll("teams/red/agents", 127)) all.push(child.path);
     expect(all).toHaveLength(1_030);
     expect(new Set(all).size).toBe(1_030);
+    const convenient = [];
+    for await (const child of client.children("teams/red/agents", 127)) convenient.push(child.path);
+    expect(convenient).toEqual(all);
     await client.bytes("teams/red/agents/agent-new").append(Uint8Array.of(1));
     await expect(client.childrenPage({ parent: "teams/red/agents", limit: 127,
       after: page.nextAfter!, hierarchyVersion: page.hierarchyVersion }))

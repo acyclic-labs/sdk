@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { approvalBinding, descriptorFor, interactionId, interactionResolution, interactionTicket, responderGrant, type AgentId, type FileRef, type InteractionTicket, type OperationId } from "../src/index.js";
+import { approvalBinding, descriptorFor, interactionId, interactionResolution, interactionTicket, resolutionReceipt, responderGrant, viewerGrant, type AgentId, type FileRef, type InteractionTicket, type OperationId } from "../src/index.js";
 
 test("standalone interaction identities and approval bindings use Rust admission", async () => {
   expect(String(await interactionId("01010101010101010101010101010101")))
@@ -35,6 +35,7 @@ test("interaction tickets are ref-only and approvals pin one exact action", asyn
   };
   const admitted = await interactionTicket(ticket);
   expect(responderGrant(admitted)).toBe("interaction:respond:01010101-0101-0101-0101-010101010101");
+  expect(viewerGrant(admitted)).toBe("interaction:view:01010101-0101-0101-0101-010101010101");
   expect(Object.isFrozen(admitted.approval?.action_digest)).toBe(true);
   expect(Object.isFrozen(admitted.request.volume.provider)).toBe(true);
   await expect(interactionTicket({ ...ticket, approval: { ...ticket.approval!, action_digest: Array(32).fill(0) } })).rejects.toThrow();
@@ -66,4 +67,14 @@ test("Rust and TypeScript share the canonical v2 interaction resolution fixture"
   const parsed = JSON.parse(fixture) as Omit<import("../src/index.js").InteractionResolution, "expected_version"> & { expected_version: number };
   const resolution = await interactionResolution({ ...parsed, expected_version: BigInt(parsed.expected_version) }, ticket);
   expect(JSON.stringify(resolution, (_key, value: unknown) => typeof value === "bigint" ? Number(value) : value)).toBe(fixture);
+});
+
+test("Rust and TypeScript share the canonical v2 interaction receipt fixture", async () => {
+  const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/resolution-receipt.json", import.meta.url)).text()).trim();
+  const parsed = JSON.parse(fixture) as Omit<import("../src/index.js").ResolutionReceipt, "version" | "conversation_revision"> &
+    { version: number; conversation_revision: number };
+  const receipt = await resolutionReceipt({ ...parsed, version: BigInt(parsed.version),
+    conversation_revision: BigInt(parsed.conversation_revision) });
+  expect(JSON.stringify(receipt, (_key, value: unknown) => typeof value === "bigint" ? Number(value) : value)).toBe(fixture);
+  await expect(resolutionReceipt({ ...receipt, version: 0n })).rejects.toThrow();
 });

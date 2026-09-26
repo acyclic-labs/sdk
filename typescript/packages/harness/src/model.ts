@@ -1,6 +1,7 @@
 import type { TaskContext, ToolContext } from "./runtime.js";
 import type { Attachment, FileRef } from "./conversation.js";
 import type { SelectedModelContext } from "./projection.js";
+import type { MachineIdentityWire } from "./native-contracts.js";
 
 export interface Model<Options = unknown> { readonly provider: string; readonly name: string; readonly revision: string; readonly options: Options }
 export type ModelContentPart =
@@ -36,7 +37,13 @@ export type ModelEvent<Arguments = unknown, Metadata = unknown> =
 export interface ModelAttempt<Event extends ModelEvent = ModelEvent> { readonly operationId: string; readonly step: number; readonly requestDigest: Uint8Array; readonly observed: readonly Event[] }
 export interface ModelProvider<Request extends ModelRequest = ModelRequest, Event extends ModelEvent = ModelEvent> { generate(request: Request): AsyncIterable<Event>; reconcile(attempt: ModelAttempt<Event>): Promise<readonly Event[] | undefined> }
 
-export interface ToolInvocation<Input = unknown> { readonly callId: string; readonly name: string; readonly arguments: Input }
+export interface ToolInvocation<Input = unknown> {
+  /** Runtime-owned reconciliation identity; provider call IDs can recur across turns. */
+  readonly operationId: string;
+  readonly callId: string;
+  readonly name: string;
+  readonly arguments: Input;
+}
 export interface ToolResult<Output = unknown> { readonly value: Output }
 export interface ToolExecutor<Input = unknown, Output = unknown> { execute(invocation: ToolInvocation<Input>): Promise<ToolResult<Output>>; reconcile(invocation: ToolInvocation<Input>): Promise<ToolResult<Output> | undefined> }
 export interface ToolProjection<Input = unknown, Output = unknown, Projected = unknown> { project(invocation: ToolInvocation<Input>, result: ToolResult<Output>): Projected }
@@ -45,6 +52,8 @@ declare const toolRefBrand: unique symbol;
 /** Opaque registered handle: implementation and executor never enter task code. */
 export interface ToolRef<Input, Output> {
   readonly definition: ModelToolDefinition;
+  /** Pinned owner-host machine for a durable-only resumable tool. */
+  readonly machine?: MachineIdentityWire;
   readonly [toolRefBrand]: (input: Input) => Output;
 }
 export type LiveTool<Input, Output> = (context: ToolContext, input: Input) => Output | Promise<Output>;

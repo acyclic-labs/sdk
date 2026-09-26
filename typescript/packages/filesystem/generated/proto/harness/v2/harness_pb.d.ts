@@ -1154,6 +1154,147 @@ export declare type ExtensionRecord = Message<"acyclic.harness.v2.ExtensionRecor
 export declare const ExtensionRecordSchema: GenMessage<ExtensionRecord>;
 
 /**
+ * @generated from message acyclic.harness.v2.ExtensionStateMigration
+ */
+export declare type ExtensionStateMigration = Message<"acyclic.harness.v2.ExtensionStateMigration"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.EventReference previous = 1;
+   */
+  previous?: EventReference | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ExtensionRecord record = 2;
+   */
+  record?: ExtensionRecord | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ExtensionStateMigration.
+ * Use `create(ExtensionStateMigrationSchema)` to create a new message.
+ */
+export declare const ExtensionStateMigrationSchema: GenMessage<ExtensionStateMigration>;
+
+/**
+ * @generated from message acyclic.harness.v2.ExtensionDependency
+ */
+export declare type ExtensionDependency = Message<"acyclic.harness.v2.ExtensionDependency"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: uint32 version = 2;
+   */
+  version: number;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ExtensionDependency.
+ * Use `create(ExtensionDependencySchema)` to create a new message.
+ */
+export declare const ExtensionDependencySchema: GenMessage<ExtensionDependency>;
+
+/**
+ * @generated from message acyclic.harness.v2.ExtensionConfiguration
+ */
+export declare type ExtensionConfiguration = Message<"acyclic.harness.v2.ExtensionConfiguration"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.ExtensionDependency extension = 1;
+   */
+  extension?: ExtensionDependency | undefined;
+
+  /**
+   * @generated from field: bytes schema_digest = 2;
+   */
+  schemaDigest: Uint8Array;
+
+  /**
+   * @generated from field: acyclic.harness.v2.FileRef content = 3;
+   */
+  content?: FileRef | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ExtensionConfiguration.
+ * Use `create(ExtensionConfigurationSchema)` to create a new message.
+ */
+export declare const ExtensionConfigurationSchema: GenMessage<ExtensionConfiguration>;
+
+/**
+ * @generated from message acyclic.harness.v2.ExtensionSelection
+ */
+export declare type ExtensionSelection = Message<"acyclic.harness.v2.ExtensionSelection"> & {
+  /**
+   * @generated from field: repeated acyclic.harness.v2.ExtensionDependency previous = 1;
+   */
+  previous: ExtensionDependency[];
+
+  /**
+   * @generated from field: repeated acyclic.harness.v2.ExtensionDependency selected = 2;
+   */
+  selected: ExtensionDependency[];
+
+  /**
+   * @generated from field: repeated acyclic.harness.v2.ExtensionConfiguration configurations = 3;
+   */
+  configurations: ExtensionConfiguration[];
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ExtensionSelection.
+ * Use `create(ExtensionSelectionSchema)` to create a new message.
+ */
+export declare const ExtensionSelectionSchema: GenMessage<ExtensionSelection>;
+
+/**
+ * @generated from message acyclic.harness.v2.ExtensionConfigured
+ */
+export declare type ExtensionConfigured = Message<"acyclic.harness.v2.ExtensionConfigured"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.ExtensionConfiguration previous = 1;
+   */
+  previous?: ExtensionConfiguration | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ExtensionConfiguration record = 2;
+   */
+  record?: ExtensionConfiguration | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ExtensionConfigured.
+ * Use `create(ExtensionConfiguredSchema)` to create a new message.
+ */
+export declare const ExtensionConfiguredSchema: GenMessage<ExtensionConfigured>;
+
+/**
+ * @generated from message acyclic.harness.v2.ExtensionAdmission
+ */
+export declare type ExtensionAdmission = Message<"acyclic.harness.v2.ExtensionAdmission"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.EventReference source = 1;
+   */
+  source?: EventReference | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.harness.v2.ExtensionDependency selected = 2;
+   */
+  selected: ExtensionDependency[];
+
+  /**
+   * @generated from field: repeated acyclic.harness.v2.ExtensionConfiguration configurations = 3;
+   */
+  configurations: ExtensionConfiguration[];
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ExtensionAdmission.
+ * Use `create(ExtensionAdmissionSchema)` to create a new message.
+ */
+export declare const ExtensionAdmissionSchema: GenMessage<ExtensionAdmission>;
+
+/**
  * @generated from message acyclic.harness.v2.ModelContextSelection
  */
 export declare type ModelContextSelection = Message<"acyclic.harness.v2.ModelContextSelection"> & {
@@ -1333,6 +1474,47 @@ export declare type InteractionResolution = Message<"acyclic.harness.v2.Interact
 export declare const InteractionResolutionSchema: GenMessage<InteractionResolution>;
 
 /**
+ * @generated from message acyclic.harness.v2.ResolutionReceipt
+ */
+export declare type ResolutionReceipt = Message<"acyclic.harness.v2.ResolutionReceipt"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: uint64 version = 2;
+   */
+  version: bigint;
+
+  /**
+   * @generated from field: string operation_id = 3;
+   */
+  operationId: string;
+
+  /**
+   * @generated from field: uint64 conversation_revision = 4;
+   */
+  conversationRevision: bigint;
+
+  /**
+   * @generated from field: bool replayed = 5;
+   */
+  replayed: boolean;
+
+  /**
+   * @generated from field: acyclic.harness.v2.InteractionOutcome outcome = 6;
+   */
+  outcome?: InteractionOutcome | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ResolutionReceipt.
+ * Use `create(ResolutionReceiptSchema)` to create a new message.
+ */
+export declare const ResolutionReceiptSchema: GenMessage<ResolutionReceipt>;
+
+/**
  * @generated from message acyclic.harness.v2.Attachment
  */
 export declare type Attachment = Message<"acyclic.harness.v2.Attachment"> & {
@@ -1501,6 +1683,506 @@ export declare type ResourceRef = Message<"acyclic.harness.v2.ResourceRef"> & {
 export declare const ResourceRefSchema: GenMessage<ResourceRef>;
 
 /**
+ * Durable task and execution contracts. JSON fields are canonical bounded
+ * schema/value documents, never file bodies, credentials, or event payloads.
+ *
+ * @generated from message acyclic.harness.v2.ComponentIdentity
+ */
+export declare type ComponentIdentity = Message<"acyclic.harness.v2.ComponentIdentity"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: string version = 2;
+   */
+  version: string;
+
+  /**
+   * @generated from field: bytes digest = 3;
+   */
+  digest: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ComponentIdentity.
+ * Use `create(ComponentIdentitySchema)` to create a new message.
+ */
+export declare const ComponentIdentitySchema: GenMessage<ComponentIdentity>;
+
+/**
+ * @generated from message acyclic.harness.v2.MachineIdentity
+ */
+export declare type MachineIdentity = Message<"acyclic.harness.v2.MachineIdentity"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: string version = 2;
+   */
+  version: string;
+
+  /**
+   * @generated from field: bytes digest = 3;
+   */
+  digest: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.MachineIdentity.
+ * Use `create(MachineIdentitySchema)` to create a new message.
+ */
+export declare const MachineIdentitySchema: GenMessage<MachineIdentity>;
+
+/**
+ * A resumable tool is admitted before any transition or effect. Its exact
+ * initial state and implementation pin survive a lost admission reply.
+ *
+ * @generated from message acyclic.harness.v2.MachineCheckpoint
+ */
+export declare type MachineCheckpoint = Message<"acyclic.harness.v2.MachineCheckpoint"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.MachineIdentity machine = 1;
+   */
+  machine?: MachineIdentity | undefined;
+
+  /**
+   * @generated from field: uint64 revision = 2;
+   */
+  revision: bigint;
+
+  /**
+   * @generated from field: bytes canonical_state_json = 3;
+   */
+  canonicalStateJson: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.MachineCheckpoint.
+ * Use `create(MachineCheckpointSchema)` to create a new message.
+ */
+export declare const MachineCheckpointSchema: GenMessage<MachineCheckpoint>;
+
+/**
+ * @generated from message acyclic.harness.v2.WorkflowAdmission
+ */
+export declare type WorkflowAdmission = Message<"acyclic.harness.v2.WorkflowAdmission"> & {
+  /**
+   * @generated from field: string operation_id = 1;
+   */
+  operationId: string;
+
+  /**
+   * @generated from field: bytes request_digest = 2;
+   */
+  requestDigest: Uint8Array;
+
+  /**
+   * @generated from field: acyclic.harness.v2.MachineCheckpoint initial = 3;
+   */
+  initial?: MachineCheckpoint | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.WorkflowAdmission.
+ * Use `create(WorkflowAdmissionSchema)` to create a new message.
+ */
+export declare const WorkflowAdmissionSchema: GenMessage<WorkflowAdmission>;
+
+/**
+ * @generated from message acyclic.harness.v2.WorkflowCommand
+ */
+export declare type WorkflowCommand = Message<"acyclic.harness.v2.WorkflowCommand"> & {
+  /**
+   * @generated from field: string operation_id = 1;
+   */
+  operationId: string;
+
+  /**
+   * @generated from field: string kind = 2;
+   */
+  kind: string;
+
+  /**
+   * @generated from field: acyclic.harness.v2.FileRef payload = 3;
+   */
+  payload?: FileRef | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.WorkflowCommand.
+ * Use `create(WorkflowCommandSchema)` to create a new message.
+ */
+export declare const WorkflowCommandSchema: GenMessage<WorkflowCommand>;
+
+/**
+ * @generated from message acyclic.harness.v2.WorkflowTransition
+ */
+export declare type WorkflowTransition = Message<"acyclic.harness.v2.WorkflowTransition"> & {
+  /**
+   * @generated from field: bytes canonical_state_json = 1;
+   */
+  canonicalStateJson: Uint8Array;
+
+  /**
+   * @generated from field: repeated acyclic.harness.v2.WorkflowCommand commands = 2;
+   */
+  commands: WorkflowCommand[];
+
+  /**
+   * @generated from oneof acyclic.harness.v2.WorkflowTransition.status
+   */
+  status: {
+    /**
+     * @generated from field: bool suspended = 3;
+     */
+    value: boolean;
+    case: "suspended";
+  } | {
+    /**
+     * @generated from field: bytes canonical_completed_value_json = 4;
+     */
+    value: Uint8Array;
+    case: "canonicalCompletedValueJson";
+  } | {
+    /**
+     * @generated from field: string failure_message = 5;
+     */
+    value: string;
+    case: "failureMessage";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message acyclic.harness.v2.WorkflowTransition.
+ * Use `create(WorkflowTransitionSchema)` to create a new message.
+ */
+export declare const WorkflowTransitionSchema: GenMessage<WorkflowTransition>;
+
+/**
+ * @generated from message acyclic.harness.v2.WorkflowRecord
+ */
+export declare type WorkflowRecord = Message<"acyclic.harness.v2.WorkflowRecord"> & {
+  /**
+   * @generated from field: string operation_id = 1;
+   */
+  operationId: string;
+
+  /**
+   * @generated from field: string idempotency_key = 2;
+   */
+  idempotencyKey: string;
+
+  /**
+   * @generated from field: bytes input_digest = 3;
+   */
+  inputDigest: Uint8Array;
+
+  /**
+   * @generated from field: acyclic.harness.v2.MachineCheckpoint prior = 4;
+   */
+  prior?: MachineCheckpoint | undefined;
+
+  /**
+   * @generated from field: bytes canonical_input_json = 5;
+   */
+  canonicalInputJson: Uint8Array;
+
+  /**
+   * @generated from field: acyclic.harness.v2.WorkflowTransition transition = 6;
+   */
+  transition?: WorkflowTransition | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.MachineCheckpoint next = 7;
+   */
+  next?: MachineCheckpoint | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.WorkflowRecord.
+ * Use `create(WorkflowRecordSchema)` to create a new message.
+ */
+export declare const WorkflowRecordSchema: GenMessage<WorkflowRecord>;
+
+/**
+ * @generated from message acyclic.harness.v2.RuntimeLimits
+ */
+export declare type RuntimeLimits = Message<"acyclic.harness.v2.RuntimeLimits"> & {
+  /**
+   * @generated from field: uint64 file_bytes = 1;
+   */
+  fileBytes: bigint;
+
+  /**
+   * @generated from field: uint64 path_bytes = 2;
+   */
+  pathBytes: bigint;
+
+  /**
+   * @generated from field: uint64 attachments = 3;
+   */
+  attachments: bigint;
+
+  /**
+   * @generated from field: uint64 render_bytes = 4;
+   */
+  renderBytes: bigint;
+
+  /**
+   * @generated from field: uint64 model_steps = 5;
+   */
+  modelSteps: bigint;
+
+  /**
+   * @generated from field: uint64 model_events_per_step = 6;
+   */
+  modelEventsPerStep: bigint;
+
+  /**
+   * @generated from field: uint64 tool_calls_per_step = 7;
+   */
+  toolCallsPerStep: bigint;
+
+  /**
+   * @generated from field: uint64 context_messages = 8;
+   */
+  contextMessages: bigint;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.RuntimeLimits.
+ * Use `create(RuntimeLimitsSchema)` to create a new message.
+ */
+export declare const RuntimeLimitsSchema: GenMessage<RuntimeLimits>;
+
+/**
+ * @generated from message acyclic.harness.v2.TaskRunLimits
+ */
+export declare type TaskRunLimits = Message<"acyclic.harness.v2.TaskRunLimits"> & {
+  /**
+   * @generated from field: optional uint64 concurrency = 1;
+   */
+  concurrency?: bigint | undefined;
+
+  /**
+   * @generated from field: optional uint64 max_steps = 2;
+   */
+  maxSteps?: bigint | undefined;
+
+  /**
+   * @generated from field: optional uint64 deadline_epoch_ms = 3;
+   */
+  deadlineEpochMs?: bigint | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.TaskRunLimits.
+ * Use `create(TaskRunLimitsSchema)` to create a new message.
+ */
+export declare const TaskRunLimitsSchema: GenMessage<TaskRunLimits>;
+
+/**
+ * @generated from message acyclic.harness.v2.ExecutionPlacement
+ */
+export declare type ExecutionPlacement = Message<"acyclic.harness.v2.ExecutionPlacement"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.ComponentIdentity provider = 1;
+   */
+  provider?: ComponentIdentity | undefined;
+
+  /**
+   * ARTIFACT
+   *
+   * @generated from field: acyclic.harness.v2.ResourceRef build = 2;
+   */
+  build?: ResourceRef | undefined;
+
+  /**
+   * SANDBOX when present
+   *
+   * @generated from field: acyclic.harness.v2.ResourceRef environment = 3;
+   */
+  environment?: ResourceRef | undefined;
+
+  /**
+   * @generated from field: bytes readiness_revision = 4;
+   */
+  readinessRevision: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ExecutionPlacement.
+ * Use `create(ExecutionPlacementSchema)` to create a new message.
+ */
+export declare const ExecutionPlacementSchema: GenMessage<ExecutionPlacement>;
+
+/**
+ * @generated from message acyclic.harness.v2.TaskAdmissionRecord
+ */
+export declare type TaskAdmissionRecord = Message<"acyclic.harness.v2.TaskAdmissionRecord"> & {
+  /**
+   * @generated from field: string operation_id = 1;
+   */
+  operationId: string;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ComponentIdentity task = 2;
+   */
+  task?: ComponentIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.MachineIdentity machine = 3;
+   */
+  machine?: MachineIdentity | undefined;
+
+  /**
+   * @generated from field: bytes canonical_input_json = 4;
+   */
+  canonicalInputJson: Uint8Array;
+
+  /**
+   * @generated from field: bytes canonical_input_schema_json = 5;
+   */
+  canonicalInputSchemaJson: Uint8Array;
+
+  /**
+   * @generated from field: bytes canonical_output_schema_json = 6;
+   */
+  canonicalOutputSchemaJson: Uint8Array;
+
+  /**
+   * @generated from field: optional string parent_task_id = 7;
+   */
+  parentTaskId?: string | undefined;
+
+  /**
+   * @generated from field: repeated string grants = 8;
+   */
+  grants: string[];
+
+  /**
+   * @generated from field: acyclic.harness.v2.RuntimeLimits limits = 9;
+   */
+  limits?: RuntimeLimits | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ComponentIdentity policy = 10;
+   */
+  policy?: ComponentIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ExtensionAdmission extensions = 11;
+   */
+  extensions?: ExtensionAdmission | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ExecutionPlacement execution = 12;
+   */
+  execution?: ExecutionPlacement | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.TaskRunLimits run_limits = 13;
+   */
+  runLimits?: TaskRunLimits | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.TaskAdmissionRecord.
+ * Use `create(TaskAdmissionRecordSchema)` to create a new message.
+ */
+export declare const TaskAdmissionRecordSchema: GenMessage<TaskAdmissionRecord>;
+
+/**
+ * @generated from message acyclic.harness.v2.DurableBatchRequest
+ */
+export declare type DurableBatchRequest = Message<"acyclic.harness.v2.DurableBatchRequest"> & {
+  /**
+   * @generated from field: string group_id = 1;
+   */
+  groupId: string;
+
+  /**
+   * @generated from field: string batch_id = 2;
+   */
+  batchId: string;
+
+  /**
+   * @generated from field: acyclic.harness.v2.BatchGroupPolicy group_policy = 3;
+   */
+  groupPolicy: BatchGroupPolicy;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ComponentIdentity task = 4;
+   */
+  task?: ComponentIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.MachineIdentity machine = 5;
+   */
+  machine?: MachineIdentity | undefined;
+
+  /**
+   * @generated from field: repeated bytes canonical_input_json = 6;
+   */
+  canonicalInputJson: Uint8Array[];
+
+  /**
+   * @generated from field: bytes canonical_input_schema_json = 7;
+   */
+  canonicalInputSchemaJson: Uint8Array;
+
+  /**
+   * @generated from field: bytes canonical_output_schema_json = 8;
+   */
+  canonicalOutputSchemaJson: Uint8Array;
+
+  /**
+   * @generated from field: optional string parent_task_id = 9;
+   */
+  parentTaskId?: string | undefined;
+
+  /**
+   * @generated from field: repeated string grants = 10;
+   */
+  grants: string[];
+
+  /**
+   * @generated from field: acyclic.harness.v2.RuntimeLimits limits = 11;
+   */
+  limits?: RuntimeLimits | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ExtensionAdmission extensions = 12;
+   */
+  extensions?: ExtensionAdmission | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ComponentIdentity policy = 13;
+   */
+  policy?: ComponentIdentity | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ExecutionPlacement execution = 14;
+   */
+  execution?: ExecutionPlacement | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.TaskRunLimits run_limits = 15;
+   */
+  runLimits?: TaskRunLimits | undefined;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.DurableBatchRequest.
+ * Use `create(DurableBatchRequestSchema)` to create a new message.
+ */
+export declare const DurableBatchRequestSchema: GenMessage<DurableBatchRequest>;
+
+/**
  * Narrows a provider-owned resource to an immutable Filesystem generation.
  *
  * @generated from message acyclic.harness.v2.GenerationRef
@@ -1517,6 +2199,80 @@ export declare type GenerationRef = Message<"acyclic.harness.v2.GenerationRef"> 
  * Use `create(GenerationRefSchema)` to create a new message.
  */
 export declare const GenerationRefSchema: GenMessage<GenerationRef>;
+
+/**
+ * One owner-authenticated lazy listing of an agent-private directory.
+ *
+ * @generated from message acyclic.harness.v2.PrivateDirectoryEntry
+ */
+export declare type PrivateDirectoryEntry = Message<"acyclic.harness.v2.PrivateDirectoryEntry"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: acyclic.harness.v2.PrivateDirectoryEntry.Kind kind = 2;
+   */
+  kind: PrivateDirectoryEntry_Kind;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.PrivateDirectoryEntry.
+ * Use `create(PrivateDirectoryEntrySchema)` to create a new message.
+ */
+export declare const PrivateDirectoryEntrySchema: GenMessage<PrivateDirectoryEntry>;
+
+/**
+ * @generated from enum acyclic.harness.v2.PrivateDirectoryEntry.Kind
+ */
+export enum PrivateDirectoryEntry_Kind {
+  /**
+   * @generated from enum value: KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: KIND_FILE = 1;
+   */
+  FILE = 1,
+
+  /**
+   * @generated from enum value: KIND_DIRECTORY = 2;
+   */
+  DIRECTORY = 2,
+}
+
+/**
+ * Describes the enum acyclic.harness.v2.PrivateDirectoryEntry.Kind.
+ */
+export declare const PrivateDirectoryEntry_KindSchema: GenEnum<PrivateDirectoryEntry_Kind>;
+
+/**
+ * @generated from message acyclic.harness.v2.PrivateDirectoryPage
+ */
+export declare type PrivateDirectoryPage = Message<"acyclic.harness.v2.PrivateDirectoryPage"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.GenerationRef generation = 1;
+   */
+  generation?: GenerationRef | undefined;
+
+  /**
+   * @generated from field: repeated acyclic.harness.v2.PrivateDirectoryEntry entries = 2;
+   */
+  entries: PrivateDirectoryEntry[];
+
+  /**
+   * @generated from field: bool has_more = 3;
+   */
+  hasMore: boolean;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.PrivateDirectoryPage.
+ * Use `create(PrivateDirectoryPageSchema)` to create a new message.
+ */
+export declare const PrivateDirectoryPageSchema: GenMessage<PrivateDirectoryPage>;
 
 /**
  * @generated from message acyclic.harness.v2.ProjectRevision
@@ -1783,6 +2539,47 @@ export declare type ForkSelection = Message<"acyclic.harness.v2.ForkSelection"> 
 export declare const ForkSelectionSchema: GenMessage<ForkSelection>;
 
 /**
+ * @generated from message acyclic.harness.v2.ForkPreparation
+ */
+export declare type ForkPreparation = Message<"acyclic.harness.v2.ForkPreparation"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.VolumeRef child_project_volume = 1;
+   */
+  childProjectVolume?: VolumeRef | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.VolumeRef child_private_volume = 2;
+   */
+  childPrivateVolume?: VolumeRef | undefined;
+
+  /**
+   * @generated from field: uint64 inherited_through_sequence = 3;
+   */
+  inheritedThroughSequence: bigint;
+
+  /**
+   * @generated from field: uint64 maximum_inherited_messages = 4;
+   */
+  maximumInheritedMessages: bigint;
+
+  /**
+   * @generated from field: uint64 maximum_inherited_bytes = 5;
+   */
+  maximumInheritedBytes: bigint;
+
+  /**
+   * @generated from field: uint32 maximum_inherited_references = 6;
+   */
+  maximumInheritedReferences: number;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ForkPreparation.
+ * Use `create(ForkPreparationSchema)` to create a new message.
+ */
+export declare const ForkPreparationSchema: GenMessage<ForkPreparation>;
+
+/**
  * @generated from message acyclic.harness.v2.ForkRequest
  */
 export declare type ForkRequest = Message<"acyclic.harness.v2.ForkRequest"> & {
@@ -1825,6 +2622,11 @@ export declare type ForkRequest = Message<"acyclic.harness.v2.ForkRequest"> & {
    * @generated from field: repeated string attached_agent_ids = 8;
    */
   attachedAgentIds: string[];
+
+  /**
+   * @generated from field: acyclic.harness.v2.ForkPreparation preparation = 9;
+   */
+  preparation?: ForkPreparation | undefined;
 };
 
 /**
@@ -2091,11 +2893,11 @@ export declare type ProjectMergeReceipt = Message<"acyclic.harness.v2.ProjectMer
   resultGeneration?: GenerationRef | undefined;
 
   /**
-   * exactly 16 bytes
+   * bounded opaque provider retry identity
    *
-   * @generated from field: bytes filesystem_operation_id = 8;
+   * @generated from field: bytes provider_operation_id = 8;
    */
-  filesystemOperationId: Uint8Array;
+  providerOperationId: Uint8Array;
 
   /**
    * @generated from field: acyclic.harness.v2.ProviderJoinProof provider_proof = 9;
@@ -2530,6 +3332,31 @@ export enum ResourceKind {
  * Describes the enum acyclic.harness.v2.ResourceKind.
  */
 export declare const ResourceKindSchema: GenEnum<ResourceKind>;
+
+/**
+ * @generated from enum acyclic.harness.v2.BatchGroupPolicy
+ */
+export enum BatchGroupPolicy {
+  /**
+   * @generated from enum value: BATCH_GROUP_POLICY_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: BATCH_GROUP_POLICY_COLLECT_ALL = 1;
+   */
+  COLLECT_ALL = 1,
+
+  /**
+   * @generated from enum value: BATCH_GROUP_POLICY_CANCEL_ON_FAILURE = 2;
+   */
+  CANCEL_ON_FAILURE = 2,
+}
+
+/**
+ * Describes the enum acyclic.harness.v2.BatchGroupPolicy.
+ */
+export declare const BatchGroupPolicySchema: GenEnum<BatchGroupPolicy>;
 
 /**
  * @generated from enum acyclic.harness.v2.SharedVolumeOperation

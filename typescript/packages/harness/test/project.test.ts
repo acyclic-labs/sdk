@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { DEFAULT_LIMITS, NativeContracts, ParentProjectController, filesystemOperationId, resourceRef,
+import { DEFAULT_LIMITS, ExecutionScope, Harness, NativeContracts, ParentProjectController, providerOperationId, resourceRef,
   type Authority, type ConversationMessageId, type OperationId, type ParentProjectBinding,
-  type ProjectMergeReceipt, type ResourceRef } from "../src/index.js";
+  type ProjectMergeReceipt, type ProjectWorkspaceProvider, type ResourceRef } from "../src/index.js";
 
 const provider = { namespace: "test", family: "filesystem", version: "2" } as const;
 const owner = { kind: "project", id: "project" } as const;
@@ -9,6 +9,19 @@ const parent = { provider, id: "root", class: "project", owner } as const;
 const child = { provider, id: "child", class: "project", owner } as const;
 const generation = (byte: number): ResourceRef<"generation"> => ({ kind: "generation", provider, key: [byte], version: null });
 const contracts = await NativeContracts.create();
+
+test("project workspace bindings need authority and scoped views cannot regain them", () => {
+  const workspaces: ProjectWorkspaceProvider = {
+    provider, project: parent,
+    async forkProject() { throw new Error("unused"); },
+    async prepareProjectMerge() { throw new Error("unused"); },
+  };
+  expect(() => Harness.builder(contracts).workspaces(workspaces).build()).toThrow("project workspaces require");
+  const runtime = Harness.builder(contracts).bindings({ workspaces, grants: ["project:merge"] }).build();
+  expect(runtime.projectWorkspaces()).toBe(workspaces);
+  expect(() => runtime.scoped(ExecutionScope.create().onlyGrants()).projectWorkspaces()).toThrow("lacks project authority");
+  expect(() => runtime.scoped(ExecutionScope.create().onlyGrants("project:merge")).projectWorkspaces()).toThrow("not bound");
+});
 
 test("Rust and TypeScript share the canonical v2 project merge receipt", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/project-merge-receipt.json", import.meta.url)).text()).trim();
@@ -24,7 +37,7 @@ test("Rust and TypeScript share the canonical v2 project merge receipt", async (
     target_project: contracts.validate("volume_ref", decoded.target_project),
     expected_target_generation: await resourceRef(decoded.expected_target_generation),
     result_generation: await resourceRef(decoded.result_generation),
-    filesystem_operation_id: filesystemOperationId(decoded.filesystem_operation_id),
+    provider_operation_id: providerOperationId(decoded.provider_operation_id),
     provider_proof: decoded.provider_proof,
     notice: { ...decoded.notice, sequence: BigInt(fixtureSequence) },
   };
@@ -32,7 +45,7 @@ test("Rust and TypeScript share the canonical v2 project merge receipt", async (
   expect(receipt.source_project.class).toBe("project");
   expect(receipt.target_project.class).toBe("project");
   expect(receipt.notice.kind).toBe("merge");
-  expect(receipt.filesystem_operation_id).toHaveLength(16);
+  expect(receipt.provider_operation_id).toHaveLength(16);
   expect(receipt.provider_proof.provider).toEqual(receipt.target_project.provider);
   (await NativeContracts.create()).validate("conversation_message", receipt.notice, DEFAULT_LIMITS);
   expect(JSON.stringify(receipt, (_key, value: unknown) => {
@@ -47,6 +60,7 @@ test("project fork and merge publication remain bound to the parent controller",
   let granted = true;
   let publications = 0;
   let notices = 0;
+  const mergeOperation = "01010101-0101-0101-0101-010101010101" as OperationId;
   const raw = Object.freeze({ secret: "raw-plan" });
   const binding: ParentProjectBinding<typeof raw, string, "theirs", string, readonly string[]> = {
     parent: { kind: "conversation", id: "parent" }, project: parent,
@@ -70,7 +84,7 @@ test("project fork and merge publication remain bound to the parent controller",
     async applyProjectMerge(plan, target, operationId, resolution) {
       expect(plan).toBe(raw);
       expect(target).toEqual(generation(1));
-      expect(operationId).toBe("merge-1");
+      expect(operationId).toBe(mergeOperation);
       expect(resolution).toBe("theirs");
       publications++;
       return "applied";
@@ -81,26 +95,28 @@ test("project fork and merge publication remain bound to the parent controller",
     },
   };
   const controller = new ParentProjectController(contracts, binding);
-  expect(() => filesystemOperationId(Array(15).fill(1))).toThrow("16 bytes");
+  expect(() => providerOperationId([])).toThrow("1–64");
   expect(await controller.forkProject(generation(1), child, "fork-1")).toEqual(generation(2));
   const plan = await controller.prepareProjectMerge(child);
   expect(Object.keys(plan)).toEqual(["child", "source", "target", "commonAncestor"]);
   expect(await controller.describeProjectMergeConflicts(plan, ["conflict"], false)).toEqual(["conflict"]);
   const other = new ParentProjectController(contracts, binding);
-  await expect(other.applyProjectMerge(plan, "merge-1", "theirs")).rejects.toThrow("another parent controller");
-  await expect(controller.applyProjectMerge({ ...plan }, "merge-1", "theirs")).rejects.toThrow("another parent controller");
+  await expect(other.applyProjectMerge(plan, mergeOperation, "theirs")).rejects.toThrow("another parent controller");
+  await expect(controller.applyProjectMerge({ ...plan }, mergeOperation, "theirs")).rejects.toThrow("another parent controller");
   granted = false;
-  await expect(controller.applyProjectMerge(plan, "merge-1", "theirs")).rejects.toThrow("parent grant missing");
+  await expect(controller.applyProjectMerge(plan, mergeOperation, "theirs")).rejects.toThrow("parent grant missing");
   expect(publications).toBe(0);
   granted = true;
-  expect(await controller.applyProjectMerge(plan, "merge-1", "theirs")).toBe("applied");
+  expect(await controller.applyProjectMerge(plan, mergeOperation, "theirs")).toBe("applied");
+  await expect(controller.applyProjectMerge(plan, "03030303-0303-0303-0303-030303030303" as OperationId, "theirs"))
+    .rejects.toThrow("another operation");
   expect(publications).toBe(1);
   const receipt: ProjectMergeReceipt = {
-    operation_id: "01010101-0101-0101-0101-010101010101" as OperationId,
+    operation_id: mergeOperation,
     child: { kind: "conversation", id: "child-conversation" },
     source_project: child, source_generation: plan.source,
     target_project: parent, expected_target_generation: plan.target,
-    result_generation: generation(3), filesystem_operation_id: filesystemOperationId(Array(16).fill(1)),
+    result_generation: generation(3), provider_operation_id: providerOperationId(Array(16).fill(1)),
     provider_proof: { provider, format: "filesystem.join.v2", statement: { generation: "3" } },
     notice: {
       id: "02020202-0202-0202-0202-020202020202" as ConversationMessageId, sequence: 1n, kind: "merge",
@@ -128,13 +144,15 @@ test("project fork and merge publication remain bound to the parent controller",
   })).toThrow();
   await expect(other.publishProjectMergeReceipt(plan, receipt)).rejects.toThrow("another parent controller");
   await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
+    operation_id: "03030303-0303-0303-0303-030303030303" as OperationId })).rejects.toThrow("another operation");
+  await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
     expected_target_generation: generation(9) })).rejects.toThrow("inspected parent plan");
   await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
     provider_proof: { ...receipt.provider_proof, provider: { ...provider, namespace: "foreign" } } })).rejects.toThrow("inconsistent identities");
   await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
     provider_proof: { ...receipt.provider_proof, statement: { unsafe: Number.POSITIVE_INFINITY } } })).rejects.toThrow();
   await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
-    filesystem_operation_id: [1] as unknown as typeof receipt.filesystem_operation_id })).rejects.toThrow();
+    provider_operation_id: [] as unknown as typeof receipt.provider_operation_id })).rejects.toThrow();
   await expect(controller.publishProjectMergeReceipt(plan, { ...receipt,
     notice: { ...receipt.notice, kind: "assistant" } as unknown as typeof receipt.notice })).rejects.toThrow();
   expect(notices).toBe(0);

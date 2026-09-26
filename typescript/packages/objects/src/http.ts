@@ -1,4 +1,4 @@
-import type { BucketId, BucketRef, ByteRange, Condition, ETag, IdempotencyKey, ListPage, MultipartProvider, MultipartUpload, ObjectMetadata, ObjectsProvider, ObjectVersion, ReadTarget, SnapshotId, SnapshotRef, StoredObject, UploadedPart, UploadId, VersionId } from "./index.js";
+import type { BucketId, BucketRef, ByteRange, Condition, ETag, HeadOptions, IdempotencyKey, ListPage, MultipartProvider, MultipartUpload, ObjectMetadata, ObjectsProvider, ObjectVersion, ReadTarget, SnapshotId, SnapshotRef, StoredObject, UploadedPart, UploadId, VersionId } from "./index.js";
 
 export interface HttpObjectsOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
 
@@ -10,7 +10,7 @@ export class HttpObjectsProvider implements ObjectsProvider, MultipartProvider {
   headBucket(value: BucketRef) { return this.#call("buckets/head", { bucket: value }, bucket); }
   deleteBucket(value: BucketRef, idempotencyKey?: IdempotencyKey) { return this.#call("buckets/delete", { bucket: value, idempotencyKey }, bool); }
   put(value: BucketRef, objectKey: string, body: Uint8Array, metadata: ObjectMetadata, condition?: Condition, idempotencyKey?: IdempotencyKey) { return this.#call("objects/put", { bucket: value, objectKey, body, metadata, condition, idempotencyKey }, version); }
-  head(target: ReadTarget, objectKey: string, versionId?: VersionId) { return this.#call("objects/head", { target, objectKey, versionId }, version); }
+  head(target: ReadTarget, objectKey: string, options: HeadOptions = {}) { return this.#call("objects/head", { target, objectKey, ...options }, version); }
   get(target: ReadTarget, objectKey: string, versionId?: VersionId, range?: Omit<ByteRange, "total">) { return this.#call("objects/get", { target, objectKey, versionId, range }, stored); }
   delete(value: BucketRef, objectKey: string, versionId?: VersionId, condition?: Condition, idempotencyKey?: IdempotencyKey) { return this.#call("objects/delete", { bucket: value, objectKey, versionId, condition, idempotencyKey }, deleted); }
   list(target: ReadTarget, prefix: string, delimiter: string | undefined, versions: boolean, pageSize: number, continuation?: string) { return this.#call("objects/list", { target, prefix, delimiter, versions, pageSize, continuation }, page); }

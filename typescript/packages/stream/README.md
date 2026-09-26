@@ -2,7 +2,7 @@
 
 Typed, hierarchical append-only streams with explicit cursors, conditional appends, forks, and coordinated commits.
 
-`childrenPage({ parent, limit })` returns direct children with an immutable 32-byte hierarchy version and an optional `nextAfter` cursor. Pass both `after` and `hierarchyVersion` for the next page; a path creation or deletion between pages fails with `hierarchy_changed` instead of silently skipping or duplicating agents. `childrenAll(parent, limit)` handles the continuation loop, including hierarchies larger than 1,024 children. Ancestor paths are materialized when a nested stream is created.
+`childrenPage({ parent, limit })` returns direct children with an immutable 32-byte hierarchy version and an optional `nextAfter` cursor. Pass both `after` and `hierarchyVersion` for the next page; a path creation or deletion between pages fails with `hierarchy_changed` instead of silently skipping or duplicating agents. `childrenAll(parent, limit)` and its `children(parent, limit)` convenience alias use that same continuation loop, including hierarchies larger than 1,024 children. Ancestor paths are materialized when a nested stream is created.
 
 ```sh
 npm install @acyclic-labs/stream

@@ -2,7 +2,7 @@
 #![cfg_attr(test, allow(clippy::too_many_lines, clippy::indexing_slicing))]
 #![doc = include_str!("../README.md")]
 
-use acyclic_fs::kernel::{FileKind, LogicalName};
+use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
 use acyclic_fs::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, ForkOptions, Fs,
     Generation, GenerationId, IdempotencyKey as FilesystemKey, JoinCommitWitness, JoinHistory,
@@ -14,6 +14,7 @@ use acyclic_harness::{
     AgentId, Error, IdempotencyKey, Result,
     conversation::{
         Attachment, ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef, Limits,
+        PrivateDirectoryEntry, PrivateDirectoryEntryKind, PrivateDirectoryPage,
         ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
         decode_complete_attachment_manifest,
     },
@@ -38,14 +39,18 @@ const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
+mod fork_preparer;
+pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
+mod project_workspaces;
+pub use project_workspaces::FilesystemProjectWorkspaces;
 mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
 #[cfg(feature = "memory")]
 mod memory;
 #[cfg(feature = "memory")]
-pub use memory::MemoryHarnessStorage;
+pub use memory::{LocalHarness, MemoryHarnessStorage};
 
 /// Owner-scoped scheduler result staging into one agent-private Filesystem volume.
 pub struct FilesystemSchedulerPayloadStore<A, O> {
@@ -151,6 +156,82 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    fn list_private_directory<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a GenerationRef>,
+        after: Option<&'a str>,
+        maximum_entries: u32,
+    ) -> BoxFuture<'a, Result<PrivateDirectoryPage>> {
+        Box::pin(async move {
+            let after = after
+                .map(|name| {
+                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 4_096)
+                        .map_err(|error| Error::Invalid(error.to_string()))
+                })
+                .transpose()?;
+            let (generation, page) = FilesystemContentVerifier::list_private_directory(
+                self,
+                volume,
+                granted_prefix,
+                path,
+                expected_generation,
+                after.as_ref(),
+                maximum_entries,
+            )
+            .await?;
+            let entries = page
+                .entries
+                .into_iter()
+                .map(|entry| {
+                    let name = entry
+                        .name
+                        .unicode_text()
+                        .ok_or_else(|| {
+                            Error::Unsupported("private directory name is not Unicode".into())
+                        })?
+                        .into_owned();
+                    let kind = match entry.kind {
+                        FileKind::Regular => PrivateDirectoryEntryKind::File,
+                        FileKind::Directory => PrivateDirectoryEntryKind::Directory,
+                        _ => {
+                            return Err(Error::Unsupported(
+                                "private directory contains an unsupported entry kind".into(),
+                            ));
+                        }
+                    };
+                    Ok(PrivateDirectoryEntry { name, kind })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(PrivateDirectoryPage {
+                generation,
+                entries,
+                has_more: page.has_more,
+            })
+        })
+    }
+
+    fn read_private_path<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a GenerationRef>,
+    ) -> BoxFuture<'a, Result<(FileRef, Vec<u8>)>> {
+        Box::pin(async move {
+            FilesystemContentVerifier::read_private_path(
+                self,
+                volume,
+                granted_prefix,
+                path,
+                expected_generation,
+            )
+            .await
+        })
+    }
+
     fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let grant = self.read_grant(reference)?;
@@ -179,13 +260,10 @@ where
         limits: &'a Limits,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            limits.validate_file(reference)?;
-            for item in
-                FilesystemContentVerifier::load_manifest(self, reference, item_count).await?
-            {
-                limits.validate_file(&item.file)?;
-                self.verify(&item.file).await?;
-            }
+            acyclic_harness::conversation::verified_attachment_manifest(
+                self, reference, item_count, limits,
+            )
+            .await?;
             Ok(())
         })
     }
@@ -264,7 +342,21 @@ where
     }
 
     fn read_grant(&self, reference: &FileRef) -> Result<ContentGrant> {
-        ContentGrant::verify_read(&self.verifier, &self.scope, reference)
+        // Execution-journal tool calls/results are intentionally stored under
+        // the owner's internal namespace. They are not public exact-file
+        // references, but the owning scope still needs to resolve them while
+        // replaying a model context. A whole-volume grant is required here so
+        // delegated exact-file scopes cannot use this escape hatch.
+        if reference.path().starts_with(".system/") {
+            ContentGrant::verify(
+                &self.verifier,
+                &self.scope,
+                reference.volume(),
+                VolumeOperation::Read,
+            )
+        } else {
+            ContentGrant::verify_read(&self.verifier, &self.scope, reference)
+        }
     }
 
     async fn load_manifest(&self, reference: &FileRef, item_count: u32) -> Result<Vec<Attachment>> {
@@ -340,6 +432,10 @@ where
         &self.host.provider
     }
 
+    fn maximum_reference_bytes(&self) -> u64 {
+        self.maximum_total_reference_bytes
+    }
+
     fn acquire_private_fence<'a>(
         &'a self,
         seed: &'a ForkSeed,
@@ -408,6 +504,11 @@ where
     fn verify<'a>(&'a self, seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             seed.validate()?;
+            if seed.child_private_volume.provider() == &self.host.provider {
+                self.host
+                    .verify_fork_allocation(seed, &seed.child_private_volume)
+                    .await?;
+            }
             for resource in &seed.resources {
                 if let (
                     ResourceRevision::Project {
@@ -421,6 +522,7 @@ where
                 ) = (&resource.source, &resource.revision)
                     && source.provider() == &self.host.provider
                 {
+                    self.host.verify_fork_allocation(seed, child).await?;
                     let source_workspace = self
                         .host
                         .open(&workspace_ref(
@@ -556,12 +658,19 @@ where
                                             && &grant.volume == reference.volume()
                                             && grant.operations.contains(&VolumeOperation::Read)
                                     });
+                                let project_read = reference.volume().class()
+                                    == VolumeClass::Project
+                                    && seed.resources.iter().any(|resource| {
+                                        matches!(&resource.revision,
+                                            ResourceRevision::Project { volume, .. }
+                                                if volume == reference.volume())
+                                    });
                                 let exact_read = seed.reference_grants.iter().any(|grant| {
                                     grant.reader == *reader
                                         && &grant.file == reference
                                         && grant.attachment_manifest.is_none()
                                 });
-                                if !owner_read && !shared_read && !exact_read {
+                                if !owner_read && !shared_read && !project_read && !exact_read {
                                     return Err(Error::Unauthorized(
                                         "inherited conversation reference lacks reader authority"
                                             .into(),
@@ -811,6 +920,10 @@ where
             if receipt.source_project.provider() != &self.host.provider
                 || receipt.target_project.provider() != &self.host.provider
                 || receipt.provider_proof.provider != self.host.provider
+                || receipt.provider_operation_id.as_slice()
+                    != project_join_key(receipt.operation_id)?
+                        .into_bytes()
+                        .as_slice()
             {
                 return Err(Error::Invalid(
                     "merge receipt belongs to another provider or retry identity".into(),
@@ -852,7 +965,8 @@ where
                 || witness.source_generation() != source_generation.id()
                 || witness.expected_target() != expected.id()
                 || witness.result_generation() != result.id()
-                || witness.operation_id().into_bytes() != receipt.filesystem_operation_id
+                || witness.operation_id().into_bytes().as_slice()
+                    != receipt.provider_operation_id.as_slice()
                 || witness.history() != JoinHistory::Merge
                 || !target_workspace
                     .verify_join_commit(&witness)
@@ -943,18 +1057,25 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
     /// Binds an authenticated parent conversation to its exact project volume.
     pub fn new(
         host: &'a FilesystemHost<A, O>,
-        parent: &Authority,
+        parent: &Reducer,
         verifier: &AuthorityVerifier,
         scope: &Scope,
         project: VolumeRef,
     ) -> Result<Self> {
-        if parent.kind != acyclic_harness::core::AggregateKind::Conversation {
+        if parent.authority().kind != acyclic_harness::core::AggregateKind::Conversation {
             return Err(Error::Invalid(
                 "project controller requires a parent conversation".into(),
             ));
         }
-        verifier.verify_audience(parent)?;
+        verifier.verify_audience(parent.authority())?;
         verifier.verify(scope)?;
+        if parent.conversation().and_then(|state| state.agent) != scope.agent()
+            || scope.agent().is_none()
+        {
+            return Err(Error::Unauthorized(
+                "project controller requires the bound parent agent".into(),
+            ));
+        }
         project.validate()?;
         if project.class() != VolumeClass::Project || project.provider() != &host.provider {
             return Err(Error::Invalid(
@@ -963,7 +1084,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
         }
         Ok(Self {
             host,
-            parent: parent.clone(),
+            parent: parent.authority().clone(),
             project,
             verifier: verifier.clone(),
             scope: scope.clone(),
@@ -1242,11 +1363,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     pub async fn apply_project_merge(
         &self,
         plan: &ParentMergePlan<A, O>,
-        idempotency_key: FilesystemKey,
+        operation_id: acyclic_harness::OperationId,
     ) -> Result<JoinOutcome<A, O>> {
         self.require_merge_plan(plan)?;
         plan.plan
-            .apply(Self::merge_options(plan, idempotency_key))
+            .apply(Self::merge_options(plan, project_join_key(operation_id)?))
             .await
             .map_err(map_error)
     }
@@ -1259,7 +1380,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         outcome: &JoinOutcome<A, O>,
         child: Authority,
         operation_id: acyclic_harness::OperationId,
-        filesystem_key: FilesystemKey,
         notice: acyclic_harness::conversation::ConversationMessage,
     ) -> Result<ProjectMergeReceipt> {
         self.require_merge_plan(plan)?;
@@ -1270,6 +1390,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 "project join did not publish a result".into(),
             ));
         };
+        let filesystem_key = project_join_key(operation_id)?;
         let witness = plan
             .plan
             .commit_witness(application, filesystem_key)
@@ -1282,7 +1403,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             target_project: self.project.clone(),
             expected_target_generation: self.host.generation_ref_id(plan.target_head())?,
             result_generation: self.host.generation_ref(application.generation())?,
-            filesystem_operation_id: filesystem_key.into_bytes(),
+            provider_operation_id: filesystem_key.into_bytes().to_vec(),
             provider_proof: ProviderJoinProof {
                 provider: self.host.provider.clone(),
                 format: FILESYSTEM_JOIN_PROOF_FORMAT.into(),
@@ -1312,7 +1433,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     pub async fn apply_project_merge_with_drivers<C: MergeResolutionCache>(
         &self,
         plan: &ParentMergePlan<A, O>,
-        idempotency_key: FilesystemKey,
+        operation_id: acyclic_harness::OperationId,
         registry: &MergeDriverRegistry,
         cache: &mut C,
         replanning: bool,
@@ -1320,7 +1441,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         self.require_merge_plan(plan)?;
         plan.plan
             .apply_with_drivers(
-                Self::merge_options(plan, idempotency_key),
+                Self::merge_options(plan, project_join_key(operation_id)?),
                 registry,
                 cache,
                 replanning,
@@ -1333,12 +1454,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     pub async fn apply_project_merge_sides(
         &self,
         plan: &ParentMergePlan<A, O>,
-        idempotency_key: FilesystemKey,
+        operation_id: acyclic_harness::OperationId,
         selections: BTreeMap<MergeConflict, ConflictSide>,
     ) -> Result<JoinOutcome<A, O>> {
         self.require_merge_plan(plan)?;
         plan.plan
-            .apply_sides(Self::merge_options(plan, idempotency_key), selections)
+            .apply_sides(
+                Self::merge_options(plan, project_join_key(operation_id)?),
+                selections,
+            )
             .await
             .map_err(|error| Error::Storage(error.to_string()))
     }
@@ -1758,7 +1882,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(bytes)
     }
 
-    /// Discovers a granted private directory at the owner's current head.
+    /// Discovers a granted private directory at the owner's current head, or
+    /// continues at the immutable generation returned by a prior page.
     /// The physical workspace is opened only when this method is called;
     /// callers need no fork or pre-mounted copy of the owner's tree.
     pub async fn list_private_directory(
@@ -1778,11 +1903,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let workspace = workspace_ref(self.provider.clone(), &volume.storage_name()?)?;
         let observation = self.resolve(&workspace).await?;
-        if expected_generation.is_some_and(|expected| expected != &observation.generation) {
-            return Err(Error::Conflict(
-                "private directory changed during pagination".into(),
-            ));
-        }
+        let generation = expected_generation.unwrap_or(&observation.generation);
+        self.retain_generation(&workspace, generation).await?;
         let requested = if path.is_empty() {
             "/".to_owned()
         } else {
@@ -1791,7 +1913,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let mut page = self
             .list_after(
                 &workspace,
-                Some(&observation.generation),
+                Some(generation),
                 &requested,
                 after,
                 maximum_entries + u32::from(path.is_empty()),
@@ -1805,7 +1927,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 page.has_more = true;
             }
         }
-        Ok((observation.generation, page))
+        Ok((generation.clone(), page))
     }
 
     /// Lazily resolves a named private file and returns an immutable ref plus
@@ -1829,15 +1951,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )?;
         let workspace = workspace_ref(self.provider.clone(), &volume.storage_name()?)?;
         let observation = self.resolve(&workspace).await?;
-        if expected_generation.is_some_and(|expected| expected != &observation.generation) {
-            return Err(Error::Conflict(
-                "private file changed since directory listing".into(),
-            ));
-        }
+        let generation = expected_generation.unwrap_or(&observation.generation);
+        self.retain_generation(&workspace, generation).await?;
         let bytes = self
             .read(
                 &workspace,
-                Some(&observation.generation),
+                Some(generation),
                 &format!("/{}", provisional.path()),
                 maximum_bytes,
             )
@@ -1845,7 +1964,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let metadata = self
             .read(
                 &workspace,
-                Some(&observation.generation),
+                Some(generation),
                 &format!("/{}", content_metadata_path(provisional.path())),
                 64 * 1024,
             )
@@ -1877,13 +1996,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let reference = FileRef::new(
             volume.clone(),
             path,
-            hex::encode(observation.generation.as_resource().key()),
+            hex::encode(generation.as_resource().key()),
             descriptor,
             display_name,
         )?;
         grant.require_file_read(&reference)?;
-        self.retain_generation(&workspace, &observation.generation)
-            .await?;
         Ok((reference, bytes))
     }
 
@@ -2160,6 +2277,12 @@ fn filesystem_key(key: &IdempotencyKey) -> FilesystemKey {
     FilesystemKey::from_bytes(bytes)
 }
 
+fn project_join_key(operation_id: acyclic_harness::OperationId) -> Result<FilesystemKey> {
+    Ok(filesystem_key(&IdempotencyKey::new(format!(
+        "project-join:{operation_id}"
+    ))?))
+}
+
 fn content_metadata_path(path: &str) -> String {
     format!(
         ".system/harness-file-metadata/{}.json",
@@ -2383,6 +2506,35 @@ mod tests {
             .list_private_directory(&volume, "messages", "messages", None, None, 10)
             .await?;
         assert_eq!(page.entries.len(), 1);
+        let erased: &dyn ContentResidencyVerifier = &delegated_reader;
+        let portable_page = erased
+            .list_private_directory(
+                &volume,
+                "messages",
+                "messages",
+                Some(&listed_generation),
+                None,
+                10,
+            )
+            .await?;
+        assert_eq!(portable_page.generation, listed_generation);
+        assert_eq!(
+            portable_page.entries,
+            vec![PrivateDirectoryEntry {
+                name: "first.txt".into(),
+                kind: PrivateDirectoryEntryKind::File,
+            }]
+        );
+        let (portable_ref, portable_bytes) = erased
+            .read_private_path(
+                &volume,
+                "messages",
+                "messages/first.txt",
+                Some(&listed_generation),
+            )
+            .await?;
+        assert_eq!(portable_ref, second);
+        assert_eq!(portable_bytes, b"two");
         let (pinned, delegated_bytes) = delegated_reader
             .read_private_path(
                 &volume,
@@ -2393,6 +2545,43 @@ mod tests {
             .await?;
         assert_eq!(pinned, second);
         assert_eq!(delegated_bytes, b"two");
+        host.put_content(
+            &volume,
+            &write,
+            "messages/later.txt",
+            b"later",
+            "text/plain",
+            "later.txt",
+            16,
+            &IdempotencyKey::new("stage-later")?,
+        )
+        .await?;
+        let (old_generation, old_page) = delegated_reader
+            .list_private_directory(
+                &volume,
+                "messages",
+                "messages",
+                Some(&listed_generation),
+                None,
+                10,
+            )
+            .await?;
+        assert_eq!(old_generation, listed_generation);
+        assert_eq!(old_page.entries, page.entries);
+        let (_, current_page) = delegated_reader
+            .list_private_directory(&volume, "messages", "messages", None, None, 10)
+            .await?;
+        assert_eq!(current_page.entries.len(), 2);
+        let (old_ref, old_bytes) = delegated_reader
+            .read_private_path(
+                &volume,
+                "messages",
+                "messages/first.txt",
+                Some(&listed_generation),
+            )
+            .await?;
+        assert_eq!(old_ref, second);
+        assert_eq!(old_bytes, b"two");
         assert!(
             delegated_reader
                 .list_private_directory(&volume, "messages", "elsewhere", None, None, 10)
@@ -2405,7 +2594,9 @@ mod tests {
             .read_private_path(&volume, &delegated, "messages/first.txt", None, 16)
             .await?;
         assert_eq!(bytes, Bytes::from_static(b"two"));
-        assert_eq!(discovered, second);
+        assert_ne!(discovered.version(), second.version());
+        assert_eq!(discovered.path(), second.path());
+        assert_eq!(discovered.descriptor(), second.descriptor());
         assert!(
             host.put_content(
                 &volume,
@@ -2441,7 +2632,7 @@ mod tests {
                     Some(&listed_generation)
                 )
                 .await,
-            Err(Error::Conflict(_))
+            Err(Error::NotFound(_))
         ));
         assert!(host.read_content(&empty, &read, 16).await?.is_empty());
         let wrong_digest = FileRef::new(

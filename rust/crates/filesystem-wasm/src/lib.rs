@@ -601,35 +601,6 @@ mod bindings {
             serde_wasm_bindgen::to_value(&browser_workspace_stat(value)).map_err(js_error)
         }
 
-        #[wasm_bindgen(js_name = listDirectory)]
-        pub async fn list_directory(
-            &self,
-            path: String,
-            after: Option<JsValue>,
-            maximum_entries: u32,
-        ) -> Result<JsValue, JsValue> {
-            let after = after.map(browser_workspace_name).transpose()?;
-            let value = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => {
-                    value
-                        .list_directory(&path, after.as_ref(), maximum_entries)
-                        .await
-                }
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    value
-                        .list_directory(&path, after.as_ref(), maximum_entries)
-                        .await
-                }
-                BrowserWorkspaceEngine::Memory(value) => {
-                    value
-                        .list_directory(&path, after.as_ref(), maximum_entries)
-                        .await
-                }
-            }
-            .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&browser_workspace_directory_page(value)).map_err(js_error)
-        }
-
         #[wasm_bindgen(js_name = readSymbolicLink)]
         pub async fn read_symbolic_link(&self, path: String) -> Result<Vec<u8>, JsValue> {
             let value = match &self.engine {

@@ -56,9 +56,7 @@ export class StreamClient {
   inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> { return this.provider.inspectIdempotency(key); }
   children(parent: string | undefined, options: { readonly limit: number } | number): AsyncIterable<{ readonly path: string }> {
     const limit = typeof options === "number" ? options : options.limit;
-    positiveInteger(limit, "limit");
-    if (limit > 1_024) throw new RangeError("child page limit exceeds 1024");
-    return this.provider.children(parent, limit);
+    return this.childrenAll(parent, limit);
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request.parent !== undefined) pathValue(request.parent);

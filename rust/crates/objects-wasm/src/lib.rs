@@ -3,8 +3,8 @@
 #[cfg(target_arch = "wasm32")]
 mod browser {
     use acyclic_objects::{
-        Condition, GetRequest, MemoryObjects, ObjectsError, ObjectsProvider, PutRequest,
-        ReadTarget, wire,
+        Condition, GetRequest, HeadRequest, MemoryObjects, ObjectsError, ObjectsProvider,
+        PutRequest, ReadTarget, wire,
     };
     use bytes::Bytes;
     use wasm_bindgen::prelude::*;
@@ -167,14 +167,12 @@ mod browser {
             let request: wire::HeadObjectRequest = decode(&request)?;
             let version = self
                 .inner
-                .head(GetRequest {
+                .head(HeadRequest {
                     target: target(required(request.target)?)?,
                     object_key: request.object_key,
                     version_id: optional(request.version_id),
-                    range: None,
                     if_match: optional(request.if_match),
                     if_none_match: optional(request.if_none_match),
-                    maximum_bytes: 0,
                 })
                 .await
                 .map_err(error)?;

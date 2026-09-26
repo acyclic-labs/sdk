@@ -292,9 +292,6 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       return read(client, await currentGeneration(client, reference), path, { offset, length }, length);
     },
     async stat(path) { return stat(client, await currentGeneration(client, reference), path); },
-    async listDirectory(path, after, maximumEntries) {
-      return list(client, await currentGeneration(client, reference), path, after, maximumEntries);
-    },
     async readSymbolicLink(path) {
       return readLink(client, await currentGeneration(client, reference), path);
     },

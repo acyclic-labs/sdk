@@ -12,13 +12,13 @@ use acyclic_harness::conversation::{
     VolumeRef,
 };
 use acyclic_harness::core::{
-    Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope,
+    Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry, Scope,
 };
 use acyclic_harness::fork::{
-    CapturedResource, CompositeForkVerifier, ForkSeed, ResourceRevision, SharedGrant,
-    StreamHistoryForkVerifier,
+    Capture, CapturedResource, CompositeForkVerifier, ForkPreparation, ForkReport, ForkRequest,
+    ForkSeed, ForkSelection, ResourceRevision, SharedGrant, StreamHistoryForkVerifier,
 };
-use acyclic_harness::merge::ProjectMergeVerifier;
+use acyclic_harness::merge::{ProjectJoinOutcome, ProjectMergeVerifier, ProjectWorkspaceProvider};
 use acyclic_harness::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
 use acyclic_harness::projection::{ModelContextSelection, select_model_context};
 use acyclic_harness::resources::{ProviderRef, StreamRef};
@@ -26,7 +26,8 @@ use acyclic_harness::store::StreamAggregate;
 use acyclic_harness::{AgentId, Capabilities, IdempotencyKey, OperationId, Result};
 use acyclic_harness_filesystem::{
     FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
-    FilesystemProjectMergeVerifier, ParentProjectController, WorkspaceMutation,
+    FilesystemProjectMergeVerifier, FilesystemProjectWorkspaces, ParentProjectController,
+    WorkspaceMutation,
 };
 use acyclic_stream::{MemoryStream, StreamClient};
 use std::{
@@ -36,6 +37,7 @@ use std::{
 use uuid::Uuid;
 
 const DEPTH: u16 = 1_024;
+const DEEP_RETRY: u16 = DEPTH / 2;
 
 fn identity(value: u16) -> [u8; 16] {
     let mut bytes = [0xA5; 16];
@@ -151,6 +153,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         VolumeOwner::Project("project".into()),
     )?;
     let mut project_head = host.create_volume(&project).await?;
+    let parent_project_workspace = project_head.workspace.clone();
 
     let mut authority = Authority {
         kind: AggregateKind::Conversation,
@@ -322,9 +325,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     let mut previous_shared_reference = Some(shared_reference);
 
     let mut final_parent_project = project.clone();
-    let mut final_parent_authority = authority.clone();
-    let mut final_parent_issuer = issuer.clone();
     let mut final_parent_scope = grant_scope.clone();
+    let mut final_parent_reducer = aggregate.reducer().clone();
+    let mut prepublication_workspaces = None;
     for level in 1..=DEPTH {
         let child_agent = AgentId::from_bytes(identity(level));
         let child_private = volume(
@@ -343,7 +346,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         )?;
         let controller = ParentProjectController::new(
             &host,
-            &authority,
+            aggregate.reducer(),
             &issuer.verifier(),
             &grant_scope,
             project.clone(),
@@ -385,12 +388,12 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         )?;
         let controller = ParentProjectController::new(
             &host,
-            &authority,
+            aggregate.reducer(),
             &issuer.verifier(),
             &grant_scope,
             project.clone(),
         )?;
-        let attached_agents = if level == 1 {
+        let attached_agents = if level == 1 || level == DEEP_RETRY {
             vec![AgentId::from_bytes([201; 16]), root_agent]
         } else {
             Vec::new()
@@ -517,7 +520,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 operations: BTreeSet::from([VolumeOperation::Read]),
             }]
             .into_iter()
-            .chain((level == 1).then_some(SharedGrant {
+            .chain((level == 1 || level == DEEP_RETRY).then_some(SharedGrant {
                 volume: shared.clone(),
                 child_agent: AgentId::from_bytes([201; 16]),
                 operations: BTreeSet::from([VolumeOperation::Read]),
@@ -530,6 +533,71 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             boundary: None,
         };
         seed.validate()?;
+        if level == DEEP_RETRY {
+            let attached = AgentId::from_bytes([201; 16]);
+            let readable = seed.reference_capabilities(attached)?;
+            assert_eq!(seed.attachment_manifests.len(), 1);
+            assert!(readable.contains(&previous_file.read_capability()?));
+            assert!(readable.contains(&previous_attachment.read_capability()?));
+            assert!(readable.contains(&inherited.read_capability()?));
+            assert!(readable.contains(&seed.attachment_manifests[0].read_capability()?));
+            assert!(!readable.contains(&child_private.capability(VolumeOperation::Write)?));
+            assert!(
+                seed.shared_capabilities_for(attached)?
+                    .contains(&shared.capability(VolumeOperation::Read)?)
+            );
+            let reader_scope =
+                child_issuer.root_for_agent(attached, "deep-attached-reader", readable);
+            let reader = FilesystemContentVerifier::new(
+                host.clone(),
+                child_issuer.verifier(),
+                reader_scope,
+                1_024,
+            )?;
+            reader
+                .verify_manifest(&seed.attachment_manifests[0], 1, &Limits::default())
+                .await?;
+            let environment = seed.attached_read_capabilities(attached)?;
+            assert!(environment.contains(&child_project.capability(VolumeOperation::Read)?));
+            assert!(environment.contains(&shared.capability(VolumeOperation::Read)?));
+            assert!(!environment.contains(&child_project.capability(VolumeOperation::Write)?));
+            let environment_scope = child_issuer.root_for_agent(
+                attached,
+                "deep-attached-environment-reader",
+                environment,
+            );
+            let project_read = ContentGrant::verify(
+                &child_issuer.verifier(),
+                &environment_scope,
+                &child_project,
+                VolumeOperation::Read,
+            )?;
+            assert_eq!(
+                host.read(
+                    &forked.workspace,
+                    Some(&forked.generation),
+                    "/marker.txt",
+                    1_024
+                )
+                .await?,
+                bytes::Bytes::from(format!("level {}", level - 1)),
+            );
+            assert!(
+                project_read
+                    .require(&child_project, VolumeOperation::Read)
+                    .is_ok()
+            );
+        }
+        if level == 1 {
+            let unbound = issuer.root("unbound-parent", grant_scope.capabilities().clone());
+            assert!(
+                host.claim_fork_seed(&seed, aggregate.reducer(), &issuer.verifier(), &unbound)
+                    .await
+                    .is_err()
+            );
+        }
+        host.claim_fork_seed(&seed, aggregate.reducer(), &issuer.verifier(), &grant_scope)
+            .await?;
         if level == 1 {
             let mut forged_prefix = seed.clone();
             forged_prefix.inherited_context[0] = FileRef::new(
@@ -596,7 +664,8 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 seed.shared_capabilities_for(inherited_reader)?
                     .contains(&shared.capability(VolumeOperation::Read)?)
             );
-            let reader_scope = child_issuer.root("attached-reader", capabilities);
+            let reader_scope =
+                child_issuer.root_for_agent(inherited_reader, "attached-reader", capabilities);
             let exact = ContentGrant::verify_file_read(
                 &child_issuer.verifier(),
                 &reader_scope,
@@ -637,6 +706,13 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert!(exact.require(&private, VolumeOperation::Write).is_err());
         }
         if level == 1 {
+            let mut missing_manifest_reader = seed.clone();
+            missing_manifest_reader.reference_grants.retain(|grant| {
+                !(grant.reader == child_agent
+                    && grant.file == seed.attachment_manifests[0]
+                    && grant.attachment_manifest.is_none())
+            });
+            assert!(missing_manifest_reader.validate().is_err());
             let mut missing_member = seed.clone();
             missing_member.reference_grants.retain(|grant| {
                 !(grant.reader == child_agent
@@ -791,6 +867,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             rogue_seed.child_private_volume = rogue_private;
             rogue_seed.child_private_generation = rogue_head.generation;
             rogue_seed.inherited_context.clear();
+            rogue_seed.inherited_through_sequence = 0;
             rogue_seed.attached_agents.clear();
             rogue_seed
                 .reference_grants
@@ -812,12 +889,50 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
             assert_eq!(aggregate.reducer().revision(), seed.parent_revision);
         }
-        let publish = fork_command(
-            level + 80,
-            aggregate.reducer().revision(),
-            &grant_scope,
-            seed.clone(),
-        )?;
+        let report = ForkReport {
+            request: ForkRequest {
+                operation_id: seed.operation_id,
+                parent: seed.parent.clone(),
+                parent_revision: seed.parent_revision,
+                child: seed.child.clone(),
+                child_agent: seed.child_agent,
+                attached_agents: seed.attached_agents.clone(),
+                preparation: ForkPreparation {
+                    child_project_volume: match &seed.resources[1].revision {
+                        ResourceRevision::Project { volume, .. } => volume.clone(),
+                        _ => unreachable!("fork seed includes the child project"),
+                    },
+                    child_private_volume: seed.child_private_volume.clone(),
+                    inherited_through_sequence: seed.inherited_through_sequence,
+                    maximum_inherited_messages: acyclic_harness::fork::MAX_FORK_INHERITED_MESSAGES,
+                    maximum_inherited_bytes: 64 * 1024 * 1024,
+                    maximum_inherited_references: 65_536,
+                },
+                selections: seed
+                    .resources
+                    .iter()
+                    .map(|resource| ForkSelection {
+                        revision: resource.source.clone(),
+                        required: true,
+                    })
+                    .collect(),
+                boundary: seed.boundary.clone(),
+            },
+            captures: seed
+                .resources
+                .iter()
+                .cloned()
+                .map(Capture::Captured)
+                .collect(),
+            child_private_volume: seed.child_private_volume.clone(),
+            child_private_generation: seed.child_private_generation.clone(),
+            inherited_context: seed.inherited_context.clone(),
+            inherited_through_sequence: seed.inherited_through_sequence,
+            shared_grants: seed.shared_grants.clone(),
+            reference_grants: seed.reference_grants.clone(),
+            attachment_manifests: seed.attachment_manifests.clone(),
+        };
+        assert_eq!(report.clone().into_seed()?, seed);
         if level == 1 {
             let verifier = CompositeForkVerifier::new(vec![
                 Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
@@ -841,36 +956,6 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
             fence.release().await?;
         }
-        aggregate.execute(publish).await?;
-        assert_eq!(aggregate.reducer().fork(&child_authority), Some(&seed));
-        if level == 1 {
-            let prebound_stream = StreamClient::new(Arc::new(MemoryStream::default()));
-            let mut prebound_child = StreamAggregate::open(
-                &prebound_stream,
-                child_authority.clone(),
-                child_issuer.verifier(),
-                SchemaRegistry::new(),
-            )
-            .await?;
-            prebound_child
-                .execute(command(
-                    1,
-                    0,
-                    &child_scope,
-                    Action::BindConversation { agent: child_agent },
-                )?)
-                .await?;
-            assert!(
-                matches!(
-                    prebound_child
-                        .bind_published_child(&aggregate, &seed, child_scope.clone())
-                        .await,
-                    Err(acyclic_harness::Error::Conflict(_))
-                ),
-                "an independently bound child cannot impersonate the published fork"
-            );
-        }
-
         let mut child_aggregate = StreamAggregate::open(
             &stream,
             child_authority.clone(),
@@ -888,9 +973,111 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
             Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
         ])?));
-        child_aggregate
-            .bind_published_child(&aggregate, &seed, child_scope.clone())
+        if level == 1 {
+            let prebound_stream = StreamClient::new(Arc::new(MemoryStream::default()));
+            let mut prebound_child = StreamAggregate::open(
+                &prebound_stream,
+                child_authority.clone(),
+                child_issuer.verifier(),
+                SchemaRegistry::new(),
+            )
             .await?;
+            prebound_child
+                .execute(command(
+                    1,
+                    0,
+                    &child_scope,
+                    Action::BindConversation { agent: child_agent },
+                )?)
+                .await?;
+            assert!(matches!(
+                prebound_child
+                    .spawn_from_report(
+                        &mut aggregate,
+                        report.clone(),
+                        grant_scope.clone(),
+                        child_scope.clone(),
+                    )
+                    .await,
+                Err(acyclic_harness::Error::Conflict(_))
+            ));
+            assert_eq!(aggregate.reducer().revision(), seed.parent_revision);
+        }
+        if level == DEPTH {
+            prepublication_workspaces = Some(FilesystemProjectWorkspaces::new(
+                &host,
+                aggregate.reducer(),
+                &issuer.verifier(),
+                &grant_scope,
+                project.clone(),
+            )?);
+        }
+        assert_eq!(
+            child_aggregate
+                .spawn_from_report(
+                    &mut aggregate,
+                    report.clone(),
+                    grant_scope.clone(),
+                    child_scope.clone(),
+                )
+                .await?,
+            seed
+        );
+        assert_eq!(aggregate.reducer().fork(&child_authority), Some(&seed));
+        if level == DEEP_RETRY {
+            // Lose both process-local reducers after the parent publication and
+            // child bind, then recover the same operation from retained Streams.
+            aggregate = StreamAggregate::open(
+                &stream,
+                authority.clone(),
+                issuer.verifier(),
+                SchemaRegistry::new(),
+            )
+            .await?
+            .with_limits(Limits::default())?
+            .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
+                host.clone(),
+                issuer.verifier(),
+                grant_scope.clone(),
+                1_024,
+            )?))
+            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+                Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+                Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
+            ])?));
+            child_aggregate = StreamAggregate::open(
+                &stream,
+                child_authority.clone(),
+                child_issuer.verifier(),
+                SchemaRegistry::new(),
+            )
+            .await?
+            .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
+                host.clone(),
+                child_issuer.verifier(),
+                child_scope.clone(),
+                1_024,
+            )?))
+            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(vec![
+                Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+                Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
+            ])?));
+            assert_eq!(aggregate.reducer().fork(&child_authority), Some(&seed));
+        }
+        if level == 1 || level == DEEP_RETRY {
+            assert_eq!(
+                child_aggregate
+                    .spawn_from_report(
+                        &mut aggregate,
+                        report,
+                        grant_scope.clone(),
+                        child_scope.clone(),
+                    )
+                    .await?,
+                seed,
+                "lost publication or child-bind acknowledgement reconciles exactly"
+            );
+        }
         child_aggregate
             .bind_published_child(&aggregate, &seed, child_scope.clone())
             .await?;
@@ -951,6 +1138,35 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 .await
                 .is_err()
         );
+        let attachments = if level == DEEP_RETRY - 1 {
+            let manifest_bytes = serde_json::to_vec(&vec![Attachment {
+                file: child_attachment.clone(),
+                label: Some(format!("depth {level}")),
+            }])
+            .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+            let manifest = host
+                .put_content(
+                    &child_private,
+                    &child_write,
+                    "attachments/manifest.json",
+                    &manifest_bytes,
+                    "application/vnd.acyclic.harness.attachments+json",
+                    "manifest.json",
+                    1_024,
+                    &IdempotencyKey::new(format!("manifest-{level}"))?,
+                )
+                .await?;
+            ReferencedAttachments::Manifest {
+                manifest,
+                item_count: 1,
+            }
+        } else {
+            vec![Attachment {
+                file: child_attachment.clone(),
+                label: Some(format!("depth {level}")),
+            }]
+            .into()
+        };
         child_aggregate
             .execute(command(
                 2,
@@ -962,11 +1178,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         sequence: 1,
                         kind: MessageKind::User,
                         content: child_file.clone(),
-                        attachments: vec![Attachment {
-                            file: child_attachment.clone(),
-                            label: Some(format!("depth {level}")),
-                        }]
-                        .into(),
+                        attachments,
                         reply_to: None,
                         tool_call_id: None,
                         extensions: BTreeMap::new(),
@@ -986,9 +1198,8 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             )
             .await?;
         final_parent_project = project;
-        final_parent_authority = authority.clone();
-        final_parent_issuer = issuer.clone();
         final_parent_scope = grant_scope.clone();
+        final_parent_reducer = aggregate.reducer().clone();
         project = child_project;
         project_head = acyclic_harness_filesystem::WorkspaceObservation {
             workspace: forked.workspace,
@@ -1088,7 +1299,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     assert!(
         ParentProjectController::new(
             &host,
-            &final_parent_authority,
+            &final_parent_reducer,
             &issuer.verifier(),
             &grant_scope,
             final_parent_project.clone(),
@@ -1096,65 +1307,77 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         .is_err(),
         "child scope must not authorize its parent's project"
     );
-    let parent_controller = ParentProjectController::new(
-        &host,
-        &final_parent_authority,
-        &final_parent_issuer.verifier(),
-        &final_parent_scope,
-        final_parent_project.clone(),
-    )?;
-    let plan = parent_controller.prepare_project_merge(&project).await?;
-    let merge_key = acyclic_fs::IdempotencyKey::from_bytes([92; 16]);
-    let outcome = parent_controller
-        .apply_project_merge(&plan, merge_key)
-        .await?;
-    assert!(matches!(
-        outcome,
-        JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_)
-    ));
-    let parent_project_write = ContentGrant::verify(
-        &final_parent_issuer.verifier(),
-        &final_parent_scope,
-        &final_parent_project,
-        VolumeOperation::Write,
-    )?;
-    let notice_file = host
-        .put_content(
-            &final_parent_project,
-            &parent_project_write,
-            "notices/merge.txt",
-            b"project merge",
-            "text/plain",
-            "merge.txt",
-            1_024,
-            &IdempotencyKey::new("deep-merge-notice")?,
+    let workspaces = prepublication_workspaces.ok_or_else(|| {
+        acyclic_harness::Error::Invalid("missing prepublication project binding".into())
+    })?;
+    let plan = workspaces
+        .prepare_project_merge(
+            &final_parent_scope,
+            &final_parent_reducer,
+            &authority,
+            &project,
         )
         .await?;
-    let receipt = parent_controller.merge_receipt(
-        &plan,
-        &outcome,
-        authority.clone(),
-        OperationId::from_bytes([93; 16]),
-        merge_key,
-        ConversationMessage {
-            id: Uuid::from_bytes([94; 16]),
-            sequence: 2,
-            kind: MessageKind::Merge,
-            content: notice_file,
-            attachments: ReferencedAttachments::Inline { items: Vec::new() },
-            reply_to: None,
-            tool_call_id: None,
-            extensions: BTreeMap::new(),
-        },
-    )?;
+    let merge_operation = OperationId::from_bytes([93; 16]);
+    let notice_file = final_parent_reducer
+        .conversation()
+        .and_then(|conversation| conversation.messages.last())
+        .map(|message| message.content.clone())
+        .ok_or_else(|| {
+            acyclic_harness::Error::Invalid("parent merge notice content is missing".into())
+        })?;
+    let notice = ConversationMessage {
+        id: Uuid::from_bytes([94; 16]),
+        sequence: 2,
+        kind: MessageKind::Merge,
+        content: notice_file,
+        attachments: ReferencedAttachments::Inline { items: Vec::new() },
+        reply_to: None,
+        tool_call_id: None,
+        extensions: BTreeMap::new(),
+    };
+    let outcome = plan
+        .apply(
+            &final_parent_scope,
+            merge_operation,
+            &authority,
+            &notice,
+            &[],
+        )
+        .await?;
+    let (ProjectJoinOutcome::Applied(receipt) | ProjectJoinOutcome::AlreadyApplied(receipt)) =
+        outcome
+    else {
+        return Err(acyclic_harness::Error::Conflict(
+            "deep project merge was not applied".into(),
+        ));
+    };
     let merge_verifier = FilesystemProjectMergeVerifier::new(host.clone());
     merge_verifier.verify(&receipt).await?;
+    assert!(
+        host.read(
+            &parent_project_workspace,
+            None,
+            "/messages/current.txt",
+            1_024
+        )
+        .await
+        .is_err()
+    );
     let mut forged_source = receipt.clone();
     forged_source.source_generation = receipt.expected_target_generation.clone();
     assert!(merge_verifier.verify(&forged_source).await.is_err());
     let mut forged_operation = receipt.clone();
-    forged_operation.filesystem_operation_id = [95; 16];
+    forged_operation.provider_operation_id = vec![95; 16];
     assert!(merge_verifier.verify(&forged_operation).await.is_err());
+    let mut forged_harness_operation = receipt.clone();
+    forged_harness_operation.operation_id = OperationId::from_bytes([96; 16]);
+    assert!(
+        merge_verifier
+            .verify(&forged_harness_operation)
+            .await
+            .is_err()
+    );
     let mut forged_proof = receipt.clone();
     forged_proof.provider_proof.statement["source_generation"] =
         serde_json::to_value([0_u8; 32])
@@ -1179,23 +1402,62 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         id: "wide-parent".into(),
     };
     let parent_issuer = AuthorityIssuer::new("qualification", [19; 32], parent_authority.clone());
-    let parent_scope = parent_issuer.root(
+    let parent_agent = AgentId::from_bytes([31; 16]);
+    let parent_scope = parent_issuer.root_for_agent(
+        parent_agent,
         "parent",
         Capabilities::new([
+            "conversation:bind".to_owned(),
             "fork:publish".to_owned(),
             "project:merge".to_owned(),
             root.capability(VolumeOperation::Read)?,
             root.capability(VolumeOperation::Write)?,
         ]),
     );
+    let mut parent_reducer = Reducer::new(
+        parent_authority.clone(),
+        parent_issuer.verifier(),
+        SchemaRegistry::new(),
+    );
+    parent_reducer.apply(command(
+        100,
+        0,
+        &parent_scope,
+        Action::BindConversation {
+            agent: parent_agent,
+        },
+    )?)?;
     let controller = ParentProjectController::new(
         &host,
-        &parent_authority,
+        &parent_reducer,
         &parent_issuer.verifier(),
         &parent_scope,
         root.clone(),
     )?;
-    let ungranted = parent_issuer.root(
+    let workspaces = FilesystemProjectWorkspaces::new(
+        &host,
+        &parent_reducer,
+        &parent_issuer.verifier(),
+        &parent_scope,
+        root.clone(),
+    )?;
+    let other_agent_scope = parent_issuer.root_for_agent(
+        AgentId::from_bytes([32; 16]),
+        "other-agent",
+        parent_scope.capabilities().clone(),
+    );
+    assert!(
+        ParentProjectController::new(
+            &host,
+            &parent_reducer,
+            &parent_issuer.verifier(),
+            &other_agent_scope,
+            root.clone(),
+        )
+        .is_err()
+    );
+    let ungranted = parent_issuer.root_for_agent(
+        parent_agent,
         "no-promotion",
         Capabilities::new([
             "fork:publish".to_owned(),
@@ -1204,7 +1466,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
     );
     let ungranted_controller = ParentProjectController::new(
         &host,
-        &parent_authority,
+        &parent_reducer,
         &parent_issuer.verifier(),
         &ungranted,
         root.clone(),
@@ -1249,7 +1511,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             assert!(
                 ParentProjectController::new(
                     &host,
-                    &parent_authority,
+                    &parent_reducer,
                     &parent_issuer.verifier(),
                     &child_scope,
                     root.clone(),
@@ -1280,28 +1542,51 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         host.resolve(&root_head.workspace).await?.generation,
         root_head.generation
     );
+    let unpublished = Authority {
+        kind: AggregateKind::Conversation,
+        id: "unpublished-child".into(),
+    };
+    assert!(
+        workspaces
+            .prepare_project_merge(&parent_scope, &parent_reducer, &unpublished, &siblings[0])
+            .await
+            .is_err(),
+        "a project branch without a published parent fork cannot be merged"
+    );
+    assert!(
+        workspaces
+            .prepare_project_merge(
+                &other_agent_scope,
+                &parent_reducer,
+                &unpublished,
+                &siblings[0]
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        host.resolve(&root_head.workspace).await?.generation,
+        root_head.generation
+    );
     let first = controller.prepare_project_merge(&siblings[0]).await?;
     let stale = controller.prepare_project_merge(&siblings[1]).await?;
     assert!(
         ungranted_controller
-            .apply_project_merge(&first, acyclic_fs::IdempotencyKey::from_bytes([100; 16]))
+            .apply_project_merge(&first, OperationId::from_bytes([100; 16]))
             .await
             .is_err()
     );
     let first_outcome = controller
-        .apply_project_merge(&first, acyclic_fs::IdempotencyKey::from_bytes([101; 16]))
+        .apply_project_merge(&first, OperationId::from_bytes([101; 16]))
         .await?;
     assert!(matches!(first_outcome, JoinOutcome::Applied(_)));
     let stale_outcome = controller
-        .apply_project_merge(&stale, acyclic_fs::IdempotencyKey::from_bytes([102; 16]))
+        .apply_project_merge(&stale, OperationId::from_bytes([102; 16]))
         .await?;
     assert!(matches!(stale_outcome, JoinOutcome::StaleTarget(_)));
     let inspected = controller.prepare_project_merge(&siblings[1]).await?;
     let conflict = controller
-        .apply_project_merge(
-            &inspected,
-            acyclic_fs::IdempotencyKey::from_bytes([103; 16]),
-        )
+        .apply_project_merge(&inspected, OperationId::from_bytes([103; 16]))
         .await?;
     let JoinOutcome::Conflicted {
         conflicts,
@@ -1336,15 +1621,15 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         ungranted_controller
             .apply_project_merge_sides(
                 &inspected,
-                acyclic_fs::IdempotencyKey::from_bytes([104; 16]),
+                OperationId::from_bytes([104; 16]),
                 selections.clone(),
             )
             .await
             .is_err()
     );
-    let resolved_key = acyclic_fs::IdempotencyKey::from_bytes([105; 16]);
+    let resolved_operation = OperationId::from_bytes([106; 16]);
     let resolved = controller
-        .apply_project_merge_sides(&inspected, resolved_key, selections)
+        .apply_project_merge_sides(&inspected, resolved_operation, selections)
         .await?;
     assert!(matches!(&resolved, JoinOutcome::Applied(_)));
     let write = ContentGrant::verify(
@@ -1372,8 +1657,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             kind: AggregateKind::Conversation,
             id: "wide-child-2".into(),
         },
-        OperationId::from_bytes([106; 16]),
-        resolved_key,
+        resolved_operation,
         ConversationMessage {
             id: Uuid::from_bytes([107; 16]),
             sequence: 1,

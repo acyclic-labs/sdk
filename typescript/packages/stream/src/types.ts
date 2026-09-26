@@ -110,7 +110,6 @@ export interface StreamProvider {
   delete(path: string, idempotencyKey?: IdempotencyKey): Promise<DeleteReceipt>;
   read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord>;
   follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord>;
-  children(parent: string | undefined, limit: number): AsyncIterable<StreamChild>;
   childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage>;
   commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult>;
   readCommit(commitId: CommitId): Promise<CommittedEnvelope>;

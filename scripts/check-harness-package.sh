@@ -32,7 +32,11 @@ elif [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1; the
 fi
 
 cd "$root"
-source_sha=$(git rev-parse --verify HEAD)
+git_bin="git"
+if [[ "$bun_platform" == "win32" ]] && command -v git.exe >/dev/null 2>&1; then
+  git_bin="git.exe"
+fi
+source_sha=$("$git_bin" rev-parse --verify HEAD)
 cargo_bin="cargo"
 if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   cargo_bin="cargo.exe"

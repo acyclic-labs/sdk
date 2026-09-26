@@ -939,10 +939,12 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
         Bytes::from_static(b"a")
     );
 
-    let first = workspace.list_directory("/tree", None, 1).await?;
+    let listing = workspace.sync().await?.into_generation();
+    let first = listing.list_directory("/tree", None, 1).await?;
     assert_eq!(first.entries.len(), 1);
     assert!(first.has_more);
-    let second = workspace
+    workspace.write_text("/tree/late", "new").await?;
+    let second = listing
         .list_directory("/tree", Some(&first.entries[0].name), 16)
         .await?;
     assert_eq!(second.entries.len(), 3);

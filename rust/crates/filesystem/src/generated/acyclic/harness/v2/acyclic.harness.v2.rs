@@ -429,6 +429,54 @@ pub struct ExtensionRecord {
     pub content: ::core::option::Option<FileRef>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExtensionStateMigration {
+    #[prost(message, optional, tag = "1")]
+    pub previous: ::core::option::Option<EventReference>,
+    #[prost(message, optional, tag = "2")]
+    pub record: ::core::option::Option<ExtensionRecord>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExtensionDependency {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub version: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExtensionConfiguration {
+    #[prost(message, optional, tag = "1")]
+    pub extension: ::core::option::Option<ExtensionDependency>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub schema_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub content: ::core::option::Option<FileRef>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExtensionSelection {
+    #[prost(message, repeated, tag = "1")]
+    pub previous: ::prost::alloc::vec::Vec<ExtensionDependency>,
+    #[prost(message, repeated, tag = "2")]
+    pub selected: ::prost::alloc::vec::Vec<ExtensionDependency>,
+    #[prost(message, repeated, tag = "3")]
+    pub configurations: ::prost::alloc::vec::Vec<ExtensionConfiguration>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExtensionConfigured {
+    #[prost(message, optional, tag = "1")]
+    pub previous: ::core::option::Option<ExtensionConfiguration>,
+    #[prost(message, optional, tag = "2")]
+    pub record: ::core::option::Option<ExtensionConfiguration>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExtensionAdmission {
+    #[prost(message, optional, tag = "1")]
+    pub source: ::core::option::Option<EventReference>,
+    #[prost(message, repeated, tag = "2")]
+    pub selected: ::prost::alloc::vec::Vec<ExtensionDependency>,
+    #[prost(message, repeated, tag = "3")]
+    pub configurations: ::prost::alloc::vec::Vec<ExtensionConfiguration>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ModelContextSelection {
     #[prost(uint64, tag = "1")]
     pub conversation_revision: u64,
@@ -495,6 +543,21 @@ pub struct InteractionResolution {
     pub detail: ::core::option::Option<FileRef>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ResolutionReceipt {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub version: u64,
+    #[prost(string, tag = "3")]
+    pub operation_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub conversation_revision: u64,
+    #[prost(bool, tag = "5")]
+    pub replayed: bool,
+    #[prost(message, optional, tag = "6")]
+    pub outcome: ::core::option::Option<InteractionOutcome>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Attachment {
     #[prost(message, optional, tag = "1")]
     pub file: ::core::option::Option<FileRef>,
@@ -558,11 +621,250 @@ pub struct ResourceRef {
     #[prost(enumeration = "ResourceKind", tag = "4")]
     pub kind: i32,
 }
+/// Durable task and execution contracts. JSON fields are canonical bounded
+/// schema/value documents, never file bodies, credentials, or event payloads.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ComponentIdentity {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub version: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MachineIdentity {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub version: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub digest: ::prost::alloc::vec::Vec<u8>,
+}
+/// A resumable tool is admitted before any transition or effect. Its exact
+/// initial state and implementation pin survive a lost admission reply.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MachineCheckpoint {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineIdentity>,
+    #[prost(uint64, tag = "2")]
+    pub revision: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub canonical_state_json: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WorkflowAdmission {
+    #[prost(string, tag = "1")]
+    pub operation_id: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub request_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub initial: ::core::option::Option<MachineCheckpoint>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WorkflowCommand {
+    #[prost(string, tag = "1")]
+    pub operation_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "3")]
+    pub payload: ::core::option::Option<FileRef>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkflowTransition {
+    #[prost(bytes = "vec", tag = "1")]
+    pub canonical_state_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "2")]
+    pub commands: ::prost::alloc::vec::Vec<WorkflowCommand>,
+    #[prost(oneof = "workflow_transition::Status", tags = "3, 4, 5")]
+    pub status: ::core::option::Option<workflow_transition::Status>,
+}
+/// Nested message and enum types in `WorkflowTransition`.
+pub mod workflow_transition {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Status {
+        #[prost(bool, tag = "3")]
+        Suspended(bool),
+        #[prost(bytes, tag = "4")]
+        CanonicalCompletedValueJson(::prost::alloc::vec::Vec<u8>),
+        #[prost(string, tag = "5")]
+        FailureMessage(::prost::alloc::string::String),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkflowRecord {
+    #[prost(string, tag = "1")]
+    pub operation_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub idempotency_key: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub input_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub prior: ::core::option::Option<MachineCheckpoint>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub canonical_input_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "6")]
+    pub transition: ::core::option::Option<WorkflowTransition>,
+    #[prost(message, optional, tag = "7")]
+    pub next: ::core::option::Option<MachineCheckpoint>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RuntimeLimits {
+    #[prost(uint64, tag = "1")]
+    pub file_bytes: u64,
+    #[prost(uint64, tag = "2")]
+    pub path_bytes: u64,
+    #[prost(uint64, tag = "3")]
+    pub attachments: u64,
+    #[prost(uint64, tag = "4")]
+    pub render_bytes: u64,
+    #[prost(uint64, tag = "5")]
+    pub model_steps: u64,
+    #[prost(uint64, tag = "6")]
+    pub model_events_per_step: u64,
+    #[prost(uint64, tag = "7")]
+    pub tool_calls_per_step: u64,
+    #[prost(uint64, tag = "8")]
+    pub context_messages: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TaskRunLimits {
+    #[prost(uint64, optional, tag = "1")]
+    pub concurrency: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "2")]
+    pub max_steps: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "3")]
+    pub deadline_epoch_ms: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExecutionPlacement {
+    #[prost(message, optional, tag = "1")]
+    pub provider: ::core::option::Option<ComponentIdentity>,
+    /// ARTIFACT
+    #[prost(message, optional, tag = "2")]
+    pub build: ::core::option::Option<ResourceRef>,
+    /// SANDBOX when present
+    #[prost(message, optional, tag = "3")]
+    pub environment: ::core::option::Option<ResourceRef>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub readiness_revision: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TaskAdmissionRecord {
+    #[prost(string, tag = "1")]
+    pub operation_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub task: ::core::option::Option<ComponentIdentity>,
+    #[prost(message, optional, tag = "3")]
+    pub machine: ::core::option::Option<MachineIdentity>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub canonical_input_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub canonical_input_schema_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub canonical_output_schema_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, optional, tag = "7")]
+    pub parent_task_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "8")]
+    pub grants: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "9")]
+    pub limits: ::core::option::Option<RuntimeLimits>,
+    #[prost(message, optional, tag = "10")]
+    pub policy: ::core::option::Option<ComponentIdentity>,
+    #[prost(message, optional, tag = "11")]
+    pub extensions: ::core::option::Option<ExtensionAdmission>,
+    #[prost(message, optional, tag = "12")]
+    pub execution: ::core::option::Option<ExecutionPlacement>,
+    #[prost(message, optional, tag = "13")]
+    pub run_limits: ::core::option::Option<TaskRunLimits>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DurableBatchRequest {
+    #[prost(string, tag = "1")]
+    pub group_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub batch_id: ::prost::alloc::string::String,
+    #[prost(enumeration = "BatchGroupPolicy", tag = "3")]
+    pub group_policy: i32,
+    #[prost(message, optional, tag = "4")]
+    pub task: ::core::option::Option<ComponentIdentity>,
+    #[prost(message, optional, tag = "5")]
+    pub machine: ::core::option::Option<MachineIdentity>,
+    #[prost(bytes = "vec", repeated, tag = "6")]
+    pub canonical_input_json: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub canonical_input_schema_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub canonical_output_schema_json: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, optional, tag = "9")]
+    pub parent_task_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "10")]
+    pub grants: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "11")]
+    pub limits: ::core::option::Option<RuntimeLimits>,
+    #[prost(message, optional, tag = "12")]
+    pub extensions: ::core::option::Option<ExtensionAdmission>,
+    #[prost(message, optional, tag = "13")]
+    pub policy: ::core::option::Option<ComponentIdentity>,
+    #[prost(message, optional, tag = "14")]
+    pub execution: ::core::option::Option<ExecutionPlacement>,
+    #[prost(message, optional, tag = "15")]
+    pub run_limits: ::core::option::Option<TaskRunLimits>,
+}
 /// Narrows a provider-owned resource to an immutable Filesystem generation.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GenerationRef {
     #[prost(message, optional, tag = "1")]
     pub resource: ::core::option::Option<ResourceRef>,
+}
+/// One owner-authenticated lazy listing of an agent-private directory.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PrivateDirectoryEntry {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(enumeration = "private_directory_entry::Kind", tag = "2")]
+    pub kind: i32,
+}
+/// Nested message and enum types in `PrivateDirectoryEntry`.
+pub mod private_directory_entry {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+    #[repr(i32)]
+    pub enum Kind {
+        Unspecified = 0,
+        File = 1,
+        Directory = 2,
+    }
+    impl Kind {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::Unspecified => "KIND_UNSPECIFIED",
+                Self::File => "KIND_FILE",
+                Self::Directory => "KIND_DIRECTORY",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "KIND_UNSPECIFIED" => Some(Self::Unspecified),
+                "KIND_FILE" => Some(Self::File),
+                "KIND_DIRECTORY" => Some(Self::Directory),
+                _ => None,
+            }
+        }
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PrivateDirectoryPage {
+    #[prost(message, optional, tag = "1")]
+    pub generation: ::core::option::Option<GenerationRef>,
+    #[prost(message, repeated, tag = "2")]
+    pub entries: ::prost::alloc::vec::Vec<PrivateDirectoryEntry>,
+    #[prost(bool, tag = "3")]
+    pub has_more: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProjectRevision {
@@ -665,6 +967,21 @@ pub struct ForkSelection {
     #[prost(message, optional, tag = "2")]
     pub revision: ::core::option::Option<ResourceRevision>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ForkPreparation {
+    #[prost(message, optional, tag = "1")]
+    pub child_project_volume: ::core::option::Option<VolumeRef>,
+    #[prost(message, optional, tag = "2")]
+    pub child_private_volume: ::core::option::Option<VolumeRef>,
+    #[prost(uint64, tag = "3")]
+    pub inherited_through_sequence: u64,
+    #[prost(uint64, tag = "4")]
+    pub maximum_inherited_messages: u64,
+    #[prost(uint64, tag = "5")]
+    pub maximum_inherited_bytes: u64,
+    #[prost(uint32, tag = "6")]
+    pub maximum_inherited_references: u32,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ForkRequest {
     #[prost(message, optional, tag = "1")]
@@ -683,6 +1000,8 @@ pub struct ForkRequest {
     pub boundary: ::core::option::Option<AttestedBoundary>,
     #[prost(string, repeated, tag = "8")]
     pub attached_agent_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "9")]
+    pub preparation: ::core::option::Option<ForkPreparation>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Capture {
@@ -787,9 +1106,9 @@ pub struct ProjectMergeReceipt {
     pub expected_target_generation: ::core::option::Option<GenerationRef>,
     #[prost(message, optional, tag = "7")]
     pub result_generation: ::core::option::Option<GenerationRef>,
-    /// exactly 16 bytes
+    /// bounded opaque provider retry identity
     #[prost(bytes = "vec", tag = "8")]
-    pub filesystem_operation_id: ::prost::alloc::vec::Vec<u8>,
+    pub provider_operation_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, optional, tag = "9")]
     pub provider_proof: ::core::option::Option<ProviderJoinProof>,
     #[prost(message, optional, tag = "10")]
@@ -1181,6 +1500,35 @@ impl ResourceKind {
             "RESOURCE_KIND_STREAM" => Some(Self::Stream),
             "RESOURCE_KIND_CONTEXT" => Some(Self::Context),
             "RESOURCE_KIND_RUN" => Some(Self::Run),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum BatchGroupPolicy {
+    Unspecified = 0,
+    CollectAll = 1,
+    CancelOnFailure = 2,
+}
+impl BatchGroupPolicy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "BATCH_GROUP_POLICY_UNSPECIFIED",
+            Self::CollectAll => "BATCH_GROUP_POLICY_COLLECT_ALL",
+            Self::CancelOnFailure => "BATCH_GROUP_POLICY_CANCEL_ON_FAILURE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "BATCH_GROUP_POLICY_UNSPECIFIED" => Some(Self::Unspecified),
+            "BATCH_GROUP_POLICY_COLLECT_ALL" => Some(Self::CollectAll),
+            "BATCH_GROUP_POLICY_CANCEL_ON_FAILURE" => Some(Self::CancelOnFailure),
             _ => None,
         }
     }

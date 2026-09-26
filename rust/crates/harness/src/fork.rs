@@ -13,6 +13,7 @@ use crate::resources::{
     ArtifactRef, CheckpointRef, ContextRef, GenerationRef, ProviderRef, ResourceRef, StreamRef,
 };
 use crate::{AgentId, Capabilities, Error, OperationId, Result};
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::{future::Future, pin::Pin};
@@ -22,8 +23,13 @@ pub const MAX_FORK_AGENTS: usize = 1_024;
 const MAX_FORK_RESOURCES: usize = 4_096;
 const MAX_FORK_REFERENCES: usize = 65_536;
 const MAX_FORK_ATTACHMENT_MANIFEST_BYTES: u64 = 64 * 1_024 * 1_024;
+const MAX_FORK_INHERITED_BYTES: u64 = 64 * 1_024 * 1_024;
+const MAX_FORK_REFERENCE_BYTES: u64 = 64 * 1_024 * 1_024 * 1_024;
 /// Hard ceiling independent of a deployment's lower configured prefix limit.
 pub const MAX_FORK_INHERITED_MESSAGES: u64 = 16_384;
+
+type DirectManifestReads = BTreeSet<(String, AgentId)>;
+type ManifestMemberGrants = BTreeMap<String, BTreeMap<String, BTreeSet<AgentId>>>;
 
 /// Child-owned, ref-only exact prefix of the authoritative parent conversation.
 /// Its canonical bytes are bound to the parent reducer before fork publication.
@@ -104,6 +110,11 @@ pub type ForkFenceFuture<'a> =
 pub trait ForkSeedVerifier: Send + Sync {
     /// Identity of the provider whose resources this verifier can prove.
     fn provider(&self) -> &ProviderRef;
+    /// Maximum aggregate descriptor bytes verified for this provider during
+    /// one publication, including members discovered through manifests.
+    fn maximum_reference_bytes(&self) -> u64 {
+        MAX_FORK_REFERENCE_BYTES
+    }
     /// Checks every selected revision owned by this provider.
     fn verify<'a>(
         &'a self,
@@ -251,10 +262,36 @@ impl CompositeForkVerifier {
                 verifier.verify_boundary(boundary).await?;
             }
         }
-        // Provider-wide capture validation does not imply that every pinned
-        // file is still resident. Prove direct references at their exact
-        // owning provider, including providers other than Filesystem.
+        self.verify_references(seed).await
+    }
+
+    /// Verifies direct references and complete attachment manifests after
+    /// provider-wide resource capture has been attested.
+    async fn verify_references(&self, seed: &ForkSeed) -> Result<()> {
         let mut verified_files = BTreeSet::new();
+        let mut reference_bytes = BTreeMap::new();
+        let (direct_manifest_reads, member_grants) = collect_manifest_grants(seed)?;
+        let mut volume_readers = ForkVolumeReaders::new(seed)?;
+        self.verify_reference_files(seed, &mut verified_files, &mut reference_bytes)
+            .await?;
+        self.verify_attachment_manifests(
+            seed,
+            &mut verified_files,
+            &mut reference_bytes,
+            &mut volume_readers,
+            &direct_manifest_reads,
+            &member_grants,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn verify_reference_files(
+        &self,
+        seed: &ForkSeed,
+        verified_files: &mut BTreeSet<String>,
+        reference_bytes: &mut BTreeMap<String, u64>,
+    ) -> Result<()> {
         for file in seed
             .inherited_context
             .iter()
@@ -267,62 +304,209 @@ impl CompositeForkVerifier {
                 .providers
                 .get(&provider_key(file.volume().provider()))
                 .ok_or_else(|| Error::Unsupported("fork file provider is not bound".into()))?;
+            reserve_reference_bytes(reference_bytes, verifier.as_ref(), file)?;
             verifier.verify_file(file).await?;
         }
+        Ok(())
+    }
+
+    async fn verify_attachment_manifests(
+        &self,
+        seed: &ForkSeed,
+        verified_files: &mut BTreeSet<String>,
+        reference_bytes: &mut BTreeMap<String, u64>,
+        volume_readers: &mut ForkVolumeReaders,
+        direct_manifest_reads: &DirectManifestReads,
+        member_grants: &ManifestMemberGrants,
+    ) -> Result<()> {
+        let mut manifest_members = 0_usize;
         for manifest in &seed.attachment_manifests {
+            let manifest_capability = manifest.read_capability()?;
             let verifier = self
                 .providers
                 .get(&provider_key(manifest.volume().provider()))
                 .ok_or_else(|| Error::Unsupported("fork manifest provider is not bound".into()))?;
+            if verified_files.insert(manifest_capability.clone()) {
+                reserve_reference_bytes(reference_bytes, verifier.as_ref(), manifest)?;
+                verifier.verify_file(manifest).await?;
+            }
             let bytes = verifier.read_manifest(manifest).await?;
             let items = decode_complete_attachment_manifest(manifest, &bytes)?;
-            let members = items
-                .iter()
-                .map(|item| item.file.read_capability())
-                .collect::<Result<BTreeSet<_>>>()?;
-            for grant in seed
-                .reference_grants
-                .iter()
-                .filter(|grant| grant.attachment_manifest.as_ref() == Some(manifest))
-            {
-                if !members.contains(&grant.file.read_capability()?) {
-                    return Err(Error::Invalid(
-                        "fork reference is not in its published manifest".into(),
-                    ));
-                }
+            manifest_members = manifest_members
+                .checked_add(items.len())
+                .ok_or_else(|| Error::Invalid("fork manifest membership count overflow".into()))?;
+            if manifest_members > MAX_FORK_REFERENCES {
+                return Err(Error::Invalid(
+                    "fork manifests exceed aggregate member limit".into(),
+                ));
             }
+            Self::verify_manifest_grants(
+                manifest,
+                &items,
+                volume_readers,
+                direct_manifest_reads,
+                member_grants,
+            )?;
             for item in items {
-                for reader in
-                    std::iter::once(seed.child_agent).chain(seed.attached_agents.iter().copied())
-                {
-                    if item.file.volume().class() == VolumeClass::AgentPrivate
-                        && item.file.volume().owner() == &VolumeOwner::Agent(reader)
-                    {
-                        continue;
-                    }
-                    if !seed.reference_grants.iter().any(|grant| {
-                        grant.reader == reader
-                            && grant.file == item.file
-                            && grant.attachment_manifest.as_ref() == Some(manifest)
-                    }) {
-                        return Err(Error::Invalid(
-                            "fork omits a manifest attachment read grant".into(),
-                        ));
-                    }
-                }
-                if verified_files.insert(item.file.read_capability()?) {
+                let item_capability = item.file.read_capability()?;
+                if verified_files.insert(item_capability) {
                     let member_verifier = self
                         .providers
                         .get(&provider_key(item.file.volume().provider()))
                         .ok_or_else(|| {
                             Error::Unsupported("fork member provider is not bound".into())
                         })?;
+                    reserve_reference_bytes(reference_bytes, member_verifier.as_ref(), &item.file)?;
                     member_verifier.verify_file(&item.file).await?;
                 }
             }
         }
         Ok(())
     }
+
+    fn verify_manifest_grants(
+        manifest: &FileRef,
+        items: &[crate::conversation::Attachment],
+        volume_readers: &mut ForkVolumeReaders,
+        direct_manifest_reads: &DirectManifestReads,
+        member_grants: &ManifestMemberGrants,
+    ) -> Result<()> {
+        let manifest_capability = manifest.read_capability()?;
+        let members = items
+            .iter()
+            .map(|item| item.file.read_capability())
+            .collect::<Result<BTreeSet<_>>>()?;
+        let grants = member_grants.get(&manifest_capability);
+        if grants.is_some_and(|grants| grants.keys().any(|file| !members.contains(file))) {
+            return Err(Error::Invalid(
+                "fork reference is not in its published manifest".into(),
+            ));
+        }
+        let implicit_readers = volume_readers.implicit_readers(manifest.volume())?.clone();
+        let mut manifest_readers = BTreeSet::new();
+        if let Some(grants) = grants {
+            for readers in grants.values() {
+                manifest_readers.extend(readers);
+            }
+        }
+        for reader in manifest_readers {
+            if !implicit_readers.contains(&reader)
+                && !direct_manifest_reads.contains(&(manifest_capability.clone(), reader))
+            {
+                return Err(Error::Invalid(
+                    "fork omits a manifest attachment read grant".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn collect_manifest_grants(seed: &ForkSeed) -> Result<(DirectManifestReads, ManifestMemberGrants)> {
+    let mut direct_manifest_reads = BTreeSet::new();
+    let mut member_grants = ManifestMemberGrants::new();
+    for grant in &seed.reference_grants {
+        if let Some(manifest) = &grant.attachment_manifest {
+            let manifest_capability = manifest.read_capability()?;
+            let file_capability = grant.file.read_capability()?;
+            if manifest_capability == file_capability {
+                direct_manifest_reads.insert((file_capability, grant.reader));
+                continue;
+            }
+            member_grants
+                .entry(manifest_capability)
+                .or_default()
+                .entry(file_capability)
+                .or_default()
+                .insert(grant.reader);
+        } else {
+            direct_manifest_reads.insert((grant.file.read_capability()?, grant.reader));
+        }
+    }
+    Ok((direct_manifest_reads, member_grants))
+}
+
+/// Precomputed reader authority for a fork. Valid project/shared volume grants
+/// are paid once per distinct volume, not once per attachment per agent.
+struct ForkVolumeReaders {
+    all: BTreeSet<AgentId>,
+    selected_projects: BTreeSet<String>,
+    shared: BTreeMap<String, BTreeSet<AgentId>>,
+    implicit: BTreeMap<String, BTreeSet<AgentId>>,
+}
+
+impl ForkVolumeReaders {
+    fn new(seed: &ForkSeed) -> Result<Self> {
+        let all = std::iter::once(seed.child_agent)
+            .chain(seed.attached_agents.iter().copied())
+            .collect();
+        let mut selected_projects = BTreeSet::new();
+        for resource in &seed.resources {
+            if let ResourceRevision::Project { volume, .. } = &resource.revision {
+                selected_projects.insert(volume.capability(VolumeOperation::Read)?);
+            }
+        }
+        let mut shared = BTreeMap::<String, BTreeSet<AgentId>>::new();
+        for grant in &seed.shared_grants {
+            if grant.operations.contains(&VolumeOperation::Read) {
+                shared
+                    .entry(grant.volume.capability(VolumeOperation::Read)?)
+                    .or_default()
+                    .insert(grant.child_agent);
+            }
+        }
+        Ok(Self {
+            all,
+            selected_projects,
+            shared,
+            implicit: BTreeMap::new(),
+        })
+    }
+
+    /// Readers that can resolve a file through a whole-volume grant rather
+    /// than through a direct exact-file reference. Private volumes are only
+    /// implicitly readable by their owner; attached readers still need the
+    /// exact manifest/member grants selected by the parent.
+    fn implicit_readers(&mut self, volume: &VolumeRef) -> Result<&BTreeSet<AgentId>> {
+        let key = volume.capability(VolumeOperation::Read)?;
+        let mut implicit_readers = BTreeSet::new();
+        match volume.class() {
+            VolumeClass::AgentPrivate => {
+                if let VolumeOwner::Agent(owner) = volume.owner()
+                    && self.all.contains(owner)
+                {
+                    implicit_readers.insert(*owner);
+                }
+            }
+            VolumeClass::Project if self.selected_projects.contains(&key) => {
+                implicit_readers = self.all.clone();
+            }
+            VolumeClass::SessionShared => {
+                if let Some(granted) = self.shared.get(&key) {
+                    implicit_readers.extend(granted.iter().copied());
+                }
+            }
+            VolumeClass::Project => {}
+        }
+        Ok(self.implicit.entry(key).or_insert(implicit_readers))
+    }
+}
+
+fn reserve_reference_bytes(
+    totals: &mut BTreeMap<String, u64>,
+    verifier: &dyn ForkSeedVerifier,
+    file: &FileRef,
+) -> Result<()> {
+    let total = totals.entry(provider_key(verifier.provider())).or_default();
+    *total = total
+        .checked_add(file.descriptor().byte_length())
+        .ok_or_else(|| Error::Invalid("fork reference bytes overflow".into()))?;
+    if *total > verifier.maximum_reference_bytes() {
+        return Err(Error::Invalid(
+            "fork reference bytes exceed aggregate limit".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn provider_key(provider: &ProviderRef) -> String {
@@ -601,10 +785,75 @@ pub struct ForkRequest {
     pub child_agent: AgentId,
     /// Additional agents allowed to attach to the child environment as readers.
     pub attached_agents: Vec<AgentId>,
+    /// Exact child allocation and bounded inherited prefix chosen before preparation.
+    pub preparation: ForkPreparation,
     /// Ordered required and optional resource selections.
     pub selections: Vec<ForkSelection>,
     /// Present only when one provider attests a common capture boundary.
     pub boundary: Option<AttestedBoundary>,
+}
+
+/// Immutable provider allocation and context bounds for one fork operation.
+/// Retrying the request must never choose different child volumes or a wider
+/// inherited prefix under the same operation identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForkPreparation {
+    /// Fresh project workspace derived from the selected project generation.
+    pub child_project_volume: VolumeRef,
+    /// Fresh private workspace owned by the child agent.
+    pub child_private_volume: VolumeRef,
+    /// Inclusive final parent conversation sequence; zero selects none.
+    pub inherited_through_sequence: u64,
+    /// Deployment limit, no greater than the protocol ceiling.
+    pub maximum_inherited_messages: u64,
+    /// Maximum bytes in the child-owned inherited-context file.
+    pub maximum_inherited_bytes: u64,
+    /// Maximum retained references in the inherited prefix.
+    pub maximum_inherited_references: u32,
+}
+
+/// Provider-neutral owner boundary for an idempotent multi-resource fork
+/// preparation. Each provider reports its own capture result; this trait does
+/// not imply a cross-provider atomic snapshot.
+pub trait ForkPreparer: Send + Sync {
+    /// Exact immutable parent projection this preparer was constructed from.
+    /// A later parent revision requires a newly bound preparer.
+    fn parent_snapshot(&self) -> (&Authority, u64);
+
+    /// Captures or returns the existing report for the exact request identity.
+    fn prepare<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<ForkReport>>;
+
+    /// Observes an uncertain preparation for the exact original request.
+    /// The operation ID alone cannot authorize a report with different
+    /// resources, child identities, or capture parameters.
+    fn reconcile<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<Option<ForkReport>>>;
+}
+
+/// Provider-owned capture of one selected revision during parent-controlled
+/// fork preparation. Implementations must reconcile retries by the request's
+/// stable operation ID and never substitute a different source revision.
+pub trait ForkCaptureProvider: Send + Sync {
+    /// Exact provider identity whose resource revisions this adapter owns.
+    fn provider(&self) -> &ProviderRef;
+
+    /// Captures one immutable child-visible revision or reports an explicit
+    /// unavailable state. An uncertain provider effect returns an error so
+    /// the top-level preparation is retried, not journaled as complete.
+    fn capture<'a>(
+        &'a self,
+        request: &'a ForkRequest,
+        selection: &'a ForkSelection,
+    ) -> BoxFuture<'a, Result<Capture>>;
+
+    /// Observes a capture whose start was durably recorded but whose result
+    /// may have been lost. `None` means unresolved, not permission to repeat
+    /// the side effect. Read-only providers may safely observe by re-reading.
+    fn reconcile<'a>(
+        &'a self,
+        request: &'a ForkRequest,
+        selection: &'a ForkSelection,
+    ) -> BoxFuture<'a, Result<Option<Capture>>>;
 }
 
 impl ForkRequest {
@@ -629,6 +878,26 @@ impl ForkRequest {
         }
         self.parent.stream_path()?;
         self.child.stream_path()?;
+        self.preparation.child_project_volume.validate()?;
+        self.preparation.child_private_volume.validate()?;
+        if self.preparation.child_private_volume.class() != VolumeClass::AgentPrivate
+            || self.preparation.child_private_volume.owner()
+                != &VolumeOwner::Agent(self.child_agent)
+            || self.preparation.child_project_volume.class() != VolumeClass::Project
+            || self.preparation.child_private_volume.provider()
+                != self.preparation.child_project_volume.provider()
+            || self.preparation.child_private_volume.provider().family() != "filesystem"
+            || self.preparation.maximum_inherited_messages == 0
+            || self.preparation.maximum_inherited_messages > MAX_FORK_INHERITED_MESSAGES
+            || self.preparation.inherited_through_sequence
+                > self.preparation.maximum_inherited_messages
+            || self.preparation.maximum_inherited_bytes == 0
+            || self.preparation.maximum_inherited_bytes > MAX_FORK_INHERITED_BYTES
+            || self.preparation.maximum_inherited_references == 0
+            || self.preparation.maximum_inherited_references as usize > MAX_FORK_REFERENCES
+        {
+            return Err(Error::Invalid("fork preparation is invalid".into()));
+        }
         let attached: BTreeSet<_> = self.attached_agents.iter().copied().collect();
         if attached.len() != self.attached_agents.len() || attached.contains(&self.child_agent) {
             return Err(Error::Invalid("fork attached agents are not unique".into()));
@@ -662,11 +931,15 @@ impl ForkRequest {
                         ));
                     }
                 }
-                ResourceRevision::Project { .. } => {
+                ResourceRevision::Project { volume, .. } => {
                     projects += 1;
-                    if !selection.required {
+                    if !selection.required
+                        || volume == &self.preparation.child_project_volume
+                        || volume.provider() != self.preparation.child_project_volume.provider()
+                        || volume.owner() != self.preparation.child_project_volume.owner()
+                    {
                         return Err(Error::Invalid(
-                            "fork project selection must be required".into(),
+                            "fork project selection does not match child allocation".into(),
                         ));
                     }
                 }
@@ -879,9 +1152,36 @@ impl ForkReport {
     /// unavailable; only `into_seed` demands all required captures succeed.
     pub fn validate(&self) -> Result<()> {
         self.request.validate()?;
-        if self.inherited_through_sequence > MAX_FORK_INHERITED_MESSAGES {
+        if self.inherited_through_sequence > MAX_FORK_INHERITED_MESSAGES
+            || self.inherited_context.len() > MAX_FORK_RESOURCES
+            || self.shared_grants.len() > MAX_FORK_REFERENCES
+            || self.reference_grants.len() > MAX_FORK_REFERENCES
+            || self.attachment_manifests.len() > MAX_FORK_RESOURCES
+        {
+            return Err(Error::Invalid("fork report exceeds protocol limits".into()));
+        }
+        if self.inherited_through_sequence != self.request.preparation.inherited_through_sequence
+            || self.child_private_volume != self.request.preparation.child_private_volume
+            || self.reference_grants.len()
+                > self.request.preparation.maximum_inherited_references as usize
+        {
             return Err(Error::Invalid(
-                "fork report exceeds inherited message limit".into(),
+                "fork report changed the requested child allocation or prefix".into(),
+            ));
+        }
+        let inherited_bytes = self
+            .inherited_context
+            .iter()
+            .try_fold(0_u64, |total, file| {
+                total
+                    .checked_add(file.descriptor().byte_length())
+                    .ok_or_else(|| {
+                        Error::Invalid("fork inherited context byte count overflow".into())
+                    })
+            })?;
+        if inherited_bytes > self.request.preparation.maximum_inherited_bytes {
+            return Err(Error::Invalid(
+                "fork inherited context exceeds requested byte limit".into(),
             ));
         }
         if self.captures.len() != self.request.selections.len() {
@@ -893,6 +1193,13 @@ impl ForkReport {
             match capture {
                 Capture::Captured(resource) if resource.source == selection.revision => {
                     resource.validate()?;
+                    if let ResourceRevision::Project { volume, .. } = &resource.revision
+                        && volume != &self.request.preparation.child_project_volume
+                    {
+                        return Err(Error::Invalid(
+                            "fork report changed the requested project volume".into(),
+                        ));
+                    }
                 }
                 Capture::Captured(_) => {
                     return Err(Error::Invalid(
@@ -1016,7 +1323,8 @@ pub struct ForkSeed {
     pub shared_grants: Vec<SharedGrant>,
     /// Parent-approved read-only access to pinned references.
     pub reference_grants: Vec<ReferenceGrant>,
-    /// Exact published attachment lists, including lists with no private members.
+    /// Exact published attachment lists. Each reader needs owner, selected
+    /// volume, or direct exact-file authority for the manifest itself.
     pub attachment_manifests: Vec<FileRef>,
     /// Optional provider-attested common boundary.
     pub boundary: Option<AttestedBoundary>,
@@ -1032,6 +1340,7 @@ impl ForkSeed {
         if self.attached_agents.len() > MAX_FORK_AGENTS
             || self.resources.len().saturating_add(self.omissions.len()) > MAX_FORK_RESOURCES
             || self.reference_grants.len() > MAX_FORK_REFERENCES
+            || self.shared_grants.len() > MAX_FORK_REFERENCES
             || self.inherited_context.len() > MAX_FORK_RESOURCES
             || self.attachment_manifests.len() > MAX_FORK_RESOURCES
             || self.inherited_through_sequence > MAX_FORK_INHERITED_MESSAGES
@@ -1137,6 +1446,8 @@ impl ForkSeed {
                 ));
             }
         }
+        let mut direct_manifest_reads = BTreeSet::new();
+        let mut member_grants = BTreeMap::<String, BTreeMap<String, BTreeSet<AgentId>>>::new();
         for grant in &self.reference_grants {
             if let Some(manifest) = &grant.attachment_manifest
                 && !manifest_ids.contains(&manifest.read_capability()?)
@@ -1144,6 +1455,42 @@ impl ForkSeed {
                 return Err(Error::Invalid(
                     "reference grant names an unselected attachment manifest".into(),
                 ));
+            }
+            let file_capability = grant.file.read_capability()?;
+            if let Some(manifest) = &grant.attachment_manifest {
+                let manifest_capability = manifest.read_capability()?;
+                if manifest_capability == file_capability {
+                    direct_manifest_reads.insert((file_capability, grant.reader));
+                } else {
+                    member_grants
+                        .entry(manifest_capability)
+                        .or_default()
+                        .entry(file_capability)
+                        .or_default()
+                        .insert(grant.reader);
+                }
+            } else {
+                direct_manifest_reads.insert((file_capability, grant.reader));
+            }
+        }
+        let mut volume_readers = ForkVolumeReaders::new(self)?;
+        for manifest in &self.attachment_manifests {
+            let capability = manifest.read_capability()?;
+            let implicit_readers = volume_readers.implicit_readers(manifest.volume())?.clone();
+            let mut manifest_readers = BTreeSet::new();
+            if let Some(grants) = member_grants.get(&capability) {
+                for readers in grants.values() {
+                    manifest_readers.extend(readers);
+                }
+            }
+            for reader in manifest_readers {
+                if !implicit_readers.contains(&reader)
+                    && !direct_manifest_reads.contains(&(capability.clone(), reader))
+                {
+                    return Err(Error::Invalid(
+                        "fork omits a manifest file read grant".into(),
+                    ));
+                }
             }
         }
         if history != 1 || project != 1 || context > 1 || process > 1 {
@@ -1226,6 +1573,19 @@ impl ForkSeed {
     }
 
     fn validate_inherited_context(&self) -> Result<()> {
+        if (self.inherited_through_sequence == 0 && !self.inherited_context.is_empty())
+            || (self.inherited_through_sequence > 0
+                && (self.inherited_context.len() != 1
+                    || self.inherited_context.first().is_none_or(|file| {
+                        file.path() != ".system/inherited-conversation/prefix.json"
+                            || file.descriptor().media_type()
+                                != "application/vnd.acyclic.harness.inherited-conversation+json"
+                    })))
+        {
+            return Err(Error::Invalid(
+                "inherited context does not match its selected prefix".into(),
+            ));
+        }
         let mut inherited_paths = BTreeSet::new();
         for file in &self.inherited_context {
             file.validate()?;
@@ -1367,6 +1727,18 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
 
+        fn verify_file<'a>(
+            &'a self,
+            file: &'a FileRef,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+            Box::pin(async move {
+                if file.volume().provider() != &self.provider {
+                    return Err(Error::Unauthorized("wrong manifest provider".into()));
+                }
+                file.descriptor().verify(&self.bytes)
+            })
+        }
+
         fn read_manifest<'a>(
             &'a self,
             manifest: &'a FileRef,
@@ -1393,6 +1765,18 @@ mod tests {
     }
 
     #[test]
+    fn v2_fork_request_fixture_round_trips_canonically() -> Result<()> {
+        let fixture = include_str!("../fixtures/v2/fork-request.json").trim();
+        let request: ForkRequest =
+            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
+        request.validate()?;
+        let encoded =
+            serde_json::to_string(&request).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(encoded, fixture);
+        Ok(())
+    }
+
+    #[test]
     fn v2_fork_seed_fixture_round_trips_canonically() -> Result<()> {
         let fixture = include_str!("../fixtures/v2/fork-seed.json").trim();
         let seed: ForkSeed =
@@ -1401,6 +1785,38 @@ mod tests {
         let encoded =
             serde_json::to_string(&seed).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(encoded, fixture);
+        Ok(())
+    }
+
+    #[test]
+    fn fork_volume_read_index_tracks_implicit_volume_readers() -> Result<()> {
+        let mut seed: ForkSeed =
+            serde_json::from_str(include_str!("../fixtures/v2/fork-seed.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        let attached = AgentId::from_bytes([7; 16]);
+        seed.attached_agents.push(attached);
+        let project_resource = seed
+            .resources
+            .get(1)
+            .ok_or_else(|| Error::Invalid("fixture has no project resource".into()))?;
+        let (parent_project, child_project) = match project_resource {
+            CapturedResource {
+                source: ResourceRevision::Project { volume: parent, .. },
+                revision: ResourceRevision::Project { volume: child, .. },
+                ..
+            } => (parent.clone(), child.clone()),
+            _ => unreachable!("fixture selects a project"),
+        };
+        let mut readers = ForkVolumeReaders::new(&seed)?;
+        assert_eq!(
+            readers.implicit_readers(&child_project)?,
+            &BTreeSet::from([seed.child_agent, attached])
+        );
+        assert_eq!(
+            readers.implicit_readers(&seed.child_private_volume)?,
+            &BTreeSet::from([seed.child_agent])
+        );
+        assert_eq!(readers.implicit_readers(&parent_project)?, &BTreeSet::new());
         Ok(())
     }
 
@@ -1620,7 +2036,11 @@ mod tests {
             std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
         ])?;
         futures::executor::block_on(complete.verify(&seed))?;
-        let source_volume = match &seed.resources[1].source {
+        let project_resource = seed
+            .resources
+            .get(1)
+            .ok_or_else(|| Error::Invalid("fixture has no project resource".into()))?;
+        let source_volume = match &project_resource.source {
             ResourceRevision::Project { volume, .. } => volume.clone(),
             _ => unreachable!("the test selects one project"),
         };
@@ -1652,7 +2072,7 @@ mod tests {
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([8; 16])),
         )?;
-        let member_volume = match &seed.resources[1].source {
+        let member_volume = match &project_resource.source {
             ResourceRevision::Project { volume, .. } => volume.clone(),
             _ => unreachable!("the test selects one project"),
         };
@@ -1689,7 +2109,33 @@ mod tests {
             reader: seed.child_agent,
             attachment_manifest: Some(manifest.clone()),
         });
+        assert!(matches!(manifest_seed.validate(), Err(Error::Invalid(_))));
+        manifest_seed.reference_grants.push(ReferenceGrant {
+            file: manifest.clone(),
+            reader: seed.child_agent,
+            attachment_manifest: None,
+        });
         manifest_seed.validate()?;
+        // An attached reader may receive a direct manifest reference without
+        // the child needing a duplicate direct grant annotation. The exact
+        // manifest identity is still a direct read grant even when the
+        // producer carries the manifest annotation on that grant.
+        let attached = AgentId::from_bytes([9; 16]);
+        let mut attached_manifest_only = manifest_seed.clone();
+        attached_manifest_only.attached_agents.push(attached);
+        attached_manifest_only
+            .reference_grants
+            .push(ReferenceGrant {
+                file: manifest.clone(),
+                reader: attached,
+                attachment_manifest: Some(manifest.clone()),
+            });
+        let first_grant = attached_manifest_only
+            .reference_grants
+            .first_mut()
+            .ok_or_else(|| Error::Invalid("fixture has no reference grant".into()))?;
+        first_grant.file = member.clone();
+        attached_manifest_only.validate()?;
         let verified_members = std::sync::Arc::new(AtomicUsize::new(0));
         let verifier = CompositeForkVerifier::new(vec![
             std::sync::Arc::new(CountingFileVerifier {
@@ -1702,6 +2148,16 @@ mod tests {
                 bytes,
             }),
         ])?;
+        futures::executor::block_on(verifier.verify(&attached_manifest_only))?;
+        let missing_manifest = CompositeForkVerifier::new(vec![
+            std::sync::Arc::new(AcceptingVerifier(filesystem.clone())),
+            std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
+            std::sync::Arc::new(MissingFileVerifier(manifest.volume().provider().clone())),
+        ])?;
+        assert!(matches!(
+            futures::executor::block_on(missing_manifest.verify(&manifest_seed)),
+            Err(Error::NotFound(_))
+        ));
         let mut oversized = seed.clone();
         for index in 0_u8..2 {
             oversized.attachment_manifests.push(FileRef::new(
@@ -1725,9 +2181,13 @@ mod tests {
             futures::executor::block_on(verifier.verify(&manifest_seed)),
             Err(Error::Invalid(_))
         ));
-        manifest_seed.reference_grants[0].file = member;
+        let first_grant = manifest_seed
+            .reference_grants
+            .first_mut()
+            .ok_or_else(|| Error::Invalid("fixture has no reference grant".into()))?;
+        first_grant.file = member;
         futures::executor::block_on(verifier.verify(&manifest_seed))?;
-        assert_eq!(verified_members.load(Ordering::Relaxed), 2);
+        assert_eq!(verified_members.load(Ordering::Relaxed), 3);
         let optional = ResourceRevision::SharedVolume(VolumeRef::new(
             filesystem,
             "shared",
@@ -1742,6 +2202,19 @@ mod tests {
                 child: seed.child.clone(),
                 child_agent: seed.child_agent,
                 attached_agents: Vec::new(),
+                preparation: ForkPreparation {
+                    child_project_volume: match &project_resource.revision {
+                        ResourceRevision::Project { volume, .. } => volume.clone(),
+                        _ => unreachable!("fixture includes the child project"),
+                    },
+                    child_private_volume: seed.child_private_volume.clone(),
+                    inherited_through_sequence: 0,
+                    maximum_inherited_messages: MAX_FORK_INHERITED_MESSAGES,
+                    maximum_inherited_bytes: MAX_FORK_INHERITED_BYTES,
+                    maximum_inherited_references: u32::try_from(MAX_FORK_REFERENCES).map_err(
+                        |_| Error::Invalid("fixture reference limit overflows u32".into()),
+                    )?,
+                },
                 selections: seed
                     .resources
                     .iter()
@@ -1773,12 +2246,19 @@ mod tests {
         };
         report.validate()?;
         let mut duplicate_request = report.request.clone();
-        duplicate_request
+        let first_selection = duplicate_request
             .selections
-            .push(duplicate_request.selections[0].clone());
+            .first()
+            .cloned()
+            .ok_or_else(|| Error::Invalid("fixture has no fork selection".into()))?;
+        duplicate_request.selections.push(first_selection);
         assert!(duplicate_request.validate().is_err());
         let mut optional_project = report.request.clone();
-        optional_project.selections[1].required = false;
+        optional_project
+            .selections
+            .get_mut(1)
+            .ok_or_else(|| Error::Invalid("fixture has no project selection".into()))?
+            .required = false;
         assert!(optional_project.validate().is_err());
         let mut missing_history = report.request.clone();
         missing_history.selections.remove(0);
@@ -1786,13 +2266,40 @@ mod tests {
         let mut stale_history = report.request.clone();
         stale_history.parent_revision = stale_history.parent_revision.saturating_add(1);
         assert!(stale_history.validate().is_err());
+        let mut changed_private = report.clone();
+        changed_private.child_private_volume = VolumeRef::new(
+            changed_private.child_private_volume.provider().clone(),
+            "different-child-private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(changed_private.request.child_agent),
+        )?;
+        assert!(changed_private.validate().is_err());
+        let mut changed_project = report.clone();
+        if let Some(Capture::Captured(project)) = changed_project.captures.get_mut(1)
+            && let ResourceRevision::Project { volume, .. } = &mut project.revision
+        {
+            *volume = VolumeRef::new(
+                volume.provider().clone(),
+                "different-child-project",
+                VolumeClass::Project,
+                volume.owner().clone(),
+            )?;
+        }
+        assert!(changed_project.validate().is_err());
+        let mut changed_prefix = report.clone();
+        changed_prefix.inherited_through_sequence = 1;
+        assert!(changed_prefix.validate().is_err());
+        let mut widened_request = report.request.clone();
+        widened_request.preparation.maximum_inherited_messages = MAX_FORK_INHERITED_MESSAGES + 1;
+        assert!(widened_request.validate().is_err());
         let published = report.into_seed()?;
         assert_eq!(published.omissions.len(), 1);
-        assert_eq!(published.omissions[0].selection.revision, optional);
-        assert!(matches!(
-            published.omissions[0].outcome,
-            Capture::Indeterminate(_)
-        ));
+        let omission = published
+            .omissions
+            .first()
+            .ok_or_else(|| Error::Invalid("fixture has no omission".into()))?;
+        assert_eq!(omission.selection.revision, optional);
+        assert!(matches!(omission.outcome, Capture::Indeterminate(_)));
         let mut shared_seed = seed.clone();
         shared_seed.resources.push(CapturedResource {
             source: optional.clone(),
@@ -1813,15 +2320,23 @@ mod tests {
                 .shared_capabilities()?
                 .contains(&shared_volume.capability(VolumeOperation::Read)?)
         );
-        shared_seed.shared_grants[0].child_agent = AgentId::from_bytes([3; 16]);
+        shared_seed
+            .shared_grants
+            .first_mut()
+            .ok_or_else(|| Error::Invalid("fixture has no shared grant".into()))?
+            .child_agent = AgentId::from_bytes([3; 16]);
         assert!(shared_seed.validate().is_err());
         let inherited = FileRef::new(
             seed.child_private_volume.clone(),
-            ".system/inherited-conversation/a.txt",
+            ".system/inherited-conversation/prefix.json",
             "one",
-            FileDescriptor::from_bytes(b"one", "text/plain")?,
-            "a.txt",
+            FileDescriptor::from_bytes(
+                b"one",
+                "application/vnd.acyclic.harness.inherited-conversation+json",
+            )?,
+            "prefix.json",
         )?;
+        seed.inherited_through_sequence = 1;
         seed.inherited_context = vec![inherited.clone(), inherited.clone()];
         assert!(seed.validate().is_err());
         seed.inherited_context = vec![inherited.clone()];

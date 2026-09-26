@@ -59,6 +59,13 @@ pub struct InteractionTicket {
 }
 
 impl InteractionTicket {
+    /// A scoped observer may see the ticket and outcome refs without being
+    /// authorized to answer it or read the referenced private bytes.
+    #[must_use]
+    pub fn viewer_grant(&self) -> String {
+        format!("interaction:view:{}", self.id)
+    }
+
     /// The one exact capability that may resolve this request.
     #[must_use]
     pub fn responder_grant(&self) -> String {
@@ -329,6 +336,60 @@ impl InteractionResolution {
     }
 }
 
+/// Immutable evidence of one admitted interaction resolution. A replay keeps
+/// the original aggregate revision and never creates a second decision.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolutionReceipt {
+    /// Resolved request identity.
+    pub id: Uuid,
+    /// Exact resolution version admitted by the conversation owner.
+    pub version: u64,
+    /// Stable caller operation used for retry and reconciliation.
+    pub operation_id: OperationId,
+    /// Gapless revision of the authoritative conversation event.
+    pub conversation_revision: u64,
+    /// Whether this call observed the already committed exact operation.
+    pub replayed: bool,
+    /// Ref-only terminal or explicitly indeterminate outcome.
+    pub outcome: InteractionOutcome,
+}
+
+impl ResolutionReceipt {
+    /// Checks the independent public receipt shape before trusting its owner.
+    pub fn validate(&self) -> Result<()> {
+        if self.id.is_nil() || self.version == 0 || self.conversation_revision == 0 {
+            return Err(Error::Invalid(
+                "interaction resolution receipt is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Converts only a committed interaction-resolution event into its receipt.
+    pub fn from_apply_result(result: crate::core::ApplyResult) -> Result<Self> {
+        let (event, replayed) = match result {
+            crate::core::ApplyResult::Applied { event } => (event, false),
+            crate::core::ApplyResult::Replayed { event } => (event, true),
+        };
+        let crate::core::EventPayload::InteractionResolved { resolution } = event.payload else {
+            return Err(Error::Conflict(
+                "operation did not resolve an interaction".into(),
+            ));
+        };
+        let receipt = Self {
+            id: resolution.id,
+            version: resolution.expected_version,
+            operation_id: event.operation_id,
+            conversation_revision: event.revision,
+            replayed,
+            outcome: resolution.outcome,
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+}
+
 #[cfg(test)]
 mod fixture_tests {
     use super::*;
@@ -341,6 +402,22 @@ mod fixture_tests {
         let encoded = serde_json::to_string(&resolution)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(encoded, fixture);
+        Ok(())
+    }
+
+    #[test]
+    fn v2_resolution_receipt_fixture_round_trips_canonically() -> Result<()> {
+        let fixture = include_str!("../fixtures/v2/resolution-receipt.json").trim();
+        let receipt: ResolutionReceipt =
+            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(receipt.version, 2);
+        assert_eq!(receipt.conversation_revision, 9);
+        let encoded =
+            serde_json::to_string(&receipt).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(encoded, fixture);
+        let mut invalid = receipt;
+        invalid.version = 0;
+        assert!(invalid.validate().is_err());
         Ok(())
     }
 }

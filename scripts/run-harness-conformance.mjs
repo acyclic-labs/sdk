@@ -93,6 +93,8 @@ const markers = new Map([
   ["transport-control-errors-remain-request-correlated", [["typescript", "framed control serializes observe and cancel for the same operation"], ["typescript", "correlated framed errors do not abort another operation"]]],
   ["durable-context-providers-reopen-compaction-exactly", [["rust", "context::tests::durable_sources_and_compaction_reopen_exactly"]]],
   ["coding-bundle-host-adapter-is-complete-and-executable", [["rust", "bundle::tests::coding_factory_builds_an_executable_complete_registry"]]],
+  ["recursive-fork-isolation-attachments-and-project-only-merge", [["e2e", "thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_project"]]],
+  ["durable-local-conversation-fork-and-merge-reopens", [["e2e", "local_reopen_preserves_ref_only_history_fork_and_parent_merge"]]],
 ]);
 
 const harnessCases = suite.cases.filter(item => item.family === "harness");
@@ -102,6 +104,27 @@ const command = (executable, args, input) => {
   if (result.status !== 0) throw new Error(`${executable} failed: ${result.stderr || result.stdout}`);
   return result.stdout.trim();
 };
+// Execute each provider-backed scenario once; package-unit transcripts alone
+// cannot prove recursive stress or durable-local restart behavior.
+const e2e = [
+  ["recursive-fork-isolation-attachments-and-project-only-merge", "recursive_fork",
+    "thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_project", []],
+  ["durable-local-conversation-fork-and-merge-reopens", "local_conversation_fork",
+    "local_reopen_preserves_ref_only_history_fork_and_parent_merge", ["--features", "local"]],
+];
+const e2eTranscripts = new Map();
+executed.e2e = new Set();
+for (const [marker, target, name, features] of e2e) {
+  const transcript = command("cargo", [
+    "test", "--locked", "-p", "acyclic-harness-filesystem", ...features,
+    "--test", target, "--", "--exact", name,
+  ]);
+  if (!transcript.split(/\r?\n/).some(line => line === `test ${name} ... ok`)) {
+    throw new Error(`${name} E2E was not actually executed`);
+  }
+  executed.e2e.add(name);
+  e2eTranscripts.set(marker, createHash("sha256").update(transcript).digest("hex"));
+}
 command("cargo", ["build", "--quiet", "--locked", "-p", "acyclic-conformance", "--bin", "harness-conformance"]);
 const metadata = JSON.parse(command("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]));
 const runnerBinary = resolve(metadata.target_directory, `debug/harness-conformance${process.platform === "win32" ? ".exe" : ""}`);
@@ -118,6 +141,9 @@ const cases = harnessCases.map(item => {
       case: item.name,
       evidence_digest: hash(evidenceBytes),
       required,
+      ...(e2eTranscripts.has(item.name)
+        ? { e2e_transcript_sha256: e2eTranscripts.get(item.name) }
+        : {}),
     }))),
   };
 });

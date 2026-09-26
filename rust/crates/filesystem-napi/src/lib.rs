@@ -1943,23 +1943,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    #[napi(js_name = listDirectory)]
-    pub async fn list_directory(
-        &self,
-        path: String,
-        after: Option<NativeWorkspaceName>,
-        maximum_entries: u32,
-    ) -> Result<NativeWorkspaceDirectoryPage> {
-        let after = after.map(native_workspace_name).transpose()?;
-        Box::pin(
-            self.inner
-                .list_directory(&path, after.as_ref(), maximum_entries),
-        )
-        .await
-        .map(native_workspace_directory_page)
-        .map_err(napi_error)
-    }
-
     #[napi(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
         Box::pin(self.inner.read_symbolic_link(&path))
@@ -8126,14 +8109,22 @@ mod tests {
                 .as_ref(),
             b"source"
         );
-        let first_page = workspace
+        let listing = workspace.sync().await?;
+        let first_page = listing
             .list_directory("/shapes".to_owned(), None, 1)
             .await?;
         assert!(first_page.has_more);
         let Some(first_entry) = first_page.entries.first() else {
             unreachable!("a page reporting has_more must contain at least one entry");
         };
-        let remaining_page = workspace
+        assert_eq!(
+            workspace
+                .write("/shapes/late".to_owned(), Buffer::from(vec![1]))
+                .await?
+                .status,
+            "committed"
+        );
+        let remaining_page = listing
             .list_directory(
                 "/shapes".to_owned(),
                 Some(NativeWorkspaceName {

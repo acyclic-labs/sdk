@@ -12,6 +12,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 /// Model-visible tool definition with immutable schemas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolDefinition {
     /// Stable bounded tool name; local names and explicit namespaces are both valid.
     pub name: String,
@@ -51,7 +52,11 @@ impl ToolDefinition {
 
 /// One admitted invocation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolInvocation {
+    /// Runtime-owned identity for execution and reconciliation. A provider's
+    /// call ID alone is not unique across turns or tasks.
+    pub operation_id: OperationId,
     /// Model-owned call identity.
     pub call_id: String,
     /// Registered tool name.
@@ -61,6 +66,34 @@ pub struct ToolInvocation {
 }
 
 impl ToolInvocation {
+    /// Binds a model call to one deterministic operation within its parent turn.
+    #[must_use]
+    pub fn for_model_call(
+        parent: OperationId,
+        step: u32,
+        call_id: String,
+        name: String,
+        arguments: Value,
+    ) -> Self {
+        let digest = blake3::hash(
+            &[
+                b"harness:tool-call:v2".as_slice(),
+                parent.into_bytes().as_slice(),
+                &step.to_be_bytes(),
+                call_id.as_bytes(),
+            ]
+            .concat(),
+        );
+        let mut identity = [0_u8; 16];
+        identity.copy_from_slice(&digest.as_bytes()[..16]);
+        Self {
+            operation_id: OperationId::from_bytes(identity),
+            call_id,
+            name,
+            arguments,
+        }
+    }
+
     /// Rejects identities that could execute successfully but fail later when
     /// their canonical conversation record is published.
     pub fn validate(&self) -> Result<()> {
@@ -90,6 +123,7 @@ fn validate_tool_name(name: &str) -> Result<()> {
 
 /// Result returned by a tool executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolResult {
     /// Schema-validated structured value.
     pub value: Value,
@@ -97,6 +131,16 @@ pub struct ToolResult {
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: Send + Sync {
+    /// Checks invocation-specific resource grants before a result is replayed,
+    /// dispatched, or reconciled. A scoped adapter must reject a missing scope.
+    fn authorize(
+        &self,
+        _scope: Option<&crate::runtime::RuntimeScope>,
+        _invocation: &ToolInvocation,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Executes an already admitted invocation.
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>>;
 
@@ -115,6 +159,17 @@ pub trait ToolExecutor: Send + Sync {
         &'a self,
         invocation: ToolInvocation,
     ) -> BoxFuture<'a, Result<Option<ToolResult>>>;
+
+    /// Reconciles under the same owner-authenticated task context used for
+    /// dispatch. Context-aware adapters override this rather than relying on
+    /// an invocation identity as a bearer authorization.
+    fn reconcile_with_context<'a>(
+        &'a self,
+        _context: crate::runtime::ToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        self.reconcile(invocation)
+    }
 }
 
 /// Replaceable mapping from tool results into model-visible context.
@@ -287,6 +342,26 @@ mod tests {
         fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
             Ok(result.value.clone())
         }
+    }
+
+    #[test]
+    fn model_tool_operation_identity_is_stable_and_scoped_to_parent_step_and_call() {
+        let parent = OperationId::from_bytes([7; 16]);
+        let make = |parent, step, call_id: &str| {
+            ToolInvocation::for_model_call(
+                parent,
+                step,
+                call_id.into(),
+                "example.echo".into(),
+                json!({"value": 1}),
+            )
+            .operation_id
+        };
+        let same = make(parent, 0, "call");
+        assert_eq!(same, make(parent, 0, "call"));
+        assert_ne!(same, make(parent, 1, "call"));
+        assert_ne!(same, make(parent, 0, "other"));
+        assert_ne!(same, make(OperationId::from_bytes([8; 16]), 0, "call"));
     }
 
     #[test]

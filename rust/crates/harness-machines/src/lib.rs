@@ -2,9 +2,15 @@
 #![cfg_attr(test, allow(clippy::indexing_slicing, clippy::too_many_lines))]
 #![doc = include_str!("../README.md")]
 
+mod execution;
+pub use execution::{AccessFuture, MachinesExecution, MachinesExecutionAccess, MachinesTaskBuild};
+
 use acyclic_harness::{
     Error, IdempotencyKey, OperationId, Result,
-    fork::{ForkSeed, ForkSeedVerifier, ResourceRevision},
+    fork::{
+        Capture, CapturedResource, ForkCaptureProvider, ForkRequest, ForkSeed, ForkSeedVerifier,
+        ForkSelection, ResourceRevision,
+    },
     resources::{ArtifactRef, CheckpointRef, ProviderRef, SandboxRef},
 };
 use acyclic_machines::{
@@ -240,6 +246,48 @@ impl ForkSeedVerifier for MachinesHost {
     }
 }
 
+/// Exact, read-only capture of a forkable process checkpoint. A child's
+/// sandbox remains a separately admitted Machines operation, not a cloned
+/// active process or an implicit side effect of conversation publication.
+impl ForkCaptureProvider for MachinesHost {
+    fn provider(&self) -> &ProviderRef {
+        &self.provider_ref
+    }
+
+    fn capture<'a>(
+        &'a self,
+        _request: &'a ForkRequest,
+        selection: &'a ForkSelection,
+    ) -> Pin<Box<dyn Future<Output = Result<Capture>> + Send + 'a>> {
+        Box::pin(async move {
+            let ResourceRevision::Process(checkpoint) = &selection.revision else {
+                return Ok(Capture::Unsupported(
+                    "Machines captures only process checkpoints".into(),
+                ));
+            };
+            let observed = self.inspect_checkpoint(checkpoint).await?;
+            if !observed.forkable {
+                return Ok(Capture::Unsupported(
+                    "selected Machines checkpoint is not forkable".into(),
+                ));
+            }
+            Ok(Capture::Captured(CapturedResource {
+                source: selection.revision.clone(),
+                revision: selection.revision.clone(),
+            }))
+        })
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        request: &'a ForkRequest,
+        selection: &'a ForkSelection,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Capture>>> + Send + 'a>> {
+        // Inspection alone cannot have created a provider effect.
+        Box::pin(async move { self.capture(request, selection).await.map(Some) })
+    }
+}
+
 fn parse_uuid<T>(
     bytes: &[u8],
     parse: impl FnOnce(&str) -> std::result::Result<T, acyclic_machines::IdentityError>,
@@ -293,7 +341,7 @@ mod tests {
         AgentId,
         conversation::{VolumeClass, VolumeOwner, VolumeRef},
         core::{AggregateKind, Authority},
-        fork::CapturedResource,
+        fork::{CapturedResource, ForkPreparation},
         resources::{GenerationRef, StreamRef},
     };
     use acyclic_machines::SimulatedMachines;
@@ -457,6 +505,43 @@ mod tests {
             boundary: None,
         };
         host.verify(&seed).await?;
+        let ResourceRevision::Project {
+            volume: child_project,
+            ..
+        } = &seed.resources[1].revision
+        else {
+            return Err(Error::Invalid("test child project is missing".into()));
+        };
+        let request = ForkRequest {
+            operation_id: seed.operation_id,
+            parent: seed.parent.clone(),
+            parent_revision: seed.parent_revision,
+            child: seed.child.clone(),
+            child_agent: seed.child_agent,
+            attached_agents: Vec::new(),
+            preparation: ForkPreparation {
+                child_project_volume: child_project.clone(),
+                child_private_volume: seed.child_private_volume.clone(),
+                inherited_through_sequence: 0,
+                maximum_inherited_messages: 1,
+                maximum_inherited_bytes: 1_024,
+                maximum_inherited_references: 1,
+            },
+            selections: seed
+                .resources
+                .iter()
+                .map(|resource| ForkSelection {
+                    required: true,
+                    revision: resource.source.clone(),
+                })
+                .collect(),
+            boundary: None,
+        };
+        request.validate()?;
+        assert_eq!(
+            host.capture(&request, &request.selections[2]).await?,
+            Capture::Captured(seed.resources[2].clone()),
+        );
         simulator
             .destroy_checkpoint(
                 host.checkpoint_id(match &seed.resources[2].revision {

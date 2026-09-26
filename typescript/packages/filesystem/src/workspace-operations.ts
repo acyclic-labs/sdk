@@ -3,17 +3,17 @@ import type {
   NativeRawJoinPlan, ResolvableFsJoinPlan, WasmRawGeneration, WasmRawJoinPlan,
   WasmRawJoinResult, WasmRawWorkspace, WorkspaceRebaseResult,
 } from "./contracts.js";
-import { copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyWorkspaceStat } from "./workspace-copies.js";
+import { copyWorkspaceExtentPlan, copyWorkspaceStat } from "./workspace-copies.js";
 import { parseWorkspaceCommit, parseWorkspaceDelete, validateWorkspaceRebaseOptions } from "./workspace-results.js";
 
 type RawOperations = Pick<WasmRawWorkspace,
   "head" | "sync" | "checkpoint" | "pin" | "delete" |
-  "read" | "readRange" | "stat" | "listDirectory" | "readSymbolicLink" |
+  "read" | "readRange" | "stat" | "readSymbolicLink" |
   "planExtents" | "write" | "remove" | "liveRebase"
 >;
 type WorkspaceOperations = Pick<FsWorkspace,
   "head" | "sync" | "checkpoint" | "pin" | "delete" |
-  "read" | "readRange" | "stat" | "listDirectory" | "readSymbolicLink" |
+  "read" | "readRange" | "stat" | "readSymbolicLink" |
   "planExtents" | "write" | "remove" | "liveRebase"
 >;
 
@@ -43,9 +43,6 @@ export function workspaceOperations(
     },
     async readRange(path, offset, length) { return Uint8Array.from(await raw.readRange(path, offset, length)); },
     async stat(path) { return copyWorkspaceStat(await raw.stat(path)); },
-    async listDirectory(path, after, maximumEntries) {
-      return copyWorkspaceDirectoryPage(await raw.listDirectory(path, after, maximumEntries));
-    },
     async readSymbolicLink(path) { return Uint8Array.from(await raw.readSymbolicLink(path)); },
     async planExtents(path, offset, length, maximumSpans) {
       return copyWorkspaceExtentPlan(await raw.planExtents(path, offset, length, maximumSpans));

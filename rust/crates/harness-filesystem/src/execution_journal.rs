@@ -220,10 +220,12 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 .checked_add(1)
                 .ok_or_else(|| Error::Invalid("interaction version exhausted".into()))
         })?;
+        let resolution_operation =
+            interaction_operation(id, &format!("resolve-{expected_version}"));
         let detail = if matches!(&response, InteractionResponse::Approval { .. }) {
             Some(
                 self.interactions
-                    .stage_answer(id, expected_version, &response)
+                    .stage_answer(id, expected_version, resolution_operation, &response)
                     .await?,
             )
         } else {
@@ -237,14 +239,14 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             other => InteractionOutcome::Answered {
                 answer: Box::new(
                     self.interactions
-                        .stage_answer(id, expected_version, &other)
+                        .stage_answer(id, expected_version, resolution_operation, &other)
                         .await?,
                 ),
             },
         };
         self.interactions
             .resolve(
-                interaction_operation(id, &format!("resolve-{expected_version}")),
+                resolution_operation,
                 responder.clone(),
                 InteractionResolution {
                     id: ticket.id,

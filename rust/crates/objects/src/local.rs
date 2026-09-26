@@ -18,9 +18,9 @@ use prost::Message;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::{
-    BufferedObject, Condition, DeleteResult, ExternalBody, GetRequest, LocalBodyLocation,
-    LocalBodyReference, MemoryObjects, ObjectsError, ObjectsProvider, ProviderListPage, PutRequest,
-    ReadTarget, wire,
+    BufferedObject, Condition, DeleteResult, ExternalBody, GetRequest, HeadRequest,
+    LocalBodyLocation, LocalBodyReference, MemoryObjects, ObjectsError, ObjectsProvider,
+    ProviderListPage, PutRequest, ReadTarget, wire,
 };
 
 const JOURNAL_MAGIC: &[u8; 23] = b"ACYCLIC-OBJECTS-LOCAL\0\x03";
@@ -804,6 +804,11 @@ impl ObjectsProvider for LocalObjects {
         self.check_available()?;
         let _body_io = self.body_io.read().await;
         self.semantic.get(request).await
+    }
+
+    async fn head(&self, request: HeadRequest) -> Result<wire::ObjectVersion, ObjectsError> {
+        self.check_available()?;
+        self.semantic.head(request).await
     }
 
     async fn get_batch(

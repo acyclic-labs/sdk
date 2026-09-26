@@ -81,6 +81,7 @@ file_url() {
 }
 version=$(node -p "require('./typescript/packages/sdk/package.json').version")
 harness_url=$(file_url "$output/acyclic-labs-harness-${version}.tgz")
+harness_objects_url=$(file_url "$output/acyclic-labs-harness-objects-${version}.tgz")
 objects_url=$(file_url "$output/acyclic-labs-objects-${version}.tgz")
 stream_url=$(file_url "$output/acyclic-labs-stream-${version}.tgz")
 inference_url=$(file_url "$output/acyclic-labs-inference-${version}.tgz")
@@ -89,7 +90,7 @@ filesystem_url=$(file_url "$output/acyclic-labs-fs-${version}.tgz")
 sdk_url=$(file_url "$output/acyclic-labs-sdk-${version}.tgz")
 mkdir "$work/consumer"
 cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","dependencies":{"@acyclic-labs/sdk":"file:$sdk_url"},"overrides":{"@acyclic-labs/harness":"file:$harness_url","@acyclic-labs/objects":"file:$objects_url","@acyclic-labs/stream":"file:$stream_url","@acyclic-labs/inference":"file:$inference_url","@acyclic-labs/machines":"file:$machines_url","@acyclic-labs/fs":"file:$filesystem_url"}}
+{"private":true,"type":"module","dependencies":{"@acyclic-labs/sdk":"file:$sdk_url"},"overrides":{"@acyclic-labs/harness":"file:$harness_url","@acyclic-labs/harness-objects":"file:$harness_objects_url","@acyclic-labs/objects":"file:$objects_url","@acyclic-labs/stream":"file:$stream_url","@acyclic-labs/inference":"file:$inference_url","@acyclic-labs/machines":"file:$machines_url","@acyclic-labs/fs":"file:$filesystem_url"}}
 EOF
 cat >"$work/consumer/smoke.mjs" <<'EOF'
 import { filesystem, harness, inference, machines, objects, stream } from "@acyclic-labs/sdk";

@@ -158,6 +158,54 @@ pub struct GetRequest {
     pub maximum_bytes: u64,
 }
 
+/// One metadata-only selection. Ranges and body-capacity limits cannot be
+/// supplied because a head operation never transfers object bytes.
+#[derive(Clone, Debug)]
+pub struct HeadRequest {
+    /// Current bucket or immutable snapshot.
+    pub target: ReadTarget,
+    /// UTF-8 object key.
+    pub object_key: String,
+    /// Exact retained version, or the visible current version when absent.
+    pub version_id: Option<String>,
+    /// Optional representation validator that must match.
+    pub if_match: Option<String>,
+    /// Optional representation validator that must not match.
+    pub if_none_match: Option<String>,
+}
+
+struct ReadSelection<'a> {
+    target: &'a ReadTarget,
+    object_key: &'a str,
+    version_id: Option<&'a str>,
+    if_match: Option<&'a str>,
+    if_none_match: Option<&'a str>,
+}
+
+impl<'a> From<&'a GetRequest> for ReadSelection<'a> {
+    fn from(request: &'a GetRequest) -> Self {
+        Self {
+            target: &request.target,
+            object_key: &request.object_key,
+            version_id: request.version_id.as_deref(),
+            if_match: request.if_match.as_deref(),
+            if_none_match: request.if_none_match.as_deref(),
+        }
+    }
+}
+
+impl<'a> From<&'a HeadRequest> for ReadSelection<'a> {
+    fn from(request: &'a HeadRequest) -> Self {
+        Self {
+            target: &request.target,
+            object_key: &request.object_key,
+            version_id: request.version_id.as_deref(),
+            if_match: request.if_match.as_deref(),
+            if_none_match: request.if_none_match.as_deref(),
+        }
+    }
+}
+
 /// One immutable descriptor and its selected body bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BufferedObject {
@@ -255,6 +303,8 @@ pub trait ObjectsProvider: Send + Sync {
     }
     /// Read one immutable version or its visible current selection.
     async fn get(&self, request: GetRequest) -> Result<BufferedObject, ObjectsError>;
+    /// Resolve one exact version descriptor without reading its body.
+    async fn head(&self, request: HeadRequest) -> Result<wire::ObjectVersion, ObjectsError>;
     /// Reads an ordered bounded group of immutable versions.
     ///
     /// Providers without a native multi-get use the exact sequential semantics
@@ -787,9 +837,11 @@ pub struct MemoryObjects {
 
 impl MemoryObjects {
     /// Resolve an object descriptor without reading or buffering its body.
-    pub async fn head(&self, request: GetRequest) -> Result<wire::ObjectVersion, ObjectsError> {
+    pub async fn head(&self, request: HeadRequest) -> Result<wire::ObjectVersion, ObjectsError> {
         let state = self.state.lock().await;
-        Ok(Self::resolve_version(&state, &request)?.descriptor.clone())
+        Ok(Self::resolve_version(&state, &(&request).into())?
+            .descriptor
+            .clone())
     }
 
     #[cfg(feature = "local")]
@@ -1230,19 +1282,17 @@ impl MemoryObjects {
 
     fn resolve_version<'a>(
         state: &'a State,
-        request: &GetRequest,
+        request: &ReadSelection<'_>,
     ) -> Result<&'a Version, ObjectsError> {
-        Self::validate_key(&request.object_key)?;
-        let bucket = Self::target_ref(state, &request.target)?;
-        let version = Self::visible(bucket, &request.object_key, request.version_id.as_deref())?;
+        Self::validate_key(request.object_key)?;
+        let bucket = Self::target_ref(state, request.target)?;
+        let version = Self::visible(bucket, request.object_key, request.version_id)?;
         if request
             .if_match
-            .as_ref()
-            .is_some_and(|etag| *etag != version.descriptor.etag)
+            .is_some_and(|etag| etag != version.descriptor.etag.as_str())
             || request
                 .if_none_match
-                .as_ref()
-                .is_some_and(|etag| *etag == version.descriptor.etag)
+                .is_some_and(|etag| etag == version.descriptor.etag.as_str())
         {
             return Err(ObjectsError::PreconditionFailed);
         }
@@ -1250,7 +1300,7 @@ impl MemoryObjects {
     }
 
     fn resolve_get(state: &State, request: &GetRequest) -> Result<ResolvedGet, ObjectsError> {
-        let version = Self::resolve_version(state, request)?;
+        let version = Self::resolve_version(state, &request.into())?;
         let descriptor = version.descriptor.clone();
         let body = version.body.clone().ok_or(ObjectsError::NotFound)?;
         let (start, end) = match request.range {
@@ -1852,6 +1902,10 @@ impl ObjectsProvider for MemoryObjects {
         let resolved = Self::resolve_get(&state, &request)?;
         drop(state);
         Self::read_resolved_get(resolved).await
+    }
+
+    async fn head(&self, request: HeadRequest) -> Result<wire::ObjectVersion, ObjectsError> {
+        MemoryObjects::head(self, request).await
     }
 
     async fn get_batch(
@@ -2490,17 +2544,30 @@ mod tests {
     async fn head_resolves_metadata_without_body_capacity() {
         let (store, bucket) = MemoryObjects::with_default_bucket();
         let version = put(&store, &bucket, "large", b"body", None).await;
-        let request = GetRequest {
-            target: ReadTarget::Bucket(bucket),
+        let request = HeadRequest {
+            target: ReadTarget::Bucket(bucket.clone()),
             object_key: "large".into(),
             version_id: None,
-            range: None,
             if_match: None,
             if_none_match: None,
-            maximum_bytes: 0,
         };
-        assert_eq!(store.head(request.clone()).await, Ok(version));
-        assert_eq!(store.get(request).await, Err(ObjectsError::Capacity));
+        assert_eq!(store.head(request.clone()).await, Ok(version.clone()));
+        let replaceable: Arc<dyn ObjectsProvider> = Arc::new(store.clone());
+        assert_eq!(replaceable.head(request.clone()).await, Ok(version.clone()));
+        assert_eq!(
+            store
+                .get(GetRequest {
+                    target: request.target,
+                    object_key: request.object_key,
+                    version_id: request.version_id,
+                    range: None,
+                    if_match: request.if_match,
+                    if_none_match: request.if_none_match,
+                    maximum_bytes: 0,
+                })
+                .await,
+            Err(ObjectsError::Capacity)
+        );
     }
 
     #[tokio::test]

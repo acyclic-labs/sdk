@@ -210,9 +210,6 @@ export class MemoryStreamProvider implements StreamProvider {
       cursor?.free();
     }
   }
-  async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> {
-    for (const child of (await this.childrenPage({ ...(parent === undefined ? {} : { parent }), limit })).children) yield child;
-  }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const value = await this.#call("children_page", encode(ChildrenPageRequestSchema,
       create(ChildrenPageRequestSchema, {

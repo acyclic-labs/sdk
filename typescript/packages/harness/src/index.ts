@@ -16,6 +16,8 @@ import { AgentHarness, HarnessBuilder, type AgentHarnessHost } from "./runtime.j
 import type { ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, FileDescriptor, FileRef, Limits, VolumeRef, Attachment } from "./conversation.js";
 import type { ToolJsonSchema } from "./model.js";
 import type { InteractionId } from "./interaction.js";
+import type { ResourceRef } from "./fork.js";
+import type { PrivateDirectoryPage } from "./runtime.js";
 import { NativeContracts } from "./native-contracts.js";
 
 export * from "./cache.js";
@@ -49,6 +51,8 @@ export interface IdentityKindMap {
   readonly session: SessionId;
   readonly turn: TurnId;
   readonly task: TaskId;
+  readonly group: import("./runtime.js").GroupId;
+  readonly batch: import("./runtime.js").BatchId;
   readonly operation: OperationId;
   readonly effect: EffectId;
   readonly interaction: InteractionId;
@@ -276,6 +280,11 @@ export class Harness {
     this.#core.verifyContentRead(scope, file);
   }
 
+  /** Authenticates lazy owner-private discovery under a signed subtree grant. */
+  verifyPrivateDirectoryRead(scope: Scope, volume: VolumeRef, grantedPrefix: string, path: string): void {
+    this.#core.verifyPrivateDirectoryRead(scope, volume, grantedPrefix, path);
+  }
+
   /** Authenticates one issuer-signed scope without widening its capabilities. */
   verifyScope(scope: Scope): void {
     this.#core.verifyScope(scope);
@@ -296,6 +305,26 @@ export class Harness {
     volume: VolumeRef<Class, Family>,
   ): VolumeRef<Class, Family> {
     return this.#contracts.validate("volume_ref", volume);
+  }
+
+  /** Returns a detached provider-owned resource address admitted by Rust. */
+  validateResourceRef<Kind extends ResourceRef["kind"]>(reference: ResourceRef<Kind>): ResourceRef<Kind> {
+    return this.#contracts.validate("resource_ref", reference) as ResourceRef<Kind>;
+  }
+
+  /** Validates an owner's bounded, ordered directory page in Rust. */
+  validatePrivateDirectoryPage(page: PrivateDirectoryPage): PrivateDirectoryPage {
+    return this.#contracts.validate("private_directory_page", page);
+  }
+
+  /** Returns limits validated and detached by the Rust contract. */
+  validateLimits(limits: Limits): Limits {
+    return this.#contracts.validate("limits", limits);
+  }
+
+  /** Compares two public contract values by their canonical Rust encoding. */
+  canonicalEqual<Value>(left: Value, right: Value): boolean {
+    return this.#contracts.canonicalEqual(left, right);
   }
 
   /** Returns a detached, immutable file reference admitted by the Rust contract. */

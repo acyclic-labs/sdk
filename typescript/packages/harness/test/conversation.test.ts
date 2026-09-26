@@ -178,6 +178,33 @@ test("Rust and TypeScript share the canonical v2 file reference fixture", async 
   expect(JSON.stringify(contracts.validate("file_ref", JSON.parse(fixture) as FileRef))).toBe(fixture);
 });
 
+test("Rust and TypeScript reject the same malformed file references and forged content", async () => {
+  const base = JSON.parse(await Bun.file(new URL("../../../../fixtures/harness/v2/file-ref.json", import.meta.url)).text()) as Record<string, unknown>;
+  const corpus = JSON.parse(await Bun.file(new URL("../../../../fixtures/harness/v2/file-ref-security-cases.json", import.meta.url)).text()) as {
+    cases: Array<{ name: string; pointer: string; value: unknown; check: "decode" | "bytes" }>;
+  };
+  expect(corpus.cases).toHaveLength(13);
+  for (const { name, pointer, value, check } of corpus.cases) {
+    const modified = structuredClone(base);
+    const segments = pointer.split("/").slice(1);
+    let parent: Record<string, unknown> = modified;
+    for (const segment of segments.slice(0, -1)) parent = parent[segment] as Record<string, unknown>;
+    parent[segments.at(-1)!] = value;
+    if (check === "decode") {
+      expect(() => contracts.validate("file_ref", modified as unknown as FileRef)).toThrow();
+    } else {
+      const reference = contracts.validate("file_ref", modified as unknown as FileRef);
+      await expect(verifyFileBytes(reference, new TextEncoder().encode("hello"))).rejects.toThrow();
+    }
+  }
+});
+
+test("Rust and TypeScript share the canonical private directory page fixture", async () => {
+  const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/private-directory-page.json", import.meta.url)).text()).trim();
+  const page = (await NativeContracts.create()).validate("private_directory_page", JSON.parse(fixture));
+  expect(JSON.stringify(page)).toBe(fixture);
+});
+
 test("Rust and TypeScript share the canonical v2 task outcome fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/task-outcome.json", import.meta.url)).text()).trim();
   const outcome = (await NativeContracts.create()).validate("task_outcome", JSON.parse(fixture) as TaskOutcomeRecord);

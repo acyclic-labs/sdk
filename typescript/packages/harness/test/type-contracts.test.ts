@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type {
-  AgentHarness, AgentId, ApprovalBinding, Authority, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, FilesystemOperationId, HarnessRuntimeHost, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
+  AgentHarness, AgentId, ApprovalBinding, Authority, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeHost, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
   ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectMergeNotice, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, RuntimeTaskId, TaskContext,
   SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef,
 } from "../src/index.js";
@@ -23,6 +23,12 @@ const objectsPrivate: VolumeRef<"agent_private", "objects"> = {
   provider: { ...provider, family: "objects" }, id: "private-object", class: "agent_private",
   owner: { kind: "agent", id: "01010101-0101-0101-0101-010101010101" as AgentId },
 };
+const memoryGeneration: ResourceRef<"generation"> = {
+  kind: "generation", provider: { namespace: "local", family: "memory", version: "2" },
+  key: [1], version: "1",
+};
+// @ts-expect-error a directory page is pinned to a generation, not a mutable workspace
+const wrongDirectoryGeneration: ResourceRef<"generation"> = { ...memoryGeneration, kind: "workspace" };
 
 // @ts-expect-error project volume cannot be owned by an agent
 const wrongOwner: VolumeRef<"project"> = privateVolume;
@@ -92,7 +98,7 @@ const stringOutboxMetadata: ClientCommand = { operationId: "op" as OperationId, 
 // @ts-expect-error interaction versions use exact unsigned 64-bit positions
 const roundedInteractionVersion: InteractionResolution = { id: "01010101-0101-0101-0101-010101010101" as InteractionId, expected_version: 1, outcome: { kind: "approved" } };
 // @ts-expect-error project merge publication identities are exact validated bytes, not strings
-const stringMergeOperation: FilesystemOperationId = "merge-1";
+const stringMergeOperation: ProviderOperationId = "merge-1";
 // @ts-expect-error a frame tag cannot carry a different protobuf payload
 const mismatchedClientFrame: ClientFrame["frame"] = { case: "resume", value: {} as HandshakeRequest };
 // @ts-expect-error replaceable policies must expose a pinned implementation revision

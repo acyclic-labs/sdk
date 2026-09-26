@@ -12,7 +12,7 @@ import {
   UploadedPartSchema, UploadPartHeaderSchema, MultipartUploadSchema,
 } from "../generated/proto/objects/v1/objects_pb.js";
 import type {
-  BucketId, BucketRef, ByteRange, Condition, ETag, IdempotencyKey, ListPage, MultipartProvider,
+  BucketId, BucketRef, ByteRange, Condition, ETag, HeadOptions, IdempotencyKey, ListPage, MultipartProvider,
   MultipartUpload, ObjectMetadata, ObjectsProvider, ObjectVersion, ReadTarget, SnapshotId,
   SnapshotRef, StoredObject, UploadedPart, UploadId, VersionId,
 } from "./index.js";
@@ -139,8 +139,9 @@ export class MemoryObjectsProvider implements ObjectsProvider, MultipartProvider
     const ownedBody = Uint8Array.from(body);
     try { return objectVersion(decode(ObjectVersionSchema, await (await this.#ready()).put(header, ownedBody))); } catch (error) { return asObjectError(error); }
   }
-  async head(value: ReadTarget, objectKey: string, versionId?: VersionId): Promise<ObjectVersion> {
-    const request = encode(HeadObjectRequestSchema, create(HeadObjectRequestSchema, { target: target(value), objectKey, versionId: versionId ?? "" }));
+  async head(value: ReadTarget, objectKey: string, options: HeadOptions = {}): Promise<ObjectVersion> {
+    const request = encode(HeadObjectRequestSchema, create(HeadObjectRequestSchema, { target: target(value), objectKey,
+      versionId: options.versionId ?? "", ifMatch: options.ifMatch ?? "", ifNoneMatch: options.ifNoneMatch ?? "" }));
     try { return objectVersion(decode(HeadObjectResponseSchema, await (await this.#ready()).head(request)).version); } catch (error) { return asObjectError(error); }
   }
   async get(value: ReadTarget, objectKey: string, versionId?: VersionId, range?: Omit<ByteRange, "total">): Promise<StoredObject> {

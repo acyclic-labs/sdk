@@ -147,6 +147,7 @@ export interface FsWorkspace {
   readonly name: string;
   readonly id: Uint8Array;
   head(): Promise<Uint8Array>;
+  /** Observe the current immutable head for pinned reads and directory pagination. */
   sync(): Promise<FsGeneration>;
   checkpoint(label: string): Promise<FsGeneration>;
   pin(identity: string): Promise<FsGeneration>;
@@ -154,7 +155,6 @@ export interface FsWorkspace {
   read(path: string, maximumBytes: bigint): Promise<Uint8Array>;
   readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
   stat(path: string): Promise<WorkspaceStat>;
-  listDirectory(path: string, after: WorkspaceName | undefined, maximumEntries: number): Promise<WorkspaceDirectoryPage>;
   readSymbolicLink(path: string): Promise<Uint8Array>;
   planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan>;
   write(path: string, bytes: Uint8Array): Promise<WorkspaceCommit>;
@@ -1292,7 +1292,6 @@ export interface RawWorkspace<Commit, ChangeSet, JoinPlan, Self> {
   read(path: string, maximumBytes: bigint): Promise<Uint8Array>;
   readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
   stat(path: string): Promise<WorkspaceStat>;
-  listDirectory(path: string, after: WorkspaceName | undefined, maximumEntries: number): Promise<WorkspaceDirectoryPage>;
   readSymbolicLink(path: string): Promise<Uint8Array>;
   planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan>;
   write(path: string, bytes: Uint8Array): Promise<Commit>;

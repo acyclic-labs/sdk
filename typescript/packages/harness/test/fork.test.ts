@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { MAX_FORK_INHERITED_MESSAGES, NativeContracts, forkReadableReferences, forkSeed, resourceRef, validateForkReport, validateForkSeed,
-  type AgentId, type ForkReport, type ForkSeed, type OperationId, type ResourceRevision, type ReferenceGrant } from "../src/index.js";
+import { ExecutionScope, Harness, MAX_FORK_INHERITED_MESSAGES, NativeContracts, forkReadableReferences, forkSeed, resourceRef, validateForkReport, validateForkRequest, validateForkSeed,
+  type AgentId, type ForkReport, type ForkRequest, type ForkSeed, type OperationId, type ResourceRevision, type ReferenceGrant } from "../src/index.js";
 
 const filesystem = { namespace: "test", family: "filesystem", version: "2" } as const;
 const stream = { namespace: "test", family: "stream", version: "2" } as const;
@@ -50,6 +50,30 @@ test("Rust and TypeScript share the canonical v2 fork seed fixture", async () =>
   expect(JSON.stringify(seed, (_key, value: unknown) => typeof value === "bigint" ? Number(value) : value)).toBe(fixture);
 });
 
+test("Rust and TypeScript share the canonical v2 fork request fixture", async () => {
+  const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/fork-request.json", import.meta.url)).text()).trim();
+  const decoded = JSON.parse(fixture) as Omit<ForkRequest, "parent_revision" | "preparation"> & {
+    parent_revision: number;
+    preparation: Omit<ForkRequest["preparation"], "inherited_through_sequence" | "maximum_inherited_messages" | "maximum_inherited_bytes"> & {
+      inherited_through_sequence: number;
+      maximum_inherited_messages: number;
+      maximum_inherited_bytes: number;
+    };
+  };
+  const request: ForkRequest = {
+    ...decoded,
+    parent_revision: BigInt(decoded.parent_revision),
+    preparation: {
+      ...decoded.preparation,
+      inherited_through_sequence: BigInt(decoded.preparation.inherited_through_sequence),
+      maximum_inherited_messages: BigInt(decoded.preparation.maximum_inherited_messages),
+      maximum_inherited_bytes: BigInt(decoded.preparation.maximum_inherited_bytes),
+    },
+  };
+  await validateForkRequest(request);
+  expect(JSON.stringify(request, (_key, value: unknown) => typeof value === "bigint" ? Number(value) : value)).toBe(fixture);
+});
+
 test("Rust and TypeScript share the canonical v2 reference grant fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/reference-grant.json", import.meta.url)).text()).trim();
   const grant = JSON.parse(fixture) as ReferenceGrant;
@@ -64,6 +88,14 @@ function report(): ForkReport {
       parent: { kind: "conversation", id: "parent" }, parent_revision: 3n,
       child: { kind: "conversation", id: "child" }, child_agent: agent,
       attached_agents: [],
+      preparation: {
+        child_project_volume: childVolume,
+        child_private_volume: privateVolume,
+        inherited_through_sequence: 0n,
+        maximum_inherited_messages: 16_384n,
+        maximum_inherited_bytes: 64n * 1024n * 1024n,
+        maximum_inherited_references: 65_536,
+      },
       selections: [
         { required: true, revision: history },
         { required: true, revision: parentProject },
@@ -83,6 +115,52 @@ function report(): ForkReport {
     attachment_manifests: [],
   };
 }
+
+test("parent publication reconciles one exact child after a lost acknowledgement", async () => {
+  const contracts = await NativeContracts.create();
+  const prepared = report();
+  const seed = contracts.forkSeed(prepared);
+  let publications = 0;
+  let committed: ForkSeed | null = null;
+  const preparer = {
+    parentSnapshot: () => ({ parent: prepared.request.parent, revision: prepared.request.parent_revision }),
+    prepare: async () => prepared,
+    reconcile: async () => prepared,
+  };
+  const publisher = {
+    parent: () => prepared.request.parent,
+    async spawnFromReport(_report: ForkReport): Promise<ForkSeed> {
+      publications++;
+      committed = seed;
+      throw new Error("publication acknowledgement lost");
+    },
+    async reconcileSpawn(operationId: OperationId): Promise<ForkSeed | null> {
+      expect(operationId).toBe(prepared.request.operation_id);
+      return committed;
+    },
+  };
+  const runtime = Harness.builder(contracts).forkPreparer(preparer).forkPublisher(publisher)
+    .grant("fork:publish").build();
+  await expect(runtime.spawnFromReport(prepared)).rejects.toThrow("acknowledgement lost");
+  expect(await runtime.reconcileSpawn(prepared)).toEqual(seed);
+  const advanced = Harness.builder(contracts).forkPreparer({ ...preparer,
+    parentSnapshot: () => ({ parent: prepared.request.parent, revision: prepared.request.parent_revision + 1n }),
+  }).forkPublisher(publisher).grant("fork:publish").build();
+  expect(await advanced.reconcileSpawn(prepared)).toEqual(seed);
+  expect(publications).toBe(1);
+  const narrowed = runtime.scoped(ExecutionScope.create().onlyGrants("fork:publish"));
+  expect(narrowed.components.forkPublisher).toBeUndefined();
+  await expect(narrowed.reconcileSpawn(prepared)).rejects.toThrow("not bound");
+  await expect(runtime.spawnFromReport({ ...prepared, request: { ...prepared.request,
+    parent: { kind: "conversation", id: "wrong-parent" } } })).rejects.toThrow();
+  expect(() => Harness.builder(contracts).forkPreparer(preparer).forkPublisher({ ...publisher,
+    parent: () => ({ kind: "conversation" as const, id: "wrong-parent" }) }).grant("fork:publish").build())
+    .toThrow("another parent");
+  const mismatched = Harness.builder(contracts).forkPreparer(preparer).forkPublisher({ ...publisher,
+    spawnFromReport: async () => ({ ...seed, child: { kind: "conversation" as const, id: "different-child" } }),
+  }).grant("fork:publish").build();
+  await expect(mismatched.spawnFromReport(prepared)).rejects.toThrow("another child seed");
+});
 
 test("parent-controlled fork seed pins exact history and isolates project/private volumes", async () => {
   const seed = await forkSeed(report());
@@ -112,6 +190,33 @@ test("fork reports and seeds reject inherited prefixes above the protocol hard c
   const seed = await forkSeed(report());
   await expect(validateForkSeed({ ...seed, inherited_through_sequence: oversized }))
     .rejects.toThrow("protocol limits");
+});
+
+test("fork preparation pins child allocation and bounded context before capture", async () => {
+  const prepared = report();
+  await expect(validateForkReport({
+    ...prepared,
+    child_private_volume: { ...privateVolume, id: "different-private" },
+  })).rejects.toThrow();
+  await expect(validateForkReport({
+    ...prepared,
+    captures: [prepared.captures[0]!, {
+      kind: "captured", value: {
+        source: parentProject,
+        revision: { kind: "project", reference: {
+          volume: { ...childVolume, id: "different-project" },
+          generation: { kind: "generation", provider: filesystem, key: [2], version: null },
+        } },
+      },
+    }],
+  })).rejects.toThrow();
+  await expect(validateForkReport({
+    ...prepared,
+    request: { ...prepared.request, preparation: {
+      ...prepared.request.preparation,
+      maximum_inherited_messages: MAX_FORK_INHERITED_MESSAGES + 1n,
+    } },
+  })).rejects.toThrow();
 });
 
 test("required capture failure never publishes a child; optional failures remain visible", async () => {
@@ -168,11 +273,19 @@ test("published seeds are detached and immutable, including nested resources", a
 
 test("native fork conversion keeps child-owned file lengths as exact TS numbers", async () => {
   const inherited = {
-    volume: privateVolume, path: ".system/inherited-conversation/prefix.txt", version: "one",
-    descriptor: { sha256: Array(32).fill(0), byte_length: 7, media_type: "text/plain" },
-    display_name: "prefix.txt",
+    volume: privateVolume, path: ".system/inherited-conversation/prefix.json", version: "one",
+    descriptor: { sha256: Array(32).fill(0), byte_length: 7, media_type: "application/vnd.acyclic.harness.inherited-conversation+json" },
+    display_name: "inherited-conversation.json",
   };
-  const seed = await forkSeed({ ...report(), inherited_context: [inherited] });
+  const prepared = report();
+  const seed = await forkSeed({
+    ...prepared,
+    request: { ...prepared.request, preparation: {
+      ...prepared.request.preparation, inherited_through_sequence: 1n,
+    } },
+    inherited_context: [inherited],
+    inherited_through_sequence: 1n,
+  });
   expect(seed.inherited_context[0]?.descriptor.byte_length).toBe(7);
   expect(typeof seed.inherited_context[0]?.descriptor.byte_length).toBe("number");
 });
@@ -185,6 +298,8 @@ test("inherited context cannot select the same child path twice", async () => {
     display_name: "a.txt",
   };
   await expect(validateForkSeed({ ...seed, inherited_context: [file, { ...file, version: "two" }] }))
+    .rejects.toThrow();
+  await expect(validateForkSeed({ ...seed, inherited_context: [file] }))
     .rejects.toThrow();
 });
 
@@ -214,8 +329,16 @@ test("attached fork agents receive exact read-only references", async () => {
   };
   const attached = { ...seed, attached_agents: [reader], reference_grants: [{ file: parentFile, reader }] };
   await expect(validateForkSeed(attached)).resolves.toBeUndefined();
-  const inherited = { ...parentFile, volume: privateVolume, path: ".system/inherited-conversation/evidence.bin" };
-  const readable = await forkReadableReferences({ ...attached, inherited_context: [inherited] }, reader);
+  const inherited = {
+    ...parentFile,
+    volume: privateVolume,
+    path: ".system/inherited-conversation/prefix.json",
+    descriptor: { ...parentFile.descriptor, media_type: "application/vnd.acyclic.harness.inherited-conversation+json" },
+    display_name: "inherited-conversation.json",
+  };
+  const readable = await forkReadableReferences({
+    ...attached, inherited_context: [inherited], inherited_through_sequence: 1n,
+  }, reader);
   const canonicalParentFile = { ...parentFile, volume: { ...parentFile.volume,
     owner: { kind: "agent" as const, id: "44444444-4444-4444-4444-444444444444" as AgentId } } };
   expect(readable).toEqual([inherited, canonicalParentFile]);
@@ -232,10 +355,24 @@ test("attached fork agents receive exact read-only references", async () => {
   const manifest = { ...parentFile, path: "attachments/list.json", descriptor: {
     ...parentFile.descriptor, media_type: "application/vnd.acyclic.harness.attachments+json",
   } };
-  await expect(validateForkSeed({ ...attached,
+  const manifestWithoutReaderGrant = { ...attached,
     attachment_manifests: [manifest],
     reference_grants: [{ file: parentFile, reader, attachment_manifest: manifest }],
-  })).resolves.toBeUndefined();
+  };
+  await expect(validateForkSeed(manifestWithoutReaderGrant)).rejects.toThrow();
+  const readableManifestSeed = { ...manifestWithoutReaderGrant,
+    reference_grants: [...manifestWithoutReaderGrant.reference_grants,
+      { file: manifest, reader }],
+  };
+  await expect(validateForkSeed(readableManifestSeed)).resolves.toBeUndefined();
+  expect((await forkReadableReferences(readableManifestSeed, reader)).map(file => file.path))
+    .toEqual(["attachments/evidence.bin", "attachments/list.json"]);
+  const projectManifest = { ...manifest, volume: childVolume };
+  const projectReadable = { ...seed, attached_agents: [reader],
+    attachment_manifests: [projectManifest] };
+  await expect(validateForkSeed(projectReadable)).resolves.toBeUndefined();
+  expect((await forkReadableReferences(projectReadable, reader)).map(file => file.path))
+    .toEqual(["attachments/list.json"]);
   await expect(validateForkSeed({ ...attached,
     reference_grants: [{ file: parentFile, reader, attachment_manifest: manifest }],
   })).rejects.toThrow();

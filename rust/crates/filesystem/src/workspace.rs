@@ -1373,6 +1373,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
     }
 
+    // Lazy workspace composition still needs a bounded authenticated page
+    // internally, even though the public eager-directory API is removed.
     pub(crate) async fn list_directory_measured(
         &self,
         path: &str,

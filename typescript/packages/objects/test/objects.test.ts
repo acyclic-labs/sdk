@@ -109,6 +109,8 @@ describe("objects", () => {
     const bucket = await new Objects(provider).createBucket("contracts");
     const first = await bucket.put("a/one", new Uint8Array([1, 2, 3]), bytesCodec, { condition: { kind: "ifAbsent" }, idempotencyKey: key("put-one") });
     expect(await bucket.head("a/one")).toEqual(first);
+    expect(await bucket.head("a/one", { ifMatch: first.etag })).toEqual(first);
+    await expect(bucket.head("a/one", { ifNoneMatch: first.etag })).rejects.toMatchObject({ code: "precondition_failed" });
     expect(await bucket.put("a/one", new Uint8Array([1, 2, 3]), bytesCodec, { condition: { kind: "ifAbsent" }, idempotencyKey: key("put-one") })).toEqual(first);
     await expect(bucket.put("a/one", new Uint8Array([4]), bytesCodec, { condition: { kind: "ifAbsent" } })).rejects.toMatchObject({ code: "precondition_failed" });
     await bucket.put("b/two", new Uint8Array([4, 5]), bytesCodec);

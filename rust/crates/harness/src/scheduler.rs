@@ -56,7 +56,7 @@ pub enum DurableOwner {
 }
 
 impl DurableOwner {
-    fn authority(&self) -> &Authority {
+    pub(crate) fn authority(&self) -> &Authority {
         match self {
             Self::Attached { authority } | Self::Detached { authority } => authority,
         }
@@ -344,10 +344,11 @@ impl Scheduler {
             return Err(Error::Conflict("operation dependency cycle".into()));
         }
         if let Some(parent) = &spec.parent {
-            if parent.slot.trim().is_empty() {
-                return Err(Error::Invalid(
-                    "structured child requires an existing parent and slot".into(),
-                ));
+            if parent.slot.trim().is_empty()
+                || parent.slot.len() > 255
+                || parent.slot.chars().any(char::is_control)
+            {
+                return Err(Error::Invalid("structured child slot is invalid".into()));
             }
             let Some(parent_operation) = self.operations.get(&parent.operation_id) else {
                 return Err(Error::Invalid(

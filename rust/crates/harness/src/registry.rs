@@ -95,6 +95,11 @@ impl<T> PinnedRegistry<T> {
         Ok(())
     }
 
+    /// Alias for callers treating registrations as native executable links.
+    pub fn register(&self, identity: ComponentIdentity, value: T) -> Result<()> {
+        self.install(identity, value)
+    }
+
     /// Pins the current version for the lifetime of one active invocation.
     pub fn pin(&self, name: &str) -> Result<ComponentLease<T>> {
         let mut state = self
@@ -119,6 +124,78 @@ impl<T> PinnedRegistry<T> {
             identity,
             value: Arc::clone(&entry.value),
         })
+    }
+
+    /// Pins an exact retained version rather than resolving the current one.
+    pub fn pin_exact(&self, identity: &ComponentIdentity) -> Result<ComponentLease<T>> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| Error::Storage("component registry lock poisoned".into()))?;
+        let entry = state.versions.get_mut(identity).ok_or_else(|| {
+            Error::NotFound(format!("component {}@{}", identity.name, identity.version))
+        })?;
+        entry.active = entry
+            .active
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("component active count exhausted".into()))?;
+        Ok(ComponentLease {
+            registry: self.clone(),
+            identity: identity.clone(),
+            value: Arc::clone(&entry.value),
+        })
+    }
+
+    /// Reports whether a logical component currently accepts new work.
+    pub fn accepting(&self, name: &str) -> Result<bool> {
+        self.0
+            .lock()
+            .map(|state| state.current.contains_key(name))
+            .map_err(|_| Error::Storage("component registry lock poisoned".into()))
+    }
+
+    /// Stops accepting new work for one logical component while preserving
+    /// every active exact-version lease until it is released.
+    pub fn disable(&self, name: &str) -> Result<()> {
+        validate_component_label(name, "component name")?;
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| Error::Storage("component registry lock poisoned".into()))?;
+        state.current.remove(name);
+        for (identity, entry) in &mut state.versions {
+            if identity.name == name {
+                entry.accepting = false;
+            }
+        }
+        reap(&mut state);
+        Ok(())
+    }
+
+    /// Removes a disabled version only after all retained invocations drain.
+    pub fn remove(&self, identity: &ComponentIdentity) -> Result<Arc<T>> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| Error::Storage("component registry lock poisoned".into()))?;
+        if state.current.get(&identity.name) == Some(identity) {
+            return Err(Error::Conflict(
+                "current component must be disabled before removal".into(),
+            ));
+        }
+        let entry = state.versions.get(identity).ok_or_else(|| {
+            Error::NotFound(format!("component {}@{}", identity.name, identity.version))
+        })?;
+        if entry.active != 0 {
+            return Err(Error::Conflict(
+                "component still has retained invocations".into(),
+            ));
+        }
+        let entry = state
+            .versions
+            .remove(identity)
+            .ok_or_else(|| Error::Storage("component disappeared during removal".into()))?;
+        Ok(entry.value)
     }
 
     /// Returns whether a specific version is still installed or draining.

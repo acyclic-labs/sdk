@@ -6,13 +6,31 @@ import type {
 } from "./conversation.js";
 import { DEFAULT_LIMITS } from "./conversation.js";
 import { selectModelContext } from "./projection.js";
-import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type ContentBindings, type RunOutput } from "./runtime.js";
+import type { ResourceRef } from "./fork.js";
+import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type ContentBindings, type ContentReader, type PrivateDirectoryPage, type RunOutput } from "./runtime.js";
 
 const encoder = new TextEncoder();
 const manifestType = "application/vnd.acyclic.harness.attachments+json";
+const defaultResidentBytes = 256 * 1024 * 1024;
+const defaultResidentFiles = 65_536;
+
+function compareUtf8(left: string, right: string): number {
+  const a = encoder.encode(left);
+  const b = encoder.encode(right);
+  for (let index = 0; index < Math.min(a.length, b.length); index++) {
+    if (a[index] !== b[index]) return a[index]! - b[index]!;
+  }
+  return a.length - b.length;
+}
 
 export interface MemoryConversationOptions {
   readonly agent: AgentId;
+  /** Maximum staged file/path bounds; runtime admission may narrow them. */
+  readonly limits?: Limits;
+  /** Hard cap on immutable bytes retained by this ephemeral host. */
+  readonly maxResidentBytes?: number;
+  /** Hard cap on retained file versions, including zero-byte files. */
+  readonly maxResidentFiles?: number;
   readonly conversationId?: string;
   readonly issuerId?: string;
   readonly issuerKey?: Uint8Array;
@@ -24,16 +42,29 @@ export class MemoryConversation {
   readonly #core: Harness;
   readonly #scope: Scope;
   readonly #volume: VolumeRef<"agent_private", "memory">;
-  readonly #foreign = new Map<string, Pick<ContentBindings, "read">>();
+  readonly #stagingLimits: Limits;
+  readonly #maxResidentBytes: number;
+  readonly #maxResidentFiles: number;
+  #residentBytes = 0;
+  readonly #foreign = new Map<string, ContentReader>();
+  #foreignMount: ((volume: VolumeRef) => Readonly<{ owner: MemoryConversation; scope: Scope }>) | undefined;
   readonly #files = new Map<string, Readonly<{ reference: FileRef; bytes: Uint8Array }>>();
+  readonly #blobs = new Map<string, Uint8Array>();
+  readonly #paths = new Map<string, FileRef>();
+  readonly #pathHistory = new Map<string, Array<Readonly<{ generation: bigint; file: FileRef }>>>();
+  #generation = 0n;
   readonly #uploads = new Map<string, Promise<FileRef>>();
   readonly #outputs = new Map<string, RunOutput>();
   #turns: Promise<void> = Promise.resolve();
 
-  private constructor(core: Harness, scope: Scope, volume: VolumeRef<"agent_private", "memory">) {
+  private constructor(core: Harness, scope: Scope, volume: VolumeRef<"agent_private", "memory">,
+    limits: Limits, maxResidentBytes: number, maxResidentFiles: number) {
     this.#core = core;
     this.#scope = scope;
     this.#volume = core.validateVolumeRef(volume);
+    this.#stagingLimits = limits;
+    this.#maxResidentBytes = maxResidentBytes;
+    this.#maxResidentFiles = maxResidentFiles;
   }
 
   static async create(options: MemoryConversationOptions): Promise<MemoryConversation> {
@@ -43,28 +74,52 @@ export class MemoryConversation {
       issuerKey: options.issuerKey ?? crypto.getRandomValues(new Uint8Array(32)),
       ...(options.wasm === undefined ? {} : { wasm: options.wasm }),
     });
-    const volume: VolumeRef<"agent_private", "memory"> = {
-      provider: { namespace: "local", family: "memory", version: "2" },
-      id: "private", class: "agent_private", owner: { kind: "agent", id: options.agent },
-    };
-    const scope = core.issueScopeForAgent(options.agent, "conversation-owner", [
-      "conversation:bind", "conversation:append", "conversation:select_context",
-      core.volumeCapability(volume, "read"), core.volumeCapability(volume, "write"),
-    ]);
-    const host = new MemoryConversation(core, scope, volume);
-    host.#apply(core.identity("operation", crypto.randomUUID()), "bind", { kind: "bind_conversation", agent: options.agent });
-    return host;
+    let limits: Limits;
+    const maxResidentBytes = options.maxResidentBytes ?? defaultResidentBytes;
+    const maxResidentFiles = options.maxResidentFiles ?? defaultResidentFiles;
+    try {
+      limits = core.validateLimits(options.limits ?? DEFAULT_LIMITS);
+      if (!Number.isSafeInteger(maxResidentBytes) || maxResidentBytes < 0
+        || !Number.isSafeInteger(maxResidentFiles) || maxResidentFiles < 1) {
+        throw new RangeError("memory content retention limits are invalid");
+      }
+    }
+    catch (error) { core.free(); throw error; }
+    try {
+      const volume: VolumeRef<"agent_private", "memory"> = {
+        provider: { namespace: "local", family: "memory", version: "2" },
+        id: crypto.randomUUID(), class: "agent_private", owner: { kind: "agent", id: options.agent },
+      };
+      const scope = core.issueScopeForAgent(options.agent, "conversation-owner", [
+        "conversation:bind", "conversation:append", "conversation:select_context",
+        core.volumeCapability(volume, "read"), core.volumeCapability(volume, "write"),
+      ]);
+      const host = new MemoryConversation(core, scope, volume, limits, maxResidentBytes, maxResidentFiles);
+      host.#apply(core.identity("operation", crypto.randomUUID()), "bind", { kind: "bind_conversation", agent: options.agent });
+      return host;
+    } catch (error) {
+      core.free();
+      throw error;
+    }
   }
 
   get volume(): VolumeRef<"agent_private", "memory"> { return this.#volume; }
   get scope(): Scope { return structuredClone(this.#scope); }
-  /** Attach one foreign owner volume lazily; its reader remains responsible for grants. */
-  attachReadVolume(volume: VolumeRef, reader: Pick<ContentBindings, "read">): this {
-    const key = this.#volumeKey(this.#core.validateVolumeRef(volume));
+  /** Attach one owner-issued reader; a bare callback or FileRef is not authority. */
+  attachReadVolume(owner: MemoryConversation, scope: Scope): this {
+    const key = this.#volumeKey(owner.volume);
     if (key === this.#volumeKey(this.#volume) || this.#foreign.has(key)) {
       throw new TypeError("foreign content volume is already bound");
     }
-    this.#foreign.set(key, Object.freeze({ read: reader.read.bind(reader) }));
+    if (scope.agent !== this.#volume.owner.id) throw new TypeError("foreign read scope belongs to another agent");
+    const reader = owner.readBindings(scope);
+    this.#foreign.set(key, reader);
+    return this;
+  }
+  /** Resolve previously unseen owner volumes lazily; each read rechecks the mount's grant. */
+  mountReadVolumes(resolver: { mount(volume: VolumeRef): Readonly<{ owner: MemoryConversation; scope: Scope }> }): this {
+    if (this.#foreignMount !== undefined) throw new TypeError("foreign content mount is already bound");
+    this.#foreignMount = resolver.mount.bind(resolver);
     return this;
   }
   /** Owner issues one exact-file grant to an unrelated attached reader. */
@@ -89,17 +144,45 @@ export class MemoryConversation {
     this.#core.verifyFileBytes(file, bytes);
     return Uint8Array.from(bytes);
   }
+  /** Owner-authenticated, generation-pinned listing; no prior FileRef is needed. */
+  listPrivateDirectory(volume: VolumeRef<"agent_private">, grantedPrefix: string, path: string,
+    expectedGeneration: ResourceRef<"generation"> | null = null, after: string | null = null,
+    maximumEntries = 256): Promise<PrivateDirectoryPage> {
+    const reader = this.#reader(volume).directory;
+    if (!reader) throw new TypeError("owner has no private directory reader");
+    return reader.list(volume, grantedPrefix, path, expectedGeneration, after, maximumEntries);
+  }
+  /** Resolve a path through its owner to a verified immutable FileRef and bytes. */
+  readPrivatePath(volume: VolumeRef<"agent_private">, grantedPrefix: string, path: string,
+    expectedGeneration: ResourceRef<"generation"> | null = null): Promise<Readonly<{ file: FileRef; bytes: Uint8Array }>> {
+    const reader = this.#reader(volume).directory;
+    if (!reader) throw new TypeError("owner has no private directory reader");
+    return reader.readPath(volume, grantedPrefix, path, expectedGeneration);
+  }
   /** Mount this owner's volume read-only under an exact owner-issued scope. */
-  readBindings(scope: Scope): ContentBindings {
+  readBindings(scope: Scope): ContentBindings & Readonly<{ requireFileRead(file: FileRef): void }> {
     const admittedScope = structuredClone(scope);
     this.#core.verifyScope(admittedScope);
     return {
       validate: (file, limits) => this.#core.validateFileUnderLimits(file, limits),
       verify: (file, bytes) => this.#core.verifyFileBytes(file, bytes),
       read: file => this.readAuthorized(admittedScope, file),
+      requireFileRead: file => {
+        const reference = this.#validatedFile(file);
+        if (this.#volumeKey(reference.volume) !== this.#volumeKey(this.#volume)) {
+          throw new TypeError("file belongs to another owner");
+        }
+        this.#core.verifyContentRead(admittedScope, reference);
+      },
       fileReadCapability: file => this.#core.fileReadCapability(file),
       volumeReadCapability: volume => this.#core.volumeCapability(volume, "read"),
       directoryReadCapability: (volume, prefix) => this.#core.directoryReadCapability(volume, prefix),
+      directory: {
+        list: async (volume, prefix, path, expected, after, maximum) =>
+          this.#listAuthorized(admittedScope, volume, prefix, path, expected, after, maximum),
+        readPath: async (volume, prefix, path, expected) =>
+          this.#readPathAuthorized(admittedScope, volume, prefix, path, expected),
+      },
     };
   }
   /** Bind this owner's authenticated content provider to typed task/tool contexts. */
@@ -113,12 +196,16 @@ export class MemoryConversation {
       fileReadCapability: file => this.#core.fileReadCapability(file),
       volumeReadCapability: volume => this.#core.volumeCapability(volume, "read"),
       directoryReadCapability: (volume, prefix) => this.#core.directoryReadCapability(volume, prefix),
+      directory: this.readBindings(this.#scope).directory!,
       writer: {
         volume: this.#volume,
         writeCapability: () => this.#core.volumeCapability(this.#volume, "write"),
         stage: async (operationId, path, bytes, mediaType, displayName) => {
           let admitted = this.#uploads.get(operationId);
           if (admitted === undefined) {
+            if (this.#uploads.size >= this.#maxResidentFiles) {
+              throw new TypeError("memory upload identity retention limit exceeded");
+            }
             admitted = this.stage(path, bytes, mediaType, displayName);
             this.#uploads.set(operationId, admitted);
           }
@@ -141,10 +228,24 @@ export class MemoryConversation {
     };
   }
   snapshot(): ReturnType<Harness["snapshot"]> { return this.#core.snapshot(); }
-  free(): void { this.#core.free(); }
+  free(): void {
+    this.#core.free();
+    this.#files.clear();
+    this.#blobs.clear();
+    this.#paths.clear();
+    this.#pathHistory.clear();
+    this.#uploads.clear();
+    this.#outputs.clear();
+    this.#foreign.clear();
+    this.#foreignMount = undefined;
+    this.#residentBytes = 0;
+  }
 
   /** Store immutable bytes before any record can refer to them. */
   async stage(path: string, bytes: Uint8Array, mediaType: string, displayName: string): Promise<FileRef> {
+    if (bytes.byteLength > this.#stagingLimits.file_bytes) {
+      throw new TypeError("staged file exceeds harness limits");
+    }
     if (path === ".system" || path.startsWith(".system/")) {
       throw new TypeError("internal storage paths are reserved");
     }
@@ -153,26 +254,140 @@ export class MemoryConversation {
       descriptor.byte_length, descriptor.media_type, displayName])]
       .map(byte => byte.toString(16).padStart(2, "0")).join("");
     const reference = this.#validatedFile({ volume: this.#volume, path, version, descriptor, display_name: displayName });
+    this.#core.validateFileUnderLimits(reference, this.#stagingLimits);
     const key = this.#fileStorageKey(reference);
     const prior = this.#files.get(key);
     if (prior !== undefined && (this.#fileKey(prior.reference) !== this.#fileKey(reference)
       || prior.bytes.byteLength !== bytes.byteLength || prior.bytes.some((byte, i) => byte !== bytes[i]))) {
       throw new TypeError("immutable file version was reused for another file contract");
     }
-    this.#files.set(key, { reference, bytes: Uint8Array.from(bytes) });
+    for (const existing of this.#paths.keys()) {
+      if (existing !== path && (existing.startsWith(`${path}/`) || path.startsWith(`${existing}/`))) {
+        throw new TypeError("file path conflicts with an existing directory");
+      }
+    }
+    if (prior === undefined) {
+      if (this.#files.size >= this.#maxResidentFiles) {
+        throw new TypeError("memory content retention limit exceeded");
+      }
+      const blobKey = this.#blobKey(reference);
+      let resident = this.#blobs.get(blobKey);
+      if (resident !== undefined && (resident.byteLength !== bytes.byteLength
+        || resident.some((byte, index) => byte !== bytes[index]))) {
+        throw new TypeError("content digest was reused for different bytes");
+      }
+      if (resident === undefined) {
+        if (bytes.byteLength > this.#maxResidentBytes - this.#residentBytes) {
+          throw new TypeError("memory content retention limit exceeded");
+        }
+        resident = Uint8Array.from(bytes);
+        this.#blobs.set(blobKey, resident);
+        this.#residentBytes += resident.byteLength;
+      }
+      this.#files.set(key, { reference, bytes: resident });
+    }
+    if (this.#fileKey(this.#paths.get(path) ?? reference) !== this.#fileKey(reference)
+      || !this.#paths.has(path)) {
+      this.#paths.set(path, reference);
+      this.#generation++;
+      const history = this.#pathHistory.get(path) ?? [];
+      history.push({ generation: this.#generation, file: reference });
+      this.#pathHistory.set(path, history);
+    }
     return reference;
   }
 
   /** Possession of a ref is not a foreign-owner read grant. */
   async read(reference: FileRef): Promise<Uint8Array> {
     const file = this.#validatedFile(reference);
-    const bytes = this.#volumeKey(file.volume) === this.#volumeKey(this.#volume)
-      ? this.#localBytes(file)
-      : await this.#foreign.get(this.#volumeKey(file.volume))?.read(file);
-    if (bytes === undefined) throw new TypeError("content has no authorized owning-provider resolver");
+    const bytes = await this.#reader(file.volume).read(file);
     if (!(bytes instanceof Uint8Array)) throw new TypeError("content resolver returned invalid bytes");
     this.#core.verifyFileBytes(file, bytes);
     return Uint8Array.from(bytes);
+  }
+
+  #reader(volume: VolumeRef): ContentReader {
+    const key = this.#volumeKey(volume);
+    if (key === this.#volumeKey(this.#volume)) return this.readBindings(this.#scope);
+    const bound = this.#foreign.get(key);
+    if (bound) return bound;
+    const mounted = this.#foreignMount?.(volume);
+    if (!mounted || this.#volumeKey(mounted.owner.volume) !== key
+      || mounted.scope.agent !== this.#volume.owner.id) {
+      throw new TypeError("content has no authorized owning-provider resolver");
+    }
+    return mounted.owner.readBindings(mounted.scope);
+  }
+
+  #checkDirectory(scope: Scope, volume: VolumeRef, grantedPrefix: string, path: string,
+    expected: ResourceRef<"generation"> | null): bigint {
+    if (this.#volumeKey(volume) !== this.#volumeKey(this.#volume)) {
+      throw new TypeError("directory belongs to another owner");
+    }
+    this.#core.verifyPrivateDirectoryRead(scope, volume, grantedPrefix, path);
+    if (expected === null) return this.#generation;
+    const version = expected.version;
+    if (version === null || version.length > 20 || !/^(0|[1-9][0-9]*)$/.test(version)) {
+      throw new TypeError("private directory generation is unavailable");
+    }
+    const generation = BigInt(version);
+    if (generation > this.#generation || !this.#core.canonicalEqual(
+      this.#core.validateResourceRef(expected), this.#directoryGeneration(version))) {
+      throw new TypeError("private directory generation is unavailable");
+    }
+    return generation;
+  }
+
+  #directoryGeneration(version = this.#generation.toString()): ResourceRef<"generation"> {
+    return this.#core.validateResourceRef({
+      kind: "generation", provider: this.#volume.provider,
+      key: [...this.#core.canonicalJsonDigest([this.#volume.id, version])],
+      version,
+    });
+  }
+
+  #listAuthorized(scope: Scope, volume: VolumeRef<"agent_private">, grantedPrefix: string,
+    path: string, expected: ResourceRef<"generation"> | null, after: string | null, maximum: number): PrivateDirectoryPage {
+    const generation = this.#checkDirectory(scope, volume, grantedPrefix, path, expected);
+    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 4096) {
+      throw new RangeError("private directory page limit is invalid");
+    }
+    if (after !== null) {
+      this.#core.directoryReadCapability(volume, path ? `${path}/${after}` : after);
+      if (after.includes("/")) throw new TypeError("directory cursor must name one entry");
+    }
+    const prefix = path ? `${path}/` : "";
+    const found = new Map<string, PrivateDirectoryPage["entries"][number]>();
+    for (const [name, history] of this.#pathHistory) {
+      if (history[0]!.generation > generation) continue;
+      if (!name.startsWith(prefix)) continue;
+      const remainder = name.slice(prefix.length);
+      const segment = remainder.split("/", 1)[0]!;
+      if (!segment || (!path && segment === ".system")) continue;
+      if (remainder.includes("/")) found.set(segment, { name: segment, kind: "directory" });
+      else if (!found.has(segment)) found.set(segment, { name: segment, kind: "file" });
+    }
+    const names = [...found.keys()].sort(compareUtf8)
+      .filter(name => after === null || compareUtf8(name, after) > 0);
+    const entries = names.slice(0, maximum).map(name => found.get(name)!);
+    return this.#core.validatePrivateDirectoryPage({
+      generation: this.#directoryGeneration(expected?.version ?? undefined), entries, hasMore: names.length > maximum,
+    });
+  }
+
+  async #readPathAuthorized(scope: Scope, volume: VolumeRef<"agent_private">, grantedPrefix: string,
+    path: string, expected: ResourceRef<"generation"> | null): Promise<Readonly<{ file: FileRef; bytes: Uint8Array }>> {
+    const generation = this.#checkDirectory(scope, volume, grantedPrefix, path, expected);
+    const history = this.#pathHistory.get(path);
+    let file: FileRef | undefined;
+    if (history) {
+      for (let index = history.length - 1; index >= 0; index--) {
+        const revision = history[index]!;
+        if (revision.generation <= generation) { file = revision.file; break; }
+      }
+    }
+    if (!file) throw new TypeError("owner has no file at this path");
+    return { file, bytes: await this.readAuthorized(scope, file) };
   }
 
   #localBytes(file: FileRef): Uint8Array | undefined {
@@ -443,6 +658,10 @@ export class MemoryConversation {
 
   #fileStorageKey(file: FileRef): string {
     return JSON.stringify([this.#volumeKey(file.volume), file.path, file.version]);
+  }
+
+  #blobKey(file: FileRef): string {
+    return `${file.descriptor.byte_length}:${file.descriptor.sha256.map(byte => byte.toString(16).padStart(2, "0")).join("")}`;
   }
 
   #sameAttachments(left: ReferencedAttachments, right: ReferencedAttachments): boolean {

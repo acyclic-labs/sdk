@@ -1,13 +1,65 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
+import { DEFAULT_LIMITS, ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
   defineTool, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeHost, type OperationId,
   type RuntimeTaskId } from "../src/index.js";
 
 const wasm = readFileSync(fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)));
 const contracts = await NativeContracts.create();
+const testModel = { provider: "fixture", name: "fixture", revision: "1", options: {} } as const;
 const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
+
+test("ephemeral private volumes never alias another conversation of the same agent", async () => {
+  const first = await MemoryConversation.create({ agent, wasm });
+  const second = await MemoryConversation.create({ agent, wasm });
+  expect(first.volume).not.toEqual(second.volume);
+  const file = await first.stage("notes/one.txt", new TextEncoder().encode("private"), "text/plain", "one.txt");
+  await expect(second.read(file)).rejects.toThrow("authorized owning-provider resolver");
+  first.free();
+  second.free();
+});
+
+test("local staging applies its Rust-validated bound before retaining bytes", async () => {
+  const host = await MemoryConversation.create({ agent, wasm,
+    limits: { ...DEFAULT_LIMITS, file_bytes: 8, render_bytes: 8, path_bytes: 24 } });
+  const empty = await host.stage("files/empty", new Uint8Array(), "text/plain", "empty.txt");
+  expect((await host.read(empty)).byteLength).toBe(0);
+  await expect(host.stage("files/too-large", new Uint8Array(9), "text/plain", "large.txt"))
+    .rejects.toThrow("staged file exceeds harness limits");
+  await expect(host.stage("files/a-path-that-is-too-long", new Uint8Array(1), "text/plain", "long.txt"))
+    .rejects.toThrow("file exceeds harness limits");
+  host.free();
+});
+
+test("ephemeral content retention bounds bytes and zero-byte versions without discarding pinned refs", async () => {
+  await expect(MemoryConversation.create({ agent, wasm, maxResidentBytes: Number.POSITIVE_INFINITY }))
+    .rejects.toThrow("retention limits are invalid");
+  await expect(MemoryConversation.create({ agent, wasm, maxResidentFiles: 0 }))
+    .rejects.toThrow("retention limits are invalid");
+  const host = await MemoryConversation.create({ agent, wasm, maxResidentBytes: 3, maxResidentFiles: 3 });
+  const first = await host.stage("files/one", new Uint8Array([1, 2]), "application/octet-stream", "one");
+  const second = await host.stage("files/two", new Uint8Array([3]), "application/octet-stream", "two");
+  await expect(host.stage("files/three", new Uint8Array([4]), "application/octet-stream", "three"))
+    .rejects.toThrow("retention limit");
+  const empty = await host.stage("files/empty", new Uint8Array(), "application/octet-stream", "empty");
+  await expect(host.stage("files/another-empty", new Uint8Array(), "application/octet-stream", "empty"))
+    .rejects.toThrow("retention limit");
+  expect(await host.stage("files/one", new Uint8Array([1, 2]), "application/octet-stream", "one"))
+    .toEqual(first);
+  expect(await host.read(first)).toEqual(new Uint8Array([1, 2]));
+  expect(await host.read(second)).toEqual(new Uint8Array([3]));
+  expect(await host.read(empty)).toEqual(new Uint8Array());
+  host.free();
+
+  const deduplicated = await MemoryConversation.create({ agent, wasm, maxResidentBytes: 2, maxResidentFiles: 3 });
+  const a = await deduplicated.stage("files/a", new Uint8Array([5, 6]), "text/plain", "a");
+  const b = await deduplicated.stage("files/b", new Uint8Array([5, 6]), "application/octet-stream", "b");
+  expect(await deduplicated.read(a)).toEqual(await deduplicated.read(b));
+  await expect(deduplicated.stage("files/c", new Uint8Array([7]), "text/plain", "c"))
+    .rejects.toThrow("retention limit");
+  deduplicated.free();
+});
 
 test("typed tasks use owner-bound content grants and stable upload identities", async () => {
   const host = await MemoryConversation.create({ agent, wasm });
@@ -44,7 +96,7 @@ test("resident file versions pin display name as well as bytes and media type", 
   (exposedScope.proof as number[])[0] = (originalProofByte ?? 0) ^ 1;
   expect(host.scope.proof[0]).toBe(originalProofByte);
   const forged = { ...file, display_name: "renamed.txt" };
-  await expect(host.read(forged)).rejects.toThrow("authorized owning-provider resolver");
+  await expect(host.read(forged)).rejects.toThrow("owner has no resident file");
   expect(() => host.delegateFileRead("11111111-1111-1111-1111-111111111111" as AgentId,
     "forged", forged)).toThrow("nonresident");
   const renamed = await host.stage("notes/pinned.txt", new TextEncoder().encode("same"), "text/plain", "renamed.txt");
@@ -73,11 +125,17 @@ test("an attached reader can use a private-root directory grant without a write 
   const task = TaskDefinition.live<void, string>("read_attached", "1", async context => {
     expect("harness" in context).toBe(false);
     expect("harness" in context.group(GroupPolicies.collectAll)).toBe(false);
-    return new TextDecoder().decode(await context.readFile(foreign));
+    const page = await context.listPrivateDirectory(owner.volume, "", "notes");
+    expect(page.entries).toEqual([{ name: "nested", kind: "directory" }]);
+    const nested = await context.listPrivateDirectory(owner.volume, "", "notes/nested", page.generation);
+    expect(nested.entries).toEqual([{ name: "shared.txt", kind: "file" }]);
+    const resolved = await context.readPrivatePath(owner.volume, "", "notes/nested/shared.txt", page.generation);
+    expect(resolved.file).toEqual(foreign);
+    return new TextDecoder().decode(resolved.bytes);
   });
   const blocked = Harness.builder(contracts).content(content).task(task).build();
   expect(await blocked.spawn(task, undefined).result()).toMatchObject({
-    kind: "failed", error: { message: expect.stringContaining("cannot read this file") },
+    kind: "failed", error: { message: expect.stringContaining("cannot discover this directory") },
   });
   const runtime = Harness.builder(contracts).content(content)
     .grant(content.directoryReadCapability(foreign.volume, ""))
@@ -92,7 +150,7 @@ test("an attached reader can use a private-root directory grant without a write 
 test("local conversation publishes staged refs and pinned context before model dispatch", async () => {
   const host = await MemoryConversation.create({ agent, wasm });
   let calls = 0;
-  const runtime = Harness.builder(contracts).model({
+  const runtime = Harness.builder(contracts).model(testModel, {
     async *generate() {
       calls += 1;
       expect(host.snapshot().events.some(event => typeof event === "object" && event !== null
@@ -126,7 +184,7 @@ test("local conversation publishes staged refs and pinned context before model d
 
 test("large attachment lists are manifest-backed and changed retry inputs are rejected", async () => {
   const host = await MemoryConversation.create({ agent, wasm });
-  const runtime = Harness.builder(contracts).model({
+  const runtime = Harness.builder(contracts).model(testModel, {
     async *generate() { yield { kind: "completed" as const, metadata: {} }; },
     async reconcile() { return undefined; },
   }).build();
@@ -148,7 +206,7 @@ test("local conversation retains exact tool call and full result artifact", asyn
     parseInput(value) { if (typeof value !== "number") throw new TypeError("expected number"); return value; },
     parseOutput(value) { if (typeof value !== "string") throw new TypeError("expected string"); return value; },
   }, async (_, value) => `value:${value}`);
-  const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:echo").model({
+  const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:echo").model(testModel, {
     async *generate() {
       if (step++ === 0) {
         yield { kind: "tool_call" as const, callId: "call-1", name: "echo", arguments: 7 };
@@ -173,7 +231,7 @@ test("large canonical attachment lists produce a bounded model request", async (
   const host = await MemoryConversation.create({ agent, wasm });
   let projectedParts = 0;
   let omission = "";
-  const runtime = Harness.builder(contracts).model({
+  const runtime = Harness.builder(contracts).model(testModel, {
     async *generate(request) {
       const content = request.messages.at(-1)?.content;
       if (!Array.isArray(content)) throw new Error("expected selected file parts");
@@ -198,7 +256,7 @@ test("large canonical attachment lists produce a bounded model request", async (
 test("concurrent retries serialize before model dispatch", async () => {
   const host = await MemoryConversation.create({ agent, wasm });
   let calls = 0;
-  const runtime = Harness.builder(contracts).model({
+  const runtime = Harness.builder(contracts).model(testModel, {
     async *generate() {
       calls += 1;
       await new Promise(resolve => setTimeout(resolve, 1));
@@ -229,8 +287,8 @@ test("a completed model run resumes publication without dispatching twice", asyn
     },
     async reconcile() { return undefined; },
   };
-  const narrow = Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 128 }).model(model).build();
-  const wider = Harness.builder(contracts).limits({ file_bytes: 1_024, render_bytes: 1_024 }).model(model).build();
+  const narrow = Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 128 }).model(testModel, model).build();
+  const wider = Harness.builder(contracts).limits({ file_bytes: 1_024, render_bytes: 1_024 }).model(testModel, model).build();
   const operation = "08080808-0808-0808-0808-080808080808" as OperationId;
   const content = await host.stage("turns/eight/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
   await expect(host.runConversation(narrow, operation, content)).rejects.toThrow("exceeds harness limits");
@@ -245,7 +303,7 @@ test("a completed model run resumes publication without dispatching twice", asyn
 test("an unknown model attempt needs explicit owner abandonment before another turn", async () => {
   const host = await MemoryConversation.create({ agent, wasm });
   let dispatches = 0;
-  const runtime = Harness.builder(contracts).model({
+  const runtime = Harness.builder(contracts).model(testModel, {
     async *generate() {
       dispatches++;
       if (dispatches === 1) throw new Error("remote acknowledgement lost");
@@ -332,7 +390,7 @@ test("authoritative failed and cancelled turns close without claiming an unknown
 test("different local turns serialize and inherit the prior committed assistant", async () => {
   const host = await MemoryConversation.create({ agent, wasm });
   const seen: number[] = [];
-  const runtime = Harness.builder(contracts).model({
+  const runtime = Harness.builder(contracts).model(testModel, {
     async *generate(request) {
       seen.push(request.messages.length);
       yield { kind: "content" as const, delta: "ok" };
@@ -348,7 +406,7 @@ test("different local turns serialize and inherit the prior committed assistant"
 
 test("oversized attachment manifests never reach canonical admission", async () => {
   const host = await MemoryConversation.create({ agent, wasm });
-  const runtime = Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 128 }).model({
+  const runtime = Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 128 }).model(testModel, {
     async *generate() { throw new Error("model must not dispatch"); },
     async reconcile() { return undefined; },
   }).build();
@@ -363,49 +421,84 @@ test("oversized attachment manifests never reach canonical admission", async () 
 
 test("foreign references require their owning provider to grant the reader", async () => {
   const bytes = new TextEncoder().encode("shared by its owner");
-  const file = {
-    volume: { provider: { namespace: "other", family: "filesystem", version: "2" },
-      id: "private", class: "agent_private" as const,
-      owner: { kind: "agent" as const, id: "09090909-0909-0909-0909-090909090909" as AgentId } },
-    path: "notes/shared.txt", version: "generation-1",
-    descriptor: await descriptorFor(bytes, "text/plain"), display_name: "shared.txt",
-  };
-  let authorized = false;
+  const owner = await MemoryConversation.create({ agent: "09090909-0909-0909-0909-090909090909" as AgentId, wasm });
+  const file = await owner.stage("notes/shared.txt", bytes, "text/plain", "shared.txt");
   const host = await MemoryConversation.create({ agent, wasm });
-  const reader = { async read(reference: FileRef) {
-    expect(reference).toEqual(file);
-    if (!authorized) throw new TypeError("owner denied read");
-    return bytes;
-  } };
-  host.attachReadVolume(file.volume, reader);
-  reader.read = async () => bytes;
-  const runtime = Harness.builder(contracts).model({
+  const runtime = Harness.builder(contracts).model(testModel, {
     async *generate() { yield { kind: "completed" as const, metadata: {} }; },
     async reconcile() { return undefined; },
   }).build();
   const operation = "06060606-0606-0606-0606-060606060606" as OperationId;
-  await expect(host.runConversation(runtime, operation, file)).rejects.toThrow("owner denied read");
+  await expect(host.runConversation(runtime, operation, file)).rejects.toThrow("authorized owning-provider resolver");
   expect(host.conversation().messages).toHaveLength(0);
-  authorized = true;
+  expect(() => host.attachReadVolume(owner, owner.scope)).toThrow("another agent");
+  host.attachReadVolume(owner, owner.delegateFileRead(agent, "attached-reader", file));
   await host.runConversation(runtime, operation, file);
+  await expect(host.listPrivateDirectory(owner.volume, "", "notes")).rejects.toThrow();
+  await expect(host.readPrivatePath(owner.volume, "", "notes/shared.txt")).rejects.toThrow();
   expect(host.conversation().messages[0]!.content).toEqual(file);
   host.free();
+  owner.free();
+});
+
+test("unseen owner volumes mount lazily without granting writes", async () => {
+  const bytes = new TextEncoder().encode("lazy owner bytes");
+  const owner = await MemoryConversation.create({ agent: "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a" as AgentId, wasm });
+  const file = await owner.stage("notes/lazy.txt", bytes, "text/plain", "lazy.txt");
+  const scope = owner.delegateDirectoryRead(agent, "lazy-reader", "notes");
+  const host = await MemoryConversation.create({ agent, wasm });
+  let granted = false;
+  let resolutions = 0;
+  host.mountReadVolumes({ mount(volume) {
+    expect(volume).toEqual(file.volume);
+    resolutions++;
+    if (!granted) throw new TypeError("owner denied mount");
+    return { owner, scope };
+  } });
+  await expect(host.read(file)).rejects.toThrow("owner denied mount");
+  granted = true;
+  expect(new TextDecoder().decode(await host.read(file))).toBe("lazy owner bytes");
+  const page = await host.listPrivateDirectory(owner.volume, "notes", "notes");
+  expect(page.entries).toEqual([{ name: "lazy.txt", kind: "file" }]);
+  expect(page.generation.kind).toBe("generation");
+  expect(page.generation.provider).toEqual(owner.volume.provider);
+  const first = await host.listPrivateDirectory(owner.volume, "notes", "notes", page.generation, null, 1);
+  expect(first.entries).toEqual(page.entries);
+  expect(first.hasMore).toBe(false);
+  expect(new TextDecoder().decode((await host.readPrivatePath(owner.volume, "notes",
+    "notes/lazy.txt", page.generation)).bytes)).toBe("lazy owner bytes");
+  await expect(host.listPrivateDirectory(owner.volume, "notes", "")).rejects.toThrow();
+  await owner.stage("notes/later.txt", new TextEncoder().encode("later"), "text/plain", "later.txt");
+  const pinned = await host.listPrivateDirectory(owner.volume, "notes", "notes", page.generation);
+  expect(pinned).toEqual(page);
+  const forgedGeneration = { ...page.generation,
+    key: page.generation.key.map((byte, index) => index === 0 ? byte ^ 1 : byte) };
+  await expect(host.listPrivateDirectory(owner.volume, "notes", "notes", forgedGeneration))
+    .rejects.toThrow("generation is unavailable");
+  expect(new TextDecoder().decode((await host.readPrivatePath(owner.volume, "notes",
+    "notes/lazy.txt", page.generation)).bytes)).toBe("lazy owner bytes");
+  expect((await host.listPrivateDirectory(owner.volume, "notes", "notes")).entries)
+    .toEqual([{ name: "later.txt", kind: "file" }, { name: "lazy.txt", kind: "file" }]);
+  await owner.stage("notes/lazy.txt", new TextEncoder().encode("revised"), "text/plain", "lazy.txt");
+  expect(new TextDecoder().decode((await host.readPrivatePath(owner.volume, "notes",
+    "notes/lazy.txt", page.generation)).bytes)).toBe("lazy owner bytes");
+  expect(new TextDecoder().decode((await host.readPrivatePath(owner.volume, "notes",
+    "notes/lazy.txt")).bytes)).toBe("revised");
+  granted = false;
+  await expect(host.read(file)).rejects.toThrow("owner denied mount");
+  expect(resolutions).toBeGreaterThan(3);
+  host.free();
+  owner.free();
 });
 
 test("a foreign provider cannot admit bytes that disagree with its pinned ref", async () => {
   const bytes = new TextEncoder().encode("correct");
-  const file = {
-    volume: { provider: { namespace: "other", family: "filesystem", version: "2" },
-      id: "shared", class: "session_shared" as const,
-      owner: { kind: "session" as const, id: "session" } },
-    path: "notes/readme.txt", version: "generation-1",
-    descriptor: await descriptorFor(bytes, "text/plain"), display_name: "readme.txt",
-  };
+  const owner = await MemoryConversation.create({ agent: "07070707-0707-0707-0707-070707070707" as AgentId, wasm });
+  const resident = await owner.stage("notes/readme.txt", new TextEncoder().encode("tampered"), "text/plain", "readme.txt");
+  const file: FileRef = { ...resident, descriptor: await descriptorFor(bytes, "text/plain") };
   const host = await MemoryConversation.create({ agent, wasm });
-  host.attachReadVolume(file.volume, {
-    async read() { return new TextEncoder().encode("tampered"); },
-  });
-  const runtime = Harness.builder(contracts).model({
+  host.attachReadVolume(owner, owner.delegateDirectoryRead(agent, "corrupt-reader", "notes"));
+  const runtime = Harness.builder(contracts).model(testModel, {
     async *generate() { throw new Error("model must not dispatch"); },
     async reconcile() { return undefined; },
   }).build();
@@ -413,4 +506,5 @@ test("a foreign provider cannot admit bytes that disagree with its pinned ref", 
   await expect(host.runConversation(runtime, operation, file)).rejects.toThrow();
   expect(host.conversation().messages).toHaveLength(0);
   host.free();
+  owner.free();
 });

@@ -1,7 +1,7 @@
 /** Ref-only durable interaction values. Rust owns admission and schema validation. */
 import type { FileRef } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
-import type { OperationId } from "./index.js";
+import type { OperationId, Scope } from "./index.js";
 
 export type InteractionKind = "question" | "choice" | "form" | "approval";
 declare const interactionBrand: unique symbol;
@@ -34,6 +34,30 @@ export interface InteractionResolution {
   readonly detail?: FileRef;
 }
 
+/** The owner retains answer bytes and publishes only their immutable file ref. */
+export type InteractionResponse =
+  | Readonly<{ type: "question" | "form"; value: unknown }>
+  | Readonly<{ type: "choice"; option_ids: readonly string[] }>
+  | Readonly<{ type: "approval"; approved: boolean; reason: string | null }>;
+
+export interface ResolutionReceipt {
+  readonly id: InteractionId;
+  readonly version: bigint;
+  readonly operation_id: OperationId;
+  readonly conversation_revision: bigint;
+  readonly replayed: boolean;
+  readonly outcome: InteractionOutcome;
+}
+
+/** Presentation and answer authority remain independent replaceable bindings. */
+export interface InteractionResolver {
+  inspect(scope: Scope, id: InteractionId): Promise<Readonly<{ ticket: InteractionTicket; resolution: InteractionResolution | null }> | null>;
+  resolveAnswer(operationId: OperationId, scope: Scope, id: InteractionId, expectedVersion: bigint,
+    response: Exclude<InteractionResponse, { type: "approval" }>): Promise<ResolutionReceipt>;
+  resolveApproval(operationId: OperationId, scope: Scope, id: InteractionId, expectedVersion: bigint,
+    approved: boolean, reason: string | null): Promise<ResolutionReceipt>;
+}
+
 /** Rust-canonical non-nil UUID for an addressable interaction. */
 export async function interactionId(value: string): Promise<InteractionId> {
   return (await NativeContracts.create()).validateIdentity("interaction", value);
@@ -48,6 +72,10 @@ export function responderGrant(ticket: Pick<InteractionTicket, "id">): string {
   return `interaction:respond:${ticket.id}`;
 }
 
+export function viewerGrant(ticket: Pick<InteractionTicket, "id">): string {
+  return `interaction:view:${ticket.id}`;
+}
+
 /** Validates and detaches the metadata envelope; request bytes are checked by the owner. */
 export async function interactionTicket(value: InteractionTicket): Promise<InteractionTicket> {
   return (await NativeContracts.create()).validate("interaction_ticket", value);
@@ -56,4 +84,9 @@ export async function interactionTicket(value: InteractionTicket): Promise<Inter
 /** Validates a CAS resolution envelope; Rust checks the current version and grant. */
 export async function interactionResolution(value: InteractionResolution, ticket: InteractionTicket): Promise<InteractionResolution> {
   return (await NativeContracts.create()).validate("interaction_resolution", value, ticket);
+}
+
+/** Admits an owner-returned receipt through the Rust v2 contract. */
+export async function resolutionReceipt(value: ResolutionReceipt): Promise<ResolutionReceipt> {
+  return (await NativeContracts.create()).validate("resolution_receipt", value);
 }
