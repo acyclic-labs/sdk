@@ -93,34 +93,40 @@ pub struct HostStat {
     creation_time: u64,
     last_access_time: u64,
     last_write_time: u64,
-    volume_serial_number: Option<u32>,
-    file_index: Option<u64>,
+    volume_serial_number: u32,
+    file_index: u64,
     number_of_links: Option<u32>,
 }
 
 #[cfg(windows)]
 impl HostStat {
-    pub fn from_metadata(metadata: &Metadata) -> Self {
+    /// # Errors
+    ///
+    /// Fails when the metadata does not identify its file, which a file
+    /// record always does: a file's identity is never assumed.
+    pub fn from_metadata(metadata: &Metadata) -> io::Result<Self> {
         use cap_primitives::fs::_WindowsByHandle;
         use cap_std::fs::MetadataExt;
-        Self {
+        let unidentified = || io::Error::other("host metadata does not identify its file");
+        Ok(Self {
             file_type: metadata.file_type(),
             len: metadata.len(),
             attributes: MetadataExt::file_attributes(metadata),
             creation_time: metadata.creation_time(),
             last_access_time: metadata.last_access_time(),
             last_write_time: metadata.last_write_time(),
-            volume_serial_number: _WindowsByHandle::volume_serial_number(metadata),
-            file_index: _WindowsByHandle::file_index(metadata),
+            volume_serial_number: _WindowsByHandle::volume_serial_number(metadata)
+                .ok_or_else(unidentified)?,
+            file_index: _WindowsByHandle::file_index(metadata).ok_or_else(unidentified)?,
             number_of_links: _WindowsByHandle::number_of_links(metadata),
-        }
+        })
     }
 
     /// The facts one `FileStatInformation` query reports for an object
     /// with no reparse point, on the volume `volume_serial_number` names.
     fn from_stat_information(
         information: &windows::Wdk::Storage::FileSystem::FILE_STAT_INFORMATION,
-        volume_serial_number: Option<u32>,
+        volume_serial_number: u32,
     ) -> io::Result<Self> {
         use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY;
 
@@ -138,7 +144,7 @@ impl HostStat {
             last_access_time: unsigned(information.LastAccessTime)?,
             last_write_time: unsigned(information.LastWriteTime)?,
             volume_serial_number,
-            file_index: Some(unsigned(information.FileId)?),
+            file_index: unsigned(information.FileId)?,
             number_of_links: Some(information.NumberOfLinks),
         })
     }
@@ -178,12 +184,12 @@ impl HostStat {
     }
 
     #[must_use]
-    pub const fn volume_serial_number(&self) -> Option<u32> {
+    pub const fn volume_serial_number(&self) -> u32 {
         self.volume_serial_number
     }
 
     #[must_use]
-    pub const fn file_index(&self) -> Option<u64> {
+    pub const fn file_index(&self) -> u64 {
         self.file_index
     }
 
@@ -283,7 +289,7 @@ impl Iterator for HostStatReader {
 #[cfg(windows)]
 pub struct HostStatReader {
     directory: Dir,
-    volume_serial_number: Option<u32>,
+    volume_serial_number: u32,
     /// `u64` storage keeps every entry record 8-byte aligned.
     buffer: Vec<u64>,
     /// Byte offset of the next unread record in `buffer`, if any.
@@ -501,7 +507,7 @@ fn stat_information_at(
 fn stat_at(
     directory: &Dir,
     path: &Path,
-    volume_serial_number: Option<u32>,
+    volume_serial_number: u32,
 ) -> io::Result<Option<HostStat>> {
     match stat_information_at(directory, path)? {
         Some(information) if information.ReparseTag == 0 => {
@@ -968,7 +974,7 @@ impl HostRoot {
             Ok(HostStatReader {
                 directory,
                 // A path without reparse points never leaves the root's volume.
-                volume_serial_number: u32::try_from(self.identity.device).ok(),
+                volume_serial_number: self.volume_serial_number()?,
                 buffer: vec![0; HostStatReader::BUFFER_BYTES / std::mem::size_of::<u64>()],
                 next: None,
                 exhausted: false,
@@ -1059,7 +1065,7 @@ impl HostRoot {
             Some(stat) => Ok(stat),
             None => self
                 .symlink_metadata(path)
-                .map(|metadata| HostStat::from_metadata(&metadata)),
+                .and_then(|metadata| HostStat::from_metadata(&metadata)),
         }
     }
 
@@ -1068,7 +1074,7 @@ impl HostRoot {
     /// in any reparse point, which only the held walk may resolve.
     #[cfg(windows)]
     fn stat_by_name(&self, path: &Path) -> io::Result<Option<HostStat>> {
-        stat_at(&self.directory, path, self.volume_serial_number())
+        stat_at(&self.directory, path, self.volume_serial_number()?)
     }
 
     /// One `FileStatInformation` query naming `path` relative to the held
@@ -1086,8 +1092,9 @@ impl HostRoot {
 
     /// The volume every name resolved without a reparse point lies on.
     #[cfg(windows)]
-    fn volume_serial_number(&self) -> Option<u32> {
-        u32::try_from(self.identity.device).ok()
+    fn volume_serial_number(&self) -> io::Result<u32> {
+        u32::try_from(self.identity.device)
+            .map_err(|_| io::Error::other("the root's volume has no serial number"))
     }
 
     /// Stats one file this root opened, exactly as [`Self::stat`] stats its
@@ -1132,11 +1139,12 @@ impl HostRoot {
             ));
         }
         if information.ReparseTag != 0 {
-            return Metadata::from_file(file).map(|metadata| HostStat::from_metadata(&metadata));
+            return Metadata::from_file(file)
+                .and_then(|metadata| HostStat::from_metadata(&metadata));
         }
         // A file opened without traversing a reparse point lies on the
         // root's volume.
-        HostStat::from_stat_information(&information, self.volume_serial_number())
+        HostStat::from_stat_information(&information, self.volume_serial_number()?)
     }
 
     /// Reads leaf metadata while refusing every intermediate link or reparse point.
@@ -3785,12 +3793,12 @@ mod windows_clone_tests {
             let fast = root
                 .stat_by_name(path)?
                 .ok_or_else(|| std::io::Error::other("a plain path is answered by name"))?;
-            let held = HostStat::from_metadata(&root.symlink_metadata(path)?);
+            let held = HostStat::from_metadata(&root.symlink_metadata(path)?)?;
             same(&fast, &held)?;
             // The held walk's by-name open reads exactly what the walk does.
             same(
                 &fast,
-                &HostStat::from_metadata(&root.symlink_metadata_held(path)?),
+                &HostStat::from_metadata(&root.symlink_metadata_held(path)?)?,
             )?;
         }
         // Every enumerated name carries exactly the facts its own stat

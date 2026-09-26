@@ -16,8 +16,8 @@
 //! (see [`super::ServiceStart::Forbidden`]).
 
 use super::{
-    MAXIMUM_CONTROL_MESSAGE_BYTES, ServiceStart, display, forward_native_hook,
-    local_native_hook_answer, native_hook_failure,
+    HookFailure, MAXIMUM_CONTROL_MESSAGE_BYTES, ServiceStart, display, forward_native_hook,
+    local_native_hook_answer,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -262,13 +262,22 @@ async fn call_result(params: &Value) -> Result<Value, String> {
         .pointer("/_meta/threadId")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let (event, cwd, input) = hook_request(params.get("arguments"), thread)?;
-    let answer = match local_native_hook_answer(HOST, event, &input) {
-        Ok(Some(answer)) => answer,
-        Ok(None) => forward_native_hook(HOST, event, cwd, input, ServiceStart::Forbidden)
-            .await
-            .unwrap_or_else(|error| native_hook_failure(HOST, event, &error)),
-        Err(error) => native_hook_failure(HOST, event, &error),
+    let answer = match hook_request(params.get("arguments"), thread) {
+        Ok((event, cwd, input)) => {
+            let failure = HookFailure::classify(HOST, event, Some((&cwd, &input)));
+            match local_native_hook_answer(HOST, event, &input) {
+                Ok(Some(answer)) => answer,
+                Ok(None) => forward_native_hook(HOST, event, cwd, input, ServiceStart::Forbidden)
+                    .await
+                    .unwrap_or_else(|error| failure.answer(&error)),
+                Err(error) => failure.answer(&error),
+            }
+        }
+        // A tool hook still gates its tool when its call cannot be read.
+        Err(error) => match params.pointer("/arguments/event").and_then(Value::as_str) {
+            Some(event @ "PreToolUse") => HookFailure::classify(HOST, event, None).answer(&error),
+            _ => return Err(error),
+        },
     };
     let text = serde_json::to_string(&answer).map_err(display)?;
     Ok(json!({"content": [{"type": "text", "text": text}]}))

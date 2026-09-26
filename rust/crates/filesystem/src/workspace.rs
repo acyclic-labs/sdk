@@ -1338,7 +1338,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     pub(crate) async fn make_records_durable(
         &self,
         records: &[crate::kernel::FileRecord],
-    ) -> Result<(), WorkspaceError> {
+    ) -> Result<crate::PublicationHold, WorkspaceError> {
         self.volume
             .fs
             .make_records_durable(

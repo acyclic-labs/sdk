@@ -1966,7 +1966,9 @@ mod restore_recovery_tests {
 
         assert!(acquire_restore_lock(relative, &destination, false).is_err());
         drop(first);
-        let _next = acquire_restore_lock(relative, &destination, false)?;
+        // Blocking: a child another test forks shares the lock's open file
+        // until it execs, so a release can take a moment to be observed.
+        let _next = acquire_restore_lock(relative, &destination, true)?;
         Ok(())
     }
 

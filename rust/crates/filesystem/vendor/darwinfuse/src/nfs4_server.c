@@ -781,34 +781,6 @@ const char *nfs4_server_socket_path(const darwinfuse_server_t *srv)
     return srv->socket_path;
 }
 
-void nfs4_server_close_inherited_fds(darwinfuse_server_t *srv)
-{
-    if (!srv) return;
-
-    /* Build a set of FDs the server needs to keep */
-    int keep[3 + DFUSE_MAX_CLIENTS];
-    int nkeep = 0;
-    if (srv->listen_fd >= 0) keep[nkeep++] = srv->listen_fd;
-    if (srv->wakeup_pipe[0] >= 0) keep[nkeep++] = srv->wakeup_pipe[0];
-    if (srv->wakeup_pipe[1] >= 0) keep[nkeep++] = srv->wakeup_pipe[1];
-    for (int i = 0; i < srv->num_clients; i++) {
-        int fd = atomic_load(&srv->clients[i].fd);
-        if (fd >= 0) keep[nkeep++] = fd;
-    }
-
-    /* Close everything from fd 3 up to a reasonable limit */
-    int maxfd = (int)sysconf(_SC_OPEN_MAX);
-    if (maxfd < 0 || maxfd > 4096) maxfd = 4096;
-
-    for (int fd = 3; fd < maxfd; fd++) {
-        int needed = 0;
-        for (int k = 0; k < nkeep; k++) {
-            if (keep[k] == fd) { needed = 1; break; }
-        }
-        if (!needed) close(fd);
-    }
-}
-
 void nfs4_server_set_ops(darwinfuse_server_t *srv,
                           const struct fuse_operations *ops,
                           void *user_data)
@@ -816,42 +788,6 @@ void nfs4_server_set_ops(darwinfuse_server_t *srv,
     if (!srv) return;
     srv->config.ops = ops;
     srv->config.user_data = user_data;
-}
-
-void nfs4_server_set_inode_table(darwinfuse_server_t *srv,
-                                  dfuse_inode_table_t *tbl)
-{
-    if (!srv) return;
-    srv->config.inode_table = tbl;
-}
-
-void nfs4_server_close_inherited_pipes(darwinfuse_server_t *srv)
-{
-    if (!srv) return;
-
-    /* Build a set of PIPE FDs the server needs to keep */
-    int keep[2];
-    int nkeep = 0;
-    if (srv->wakeup_pipe[0] >= 0) keep[nkeep++] = srv->wakeup_pipe[0];
-    if (srv->wakeup_pipe[1] >= 0) keep[nkeep++] = srv->wakeup_pipe[1];
-
-    int maxfd = (int)sysconf(_SC_OPEN_MAX);
-    if (maxfd < 0 || maxfd > 4096) maxfd = 4096;
-
-    for (int fd = 3; fd < maxfd; fd++) {
-        /* Skip server's wakeup pipe */
-        int needed = 0;
-        for (int k = 0; k < nkeep; k++) {
-            if (keep[k] == fd) { needed = 1; break; }
-        }
-        if (needed) continue;
-
-        /* Only close PIPE-type FDs; keep regular files, sockets, etc. */
-        struct stat st;
-        if (fstat(fd, &st) == 0 && S_ISFIFO(st.st_mode)) {
-            close(fd);
-        }
-    }
 }
 
 void nfs4_server_set_multithreaded(darwinfuse_server_t *srv, int num_threads)

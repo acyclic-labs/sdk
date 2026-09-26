@@ -882,7 +882,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             request.page,
             &mut self.allocations,
             &mut self.work,
-            self.budget,
+            &self.budget,
         )?;
         if !visited.inserted {
             return Err(ExtentMutationError::CycleOrAlias);

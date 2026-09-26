@@ -43,7 +43,7 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_FILE_OVERWRITTEN, PRJ_NOTIFY_FILE_RENAMED, PRJ_NOTIFY_HARDLINK_CREATED,
     PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK,
     PRJ_NOTIFY_TYPES, PRJ_PLACEHOLDER_INFO, PRJ_PLACEHOLDER_VERSION_INFO,
-    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_NONE, PrjAllocateAlignedBuffer,
+    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_READ_ONLY, PrjAllocateAlignedBuffer,
     PrjClearNegativePathCache, PrjCompleteCommand, PrjDeleteFile, PrjFileNameCompare,
     PrjFileNameMatch, PrjFillDirEntryBuffer, PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer,
     PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
@@ -925,7 +925,7 @@ fn replace_placeholder(
                     &relative,
                     &raw const placeholder,
                     u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX),
-                    Some(PRJ_UPDATE_NONE),
+                    Some(PRJ_UPDATE_ALLOW_READ_ONLY),
                     None,
                 )
             }
@@ -937,12 +937,14 @@ fn replace_placeholder(
             })
         }
         // SAFETY: as above.
-        _ => unsafe { PrjDeleteFile(context, &relative, Some(PRJ_UPDATE_NONE), None) }
+        _ => unsafe { PrjDeleteFile(context, &relative, Some(PRJ_UPDATE_ALLOW_READ_ONLY), None) }
             .map(|()| Replaced::Released),
     };
     match result {
         Ok(replaced) => Ok(replaced),
-        // Gone already, authored since, or holding authored state.
+        // Gone already, authored since, or holding authored state: a
+        // placeholder's read-only attribute, which follows its source, never
+        // refuses an update, so nothing refused here is still projected.
         Err(error)
             if [
                 HR_FILE_NOT_FOUND,
@@ -1322,7 +1324,7 @@ impl ProjFsSession {
         let relative = HSTRING::from(relative.as_os_str());
         // SAFETY: the relative UTF-16 name remains live for this synchronous
         // call and the context belongs to this mounted runtime.
-        match unsafe { PrjDeleteFile(context, &relative, None, None) } {
+        match unsafe { PrjDeleteFile(context, &relative, Some(PRJ_UPDATE_ALLOW_READ_ONLY), None) } {
             Err(error)
                 if ![
                     HR_FILE_NOT_FOUND,
@@ -3608,10 +3610,7 @@ mod tests {
         }
         let settled = std::thread::spawn({
             let placeholders = Arc::clone(&placeholders);
-            move || {
-                let started = std::time::Instant::now();
-                placeholders.settle().map(|()| started.elapsed())
-            }
+            move || placeholders.settle()
         });
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(
@@ -3622,11 +3621,11 @@ mod tests {
             .pending
             .remove(&path);
         placeholders.changed.notify_all();
-        let waited = settled
+        // Settling ends once nothing is pending.
+        settled
             .join()
             .map_err(|_| "settle panicked")?
             .map_err(|error| error.to_string())?;
-        assert!(waited >= std::time::Duration::from_millis(100));
         Ok(())
     }
 
@@ -3686,6 +3685,62 @@ mod tests {
             .map_err(|error| error.to_string())?;
         assert_eq!(std::fs::metadata(&held_path)?.len(), 10);
         assert_eq!(std::fs::read(&held_path)?, b"much newer");
+        mount.unmount().await?;
+        Ok(())
+    }
+
+    /// A read-only source file's placeholder is read-only too; a change to
+    /// the source still replaces it, so revalidation never leaves it stale.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::native::NativeDemandSource;
+
+        let root = tempfile::tempdir()?;
+        let source_root = root.path().join("source");
+        std::fs::create_dir(&source_root)?;
+        let source_file = source_root.join("locked.txt");
+        let set_read_only = |read_only: bool| -> std::io::Result<()> {
+            let mut permissions = std::fs::metadata(&source_file)?.permissions();
+            permissions.set_readonly(read_only);
+            std::fs::set_permissions(&source_file, permissions)
+        };
+        std::fs::write(&source_file, b"old")?;
+        set_read_only(true)?;
+        let demand = NativeDemandSource::open(
+            &source_root,
+            crate::model::FilesystemProfile::Windows,
+            crate::model::VolumeLimits::default(),
+        )
+        .await?;
+        let lazy = crate::LazyWorkspace::attach_with_config(
+            &Fs::memory(),
+            "read-only-placeholder",
+            Arc::new(demand),
+            crate::MemoryLazyWorkspaceStore::default(),
+            VolumeConfig::native(Lifecycle::Ephemeral),
+        )
+        .await?;
+        let destination = root.path().join("mount");
+        std::fs::create_dir(&destination)?;
+        let mount = lazy
+            .mount(
+                &destination,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        let projected = destination.join("locked.txt");
+        assert_eq!(std::fs::metadata(&projected)?.len(), 3);
+        assert!(std::fs::metadata(&projected)?.permissions().readonly());
+
+        set_read_only(false)?;
+        std::fs::write(&source_file, b"much newer")?;
+        set_read_only(true)?;
+        mount.revalidate()?;
+        assert_eq!(std::fs::metadata(&projected)?.len(), 10);
+        assert_eq!(std::fs::read(&projected)?, b"much newer");
+        set_read_only(false)?;
         mount.unmount().await?;
         Ok(())
     }

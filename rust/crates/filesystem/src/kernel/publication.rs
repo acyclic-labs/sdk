@@ -296,6 +296,7 @@ async fn publish_generation_async_inner<
     cancellation: &CancellationToken,
 ) -> Result<PublicationReceipt, PublicationFailure> {
     validate_authority(request)?;
+    let proven_at = objects.collection_sweeps();
     let proof = prove_generation_closure_async(
         objects,
         request.generation_root,
@@ -314,7 +315,10 @@ async fn publish_generation_async_inner<
     // and can be retried idempotently.
     let drained = objects
         .flush_before_publish(
-            crate::PublicationScope::Closure(&prepared.proof.objects),
+            crate::PublicationScope::Closure {
+                objects: &prepared.proof.objects,
+                proven_at,
+            },
             work.remaining(budget)
                 .map_err(|error| OperationFailure::new(error.into(), work))?,
             cancellation,

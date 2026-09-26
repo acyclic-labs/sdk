@@ -309,7 +309,7 @@ impl<'a, F: Format> Machine<'a, F> {
     fn visit(&mut self, page: ObjectId) -> Result<(), Failure> {
         let inserted = self
             .visited
-            .insert(page, &mut self.allocations, &mut self.work, self.budget)
+            .insert(page, &mut self.allocations, &mut self.work, &self.budget)
             .map_err(|error| failed(map_allocation(error), self.work))?;
         if !inserted.inserted {
             return Err(failed(Error::CycleOrAlias, self.work));

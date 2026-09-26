@@ -298,6 +298,9 @@ pub enum AuthorityStoreError {
     /// The authority does not exist.
     #[error("authority does not exist")]
     Missing,
+    /// The authority was released for good with its deleted workspace.
+    #[error("authority was retired with its deleted workspace")]
+    Retired,
     /// A configured replay bound is invalid.
     #[error("replay limit must have non-zero record and payload bounds")]
     InvalidReplayLimit,
@@ -471,6 +474,12 @@ impl HashedObject {
     #[must_use]
     pub fn length(&self) -> u64 {
         u64::try_from(self.bytes.len()).unwrap_or(u64::MAX)
+    }
+
+    /// The canonical bytes.
+    #[must_use]
+    pub const fn bytes(&self) -> &Bytes {
+        &self.bytes
     }
 
     /// Releases the identity and bytes.

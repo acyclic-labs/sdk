@@ -2,7 +2,7 @@
 #![allow(clippy::too_many_lines)]
 #![cfg(feature = "local")]
 
-use acyclic_fs::{CancellationToken, Fs, LocalOptions, WorkBudget};
+use acyclic_fs::{CancellationToken, Fs, LocalOptions};
 use acyclic_harness::conversation::{
     ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
 };
@@ -170,21 +170,13 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
     );
     drop(host);
 
-    Fs::collect_local_garbage(
-        options.clone(),
-        16,
-        1_024,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
-    let reopened = FilesystemHost::new(
-        Fs::local(options)
-            .await
-            .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?,
-        provider,
-    )?;
+    let fs = Fs::local(options)
+        .await
+        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    fs.collect_local_garbage(None, &CancellationToken::new())
+        .await
+        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    let reopened = FilesystemHost::new(fs, provider)?;
     assert_eq!(
         reopened.read_content(&admitted, &read, 64).await?.as_ref(),
         b"first"

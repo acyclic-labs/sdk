@@ -63,6 +63,7 @@ impl ViewStamp {
 
     /// Records one change in a slot, at a position after every stamp
     /// sampled before it, and returns that position.
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn record(slot: &AtomicU64) -> Self {
         let position = Self::next();
         position.record_in(slot);
@@ -373,6 +374,17 @@ impl ViewLedger {
                 self.nodes
                     .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id)))
             })
+    }
+
+    /// Whether `path` still names what it named after `stamp`: no component
+    /// of it was rebound since. Changes beneath it, its listing's among
+    /// them, do not count.
+    pub(super) fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
+        stamp.precedes_none_of(&self.unconfirmed)
+            && stamp.precedes_none_of(&self.everything)
+            && self
+                .bindings
+                .unchanged_since(stamp, |unchanged| PathKeys::new(path).all(unchanged))
     }
 
     /// Whether facts read about the node `file_id` after `stamp` still

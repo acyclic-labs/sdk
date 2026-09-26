@@ -528,10 +528,7 @@ fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
             u8::try_from(value)?;
             usize::try_from(retained_per_object)?
         ]);
-        let id = ObjectId {
-            kind: ObjectKind::BlobChunk,
-            digest: object_digest(ObjectKind::BlobChunk, &bytes),
-        };
+        let object = HashedObject::new(ObjectKind::BlobChunk, bytes);
         let residual = WorkBudget {
             peak_allocation_bytes: total_budget
                 .peak_allocation_bytes
@@ -540,8 +537,7 @@ fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
             ..WorkBudget::UNBOUNDED
         };
         crate::async_storage::poll_ready(batch.put_with_retained(
-            id,
-            bytes,
+            object,
             retained_per_object,
             residual,
             &cancellation,
@@ -560,14 +556,9 @@ fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
         ..WorkBudget::UNBOUNDED
     };
     let (mut final_batch, _) = BlobBatchStore::new(&final_store, final_budget)?;
-    let bytes = Bytes::from_static(b"one");
-    let id = ObjectId {
-        kind: ObjectKind::BlobChunk,
-        digest: object_digest(ObjectKind::BlobChunk, &bytes),
-    };
+    let object = HashedObject::new(ObjectKind::BlobChunk, Bytes::from_static(b"one"));
     crate::async_storage::poll_ready(final_batch.put_with_retained(
-        id,
-        bytes,
+        object,
         retained_per_object,
         WorkBudget::UNBOUNDED,
         &cancellation,

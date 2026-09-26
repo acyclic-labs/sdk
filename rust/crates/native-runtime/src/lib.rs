@@ -497,6 +497,79 @@ pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
     sync_parent_impl(path, durability)
 }
 
+/// What recovery found after the last valid frame of an append-only log.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogTail {
+    /// Nothing valid followed the invalid frame, so it was a torn append; the log now ends
+    /// before it, durably.
+    Torn,
+    /// A valid frame follows the invalid one, so a committed frame was damaged. The log is
+    /// left untouched.
+    Corrupt,
+}
+
+/// Recovers an append-only log whose frame at `invalid_start` is invalid.
+///
+/// A crash tears only the final append, and power loss can leave that append short,
+/// zero-filled, or garbage once the file's size grew but its data never landed. So an
+/// invalid frame is a torn tail exactly when no valid frame starts anywhere after it:
+/// the log is then truncated before it and synchronized, and its cursor left at the new
+/// end. Otherwise a committed frame was damaged, and recovery must fail closed rather than
+/// discard the frames after it; the log is left untouched.
+///
+/// `valid_frame` reports whether a complete valid frame starts at the beginning of its
+/// slice, which holds at most `maximum_frame_bytes` of the log's following bytes.
+///
+/// # Errors
+///
+/// Returns an I/O error when the log cannot be read, truncated, or synchronized.
+pub fn recover_log_tail(
+    file: &mut File,
+    invalid_start: u64,
+    maximum_frame_bytes: usize,
+    durability: Durability,
+    mut valid_frame: impl FnMut(&[u8]) -> bool,
+) -> io::Result<LogTail> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let end = file.metadata()?.len();
+    let frame_bytes = maximum_frame_bytes.max(1);
+    // Candidates are scanned through a window holding up to two frames' bytes, refilled
+    // once fewer than a whole frame remain ahead of the candidate, so each byte is read
+    // once.
+    let first = invalid_start.saturating_add(1);
+    let mut window = Vec::new();
+    let mut window_start = first;
+    let mut read_to = first;
+    file.seek(SeekFrom::Start(first))?;
+    for offset in first..end {
+        let ahead = usize::try_from(read_to - offset).unwrap_or(usize::MAX);
+        if ahead < frame_bytes && read_to < end {
+            window.drain(..usize::try_from(offset - window_start).map_err(io::Error::other)?);
+            window_start = offset;
+            let wanted = u64::try_from(frame_bytes.saturating_mul(2)).unwrap_or(u64::MAX);
+            let fill_end = end.min(offset.saturating_add(wanted));
+            let mut buffer =
+                vec![0; usize::try_from(fill_end - read_to).map_err(io::Error::other)?];
+            file.read_exact(&mut buffer)?;
+            window.extend_from_slice(&buffer);
+            read_to = fill_end;
+        }
+        let skip = usize::try_from(offset - window_start).map_err(io::Error::other)?;
+        let candidate = window.get(skip..).unwrap_or_default();
+        let candidate = candidate
+            .get(..candidate.len().min(frame_bytes))
+            .unwrap_or_default();
+        if valid_frame(candidate) {
+            return Ok(LogTail::Corrupt);
+        }
+    }
+    file.set_len(invalid_start)?;
+    sync_file(file, durability)?;
+    file.seek(SeekFrom::Start(invalid_start))?;
+    Ok(LogTail::Torn)
+}
+
 /// Whether an exclusive file-lock failure proves that another owner holds the lock.
 /// Other failures must retain their original I/O error for recovery decisions.
 #[must_use]

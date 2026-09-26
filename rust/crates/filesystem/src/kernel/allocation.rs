@@ -165,7 +165,7 @@ impl VisitedObjectSet {
         object: ObjectId,
         ledger: &mut AllocationLedger,
         work: &mut WorkCounters,
-        budget: WorkBudget,
+        budget: &WorkBudget,
     ) -> Result<VisitedInsert, AllocationError> {
         let mut probes = 0_u64;
         loop {
@@ -213,7 +213,7 @@ impl VisitedObjectSet {
         &mut self,
         ledger: &mut AllocationLedger,
         work: &mut WorkCounters,
-        budget: WorkBudget,
+        budget: &WorkBudget,
     ) -> Result<u64, AllocationError> {
         let next_entries = self
             .entry_capacity()
@@ -221,7 +221,7 @@ impl VisitedObjectSet {
             .ok_or(AllocationError::Overflow)?
             .min(self.maximum_entries);
         let slot_count = Self::slot_count(next_entries)?;
-        let new_bytes = ledger.claim_elements::<Option<ObjectId>>(slot_count, work, budget)?;
+        let new_bytes = ledger.claim_elements::<Option<ObjectId>>(slot_count, work, *budget)?;
         let mut slots = Vec::new();
         if slots.try_reserve_exact(slot_count).is_err() {
             ledger.release(new_bytes)?;
@@ -271,22 +271,24 @@ impl VisitedObjectSet {
             .ok_or(AllocationError::Overflow)
     }
 
+    #[inline]
     fn charge_items(
         work: &mut WorkCounters,
-        budget: WorkBudget,
+        budget: &WorkBudget,
         count: u64,
     ) -> Result<(), AllocationError> {
-        Ok(work.charge_items(count, &budget)?)
+        Ok(work.charge_items(count, budget)?)
     }
 
-    fn charge_copied(work: &mut WorkCounters, budget: WorkBudget) -> Result<(), AllocationError> {
-        let prospective = work.checked_add(WorkCounters {
-            bytes_copied: u64::try_from(size_of::<ObjectId>())
-                .map_err(|_| AllocationError::Overflow)?,
-            ..WorkCounters::default()
-        })?;
-        prospective.verify(budget)?;
-        *work = prospective;
+    fn charge_copied(work: &mut WorkCounters, budget: &WorkBudget) -> Result<(), AllocationError> {
+        work.charge(
+            &WorkCounters {
+                bytes_copied: u64::try_from(size_of::<ObjectId>())
+                    .map_err(|_| AllocationError::Overflow)?,
+                ..WorkCounters::UNCHARGED
+            },
+            budget,
+        )?;
         Ok(())
     }
 

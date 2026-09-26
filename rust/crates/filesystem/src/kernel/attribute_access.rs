@@ -193,7 +193,7 @@ pub async fn lookup_attribute_async<S: AsyncObjectStore>(
 
     for _ in 0..limits.maximum_page_height {
         let inserted = visited
-            .insert(page, &mut allocations, &mut work, budget)
+            .insert(page, &mut allocations, &mut work, &budget)
             .map_err(|error| failed(map_allocation(error), work))?;
         if !inserted.inserted {
             return Err(failed(AttributeLookupError::CycleOrAlias, work));
