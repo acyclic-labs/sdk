@@ -817,7 +817,7 @@ mod tests {
         assert!(event.committed_at_ms.is_some_and(|time| time > 0));
         assert!(matches!(event.event, SchedulerEvent::Declared { .. }));
         let replayed = read_coordinator_event_page(&client, 0, 1).await?;
-        assert_eq!(replayed[0].committed_at_ms, event.committed_at_ms);
+        assert_eq!(replayed.first().and_then(|item| item.committed_at_ms), event.committed_at_ms);
         assert!(read_coordinator_event_page(&client, 1, 1).await?.is_empty());
         assert!(read_coordinator_event_page(&client, 0, 0).await.is_err());
         Ok(())
