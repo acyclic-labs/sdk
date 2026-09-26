@@ -320,6 +320,10 @@ struct InodeEntry {
     /// Absent child names the kernel may hold as negative entries, each with
     /// a lower bound on the position its absence was derived after.
     negative_children: HashMap<Vec<u8>, ViewStamp>,
+    /// A position at which this directory had no children: set when this
+    /// session created it. A name beneath it bound at no later position is
+    /// absent without asking the source.
+    empty_since: Option<ViewStamp>,
 }
 
 impl InodeEntry {
@@ -338,6 +342,7 @@ impl InodeEntry {
             open_handles: 0,
             cached_content: None,
             negative_children: HashMap::new(),
+            empty_since: None,
         }
     }
 
@@ -1009,6 +1014,30 @@ impl ProjectionState {
             hold(&mut binding.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
         }
         if admitted { attributes } else { Duration::ZERO }
+    }
+
+    /// A position at which the directory `inode` had no children.
+    fn empty_since(&self, inode: u64) -> Option<ViewStamp> {
+        self.by_inode.get(&inode)?.empty_since
+    }
+
+    /// Answers a lookup of `name` under `parent` found absent after `stamp`:
+    /// a zero-inode entry carrying a negative-dentry TTL. Plain ENOENT has no
+    /// cache lifetime and makes compiler probes traverse the same absent
+    /// dependency paths thousands of times.
+    fn negative_entry(
+        &mut self,
+        source: &dyn MountFilesystem,
+        parent: u64,
+        name: &ChildName,
+        stamp: Option<ViewStamp>,
+    ) -> Result<Entry, i32> {
+        let ttl = self
+            .admit_negative(source, parent, name, stamp)
+            .ok_or(libc::ENOENT)?;
+        let mut attr = self.node_attr(ROOT_INODE).map_err(|_| libc::ESTALE)?;
+        attr.ino = INodeNo(0);
+        Ok(Entry { attr, ttl })
     }
 
     /// The position after which `name` under `parent` was last found absent,
@@ -2614,6 +2643,14 @@ impl FuseProjection {
                 let ttl = state.admit_entry(source, inode, &child, Some(stamp));
                 return Ok(Entry { attr, ttl });
             }
+            // Under a directory this session created, a name nothing bound
+            // since it was empty is absent: no source lookup needed.
+            if let Some(empty) = state.empty_since(parent)
+                && child.is_exact()
+                && source.unchanged_since(child.key(), None, empty)
+            {
+                return state.negative_entry(source, parent, &child, Some(empty));
+            }
             child
         };
         let (found, stamp) = resolve_path(source, &child.spelled)?;
@@ -2626,15 +2663,7 @@ impl FuseProjection {
         let mut state = self.core.state()?;
         let Some(lookup) = found else {
             state.remove_path_cache(child.key());
-            // A zero-inode LOOKUP response carries a negative-dentry TTL.
-            // Plain ENOENT has no cache lifetime and makes compiler probes
-            // traverse the same absent dependency paths thousands of times.
-            let ttl = state
-                .admit_negative(source, parent, &child, stamp)
-                .ok_or(libc::ENOENT)?;
-            let mut attr = state.node_attr(ROOT_INODE).map_err(|_| libc::ESTALE)?;
-            attr.ino = INodeNo(0);
-            return Ok(Entry { attr, ttl });
+            return state.negative_entry(source, parent, &child, stamp);
         };
         let inode = state.intern(
             source,
@@ -2750,6 +2779,14 @@ impl FuseProjection {
         };
         let stamp = source.view_stamp();
         let lookup = create(&child.spelled).map_err(errno)?;
+        // A directory just created is empty as of a position sampled after
+        // its creation, when no name beneath it was bound since before it.
+        let empty = (lookup.node.kind == MountNodeKind::Directory)
+            .then(|| source.view_stamp())
+            .flatten()
+            .filter(|_| {
+                stamp.is_some_and(|before| source.listing_unchanged_since(child.key(), before))
+            });
         // A node just created has no recorded name to confirm.
         let confirmed =
             self.confirm_names(ConfirmedNames::default(), [(child.key(), lookup.node)])?;
@@ -2762,6 +2799,9 @@ impl FuseProjection {
             true,
             &confirmed,
         )?;
+        if let Some(entry) = state.by_inode.get_mut(&inode) {
+            entry.empty_since = empty;
+        }
         let attr = state
             .attr(inode, &lookup)
             .inspect_err(|_| state.release_lookup_reference(inode, 1))?;
@@ -5424,6 +5464,63 @@ mod tests {
 
     #[test]
     #[ignore = "requires a live Linux FUSE mount"]
+    fn linux_names_under_a_created_directory_need_no_source_lookup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (inner, around) = shared_sources()?;
+        let volume_id = inner.volume_id()?;
+        let counted = Arc::new(GatedSource::ungated(Arc::new(inner)));
+        let temporary = tempfile::tempdir()?;
+        let mut session = mount(
+            Arc::clone(&counted) as Arc<dyn MountFilesystem>,
+            volume_id,
+            temporary.path(),
+        )?;
+        let made = temporary.path().join("made");
+        std::fs::create_dir(&made)?;
+        let before = counted.reads().len();
+        let mut expected = Vec::new();
+        for index in 0..8 {
+            let created = format!("new-{index}");
+            std::fs::write(made.join(&created), created.as_bytes())?;
+            expected.push(created);
+        }
+        assert!(!made.join("absent").exists());
+        // The kernel looks each name up before creating it; the directory
+        // was empty when this session made it, so none reaches the source.
+        assert!(
+            !counted.reads()[before..]
+                .iter()
+                .any(|read| read.starts_with(b"new-") || read == b"absent"),
+            "a lookup under a directory this session created reached the source"
+        );
+        // A name bound around the mount is found all the same.
+        around.create_file(
+            &name("made").child(b"around".to_vec()),
+            FileMetadata::default(),
+        )?;
+        session.revalidate()?;
+        assert!(made.join("around").is_file());
+        expected.push("around".to_owned());
+        expected.sort();
+        assert_eq!(
+            listing(&made)?,
+            expected
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>()
+        );
+        for created in expected
+            .iter()
+            .filter(|created| created.starts_with("new-"))
+        {
+            assert_eq!(std::fs::read(made.join(created))?, created.as_bytes());
+        }
+        assert!(session.stop()?);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a live Linux FUSE mount"]
     fn linux_listings_resume_across_pages_and_readers() -> Result<(), Box<dyn std::error::Error>> {
         let (inner, around) = shared_sources()?;
         let volume_id = inner.volume_id()?;
@@ -5669,6 +5766,9 @@ mod tests {
             stamp: ViewStamp,
         ) -> bool {
             self.inner.unchanged_since(path, file_id, stamp)
+        }
+        fn listing_unchanged_since(&self, path: &MountPath, stamp: ViewStamp) -> bool {
+            self.inner.listing_unchanged_since(path, stamp)
         }
         fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
             self.inner.observe_view(observer);

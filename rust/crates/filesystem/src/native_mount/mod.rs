@@ -686,6 +686,13 @@ pub trait MountFilesystem: Send + Sync + 'static {
         false
     }
 
+    /// Whether the listing of the directory at `path` is unchanged since
+    /// `stamp`: no name directly beneath it was bound, unbound, or rebound
+    /// since. Its own binding, and anything deeper, do not count.
+    fn listing_unchanged_since(&self, _path: &MountPath, _stamp: ViewStamp) -> bool {
+        false
+    }
+
     /// The spelling every equivalent spelling of `path` resolves to, when
     /// this source folds names; `None` when every spelling is distinct.
     ///

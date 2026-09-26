@@ -2097,6 +2097,10 @@ where
             && self.authored.node_unchanged_since(file_id, stamp)
     }
 
+    fn listing_unchanged_since(&self, path: &MountPath, stamp: ViewStamp) -> bool {
+        self.source_view.is_stable() && self.authored.listing_unchanged_since(path, stamp)
+    }
+
     fn binding_epoch(&self) -> Option<u64> {
         Some(self.source_view.generation())
     }

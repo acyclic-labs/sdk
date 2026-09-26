@@ -799,6 +799,10 @@ impl<A, O> SharedCheckout<A, O> {
         self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp)
     }
 
+    fn listing_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
+        self.view_gate.is_stable() && self.ledger.listing_unchanged_since(path, stamp)
+    }
+
     fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
         self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp)
     }
@@ -3003,6 +3007,11 @@ where
         self.checkout.node_unchanged_since(file_id, stamp)
     }
 
+    fn listing_unchanged_since(&self, path: &MountPath, stamp: ViewStamp) -> bool {
+        self.path(path)
+            .is_ok_and(|path| self.checkout.listing_unchanged_since(&path, stamp))
+    }
+
     fn folded_path(&self, path: &MountPath) -> Option<MountPath> {
         self.folds_names().then(|| {
             path.components()
@@ -3277,13 +3286,17 @@ where
         let mount_path = path;
         let path = self.path(path)?;
         // A creation waits to be applied, but not for publication to resolve.
-        self.runtime.wait(|| async {
-            self.checkout
-                .state
-                .read()
-                .await
-                .ensure_publication_resolved()
-        })?;
+        // An uncontended state answers in place, without entering the runtime.
+        match self.checkout.state.try_read() {
+            Ok(state) => state.ensure_publication_resolved()?,
+            Err(_) => self.runtime.wait(|| async {
+                self.checkout
+                    .state
+                    .read()
+                    .await
+                    .ensure_publication_resolved()
+            })?,
+        }
         let waiting = self
             .checkout
             .pending
