@@ -369,6 +369,54 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     }
 }
 
+impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+    /// Deletes `path` and every path beneath it, deepest first.
+    fn retire_subtree<'a>(
+        &'a self,
+        path: acyclic_stream::StreamPath,
+        work: &'a mut WorkCounters,
+        cancellation: &'a CancellationToken,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), AuthorityStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            loop {
+                cancellation
+                    .check()
+                    .map_err(|_| AuthorityStoreError::Cancelled)?;
+                let children = self
+                    .provider
+                    .children(acyclic_stream::ChildrenRequest {
+                        parent: Some(path.clone()),
+                        limit: u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX),
+                    })
+                    .await
+                    .map_err(map_stream_error)?
+                    .map(|child| child.map(|child| child.path))
+                    .collect::<Vec<_>>()
+                    .await
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(map_stream_error)?;
+                *work = work.checked_add(authority_read_work(1))?;
+                if children.is_empty() {
+                    break;
+                }
+                for child in children {
+                    self.retire_subtree(child, work, cancellation).await?;
+                }
+            }
+            let key = stream_key(b"retire-path", path.as_str().as_bytes())?;
+            *work = work.checked_add(authority_write_work(0, 0))?;
+            match self.provider.delete(path, key).await {
+                Ok(_)
+                | Err(
+                    acyclic_stream::StreamError::NotFound | acyclic_stream::StreamError::Retired,
+                ) => Ok(()),
+                Err(error) => Err(map_stream_error(error)),
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     /// Every generation in one authority's lineage, oldest first.
@@ -859,6 +907,27 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             .await
             .map_err(OperationFailure::before_work)?;
         authority_success(snapshot.head, authority_read_work(2), budget)
+    }
+
+    /// Deletes the authority's whole subtree of Stream paths, each once
+    /// nothing lives beneath it; Stream then answers every path in it as
+    /// retired. Each deletion has its own retry identity, so an interrupted
+    /// retirement resumes where it stopped.
+    async fn retire_authority(
+        &self,
+        authority_id: AuthorityId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let root = authority_path(authority_id).map_err(OperationFailure::before_work)?;
+        let mut work = WorkCounters::default();
+        self.retire_subtree(root, &mut work, cancellation)
+            .await
+            .map_err(|error| OperationFailure::new(error, work))?;
+        authority_success((), work, budget)
     }
 
     async fn compare_and_append(
@@ -2320,6 +2389,7 @@ fn decode_durable(
 fn map_stream_error(error: acyclic_stream::StreamError) -> AuthorityStoreError {
     match error {
         acyclic_stream::StreamError::NotFound => AuthorityStoreError::Missing,
+        acyclic_stream::StreamError::Retired => AuthorityStoreError::Retired,
         acyclic_stream::StreamError::Capacity => {
             AuthorityStoreError::Rejected("Stream capacity exhausted".to_owned())
         }

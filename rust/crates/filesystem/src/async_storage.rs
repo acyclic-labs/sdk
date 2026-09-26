@@ -357,6 +357,23 @@ pub trait AsyncAuthorityStore: StorageProvider {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = AuthorityResult<CreateAuthorityOutcome>> + StorageFuture;
 
+    /// Releases every durable fact of `authority_id`, whose workspace or
+    /// retention ended for good, and answers [`AuthorityStoreError::Retired`]
+    /// for it from then on. Retiring a retired authority succeeds. Backends
+    /// that keep every authority answer from its last record instead.
+    fn retire_authority(
+        &self,
+        authority_id: AuthorityId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<()>> + StorageFuture {
+        let _ = (authority_id, budget, cancellation);
+        std::future::ready(Ok(crate::storage::AuthorityReceipt {
+            value: (),
+            work: crate::WorkCounters::default(),
+        }))
+    }
+
     /// Asynchronously reads the linearizable head.
     fn head(
         &self,

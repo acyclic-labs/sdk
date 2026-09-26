@@ -298,6 +298,9 @@ pub enum AuthorityStoreError {
     /// The authority does not exist.
     #[error("authority does not exist")]
     Missing,
+    /// The authority was released for good with its deleted workspace.
+    #[error("authority was retired with its deleted workspace")]
+    Retired,
     /// A configured replay bound is invalid.
     #[error("replay limit must have non-zero record and payload bounds")]
     InvalidReplayLimit,

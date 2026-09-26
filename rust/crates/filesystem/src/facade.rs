@@ -1726,7 +1726,7 @@ pub enum FsError {
     },
     /// Authority storage failed.
     #[error(transparent)]
-    Authority(#[from] AuthorityStoreError),
+    Authority(AuthorityStoreError),
     /// Immutable object storage failed.
     #[error(transparent)]
     Object(#[from] ObjectStoreError),
@@ -1886,6 +1886,17 @@ pub enum FsError {
     /// Exact work overflowed or exceeded the admitted budget.
     #[error(transparent)]
     Work(#[from] WorkError),
+}
+
+impl From<AuthorityStoreError> for FsError {
+    fn from(error: AuthorityStoreError) -> Self {
+        match error {
+            // A deleted workspace's authority is released for good; reading
+            // it answers exactly as its tombstone did.
+            AuthorityStoreError::Retired => Self::WorkspaceDeleted,
+            error => Self::Authority(error),
+        }
+    }
 }
 
 impl<A, O> Fs<A, O> {
@@ -2533,26 +2544,17 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         if head.value.sequence == Sequence::GENESIS {
             return Ok(None);
         }
-        let creation = self
-            .inner
-            .authority
-            .replay(
+        let (first, next_work) = self
+            .local_record_after(
                 authority_id,
                 Sequence::GENESIS,
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                },
-                remaining(work, budget)?,
+                retained_bytes,
+                work,
+                budget,
                 cancellation,
             )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = merge_simultaneous_work(work, creation.work, retained_bytes, budget)?;
-        let first = creation
-            .value
-            .first()
-            .ok_or_else(|| OperationFailure::new(FsError::InvalidAuthorityHistory, work))?;
+            .await?;
+        work = next_work;
         let Ok(created) = decode_volume_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES) else {
             #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
             if let Ok(source_volume) =
@@ -2565,7 +2567,16 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             }
             let retained = decode_retention_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES)
                 .map_err(|error| OperationFailure::new(error.into(), work))?;
-            return Ok(Some((retained.generation_root, retained.config, work)));
+            return self
+                .local_retention_generation(
+                    authority_id,
+                    retained,
+                    retained_bytes,
+                    work,
+                    budget,
+                    cancellation,
+                )
+                .await;
         };
         if volume_authority_id(created.volume_id) != authority_id {
             return Err(OperationFailure::new(FsError::VolumeMismatch, work));
@@ -2573,37 +2584,178 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         let generation_root = if head.value.sequence == Sequence::new(1) {
             created.initial_generation_root
         } else {
-            let latest = self
-                .inner
-                .authority
-                .replay(
+            let (record, next_work) = self
+                .local_record_after(
                     authority_id,
                     Sequence::new(head.value.sequence.get().saturating_sub(1)),
-                    ReplayLimit {
-                        records: 1,
-                        payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                    },
-                    remaining(work, budget)?,
+                    retained_bytes,
+                    work,
+                    budget,
                     cancellation,
                 )
-                .await
-                .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-            work = merge_simultaneous_work(work, latest.work, retained_bytes, budget)?;
-            let record = latest
-                .value
-                .first()
-                .ok_or_else(|| OperationFailure::new(FsError::InvalidAuthorityHistory, work))?;
+                .await?;
+            work = next_work;
+            let record = &record;
             if let Ok(deleted) =
                 decode_workspace_deleted(&record.payload, MAXIMUM_VOLUME_EVENT_BYTES)
             {
                 if deleted != created.volume_id {
                     return Err(OperationFailure::new(FsError::VolumeMismatch, work));
                 }
+                // A delete interrupted before it released the authority.
+                self.retire_local_authority(
+                    authority_id,
+                    retained_bytes,
+                    work,
+                    budget,
+                    cancellation,
+                )
+                .await?;
                 return Ok(None);
             }
             generation_from_record(record, created.volume_id, work)?
         };
         Ok(Some((generation_root, created.config, work)))
+    }
+
+    /// The record of one authority right after `after`.
+    async fn local_record_after(
+        &self,
+        authority_id: crate::foundation::AuthorityId,
+        after: Sequence,
+        retained_bytes: u64,
+        work: WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<(crate::foundation::DurableCommit, WorkCounters), OperationFailure<FsError>> {
+        let replayed = self
+            .inner
+            .authority
+            .replay(
+                authority_id,
+                after,
+                ReplayLimit {
+                    records: 1,
+                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+                },
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+        let work = merge_simultaneous_work(work, replayed.work, retained_bytes, budget)?;
+        let record = replayed
+            .value
+            .into_iter()
+            .next()
+            .ok_or_else(|| OperationFailure::new(FsError::InvalidAuthorityHistory, work))?;
+        Ok((record, work))
+    }
+
+    /// The generation a retention keeps, or `None` once the workspace it
+    /// serves ended, which releases it.
+    async fn local_retention_generation(
+        &self,
+        authority_id: crate::foundation::AuthorityId,
+        retained: RetentionCreated,
+        retained_bytes: u64,
+        mut work: WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(ObjectId, VolumeConfig, WorkCounters)>, OperationFailure<FsError>> {
+        // A retention lasts as long as the workspace it serves: a fork
+        // base as long as its fork, a pin or checkpoint as long as its
+        // own workspace.
+        let owner = match retained.kind {
+            RetentionKind::ForkBase => hex::decode(&retained.label)
+                .ok()
+                .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+                .map(VolumeId::from_bytes)
+                .ok_or_else(|| OperationFailure::new(FsError::InvalidAuthorityHistory, work))?,
+            RetentionKind::Checkpoint | RetentionKind::Pin => retained.volume_id,
+        };
+        let (ended, next_work) = self
+            .local_volume_ended(owner, retained_bytes, work, budget, cancellation)
+            .await?;
+        work = next_work;
+        if ended {
+            self.retire_local_authority(authority_id, retained_bytes, work, budget, cancellation)
+                .await?;
+            return Ok(None);
+        }
+        Ok(Some((retained.generation_root, retained.config, work)))
+    }
+
+    /// Whether the workspace `volume_id` ended: deleted, or never created.
+    async fn local_volume_ended(
+        &self,
+        volume_id: VolumeId,
+        retained_bytes: u64,
+        mut work: WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<(bool, WorkCounters), OperationFailure<FsError>> {
+        let authority_id = volume_authority_id(volume_id);
+        let head = match self
+            .inner
+            .authority
+            .head(authority_id, remaining(work, budget)?, cancellation)
+            .await
+        {
+            Ok(head) => head,
+            Err(failure)
+                if matches!(
+                    failure.error,
+                    AuthorityStoreError::Retired | AuthorityStoreError::Missing
+                ) =>
+            {
+                work = merge_simultaneous_work(work, *failure.work, retained_bytes, budget)?;
+                return Ok((true, work));
+            }
+            Err(failure) => return Err(failure.map_with_prior_work(work, Into::into)),
+        };
+        work = merge_simultaneous_work(work, head.work, retained_bytes, budget)?;
+        if head.value.sequence == Sequence::GENESIS {
+            return Ok((false, work));
+        }
+        let latest = self
+            .inner
+            .authority
+            .replay(
+                authority_id,
+                Sequence::new(head.value.sequence.get().saturating_sub(1)),
+                ReplayLimit {
+                    records: 1,
+                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+                },
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+        work = merge_simultaneous_work(work, latest.work, retained_bytes, budget)?;
+        let deleted = latest.value.first().is_some_and(|record| {
+            decode_workspace_deleted(&record.payload, MAXIMUM_VOLUME_EVENT_BYTES)
+                .is_ok_and(|deleted| deleted == volume_id)
+        });
+        Ok((deleted, work))
+    }
+
+    async fn retire_local_authority(
+        &self,
+        authority_id: crate::foundation::AuthorityId,
+        retained_bytes: u64,
+        work: WorkCounters,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkCounters, OperationFailure<FsError>> {
+        let retired = self
+            .inner
+            .authority
+            .retire_authority(authority_id, remaining(work, budget)?, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+        merge_simultaneous_work(work, retired.work, retained_bytes, budget)
     }
 }
 
@@ -2796,15 +2948,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<crate::workspace::WorkspaceDelete, crate::workspace::WorkspaceError> {
         let name = crate::WorkspaceName::new(name)?;
         let id = crate::WorkspaceId::derive(self.inner.workspace_namespace, &name);
-        let volume = self
+        let volume = match self
             .open_volume(
                 id.volume_id(),
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
             .await
-            .map_err(crate::workspace::WorkspaceError::engine)?
-            .value;
+        {
+            Ok(volume) => volume.value,
+            Err(failure) if matches!(failure.error, FsError::WorkspaceDeleted) => {
+                return Ok(crate::workspace::WorkspaceDelete::AlreadyDeleted);
+            }
+            Err(failure) => return Err(crate::workspace::WorkspaceError::engine(failure)),
+        };
         self.delete_workspace_volume(&volume, idempotency_key.operation_id())
             .await
     }
@@ -3164,13 +3321,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<crate::workspace::WorkspaceDelete, crate::workspace::WorkspaceError> {
         let cancellation = CancellationToken::new();
         let authority_id = volume_authority_id(volume.id);
-        let head = self
+        let head = match self
             .inner
             .authority
             .head(authority_id, WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .map_err(crate::workspace::WorkspaceError::engine)?
-            .value;
+        {
+            Ok(head) => head.value,
+            Err(failure) if matches!(failure.error, AuthorityStoreError::Retired) => {
+                return Ok(crate::workspace::WorkspaceDelete::AlreadyDeleted);
+            }
+            Err(failure) => return Err(crate::workspace::WorkspaceError::engine(failure)),
+        };
         if head.sequence == Sequence::GENESIS {
             return Err(crate::workspace::WorkspaceError::engine(
                 FsError::EmptyAuthority,
@@ -3200,6 +3362,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     FsError::VolumeMismatch,
                 ));
             }
+            // A retry after the tombstone finishes what the delete began.
+            self.retire_deleted_authority(authority_id, &cancellation)
+                .await?;
             return Ok(crate::workspace::WorkspaceDelete::AlreadyDeleted);
         }
         generation_from_record(latest, volume.id, WorkCounters::default())
@@ -3220,6 +3385,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .map_err(crate::workspace::WorkspaceError::engine)?;
         Ok(match appended.value {
             AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => {
+                self.retire_deleted_authority(authority_id, &cancellation)
+                    .await?;
                 crate::workspace::WorkspaceDelete::Deleted
             }
             AppendOutcome::Conflict { .. } | AppendOutcome::Fenced { .. } => {
@@ -3229,6 +3396,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 crate::workspace::WorkspaceDelete::IdempotencyConflict
             }
         })
+    }
+
+    /// Releases the authority of a workspace whose tombstone is durable:
+    /// nothing reads its history again, and the workspace's objects become
+    /// collectable once nothing else retains them.
+    async fn retire_deleted_authority(
+        &self,
+        authority_id: crate::AuthorityId,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::workspace::WorkspaceError> {
+        self.inner
+            .authority
+            .retire_authority(authority_id, WorkBudget::UNBOUNDED, cancellation)
+            .await
+            .map_err(crate::workspace::WorkspaceError::engine)?;
+        Ok(())
     }
 
     pub(crate) async fn workspace_common_ancestor(

@@ -465,10 +465,15 @@ impl StreamProvider for MemoryStream {
         if !state.paths.contains_key(&path) {
             return Err(StreamError::NotFound);
         }
-        if state
-            .paths
-            .keys()
-            .any(|candidate| is_descendant(&path, candidate))
+        if beneath(
+            state
+                .paths
+                .range(path.clone()..)
+                .map(|(candidate, _)| candidate),
+            &path,
+        )
+        .next()
+        .is_some()
         {
             return Err(StreamError::InvalidArgument);
         }
@@ -1040,6 +1045,24 @@ fn is_direct_child(parent: &StreamPath, candidate: &StreamPath) -> bool {
     candidate.parent().as_ref() == Some(parent)
 }
 
+/// The paths beneath `path` among `ordered`, which lists paths in order
+/// from `path` on. They follow it at once but for siblings that extend its
+/// last name with a byte sorting before `/`, so the walk ends at the first
+/// path past them.
+fn beneath<'a>(
+    ordered: impl Iterator<Item = &'a StreamPath>,
+    path: &'a StreamPath,
+) -> impl Iterator<Item = &'a StreamPath> {
+    let prefix = path.as_str().as_bytes();
+    ordered
+        .take_while(move |candidate| {
+            let candidate = candidate.as_str().as_bytes();
+            candidate.starts_with(prefix)
+                && candidate.get(prefix.len()).is_none_or(|next| *next <= b'/')
+        })
+        .filter(move |candidate| is_descendant(path, candidate))
+}
+
 fn is_descendant(parent: &StreamPath, candidate: &StreamPath) -> bool {
     candidate
         .as_str()
@@ -1072,14 +1095,10 @@ fn retire_path(state: &mut State, path: &StreamPath) {
         state.path_bytes = state.path_bytes.saturating_sub(path.as_str().len());
     }
     // Retiring the path retires everything beneath it, retired or not.
-    let beneath = state
-        .retired
-        .range(path.clone()..)
-        .skip_while(|candidate| *candidate == path)
-        .take_while(|candidate| is_descendant(path, candidate))
+    let retired = beneath(state.retired.range(path.clone()..), path)
         .cloned()
         .collect::<Vec<_>>();
-    for candidate in beneath {
+    for candidate in retired {
         state.retired.remove(&candidate);
     }
     state.retired.insert(path.clone());
@@ -1485,10 +1504,15 @@ fn validate_commit_authority(state: &State, request: &CommitRequest) -> Result<(
             }
             CommitMutation::Delete { path } => {
                 if !state.paths.contains_key(path)
-                    || state
-                        .paths
-                        .keys()
-                        .any(|candidate| is_descendant(path, candidate))
+                    || beneath(
+                        state
+                            .paths
+                            .range(path.clone()..)
+                            .map(|(candidate, _)| candidate),
+                        path,
+                    )
+                    .next()
+                    .is_some()
                 {
                     return Err(StreamError::InvalidArgument);
                 }
@@ -2096,7 +2120,7 @@ mod tests {
     #[tokio::test]
     async fn deleting_a_path_frees_it_and_folds_retirements_beneath() -> Result<(), StreamError> {
         let provider = MemoryStream::default();
-        for name in ["tree/a", "tree/b"] {
+        for name in ["tree/a", "tree/b", "tree-x"] {
             provider
                 .append(AppendRequest {
                     path: path(name)?,
@@ -2106,6 +2130,12 @@ mod tests {
                 })
                 .await?;
         }
+        provider.delete(path("tree-x")?, key(b"delete-x")?).await?;
+        assert_eq!(
+            provider.delete(path("tree")?, key(b"early")?).await,
+            Err(StreamError::InvalidArgument),
+            "the tree still has live paths"
+        );
         provider.delete(path("tree/a")?, key(b"delete-a")?).await?;
         provider.delete(path("tree/b")?, key(b"delete-b")?).await?;
         provider.delete(path("tree")?, key(b"delete-tree")?).await?;
@@ -2114,7 +2144,8 @@ mod tests {
         assert_eq!(state.path_bytes, 0);
         assert_eq!(
             state.retired.iter().collect::<Vec<_>>(),
-            vec![&path("tree")?]
+            vec![&path("tree")?, &path("tree-x")?],
+            "a sibling sorting before the subtree stays"
         );
         drop(state);
         assert_eq!(

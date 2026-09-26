@@ -2348,3 +2348,74 @@ async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), B
     }
     Ok(())
 }
+
+/// Deleting a local workspace releases its authority for good; a collection
+/// then releases the fork base its creation retained and reclaims what only
+/// the deleted workspace held, while its source reads as before.
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let cancellation = CancellationToken::new();
+    {
+        let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+        let main = fs.create_workspace("repo").await?;
+        main.write_text("/base.txt", "base").await?;
+        let base = main.head().await?;
+        let agent = main
+            .fork(
+                "agent",
+                ForkOptions::from_generation(base, IdempotencyKey::new()),
+            )
+            .await?;
+        agent
+            .write_text("/agent.txt", &"only the agent ".repeat(8_192))
+            .await?;
+        assert_eq!(fs.authority().authorities(64).await?.len(), 3);
+        let key = IdempotencyKey::new();
+        assert_eq!(agent.delete(key).await?, WorkspaceDelete::Deleted);
+        assert_eq!(agent.delete(key).await?, WorkspaceDelete::AlreadyDeleted);
+        assert_eq!(
+            fs.delete_workspace("agent", key).await?,
+            WorkspaceDelete::AlreadyDeleted
+        );
+        assert!(fs.open_workspace("agent").await.is_err());
+        assert!(fs.create_workspace("agent").await.is_err());
+        assert_eq!(
+            fs.authority().authorities(64).await?.len(),
+            2,
+            "the fork's authority is gone; its base is still retained"
+        );
+        drop((main, agent));
+        close_local(fs).await?;
+    }
+    let collected = Fs::collect_local_garbage(
+        crate::LocalOptions::new(root),
+        64,
+        1_024,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    assert!(collected.value.removed >= 1, "{:?}", collected.value);
+    let again = Fs::collect_local_garbage(
+        crate::LocalOptions::new(root),
+        64,
+        1_024,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    assert_eq!(again.value.removed, 0);
+
+    let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+    assert_eq!(
+        fs.authority().authorities(64).await?.len(),
+        1,
+        "the fork base went with its fork"
+    );
+    let main = fs.open_workspace("repo").await?;
+    assert_eq!(main.read("/base.txt", 64).await?, "base");
+    Ok(())
+}
