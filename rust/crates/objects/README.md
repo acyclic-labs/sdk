@@ -1,6 +1,26 @@
 # acyclic-objects
 
-The versioned Objects contract, typed provider interface, and first-party gRPC, memory, and optional local providers. Object versions and whole-bucket snapshots are immutable identities; a bucket name is not a substitute for its `BucketRef`.
+The Objects contract, typed provider interface, and first-party gRPC, memory, and optional local providers.
+
+## Current-value contract
+
+Hosted customer code should use the re-exported `replaceable` API. An
+`ObjectId` is a stable bucket identity plus opaque object key. `replace_put`
+replaces the current bytes at that identity and returns a `PutReceipt` with the
+new `ETag` and size. `get_current` and `verify_current` select the current
+visible value; no customer-visible version identity is required or exposed by
+these operations. Checksums validate bytes and never choose object identity.
+
+Reads may be eventually visible after a successful replacement. Use the
+returned `ETag` with `CurrentGetRequest.if_none_match` when waiting for the new
+value to become visible. Every transport failure during a replacement is
+ambiguous; retry with the exact same idempotency key. Reusing a key with a
+different body, condition, or object is rejected as an idempotency mismatch.
+
+The older permanently-versioned provider and wire types remain in this source
+release so FS and hosted migration code can be upgraded without a flag day.
+They are compatibility internals for the next prerelease and are not the
+customer-facing current-value contract.
 
 ```sh
 cargo add acyclic-objects

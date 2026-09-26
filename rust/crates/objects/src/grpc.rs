@@ -48,6 +48,28 @@ pub enum Error {
     Protocol(&'static str),
 }
 
+impl Error {
+    /// Returns whether a replacement mutation may have committed remotely.
+    ///
+    /// Callers must retry an ambiguous replacement with the exact same
+    /// idempotency key. A fresh key could publish a second replacement after
+    /// the first request actually reached the service.
+    #[must_use]
+    pub fn is_ambiguous_mutation(&self) -> bool {
+        match self {
+            Self::Rejected {
+                code: wire::ErrorCode::Unavailable,
+                ..
+            } => true,
+            Self::Transport(status) => matches!(
+                status.code(),
+                tonic::Code::DeadlineExceeded | tonic::Code::Unavailable
+            ),
+            _ => false,
+        }
+    }
+}
+
 impl From<tonic::Status> for Error {
     fn from(status: tonic::Status) -> Self {
         if let Ok(detail) = wire::ErrorDetail::decode(status.details())

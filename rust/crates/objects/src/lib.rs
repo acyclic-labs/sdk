@@ -2,6 +2,13 @@
 
 pub mod conformance;
 
+/// Stable object identities and current-value replacement operations.
+pub mod replaceable;
+pub use replaceable::{
+    CurrentGetRequest, CurrentObject, MAX_REPLACEMENT_IDEMPOTENCY_KEY_BYTES, ObjectId, PutReceipt,
+    ReplaceCondition, ReplacePutRequest, ReplaceableObjectsProvider, Verification,
+};
+
 /// Generated public gRPC schema and client/server bindings.
 #[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
 pub mod wire {
