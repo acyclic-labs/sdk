@@ -374,6 +374,7 @@ where
             return;
         };
         let mut effect = ViewEffect::default();
+        let mut unconfirmed = false;
         for change in changes {
             match change {
                 // Source paths are workspace paths, and the view keys names
@@ -387,16 +388,22 @@ where
                     effect.nodes.push(lazy.source_file_id_of(identity));
                 }
                 SourceChange::Everything => effect.everything = true,
+                SourceChange::Unconfirmed => unconfirmed = true,
             }
         }
         authored.record_projection_change(&ViewChange::Effect(&effect));
+        if unconfirmed {
+            authored.record_projection_change(&ViewChange::Unconfirmed);
+        }
     }
 }
 
-/// Whether a source node has more than one name. A source that cannot count
-/// names (a Windows listing) reports none.
+/// Whether a source node may have a name outside the root, through which it
+/// changes unreported: a node other than a directory with more than one
+/// name. A directory's names are its parent's entry and its own `.` and its
+/// children's `..`, all beneath the root.
 fn linked(node: &SourceNode) -> bool {
-    node.link_count.is_some_and(|count| count > 1)
+    node.kind != SourceNodeKind::Directory && node.link_count.is_some_and(|count| count > 1)
 }
 
 /// One native callback adapter over a source-backed sparse workspace.
@@ -1951,6 +1958,21 @@ where
         self.source_view.is_stable()
             && file_id.is_none_or(|file_id| self.reported(file_id))
             && self.authored.unchanged_since(path, file_id, stamp)
+    }
+
+    fn reports_changes_to(&self, file_id: FileId) -> bool {
+        self.source_observed() && self.reported(file_id)
+    }
+
+    fn reported_unchanged_since(
+        &self,
+        path: &MountPath,
+        file_id: Option<FileId>,
+        stamp: ViewStamp,
+    ) -> bool {
+        self.source_view.is_stable()
+            && file_id.is_none_or(|file_id| self.reported(file_id))
+            && self.authored.reported_unchanged_since(path, file_id, stamp)
     }
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
@@ -4709,6 +4731,40 @@ mod tests {
                 "{first} and {second} after revalidation ({watched:?})"
             );
         }
+        live.unmount().await?;
+        Ok(())
+    }
+
+    /// A file with a name outside the source changes unreported through that
+    /// name; the kernel keeps none of its facts or pages, so the mount shows
+    /// such a write at once, however often the file was read before.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "mounts a live native session; requires the host's native mount capability"]
+    async fn live_mount_shows_writes_through_a_name_outside_its_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let (source, mount, outside) = (
+            root.path().join("source"),
+            root.path().join("mount"),
+            root.path().join("outside"),
+        );
+        std::fs::create_dir_all(&source)?;
+        std::fs::create_dir_all(&outside)?;
+        std::fs::write(source.join("linked"), b"before")?;
+        std::fs::hard_link(source.join("linked"), outside.join("alias"))?;
+        let live = live_lazy_mount(&source, &mount, "live-linked-outside").await?;
+        for _ in 0..3 {
+            assert_eq!(std::fs::read(mount.join("linked"))?, b"before");
+            assert_eq!(std::fs::metadata(mount.join("linked"))?.len(), 6);
+        }
+        // Written in place through the name outside the source: unreported.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(outside.join("alias"))
+            .and_then(|mut file| std::io::Write::write_all(&mut file, b"AFTER!, longer"))?;
+        assert_eq!(std::fs::metadata(mount.join("linked"))?.len(), 14);
+        assert_eq!(std::fs::read(mount.join("linked"))?, b"AFTER!, longer");
         live.unmount().await?;
         Ok(())
     }

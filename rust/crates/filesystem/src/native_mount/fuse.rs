@@ -812,8 +812,12 @@ impl ProjectionState {
     }
 
     /// Whether facts about `file_id` at `anchor`, derived after `stamp`, may
-    /// enter the kernel: every change the invalidator already checked the
-    /// kernel against either precedes them or left them unchanged.
+    /// enter the kernel: the source reports every change to the node, so the
+    /// invalidator will drop them once one supersedes them, and every change
+    /// the invalidator already checked the kernel against either precedes
+    /// them or left them unchanged. Every kernel admission (entry and
+    /// attribute lifetimes, negative entries, listings, kept pages, and page
+    /// stores) is decided here.
     fn admissible(
         &self,
         source: &dyn MountFilesystem,
@@ -822,10 +826,12 @@ impl ProjectionState {
         stamp: Option<ViewStamp>,
     ) -> bool {
         stamp.is_some_and(|stamp| {
-            self.invalidation
-                .scanned
-                .is_none_or(|scanned| scanned <= stamp)
-                || source.unchanged_since(anchor, file_id, stamp)
+            file_id.is_none_or(|file_id| source.reports_changes_to(file_id))
+                && (self
+                    .invalidation
+                    .scanned
+                    .is_none_or(|scanned| scanned <= stamp)
+                    || source.unchanged_since(anchor, file_id, stamp))
         })
     }
 

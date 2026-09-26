@@ -649,6 +649,29 @@ pub trait MountFilesystem: Send + Sync + 'static {
         false
     }
 
+    /// [`Self::unchanged_since`], counting only changes the source reported:
+    /// facts read after `stamp` that a driver read again since, with the
+    /// same result, still describe the view across changes the source could
+    /// not yet confirm ([`super::demand::SourceChange::Unconfirmed`]).
+    fn reported_unchanged_since(
+        &self,
+        path: &MountPath,
+        file_id: Option<FileId>,
+        stamp: ViewStamp,
+    ) -> bool {
+        self.unchanged_since(path, file_id, stamp)
+    }
+
+    /// Whether this source reports every change to the node `file_id`, so
+    /// facts about it may be kept (by a kernel, or an NFS client) until a
+    /// reported change supersedes them. Facts about a node it does not are
+    /// read afresh on every use and never kept, whatever else vouches for
+    /// them; [`Self::unchanged_since`] and [`Self::node_unchanged_since`]
+    /// never vouch for them either.
+    fn reports_changes_to(&self, _file_id: FileId) -> bool {
+        self.view_stamp().is_some()
+    }
+
     /// Whether facts about the node `file_id`, read after `stamp` was
     /// sampled, still describe it: no change after `stamp` touched the node
     /// under any of its names. Facts that follow from a directory's listing

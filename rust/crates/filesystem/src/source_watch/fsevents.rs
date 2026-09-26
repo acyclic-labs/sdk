@@ -7,9 +7,10 @@
 //! was seen reported ahead of a file written before it, with a lower event
 //! id, and `FSEventStreamFlushSync` does not release held events either. So
 //! nothing proves that every change completed before a fence has been
-//! delivered, and a fence reports instead that anything may have changed:
-//! every remembered fact is read again, and the reports that arrive later
-//! only invalidate what they name once more.
+//! delivered, and a fence reports instead that changes may be undelivered
+//! ([`HostChange::Unconfirmed`]): every remembered fact is verified against
+//! the source at its next use and kept where it still holds, and the
+//! reports that arrive later only invalidate what they name once more.
 //!
 //! The stream follows the root by path, so a root that moves, or whose
 //! ancestor moves, leaves it reporting a path the held root no longer has.
@@ -90,7 +91,7 @@ impl PlatformWatch {
         let named = std::fs::symlink_metadata(&shared.root)
             .is_ok_and(|metadata| identity(&metadata) == shared.held);
         if named {
-            shared.delivery.deliver(&[HostChange::Everything]);
+            shared.delivery.deliver(&[HostChange::Unconfirmed]);
         } else {
             shared.delivery.abandon();
         }
@@ -198,7 +199,8 @@ mod tests {
         )?;
         watch.fence()?;
         let recorded = recorded.0.lock().map_err(|_| "poisoned")?;
-        assert!(recorded.contains(&HostChange::Everything));
+        assert!(recorded.contains(&HostChange::Unconfirmed));
+        assert!(!recorded.contains(&HostChange::Everything));
         Ok(())
     }
 

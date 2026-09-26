@@ -579,6 +579,15 @@ impl<A, O> SharedCheckout<A, O> {
         self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp)
     }
 
+    fn reported_unchanged_since(
+        &self,
+        path: &NamespacePath,
+        file_id: Option<FileId>,
+        stamp: ViewStamp,
+    ) -> bool {
+        self.view_gate.is_stable() && self.ledger.reported_unchanged_since(path, file_id, stamp)
+    }
+
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
         self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp)
     }
@@ -2531,6 +2540,18 @@ where
     fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp) -> bool {
         self.path(path)
             .is_ok_and(|path| self.checkout.unchanged_since(&path, file_id, stamp))
+    }
+
+    fn reported_unchanged_since(
+        &self,
+        path: &MountPath,
+        file_id: Option<FileId>,
+        stamp: ViewStamp,
+    ) -> bool {
+        self.path(path).is_ok_and(|path| {
+            self.checkout
+                .reported_unchanged_since(&path, file_id, stamp)
+        })
     }
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {

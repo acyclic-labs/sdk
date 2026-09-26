@@ -31,6 +31,10 @@ const ROOT_INODE: u64 = 1;
 const DIRECTORY_PAGE_SIZE: u32 = 256;
 const ATTRIBUTE_PAGE_SIZE: u32 = 256;
 const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
+/// Most labelled objects a revalidation verifies against the source after
+/// an unconfirmed fence; with more, waiting out the attribute timeout costs
+/// less.
+const MAXIMUM_VERIFIED_LABELS: usize = 4_096;
 const MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES: usize = 1024 * 1024;
 const MAXIMUM_CALLBACK_BYTES: usize = i32::MAX as usize;
 const RENAME_NOREPLACE: u32 = 1;
@@ -304,6 +308,11 @@ struct AroundChanges {
     made: AtomicU64,
     /// `made` as of the latest barrier that waited them out.
     settled: AtomicU64,
+    /// Fences that could not confirm every change was reported.
+    unconfirmed: AtomicU64,
+    /// `unconfirmed` as of the latest barrier that verified or waited them
+    /// out.
+    verified: AtomicU64,
 }
 
 impl ViewObserver for DarwinMountContext {
@@ -312,6 +321,10 @@ impl ViewObserver for DarwinMountContext {
         if origin != self.origin {
             self.around.made.fetch_add(1, Ordering::AcqRel);
         }
+    }
+
+    fn view_unconfirmed(&self, _position: ViewStamp) {
+        self.around.unconfirmed.fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -384,20 +397,44 @@ impl FlushLedger {
 ///
 /// A node keeps its label while the source reports nothing that node's
 /// attributes, listing, or name depend on changed since the label was
-/// issued; otherwise it gets a fresh one. Labels come from one counter and
-/// are never reissued, so a stale cached value can never match again, and a
+/// issued, or, across changes the source could not confirm it reported,
+/// while the attributes observed again match those it was issued for;
+/// otherwise it gets a fresh one. Labels come from one counter and are
+/// never reissued, so a stale cached value can never match again, and a
 /// write to one file leaves every other object's cached state valid.
 struct ChangeLabels {
     next: AtomicU64,
     labels: Mutex<HashMap<FileId, IssuedLabel>>,
+    /// Times the labels were dropped at capacity, after which a revalidation
+    /// cannot tell what the client holds.
+    cleared: AtomicU64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct IssuedLabel {
     label: u64,
     /// Sampled before the attributes the label was issued for.
     stamp: CacheStamp,
     binding: Option<u64>,
+    /// The attributes it was issued for, and the path they were observed at.
+    observed: Observed,
+}
+
+/// Attributes a label was issued for, as observed at a path.
+#[derive(Clone)]
+struct Observed {
+    path: MountPath,
+    lookup: MountLookup,
+}
+
+impl Observed {
+    /// Whether `lookup` shows the client what these attributes did. Access
+    /// times are left out: no source reports reads, so no label follows them.
+    fn matches(&self, lookup: &MountLookup) -> bool {
+        let mut seen = *lookup;
+        seen.metadata.accessed_ns = self.lookup.metadata.accessed_ns;
+        seen == self.lookup
+    }
 }
 
 impl ChangeLabels {
@@ -405,20 +442,24 @@ impl ChangeLabels {
         Self {
             next: AtomicU64::new(1),
             labels: Mutex::new(HashMap::new()),
+            cleared: AtomicU64::new(0),
         }
     }
 
-    /// The label for `file_id`'s attributes, observed after `stamp` was
+    /// The label for `file_id`'s attributes, `observed` after `stamp` was
     /// sampled under source binding `binding`; `unchanged` tells whether
-    /// nothing they depend on changed since a stamp. A source without stamps
-    /// gets a fresh label every time, so its cached state is never trusted
-    /// past a revalidation.
+    /// nothing they depend on changed since a stamp, and `reported_unchanged`
+    /// whether nothing reported did. A source without stamps gets a fresh
+    /// label every time, so its cached state is never trusted past a
+    /// revalidation.
     fn label(
         &self,
         file_id: FileId,
         stamp: Option<CacheStamp>,
         binding: Option<u64>,
+        observed: Observed,
         unchanged: impl FnOnce(CacheStamp) -> bool,
+        reported_unchanged: impl FnOnce(CacheStamp) -> bool,
     ) -> u64 {
         let Some(stamp) = stamp else {
             return self.fresh();
@@ -429,14 +470,23 @@ impl ChangeLabels {
         // The issued label names these attributes only if nothing changed
         // since the older of the two observations, so attributes observed
         // before a change never take a label issued after it.
-        if let Some(issued) = labels.get(&file_id)
+        if let Some(issued) = labels.get_mut(&file_id)
             && issued.binding == binding
-            && unchanged(issued.stamp.min(stamp))
         {
-            return issued.label;
+            let since = issued.stamp.min(stamp);
+            if unchanged(since) {
+                return issued.label;
+            }
+            // Read again across changes the source could not confirm, with
+            // the same result: the client's copy still holds.
+            if issued.observed.matches(&observed.lookup) && reported_unchanged(since) {
+                issued.stamp = issued.stamp.max(stamp);
+                return issued.label;
+            }
         }
         if labels.len() >= MAXIMUM_LOOKUP_CACHE_ENTRIES {
             labels.clear();
+            self.cleared.fetch_add(1, Ordering::AcqRel);
         }
         let label = self.fresh();
         labels.insert(
@@ -445,9 +495,23 @@ impl ChangeLabels {
                 label,
                 stamp,
                 binding,
+                observed,
             },
         );
         label
+    }
+
+    /// What the client may hold labels for: each labelled node with the
+    /// attributes and path it was labelled at; `None` past
+    /// [`MAXIMUM_VERIFIED_LABELS`].
+    fn issued(&self) -> Option<Vec<(FileId, Observed)>> {
+        let labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
+        (labels.len() <= MAXIMUM_VERIFIED_LABELS).then(|| {
+            labels
+                .iter()
+                .map(|(file_id, issued)| (*file_id, issued.observed.clone()))
+                .collect()
+        })
     }
 
     fn fresh(&self) -> u64 {
@@ -490,6 +554,8 @@ impl DarwinMountContext {
             around: AroundChanges {
                 made: AtomicU64::new(0),
                 settled: AtomicU64::new(0),
+                unconfirmed: AtomicU64::new(0),
+                verified: AtomicU64::new(0),
             },
         }
     }
@@ -536,6 +602,19 @@ impl DarwinMountContext {
             && self.source.unchanged_since(path, file_id, stamp.view)
     }
 
+    /// [`Self::unchanged_since`], counting only changes the source reported.
+    fn reported_unchanged_since(
+        &self,
+        path: &MountPath,
+        file_id: Option<FileId>,
+        stamp: CacheStamp,
+    ) -> bool {
+        stamp.forgotten == self.forgotten.load(Ordering::Acquire)
+            && self
+                .source
+                .reported_unchanged_since(path, file_id, stamp.view)
+    }
+
     fn cache_epochs(&self) -> Option<CacheEpochs> {
         if !self.source.view_is_stable() {
             return None;
@@ -576,7 +655,19 @@ impl DarwinMountContext {
     /// are assumed to arrive within [`REPLY_DELIVERY_SLACK`], so all expire
     /// by the uptime second one timeout after that. The wait is at most the
     /// timeout plus the slack and averages half a second less.
+    ///
+    /// A fence that could not confirm every change was reported (macOS)
+    /// needs no wait when nothing the client holds changed: each object it
+    /// holds a label for is read again, and the wait follows only if one no
+    /// longer matches what its label was issued for.
     fn revalidate(&self) {
+        let unconfirmed = self.around.unconfirmed.load(Ordering::Acquire);
+        if self.around.verified.load(Ordering::Acquire) < unconfirmed && !self.verify_labels() {
+            self.around.made.fetch_add(1, Ordering::AcqRel);
+        }
+        self.around
+            .verified
+            .fetch_max(unconfirmed, Ordering::AcqRel);
         let made = self.around.made.load(Ordering::Acquire);
         if self.around.settled.load(Ordering::Acquire) >= made {
             return;
@@ -594,6 +685,20 @@ impl DarwinMountContext {
             std::thread::sleep(expired - now);
         }
         self.around.settled.fetch_max(made, Ordering::AcqRel);
+    }
+
+    /// Whether every object the client holds a label for still shows what
+    /// its label was issued for, read again from the source. False when any
+    /// differs, or when what the client holds is unknown.
+    fn verify_labels(&self) -> bool {
+        let cleared = self.changes.cleared.load(Ordering::Acquire);
+        let Some(issued) = self.changes.issued() else {
+            return false;
+        };
+        issued.iter().all(|(file_id, observed)| {
+            self.lookup(&observed.path)
+                .is_ok_and(|current| current.node.file_id == *file_id && observed.matches(&current))
+        }) && self.changes.cleared.load(Ordering::Acquire) == cleared
     }
 
     fn inode(&self, file_id: FileId) -> Result<u64, i32> {
@@ -895,11 +1000,17 @@ impl DarwinMountContext {
                 .unwrap_or(0),
             block_size: 4096,
             flags: u32::try_from(metadata_or(lookup.metadata.posix_flags, 0)).unwrap_or(u32::MAX),
-            change: self
-                .changes
-                .label(node.file_id, stamp, self.source.binding_epoch(), |stamp| {
-                    self.unchanged_since(path, Some(node.file_id), stamp)
-                }),
+            change: self.changes.label(
+                node.file_id,
+                stamp,
+                self.source.binding_epoch(),
+                Observed {
+                    path: path.clone(),
+                    lookup,
+                },
+                |stamp| self.unchanged_since(path, Some(node.file_id), stamp),
+                |stamp| self.reported_unchanged_since(path, Some(node.file_id), stamp),
+            ),
         })
     }
 
@@ -2781,11 +2892,79 @@ mod tests {
         );
 
         let unstamped = ChangeLabels::new();
-        let file_id = source.lookup(&first)?.ok_or("file absent")?.node.file_id;
+        let lookup = source.lookup(&first)?.ok_or("file absent")?;
+        let observed = || Observed {
+            path: first.clone(),
+            lookup,
+        };
         assert_ne!(
-            unstamped.label(file_id, None, None, |_| true),
-            unstamped.label(file_id, None, None, |_| true),
+            unstamped.label(
+                lookup.node.file_id,
+                None,
+                None,
+                observed(),
+                |_| true,
+                |_| true
+            ),
+            unstamped.label(
+                lookup.node.file_id,
+                None,
+                None,
+                observed(),
+                |_| true,
+                |_| true
+            ),
             "a source without stamps never repeats a label"
+        );
+        Ok(())
+    }
+
+    /// After a fence that could not confirm every change was reported, each
+    /// labelled object is read again: one that reads the same keeps its
+    /// label and a revalidation returns without waiting out the client's
+    /// attribute timeout, while one that differs makes it wait.
+    #[test]
+    fn an_unconfirmed_fence_waits_only_for_what_changed() -> TestResult {
+        use super::super::view_ledger::ViewChange;
+        use std::time::{Duration, Instant};
+
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let context = Arc::new(context);
+        let observer = Arc::downgrade(&context);
+        let observer: std::sync::Weak<dyn ViewObserver> = observer;
+        source.observe_view(observer);
+        let path = MountPath::root().child(b"kept".to_vec());
+        source.create_file(&path, FileMetadata::default())?;
+        // The creation was made around the mount; take it as waited out.
+        let made = context.around.made.load(Ordering::Acquire);
+        context.around.settled.store(made, Ordering::Release);
+        let label = context.attributes(&path, 0).map_err(os)?.change;
+
+        source.record_projection_change(&ViewChange::Unconfirmed);
+        let started = Instant::now();
+        context.revalidate();
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "nothing changed, so nothing is waited out"
+        );
+        assert_eq!(context.attributes(&path, 0).map_err(os)?.change, label);
+
+        // What the client holds no longer matches what the source reads.
+        for issued in context
+            .changes
+            .labels
+            .lock()
+            .map_err(|_| "labels poisoned")?
+            .values_mut()
+        {
+            issued.observed.lookup.node.logical_bytes += 1;
+        }
+        source.record_projection_change(&ViewChange::Unconfirmed);
+        let started = Instant::now();
+        context.revalidate();
+        assert!(
+            started.elapsed() >= Duration::from_millis(500),
+            "a change the fence could not confirm is waited out"
         );
         Ok(())
     }
@@ -2794,31 +2973,49 @@ mod tests {
     fn attributes_observed_before_a_change_never_take_a_later_label() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let path = MountPath::root().child(b"raced".to_vec());
-        let file_id = source
-            .create_file(&path, FileMetadata::default())?
-            .node
-            .file_id;
+        let created = source.create_file(&path, FileMetadata::default())?;
+        let file_id = created.node.file_id;
         let binding = source.binding_epoch();
         let unchanged = |stamp| context.unchanged_since(&path, Some(file_id), stamp);
+        let reported = |stamp| context.reported_unchanged_since(&path, Some(file_id), stamp);
         let before = context.cache_stamp().ok_or("checkout has no view stamp")?;
         source.write_range(&path, 0, Bytes::from_static(b"changed"))?;
         let after = context.cache_stamp().ok_or("checkout has no view stamp")?;
+        let written = source.lookup(&path)?.ok_or("file absent")?;
+        let observed = |lookup| Observed {
+            path: path.clone(),
+            lookup,
+        };
 
-        let current = context
-            .changes
-            .label(file_id, Some(after), binding, unchanged);
+        let current = context.changes.label(
+            file_id,
+            Some(after),
+            binding,
+            observed(written),
+            unchanged,
+            reported,
+        );
         assert_eq!(
-            context
-                .changes
-                .label(file_id, Some(after), binding, unchanged),
+            context.changes.label(
+                file_id,
+                Some(after),
+                binding,
+                observed(written),
+                unchanged,
+                reported
+            ),
             current,
             "attributes observed after the change share its label"
         );
         assert!(
-            context
-                .changes
-                .label(file_id, Some(before), binding, unchanged)
-                > current,
+            context.changes.label(
+                file_id,
+                Some(before),
+                binding,
+                observed(created),
+                unchanged,
+                reported
+            ) > current,
             "attributes observed before it get a label of their own"
         );
         Ok(())

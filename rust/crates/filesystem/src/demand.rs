@@ -187,6 +187,10 @@ pub enum SourceChange {
     Node([u8; 32]),
     /// Changes may have gone unreported: anything may have changed.
     Everything,
+    /// Changes may not all have been reported yet, though none is known to
+    /// have been lost: every fact read before is verified against the
+    /// source at its next use, and kept where it still holds.
+    Unconfirmed,
 }
 
 /// Receives the changes one watched source reports.
@@ -412,7 +416,9 @@ impl SourceChangeSink for FilteredChangeSink {
                 SourceChange::Name(path) | SourceChange::Entry(path) => {
                     !self.excluded.iter().any(|root| path.is_within(root))
                 }
-                SourceChange::Node(_) | SourceChange::Everything => true,
+                SourceChange::Node(_) | SourceChange::Everything | SourceChange::Unconfirmed => {
+                    true
+                }
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -1665,6 +1671,8 @@ pub mod native {
             for change in changes {
                 match change {
                     HostChange::Everything => reported.push(SourceChange::Everything),
+                    #[cfg(target_os = "macos")]
+                    HostChange::Unconfirmed => reported.push(SourceChange::Unconfirmed),
                     #[cfg(windows)]
                     HostChange::File(index) => reported.push(SourceChange::Node(
                         windows_file_identity(inner.root.identity().device, *index),

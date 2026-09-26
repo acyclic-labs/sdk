@@ -645,6 +645,24 @@ impl MountFilesystem for RoutedMountSource {
         })
     }
 
+    fn reports_changes_to(&self, file_id: FileId) -> bool {
+        let owner = self
+            .file_id_index
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&file_id)
+            .cloned();
+        // A node no route owns is the router's own, whose changes it records.
+        owner.map_or_else(
+            || self.view_stamp().is_some(),
+            |name| {
+                self.locate(&name).is_ok_and(|(source, tag)| {
+                    source.reports_changes_to(remap_file_id(file_id, tag))
+                })
+            },
+        )
+    }
+
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
         let owner = self
             .file_id_index

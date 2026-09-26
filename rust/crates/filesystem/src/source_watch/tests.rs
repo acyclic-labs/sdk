@@ -37,6 +37,18 @@ impl Recorded {
     fn everything(changes: &[HostChange]) -> bool {
         changes.contains(&HostChange::Everything)
     }
+
+    /// Whether a fence reported that changes may be undelivered, which it
+    /// does on macOS instead of proving their delivery.
+    fn unconfirmed(changes: &[HostChange]) -> bool {
+        #[cfg(target_os = "macos")]
+        return changes.contains(&HostChange::Unconfirmed);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = changes;
+            false
+        }
+    }
 }
 
 /// Everything reported until `reported` holds of it, or ten seconds pass. A
@@ -110,8 +122,7 @@ fn changes_beneath_the_root_are_reported_by_name() -> TestResult {
             "{path}: {changes:?}"
         );
     }
-    // Nothing was lost; a macOS fence reports everything by design.
-    #[cfg(not(target_os = "macos"))]
+    // Nothing was lost.
     assert!(
         !Recorded::everything(&changes),
         "nothing was lost: {changes:?}"
@@ -144,7 +155,7 @@ fn a_fence_delivers_every_change_completed_before_it() -> TestResult {
         let changes = recorded.take();
         for path in expected {
             assert!(
-                Recorded::reported(&changes, &path) || Recorded::everything(&changes),
+                Recorded::reported(&changes, &path) || Recorded::unconfirmed(&changes),
                 "{path:?} changed before fence {index} but was not delivered by it: {changes:?}"
             );
         }

@@ -110,6 +110,11 @@ pub(crate) enum HostChange {
     File(u64),
     /// Notifications were lost: anything may have changed.
     Everything,
+    /// Changes may not all have been delivered yet, though none is known to
+    /// have been lost: a fence that cannot prove delivery (see the macOS
+    /// backend) reports this instead.
+    #[cfg(target_os = "macos")]
+    Unconfirmed,
 }
 
 /// Receives each batch of changes, in the order the host reported them.

@@ -130,6 +130,13 @@ impl Drop for ViewOriginScope {
 pub trait ViewObserver: Send + Sync {
     /// One change was recorded at `position` by `origin`.
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
+
+    /// Changes to the source may not all have been reported by `position`,
+    /// though none is known to have been lost ([`ViewChange::Unconfirmed`]).
+    /// An observer that cannot verify what it keeps treats it as a change.
+    fn view_unconfirmed(&self, position: ViewStamp) {
+        self.view_changed(position, ViewOrigin::current());
+    }
 }
 
 /// The observers of one source of view changes.
@@ -160,6 +167,13 @@ impl ViewObservers {
             observer.view_changed(position, origin);
         }
     }
+
+    /// Tells every observer that changes may be unreported by `position`.
+    pub(super) fn notify_unconfirmed(&self, position: ViewStamp) {
+        for observer in self.live() {
+            observer.view_unconfirmed(position);
+        }
+    }
 }
 
 /// What one checkout mutation changed in the mounted view.
@@ -184,6 +198,12 @@ pub(super) enum ViewChange<'a> {
     Effect(&'a ViewEffect),
     /// An effect set that cannot be enumerated, such as a rebind.
     Everything,
+    /// Changes to the source may not all have been reported yet, though
+    /// none is known to have been lost. Every fact read before is stale to
+    /// [`ViewLedger::unchanged_since`], so it is read again, and kept where
+    /// what is read again matches it: nothing reported changed it
+    /// ([`ViewLedger::reported_unchanged_since`]).
+    Unconfirmed,
 }
 
 /// One enumerated effect on the view: installing a candidate prepared from
@@ -215,6 +235,7 @@ pub(super) struct ViewEffect {
 pub(super) struct ViewLedger {
     latest: AtomicU64,
     everything: AtomicU64,
+    unconfirmed: AtomicU64,
     bindings: ChangeMap,
     directories: ChangeMap,
     nodes: ChangeMap,
@@ -226,6 +247,7 @@ impl ViewLedger {
         Self {
             latest: AtomicU64::new(0),
             everything: AtomicU64::new(0),
+            unconfirmed: AtomicU64::new(0),
             bindings: ChangeMap::default(),
             directories: ChangeMap::default(),
             nodes: ChangeMap::default(),
@@ -290,6 +312,12 @@ impl ViewLedger {
                 }
             }
             ViewChange::Everything => position.record_in(&self.everything),
+            ViewChange::Unconfirmed => {
+                position.record_in(&self.unconfirmed);
+                position.record_in(&self.latest);
+                self.observers.notify_unconfirmed(position);
+                return;
+            }
         }
         position.record_in(&self.latest);
         self.observers.notify(position);
@@ -300,6 +328,19 @@ impl ViewLedger {
     /// rebound, `path`'s own listing and attributes are unchanged, and the
     /// node itself is unchanged.
     pub(super) fn unchanged_since(
+        &self,
+        path: &NamespacePath,
+        file_id: Option<FileId>,
+        stamp: ViewStamp,
+    ) -> bool {
+        stamp.precedes_none_of(&self.unconfirmed)
+            && self.reported_unchanged_since(path, file_id, stamp)
+    }
+
+    /// [`Self::unchanged_since`], counting only reported changes: facts read
+    /// after `stamp` and read again since, with the same result, still
+    /// describe the view.
+    pub(super) fn reported_unchanged_since(
         &self,
         path: &NamespacePath,
         file_id: Option<FileId>,
@@ -328,7 +369,8 @@ impl ViewLedger {
     /// listing is keyed by its path, so only [`Self::unchanged_since`] covers
     /// facts that follow from a listing.
     pub(super) fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
-        stamp.precedes_none_of(&self.everything)
+        stamp.precedes_none_of(&self.unconfirmed)
+            && stamp.precedes_none_of(&self.everything)
             && self
                 .nodes
                 .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id)))
