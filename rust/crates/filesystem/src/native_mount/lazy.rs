@@ -2250,6 +2250,16 @@ where
         Ok(created)
     }
 
+    fn open_created(
+        &self,
+        path: &MountPath,
+        created: &MountLookup,
+    ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
+        let lease = self.view_lease(None)?;
+        let file = self.authored.open_created(path, created)?;
+        self.bind_open_file(file, Some(created.node.file_id), lease.generation)
+    }
+
     fn create_directory(
         &self,
         path: &MountPath,

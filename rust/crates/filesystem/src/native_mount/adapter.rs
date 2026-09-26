@@ -2635,6 +2635,21 @@ where
         }))
     }
 
+    fn open_created(
+        &self,
+        _path: &MountPath,
+        created: &MountLookup,
+    ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
+        Ok(Arc::new(CheckoutAttachedFile {
+            checkout: Arc::clone(&self.checkout),
+            file_id: created.node.file_id,
+            runtime: self.runtime.clone(),
+            cancellation: self.cancellation.clone(),
+            profile: self.profile,
+            limits: self.limits,
+        }))
+    }
+
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
         let path = self.path(path)?;
         let owner = ViewGate::callback_owner();

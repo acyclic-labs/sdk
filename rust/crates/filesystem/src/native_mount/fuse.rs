@@ -983,6 +983,21 @@ impl ProjectionState {
         if admitted { attributes } else { Duration::ZERO }
     }
 
+    /// The position after which `name` under `parent` was last found absent,
+    /// as the negative entry the kernel holds for it records.
+    fn absent_since(&self, parent: u64, name: &ChildName) -> Option<ViewStamp> {
+        let component = name.key().components().last()?;
+        name.is_exact()
+            .then(|| {
+                self.by_inode
+                    .get(&parent)?
+                    .negative_children
+                    .get(component)
+                    .copied()
+            })
+            .flatten()
+    }
+
     /// Records a negative entry for `name` under `parent`, derived after
     /// `stamp`, returning its cache lifetime when the kernel may keep it.
     fn admit_negative(
@@ -2992,10 +3007,12 @@ impl FuseProjection {
     ) -> Result<(Entry, u64, FopenFlags), i32> {
         let source = self.source();
         let _names = self.core.names()?;
-        let child = {
+        let (child, absent_since) = {
             let state = self.core.state()?;
             state.admit_write()?;
-            self.child(&state, parent, name)?
+            let child = self.child(&state, parent, name)?;
+            let absent_since = state.absent_since(parent, &child);
+            (child, absent_since)
         };
         let path = &child.spelled;
         let stamp = source.view_stamp();
@@ -3004,45 +3021,50 @@ impl FuseProjection {
                 .then(|| self.core.claim_content(file_id))
                 .transpose()
         };
-        let (lookup, open_file, dirty, _claim, confirmed) =
-            if let Some(existing) = source.lookup(path).map_err(errno)? {
-                {
-                    if flags & libc::O_EXCL != 0 {
-                        return Err(libc::EEXIST);
-                    }
-                    if existing.node.kind != MountNodeKind::Regular {
-                        return Err(libc::EISDIR);
-                    }
-                    // Confirmed before the open changes anything.
-                    let confirmed = self
-                        .confirm_names(ConfirmedNames::default(), [(child.key(), existing.node)])?;
-                    let claimed = claim(existing.node.file_id)?;
-                    let open_file = source.open_file(path).map_err(errno)?;
-                    let opened = open_file.lookup().map_err(errno)?;
-                    if opened.node.file_id != existing.node.file_id {
-                        return Err(libc::ESTALE);
-                    }
-                    if flags & libc::O_TRUNC == 0 {
-                        (opened, open_file, false, claimed, confirmed)
-                    } else {
-                        open_file.resize(0).map_err(errno)?;
-                        let resized = open_file.lookup().map_err(errno)?;
-                        (resized, open_file, true, claimed, confirmed)
-                    }
+        // The kernel looks a name up before it creates it: an absence it was
+        // told of that nothing has changed since needs no second lookup.
+        let existing = match absent_since {
+            Some(held) if source.unchanged_since(child.key(), None, held) => None,
+            _ => source.lookup(path).map_err(errno)?,
+        };
+        let (lookup, open_file, dirty, _claim, confirmed) = if let Some(existing) = existing {
+            {
+                if flags & libc::O_EXCL != 0 {
+                    return Err(libc::EEXIST);
                 }
-            } else {
-                let metadata = create_metadata(request, mode, S_IFREG);
-                let created = source.create_file(path, metadata).map_err(errno)?;
-                let claimed = claim(created.node.file_id)?;
-                (
-                    created,
-                    source.open_file(path).map_err(errno)?,
-                    true,
-                    claimed,
-                    // A file just created has no other name.
-                    ConfirmedNames::default(),
-                )
-            };
+                if existing.node.kind != MountNodeKind::Regular {
+                    return Err(libc::EISDIR);
+                }
+                // Confirmed before the open changes anything.
+                let confirmed =
+                    self.confirm_names(ConfirmedNames::default(), [(child.key(), existing.node)])?;
+                let claimed = claim(existing.node.file_id)?;
+                let open_file = source.open_file(path).map_err(errno)?;
+                let opened = open_file.lookup().map_err(errno)?;
+                if opened.node.file_id != existing.node.file_id {
+                    return Err(libc::ESTALE);
+                }
+                if flags & libc::O_TRUNC == 0 {
+                    (opened, open_file, false, claimed, confirmed)
+                } else {
+                    open_file.resize(0).map_err(errno)?;
+                    let resized = open_file.lookup().map_err(errno)?;
+                    (resized, open_file, true, claimed, confirmed)
+                }
+            }
+        } else {
+            let metadata = create_metadata(request, mode, S_IFREG);
+            let created = source.create_file(path, metadata).map_err(errno)?;
+            let claimed = claim(created.node.file_id)?;
+            (
+                created,
+                source.open_created(path, &created).map_err(errno)?,
+                true,
+                claimed,
+                // A file just created has no other name.
+                ConfirmedNames::default(),
+            )
+        };
         let mut state = self.core.state()?;
         let inode = state.intern(
             source,
