@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { Harness, NativeContracts, TaskDefinition, type AgentId } from "@acyclic-labs/harness";
+import { Harness, NativeContracts, TaskDefinition, type AgentId } from "../src/index.js";
 import { MemoryObjectsProvider } from "@acyclic-labs/objects";
-import { ObjectContentStore, type ObjectVolumeRef } from "../src/index.js";
+import { ObjectContentStore, type ObjectVolumeRef } from "../src/objects.js";
 
-const wasm = readFileSync(fileURLToPath(new URL("../../harness/generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)));
+const wasm = readFileSync(fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)));
 const contracts = await NativeContracts.create();
 const owner = "10101010-1010-1010-1010-101010101010" as AgentId;
 const reader = "11111111-1111-1111-1111-111111111111" as AgentId;

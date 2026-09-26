@@ -2,7 +2,7 @@
 import {
   type Attachment, type ContentBindings, type FileRef, type Harness,
   type Limits, type ProviderRef, type Scope, type VolumeClass, type VolumeRef,
-} from "@acyclic-labs/harness";
+} from "./index.js";
 import {
   idempotencyKey, type BucketRef, type ObjectMetadata,
   type ObjectsProvider, type VersionId,
