@@ -1342,13 +1342,8 @@ impl ProjectionState {
     }
 
     fn remove_path_cache(&mut self, path: &MountPath) {
-        let affected = self
-            .by_inode
-            .iter()
-            .filter_map(|(inode, entry)| entry.binding(path).is_some().then_some(*inode))
-            .collect::<Vec<_>>();
-        for inode in affected {
-            self.remove_binding(inode, path);
+        if let Some(inode) = self.inode_by_path.remove(path) {
+            unbind(&mut self.by_inode, &mut self.inode_by_file, inode, path);
         }
     }
 
@@ -1356,15 +1351,7 @@ impl ProjectionState {
         if self.inode_by_path.get(path) == Some(&inode) {
             self.inode_by_path.remove(path);
         }
-        let remove_inode = if let Some(entry) = self.by_inode.get_mut(&inode) {
-            entry.bindings.retain(|binding| binding.path != *path);
-            entry.bindings.is_empty() && entry.lookup_references == 0 && entry.open_handles == 0
-        } else {
-            false
-        };
-        if remove_inode && let Some(entry) = self.by_inode.remove(&inode) {
-            forget_file(&mut self.inode_by_file, entry.lookup.node.file_id, inode);
-        }
+        unbind(&mut self.by_inode, &mut self.inode_by_file, inode, path);
     }
 
     fn invalidate_prefix(&mut self, prefix: &MountPath) {
@@ -1396,7 +1383,8 @@ impl ProjectionState {
         self.inode_by_path.clear();
         for (inode, entry) in &self.by_inode {
             for binding in &entry.bindings {
-                self.inode_by_path.insert(binding.path.clone(), *inode);
+                let previous = self.inode_by_path.insert(binding.path.clone(), *inode);
+                debug_assert!(previous.is_none(), "a path is bound to one inode");
             }
         }
     }
@@ -1697,6 +1685,41 @@ fn forget_unbound_names(
 }
 
 /// Forgets that `file_id` is `inode`, unless it already names another.
+/// Records `path` as bound to `inode` alone. A path names one file, so an
+/// inode that held it before holds it no longer, and one left with no name,
+/// reference, or handle is forgotten. `inode_by_path` thereby indexes every
+/// binding, which lets a path's binding go without scanning every inode.
+fn bind_path(
+    by_inode: &mut HashMap<u64, InodeEntry>,
+    inode_by_path: &mut HashMap<MountPath, u64>,
+    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    path: &MountPath,
+    inode: u64,
+) {
+    if let Some(previous) = inode_by_path.insert(path.clone(), inode)
+        && previous != inode
+    {
+        unbind(by_inode, inode_by_file, previous, path);
+    }
+}
+
+/// Removes `path` from `inode`'s bindings and forgets an inode left with no
+/// name, lookup reference, or open handle. The caller keeps `inode_by_path`.
+fn unbind(
+    by_inode: &mut HashMap<u64, InodeEntry>,
+    inode_by_file: &mut HashMap<crate::FileId, u64>,
+    inode: u64,
+    path: &MountPath,
+) {
+    let remove_inode = by_inode.get_mut(&inode).is_some_and(|entry| {
+        entry.bindings.retain(|binding| binding.path != *path);
+        entry.bindings.is_empty() && entry.lookup_references == 0 && entry.open_handles == 0
+    });
+    if remove_inode && let Some(entry) = by_inode.remove(&inode) {
+        forget_file(inode_by_file, entry.lookup.node.file_id, inode);
+    }
+}
+
 fn forget_file(
     inode_by_file: &mut HashMap<crate::FileId, u64>,
     file_id: crate::FileId,
@@ -1753,7 +1776,7 @@ fn intern_projected(
         if lookup_reference {
             entry.lookup_references = entry.lookup_references.saturating_add(1);
         }
-        inode_by_path.insert(path, inode);
+        bind_path(by_inode, inode_by_path, inode_by_file, &path, inode);
         return Ok(inode);
     }
     let inode = *next_inode;
@@ -1763,7 +1786,7 @@ fn intern_projected(
     let following = inode.checked_add(1).ok_or(libc::EOVERFLOW)?;
     *next_inode = following;
     inode_by_file.insert(lookup.node.file_id, inode);
-    inode_by_path.insert(path.clone(), inode);
+    bind_path(by_inode, inode_by_path, inode_by_file, &path, inode);
     by_inode.insert(
         inode,
         InodeEntry::new(path, *lookup, stamp, u64::from(lookup_reference)),
@@ -2741,9 +2764,9 @@ impl FuseProjection {
         // Renaming between spellings of one folded name moves nothing the
         // projection records.
         if from.key() != to.key() {
-            if replace {
-                state.invalidate_prefix(to.key());
-            }
+            // Whatever the projection still binds under the destination is
+            // gone now: the rename replaced it, or it was already absent.
+            state.invalidate_prefix(to.key());
             state.rename_prefix(from.key(), to.key());
         }
         Ok(())
@@ -2783,7 +2806,13 @@ impl FuseProjection {
         entry.lookup = projected;
         entry.facts = None;
         entry.lookup_references = entry.lookup_references.saturating_add(1);
-        state.inode_by_path.insert(to.key().clone(), inode);
+        let ProjectionState {
+            by_inode,
+            inode_by_path,
+            inode_by_file,
+            ..
+        } = &mut *state;
+        bind_path(by_inode, inode_by_path, inode_by_file, to.key(), inode);
         let ttl = state.admit_entry(source, inode, &to, current.stamp);
         Ok(Entry { attr, ttl })
     }
