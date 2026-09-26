@@ -10786,9 +10786,11 @@ impl Drop for ServiceLock {
 ///   exactly `acyclic-service-v1\n{instance id}\n{binary identity}\n`.
 /// - A file `service-stop/{instance id}` holding a drain ID of at most 128
 ///   ASCII letters, digits and hyphens asks that instance to drain every
-///   session and exit. It then writes `service-drain.json`, version 1, with
-///   its instance ID as `identity`, the `drainId` and whether teardown
-///   succeeded, and releases its lock.
+///   session and exit. It then writes `service-drain/{instance id}.json`,
+///   version 1, with its instance ID as `identity`, the `drainId` of the
+///   request it served and whether teardown succeeded, and releases its
+///   lock. Every requester of that instance is answered by that record:
+///   an instance drains every session once, whichever request it read.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ServiceMarker {
     instance_id: String,
@@ -10856,7 +10858,14 @@ impl StopRequests {
     fn open(data: &Path, instance_id: &str) -> Result<Self, String> {
         let directory = data.join(SERVICE_STOP_DIRECTORY);
         fs::create_dir_all(&directory).map_err(display)?;
-        // Requests addressed to earlier instances can never be served.
+        // Requests addressed to earlier instances can never be served, and
+        // their drain records were read by requesters that held this lock.
+        let drains = data.join(SERVICE_DRAIN_DIRECTORY);
+        match fs::remove_dir_all(&drains) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(display(error)),
+        }
         for entry in fs::read_dir(&directory).map_err(display)? {
             match fs::remove_file(entry.map_err(display)?.path()) {
                 Ok(()) => {}
@@ -10905,9 +10914,15 @@ struct PublishedServiceMarker {
 }
 
 impl PublishedServiceMarker {
+    /// Publishes the marker whole: a reader sees no marker or all of it.
     fn create(data: &Path, marker: &ServiceMarker) -> Result<Self, String> {
         let path = ServiceMarker::path(data);
-        fs::write(&path, marker.encode()).map_err(display)?;
+        let staged = data.join(format!("service.identity.{}.next", marker.instance_id));
+        fs::write(&staged, marker.encode()).map_err(display)?;
+        if let Err(error) = fs::rename(&staged, &path) {
+            let _ = fs::remove_file(&staged);
+            return Err(display(error));
+        }
         Ok(Self { path })
     }
 }
@@ -10918,8 +10933,12 @@ impl Drop for PublishedServiceMarker {
     }
 }
 
-fn service_drain_completion_path(data: &Path) -> PathBuf {
-    data.join("service-drain.json")
+const SERVICE_DRAIN_DIRECTORY: &str = "service-drain";
+
+/// Where the instance `identity` records its drain; see [`ServiceMarker`].
+fn service_drain_completion_path(data: &Path, identity: &str) -> PathBuf {
+    data.join(SERVICE_DRAIN_DIRECTORY)
+        .join(format!("{identity}.json"))
 }
 
 fn write_service_drain_completion(
@@ -10928,8 +10947,9 @@ fn write_service_drain_completion(
     drain_id: &str,
     result: &Result<(), String>,
 ) -> Result<(), String> {
-    let path = service_drain_completion_path(data);
-    let next = data.join("service-drain.next.json");
+    let path = service_drain_completion_path(data, identity);
+    let next = path.with_extension("next");
+    fs::create_dir_all(data.join(SERVICE_DRAIN_DIRECTORY)).map_err(display)?;
     let value = json!({
         "version": 1,
         "identity": identity,
@@ -10950,12 +10970,8 @@ fn write_service_drain_completion(
     durable_rename(&next, &path, RenameMode::Replace).map_err(display)
 }
 
-fn verify_service_drain_completion(
-    data: &Path,
-    identity: &str,
-    drain_id: &str,
-) -> Result<(), String> {
-    let path = service_drain_completion_path(data);
+fn verify_service_drain_completion(data: &Path, identity: &str) -> Result<(), String> {
+    let path = service_drain_completion_path(data, identity);
     let value: Value = serde_json::from_slice(&fs::read(&path).map_err(|error| {
         format!(
             "Acyclic service exited without durable drain confirmation at {}: {error}",
@@ -10965,7 +10981,6 @@ fn verify_service_drain_completion(
     .map_err(display)?;
     if value.get("version").and_then(Value::as_u64) != Some(1)
         || value.get("identity").and_then(Value::as_str) != Some(identity)
-        || value.get("drainId").and_then(Value::as_str) != Some(drain_id)
     {
         return Err("Acyclic service drain confirmation does not match this request".to_owned());
     }
@@ -12047,7 +12062,7 @@ async fn drain_service(
     request_service_stop(data, &marker.instance_id, &drain_id)?;
     for _ in 0..250 {
         if let Some(lock) = acquire_service_lock(data)? {
-            verify_service_drain_completion(data, &marker.instance_id, &drain_id)?;
+            verify_service_drain_completion(data, &marker.instance_id)?;
             return Ok(lock);
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -15636,17 +15651,31 @@ mod tests {
                             Err(error) if error == "refusing to drain a replacement Acyclic service"
                         ));
                         assert!(acquire_service_lock(&data).expect("service lock").is_none());
-                        let fence = drain_service(&data, Some(&identity))
-                            .await
-                            .expect("identity-bound durable drain");
-                        drop(fence);
+                        // Two requesters that ask at once are both answered.
+                        let (first, second) = tokio::join!(
+                            async {
+                                drop(
+                                    drain_service(&data, Some(&identity))
+                                        .await
+                                        .expect("identity-bound durable drain"),
+                                );
+                            },
+                            async {
+                                drop(
+                                    drain_service(&data, Some(&identity))
+                                        .await
+                                        .expect("concurrent durable drain"),
+                                );
+                            }
+                        );
+                        let ((), ()) = (first, second);
                         tokio::time::timeout(std::time::Duration::from_secs(5), service)
                             .await
                             .expect("service exit deadline")
                             .expect("service task")
                             .expect("clean service shutdown");
                         assert!(!data.join("service.identity").exists());
-                        assert!(service_drain_completion_path(&data).exists());
+                        assert!(service_drain_completion_path(&data, &identity).exists());
                         assert!(acquire_service_lock(&data).expect("service lock").is_some());
                     });
             })
@@ -15715,7 +15744,8 @@ mod tests {
                         assert!(ServiceMarker::read(&data).is_none());
                         assert!(acquire_service_lock(&data).expect("service lock").is_some());
                         let completion: Value = serde_json::from_slice(
-                            &fs::read(service_drain_completion_path(&data)).expect("drain record"),
+                            &fs::read(service_drain_completion_path(&data, &marker.instance_id))
+                                .expect("drain record"),
                         )
                         .expect("drain record json");
                         assert_eq!(completion["identity"], marker.instance_id.as_str());
@@ -15961,7 +15991,7 @@ mod tests {
                             .expect("service exit deadline")
                             .expect("service task")
                             .expect("clean service shutdown");
-                        assert!(service_drain_completion_path(&data).exists());
+                        assert!(service_drain_completion_path(&data, &instance_id).exists());
                         assert!(acquire_service_lock(&data).expect("service lock").is_some());
                         assert!(kept.iter().all(|path| path.exists()));
                     });

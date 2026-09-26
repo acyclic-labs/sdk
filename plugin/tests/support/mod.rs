@@ -275,8 +275,12 @@ impl ServiceGuard {
                         && status.get("lockAcquirable").and_then(Value::as_bool) == Some(true) =>
                 {
                     let drain: Value = serde_json::from_slice(
-                        &fs::read(service_data(&self.home).join("service-drain.json"))
-                            .map_err(|error| error.to_string())?,
+                        &fs::read(
+                            service_data(&self.home)
+                                .join("service-drain")
+                                .join(format!("{identity}.json")),
+                        )
+                        .map_err(|error| error.to_string())?,
                     )
                     .map_err(|error| error.to_string())?;
                     if drain.get("identity").and_then(Value::as_str) == Some(identity)
