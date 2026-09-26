@@ -451,6 +451,10 @@ pub struct LazyMountSource<A, O, D, S> {
     /// sampled before and the source it was read from: nothing beneath one
     /// needs the source while the view records no change to its name.
     source_absent: SourceAbsentDirectories,
+    /// Directories the checkout was found to hold, each with the stamp
+    /// sampled before: one stays held while no component of its path is
+    /// rebound, which is the only way a directory leaves the checkout.
+    authored_directories: Mutex<HashMap<MountPath, ViewStamp>>,
     unstaged: UnstagedIdentities,
     cursors: CursorTable<(ViewStamp, LazyDirectoryCursor)>,
     source_view: Arc<SourceViewGate>,
@@ -503,6 +507,7 @@ where
             runtime: Arc::new(CallbackRuntime::create()?),
             resolutions: Resolutions::default(),
             source_absent: SourceAbsentDirectories::default(),
+            authored_directories: Mutex::new(HashMap::new()),
             unstaged: Arc::default(),
             cursors: CursorTable::new(MAXIMUM_LAZY_DIRECTORY_CURSORS),
             source_view: Arc::new(SourceViewGate::new()),
@@ -1219,11 +1224,24 @@ where
         let mut parent = MountPath::root();
         for component in components.iter().take(components.len().saturating_sub(1)) {
             parent = parent.child((*component).to_vec());
-            let authored = self.authored.lookup(&parent)?;
-            if authored.is_some() {
+            if self.holds_authored_directory(&parent) {
                 continue;
             }
-            self.wait(|| async { self.promote(&parent).await })?;
+            // Sampled first: a rebinding after it retires the confirmation.
+            let stamp = self.ledger_stamp();
+            if self.authored.lookup(&parent)?.is_none() {
+                self.wait(|| async { self.promote(&parent).await })?;
+            }
+            if let Some(stamp) = stamp {
+                let mut held = self
+                    .authored_directories
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if held.len() >= MAXIMUM_REMEMBERED_RESOLUTIONS {
+                    held.clear();
+                }
+                held.insert(parent.clone(), stamp);
+            }
         }
         Ok(())
     }
@@ -1319,6 +1337,20 @@ where
             Ok(Resolution::Unauthored(resolved.0, resolved.1))
         })
         .await
+    }
+
+    /// Whether the checkout holds `directory`, as found after a stamp no
+    /// component of its path was rebound since.
+    fn holds_authored_directory(&self, directory: &MountPath) -> bool {
+        self.authored_directories
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(directory)
+            .copied()
+            .is_some_and(|stamp| {
+                self.source_view.is_stable()
+                    && self.authored.binding_unchanged_since(directory, stamp)
+            })
     }
 
     /// Whether the source lacks `directory`, as a watched source read after
