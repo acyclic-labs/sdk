@@ -1081,12 +1081,20 @@ impl ProjectionState {
         inode: u64,
         handle: Option<u64>,
     ) -> Result<Result<Resolved, NodeFacts>, i32> {
-        if let Some(handle) = handle {
-            return self
-                .open_handle(inode, handle)
-                .map(|open_file| Err(NodeFacts::Handle(open_file)));
-        }
         let entry = self.by_inode.get(&inode).ok_or(libc::ESTALE)?;
+        if let Some(handle) = handle {
+            let open_file = self.open_handle(inode, handle)?;
+            // The handle names the inode's file, whose changes are recorded
+            // by identity: facts nothing changed since answer for it too.
+            return Ok(match entry.current_facts(source) {
+                Some(stamp) => Ok(Resolved {
+                    lookup: entry.lookup,
+                    stamp: Some(stamp),
+                    through: None,
+                }),
+                None => Err(NodeFacts::Handle(open_file)),
+            });
+        }
         if let Some(stamp) = entry.current_facts(source) {
             return Ok(Ok(Resolved {
                 lookup: entry.lookup,

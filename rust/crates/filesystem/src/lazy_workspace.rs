@@ -3142,31 +3142,47 @@ where
                             )
                         })?;
                         let limits = self.workspace.limits();
+                        // A child is hidden when it or an ancestor is a
+                        // tombstone; the ancestors are this page's directory
+                        // and its own, so they are read once for the page.
+                        let directory_tombstoned = self
+                            .tombstoned_measured(
+                                state.overlay,
+                                path,
+                                remaining_work(work, budget)?,
+                                cancellation,
+                            )
+                            .await?;
+                        work = account_nested_with_live_memory(
+                            work,
+                            directory_tombstoned.work,
+                            live_bytes,
+                            budget,
+                        )?;
                         for entry in &page.entries {
                             let child_path = logical_child_path(path, &entry.name);
                             if let Some(child) = child_path.as_ref() {
                                 work = account_transient_string(work, child, live_bytes, budget)?;
-                                if mounted_mask
-                                    .is_some_and(|(paths, _)| paths.binary_search(child).is_ok())
+                                if directory_tombstoned.value
+                                    || mounted_mask.is_some_and(|(paths, _)| {
+                                        paths.binary_search(child).is_ok()
+                                    })
                                 {
                                     slots.push((true, None));
                                     continue;
                                 }
-                                let tombstoned = self
-                                    .tombstoned_measured(
+                                let fact = self
+                                    .overlay_fact_measured(
                                         state.overlay,
-                                        child,
+                                        &self.canonical_path(child)?,
                                         remaining_work(work, budget)?,
                                         cancellation,
                                     )
                                     .await?;
                                 work = account_nested_with_live_memory(
-                                    work,
-                                    tombstoned.work,
-                                    live_bytes,
-                                    budget,
+                                    work, fact.work, live_bytes, budget,
                                 )?;
-                                if tombstoned.value {
+                                if matches!(fact.value, Some(LazyOverlayChange::Tombstone)) {
                                     slots.push((true, None));
                                     continue;
                                 }
