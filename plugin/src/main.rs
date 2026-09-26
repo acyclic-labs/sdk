@@ -1824,6 +1824,9 @@ struct ControlPlane {
     physical_roots: BTreeMap<String, Arc<SharedPhysicalRoot>>,
     mounts: BTreeMap<String, LocalMount>,
     pending_mounts: BTreeMap<[u8; 16], LocalMount>,
+    /// Detached mounts whose sources are still being torn down; see
+    /// [`ControlPlane::retire`].
+    retiring: Vec<tokio::task::JoinHandle<()>>,
     /// The last save was left unflushed; see [`Survives::ServiceCrash`].
     unflushed: bool,
     slots: StateSlots,
@@ -1904,6 +1907,7 @@ impl ControlPlane {
             physical_roots: BTreeMap::new(),
             mounts: BTreeMap::new(),
             pending_mounts: BTreeMap::new(),
+            retiring: Vec::new(),
             unflushed: false,
             slots,
             #[cfg(test)]
@@ -2380,6 +2384,7 @@ impl ControlPlane {
                 mount.abandon().map_err(|error| {
                     format!("cannot fence expired agent '{agent_id}' before recovery: {error}")
                 })?;
+                self.retire(mount);
             }
         }
         for record in expired {
@@ -5008,9 +5013,21 @@ impl ControlPlane {
         }
         if let Some(mount) = self.mounts.get(agent_id) {
             mount.unmount().await?;
-            self.mounts.remove(agent_id);
+            if let Some(mount) = self.mounts.remove(agent_id) {
+                self.retire(mount);
+            }
         }
         Ok(())
+    }
+
+    /// Tears a detached mount's source down off the caller's path: its
+    /// namespace is gone and its effects are published, so nothing waits on
+    /// the watch and checkout it still holds, whose release takes a while.
+    /// Close joins every retirement before it lets the root go.
+    fn retire(&mut self, mount: LocalMount) {
+        self.retiring.retain(|retirement| !retirement.is_finished());
+        self.retiring
+            .push(tokio::task::spawn_blocking(move || drop(mount)));
     }
 
     #[cfg(test)]
@@ -5622,6 +5639,13 @@ impl ControlPlane {
                 }
             }
             drop(operations);
+            for retirement in std::mem::take(&mut self.retiring) {
+                if let Err(error) = retirement.await {
+                    first_error.get_or_insert_with(|| {
+                        format!("cannot release a retired mount during shutdown: {error}")
+                    });
+                }
+            }
             first_error.map_or(Ok(()), Err)
         }
         .await;
