@@ -41,10 +41,11 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Storage_FileSystem",
   "Win32_System_Memory",
   "Win32_System_Pipes",
+  "Win32_System_Threading",
 ] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-rustix = { workspace = true, features = ["fs"] }
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
 bytes.workspace = true
