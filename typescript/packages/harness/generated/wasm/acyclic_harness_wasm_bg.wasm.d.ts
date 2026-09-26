@@ -49,7 +49,6 @@ export const wasmreducer_verifyPrivateDirectoryRead: (a: number, b: any, c: any,
 export const wasmreducer_verifyScope: (a: number, b: any) => [number, number];
 export const wasmreducer_volumeCapability: (a: number, b: any, c: number, d: number) => [number, number, number, number];
 export const wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
-export const wasm_bindgen__convert__closures_____invoke__h74ad4a992e845941: (a: number, b: number, c: any, d: any) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_exn_store: (a: number) => void;

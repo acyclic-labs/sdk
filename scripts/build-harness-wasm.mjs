@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,3 +46,22 @@ run(wasmBindgen, [
   "--out-dir", outputDirectory,
   "--out-name", "acyclic_harness_wasm",
 ]);
+
+// wasm-bindgen exposes the internal closure invoke shim in its generated
+// `InitOutput` declarations.  Its short hash is derived from linker details
+// and therefore changes between otherwise equivalent host builds (for
+// example, Windows and Linux).  The shim is an implementation detail: it is
+// never a supported JS entry point and is not used by the public Harness
+// facade.  Omit it from the tracked declaration surface so a clean build is
+// byte-for-byte stable across platforms while leaving the generated runtime
+// JS/WASM pair untouched.
+const generatedDeclarationFiles = [
+  resolve(outputDirectory, "acyclic_harness_wasm.d.ts"),
+  resolve(outputDirectory, "acyclic_harness_wasm_bg.wasm.d.ts"),
+];
+const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen__convert__closures_____invoke__h[0-9a-f]+:.*\r?\n/gm;
+for (const declaration of generatedDeclarationFiles) {
+  const source = readFileSync(declaration, "utf8");
+  const normalized = source.replace(closureInvokeShim, "");
+  if (normalized !== source) writeFileSync(declaration, normalized);
+}

@@ -660,7 +660,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
         // Validate and canonicalize every member before consulting the owner
         // manifest. Invalid input must be rejected locally and must never be
         // turned into an unsupported-provider result (or partially admitted).
-        this.#validateBatchInputs(definition, batch);
+        const admittedInputs = this.#validateBatchInputs(definition, batch);
         if (!this.#harness.spawner?.loadBatch) {
           throw new Error("durable batch requires an owner-retained manifest provider");
         }
@@ -670,7 +670,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
         // A retained batch already has an immutable execution placement. Load
         // it before qualification so replay still works if the provider is
         // unavailable or now returns a different placement.
-        request = await this.#batchRequest(definition, batch, retained?.execution);
+        request = await this.#batchRequest(definition, batch, retained?.execution, admittedInputs);
         if (retained && !this.#harness.contracts.canonicalEqual(retained, request.canonical)) {
           throw new Error("batch identity belongs to another admission request");
         }
@@ -874,18 +874,17 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     return entries;
   }
   async #batchRequest<Input>(definition: TaskDefinition<Input, Output>, batch: Batch<Input>,
-    retainedExecution?: ExecutionPlacementWire | null): Promise<BatchAdmissionRequest> {
+    retainedExecution?: ExecutionPlacementWire | null,
+    admittedInputs?: readonly Input[]): Promise<BatchAdmissionRequest> {
     if (definition.implementation.kind !== "resumable" || !definition.options.input
       || !definition.options.implementationDigest) throw new BatchInputError("durable batch needs a pinned resumable task");
     if (batch.inputs.length > 65_536) throw new BatchInputError("batch has too many inputs");
     let request: BatchAdmissionRequest;
     try {
       const contracts = this.#harness.contracts;
-      const members = batch.inputs.map((input, index) => {
-        const admitted = definition.options.input!.parse(contracts.validateToolValue(definition.options.input!.document, input));
-        contracts.validateToolValue(definition.options.input!.document, admitted);
+      const members = (admittedInputs ?? this.#validateBatchInputs(definition, batch)).map((input, index) => {
         return this.#harness.admissionRecord(contracts.batchMemberOperationId(this.id, batch.id, index),
-          definition, admitted, this.parentTaskId);
+          definition, input, this.parentTaskId);
       });
       const identities = durableWireIdentities(definition, contracts);
       const policy = this.#harness.durablePolicyIdentity();
@@ -935,16 +934,19 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     this.#pinBatchDigest(batch.id, request.inputDigest);
     return request;
   }
-  #validateBatchInputs<Input>(definition: TaskDefinition<Input, Output>, batch: Batch<Input>): void {
+  #validateBatchInputs<Input>(definition: TaskDefinition<Input, Output>, batch: Batch<Input>): readonly Input[] {
     if (definition.implementation.kind !== "resumable" || !definition.options.input
       || !definition.options.implementationDigest) throw new BatchInputError("durable batch needs a pinned resumable task");
     if (batch.inputs.length > 65_536) throw new BatchInputError("batch has too many inputs");
     try {
       const contracts = this.#harness.contracts;
+      const admittedInputs: Input[] = [];
       for (const input of batch.inputs) {
         const admitted = definition.options.input.parse(contracts.validateToolValue(definition.options.input.document, input));
         contracts.validateToolValue(definition.options.input.document, admitted);
+        admittedInputs.push(admitted);
       }
+      return admittedInputs;
     } catch (error) {
       throw new BatchInputError(error instanceof Error ? error.message : String(error));
     }

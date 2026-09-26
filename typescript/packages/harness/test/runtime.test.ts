@@ -863,10 +863,16 @@ describe("typed agent runtime", () => {
   });
 
   test("replays a retained batch without requalifying its immutable placement", async () => {
+    let parsedInputs = 0;
+    const countingInput = defineRuntimeSchema("counting-input", { type: "number" }, (value: unknown): number => {
+      parsedInputs++;
+      if (typeof value !== "number") throw new TypeError("invalid input");
+      return value;
+    });
     const definition = TaskDefinition.resumable<number, number, number>("retained-placement", "1", {
       state: numberSchema, initial: input => input,
       async transition(_context, state) { return { kind: "finish", output: state }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    }, { implementationDigest: durableDigest, input: countingInput, output: numberSchema });
     const routeIdentity = policyIdentity("test.batch.execution", "1", Uint8Array.from({ length: 32 }, () => 8));
     const placement = {
       provider: routeIdentity,
@@ -916,12 +922,14 @@ describe("typed agent runtime", () => {
       .group<number>(GroupPolicies.collectAll, groupId);
     expect((await first.spawnMany(definition, batch)).map(entry => entry.admission.kind))
       .toEqual(["indeterminate", "indeterminate"]);
+    expect(parsedInputs).toBe(2);
     expect(qualifications).toBe(1);
     unavailable = true;
     const reopened = Harness.builder(contracts).execution(execution).task(definition).build()
       .group<number>(GroupPolicies.collectAll, groupId);
     expect((await reopened.spawnMany(definition, batch)).map(entry => entry.admission.kind))
       .toEqual(["indeterminate", "indeterminate"]);
+    expect(parsedInputs).toBe(4);
     expect(qualifications).toBe(1);
   });
 

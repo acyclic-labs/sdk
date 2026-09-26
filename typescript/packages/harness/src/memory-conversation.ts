@@ -243,6 +243,17 @@ export class MemoryConversation {
 
   /** Store immutable bytes before any record can refer to them. */
   async stage(path: string, bytes: Uint8Array, mediaType: string, displayName: string): Promise<FileRef> {
+    return this.#stage(path, bytes, mediaType, displayName, true);
+  }
+
+  /**
+   * Stores an immutable ref without changing the provider's path head.
+   * Conversation-only artifacts use this when a narrowed path budget leaves
+   * no safe auxiliary path: a ref may be addressed directly, but it must not
+   * shadow the user file returned by path-based reads.
+   */
+  async #stage(path: string, bytes: Uint8Array, mediaType: string, displayName: string,
+    updatePath: boolean): Promise<FileRef> {
     if (bytes.byteLength > this.#stagingLimits.file_bytes) {
       throw new TypeError("staged file exceeds harness limits");
     }
@@ -286,8 +297,8 @@ export class MemoryConversation {
       }
       this.#files.set(key, { reference, bytes: resident });
     }
-    if (this.#fileKey(this.#paths.get(path) ?? reference) !== this.#fileKey(reference)
-      || !this.#paths.has(path)) {
+    if (updatePath && (this.#fileKey(this.#paths.get(path) ?? reference) !== this.#fileKey(reference)
+      || !this.#paths.has(path))) {
       this.#paths.set(path, reference);
       this.#generation++;
       const history = this.#pathHistory.get(path) ?? [];
@@ -453,15 +464,16 @@ export class MemoryConversation {
     if (user === undefined) throw new TypeError("terminal turn has no admitted user message");
     // Terminalization must remain possible under every valid narrowed limit,
     // including file_bytes/path_bytes == 1. The marker is control-plane data:
-    // its one-byte body and display name retain the outcome while its path
+    // its one-byte body and display name retain the outcome while its ref path
     // falls back to the admitted user path when no short path is available.
+    // The detached staging path never becomes the provider's path head.
     const marker = encoder.encode(outcome === "failed" ? "f" : "c");
     const preferredPath = `turns/${operationId}/terminal`;
     const path = encoder.encode(preferredPath).byteLength <= limits.path_bytes
       && ![...this.#paths.keys()].some(existing => existing !== preferredPath
         && (existing.startsWith(`${preferredPath}/`) || preferredPath.startsWith(`${existing}/`)))
       ? preferredPath : user.content.path;
-    const terminal = await this.stage(path, marker, "text/plain", `${outcome}.txt`);
+    const terminal = await this.#stage(path, marker, "text/plain", `${outcome}.txt`, false);
     this.#core.validateFileUnderLimits(terminal, limits);
     this.#append(this.#core.deriveOperationId(operationId, "terminal-event"), "terminal", {
       id: noticeId, sequence: BigInt(state.messages.length + 1), kind: "system", content: terminal,

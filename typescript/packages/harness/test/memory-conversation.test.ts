@@ -459,11 +459,15 @@ test("terminal outcomes publish under tight but valid file and path limits", asy
   expect(new TextDecoder().decode(await conversation.read(terminal.content))).toBe("f");
   expect(terminal.content.descriptor.byte_length).toBe(1);
   expect(terminal.content.path).toBe("u");
+  expect(new TextDecoder().decode((await conversation.readPrivatePath(
+    conversation.volume, "", "u")).bytes)).toBe("q");
 
   // Reusing the fallback path creates a new immutable user version, then
   // returns to the already-resident terminal marker version. Both refs must
   // remain readable and independently recorded.
   const nextContent = await conversation.stage("u", new TextEncoder().encode("n"), "text/plain", "u");
+  expect(new TextDecoder().decode((await conversation.readPrivatePath(
+    conversation.volume, "", "u")).bytes)).toBe("n");
   await expect(conversation.runConversation(runtime,
     "13131313-1313-1313-1313-131313131313" as OperationId, nextContent))
     .rejects.toBeInstanceOf(TerminalModelTurnError);
@@ -475,6 +479,8 @@ test("terminal outcomes publish under tight but valid file and path limits", asy
   expect(messages[3]!.content.path).toBe("u");
   expect(messages[3]!.content.version).toBe(messages[1]!.content.version);
   expect(new TextDecoder().decode(await conversation.read(messages[3]!.content))).toBe("f");
+  expect(new TextDecoder().decode((await conversation.readPrivatePath(
+    conversation.volume, "", "u")).bytes)).toBe("n");
   conversation.free();
 });
 
