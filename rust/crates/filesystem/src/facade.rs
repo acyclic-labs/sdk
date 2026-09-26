@@ -2396,15 +2396,10 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             cancellation
                 .check()
                 .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            let identity = blake3::hash(format!("{object_key}\0{version_id}").as_bytes());
+            // Each collection lists its candidates afresh, so an exact
+            // version is deleted at most once and needs no retry identity.
             provider
-                .delete(
-                    bucket.clone(),
-                    object_key,
-                    Some(version_id),
-                    None,
-                    Some(format!("fs-gc-{}", identity.to_hex())),
-                )
+                .delete(bucket.clone(), object_key, Some(version_id), None, None)
                 .await
                 .map_err(|error| {
                     OperationFailure::new(FsError::LocalObjectsBucket(error), *work)

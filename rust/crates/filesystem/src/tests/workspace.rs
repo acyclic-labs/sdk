@@ -2417,5 +2417,13 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
     );
     let main = fs.open_workspace("repo").await?;
     assert_eq!(main.read("/base.txt", 64).await?, "base");
+    // Content the collection removed is stored again when written again.
+    let content = "only the agent ".repeat(8_192);
+    main.write_text("/again.txt", &content).await?;
+    drop(main);
+    close_local(fs).await?;
+    let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+    let main = fs.open_workspace("repo").await?;
+    assert_eq!(main.read("/again.txt", 1 << 20).await?, content.as_str());
     Ok(())
 }

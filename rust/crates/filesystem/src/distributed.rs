@@ -1677,10 +1677,10 @@ fn provider_put_request(bucket: &wire::BucketRef, write: &ObjectWrite) -> PutReq
             ..wire::ObjectMetadata::default()
         },
         condition: Some(Condition::IfAbsent),
-        idempotency_key: Some(format!(
-            "fs-object-{}",
-            hex::encode(write.object_id.digest.as_bytes())
-        )),
+        // IfAbsent on a content-addressed key already makes a retry exact.
+        // A retained idempotency outcome would outlive a collection of the
+        // object and answer a later put of it without storing it.
+        idempotency_key: None,
     }
 }
 
@@ -1737,10 +1737,10 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
                 ..wire::ObjectMetadata::default()
             },
             condition: Some(Condition::IfAbsent),
-            idempotency_key: Some(format!(
-                "fs-object-{}",
-                hex::encode(object_id.digest.as_bytes())
-            )),
+            // IfAbsent on a content-addressed key already makes a retry exact.
+            // A retained idempotency outcome would outlive a collection of the
+            // object and answer a later put of it without storing it.
+            idempotency_key: None,
         };
         match self.provider.put(request).await {
             Ok(version) if version.size == byte_count => success((), work, budget),
