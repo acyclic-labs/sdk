@@ -2964,10 +2964,13 @@ mod tests {
             issued.observed.lookup.node.logical_bytes += 1;
         }
         source.record_projection_change(&ViewChange::Unconfirmed);
-        let started = Instant::now();
+        let before = context.around.made.load(Ordering::Acquire);
         context.revalidate();
+        // The wait ends on a whole uptime second, so its length says little;
+        // what it waited out does.
+        let waited = context.around.made.load(Ordering::Acquire);
         assert!(
-            started.elapsed() >= Duration::from_millis(500),
+            waited > before && context.around.settled.load(Ordering::Acquire) >= waited,
             "a change the fence could not confirm is waited out"
         );
         Ok(())

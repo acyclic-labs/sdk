@@ -2430,7 +2430,7 @@ mod tests {
             .value;
         let read = file.read_range(0, 6, &CancellationToken::new())?;
         assert_eq!(read.value.as_ref(), b"remote");
-        std::fs::write(temporary.path().join("file"), b"edited")?;
+        std::fs::write(temporary.path().join("file"), b"edited again")?;
         assert!(matches!(
             read_failure(file.as_ref()),
             Some(DemandError::StaleVersion)
