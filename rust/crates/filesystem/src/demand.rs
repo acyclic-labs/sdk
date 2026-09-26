@@ -875,8 +875,8 @@ pub mod native {
         }
 
         /// This source, reporting no changes as a root the host cannot watch
-        /// would.
-        #[cfg(test)]
+        /// would. The live tests that run both ways mount through FUSE or NFS.
+        #[cfg(all(test, unix, feature = "native-mount"))]
         pub(crate) fn unwatched(self) -> Self {
             Self {
                 watchable: false,

@@ -4397,17 +4397,20 @@ mod tests {
         >,
         Box<dyn std::error::Error>,
     > {
-        live_lazy_mount_over(source, destination, name, Watched::Yes).await
+        live_lazy_mount_of(open_native_source(source).await?, destination, name).await
     }
 
     /// Whether a test's source reports its changes or, like a root the host
-    /// cannot watch, is read afresh.
+    /// cannot watch, is read afresh. The live tests that run both ways mount
+    /// through FUSE or NFS.
+    #[cfg(unix)]
     #[derive(Clone, Copy, Debug)]
     enum Watched {
         Yes,
         No,
     }
 
+    #[cfg(unix)]
     async fn live_lazy_mount_over(
         source: &Path,
         destination: &Path,
@@ -4422,24 +4425,47 @@ mod tests {
         >,
         Box<dyn std::error::Error>,
     > {
-        use crate::model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
+        let demand = open_native_source(source).await?;
+        let demand = match watched {
+            Watched::Yes => demand,
+            Watched::No => demand.unwatched(),
+        };
+        live_lazy_mount_of(demand, destination, name).await
+    }
+
+    async fn open_native_source(
+        source: &Path,
+    ) -> Result<crate::demand::native::NativeDemandSource, Box<dyn std::error::Error>> {
+        let profile = if cfg!(windows) {
+            crate::model::FilesystemProfile::Windows
+        } else {
+            crate::model::FilesystemProfile::Posix
+        };
+        Ok(crate::demand::native::NativeDemandSource::open(
+            source,
+            profile,
+            crate::model::VolumeLimits::default(),
+        )
+        .await?)
+    }
+
+    async fn live_lazy_mount_of(
+        demand: crate::demand::native::NativeDemandSource,
+        destination: &Path,
+        name: &str,
+    ) -> Result<
+        super::super::LazyMount<
+            impl AsyncAuthorityStore + Send + Sync + 'static,
+            impl AsyncObjectStore + Send + Sync + 'static,
+            crate::demand::native::NativeDemandSource,
+            crate::MemoryLazyWorkspaceStore,
+        >,
+        Box<dyn std::error::Error>,
+    > {
+        use crate::model::{Lifecycle, VolumeConfig};
         use crate::native_mount::{MountOptions, MountPublication};
         use crate::{Fs, MemoryLazyWorkspaceStore};
 
-        let profile = if cfg!(windows) {
-            FilesystemProfile::Windows
-        } else {
-            FilesystemProfile::Posix
-        };
-        let mut demand = crate::demand::native::NativeDemandSource::open(
-            source,
-            profile,
-            VolumeLimits::default(),
-        )
-        .await?;
-        if matches!(watched, Watched::No) {
-            demand = demand.unwatched();
-        }
         let lazy = LazyWorkspace::attach_with_config(
             &Fs::memory(),
             name,
