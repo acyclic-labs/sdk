@@ -2366,8 +2366,9 @@ impl FuseProjection {
     /// name to keep, and a node no inode stands for has no recorded name.
     ///
     /// Only a resolution that finds the name absent or naming another node
-    /// counts against it; one that fails fails the operation, which the
-    /// kernel repeats, rather than forget a name that may still be bound.
+    /// counts against it. One that fails (a name the caller may not reach,
+    /// say) leaves the name recorded as bound: the requested name resolved,
+    /// so its own lookup must not fail for a name it did not ask for.
     fn confirm_names<'a>(
         &self,
         mut confirmed: ConfirmedNames,
@@ -2394,10 +2395,12 @@ impl FuseProjection {
                 .collect::<Vec<_>>()
         };
         for (file_id, name) in unvouched {
-            if let (Some(found), stamp) = resolve_path(source, &name)?
-                && found.node.file_id == file_id
-            {
-                confirmed.confirm(file_id, name, stamp);
+            match resolve_path(source, &name) {
+                Ok((Some(found), stamp)) if found.node.file_id == file_id => {
+                    confirmed.confirm(file_id, name, stamp);
+                }
+                Ok(_) => {}
+                Err(_) => confirmed.confirm(file_id, name, None),
             }
         }
         Ok(confirmed)

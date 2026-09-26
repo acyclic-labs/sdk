@@ -430,10 +430,17 @@ struct Observed {
 impl Observed {
     /// Whether `lookup` shows the client what these attributes did. Access
     /// times are left out: no source reports reads, so no label follows them.
+    ///
+    /// A directory's label also covers its listing, which its attributes
+    /// witness only through its change time: every entry created, removed,
+    /// or renamed in it sets that time, and no caller can set it back. A
+    /// directory whose change time is unknown is never taken as unchanged.
     fn matches(&self, lookup: &MountLookup) -> bool {
         let mut seen = *lookup;
         seen.metadata.accessed_ns = self.lookup.metadata.accessed_ns;
         seen == self.lookup
+            && (lookup.node.kind != MountNodeKind::Directory
+                || matches!(lookup.metadata.changed_ns, MetadataField::Value(_)))
     }
 }
 
