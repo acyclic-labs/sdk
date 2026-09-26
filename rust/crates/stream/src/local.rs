@@ -5,7 +5,8 @@ use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 use acyclic_native_runtime::OwnershipAnchor;
 use async_trait::async_trait;
@@ -26,8 +27,20 @@ use crate::{
     UnixMillisClock,
 };
 
-const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
-const HEADER_BYTES: usize = HEADER_MAGIC.len() + 8 * 8;
+const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V2\0";
+/// The magic, the limits, then the journal's epoch.
+const HEADER_BYTES: usize = HEADER_MAGIC.len() + LIMITS_BYTES + 8;
+const LIMITS_BYTES: usize = 8 * 8;
+const SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAPSHOT\0";
+/// The magic, the limits, the epoch of the journal that follows, and the
+/// store time; the state and a checksum follow.
+const SNAPSHOT_HEADER_BYTES: usize = SNAPSHOT_MAGIC.len() + LIMITS_BYTES + 8 + 8;
+/// A frame's store time, before its command.
+const FRAME_TIME_BYTES: usize = 8;
+const LOCK_FILE: &str = "stream.lock";
+const JOURNAL_FILE: &str = "stream.journal";
+const SNAPSHOT_FILE: &str = "stream.snapshot";
+const SNAPSHOT_TEMPORARY: &str = "stream.snapshot.tmp";
 const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
@@ -138,11 +151,17 @@ pub enum LocalStreamError {
     Executor,
 }
 
-/// Exclusive-process durable local provider backed by a checksummed command journal.
+/// Exclusive-process durable local provider backed by a snapshot and a checksummed command
+/// journal.
 ///
-/// The journal is synchronized before a mutation becomes observable. Startup replays every
-/// complete frame through the same bounded [`MemoryStream`] state machine used by conformance.
-/// A torn final frame is removed; corruption in a complete frame fails closed.
+/// The journal is synchronized before a mutation becomes observable. Startup installs the
+/// snapshot and replays every complete frame after it through the same bounded [`MemoryStream`]
+/// state machine used by conformance. A torn final frame is removed; corruption in a complete
+/// frame fails closed. Once the journal is half full, the whole state is written as a new
+/// snapshot and the journal starts again, so it bounds only what happened since.
+///
+/// Retention is measured on a store clock that runs only while the provider is open: a result
+/// kept for its retention period is still there after any downtime.
 #[derive(Clone)]
 pub struct LocalStream {
     inner: Arc<LocalInner>,
@@ -150,6 +169,7 @@ pub struct LocalStream {
 
 struct LocalInner {
     provider: MemoryStream,
+    clock: Arc<StoreClock>,
     journal: OwnedJournal,
     visibility: RwLock<()>,
     changed: watch::Sender<u64>,
@@ -178,6 +198,85 @@ impl OwnedJournal {
             .map_err(|_| LocalStreamError::Corrupt)?
             .flush()
     }
+
+    fn compaction_due(&self) -> Result<bool, LocalStreamError> {
+        Ok(self
+            .journal
+            .lock()
+            .map_err(|_| LocalStreamError::Corrupt)?
+            .compaction_due())
+    }
+
+    fn compact(&self, state: &[u8], store_time: u64) -> Result<(), LocalStreamError> {
+        self.journal
+            .lock()
+            .map_err(|_| LocalStreamError::Corrupt)?
+            .compact(state, store_time)
+    }
+}
+
+/// Time as the store experiences it: milliseconds the provider has been
+/// open, summed over every open. A mutation pins it for its whole run, and
+/// its frame records that time, so replay retains and forgets exactly what
+/// the mutation did.
+#[derive(Default)]
+struct StoreClock(Mutex<StoreTime>);
+
+#[derive(Default)]
+struct StoreTime {
+    /// The store time when `since` was taken, or the latest recovered.
+    base: u64,
+    /// When the provider opened; `None` while it recovers.
+    since: Option<Instant>,
+    pinned: Option<u64>,
+}
+
+impl StoreClock {
+    fn time(&self) -> std::sync::MutexGuard<'_, StoreTime> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn live(&self) -> u64 {
+        let time = self.time();
+        time.since.map_or(time.base, |since| {
+            time.base
+                .saturating_add(u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX))
+        })
+    }
+
+    fn pin(&self, at: u64) {
+        let mut time = self.time();
+        time.pinned = Some(at);
+        if time.since.is_none() {
+            time.base = time.base.max(at);
+        }
+    }
+
+    fn unpin(&self) {
+        self.time().pinned = None;
+    }
+
+    /// Starts running from the latest time recovered.
+    fn start(&self) {
+        let mut time = self.time();
+        time.pinned = None;
+        time.since = Some(Instant::now());
+    }
+}
+
+impl UnixMillisClock for StoreClock {
+    fn now_unix_millis(&self) -> u64 {
+        let pinned = self.time().pinned;
+        pinned.unwrap_or_else(|| self.live())
+    }
+}
+
+/// What recovery hands the state machine, in order.
+enum Recovered {
+    /// The snapshot's state, first.
+    State { encoded: Vec<u8>, store_time: u64 },
+    /// Each command in the journal after it.
+    Command { store_time: u64, command: Command },
 }
 
 impl LocalStream {
@@ -237,10 +336,10 @@ impl LocalStream {
         ownership_anchor: Option<OwnershipAnchor>,
     ) -> Result<Self, LocalStreamError> {
         validate_limits(limits)?;
-        let (commands, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
+        let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
         #[cfg(test)]
         let submitted_root = root.clone();
-        let open = tokio::task::spawn_blocking(move || Journal::open(&root, limits, &commands));
+        let open = tokio::task::spawn_blocking(move || Journal::open(&root, limits, &recovered));
         #[cfg(test)]
         {
             if let Ok(mut hook) = JOURNAL_OPEN_SUBMITTED.lock()
@@ -252,23 +351,49 @@ impl LocalStream {
                 let _ = submitted.send(());
             }
         }
-        let provider = MemoryStream::new_with_clock(limits.memory, clock);
+        let store_clock = Arc::new(StoreClock::default());
+        let provider =
+            MemoryStream::new_with_clocks(limits.memory, clock, Arc::clone(&store_clock) as _);
         let mut replay_error = None;
-        while let Some(command) = receiver.recv().await {
-            if replay_error.is_none()
-                && let Err(error) = replay(&provider, command).await
-            {
+        while let Some(recovered) = receiver.recv().await {
+            if replay_error.is_some() {
+                continue;
+            }
+            let replayed = match recovered {
+                Recovered::State {
+                    encoded,
+                    store_time,
+                } => {
+                    store_clock.pin(store_time);
+                    provider
+                        .install_state(&encoded)
+                        .await
+                        .map_err(|_| LocalStreamError::Corrupt)
+                }
+                Recovered::Command {
+                    store_time,
+                    command,
+                } => {
+                    store_clock.pin(store_time);
+                    replay(&provider, command)
+                        .await
+                        .map_err(LocalStreamError::Replay)
+                }
+            };
+            if let Err(error) = replayed {
                 replay_error = Some(error);
             }
         }
         let journal = open.await.map_err(|_| LocalStreamError::Executor)??;
         if let Some(error) = replay_error {
-            return Err(LocalStreamError::Replay(error));
+            return Err(error);
         }
+        store_clock.start();
         let (changed, _) = watch::channel(0_u64);
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
+                clock: store_clock,
                 journal: OwnedJournal {
                     journal: Arc::new(Mutex::new(journal)),
                     _ownership_anchor: ownership_anchor,
@@ -288,8 +413,11 @@ impl LocalStream {
         }
     }
 
+    /// Encodes `command`'s frame at the current store time, which it pins
+    /// until the mutation ends.
     fn prepare(&self, command: &Command) -> Result<PreparedFrame, StreamError> {
-        let frame = PreparedFrame::encode(command).map_err(|error| match error {
+        let at = self.inner.clock.live();
+        let frame = PreparedFrame::encode(command, at).map_err(|error| match error {
             LocalStreamError::InvalidLimits => StreamError::Capacity,
             _ => StreamError::Unavailable,
         })?;
@@ -303,6 +431,7 @@ impl LocalStream {
                 LocalStreamError::InvalidLimits => StreamError::Capacity,
                 _ => StreamError::Unavailable,
             })?;
+        self.inner.clock.pin(at);
         Ok(frame)
     }
 
@@ -350,7 +479,28 @@ impl LocalStream {
         self.inner.changed.send_modify(|revision| {
             *revision = revision.saturating_add(1);
         });
-        Ok(())
+        self.compact_if_due().await
+    }
+
+    /// Writes the whole state as the snapshot and starts the journal again,
+    /// once the journal is half full. Runs inside a mutation, after its
+    /// frame, so the state is exactly what the journal describes.
+    async fn compact_if_due(&self) -> Result<(), StreamError> {
+        let poison = |_| {
+            self.inner.poisoned.store(true, Ordering::Release);
+            StreamError::Unavailable
+        };
+        if !self.inner.journal.compaction_due().map_err(poison)? {
+            return Ok(());
+        }
+        let state = self.inner.provider.encode_state().await;
+        let store_time = self.inner.clock.now_unix_millis();
+        let journal = self.inner.journal.clone();
+        tokio::task::spawn_blocking(move || journal.compact(&state, store_time))
+            .await
+            .map_err(|_| LocalStreamError::Executor)
+            .and_then(|result| result)
+            .map_err(poison)
     }
 
     /// Runs one mutation under exclusive visibility on its own task, so a
@@ -373,7 +523,9 @@ impl LocalStream {
         tokio::spawn(DEFERRED.scope(deferred, async move {
             let _visibility = stream.inner.visibility.write().await;
             stream.check_available()?;
-            mutation(stream.clone()).await
+            let result = mutation(stream.clone()).await;
+            stream.inner.clock.unpin();
+            result
         }))
         .await
         .map_err(|_| StreamError::Unavailable)?
@@ -580,18 +732,22 @@ struct FollowState {
 }
 
 struct Journal {
+    /// Held locked for as long as the provider is open.
+    lock: File,
     file: File,
+    /// Which snapshot the journal follows: the one naming this epoch.
+    epoch: u64,
     operations: u64,
     bytes: u64,
     limits: LocalStreamLimits,
     /// Whether frames were written since the journal last flushed.
     unflushed: bool,
-    _root: PathBuf,
+    root: PathBuf,
 }
 
 impl Drop for Journal {
     fn drop(&mut self) {
-        let _ = self.file.unlock();
+        let _ = self.lock.unlock();
     }
 }
 
@@ -601,14 +757,13 @@ struct PreparedFrame {
 }
 
 impl PreparedFrame {
-    fn encode(command: &Command) -> Result<Self, LocalStreamError> {
+    fn encode(command: &Command, store_time: u64) -> Result<Self, LocalStreamError> {
         let journal = journal_command(command);
-        let command_length = journal.encoded_len();
-        if command_length > MAX_COMMAND_BYTES {
+        if journal.encoded_len() > MAX_COMMAND_BYTES {
             return Err(LocalStreamError::InvalidLimits);
         }
-        let command_length =
-            u32::try_from(command_length).map_err(|_| LocalStreamError::InvalidLimits)?;
+        let command_length = u32::try_from(FRAME_TIME_BYTES + journal.encoded_len())
+            .map_err(|_| LocalStreamError::InvalidLimits)?;
         let length = command_length.to_le_bytes();
         let command_length_usize =
             usize::try_from(command_length).map_err(|_| LocalStreamError::InvalidLimits)?;
@@ -618,6 +773,7 @@ impl PreparedFrame {
             .ok_or(LocalStreamError::InvalidLimits)?;
         let mut encoded = Vec::with_capacity(capacity);
         encoded.extend_from_slice(&length);
+        encoded.extend_from_slice(&store_time.to_le_bytes());
         journal
             .encode(&mut encoded)
             .map_err(|_| LocalStreamError::InvalidLimits)?;
@@ -635,53 +791,97 @@ impl Journal {
     fn open(
         root: &Path,
         limits: LocalStreamLimits,
-        commands: &mpsc::Sender<Command>,
+        recovered: &mpsc::Sender<Recovered>,
     ) -> Result<Self, LocalStreamError> {
-        std::fs::create_dir_all(root)?;
-        let path = root.join("stream.journal");
-        let mut file = OpenOptions::new()
+        let lock = lock_root(root, limits)?;
+        // A snapshot still being written was never installed.
+        match std::fs::remove_file(root.join(SNAPSHOT_TEMPORARY)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
+        }
+        let epoch = match read_snapshot(root, limits)? {
+            Some(snapshot) => {
+                recovered
+                    .blocking_send(Recovered::State {
+                        encoded: snapshot.state,
+                        store_time: snapshot.store_time,
+                    })
+                    .map_err(|_| LocalStreamError::Executor)?;
+                snapshot.epoch
+            }
+            None => 0,
+        };
+        let path = root.join(JOURNAL_FILE);
+        let file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(path)?;
-        file.try_lock_exclusive().map_err(|error| {
-            if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
-                LocalStreamError::AlreadyOpen
-            } else {
-                LocalStreamError::Io(error)
-            }
-        })?;
-        let length = file.metadata()?.len();
-        // Every command appends a frame after the header, so a journal shorter
-        // than its header never acknowledged one: a crash tore its creation,
-        // and it is created again.
-        if length < u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)? {
-            let header = encode_header(limits)?;
-            file.set_len(0)?;
-            file.write_all(&header)?;
-            sync_file(&file, limits.durability)?;
-            sync_directory(root, limits.durability)?;
+            .open(&path)?;
+        let mut journal = Self {
+            lock,
+            file,
+            epoch,
+            operations: 0,
+            bytes: 0,
+            limits,
+            unflushed: false,
+            root: root.to_path_buf(),
+        };
+        let header_bytes =
+            u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
+        let length = journal.file.metadata()?.len();
+        let mut header = vec![0_u8; HEADER_BYTES];
+        let found = if length < header_bytes {
+            None
         } else {
-            let mut header = vec![0_u8; HEADER_BYTES];
-            file.read_exact(&mut header)
+            journal
+                .file
+                .read_exact(&mut header)
                 .map_err(|_| LocalStreamError::Corrupt)?;
-            if header != encode_header(limits)? {
-                return Err(LocalStreamError::Corrupt);
+            Some(decode_header(&header, limits))
+        };
+        match found {
+            // Every frame follows a whole header, so a journal holding less
+            // than a valid header never acknowledged one: its creation or
+            // restart was torn, and it starts again.
+            None | Some(None) if length <= header_bytes => {
+                journal.restart(epoch)?;
+                sync_directory(&path, limits.durability)?;
+                return Ok(journal);
             }
+            Some(Some(found)) if found == epoch => {}
+            // The snapshot for the next epoch landed before the journal
+            // restarted, so it already holds every frame here.
+            Some(Some(found)) if found < epoch => {
+                journal.restart(epoch)?;
+                return Ok(journal);
+            }
+            _ => return Err(LocalStreamError::Corrupt),
         }
+        journal.replay(length, recovered)?;
+        Ok(journal)
+    }
+
+    /// Hands every whole frame of a journal `length` long to `recovered`,
+    /// cutting a torn one off the end.
+    fn replay(
+        &mut self,
+        length: u64,
+        recovered: &mpsc::Sender<Recovered>,
+    ) -> Result<(), LocalStreamError> {
+        let limits = self.limits;
         let mut operations = 0_u64;
         let mut valid_length =
             u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
-        let total_length = file.metadata()?.len();
-        file.seek(SeekFrom::Start(valid_length))?;
+        let total_length = length;
         while valid_length < total_length {
             let frame_start = valid_length;
-            let Some(frame) = read_frame(&mut file, total_length - frame_start)? else {
+            let Some(frame) = read_frame(&mut self.file, total_length - frame_start)? else {
                 // An invalid frame is a torn append exactly when nothing valid
                 // follows it; power loss can leave one zero-filled or garbage.
                 match acyclic_native_runtime::recover_log_tail(
-                    &mut file,
+                    &mut self.file,
                     frame_start,
                     maximum_frame_bytes(),
                     native_durability(limits.durability),
@@ -695,13 +895,20 @@ impl Journal {
             };
             // An intact frame was written whole, so one that does not decode
             // may be a committed command: fail closed.
-            let command = decode_command(&frame.command).map_err(|_| LocalStreamError::Corrupt)?;
+            let (store_time, command) = frame
+                .command
+                .split_first_chunk::<FRAME_TIME_BYTES>()
+                .ok_or(LocalStreamError::Corrupt)?;
+            let command = decode_command(command).map_err(|_| LocalStreamError::Corrupt)?;
             operations = operations.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
             if operations > limits.journal_operations {
                 return Err(LocalStreamError::Corrupt);
             }
-            commands
-                .blocking_send(command)
+            recovered
+                .blocking_send(Recovered::Command {
+                    store_time: u64::from_le_bytes(*store_time),
+                    command,
+                })
                 .map_err(|_| LocalStreamError::Executor)?;
             valid_length = valid_length
                 .checked_add(frame_bytes(&frame.length))
@@ -710,15 +917,46 @@ impl Journal {
         if valid_length > limits.journal_bytes {
             return Err(LocalStreamError::InvalidLimits);
         }
-        file.seek(SeekFrom::End(0))?;
-        Ok(Self {
-            file,
-            operations,
-            bytes: valid_length,
-            limits,
-            unflushed: false,
-            _root: root.to_path_buf(),
-        })
+        self.file.seek(SeekFrom::End(0))?;
+        self.operations = operations;
+        self.bytes = valid_length;
+        Ok(())
+    }
+
+    /// Empties the journal to follow the snapshot of `epoch`.
+    fn restart(&mut self, epoch: u64) -> Result<(), LocalStreamError> {
+        self.file.set_len(0)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(&encode_header(self.limits, epoch)?)?;
+        sync_file(&self.file, self.limits.durability)?;
+        self.epoch = epoch;
+        self.operations = 0;
+        self.bytes = u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
+        self.unflushed = false;
+        Ok(())
+    }
+
+    fn compaction_due(&self) -> bool {
+        self.operations > 0
+            && (self.operations >= self.limits.journal_operations / 2
+                || self.bytes >= self.limits.journal_bytes / 2)
+    }
+
+    /// Makes `state`, which holds every frame so far, the snapshot the
+    /// journal follows, then empties the journal. The snapshot is durable
+    /// under its final name before the journal loses a frame.
+    fn compact(&mut self, state: &[u8], store_time: u64) -> Result<(), LocalStreamError> {
+        let epoch = self.epoch.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
+        let temporary = self.root.join(SNAPSHOT_TEMPORARY);
+        let snapshot = self.root.join(SNAPSHOT_FILE);
+        {
+            let mut file = File::create(&temporary)?;
+            file.write_all(&encode_snapshot(self.limits, epoch, store_time, state)?)?;
+            sync_file(&file, self.limits.durability)?;
+        }
+        std::fs::rename(&temporary, &snapshot)?;
+        sync_directory(&snapshot, self.limits.durability)?;
+        self.restart(epoch)
     }
 
     fn admit(&self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
@@ -753,9 +991,30 @@ impl Journal {
     }
 }
 
-/// The largest frame the journal holds: length prefix, command and checksum.
+/// Creates `root` if it is missing and takes its exclusive lock.
+fn lock_root(root: &Path, limits: LocalStreamLimits) -> Result<File, LocalStreamError> {
+    std::fs::create_dir_all(root)?;
+    sync_directory(root, limits.durability)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join(LOCK_FILE))?;
+    lock.try_lock_exclusive().map_err(|error| {
+        if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
+            LocalStreamError::AlreadyOpen
+        } else {
+            LocalStreamError::Io(error)
+        }
+    })?;
+    Ok(lock)
+}
+
+/// The largest frame the journal holds: length prefix, store time, command
+/// and checksum.
 fn maximum_frame_bytes() -> usize {
-    4 + MAX_COMMAND_BYTES + FRAME_CHECKSUM_BYTES
+    4 + FRAME_TIME_BYTES + MAX_COMMAND_BYTES + FRAME_CHECKSUM_BYTES
 }
 
 /// The bytes of the frame whose length prefix is `length_bytes`.
@@ -763,11 +1022,14 @@ fn frame_bytes(length_bytes: &[u8; 4]) -> u64 {
     4 + u64::from(u32::from_le_bytes(*length_bytes)) + FRAME_CHECKSUM_BYTES as u64
 }
 
-/// The command length a frame's prefix declares, if the journal can hold it.
+/// The store time and command length a frame's prefix declares, if the
+/// journal can hold it.
 fn command_length(length_bytes: [u8; 4]) -> Option<usize> {
     usize::try_from(u32::from_le_bytes(length_bytes))
         .ok()
-        .filter(|length| (1..=MAX_COMMAND_BYTES).contains(length))
+        .filter(|length| {
+            (FRAME_TIME_BYTES + 1..=FRAME_TIME_BYTES + MAX_COMMAND_BYTES).contains(length)
+        })
 }
 
 /// One whole journal frame whose checksum matched.
@@ -856,9 +1118,8 @@ fn validate_limits(limits: LocalStreamLimits) -> Result<(), LocalStreamError> {
     }
 }
 
-fn encode_header(limits: LocalStreamLimits) -> Result<Vec<u8>, LocalStreamError> {
-    let mut encoded = Vec::with_capacity(HEADER_BYTES);
-    encoded.extend_from_slice(HEADER_MAGIC);
+fn encode_limits(limits: LocalStreamLimits) -> Result<Vec<u8>, LocalStreamError> {
+    let mut encoded = Vec::with_capacity(LIMITS_BYTES);
     for value in [
         limits.memory.paths,
         limits.memory.path_bytes,
@@ -876,6 +1137,91 @@ fn encode_header(limits: LocalStreamLimits) -> Result<Vec<u8>, LocalStreamError>
     encoded.extend_from_slice(&limits.journal_operations.to_le_bytes());
     encoded.extend_from_slice(&limits.journal_bytes.to_le_bytes());
     Ok(encoded)
+}
+
+fn encode_header(limits: LocalStreamLimits, epoch: u64) -> Result<Vec<u8>, LocalStreamError> {
+    let mut encoded = Vec::with_capacity(HEADER_BYTES);
+    encoded.extend_from_slice(HEADER_MAGIC);
+    encoded.extend_from_slice(&encode_limits(limits)?);
+    encoded.extend_from_slice(&epoch.to_le_bytes());
+    Ok(encoded)
+}
+
+/// The epoch of a whole journal header written for `limits`.
+fn decode_header(header: &[u8], limits: LocalStreamLimits) -> Option<u64> {
+    let rest = header.strip_prefix(HEADER_MAGIC)?;
+    let (found, epoch) = rest.split_at_checked(LIMITS_BYTES)?;
+    (found == encode_limits(limits).ok()?).then_some(())?;
+    Some(u64::from_le_bytes(epoch.try_into().ok()?))
+}
+
+struct Snapshot {
+    epoch: u64,
+    store_time: u64,
+    state: Vec<u8>,
+}
+
+fn snapshot_checksum(body: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"acyclic-stream-local-snapshot-v1\0");
+    hasher.update(body);
+    hasher.finalize().into()
+}
+
+fn encode_snapshot(
+    limits: LocalStreamLimits,
+    epoch: u64,
+    store_time: u64,
+    state: &[u8],
+) -> Result<Vec<u8>, LocalStreamError> {
+    let mut encoded = Vec::with_capacity(SNAPSHOT_HEADER_BYTES + state.len() + 32);
+    encoded.extend_from_slice(SNAPSHOT_MAGIC);
+    encoded.extend_from_slice(&encode_limits(limits)?);
+    encoded.extend_from_slice(&epoch.to_le_bytes());
+    encoded.extend_from_slice(&store_time.to_le_bytes());
+    encoded.extend_from_slice(state);
+    let checksum = snapshot_checksum(&encoded);
+    encoded.extend_from_slice(&checksum);
+    Ok(encoded)
+}
+
+/// The snapshot below `root`, if one was installed. It is written whole
+/// before it is renamed into place, so any damage fails closed.
+fn read_snapshot(
+    root: &Path,
+    limits: LocalStreamLimits,
+) -> Result<Option<Snapshot>, LocalStreamError> {
+    let encoded = match std::fs::read(root.join(SNAPSHOT_FILE)) {
+        Ok(encoded) => encoded,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let (body, checksum) = encoded
+        .split_last_chunk::<32>()
+        .ok_or(LocalStreamError::Corrupt)?;
+    if snapshot_checksum(body) != *checksum {
+        return Err(LocalStreamError::Corrupt);
+    }
+    let rest = body
+        .strip_prefix(SNAPSHOT_MAGIC)
+        .ok_or(LocalStreamError::Corrupt)?;
+    let (found, rest) = rest
+        .split_at_checked(LIMITS_BYTES)
+        .ok_or(LocalStreamError::Corrupt)?;
+    if found != encode_limits(limits)? {
+        return Err(LocalStreamError::Corrupt);
+    }
+    let (epoch, rest) = rest
+        .split_first_chunk::<8>()
+        .ok_or(LocalStreamError::Corrupt)?;
+    let (store_time, state) = rest
+        .split_first_chunk::<8>()
+        .ok_or(LocalStreamError::Corrupt)?;
+    Ok(Some(Snapshot {
+        epoch: u64::from_le_bytes(*epoch),
+        store_time: u64::from_le_bytes(*store_time),
+        state: state.to_vec(),
+    }))
 }
 
 fn frame_checksum(length: &[u8; 4], command: &[u8]) -> [u8; 32] {
@@ -1490,17 +1836,23 @@ mod tests {
         drop(provider);
 
         let path = StreamPath::new("failed-replay")?;
-        let invalid = PreparedFrame::encode(&Command::Trim {
-            path: path.clone(),
-            before: 1,
-            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"invalid-trim"))?,
-        })?;
-        let valid = PreparedFrame::encode(&Command::Append(AppendRequest {
-            path,
-            records: vec![Bytes::from_static(b"later")],
-            if_tail: Some(0),
-            idempotency_key: None,
-        }))?;
+        let invalid = PreparedFrame::encode(
+            &Command::Trim {
+                path: path.clone(),
+                before: 1,
+                idempotency_key: IdempotencyKey::new(Bytes::from_static(b"invalid-trim"))?,
+            },
+            0,
+        )?;
+        let valid = PreparedFrame::encode(
+            &Command::Append(AppendRequest {
+                path,
+                records: vec![Bytes::from_static(b"later")],
+                if_tail: Some(0),
+                idempotency_key: None,
+            }),
+            0,
+        )?;
         let journal_path = directory.path().join("stream.journal");
         let mut journal = OpenOptions::new().append(true).open(journal_path)?;
         journal.write_all(&invalid.encoded)?;
@@ -1642,6 +1994,118 @@ mod tests {
             );
             assert_eq!(std::fs::metadata(&journal)?.len(), kept, "{fill:#x}");
         }
+        Ok(())
+    }
+
+    fn compacting_limits() -> LocalStreamLimits {
+        LocalStreamLimits {
+            journal_operations: 8,
+            ..LocalStreamLimits::default()
+        }
+    }
+
+    async fn append_keyed(
+        provider: &LocalStream,
+        index: u64,
+    ) -> Result<AppendOutcome, Box<dyn std::error::Error>> {
+        Ok(provider
+            .append(AppendRequest {
+                path: StreamPath::new("compacted")?,
+                records: vec![Bytes::copy_from_slice(&index.to_le_bytes())],
+                if_tail: Some(index),
+                idempotency_key: Some(IdempotencyKey::new(Bytes::copy_from_slice(
+                    &index.to_le_bytes(),
+                ))?),
+            })
+            .await?)
+    }
+
+    /// A journal half full becomes a snapshot and starts again; reopening
+    /// installs the snapshot, replays the journal after it, and still
+    /// answers every retained result.
+    #[tokio::test]
+    async fn a_half_full_journal_is_compacted_into_a_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = compacting_limits();
+        let provider = LocalStream::open(directory.path(), limits).await?;
+        let mut outcomes = Vec::new();
+        for index in 0..21 {
+            outcomes.push(append_keyed(&provider, index).await?);
+        }
+        let journal = provider
+            .inner
+            .journal
+            .journal
+            .lock()
+            .map_err(|_| "journal poisoned")?
+            .operations;
+        assert!(journal < 4, "the journal restarted: {journal} frames");
+        drop(provider);
+        assert!(directory.path().join(SNAPSHOT_FILE).exists());
+
+        let reopened = LocalStream::open(directory.path(), limits).await?;
+        assert_eq!(reopened.tail(StreamPath::new("compacted")?).await?, 21);
+        for (index, outcome) in (0..).zip(&outcomes) {
+            assert_eq!(&append_keyed(&reopened, index).await?, outcome, "{index}");
+        }
+        conformance::verify(&reopened)
+            .await
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    }
+
+    /// A crash after the snapshot landed but before the journal restarted
+    /// leaves a journal of the previous epoch, whose frames the snapshot
+    /// already holds: it is discarded, never applied twice. A snapshot still
+    /// being written was never installed.
+    #[tokio::test]
+    async fn a_journal_the_snapshot_already_holds_is_discarded()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = compacting_limits();
+        let journal = directory.path().join(JOURNAL_FILE);
+        let provider = LocalStream::open(directory.path(), limits).await?;
+        for index in 0..3 {
+            append_keyed(&provider, index).await?;
+        }
+        let before = std::fs::read(&journal)?;
+        append_keyed(&provider, 3).await?;
+        drop(provider);
+        assert!(std::fs::metadata(&journal)?.len() < u64::try_from(before.len())?);
+        std::fs::write(&journal, &before)?;
+        std::fs::write(directory.path().join(SNAPSHOT_TEMPORARY), b"torn")?;
+
+        let reopened = LocalStream::open(directory.path(), limits).await?;
+        assert_eq!(reopened.tail(StreamPath::new("compacted")?).await?, 4);
+        drop(reopened);
+        assert!(!directory.path().join(SNAPSHOT_TEMPORARY).exists());
+        assert_eq!(
+            std::fs::metadata(&journal)?.len(),
+            u64::try_from(HEADER_BYTES)?
+        );
+        Ok(())
+    }
+
+    /// A damaged snapshot fails closed.
+    #[tokio::test]
+    async fn a_damaged_snapshot_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = compacting_limits();
+        let provider = LocalStream::open(directory.path(), limits).await?;
+        for index in 0..4 {
+            append_keyed(&provider, index).await?;
+        }
+        drop(provider);
+        let snapshot = directory.path().join(SNAPSHOT_FILE);
+        let mut damaged = std::fs::read(&snapshot)?;
+        let middle = damaged.len() / 2;
+        *damaged.get_mut(middle).ok_or("snapshot is empty")? ^= 1;
+        std::fs::write(&snapshot, damaged)?;
+        assert!(matches!(
+            LocalStream::open(directory.path(), limits).await,
+            Err(LocalStreamError::Corrupt)
+        ));
         Ok(())
     }
 }

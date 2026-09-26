@@ -8376,7 +8376,7 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
         }
     })
     .await?;
-    for relative in ["stream/stream.journal", "objects/owner.lock"] {
+    for relative in ["stream/stream.lock", "objects/owner.lock"] {
         let lock = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
