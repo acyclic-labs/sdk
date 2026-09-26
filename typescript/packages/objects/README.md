@@ -1,31 +1,25 @@
 # @acyclic-labs/objects
 
-Typed access to immutable object versions, buckets, snapshots, and multipart uploads. Use the in-memory provider for local tests or the HTTPS provider for a hosted Objects service.
+The current-value Objects API uses opaque stable IDs and replaceable content. `ReplaceableObjects` exposes only PUT, current GET, and verification; FS owns versioned file semantics.
 
 ```sh
 npm install @acyclic-labs/objects
 ```
 
 ```ts
-import { MemoryObjectsProvider, Objects, jsonCodec } from "@acyclic-labs/objects";
+import { ReplaceableObjects, bytesCodec, idempotencyKey, objectId } from "@acyclic-labs/objects";
 
-const objects = new Objects(new MemoryObjectsProvider());
-const bucket = await objects.createBucket("documents");
-const json = jsonCodec(value => {
-  if (value === null || typeof value !== "object" || !("title" in value) || typeof value.title !== "string") {
-    throw new TypeError("expected a document with a title");
-  }
-  return { title: value.title };
-});
-const version = await bucket.put("welcome.json", { title: "Hello" }, json);
-const { value } = await bucket.get("welcome.json", json, { versionId: version.versionId });
-console.log(value.title);
+const objects = ReplaceableObjects.memory();
+const object = objectId("opaque-object-id");
+const receipt = await objects.replacePut({ object, body: bytesCodec.encode(new TextEncoder().encode("Hello")), idempotencyKey: idempotencyKey("welcome-1") });
+const current = await objects.getCurrent(object, { consistency: "weak" });
+console.log(receipt.etag, new TextDecoder().decode(current.body));
 ```
 
-`jsonCodec()` returns general JSON values. Pass a parser when reads should return a narrower type; the parser checks stored data before the codec promises that type.
+`ReplaceableObjects.fromEnv()` uses `ACYCLIC_OBJECTS_ENDPOINT` and `ACYCLIC_OBJECTS_TOKEN`. The hosted adapter calls `POST /v2/objects/put`, `/get-current`, and `/verify-current` over HTTPS. A missing or 5xx PUT response is ambiguous: retry the exact request and idempotency key.
 
-For a service, construct `new Objects(new HttpObjectsProvider({ endpoint, token }))` or use `Objects.fromEnv()` with `ACYCLIC_OBJECTS_ENDPOINT` and `ACYCLIC_OBJECTS_TOKEN`. The endpoint must be HTTPS. `BucketRef`, `SnapshotRef`, and version IDs are identities, not names; retain them for subsequent calls.
+`ObjectId` and `ETag` are opaque. The public current-value facade does not expose object versions, snapshots, listings, or delete operations. The older `Objects` API and `./proto` export remain available as migration compatibility; new hosted integrations should use `ReplaceableObjects` and `./proto/v2`.
 
-`put` accepts `condition` (`ifAbsent`, `ifMatch`, or `ifVersion`) and an idempotency key. `bucket.snapshot()` freezes a whole-bucket read view; `bucket.createMultipart()` handles larger bodies and captures its condition when the upload is created. Non-final multipart parts must be at least 5 MiB. Listings are paginated; use `bucket.pages()` when delimiter prefixes matter. `MemoryObjectsProvider` runs the canonical Rust provider through WebAssembly; it is process-local and not durable.
+The legacy `Objects`/`HttpObjectsProvider` surface remains documented in its source for migration only. It retains the v1 permanent-version protocol and should not be used by new hosted integrations.
 
 [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/objects/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/objects)

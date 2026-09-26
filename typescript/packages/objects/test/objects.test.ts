@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
-import { HttpObjectsProvider, MemoryObjectsProvider, ObjectError, Objects, ObjectsTransportError, bytesCodec, idempotencyKey, jsonCodec, type IdempotencyKey } from "../src/index.js";
+import { AmbiguousMutationError, HttpObjectsProvider, HttpReplaceableObjectsProvider, MemoryObjectsProvider, ObjectError, Objects, ObjectsTransportError, ReplaceableObjectError, ReplaceableObjects, bytesCodec, idempotencyKey, isAmbiguousMutationError, jsonCodec, objectId, type IdempotencyKey } from "../src/index.js";
 
 const key = (value: string) => value as IdempotencyKey;
 const numberJson = jsonCodec(value => {
@@ -15,6 +15,28 @@ const answerJson = jsonCodec(value => {
 });
 
 describe("objects", () => {
+  test("current-value facade replaces one opaque object without exposing versions", async () => {
+    const objects = ReplaceableObjects.memory();
+    const object = objectId("opaque-cas-id");
+    const first = await objects.replacePut({ object, body: Uint8Array.from([1, 2, 3]), condition: { kind: "ifAbsent" }, idempotencyKey: idempotencyKey("cas-first") });
+    expect(first.object).toBe(object);
+    expect(first.size).toBe(3n);
+    expect(await objects.replacePut({ object, body: Uint8Array.from([1, 2, 3]), condition: { kind: "ifAbsent" }, idempotencyKey: idempotencyKey("cas-first") })).toEqual(first);
+    const second = await objects.replacePut({ object, body: Uint8Array.from([4, 5, 6, 7]), condition: { kind: "ifMatch", etag: first.etag }, idempotencyKey: idempotencyKey("cas-second") });
+    expect(second.object).toBe(object);
+    expect((await objects.getCurrent(object, { consistency: "weak", range: { start: 1, endExclusive: 3 } })).body).toEqual(Uint8Array.from([5, 6]));
+    expect((await objects.verifyCurrent(object, second.etag)).valid).toBeTrue();
+    await expect(objects.replacePut({ object, body: new Uint8Array([9]), condition: { kind: "ifAbsent" }, idempotencyKey: idempotencyKey("cas-third") })).rejects.toBeInstanceOf(ReplaceableObjectError);
+  });
+
+  test("current-value HTTP mutations classify missing replies as ambiguous", async () => {
+    const provider = new HttpReplaceableObjectsProvider({
+      endpoint: "https://objects.example", token: "token", fetcher: async () => { throw new TypeError("socket closed"); },
+    });
+    await expect(provider.replacePut({ object: objectId("opaque"), body: new Uint8Array([1]), idempotencyKey: idempotencyKey("retry-me") })).rejects.toBeInstanceOf(AmbiguousMutationError);
+    try { await provider.replacePut({ object: objectId("opaque"), body: new Uint8Array([1]), idempotencyKey: idempotencyKey("retry-me") }); } catch (error) { expect(isAmbiguousMutationError(error)).toBeTrue(); }
+  });
+
   test("retains independent bytes when native Buffers are stored and returned", async () => {
     const provider = new MemoryObjectsProvider();
     const bucket = await provider.createBucket("bytes");

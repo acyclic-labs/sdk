@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package acyclic.objects.v2;
+
+// Current-value Objects contract. Object identity is opaque to callers; the
+// service owns the mapping to its regional catalog and physical content.
+message ObjectId {
+  string value = 1;
+}
+
+message ObjectMetadata {
+  string content_type = 1;
+  map<string, string> user = 2;
+  string content_encoding = 3;
+  string cache_control = 4;
+  string content_disposition = 5;
+  string content_language = 6;
+  optional int64 expires_unix_seconds = 7;
+}
+
+message ReplaceCondition {
+  oneof condition {
+    bool if_absent = 1;
+    string if_match = 2;
+  }
+}
+
+message PutObjectRequest {
+  ObjectId object = 1;
+  bytes body = 2;
+  ObjectMetadata metadata = 3;
+  ReplaceCondition condition = 4;
+  string idempotency_key = 5;
+}
+
+message PutObjectResponse {
+  ObjectId object = 1;
+  string etag = 2;
+  uint64 size = 3;
+}
+
+enum ReadConsistency {
+  READ_CONSISTENCY_UNSPECIFIED = 0;
+  READ_CONSISTENCY_WEAK = 1;
+}
+
+message GetCurrentRequest {
+  ObjectId object = 1;
+  optional uint64 range_start = 2;
+  optional uint64 range_end_exclusive = 3;
+  string if_match = 4;
+  string if_none_match = 5;
+  uint64 maximum_bytes = 6;
+  ReadConsistency consistency = 7;
+}
+
+message CurrentObject {
+  ObjectId object = 1;
+  string etag = 2;
+  uint64 size = 3;
+  ObjectMetadata metadata = 4;
+  bytes body = 5;
+}
+
+message VerifyCurrentRequest {
+  ObjectId object = 1;
+  string expected_etag = 2;
+}
+
+message VerifyCurrentResponse {
+  ObjectId object = 1;
+  string etag = 2;
+  uint64 size = 3;
+  bool valid = 4;
+}
+
+service ObjectsService {
+  rpc PutObject(PutObjectRequest) returns (PutObjectResponse);
+  rpc GetCurrent(GetCurrentRequest) returns (CurrentObject);
+  rpc VerifyCurrent(VerifyCurrentRequest) returns (VerifyCurrentResponse);
+}

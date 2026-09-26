@@ -1,5 +1,11 @@
 # @acyclic-labs/objects changelog
 
+## 0.2.0-rc.0
+
+- Added the current-value `ReplaceableObjects` facade with opaque stable IDs, replacement PUT, weak reads, verification, and exact idempotency retry semantics.
+- Added the generated `acyclic.objects.v2` protocol and `./proto/v2` package export.
+- The legacy versioned `Objects` facade remains available only for migration compatibility.
+
 ## 0.1.5 - 2026-09-25
 
 - Aligns object clients with the qualified SDK 0.1.5 release.
