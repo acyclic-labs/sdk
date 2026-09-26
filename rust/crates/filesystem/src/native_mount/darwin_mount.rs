@@ -2931,6 +2931,7 @@ mod tests {
     /// label and a revalidation returns without waiting out the client's
     /// attribute timeout, while one that differs makes it wait.
     #[test]
+    #[allow(unsafe_code)]
     fn an_unconfirmed_fence_waits_only_for_what_changed() -> TestResult {
         use super::super::view_ledger::ViewChange;
         use std::time::{Duration, Instant};
@@ -2967,10 +2968,15 @@ mod tests {
             issued.observed.lookup.node.logical_bytes += 1;
         }
         source.record_projection_change(&ViewChange::Unconfirmed);
-        let started = Instant::now();
+        let began = uptime();
         context.revalidate();
+        let ended = uptime();
+        // The NFS expiry is rounded to whole uptime seconds. Elapsed wall time
+        // can be less than 500 ms when the call begins near a second boundary.
+        // SAFETY: the bridge reports a constant.
+        let timeout = u64::from(unsafe { acyclic_fs_darwin_mount_attribute_timeout() });
         assert!(
-            started.elapsed() >= Duration::from_millis(500),
+            ended.as_secs() >= (began + REPLY_DELIVERY_SLACK).as_secs() + timeout,
             "a change the fence could not confirm is waited out"
         );
         Ok(())
