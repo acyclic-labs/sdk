@@ -890,9 +890,13 @@ mod tests {
             )
             .await?;
         let continuation = read_coordinator_event_page(&client, 1, 1).await?;
-        assert_eq!(continuation.len(), 1);
-        assert_eq!(continuation[0].revision, 2);
-        assert_eq!(continuation[0].operation_id, second);
+        let [continued] = continuation.as_slice() else {
+            return Err(Error::Storage(
+                "expected one continued coordinator event".into(),
+            ));
+        };
+        assert_eq!(continued.revision, 2);
+        assert_eq!(continued.operation_id, second);
         assert!(read_coordinator_event_page(&client, 2, 1).await?.is_empty());
         assert!(read_coordinator_event_page(&client, 0, 0).await.is_err());
         Ok(())
@@ -934,7 +938,12 @@ mod tests {
             CoordinatorApply::Replayed
         );
         let page = read_coordinator_event_page(&client, 0, 1).await?;
-        assert_eq!(page[0].committed_at_ms, Some(1));
+        let [committed] = page.as_slice() else {
+            return Err(Error::Storage(
+                "expected one committed coordinator event".into(),
+            ));
+        };
+        assert_eq!(committed.committed_at_ms, Some(1));
         Ok(())
     }
 
