@@ -50,15 +50,7 @@ impl<F: Format> OwnedPage<F> {
                     work,
                     budget,
                 )?;
-                let copied = work.checked_add(WorkCounters {
-                    bytes_copied: logical_bytes,
-                    ..WorkCounters::default()
-                })?;
-                if let Err(error) = copied.verify(budget) {
-                    allocations.release(logical_bytes)?;
-                    return Err(error.into());
-                }
-                *work = copied;
+                charge_copy(logical_bytes, &budget, allocations, work)?;
                 Ok(((*page).clone(), logical_bytes))
             }
         }
@@ -149,14 +141,13 @@ where
     S: AsyncObjectStore,
     F: Format,
 {
-    let prospective = context.work.checked_add(WorkCounters {
-        page_reads: 1,
-        ..WorkCounters::default()
-    })?;
-    prospective.verify(context.budget)?;
     let cache_key = DecodedCacheKey::new::<Page<F>>(page, context.limits);
+    // Admit the page read before consulting the cache, as a backend read
+    // would; the read is charged once the page is known to be cached, and
+    // otherwise the same prospective work carries the backend's receipt.
+    context.work.admit(&PAGE_READ, &context.budget)?;
     if let Some(cached) = store.decoded_cache_get(cache_key)? {
-        *context.work = prospective;
+        context.work.charge(&PAGE_READ, &context.budget)?;
         let logical_bytes = cached.logical_bytes;
         let page = cached
             .value
@@ -177,15 +168,12 @@ where
                     context.work,
                     context.budget,
                 )?;
-                let copied = context.work.checked_add(WorkCounters {
-                    bytes_copied: logical_bytes,
-                    ..WorkCounters::default()
-                })?;
-                if let Err(error) = copied.verify(context.budget) {
-                    context.allocations.release(logical_bytes)?;
-                    return Err(error.into());
-                }
-                *context.work = copied;
+                charge_copy(
+                    logical_bytes,
+                    &context.budget,
+                    context.allocations,
+                    context.work,
+                )?;
                 Ok(OwnedPage {
                     page: PageLease::Owned((*page).clone()),
                     logical_bytes,
@@ -193,6 +181,7 @@ where
             }
         };
     }
+    let prospective = context.work.checked_add(PAGE_READ)?;
     let mut remaining = prospective.remaining(context.budget)?;
     remaining.peak_allocation_bytes = context
         .budget
@@ -751,22 +740,49 @@ fn admit_clone(
     work: &mut WorkCounters,
 ) -> Result<(), Error> {
     allocations.claim_bytes(nested, u64::from(nested != 0), work, budget)?;
-    let copied = match work.checked_add(WorkCounters {
-        bytes_copied: nested,
-        ..WorkCounters::default()
-    }) {
-        Ok(copied) => copied,
-        Err(error) => {
-            allocations.release(nested)?;
-            return Err(error.into());
-        }
-    };
-    if let Err(error) = copied.verify(budget) {
+    if let Err(error) = work.charge(
+        &WorkCounters {
+            bytes_copied: nested,
+            ..WorkCounters::default()
+        },
+        &budget,
+    ) {
         allocations.release(nested)?;
         return Err(error.into());
     }
-    *work = copied;
     Ok(())
+}
+
+/// One authenticated page read, as charged before any backend work.
+const PAGE_READ: WorkCounters = WorkCounters {
+    page_reads: 1,
+    ..WorkCounters::UNCHARGED
+};
+
+/// Charges `copied` bytes of a shared page cloned into an owned one whose
+/// allocation `allocations` has just claimed. An exceeded budget releases
+/// that claim before failing; an overflowing charge fails without releasing
+/// it, exactly as the prospective sum this replaces did.
+fn charge_copy(
+    copied: u64,
+    budget: &WorkBudget,
+    allocations: &mut AllocationLedger,
+    work: &mut WorkCounters,
+) -> Result<(), Error> {
+    match work.charge(
+        &WorkCounters {
+            bytes_copied: copied,
+            ..WorkCounters::default()
+        },
+        budget,
+    ) {
+        Ok(()) => Ok(()),
+        Err(WorkError::Overflow) => Err(WorkError::Overflow.into()),
+        Err(error) => {
+            allocations.release(copied)?;
+            Err(error.into())
+        }
+    }
 }
 
 fn charge_items(work: &mut WorkCounters, count: u64, budget: WorkBudget) -> Result<(), WorkError> {

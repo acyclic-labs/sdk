@@ -1553,7 +1553,7 @@ impl BlobRangeMachine {
                 }
                 let visited = self
                     .visited
-                    .insert(page, &mut self.allocations, &mut self.work, self.budget)
+                    .insert(page, &mut self.allocations, &mut self.work, &self.budget)
                     .map_err(|error| failed(error.into(), self.work))?;
                 if !visited.inserted {
                     return Err(failed(BlobReadError::CycleOrHeight, self.work));

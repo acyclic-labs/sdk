@@ -432,7 +432,7 @@ impl RangeMachine {
                 expected.page,
                 &mut self.allocations,
                 &mut self.work,
-                self.budget,
+                &self.budget,
             )
             .map_err(|error| failed(error.into(), self.work))?;
         if !visited.inserted {

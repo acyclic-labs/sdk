@@ -61,26 +61,37 @@ where
         if !visited.insert(page) {
             return Err(OperationFailure::new(Error::CycleOrAlias, work));
         }
-        let prospective = work
-            .checked_add(WorkCounters {
-                page_reads: 1,
-                ..WorkCounters::default()
+        // Charging the page read in place is exactly `checked_add` then
+        // `remaining`'s verification, and leaves `work` unchanged on failure.
+        work.charge(&PAGE_READ, &budget)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let key_for_cache = DecodedCacheKey::new::<Page<F>>(page, limits);
+        let cached = store
+            .decoded_cache_get(key_for_cache)
+            .map_err(|error| OperationFailure::new(Error::Storage(error), work))?;
+        let decoded = if let Some(cached) = cached {
+            cached.value.downcast::<Page<F>>().map_err(|_| {
+                OperationFailure::new(Error::Storage(ObjectStoreError::Corrupt), work)
+            })?
+        } else {
+            // A cache miss awaits the backend in its own heap frame, so a
+            // lookup the decoded cache answers, which is nearly every one,
+            // never builds or moves that future.
+            let (decoded, spent) = in_heap(|| {
+                read_uncached::<S, F>(
+                    store,
+                    page,
+                    key_for_cache,
+                    limits,
+                    work,
+                    budget,
+                    cancellation,
+                )
             })
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let remaining = prospective
-            .remaining(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let (decoded, spent) = read_decoded::<S, F>(
-            store,
-            page,
-            limits,
-            prospective,
-            remaining,
-            budget,
-            cancellation,
-        )
-        .await?;
-        work = spent;
+            .await?;
+            work = spent;
+            decoded
+        };
         match &*decoded {
             Page::Leaf(values) => {
                 validate_leaf::<F>(values, lower.as_ref(), upper.as_ref())
@@ -110,15 +121,21 @@ where
     }
 }
 
-/// One decoded page, from the decoded cache or read and offered to it, and
-/// the work spent through it: `prospective` for a cached page, plus the
-/// backend's work for a page read.
-async fn read_decoded<S, F>(
+/// One authenticated page read, as charged before any backend work.
+const PAGE_READ: WorkCounters = WorkCounters {
+    page_reads: 1,
+    ..WorkCounters::UNCHARGED
+};
+
+/// One page the decoded cache did not hold, read, decoded, and offered to
+/// the cache, with the work spent: `prospective` (which already charges the
+/// page read) plus the backend's work.
+async fn read_uncached<S, F>(
     store: &S,
     page: ObjectId,
+    key: DecodedCacheKey,
     limits: DecodeLimits,
     prospective: WorkCounters,
-    remaining: WorkBudget,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<(Arc<Page<F>>, WorkCounters), Failure>
@@ -126,34 +143,23 @@ where
     S: AsyncObjectStore,
     F: Format,
 {
-    let key = DecodedCacheKey::new::<Page<F>>(page, limits);
     let storage =
         |error: ObjectStoreError, work| OperationFailure::new(Error::Storage(error), work);
-    if let Some(cached) = store
-        .decoded_cache_get(key)
-        .map_err(|error| storage(error, prospective))?
-    {
-        let decoded = cached
-            .value
-            .downcast::<Page<F>>()
-            .map_err(|_| storage(ObjectStoreError::Corrupt, prospective))?;
-        return Ok((decoded, prospective));
-    }
-    // The read runs in its own heap frame, so a lookup the decoded cache
-    // answers, which is nearly every one, never builds or moves its future.
-    let receipt = in_heap(|| {
-        store.read(
+    let remaining = prospective
+        .remaining(budget)
+        .map_err(|error| OperationFailure::new(error.into(), prospective))?;
+    let receipt = store
+        .read(
             page,
             limits.maximum_page_object_bytes(),
             remaining,
             cancellation,
         )
-    })
-    .await
-    .map_err(|failure| match prospective.checked_add(*failure.work) {
-        Ok(spent) => storage(failure.error, spent),
-        Err(error) => OperationFailure::new(error.into(), prospective),
-    })?;
+        .await
+        .map_err(|failure| match prospective.checked_add(*failure.work) {
+            Ok(spent) => storage(failure.error, spent),
+            Err(error) => OperationFailure::new(error.into(), prospective),
+        })?;
     let work = prospective
         .checked_add(receipt.work)
         .map_err(|error| OperationFailure::new(error.into(), prospective))?;

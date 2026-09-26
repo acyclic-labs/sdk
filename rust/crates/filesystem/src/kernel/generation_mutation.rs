@@ -2170,6 +2170,7 @@ fn decode_limits(config: VolumeConfig) -> DecodeLimits {
     }
 }
 
+#[inline]
 fn nested_budget(
     work: WorkCounters,
     budget: WorkBudget,
@@ -2185,6 +2186,7 @@ fn nested_budget(
     Ok(remaining)
 }
 
+#[inline]
 fn merge_nested(
     prior: WorkCounters,
     mut nested: WorkCounters,
@@ -2221,6 +2223,7 @@ fn nested_failure(
     failed(error, work)
 }
 
+#[inline]
 fn charge_items(
     work: &mut WorkCounters,
     count: u64,

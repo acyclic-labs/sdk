@@ -13573,6 +13573,7 @@ fn creation_commit(operation_id: OperationId, payload: Vec<u8>) -> (ProposedComm
     )
 }
 
+#[inline]
 fn add(prior: WorkCounters, next: WorkCounters) -> Result<WorkCounters, OperationFailure<FsError>> {
     prior
         .checked_add(next)
@@ -13692,6 +13693,7 @@ fn merge_sorted_object_ids(
     Ok(())
 }
 
+#[inline]
 fn remaining(
     work: WorkCounters,
     budget: WorkBudget,

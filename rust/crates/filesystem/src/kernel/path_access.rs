@@ -1829,11 +1829,13 @@ fn maximum_cache_entries_for_components(
         .min(usize::try_from(config.limits.maximum_objects_per_generation).unwrap_or(usize::MAX)))
 }
 
+#[inline]
 fn add(left: WorkCounters, right: WorkCounters) -> Result<WorkCounters, PathLookupFailure> {
     left.checked_add(right)
         .map_err(|error| OperationFailure::new(error.into(), left))
 }
 
+#[inline]
 fn remaining(work: WorkCounters, budget: WorkBudget) -> Result<WorkBudget, PathLookupFailure> {
     work.remaining(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))
