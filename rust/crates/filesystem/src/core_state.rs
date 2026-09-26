@@ -599,16 +599,10 @@ fn remove_if_present(path: &Path) -> Result<(), std::io::Error> {
     }
 }
 
+/// Makes the entries of directory `path` durable, with the one directory
+/// synchronization every store shares; Windows flushes a directory handle.
 fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
-    #[cfg(unix)]
-    {
-        File::open(path)?.sync_all()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
+    acyclic_native_runtime::sync_parent(path, acyclic_native_runtime::Durability::Full)
 }
 
 /// Guard for a [`LocalCoreStateStore::defer_durability`] scope.
