@@ -132,7 +132,7 @@ pub trait ViewObserver: Send + Sync {
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
 
     /// Changes to the source may not all have been reported by `position`,
-    /// though none is known to have been lost ([`ViewChange::Unconfirmed`]).
+    /// though none is known to have been lost (`ViewChange::Unconfirmed`).
     /// An observer that cannot verify what it keeps treats it as a change.
     fn view_unconfirmed(&self, position: ViewStamp) {
         self.view_changed(position, ViewOrigin::current());
