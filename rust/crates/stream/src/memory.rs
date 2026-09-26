@@ -586,10 +586,11 @@ impl StreamProvider for MemoryStream {
             .paths
             .keys()
             .filter(|path| {
-                request.parent.as_ref().map_or_else(
-                    || !path.as_str().contains('/'),
-                    |parent| is_direct_child(parent, path),
-                )
+                request.after.as_ref().is_none_or(|after| *path > after)
+                    && request.parent.as_ref().map_or_else(
+                        || !path.as_str().contains('/'),
+                        |parent| is_direct_child(parent, path),
+                    )
             })
             .take(limit)
             .cloned()
@@ -2152,6 +2153,46 @@ mod tests {
             provider.tail(path("tree/a")?).await,
             Err(StreamError::Retired)
         );
+        Ok(())
+    }
+
+    /// A listing longer than its limit pages on from the last child listed.
+    #[tokio::test]
+    async fn children_page_after_the_last_listed() -> Result<(), StreamError> {
+        let provider = MemoryStream::default();
+        for name in ["tree/a", "tree/b", "tree/c", "tree-x/d"] {
+            provider
+                .append(AppendRequest {
+                    path: path(name)?,
+                    records: vec![Bytes::from_static(b"record")],
+                    if_tail: None,
+                    idempotency_key: None,
+                })
+                .await?;
+        }
+        let mut listed = Vec::new();
+        let mut after = None;
+        loop {
+            let page = provider
+                .children(ChildrenRequest {
+                    parent: Some(path("tree")?),
+                    limit: 2,
+                    after: after.take(),
+                })
+                .await?
+                .map(|child| child.map(|child| child.path))
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
+            after = page.last().cloned();
+            let complete = page.len() < 2;
+            listed.extend(page);
+            if complete {
+                break;
+            }
+        }
+        assert_eq!(listed, vec![path("tree/a")?, path("tree/b")?, path("tree/c")?]);
         Ok(())
     }
 }

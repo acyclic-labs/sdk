@@ -72,6 +72,102 @@ type LocalSingleMount =
 #[derive(Clone, Default)]
 struct SharedRootRegistry {
     roots: Arc<AsyncMutex<BTreeMap<PathBuf, Arc<AsyncMutex<SharedRootRegistration>>>>>,
+    collection: BackgroundCollection,
+}
+
+/// Workspaces deleted before the local store is collected again.
+const DELETIONS_PER_COLLECTION: u64 = 32;
+/// The longest the local store goes uncollected while the service runs.
+const COLLECTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Collects the local object store in the background, off every hook's
+/// path: once enough workspaces were deleted since the last collection, and
+/// at least daily.
+#[derive(Clone, Default)]
+struct BackgroundCollection {
+    deletions: Arc<std::sync::atomic::AtomicU64>,
+    wake: Arc<tokio::sync::Notify>,
+    task: Arc<CollectionSlot>,
+}
+
+/// The running background collection, shared by every registry clone: the
+/// last clone to go stops it, so the root it holds is released even when
+/// nothing stops it explicitly.
+#[derive(Default)]
+struct CollectionSlot(Mutex<Option<CollectionTask>>);
+
+/// The running background collection and how to stop it.
+struct CollectionTask {
+    cancellation: acyclic_fs::CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl CollectionSlot {
+    fn take(&self) -> Option<CollectionTask> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
+impl Drop for CollectionSlot {
+    fn drop(&mut self) {
+        if let Some(task) = self.take() {
+            task.cancellation.cancel();
+        }
+    }
+}
+
+impl BackgroundCollection {
+    /// Counts one deleted workspace toward the next collection.
+    fn deleted(&self) {
+        if self
+            .deletions
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1
+            >= DELETIONS_PER_COLLECTION
+        {
+            self.wake.notify_one();
+        }
+    }
+
+    fn start(&self, fs: LocalFs, store: LocalCoreStateStore) {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let deletions = Arc::clone(&self.deletions);
+        let wake = Arc::clone(&self.wake);
+        let token = cancellation.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = wake.notified() => {}
+                    () = tokio::time::sleep(COLLECTION_INTERVAL) => {}
+                    () = token.cancelled() => return,
+                }
+                deletions.store(0, std::sync::atomic::Ordering::Release);
+                // A failed collection sweeps nothing it should not; the next
+                // one starts over.
+                let _ = fs.collect_local_garbage(Some(&store), &token).await;
+            }
+        });
+        if let Some(previous) = self
+            .task
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(CollectionTask { cancellation, task })
+        {
+            previous.cancellation.cancel();
+        }
+    }
+
+    /// Stops collecting and waits for a collection in progress to end.
+    async fn stop(&self) {
+        if let Some(CollectionTask { cancellation, task }) = self.task.take() {
+            cancellation.cancel();
+            let _ = task.await;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -4301,7 +4397,8 @@ impl ControlPlane {
                 .await
                 .map_err(display)?
             {
-                WorkspaceDelete::Deleted | WorkspaceDelete::AlreadyDeleted => {}
+                WorkspaceDelete::Deleted => self.shared_roots.collection.deleted(),
+                WorkspaceDelete::AlreadyDeleted => {}
                 WorkspaceDelete::Conflict => {
                     return Err("prepared workspace deletion conflicted".to_owned());
                 }
@@ -4966,7 +5063,8 @@ impl ControlPlane {
                     .await
                     .map_err(|error| format!("cannot delete discarded workspace: {error}"))?
                 {
-                    WorkspaceDelete::Deleted | WorkspaceDelete::AlreadyDeleted => {}
+                    WorkspaceDelete::Deleted => self.shared_roots.collection.deleted(),
+                    WorkspaceDelete::AlreadyDeleted => {}
                     WorkspaceDelete::Conflict => {
                         return Err("discarded workspace deletion conflicted".to_owned());
                     }
@@ -7905,6 +8003,10 @@ impl ServiceResources {
             data,
             fs,
         };
+        resources
+            .shared_roots
+            .collection
+            .start(resources.fs.clone(), resources.store.clone());
         let mut entries = fs::read_dir(resources.data.join("sessions"))
             .map_err(display)?
             .filter_map(|entry| match entry {
@@ -8196,6 +8298,7 @@ impl ServiceControl {
     async fn shutdown(mut self) -> Result<(), String> {
         let root_released = self.fs.local_root_release_barrier();
         let result = self.shutdown_sessions(false).await;
+        self.shared_roots.collection.stop().await;
         // Publish service shutdown only after its final LocalFs handle has released the durable
         // Stream and Objects roots. A completed async future may otherwise retain `self` until the
         // executor drops the future, allowing an immediate replacement service to race the lock.
@@ -9334,6 +9437,7 @@ impl ConcurrentServiceControl {
             .shutdown_deactivates
             .load(std::sync::atomic::Ordering::Acquire);
         let result = self.drain_sessions(deactivate).await;
+        self.shared_roots.collection.stop().await;
         drop(self);
         wait_for_root_release(root_released).await?;
         result

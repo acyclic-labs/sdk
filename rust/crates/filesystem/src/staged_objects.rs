@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{OnceLock, PoisonError};
+use std::sync::{Arc, OnceLock, PoisonError};
 use tokio::sync::RwLock;
 
 // The local provider stores one batch in a bounded segment. Every durable
@@ -247,6 +247,7 @@ pub struct StagedObjects<S> {
     spill: NativeFile,
     index: std::sync::RwLock<Index>,
     spill_io: RwLock<()>,
+    collection: Arc<crate::Collection>,
 }
 
 impl<S> StagedObjects<S> {
@@ -264,6 +265,7 @@ impl<S> StagedObjects<S> {
             spill: NativeFile::from_file(spill)?,
             index: std::sync::RwLock::new(Index::default()),
             spill_io: RwLock::new(()),
+            collection: Arc::default(),
         })
     }
 
@@ -771,12 +773,27 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         scope: PublicationScope<'_>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+    ) -> ObjectResult<crate::PublicationHold> {
         let _spill_file = self.spill_io.write().await;
+        // Admitted before the drain: a collection cannot sweep what the
+        // drain stores until the record naming it is written.
+        let (objects, proven_at) = match scope {
+            PublicationScope::Closure { objects, proven_at } => (objects, proven_at),
+            PublicationScope::Everything => (&[][..], self.collection.sweeps()),
+        };
+        let hold = self
+            .collection
+            .admit(
+                objects,
+                |object_id| self.index().objects.contains_key(object_id),
+                proven_at,
+            )
+            .await
+            .map_err(ObjectFailure::before_work)?;
         let targets = {
             let index = self.index();
             match scope {
-                PublicationScope::Closure(closure) => closure
+                PublicationScope::Closure { objects, .. } => objects
                     .iter()
                     .copied()
                     .filter(|object_id| index.objects.contains_key(object_id))
@@ -784,7 +801,15 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
                 PublicationScope::Everything => index.objects.keys().copied().collect(),
             }
         };
-        self.drain_locked(targets, budget, cancellation).await
+        let drained = self.drain_locked(targets, budget, cancellation).await?;
+        Ok(ObjectReceipt {
+            value: hold,
+            work: drained.work,
+        })
+    }
+
+    fn collection(&self) -> Option<&Arc<crate::Collection>> {
+        Some(&self.collection)
     }
 
     async fn read(
@@ -1170,7 +1195,10 @@ mod tests {
 
         store
             .flush_before_publish(
-                PublicationScope::Closure(&closure),
+                PublicationScope::Closure {
+                    objects: &closure,
+                    proven_at: 0,
+                },
                 WorkBudget::UNBOUNDED,
                 &token,
             )
@@ -1291,7 +1319,10 @@ mod tests {
         writers.await?;
         store
             .flush_before_publish(
-                PublicationScope::Closure(&closure),
+                PublicationScope::Closure {
+                    objects: &closure,
+                    proven_at: 0,
+                },
                 WorkBudget::UNBOUNDED,
                 token,
             )

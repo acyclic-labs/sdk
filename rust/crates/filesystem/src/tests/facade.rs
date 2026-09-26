@@ -198,7 +198,7 @@ struct CheckoutState {
 
 fn checkout_state<A, O>(checkout: &Checkout<A, O>) -> CheckoutState {
     CheckoutState {
-        base_generation_root: checkout.base_generation_root,
+        base_generation_root: checkout.root.base(),
         generation_root: checkout.generation_root,
         base_file_table: checkout.base_file_table,
         base_root: checkout.base_root.clone(),
@@ -9017,20 +9017,13 @@ async fn a_rejected_open_leaves_no_provider_opening_behind_it()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let options = LocalOptions::new(directory.path());
-    let cancellation = CancellationToken::new();
     for iteration in 0..200_u32 {
         let fs = Fs::local(options.clone()).await?;
         assert!(
-            Fs::collect_local_garbage(
-                options.clone(),
-                8,
-                1_024,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .is_err(),
-            "a live engine excludes garbage collection"
+            Fs::open_local_unshared(options.clone(), None)
+                .await
+                .is_err(),
+            "a live engine excludes a second owner"
         );
         drop(fs);
         drop(
@@ -9055,7 +9048,7 @@ async fn a_rejected_open_leaves_no_provider_opening_behind_it()
 
 #[cfg(feature = "local")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines()
+async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let options = LocalOptions::new(directory.path());
@@ -9093,17 +9086,26 @@ async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines(
             &cancellation,
         )
         .await?;
-    assert!(
-        Fs::collect_local_garbage(
-            options.clone(),
-            8,
-            1_024,
+    // An open checkout's unpublished work survives a collection, and so
+    // does everything its publication then names.
+    let pending = path("pending.txt")?;
+    checkout
+        .create_file(
+            pending.clone(),
+            Bytes::from(vec![b'p'; 256 * 1_024]),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
-        .await
-        .is_err()
-    );
+        .await?;
+    fs.collect_local_garbage(None, &cancellation).await?;
+    checkout
+        .commit(
+            OperationId::from_bytes([50; 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    fs.collect_local_garbage(None, &cancellation).await?;
     drop(checkout);
     drop(volume);
     drop(fs);
@@ -9135,12 +9137,11 @@ async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines(
     )
     .await?;
     drop(objects);
-    let collected =
-        Fs::collect_local_garbage(options, 8, 1_024, WorkBudget::UNBOUNDED, &cancellation).await?;
-    assert!(collected.value.removed >= 1);
-    assert!(collected.value.segments_removed >= 1);
+    let reopened = Fs::local(options).await?;
+    let collected = reopened.collect_local_garbage(None, &cancellation).await?;
+    assert!(collected.removed >= 1);
+    assert!(collected.segments_removed >= 1);
 
-    let reopened = Fs::local(LocalOptions::new(directory.path())).await?;
     let volume = reopened
         .open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation)
         .await?;
@@ -9166,6 +9167,22 @@ async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines(
         )
         .await?;
     assert_eq!(retained.value.bytes.as_ref(), b"retained");
+    let pending = checkout
+        .value
+        .read_file_range(
+            &pending,
+            ByteRange {
+                offset: 0,
+                length: 256 * 1_024,
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(
+        pending.value.bytes.as_ref(),
+        vec![b'p'; 256 * 1_024].as_slice()
+    );
     Ok(())
 }
 

@@ -2387,27 +2387,15 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
             2,
             "the fork's authority is gone; its base is still retained"
         );
+        // The collection runs while the source workspace is open.
+        let collected = fs.collect_local_garbage(None, &cancellation).await?;
+        assert!(collected.removed >= 1, "{collected:?}");
+        let again = fs.collect_local_garbage(None, &cancellation).await?;
+        assert_eq!(again.removed, 0);
+        assert_eq!(main.read("/base.txt", 64).await?, "base");
         drop((main, agent));
         close_local(fs).await?;
     }
-    let collected = Fs::collect_local_garbage(
-        crate::LocalOptions::new(root),
-        64,
-        1_024,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await?;
-    assert!(collected.value.removed >= 1, "{:?}", collected.value);
-    let again = Fs::collect_local_garbage(
-        crate::LocalOptions::new(root),
-        64,
-        1_024,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await?;
-    assert_eq!(again.value.removed, 0);
 
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
     assert_eq!(
@@ -2425,5 +2413,56 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
     let main = fs.open_workspace("repo").await?;
     assert_eq!(main.read("/again.txt", 1 << 20).await?, content.as_str());
+    Ok(())
+}
+
+/// Collections run back to back while a workspace keeps publishing and its
+/// forks come and go: every publication succeeds, what the deleted forks
+/// held is reclaimed, and everything live reads back after a reopen.
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let cancellation = CancellationToken::new();
+    let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+    fs.create_workspace("repo").await?;
+    let writer = tokio::spawn({
+        let fs = fs.clone();
+        async move {
+            let main = fs.open_workspace("repo").await?;
+            for round in 0..24_u32 {
+                main.write_text("/churn.txt", &round.to_string().repeat(20_000))
+                    .await?;
+                let agent = main
+                    .fork(
+                        &format!("agent-{round}"),
+                        ForkOptions::from_generation(main.head().await?, IdempotencyKey::new()),
+                    )
+                    .await?;
+                agent
+                    .write_text("/agent.txt", &format!("agent {round} ").repeat(8_192))
+                    .await?;
+                agent.delete(IdempotencyKey::new()).await?;
+            }
+            Ok::<_, WorkspaceError>(())
+        }
+    });
+    let mut removed = 0_u64;
+    while !writer.is_finished() {
+        removed += fs.collect_local_garbage(None, &cancellation).await?.removed;
+    }
+    writer.await??;
+    removed += fs.collect_local_garbage(None, &cancellation).await?.removed;
+    assert!(removed > 0);
+    close_local(fs).await?;
+
+    let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+    let main = fs.open_workspace("repo").await?;
+    assert_eq!(
+        main.read("/churn.txt", 1 << 20).await?,
+        "23".repeat(20_000).as_str()
+    );
+    assert_eq!(fs.collect_local_garbage(None, &cancellation).await?.removed, 0);
     Ok(())
 }

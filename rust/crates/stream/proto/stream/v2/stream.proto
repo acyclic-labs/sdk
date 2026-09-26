@@ -97,6 +97,8 @@ message ReadResponse {
 message ChildrenRequest {
   optional string parent = 1;
   uint32 limit = 2;
+  // Lists only children ordered after this one, to page past `limit`.
+  optional string after = 3;
 }
 
 message Child {

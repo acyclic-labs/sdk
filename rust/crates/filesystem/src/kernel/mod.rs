@@ -20,6 +20,7 @@ mod frontier;
 mod generation;
 mod generation_mutation;
 mod list;
+mod mark;
 mod live;
 mod merge;
 mod metadata;
@@ -76,6 +77,8 @@ pub use checkpoint::{
 #[cfg(feature = "s3-http")]
 pub(crate) use closure::prove_blob_closure_async;
 pub(crate) use closure::prove_record_closure_async;
+pub(crate) use mark::Marker;
+pub use mark::MarkError;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
     prove_generation_closure_async,

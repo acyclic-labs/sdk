@@ -4643,7 +4643,10 @@ where
             // A shadow outlives the checkout whose objects it names, which
             // publication need not flush: make them durable first, so no
             // durable shadow ever names content a crash could lose.
-            self.workspace
+            // Held until the shadow is written, so no collection sweeps what
+            // it names in between.
+            let _hold = self
+                .workspace
                 .make_records_durable(std::slice::from_ref(&record))
                 .await
                 .map_err(workspace_error)?;

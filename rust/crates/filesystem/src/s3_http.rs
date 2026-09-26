@@ -703,6 +703,7 @@ async fn bounded_children<P: acyclic_stream::StreamProvider>(
         .children(acyclic_stream::ChildrenRequest {
             parent: Some(parent),
             limit,
+            after: None,
         })
         .await
         .map_err(|error| stream_read_error(&error))?;

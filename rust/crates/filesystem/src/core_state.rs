@@ -1951,6 +1951,52 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
     }
 }
 
+impl LocalCoreStateStore {
+    /// Every file record a stored lazy shadow holds, which an object
+    /// collection keeps: a lazy workspace may still resolve any of them.
+    pub(crate) async fn lazy_shadow_records(
+        &self,
+    ) -> Result<Vec<crate::kernel::FileRecord>, LocalCoreStateStoreError> {
+        self.transaction(|namespace| {
+            let family = <crate::LazyShadow as LazyNode>::FAMILY;
+            let entries = match std::fs::read_dir(namespace.family(family)) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Vec::new());
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let mut addresses = std::collections::BTreeSet::new();
+            for entry in entries {
+                let name = entry?.file_name();
+                let Some(stem) = name.to_str().and_then(|name| name.strip_suffix(".json")) else {
+                    continue;
+                };
+                let stem = stem.strip_suffix(".previous").unwrap_or(stem);
+                if let Some(address) = hex::decode(stem)
+                    .ok()
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                {
+                    addresses.insert(address);
+                }
+            }
+            let mut records = Vec::new();
+            for address in addresses {
+                if let Some(crate::LazyShadow::Node { record, .. }) =
+                    load_content_addressed::<crate::LazyShadow>(namespace, family, address)?
+                {
+                    records.push(
+                        crate::kernel::decode_file_record(&record)
+                            .map_err(|_| LocalCoreStateStoreError::Integrity)?,
+                    );
+                }
+            }
+            Ok(records)
+        })
+        .await
+    }
+}
+
 /// Loads an immutable record whose key is the BLAKE3 digest of its encoding.
 fn load_content_addressed<T: DeserializeOwned + Serialize>(
     namespace: &Namespace,

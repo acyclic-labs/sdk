@@ -65,6 +65,8 @@ mod public_contract_tests {
 }
 
 pub mod async_storage;
+mod collection;
+pub use collection::{Collection, PublicationHold};
 pub mod cache;
 pub mod cancellation;
 pub mod compat_wire;

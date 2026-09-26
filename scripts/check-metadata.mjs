@@ -222,7 +222,6 @@ const familyArtifacts = {
   },
   stream: {
     schemaDigest: "rust/crates/stream/proto/stream/v2/stream.proto",
-    descriptorDigest: "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
     conformanceDigest: "conformance/vectors/stream.json",
   },
   objects: {

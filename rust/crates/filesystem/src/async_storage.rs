@@ -537,7 +537,13 @@ impl<T: ImmediateAuthorityStore + ?Sized> ImmediateAuthorityStore for Arc<T> {}
 #[derive(Clone, Copy, Debug)]
 pub enum PublicationScope<'a> {
     /// The complete authenticated closure of one published generation.
-    Closure(&'a [ObjectId]),
+    Closure {
+        /// Every object the record reaches.
+        objects: &'a [ObjectId],
+        /// The store's [`AsyncObjectStore::collection_sweeps`] before the
+        /// closure was proven.
+        proven_at: u64,
+    },
     /// Every object admitted so far, for a record whose closure was not
     /// enumerated.
     Everything,
@@ -636,21 +642,35 @@ pub trait AsyncObjectStore: StorageProvider {
     }
 
     /// Makes every admitted object in `scope` crash-durable before an
-    /// authority record may reference it. Ordinary stores already provide
-    /// that guarantee from `put`/`put_many`; a bounded staging adapter overrides
-    /// this boundary to group physical writes without changing publication.
+    /// authority record may reference it, and keeps it from collection until
+    /// the returned hold drops, which the caller does after writing the
+    /// record. Ordinary stores already provide durability from
+    /// `put`/`put_many` and never collect; a bounded staging adapter
+    /// overrides this boundary to group physical writes and to admit the
+    /// closure against a running collection.
     fn flush_before_publish(
         &self,
         _scope: PublicationScope<'_>,
         _budget: WorkBudget,
         _cancellation: &CancellationToken,
-    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
+    ) -> impl Future<Output = ObjectResult<crate::PublicationHold>> + StorageFuture {
         async {
             Ok(crate::storage::ObjectReceipt {
-                value: (),
+                value: crate::PublicationHold::none(),
                 work: crate::WorkCounters::default(),
             })
         }
+    }
+
+    /// The collection this store runs while it stays open, if it collects.
+    fn collection(&self) -> Option<&Arc<crate::Collection>> {
+        None
+    }
+
+    /// The count a proof records before it starts, for
+    /// [`PublicationScope::Closure`].
+    fn collection_sweeps(&self) -> u64 {
+        self.collection().map_or(0, |collection| collection.sweeps())
     }
 
     /// Asynchronously reads one complete bounded object.

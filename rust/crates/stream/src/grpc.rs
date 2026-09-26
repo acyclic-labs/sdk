@@ -632,6 +632,7 @@ impl StreamProvider for Client {
         let body = wire::ChildrenRequest {
             parent: request.parent.map(|path| path.to_string()),
             limit: request.limit,
+            after: request.after.map(|path| path.to_string()),
         };
         let mut last = None;
         for _ in 0..self.channels.len() {
@@ -891,6 +892,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .transpose()
                     .map_err(|error| error_status(&error))?,
                 limit: request.limit,
+                after: request
+                    .after
+                    .map(path)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
             })
             .await
             .map_err(|error| error_status(&error))?;

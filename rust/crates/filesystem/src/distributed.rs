@@ -69,53 +69,39 @@ struct AuthoritySnapshot {
 }
 
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
-    /// Lists a bounded snapshot of exact filesystem authority identities.
+    /// Lists up to `maximum` exact filesystem authority identities, in order.
     ///
     /// Authorities are native direct children in Stream; no filesystem record or object is read.
     pub async fn authorities(&self, maximum: u32) -> Result<Vec<AuthorityId>, AuthorityStoreError> {
-        let request_limit = maximum.checked_add(1).ok_or_else(|| {
-            AuthorityStoreError::Rejected("authority listing bound is too large".to_owned())
-        })?;
         let parent = acyclic_stream::StreamPath::new("fs/authorities").map_err(map_stream_error)?;
-        let mut children = self
-            .provider
-            .children(acyclic_stream::ChildrenRequest {
-                parent: Some(parent),
-                limit: request_limit,
-            })
-            .await
-            .map_err(map_stream_error)?;
+        let page = u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX);
+        let mut after = None;
         let mut authorities = Vec::new();
-        while let Some(child) = children.next().await {
-            let child = child.map_err(map_stream_error)?;
-            let encoded = child
-                .path
-                .as_str()
-                .strip_prefix("fs/authorities/")
-                .ok_or_else(|| {
-                    AuthorityStoreError::Corrupt(
-                        "Stream authority child escaped its parent".to_owned(),
-                    )
-                })?;
-            if encoded.len() != 32 || encoded.contains('/') {
-                return Err(AuthorityStoreError::Corrupt(
-                    "Stream authority child has a noncanonical identity".to_owned(),
-                ));
+        loop {
+            let mut children = self
+                .provider
+                .children(acyclic_stream::ChildrenRequest {
+                    parent: Some(parent.clone()),
+                    limit: page,
+                    after: after.take(),
+                })
+                .await
+                .map_err(map_stream_error)?;
+            let listed = authorities.len();
+            while let Some(child) = children.next().await {
+                let child = child.map_err(map_stream_error)?;
+                authorities.push(authority_child(&child.path)?);
+                after = Some(child.path);
+                if authorities.len() > maximum as usize {
+                    return Err(AuthorityStoreError::Rejected(
+                        "authority listing bound exceeded".to_owned(),
+                    ));
+                }
             }
-            let mut bytes = [0_u8; 16];
-            hex::decode_to_slice(encoded, &mut bytes).map_err(|_| {
-                AuthorityStoreError::Corrupt(
-                    "Stream authority child has a noncanonical identity".to_owned(),
-                )
-            })?;
-            authorities.push(AuthorityId::from_bytes(bytes));
+            if authorities.len() - listed < page as usize {
+                return Ok(authorities);
+            }
         }
-        if authorities.len() > maximum as usize {
-            return Err(AuthorityStoreError::Rejected(
-                "authority listing bound exceeded".to_owned(),
-            ));
-        }
-        Ok(authorities)
     }
 
     async fn snapshot(
@@ -387,6 +373,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     .children(acyclic_stream::ChildrenRequest {
                         parent: Some(path.clone()),
                         limit: u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX),
+                        after: None,
                     })
                     .await
                     .map_err(map_stream_error)?
@@ -2004,12 +1991,46 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
     }
 }
 
+/// The object an [`object_key`] names.
+pub(crate) fn object_id_from_key(key: &str) -> Option<ObjectId> {
+    let (tag, digest) = key.strip_prefix("fs/v1/")?.split_once('/')?;
+    let kind = crate::storage::ObjectKind::from_canonical_tag(tag.parse().ok()?).ok()?;
+    let digest = <[u8; 32]>::try_from(hex::decode(digest).ok()?).ok()?;
+    let object = ObjectId {
+        kind,
+        digest: crate::foundation::Digest::from_bytes(digest),
+    };
+    (object_key(object) == key).then_some(object)
+}
+
 pub(crate) fn object_key(object_id: ObjectId) -> String {
     format!(
         "fs/v1/{}/{}",
         object_id.kind.canonical_tag(),
         hex::encode(object_id.digest.as_bytes())
     )
+}
+
+/// The authority a direct child of `fs/authorities` names.
+fn authority_child(child: &acyclic_stream::StreamPath) -> Result<AuthorityId, AuthorityStoreError> {
+    let encoded = child
+        .as_str()
+        .strip_prefix("fs/authorities/")
+        .ok_or_else(|| {
+            AuthorityStoreError::Corrupt("Stream authority child escaped its parent".to_owned())
+        })?;
+    if encoded.len() != 32 || encoded.contains('/') {
+        return Err(AuthorityStoreError::Corrupt(
+            "Stream authority child has a noncanonical identity".to_owned(),
+        ));
+    }
+    let mut bytes = [0_u8; 16];
+    hex::decode_to_slice(encoded, &mut bytes).map_err(|_| {
+        AuthorityStoreError::Corrupt(
+            "Stream authority child has a noncanonical identity".to_owned(),
+        )
+    })?;
+    Ok(AuthorityId::from_bytes(bytes))
 }
 
 fn authority_prefix(authority_id: AuthorityId) -> String {

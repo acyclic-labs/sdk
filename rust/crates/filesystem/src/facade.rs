@@ -538,11 +538,12 @@ impl<A, O> Clone for Volume<A, O> {
 /// Immutable generation-fenced checkout admitted by the embedded facade.
 pub struct Checkout<A, O> {
     volume: Volume<A, O>,
-    base_generation_root: ObjectId,
     generation_root: ObjectId,
     base_file_table: ObjectId,
     base_root: GenerationRoot,
-    root: GenerationRoot,
+    /// The base generation and the working tree, which a running collection
+    /// treats as live.
+    root: crate::collection::CheckoutRoots,
     authority_head: Option<Head>,
     authored_operation_id: Option<OperationId>,
     live_operation_id: Option<OperationId>,
@@ -862,6 +863,8 @@ struct VerifiedForkSource {
     generation_root: ObjectId,
     /// Every object reachable from `generation_root`.
     closure: Vec<ObjectId>,
+    /// The store's sweep count before the closure was proven.
+    proven_at: u64,
 }
 
 /// Durable local authority backend with nonblocking native storage dispatch.
@@ -915,6 +918,8 @@ pub(crate) type MemoryCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBa
 pub struct DetachedFile<A, O> {
     volume: Volume<A, O>,
     record: FileRecord,
+    /// Keeps what the record reaches from a running collection.
+    _hold: Option<crate::collection::Hold>,
 }
 
 /// Successful facade operation with exact composed work.
@@ -2184,241 +2189,175 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         ))
     }
 
-    /// Reclaims unreachable local objects under an exclusive cross-process
-    /// maintenance fence.
+    /// Reclaims every stored object nothing live reaches, while the root
+    /// stays open and in use.
     ///
-    /// Every normal local store holds a shared fence for its complete lifetime,
-    /// so this operation fails while any embedded engine, checkout, mount, or
-    /// direct local object-store consumer is open. It authenticates every
-    /// authority head and complete generation closure before physical deletion.
+    /// Live means: every generation in the history of a workspace that is
+    /// not deleted, every generation a retention keeps while the workspace it
+    /// serves lives, every record a lazy workspace in `core_state` still
+    /// resolves, active S3 multipart parts, and the base and working tree of
+    /// every open checkout. The root object of every generation a live one
+    /// names as a parent is kept too, so lineage walks stay whole. Along the
+    /// way, the authorities of deleted workspaces and ended retentions are
+    /// released. See [`crate::Collection`] for how publications made while
+    /// it runs stay safe.
     ///
     /// # Errors
     ///
-    /// Returns a typed failure for an active local consumer, malformed authority
-    /// history, incomplete/corrupt closure, cancellation, candidate/result
-    /// bounds, storage failure, or work outside `budget`.
+    /// Fails, sweeping nothing, when anything live cannot be marked, and
+    /// stops at the first storage failure while sweeping.
     pub async fn collect_local_garbage(
-        options: LocalOptions,
-        maximum_authorities: u32,
-        maximum_candidates: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<LocalGarbageCollection> {
-        cancellation
-            .check()
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let fs = Self::open_local_unshared(options, None)
-            .await
-            .map_err(OperationFailure::before_work)?;
-        fs.collect_local_garbage_exclusive(
-            maximum_authorities,
-            maximum_candidates,
-            budget,
-            cancellation,
-        )
-        .await
-    }
-
-    async fn collect_local_garbage_exclusive(
         &self,
-        maximum_authorities: u32,
-        maximum_candidates: u64,
-        budget: WorkBudget,
+        core_state: Option<&crate::LocalCoreStateStore>,
         cancellation: &CancellationToken,
-    ) -> FsResult<LocalGarbageCollection> {
-        let authorities = self
-            .inner
-            .authority
-            .authorities(maximum_authorities)
-            .await
-            .map_err(|error| OperationFailure::before_work(error.into()))?;
-        let authority_live_bytes = u64::try_from(authorities.capacity())
-            .unwrap_or(u64::MAX)
-            .saturating_mul(
-                u64::try_from(size_of::<crate::foundation::AuthorityId>()).unwrap_or(u64::MAX),
-            );
-        let mut work = WorkCounters {
-            backend_read_operations: 1,
-            items_examined: u64::try_from(authorities.len()).unwrap_or(u64::MAX),
-            items_returned: u64::try_from(authorities.len()).unwrap_or(u64::MAX),
-            allocation_operations: u64::from(!authorities.is_empty()),
-            peak_allocation_bytes: authority_live_bytes,
-            ..WorkCounters::default()
-        };
-        work.verify(budget)
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let mut reachable = Vec::<ObjectId>::new();
-        for authority_id in authorities {
-            let Some((generation_root, config, next_work)) = self
-                .local_authority_generation(
-                    authority_id,
-                    authority_live_bytes,
-                    work,
-                    budget,
-                    cancellation,
-                )
-                .await?
-            else {
-                continue;
-            };
-            work = next_work;
-            let live_bytes = authority_live_bytes.saturating_add(object_vec_bytes(&reachable));
-            let proof = prove_generation_closure_async(
-                &self.inner.objects,
-                generation_root,
-                closure_limits(config),
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-            work = merge_simultaneous_work(work, proof.work, live_bytes, budget)?;
-            let incoming_bytes = object_vec_bytes(&proof.objects);
-            merge_sorted_object_ids(
-                &mut reachable,
-                &proof.objects,
-                incoming_bytes,
-                authority_live_bytes,
-                &mut work,
-                budget,
-            )?;
-        }
+    ) -> Result<LocalGarbageCollection, FsError> {
+        let collection = Arc::clone(self.inner.objects.collection().ok_or(FsError::Object(
+            ObjectStoreError::Rejected("the local object store does not collect".to_owned()),
+        ))?);
+        let collecting = collection.begin().await;
+        let candidates = self.local_object_versions(cancellation).await?;
+        let mut marker = crate::kernel::Marker::new(&self.inner.objects, cancellation);
+        let shadow_limits = self
+            .mark_local_authorities(&mut marker, cancellation)
+            .await?;
         #[cfg(feature = "s3-http")]
         {
-            work = self
-                .merge_active_s3_multipart_reachable_objects(
-                    maximum_candidates,
-                    authority_live_bytes,
-                    &mut reachable,
-                    work,
-                    budget,
-                    cancellation,
-                )
-                .await?;
-        }
-        let collected = self
-            .collect_unreachable_local_objects(
-                &reachable,
-                maximum_candidates,
-                authority_live_bytes,
-                &mut work,
-                budget,
+            let multipart = crate::active_s3_multipart_objects(
+                self.inner.authority.provider().as_ref(),
+                &self.inner.objects,
+                crate::FilesystemS3Limits::default(),
+                crate::S3MultipartRetentionLimits::default(),
+                WorkBudget::UNBOUNDED,
                 cancellation,
             )
-            .await?;
-        Ok(FsReceipt {
-            value: collected,
-            work,
-        })
-    }
-
-    /// Scans active S3 multipart staged content and merges its reachable
-    /// objects into the accumulating local garbage-collection reachable set.
-    #[cfg(feature = "s3-http")]
-    async fn merge_active_s3_multipart_reachable_objects(
-        &self,
-        maximum_candidates: u64,
-        authority_live_bytes: u64,
-        reachable: &mut Vec<ObjectId>,
-        work: WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<WorkCounters, OperationFailure<FsError>> {
-        let multipart = crate::active_s3_multipart_objects(
-            self.inner.authority.provider().as_ref(),
-            &self.inner.objects,
-            crate::FilesystemS3Limits::default(),
-            crate::S3MultipartRetentionLimits {
-                maximum_uploads: maximum_candidates.max(1),
-                ..crate::S3MultipartRetentionLimits::default()
-            },
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|_| {
-            OperationFailure::new(
+            .await
+            .map_err(|_| {
                 FsError::Object(ObjectStoreError::Rejected(
                     "active S3 multipart retention scan failed".to_owned(),
-                )),
-                work,
-            )
-        })?;
-        let mut work = merge_simultaneous_work(
-            work,
-            multipart.work,
-            authority_live_bytes.saturating_add(object_vec_bytes(reachable)),
-            budget,
-        )?;
-        let incoming_bytes = object_vec_bytes(&multipart.value);
-        merge_sorted_object_ids(
-            reachable,
-            &multipart.value,
-            incoming_bytes,
-            authority_live_bytes,
-            &mut work,
-            budget,
-        )?;
-        Ok(work)
+                ))
+            })?;
+            marker.keep(multipart.value);
+        }
+        if let Some(core_state) = core_state {
+            marker.set_limits(shadow_limits);
+            for record in core_state
+                .lazy_shadow_records()
+                .await
+                .map_err(|error| FsError::Object(ObjectStoreError::Rejected(error.to_string())))?
+            {
+                marker.record(&record).await.map_err(mark_error)?;
+            }
+        }
+        for held in collection.held() {
+            match held {
+                crate::collection::Held::Checkout(held) => {
+                    marker.set_limits(decode_limits(held.config));
+                    marker
+                        .generation(GenerationId::new(held.base.digest))
+                        .await
+                        .map_err(mark_error)?;
+                    marker.working(&held.working).await.map_err(mark_error)?;
+                }
+                crate::collection::Held::Record { record, config } => {
+                    marker.set_limits(decode_limits(config));
+                    marker.record(&record).await.map_err(mark_error)?;
+                }
+            }
+        }
+        marker.set_limits(shadow_limits);
+        marker.lineage_roots().await.map_err(mark_error)?;
+        let unmarked = candidates
+            .into_iter()
+            .filter(|(object, _)| !marker.marked().contains(object))
+            .collect::<Vec<_>>();
+        drop(marker);
+        self.sweep_local_objects(&collecting, unmarked, cancellation)
+            .await
     }
 
-    async fn collect_unreachable_local_objects(
+    /// Every stored filesystem object and its version.
+    async fn local_object_versions(
         &self,
-        reachable: &[ObjectId],
-        maximum_candidates: u64,
-        retained_bytes: u64,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> Result<LocalGarbageCollection, OperationFailure<FsError>> {
-        if maximum_candidates == 0 {
-            return Err(OperationFailure::new(
-                FsError::Object(ObjectStoreError::Rejected(
-                    "garbage-collection candidate bound must be positive".to_owned(),
-                )),
-                *work,
-            ));
-        }
-        let (candidates, examined) = self
-            .list_unreachable_object_candidates(
-                reachable,
-                maximum_candidates,
-                retained_bytes,
-                work,
-                budget,
-                cancellation,
-            )
-            .await?;
+    ) -> Result<Vec<(ObjectId, String)>, FsError> {
         let provider = self.inner.objects.inner().inner().provider();
         let bucket = self.inner.objects.inner().inner().bucket().clone();
-        let mut removed = 0_u64;
-        for (object_key, version_id) in candidates {
-            cancellation
-                .check()
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            // Each collection lists its candidates afresh, so an exact
-            // version is deleted at most once and needs no retry identity.
-            provider
-                .delete(bucket.clone(), object_key, Some(version_id), None, None)
+        let mut continuation = None;
+        let mut versions = Vec::new();
+        loop {
+            cancellation.check()?;
+            let page = provider
+                .list(
+                    acyclic_objects::ReadTarget::Bucket(bucket.clone()),
+                    "fs/v1/".to_owned(),
+                    None,
+                    true,
+                    256,
+                    continuation,
+                )
                 .await
-                .map_err(|error| {
-                    OperationFailure::new(FsError::LocalObjectsBucket(error), *work)
-                })?;
-            removed = removed.saturating_add(1);
-            *work = work
-                .checked_add(WorkCounters {
-                    backend_write_operations: 1,
-                    items_examined: 1,
-                    ..WorkCounters::default()
-                })
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            work.verify(budget)
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
+                .map_err(FsError::LocalObjectsBucket)?;
+            for entry in page.entries {
+                let version = entry
+                    .version
+                    .ok_or(FsError::Object(ObjectStoreError::Corrupt))?;
+                let object = crate::distributed::object_id_from_key(&entry.object_key)
+                    .ok_or(FsError::Object(ObjectStoreError::Corrupt))?;
+                versions.push((object, version.version_id));
+            }
+            continuation = page.continuation;
+            if continuation.is_none() {
+                return Ok(versions);
+            }
+        }
+    }
+
+    /// Deletes `unmarked` in batches, each under the collection gate, then
+    /// reclaims their bodies.
+    async fn sweep_local_objects(
+        &self,
+        collecting: &crate::collection::Collecting,
+        unmarked: Vec<(ObjectId, String)>,
+        cancellation: &CancellationToken,
+    ) -> Result<LocalGarbageCollection, FsError> {
+        const BATCH: usize = 256;
+        let provider = self.inner.objects.inner().inner().provider();
+        let bucket = self.inner.objects.inner().inner().bucket().clone();
+        let examined = u64::try_from(unmarked.len()).unwrap_or(u64::MAX);
+        let mut versions = unmarked
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut removed = 0_u64;
+        let objects = versions.keys().copied().collect::<Vec<_>>();
+        for batch in objects.chunks(BATCH) {
+            cancellation.check()?;
+            let (_gate, sweepable) = collecting.sweepable(batch.to_vec()).await;
+            for object in sweepable {
+                let Some(version) = versions.remove(&object) else {
+                    continue;
+                };
+                collecting.sweeping(object);
+                // Each collection lists its candidates afresh, so an exact
+                // version is deleted at most once and needs no retry identity.
+                provider
+                    .delete(
+                        bucket.clone(),
+                        crate::distributed::object_key(object),
+                        Some(version),
+                        None,
+                        None,
+                    )
+                    .await
+                    .map_err(FsError::LocalObjectsBucket)?;
+                removed = removed.saturating_add(1);
+            }
+            // A cached copy of a swept object must not stand in for it.
+            self.inner.objects.inner().clear()?;
         }
         let physical = provider
-            .collect_garbage(maximum_candidates)
+            .collect_garbage(u64::MAX)
             .await
-            .map_err(|error| OperationFailure::new(FsError::LocalObjects(error), *work))?;
+            .map_err(FsError::LocalObjects)?;
         Ok(LocalGarbageCollection {
             examined,
             removed,
@@ -2427,237 +2366,86 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         })
     }
 
-    /// Pages the local objects bucket and collects every stored object key
-    /// and version absent from the `reachable` set, up to `maximum_candidates`.
-    ///
-    /// Returns the unreachable candidates alongside the total number of
-    /// stored objects examined while paging.
-    async fn list_unreachable_object_candidates(
+    /// Marks every live generation of every authority, releasing the
+    /// authorities of deleted workspaces and ended retentions. Returns decode
+    /// limits that admit every live volume's pages.
+    async fn mark_local_authorities(
         &self,
-        reachable: &[ObjectId],
-        maximum_candidates: u64,
-        retained_bytes: u64,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
+        marker: &mut crate::kernel::Marker<'_, LocalObjectBackend>,
         cancellation: &CancellationToken,
-    ) -> Result<(Vec<(String, String)>, u64), OperationFailure<FsError>> {
-        let reachable_keys = reachable
-            .iter()
-            .copied()
-            .map(crate::distributed::object_key)
-            .collect::<BTreeSet<_>>();
-        let provider = self.inner.objects.inner().inner().provider();
-        let bucket = self.inner.objects.inner().inner().bucket().clone();
-        let mut continuation = None;
-        let mut candidates = Vec::new();
-        let mut examined = 0_u64;
-        loop {
-            cancellation
-                .check()
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            let remaining_candidates = maximum_candidates.saturating_sub(examined);
-            if remaining_candidates == 0 && continuation.is_some() {
-                return Err(OperationFailure::new(
-                    FsError::Object(ObjectStoreError::Rejected(
-                        "garbage-collection candidate bound exceeded".to_owned(),
-                    )),
-                    *work,
-                ));
-            }
-            let page_size = u32::try_from(remaining_candidates.min(256)).unwrap_or(256);
-            let page = provider
-                .list(
-                    acyclic_objects::ReadTarget::Bucket(bucket.clone()),
-                    "fs/v1/".to_owned(),
-                    None,
-                    true,
-                    page_size,
-                    continuation,
-                )
+    ) -> Result<DecodeLimits, FsError> {
+        let mut widest = decode_limits(VolumeConfig::portable(Lifecycle::Durable));
+        let authorities = self
+            .inner
+            .authority
+            .authorities(u32::MAX - 1)
+            .await
+            .map_err(FsError::from)?;
+        for authority_id in authorities {
+            match self
+                .mark_local_authority(marker, authority_id, &mut widest, cancellation)
                 .await
-                .map_err(|error| {
-                    OperationFailure::new(FsError::LocalObjectsBucket(error), *work)
-                })?;
-            let page_items = u64::try_from(page.entries.len()).unwrap_or(u64::MAX);
-            examined = examined
-                .checked_add(page_items)
-                .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), *work))?;
-            if examined > maximum_candidates {
-                return Err(OperationFailure::new(
-                    FsError::Object(ObjectStoreError::Rejected(
-                        "garbage-collection candidate bound exceeded".to_owned(),
-                    )),
-                    *work,
-                ));
-            }
-            for entry in page.entries {
-                let version = entry.version.ok_or_else(|| {
-                    OperationFailure::new(FsError::Object(ObjectStoreError::Corrupt), *work)
-                })?;
-                if !reachable_keys.contains(&entry.object_key) {
-                    candidates.push((entry.object_key, version.version_id));
-                }
-            }
-            *work = work
-                .checked_add(WorkCounters {
-                    backend_read_operations: 1,
-                    items_examined: page_items,
-                    allocation_operations: u64::from(!candidates.is_empty()),
-                    peak_allocation_bytes: retained_bytes
-                        .saturating_add(object_slice_bytes(reachable)),
-                    ..WorkCounters::default()
-                })
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            work.verify(budget)
-                .map_err(|error| OperationFailure::new(error.into(), *work))?;
-            continuation = page.continuation;
-            if continuation.is_none() {
-                break;
+            {
+                // Deleted and released since it was listed: nothing of it is
+                // left to keep.
+                Ok(()) | Err(FsError::WorkspaceDeleted) => {}
+                Err(error) => return Err(error),
             }
         }
-        Ok((candidates, examined))
+        Ok(widest)
     }
 
-    async fn local_authority_generation(
+    /// Marks one authority's live generations; see
+    /// [`Self::mark_local_authorities`].
+    async fn mark_local_authority(
         &self,
+        marker: &mut crate::kernel::Marker<'_, LocalObjectBackend>,
         authority_id: crate::foundation::AuthorityId,
-        retained_bytes: u64,
-        mut work: WorkCounters,
-        budget: WorkBudget,
+        widest: &mut DecodeLimits,
         cancellation: &CancellationToken,
-    ) -> Result<Option<(ObjectId, VolumeConfig, WorkCounters)>, OperationFailure<FsError>> {
-        cancellation
-            .check()
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
-        let head = self
+    ) -> Result<(), FsError> {
+        cancellation.check()?;
+        let head = match self
             .inner
             .authority
-            .head(authority_id, remaining(work, budget)?, cancellation)
+            .head(authority_id, WorkBudget::UNBOUNDED, cancellation)
             .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = merge_simultaneous_work(work, head.work, retained_bytes, budget)?;
-        if head.value.sequence == Sequence::GENESIS {
-            return Ok(None);
-        }
-        let (first, next_work) = self
-            .local_record_after(
-                authority_id,
-                Sequence::GENESIS,
-                retained_bytes,
-                work,
-                budget,
-                cancellation,
-            )
-            .await?;
-        work = next_work;
-        let Ok(created) = decode_volume_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES) else {
-            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-            if let Ok(source_volume) =
-                decode_source_volume(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES)
-            {
-                if source_authority_id(source_volume) != authority_id {
-                    return Err(OperationFailure::new(FsError::VolumeMismatch, work));
-                }
-                return Ok(None);
-            }
-            let retained = decode_retention_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES)
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
-            return self
-                .local_retention_generation(
-                    authority_id,
-                    retained,
-                    retained_bytes,
-                    work,
-                    budget,
-                    cancellation,
-                )
-                .await;
+        {
+            Ok(head) => head.value,
+            // Released since it was listed.
+            Err(failure) if matches!(failure.error, AuthorityStoreError::Retired) => return Ok(()),
+            Err(failure) => return Err(failure.error.into()),
         };
-        if volume_authority_id(created.volume_id) != authority_id {
-            return Err(OperationFailure::new(FsError::VolumeMismatch, work));
+        if head.sequence == Sequence::GENESIS {
+            return Ok(());
         }
-        let generation_root = if head.value.sequence == Sequence::new(1) {
-            created.initial_generation_root
-        } else {
-            let (record, next_work) = self
-                .local_record_after(
-                    authority_id,
-                    Sequence::new(head.value.sequence.get().saturating_sub(1)),
-                    retained_bytes,
-                    work,
-                    budget,
-                    cancellation,
-                )
-                .await?;
-            work = next_work;
-            let record = &record;
-            if let Ok(deleted) =
-                decode_workspace_deleted(&record.payload, MAXIMUM_VOLUME_EVENT_BYTES)
-            {
-                if deleted != created.volume_id {
-                    return Err(OperationFailure::new(FsError::VolumeMismatch, work));
-                }
-                // A delete interrupted before it released the authority.
-                self.retire_local_authority(
-                    authority_id,
-                    retained_bytes,
-                    work,
-                    budget,
-                    cancellation,
-                )
-                .await?;
-                return Ok(None);
-            }
-            generation_from_record(record, created.volume_id, work)?
-        };
-        Ok(Some((generation_root, created.config, work)))
-    }
-
-    /// The record of one authority right after `after`.
-    async fn local_record_after(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        after: Sequence,
-        retained_bytes: u64,
-        work: WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<(crate::foundation::DurableCommit, WorkCounters), OperationFailure<FsError>> {
-        let replayed = self
-            .inner
-            .authority
-            .replay(
-                authority_id,
-                after,
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                },
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        let work = merge_simultaneous_work(work, replayed.work, retained_bytes, budget)?;
-        let record = replayed
-            .value
+        let first = self
+            .local_records(authority_id, Sequence::GENESIS, 1, cancellation)
+            .await?
             .into_iter()
             .next()
-            .ok_or_else(|| OperationFailure::new(FsError::InvalidAuthorityHistory, work))?;
-        Ok((record, work))
-    }
-
-    /// The generation a retention keeps, or `None` once the workspace it
-    /// serves ended, which releases it.
-    async fn local_retention_generation(
-        &self,
-        authority_id: crate::foundation::AuthorityId,
-        retained: RetentionCreated,
-        retained_bytes: u64,
-        mut work: WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Option<(ObjectId, VolumeConfig, WorkCounters)>, OperationFailure<FsError>> {
+            .ok_or(FsError::InvalidAuthorityHistory)?;
+        if let Ok(created) = decode_volume_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES) {
+            if volume_authority_id(created.volume_id) != authority_id {
+                return Err(FsError::VolumeMismatch);
+            }
+            let limits = decode_limits(created.config);
+            *widest = widest_limits(*widest, limits);
+            marker.set_limits(limits);
+            self.mark_local_volume(marker, authority_id, created.volume_id, head, cancellation)
+                .await?;
+            return Ok(());
+        }
+        #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+        if let Ok(source_volume) = decode_source_volume(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES)
+        {
+            if source_authority_id(source_volume) != authority_id {
+                return Err(FsError::VolumeMismatch);
+            }
+            // Its facts name generations of its volume's own history.
+            return Ok(());
+        }
+        let retained = decode_retention_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES)?;
         // A retention lasts as long as the workspace it serves: a fork
         // base as long as its fork, a pin or checkpoint as long as its
         // own workspace.
@@ -2666,91 +2454,177 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .ok()
                 .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
                 .map(VolumeId::from_bytes)
-                .ok_or_else(|| OperationFailure::new(FsError::InvalidAuthorityHistory, work))?,
+                .ok_or(FsError::InvalidAuthorityHistory)?,
             RetentionKind::Checkpoint | RetentionKind::Pin => retained.volume_id,
         };
-        let (ended, next_work) = self
-            .local_volume_ended(owner, retained_bytes, work, budget, cancellation)
-            .await?;
-        work = next_work;
-        if ended {
-            self.retire_local_authority(authority_id, retained_bytes, work, budget, cancellation)
+        if self.local_volume_ended(owner, cancellation).await? {
+            self.retire_local_authority(authority_id, cancellation)
                 .await?;
-            return Ok(None);
+            return Ok(());
         }
-        Ok(Some((retained.generation_root, retained.config, work)))
+        let limits = decode_limits(retained.config);
+        *widest = widest_limits(*widest, limits);
+        marker.set_limits(limits);
+        marker
+            .generation(GenerationId::new(retained.generation_root.digest))
+            .await
+            .map_err(mark_error)?;
+        Ok(())
+    }
+
+    /// Marks every generation in one volume's history, or releases the
+    /// volume's authority when its last record is its tombstone.
+    async fn mark_local_volume(
+        &self,
+        marker: &mut crate::kernel::Marker<'_, LocalObjectBackend>,
+        authority_id: crate::foundation::AuthorityId,
+        volume_id: VolumeId,
+        head: Head,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        const PAGE: u32 = 256;
+        let latest = self
+            .local_records(
+                authority_id,
+                Sequence::new(head.sequence.get().saturating_sub(1)),
+                1,
+                cancellation,
+            )
+            .await?;
+        if let Some(latest) = latest.first()
+            && let Ok(deleted) =
+                decode_workspace_deleted(&latest.payload, MAXIMUM_VOLUME_EVENT_BYTES)
+        {
+            if deleted != volume_id {
+                return Err(FsError::VolumeMismatch);
+            }
+            // A delete interrupted before it released the authority.
+            return self
+                .retire_local_authority(authority_id, cancellation)
+                .await;
+        }
+        let mut after = Sequence::GENESIS;
+        while after < head.sequence {
+            let records = self
+                .local_records(authority_id, after, PAGE, cancellation)
+                .await?;
+            let Some(last) = records.last() else {
+                return Err(FsError::InvalidAuthorityHistory);
+            };
+            after = last.sequence;
+            for record in &records {
+                let generation = generation_from_record(record, volume_id, WorkCounters::default())
+                    .map_err(|failure| failure.error)?;
+                marker
+                    .generation(GenerationId::new(generation.digest))
+                    .await
+                    .map_err(mark_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Up to `count` records of one authority after `after`.
+    async fn local_records(
+        &self,
+        authority_id: crate::foundation::AuthorityId,
+        after: Sequence,
+        count: u32,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<crate::foundation::DurableCommit>, FsError> {
+        Ok(self
+            .inner
+            .authority
+            .replay(
+                authority_id,
+                after,
+                ReplayLimit {
+                    records: count,
+                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES.saturating_mul(u64::from(count)),
+                },
+                WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| FsError::from(failure.error))?
+            .value)
     }
 
     /// Whether the workspace `volume_id` ended: deleted, or never created.
     async fn local_volume_ended(
         &self,
         volume_id: VolumeId,
-        retained_bytes: u64,
-        mut work: WorkCounters,
-        budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> Result<(bool, WorkCounters), OperationFailure<FsError>> {
+    ) -> Result<bool, FsError> {
         let authority_id = volume_authority_id(volume_id);
         let head = match self
             .inner
             .authority
-            .head(authority_id, remaining(work, budget)?, cancellation)
+            .head(authority_id, WorkBudget::UNBOUNDED, cancellation)
             .await
         {
-            Ok(head) => head,
+            Ok(head) => head.value,
             Err(failure)
                 if matches!(
                     failure.error,
                     AuthorityStoreError::Retired | AuthorityStoreError::Missing
                 ) =>
             {
-                work = merge_simultaneous_work(work, *failure.work, retained_bytes, budget)?;
-                return Ok((true, work));
+                return Ok(true);
             }
-            Err(failure) => return Err(failure.map_with_prior_work(work, Into::into)),
+            Err(failure) => return Err(failure.error.into()),
         };
-        work = merge_simultaneous_work(work, head.work, retained_bytes, budget)?;
-        if head.value.sequence == Sequence::GENESIS {
-            return Ok((false, work));
+        if head.sequence == Sequence::GENESIS {
+            return Ok(false);
         }
         let latest = self
-            .inner
-            .authority
-            .replay(
+            .local_records(
                 authority_id,
-                Sequence::new(head.value.sequence.get().saturating_sub(1)),
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                },
-                remaining(work, budget)?,
+                Sequence::new(head.sequence.get().saturating_sub(1)),
+                1,
                 cancellation,
             )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = merge_simultaneous_work(work, latest.work, retained_bytes, budget)?;
-        let deleted = latest.value.first().is_some_and(|record| {
+            .await?;
+        Ok(latest.first().is_some_and(|record| {
             decode_workspace_deleted(&record.payload, MAXIMUM_VOLUME_EVENT_BYTES)
                 .is_ok_and(|deleted| deleted == volume_id)
-        });
-        Ok((deleted, work))
+        }))
     }
 
     async fn retire_local_authority(
         &self,
         authority_id: crate::foundation::AuthorityId,
-        retained_bytes: u64,
-        work: WorkCounters,
-        budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> Result<WorkCounters, OperationFailure<FsError>> {
-        let retired = self
-            .inner
+    ) -> Result<(), FsError> {
+        self.inner
             .authority
-            .retire_authority(authority_id, remaining(work, budget)?, cancellation)
+            .retire_authority(authority_id, WorkBudget::UNBOUNDED, cancellation)
             .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        merge_simultaneous_work(work, retired.work, retained_bytes, budget)
+            .map_err(|failure| FsError::from(failure.error))?;
+        Ok(())
+    }
+}
+
+/// Limits that admit every page either admits.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+fn widest_limits(left: DecodeLimits, right: DecodeLimits) -> DecodeLimits {
+    DecodeLimits {
+        maximum_object_bytes: left.maximum_object_bytes.max(right.maximum_object_bytes),
+        maximum_name_bytes: left.maximum_name_bytes.max(right.maximum_name_bytes),
+        maximum_page_items: left.maximum_page_items.max(right.maximum_page_items),
+        maximum_page_bytes: left.maximum_page_bytes.max(right.maximum_page_bytes),
+        maximum_page_height: left.maximum_page_height.max(right.maximum_page_height),
+        maximum_visited_pages: left.maximum_visited_pages.max(right.maximum_visited_pages),
+    }
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+fn mark_error(error: crate::kernel::MarkError) -> FsError {
+    match error {
+        crate::kernel::MarkError::Storage(error) => FsError::Object(error),
+        crate::kernel::MarkError::Decode(reason) => FsError::Object(ObjectStoreError::Rejected(
+            format!("a live object does not decode, so nothing was collected: {reason}"),
+        )),
     }
 }
 
@@ -2973,6 +2847,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<(VerifiedForkSource, ObjectId, WorkCounters), crate::workspace::WorkspaceError>
     {
+        let proven_at = self.inner.objects.collection_sweeps();
         let source_object = ObjectId {
             kind: ObjectKind::GenerationRoot,
             digest: source.id.digest(),
@@ -3022,6 +2897,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             VerifiedForkSource {
                 generation_root,
                 closure: proof.objects,
+                proven_at,
             },
             source_object,
             work,
@@ -3084,7 +2960,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .inner
             .objects
             .flush_before_publish(
-                crate::PublicationScope::Closure(&fork_root.closure),
+                crate::PublicationScope::Closure {
+                    objects: &fork_root.closure,
+                    proven_at: fork_root.proven_at,
+                },
                 remaining(work, budget).map_err(WorkspaceError::engine)?,
                 cancellation,
             )
@@ -3174,7 +3053,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         config: VolumeConfig,
         records: &[FileRecord],
         cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
+    ) -> Result<crate::PublicationHold, FsError> {
+        let proven_at = self.inner.objects.collection_sweeps();
         let (closure, work) = crate::kernel::prove_record_closure_async(
             &self.inner.objects,
             records,
@@ -3184,16 +3064,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         )
         .await
         .map_err(|failure| FsError::from(failure.error))?;
-        self.inner
+        let flushed = self
+            .inner
             .objects
             .flush_before_publish(
-                crate::PublicationScope::Closure(&closure),
+                crate::PublicationScope::Closure {
+                    objects: &closure,
+                    proven_at,
+                },
                 remaining(work, WorkBudget::UNBOUNDED).map_err(|failure| failure.error)?,
                 cancellation,
             )
             .await
             .map_err(|failure| FsError::from(failure.error))?;
-        Ok(())
+        Ok(flushed.value)
     }
 
     pub(crate) async fn retain_workspace_generation(
@@ -3204,6 +3088,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         label: String,
     ) -> Result<(), crate::workspace::WorkspaceError> {
         let cancellation = CancellationToken::new();
+        let proven_at = self.inner.objects.collection_sweeps();
         let generation_root = ObjectId {
             kind: ObjectKind::GenerationRoot,
             digest: generation_id.digest(),
@@ -3225,6 +3110,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             VerifiedForkSource {
                 generation_root,
                 closure: proof.objects,
+                proven_at,
             },
             kind,
             label,
@@ -3265,6 +3151,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let VerifiedForkSource {
             generation_root,
             closure,
+            proven_at,
         } = source;
         let authority_id = retention_authority_id(volume.id, kind, &label);
         let payload = encode_retention_created(&RetentionCreated {
@@ -3283,7 +3170,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .inner
             .objects
             .flush_before_publish(
-                crate::PublicationScope::Closure(&closure),
+                crate::PublicationScope::Closure {
+                    objects: &closure,
+                    proven_at,
+                },
                 budget,
                 cancellation,
             )
@@ -4324,6 +4214,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .check()
             .map_err(|error| OperationFailure::before_work(error.into()))?;
         validate_volume_capabilities(config, self.inner.capabilities)?;
+        let proven_at = self.inner.objects.collection_sweeps();
         let (generation_root, mut work) = self
             .build_empty_generation(volume_id, config, budget, cancellation)
             .await?;
@@ -4347,6 +4238,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 operation_id,
             },
             &proof.objects,
+            proven_at,
             work,
             budget,
             cancellation,
@@ -4520,6 +4412,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .check()
             .map_err(|error| OperationFailure::before_work(error.into()))?;
         validate_volume_capabilities(manifest.config, self.inner.capabilities)?;
+        let proven_at = self.inner.objects.collection_sweeps();
         let proof = authenticate_generation_export_manifest_async(
             &self.inner.objects,
             manifest,
@@ -4540,6 +4433,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 operation_id: Some(operation_id),
             },
             &manifest.objects,
+            proven_at,
             work,
             budget,
             cancellation,
@@ -4554,6 +4448,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         creation: VolumeCreation,
         closure: &[ObjectId],
+        proven_at: u64,
         mut work: WorkCounters,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -4585,7 +4480,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .inner
             .objects
             .flush_before_publish(
-                crate::PublicationScope::Closure(closure),
+                crate::PublicationScope::Closure {
+                    objects: closure,
+                    proven_at,
+                },
                 remaining(work, budget)?,
                 cancellation,
             )
@@ -4998,11 +4896,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         Ok(FsReceipt {
             value: Checkout {
                 volume: self.clone(),
-                base_generation_root: generation_root,
                 generation_root,
                 base_file_table: root.file_table,
                 base_root: root.clone(),
-                root,
+                root: crate::collection::CheckoutRoots::new(
+                    self.fs.inner.objects.collection(),
+                    self.config,
+                    generation_root,
+                    root,
+                ),
                 authority_head,
                 authored_operation_id: None,
                 live_operation_id: None,
@@ -5102,7 +5004,6 @@ impl<A, O> Checkout<A, O> {
     fn candidate_proof(&self, base: &Self, candidate: &Self) -> Option<CheckoutDependencies> {
         let Self {
             volume: _,
-            base_generation_root,
             generation_root,
             base_file_table,
             base_root,
@@ -5115,8 +5016,7 @@ impl<A, O> Checkout<A, O> {
             dependencies,
             mode,
         } = self;
-        let unchanged = *base_generation_root == base.base_generation_root
-            && *generation_root == base.generation_root
+        let unchanged = *generation_root == base.generation_root
             && *base_file_table == base.base_file_table
             && *base_root == base.base_root
             && *root == base.root
@@ -5153,7 +5053,7 @@ impl<A, O> Checkout<A, O> {
 
     /// Authenticated decoded generation root.
     #[must_use]
-    pub const fn root(&self) -> &GenerationRoot {
+    pub fn root(&self) -> &GenerationRoot {
         &self.root
     }
 
@@ -6098,7 +5998,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let merged = merge_generation_async(
             &self.volume.fs.inner.objects,
             MergeGenerationRequest {
-                base_generation: self.base_generation_root,
+                base_generation: self.root.base(),
                 base: self.base_root.clone(),
                 ours_generation: (self.root.file_table == self.base_file_table)
                     .then_some(self.generation_root),
@@ -6123,7 +6023,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 root,
                 generation_id,
             } => {
-                self.root = root;
+                self.root.set_working(root);
                 self.generation_root = generation_root;
                 self.prepared_merge_parent = Some(theirs_id);
                 self.authority_head = Some(current_head);
@@ -6219,7 +6119,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let checkpoint = build_checkpoint_async(
             &self.volume.fs.inner.objects,
             CheckpointRequest {
-                base: self.base_generation_root,
+                base: self.root.base(),
                 file_table: self.root.file_table,
                 merge_parent: None,
             },
@@ -6251,7 +6151,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         let (root, work) = read_generation_root(
             &self.volume.fs.inner.objects,
-            self.base_generation_root,
+            self.root.base(),
             self.volume.config,
             budget,
             cancellation,
@@ -6260,10 +6160,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if root.volume_id != self.volume.id {
             return Err(OperationFailure::new(FsError::VolumeMismatch, work));
         }
-        self.root = root;
+        self.root.set_working(root);
         self.base_root = self.root.clone();
         self.base_file_table = self.root.file_table;
-        self.generation_root = self.base_generation_root;
+        self.generation_root = self.root.base();
         self.live_operation_id = None;
         self.prepared_merge_parent = None;
         self.dependencies.proof().clear();
@@ -6319,9 +6219,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if root.volume_id != self.volume.id {
             return Err(OperationFailure::new(FsError::VolumeMismatch, work));
         }
-        self.base_generation_root = generation_root;
         self.generation_root = generation_root;
-        self.root = root;
+        self.root.set(generation_root, root);
         self.base_root = self.root.clone();
         self.base_file_table = self.root.file_table;
         self.authority_head = Some(head);
@@ -6375,7 +6274,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .volume
             .resolve_head_generation(budget, cancellation)
             .await?;
-        let base = GenerationId::new(self.base_generation_root.digest);
+        let base = GenerationId::new(self.root.base().digest);
         let candidate = GenerationId::new(candidate_object.digest);
         let probe = AuthenticatedGenerationProbe::new(
             &self.volume.fs.inner.objects,
@@ -6408,7 +6307,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 work,
             });
         }
-        if candidate_object == self.base_generation_root {
+        if candidate_object == self.root.base() {
             self.authority_head = Some(candidate_head);
             return Ok(FsReceipt {
                 value: classification.decision,
@@ -6440,11 +6339,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 cancellation,
             )
             .await?;
-        self.base_generation_root = candidate_object;
         self.base_file_table = candidate_file_table;
         self.base_root = candidate_base_root;
         self.generation_root = candidate_object;
-        self.root = rebased_root;
+        self.root.set(candidate_object, rebased_root);
         self.authority_head = Some(candidate_head);
         Ok(FsReceipt {
             value: classification.decision,
@@ -6472,7 +6370,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let merged = merge_generation_async(
             &self.volume.fs.inner.objects,
             MergeGenerationRequest {
-                base_generation: self.base_generation_root,
+                base_generation: self.root.base(),
                 base: self.base_root.clone(),
                 ours_generation: Some(candidate_object),
                 ours: candidate_root.clone(),
@@ -7019,7 +6917,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             } else {
                 self.dependencies.proof().commit(extension);
             }
-            self.root = receipt.root;
+            self.root.set_working(receipt.root);
         }
         Ok(FsReceipt { value: (), work })
     }
@@ -7762,11 +7660,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     fn replica(&self, dependencies: DependencyLedger, mode: CheckoutMode) -> Self {
         Self {
             volume: self.volume.clone(),
-            base_generation_root: self.base_generation_root,
             generation_root: self.generation_root,
             base_file_table: self.base_file_table,
             base_root: self.base_root.clone(),
-            root: self.root.clone(),
+            root: self.root.replicate(),
             authority_head: self.authority_head,
             authored_operation_id: self.authored_operation_id,
             live_operation_id: self.live_operation_id,
@@ -9021,10 +8918,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             ));
         }
         Ok(FsReceipt {
-            value: DetachedFile {
-                volume: self.volume.clone(),
-                record,
-            },
+            value: DetachedFile::from_record(self.volume.clone(), record),
             work: lookup.work,
         })
     }
@@ -10753,9 +10647,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         match publication.outcome {
             AppendOutcome::Committed(commit) => {
                 let head = durable_head(&commit);
-                self.base_generation_root = checkpoint_root;
                 self.generation_root = checkpoint_root;
-                self.root = publication.proof.root;
+                self.root.set(checkpoint_root, publication.proof.root);
                 self.base_root = self.root.clone();
                 self.base_file_table = self.root.file_table;
                 self.authority_head = Some(head);
@@ -10773,9 +10666,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
             AppendOutcome::AlreadyCommitted(commit) => {
                 let head = durable_head(&commit);
-                self.base_generation_root = checkpoint_root;
                 self.generation_root = checkpoint_root;
-                self.root = publication.proof.root;
+                self.root.set(checkpoint_root, publication.proof.root);
                 self.base_root = self.root.clone();
                 self.base_file_table = self.root.file_table;
                 self.authority_head = Some(head);
@@ -11282,7 +11174,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         // An unchanged checkout resolves every path in the base itself, so
         // one walk both answers and observes the batch.
-        if self.root == self.base_root {
+        if *self.root == self.base_root {
             let observed = crate::kernel::observe_paths_async(
                 objects,
                 &self.root,
@@ -11443,7 +11335,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .map_err(|error| OperationFailure::new(error.into(), work))?;
                 let state = probe
                     .probe_async(
-                        GenerationId::new(self.base_generation_root.digest),
+                        GenerationId::new(self.root.base().digest),
                         &region,
                         remaining(work, budget)?,
                         cancellation,
@@ -12126,7 +12018,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .map_err(|error| OperationFailure::new(error.into(), work))?;
             let state = probe
                 .probe_async(
-                    GenerationId::new(self.base_generation_root.digest),
+                    GenerationId::new(self.root.base().digest),
                     &region,
                     remaining(work, budget)?,
                     cancellation,
@@ -12245,7 +12137,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         in_heap(move || async move {
             let captured = capture_dependencies_async(
                 &self.volume.fs.inner.objects,
-                &self.base_generation_root,
+                &self.root.base(),
                 self.volume.config,
                 regions,
                 remaining(work, budget)?,
@@ -12410,7 +12302,16 @@ async fn stage_content_for_volume<
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
     pub(crate) fn from_record(volume: Volume<A, O>, record: FileRecord) -> Self {
-        Self { volume, record }
+        let hold = crate::Collection::hold_record(
+            volume.fs.inner.objects.collection(),
+            record,
+            volume.config,
+        );
+        Self {
+            volume,
+            record,
+            _hold: hold,
+        }
     }
 
     #[cfg(feature = "native-mount")]
@@ -13817,103 +13718,6 @@ fn map_transfer_error(error: GenerationTransferError) -> FsError {
         | GenerationTransferError::TooManyObjects
         | GenerationTransferError::AllocationFailed) => FsError::Transfer(error),
     }
-}
-
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-fn object_vec_bytes(objects: &Vec<ObjectId>) -> u64 {
-    u64::try_from(objects.capacity())
-        .unwrap_or(u64::MAX)
-        .saturating_mul(u64::try_from(size_of::<ObjectId>()).unwrap_or(u64::MAX))
-}
-
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-fn object_slice_bytes(objects: &[ObjectId]) -> u64 {
-    u64::try_from(objects.len())
-        .unwrap_or(u64::MAX)
-        .saturating_mul(u64::try_from(size_of::<ObjectId>()).unwrap_or(u64::MAX))
-}
-
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-fn merge_sorted_object_ids(
-    reachable: &mut Vec<ObjectId>,
-    incoming: &[ObjectId],
-    incoming_bytes: u64,
-    retained_bytes: u64,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<(), OperationFailure<FsError>> {
-    let maximum_items = reachable
-        .len()
-        .checked_add(incoming.len())
-        .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), *work))?;
-    let maximum_bytes = u64::try_from(maximum_items)
-        .unwrap_or(u64::MAX)
-        .saturating_mul(u64::try_from(size_of::<ObjectId>()).unwrap_or(u64::MAX));
-    let peak = retained_bytes
-        .checked_add(object_vec_bytes(reachable))
-        .and_then(|value| value.checked_add(incoming_bytes))
-        .and_then(|value| value.checked_add(maximum_bytes))
-        .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), *work))?;
-    let admission = work
-        .checked_add(WorkCounters {
-            items_examined: u64::try_from(maximum_items).unwrap_or(u64::MAX),
-            bytes_copied: maximum_bytes,
-            allocation_operations: u64::from(maximum_items != 0),
-            peak_allocation_bytes: peak,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    admission
-        .verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    let mut merged = Vec::new();
-    merged
-        .try_reserve_exact(maximum_items)
-        .map_err(|_| OperationFailure::new(FsError::GarbageCollectionAllocationFailed, *work))?;
-    let mut left_iter = reachable.iter().copied().peekable();
-    let mut right_iter = incoming.iter().copied().peekable();
-    loop {
-        match (left_iter.peek(), right_iter.peek()) {
-            (Some(&left), Some(&right)) => match left.cmp(&right) {
-                std::cmp::Ordering::Less => {
-                    merged.push(left);
-                    left_iter.next();
-                }
-                std::cmp::Ordering::Greater => {
-                    merged.push(right);
-                    right_iter.next();
-                }
-                std::cmp::Ordering::Equal => {
-                    merged.push(left);
-                    left_iter.next();
-                    right_iter.next();
-                }
-            },
-            (Some(&left), None) => {
-                merged.push(left);
-                left_iter.next();
-            }
-            (None, Some(&right)) => {
-                merged.push(right);
-                right_iter.next();
-            }
-            (None, None) => break,
-        }
-    }
-    let copied_bytes = u64::try_from(merged.len())
-        .unwrap_or(u64::MAX)
-        .saturating_mul(u64::try_from(size_of::<ObjectId>()).unwrap_or(u64::MAX));
-    *work = work
-        .checked_add(WorkCounters {
-            items_examined: u64::try_from(maximum_items).unwrap_or(u64::MAX),
-            bytes_copied: copied_bytes,
-            allocation_operations: u64::from(maximum_items != 0),
-            peak_allocation_bytes: peak,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    *reachable = merged;
-    Ok(())
 }
 
 #[inline]

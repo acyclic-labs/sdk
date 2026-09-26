@@ -21,8 +21,9 @@ mod wire_codec;
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v2.rs"));
 }
-/// Canonical public descriptor set used by compatibility gates.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v2/stream_descriptor.bin");
+/// Canonical public descriptor set, built from the schema.
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-stream-v2.bin"));
 #[cfg(feature = "local")]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
@@ -265,6 +266,8 @@ pub struct ChildrenRequest {
     pub parent: Option<StreamPath>,
     /// Nonzero result bound.
     pub limit: u32,
+    /// Lists only children ordered after this one, to page past `limit`.
+    pub after: Option<StreamPath>,
 }
 
 /// Append fact retained in a committed envelope.
@@ -584,6 +587,7 @@ impl<P: StreamProvider> StreamClient<P> {
             .children(ChildrenRequest {
                 parent: parent.map(StreamPath::new).transpose()?,
                 limit,
+                after: None,
             })
             .await
     }
