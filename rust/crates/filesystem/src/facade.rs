@@ -505,6 +505,19 @@ impl<P, O> Fs<crate::StreamAuthorityStore<P>, O> {
     }
 }
 
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+impl<O> Fs<LocalAuthorityBackend, O> {
+    /// Flushes the authority frames written under
+    /// [`acyclic_stream::deferring_durability`], blocking the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the authority journal cannot be flushed.
+    pub fn flush_deferred_authority(&self) -> Result<(), acyclic_stream::StreamError> {
+        self.inner.authority.provider().flush()
+    }
+}
+
 /// One independently configured volume handle reconstructed from authority.
 pub struct Volume<A, O> {
     pub(crate) fs: Fs<A, O>,

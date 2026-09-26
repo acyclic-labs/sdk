@@ -5465,6 +5465,9 @@ impl ControlPlane {
     }
 
     fn persist(&mut self) -> Result<(), String> {
+        // A save that survives a power loss survives it with every authority
+        // write it may rest on.
+        self.fs.flush_deferred_authority().map_err(display)?;
         self.slots
             .save(&self.data, &self.state, Survives::PowerLoss)?;
         // A flushed save is a whole snapshot, so it covers any unflushed one.
@@ -5481,9 +5484,15 @@ impl ControlPlane {
         Ok(())
     }
 
-    /// Flushes an unflushed save. Every request starts here, so nothing ever
-    /// acts on a transition that a power loss could still undo.
+    /// Flushes an unflushed save and the authority writes of the requests
+    /// before it. Every request starts here, so nothing ever acts on a
+    /// transition that a power loss could still undo.
     async fn make_durable(&mut self) -> Result<(), String> {
+        let fs = self.fs.clone();
+        tokio::task::spawn_blocking(move || fs.flush_deferred_authority())
+            .await
+            .map_err(display)?
+            .map_err(display)?;
         if !self.unflushed {
             return Ok(());
         }
@@ -5520,6 +5529,8 @@ impl ControlPlane {
         let has_leases = !self.state.leases.is_empty();
         if has_leases || !self.mounts.is_empty() || !self.pending_mounts.is_empty() {
             self.make_durable().await?;
+        } else {
+            self.fs.flush_deferred_authority().map_err(display)?;
         }
         #[cfg(test)]
         let root_released = if self.owns_local_root {
@@ -8357,16 +8368,18 @@ async fn dispatch_native_session_hook(
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             let tool_use_id = native_hook_tool_id(&input, &session_id, &tool_name, &tool_input)?;
-            let output = control
-                .pre_tool(json!({
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "tool_use_id": tool_use_id,
-                    "tool_name": tool_name,
-                    "tool_input": tool_input,
-                    "_caller_root_id": hex::encode(root_id.into_bytes())
-                }))
-                .await?;
+            // Like the request's own save, its authority writes survive a crash
+            // of the service at once and a power loss once the next request
+            // begins (see `ControlPlane::make_durable`).
+            let output = acyclic_fs::deferring_authority_durability(control.pre_tool(json!({
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "tool_use_id": tool_use_id,
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "_caller_root_id": hex::encode(root_id.into_bytes())
+            })))
+            .await?;
             if host == "copilot" {
                 let updated = output.pointer("/hookSpecificOutput/updatedInput").cloned();
                 Ok(json!({
@@ -8390,14 +8403,13 @@ async fn dispatch_native_session_hook(
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             let tool_use_id = native_hook_tool_id(&input, &session_id, &tool_name, &tool_input)?;
-            control
-                .post_tool(json!({
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "tool_use_id": tool_use_id,
-                    "tool_name": tool_name
-                }))
-                .await
+            acyclic_fs::deferring_authority_durability(control.post_tool(json!({
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "tool_use_id": tool_use_id,
+                "tool_name": tool_name
+            })))
+            .await
         }
         "SubagentStart" | "subagentStart" => {
             let agent_id = hook_optional_id(&input, "agent_id", "agentId")?

@@ -70,6 +70,27 @@ pub enum LocalDurability {
     Barrier,
 }
 
+tokio::task_local! {
+    /// Whether mutations made on this task leave their frames unflushed; see
+    /// [`deferring_durability`].
+    static DEFERRED: bool;
+}
+
+/// Runs `future` with every local-stream mutation it makes durable against a
+/// crash of this process only: each frame is written, and becomes visible,
+/// without waiting for the storage device, until [`LocalStream::flush`] or
+/// any mutation made outside such a scope flushes the journal, and with it
+/// every frame before. A power loss before then loses a suffix of those
+/// frames, as recovery then finds them torn. Mutations other tasks make
+/// flush as ever.
+pub async fn deferring_durability<F: Future>(future: F) -> F::Output {
+    DEFERRED.scope(true, future).await
+}
+
+fn deferred() -> bool {
+    DEFERRED.try_with(|deferred| *deferred).unwrap_or(false)
+}
+
 /// Explicit local retention and recovery bounds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LocalStreamLimits {
@@ -144,11 +165,18 @@ struct OwnedJournal {
 }
 
 impl OwnedJournal {
-    fn append(&self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
+    fn append(&self, frame: &PreparedFrame, flush: bool) -> Result<(), LocalStreamError> {
         self.journal
             .lock()
             .map_err(|_| LocalStreamError::Corrupt)?
-            .append(frame)
+            .append(frame, flush)
+    }
+
+    fn flush(&self) -> Result<(), LocalStreamError> {
+        self.journal
+            .lock()
+            .map_err(|_| LocalStreamError::Corrupt)?
+            .flush()
     }
 }
 
@@ -278,7 +306,21 @@ impl LocalStream {
         Ok(frame)
     }
 
+    /// Flushes every frame written without waiting for the storage device
+    /// (see [`deferring_durability`]), blocking the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Fails, and poisons the store, when the journal cannot be flushed.
+    pub fn flush(&self) -> Result<(), StreamError> {
+        self.inner.journal.flush().map_err(|_| {
+            self.inner.poisoned.store(true, Ordering::Release);
+            StreamError::Unavailable
+        })
+    }
+
     async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
+        let flush = !deferred();
         let journal = self.inner.journal.clone();
         #[cfg(test)]
         let journal_identity = Arc::as_ptr(&journal.journal) as usize;
@@ -295,7 +337,7 @@ impl LocalStream {
                     let _ = release.recv();
                 }
             }
-            journal.append(&frame)
+            journal.append(&frame, flush)
         });
         let result = persist
             .await
@@ -325,11 +367,14 @@ impl LocalStream {
     {
         self.check_available()?;
         let stream = self.clone();
-        tokio::spawn(async move {
+        // The mutation runs on a task of its own, which takes its caller's
+        // durability scope with it.
+        let deferred = deferred();
+        tokio::spawn(DEFERRED.scope(deferred, async move {
             let _visibility = stream.inner.visibility.write().await;
             stream.check_available()?;
             mutation(stream.clone()).await
-        })
+        }))
         .await
         .map_err(|_| StreamError::Unavailable)?
     }
@@ -539,6 +584,8 @@ struct Journal {
     operations: u64,
     bytes: u64,
     limits: LocalStreamLimits,
+    /// Whether frames were written since the journal last flushed.
+    unflushed: bool,
     _root: PathBuf,
 }
 
@@ -669,6 +716,7 @@ impl Journal {
             operations,
             bytes: valid_length,
             limits,
+            unflushed: false,
             _root: root.to_path_buf(),
         })
     }
@@ -685,11 +733,22 @@ impl Journal {
         Ok(())
     }
 
-    fn append(&mut self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
+    fn append(&mut self, frame: &PreparedFrame, flush: bool) -> Result<(), LocalStreamError> {
         self.file.write_all(&frame.encoded)?;
-        sync_file_data(&self.file, self.limits.durability)?;
+        if flush {
+            sync_file_data(&self.file, self.limits.durability)?;
+        }
+        self.unflushed = !flush;
         self.operations += 1;
         self.bytes += frame.bytes;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), LocalStreamError> {
+        if self.unflushed {
+            sync_file_data(&self.file, self.limits.durability)?;
+            self.unflushed = false;
+        }
         Ok(())
     }
 }
@@ -1242,6 +1301,52 @@ mod tests {
             .map_err(std::io::Error::other)?;
         drop(provider);
         LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        Ok(())
+    }
+
+    /// A mutation made under `deferring_durability` is visible at once and
+    /// leaves the journal unflushed; `flush`, or any mutation made outside
+    /// such a scope, flushes it, frames before included.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deferred_mutations_wait_for_the_next_flush() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let unflushed = |provider: &LocalStream| -> Result<bool, Box<dyn std::error::Error>> {
+            Ok(provider
+                .inner
+                .journal
+                .journal
+                .lock()
+                .map_err(|_| "journal poisoned")?
+                .unflushed)
+        };
+        let append = |provider: LocalStream, key: &'static [u8]| async move {
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new("deferred")?,
+                    records: vec![Bytes::from_static(b"record")],
+                    if_tail: None,
+                    idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(key))?),
+                })
+                .await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+
+        deferring_durability(append(provider.clone(), b"first")).await?;
+        assert_eq!(provider.tail(StreamPath::new("deferred")?).await?, 1);
+        assert!(unflushed(&provider)?);
+        provider.flush()?;
+        assert!(!unflushed(&provider)?);
+
+        deferring_durability(append(provider.clone(), b"second")).await?;
+        assert!(unflushed(&provider)?);
+        append(provider.clone(), b"third").await?;
+        assert!(
+            !unflushed(&provider)?,
+            "a flushed mutation flushes those before it"
+        );
+        assert_eq!(provider.tail(StreamPath::new("deferred")?).await?, 3);
         Ok(())
     }
 

@@ -142,6 +142,10 @@ pub mod workspace_context;
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObjectsLimits};
+/// Scopes authority writes that survive a crash of this process but wait
+/// for [`LocalFs::flush_deferred_authority`] to survive a power loss.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use acyclic_stream::deferring_durability as deferring_authority_durability;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 pub use async_storage::{
