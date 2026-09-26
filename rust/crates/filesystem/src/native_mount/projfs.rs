@@ -631,15 +631,30 @@ struct WrittenPlaceholder {
 /// again from the source, or deletes it where the source names nothing. A
 /// placeholder the user has since modified is authored state, which
 /// `ProjFS` refuses to update, and is left alone.
+///
+/// A placeholder another process holds open cannot be replaced until the
+/// handle closes. It stays pending, retried as handles close and every
+/// [`PLACEHOLDER_RETRY`], and revalidation waits for it (at most
+/// [`PLACEHOLDER_SETTLE_LIMIT`], then fails naming it) rather than
+/// return while it still describes a superseded source.
 struct Placeholders {
     state: Mutex<PlaceholderState>,
     changed: Condvar,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
+/// How often a placeholder held open is tried again.
+const PLACEHOLDER_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
+/// How long revalidation waits for placeholders held open.
+const PLACEHOLDER_SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Default)]
 struct PlaceholderState {
     written: HashMap<MountPath, WrittenPlaceholder>,
+    /// Superseded placeholders held open, not yet replaced.
+    pending: HashMap<MountPath, WrittenPlaceholder>,
+    /// Whether a handle closed since pending placeholders were last tried.
+    retry: bool,
     /// Latest change around the mount the source reported.
     notified: Option<ViewStamp>,
     /// Latest change every placeholder was checked against.
@@ -664,7 +679,7 @@ enum Replaced {
     Rewritten(Option<WrittenPlaceholder>),
     /// Deleted, or no longer a placeholder the provider owns.
     Released,
-    /// Open elsewhere; tried again after the next change.
+    /// Open elsewhere; pending until it can be replaced.
     Busy,
 }
 
@@ -720,15 +735,32 @@ impl Placeholders {
     ) {
         let mut state = lock_recover(&self.state);
         loop {
-            while !state.stopping && state.processed >= state.notified {
-                state = self
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Waits for a change, or, while placeholders are pending, for a
+            // handle to close or the retry interval, whichever comes first.
+            loop {
+                if state.stopping {
+                    return;
+                }
+                if state.processed < state.notified || state.retry {
+                    break;
+                }
+                if state.pending.is_empty() {
+                    state = self
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                } else {
+                    let (next, waited) = self
+                        .changed
+                        .wait_timeout(state, PLACEHOLDER_RETRY)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state = next;
+                    if waited.timed_out() {
+                        break;
+                    }
+                }
             }
-            if state.stopping {
-                return;
-            }
+            state.retry = false;
             let through = state.notified;
             let mut superseded = state
                 .written
@@ -743,6 +775,7 @@ impl Placeholders {
             for (path, _) in &superseded {
                 state.written.remove(path);
             }
+            superseded.extend(state.pending.drain());
             drop(state);
             let mut failure = absences.and_then(|absences| {
                 lock_recover(absences)
@@ -752,12 +785,12 @@ impl Placeholders {
             });
             // A directory can be deleted only once what it holds is.
             superseded.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().len()));
-            let mut kept = Vec::new();
+            let (mut kept, mut busy) = (Vec::new(), Vec::new());
             for (path, written) in superseded {
                 match replace_placeholder(source, context, &path) {
                     Ok(Replaced::Rewritten(Some(current))) => kept.push((path, current)),
                     Ok(Replaced::Rewritten(None) | Replaced::Released) => {}
-                    Ok(Replaced::Busy) => kept.push((path, written)),
+                    Ok(Replaced::Busy) => busy.push((path, written)),
                     Err(error) => {
                         failure.get_or_insert(error);
                     }
@@ -772,6 +805,7 @@ impl Placeholders {
                     *entry = placeholder;
                 }
             }
+            state.pending.extend(busy);
             state.processed = state.processed.max(through);
             if let Some(failure) = failure {
                 state.failure.get_or_insert(failure);
@@ -780,15 +814,36 @@ impl Placeholders {
         }
     }
 
-    /// Waits until every change reported so far has been served.
+    /// Tries the placeholders held open again, as one of their handles
+    /// closed.
+    fn retry(&self) {
+        let mut state = lock_recover(&self.state);
+        if !state.pending.is_empty() {
+            state.retry = true;
+            self.changed.notify_all();
+        }
+    }
+
+    /// Waits until every change reported so far has been served and no
+    /// superseded placeholder remains; fails, naming one, when one is still
+    /// held open after [`PLACEHOLDER_SETTLE_LIMIT`].
     fn settle(&self) -> Result<(), NativeMountError> {
+        let deadline = std::time::Instant::now() + PLACEHOLDER_SETTLE_LIMIT;
         let mut state = lock_recover(&self.state);
         let target = state.notified;
-        while !state.stopping && state.processed < target {
+        while !state.stopping && (state.processed < target || !state.pending.is_empty()) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                let held = state.pending.keys().next().cloned();
+                return Err(NativeMountError::Driver(format!(
+                    "a superseded placeholder is held open and cannot be replaced: {held:?}"
+                )));
+            }
             state = self
                 .changed
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
         }
         state
             .failure
@@ -2618,6 +2673,16 @@ unsafe fn notification(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
+    // A closed handle may have held a superseded placeholder open.
+    if matches!(
+        notification,
+        PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
+            | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
+            | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
+    ) && let Some(placeholders) = runtime.placeholders.as_ref()
+    {
+        placeholders.retry();
+    }
     if unsafe { (*callback_data).TriggeringProcessId } == std::process::id()
         && matches!(
             notification,
@@ -3482,6 +3547,66 @@ mod tests {
         transaction.commit().await?;
         mount.advance_to_head().await?;
         assert_eq!(std::fs::read(&added)?, b"added");
+        mount.unmount().await?;
+        Ok(())
+    }
+
+    /// A superseded placeholder another handle holds open is replaced once
+    /// that handle closes; revalidation never returns while it still
+    /// describes the superseded source.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn a_held_placeholder_is_replaced_before_revalidation_returns()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::native::NativeDemandSource;
+
+        let root = tempfile::tempdir()?;
+        let source_root = root.path().join("source");
+        std::fs::create_dir(&source_root)?;
+        std::fs::write(source_root.join("held.txt"), b"old")?;
+        let demand = NativeDemandSource::open(
+            &source_root,
+            crate::model::FilesystemProfile::Windows,
+            crate::model::VolumeLimits::default(),
+        )
+        .await?;
+        let lazy = crate::LazyWorkspace::attach_with_config(
+            &Fs::memory(),
+            "held-placeholder",
+            Arc::new(demand),
+            crate::MemoryLazyWorkspaceStore::default(),
+            VolumeConfig::native(Lifecycle::Ephemeral),
+        )
+        .await?;
+        let destination = root.path().join("mount");
+        std::fs::create_dir(&destination)?;
+        let mount = Arc::new(
+            lazy.mount(
+                &destination,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?,
+        );
+        let held_path = destination.join("held.txt");
+        assert_eq!(std::fs::metadata(&held_path)?.len(), 3);
+        let held = std::fs::File::open(&held_path)?;
+        std::fs::write(source_root.join("held.txt"), b"much newer")?;
+        let revalidating = {
+            let mount = Arc::clone(&mount);
+            std::thread::spawn(move || mount.revalidate().map_err(|error| error.to_string()))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Either replaced despite the handle, and current already, or
+        // replaced once it closes; never current only in name.
+        if !revalidating.is_finished() {
+            drop(held);
+        }
+        revalidating
+            .join()
+            .map_err(|_| "revalidation panicked")?
+            .map_err(|error| error.to_string())?;
+        assert_eq!(std::fs::metadata(&held_path)?.len(), 10);
+        assert_eq!(std::fs::read(&held_path)?, b"much newer");
         mount.unmount().await?;
         Ok(())
     }
