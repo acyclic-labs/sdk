@@ -1649,6 +1649,10 @@ where
         self.with_mutation(|file| file.write_range(offset, bytes))
     }
 
+    fn settle(&self) -> Result<(), MountSourceError> {
+        self.with_mutation(MountOpenFile::settle)
+    }
+
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
         self.with_mutation(|file| file.resize(logical_bytes))
     }

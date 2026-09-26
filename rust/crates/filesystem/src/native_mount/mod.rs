@@ -386,6 +386,15 @@ pub trait MountOpenFile: Send + Sync + 'static {
     ///
     /// Returns absence, unsupported-profile, storage, or work failures.
     fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError>;
+    /// Applies whatever this handle holds back from the view, as a close or
+    /// a durability request must; most handles hold nothing back.
+    ///
+    /// # Errors
+    ///
+    /// Returns the storage, cancellation, or work failure of applying it.
+    fn settle(&self) -> Result<(), MountSourceError> {
+        Ok(())
+    }
 
     /// Reads one bounded sparse range without materializing holes.
     ///

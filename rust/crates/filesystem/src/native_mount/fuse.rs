@@ -3340,7 +3340,7 @@ impl FuseProjection {
     fn flush_handle(&self, inode: u64, handle: u64, force: bool, release: bool) -> Result<(), i32> {
         let operation = self.core.state()?.open_handle_operation(inode, handle)?;
         let _operation = operation.lock().map_err(|_| libc::EIO)?;
-        let should_flush = {
+        let (should_flush, open_file) = {
             let state = self.core.state()?;
             let file = state
                 .files
@@ -3350,15 +3350,26 @@ impl FuseProjection {
             // fsync is an explicit durability request for the file, including
             // writes made through other descriptors. A close only flushes when
             // this handle was dirty and the source requires it.
-            force || (file.dirty && self.source().flush_on_handle_close())
+            (
+                force || (file.dirty && self.source().flush_on_handle_close()),
+                Arc::clone(&file.open_file),
+            )
         };
-        // The per-handle operation gate remains held, but unrelated FUSE
-        // callbacks never wait on the state lock during durable IO.
-        let flushed = if should_flush {
-            self.source().flush().map_err(errno)
+        // A close or durability request applies what the handle held back
+        // first. The per-handle operation gate remains held, but unrelated
+        // FUSE callbacks never wait on the state lock during durable IO.
+        let settled = if force || release {
+            open_file.settle().map_err(errno)
         } else {
             Ok(())
         };
+        let flushed = settled.and_then(|()| {
+            if should_flush {
+                self.source().flush().map_err(errno)
+            } else {
+                Ok(())
+            }
+        });
         let mut state = self.core.state()?;
         let current = state
             .files

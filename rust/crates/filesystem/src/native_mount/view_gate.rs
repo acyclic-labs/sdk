@@ -132,6 +132,16 @@ impl ViewGate {
         self.read_as(owner, expected).await
     }
 
+    /// Whether `owner`'s callback already holds a read of the view, which a
+    /// writer it waited for would never see released.
+    pub(super) fn reads_for_callback(&self, owner: ThreadId) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .readers_by_owner
+            .contains_key(&ViewReaderId::Callback(owner))
+    }
+
     pub(super) fn callback_owner() -> ThreadId {
         std::thread::current().id()
     }

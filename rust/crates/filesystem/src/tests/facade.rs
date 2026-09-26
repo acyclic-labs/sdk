@@ -11300,7 +11300,9 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
     let create = |name: &str| -> Result<GroupedChange, Box<dyn std::error::Error>> {
         Ok(GroupedChange::CreateFile {
             path: path(name)?,
-            metadata: FileMetadata::default(),
+            metadata: Box::new(FileMetadata::default()),
+            file_id: FileId::new(),
+            bytes: Bytes::new(),
         })
     };
 

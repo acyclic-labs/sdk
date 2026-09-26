@@ -980,12 +980,17 @@ pub enum ContentChange<F> {
 /// would compile to after its predecessors.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GroupedChange {
-    /// Creates one empty regular file with a fresh stable identity.
+    /// Creates one regular file with the caller's fresh stable identity and
+    /// exact initial bytes.
     CreateFile {
         /// New namespace path.
         path: NamespacePath,
         /// Exact cross-profile metadata.
-        metadata: FileMetadata,
+        metadata: Box<FileMetadata>,
+        /// Fresh stable identity the caller chose, as [`FileId::new`] mints.
+        file_id: FileId,
+        /// Complete initial bytes.
+        bytes: Bytes,
     },
     /// Changes the content of one regular file by stable identity.
     Content {
@@ -7643,73 +7648,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     bytes,
                     metadata,
                 } => {
-                    if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-                        > self.volume.config.limits.maximum_read_bytes
-                    {
-                        return Err(OperationFailure::new(
-                            FsError::FileRead(FileRangeReadError::InvalidRange),
-                            *work,
-                        ));
-                    }
-                    let metadata = self
-                        .stage_authored_metadata(
-                            metadata,
-                            staged_metadata,
-                            remaining(*work, budget)?,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(|failure| {
-                            failure.map_with_prior_work(*work, std::convert::identity)
-                        })?;
-                    *work = add(*work, metadata.work)?;
                     let file_id = self.authored_file_id(FileKind::Regular, &path);
-                    if bytes.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
-                        operations.push(Mutation::Create {
-                            path,
-                            record: FileRecord {
-                                file_id,
-                                kind: FileKind::Regular,
-                                link_count: 1,
-                                metadata: metadata.value,
-                                payload: FilePayload::InlineRegular(
-                                    InlineFileData::new(&bytes).map_err(|error| {
-                                        OperationFailure::new(error.into(), *work)
-                                    })?,
-                                ),
-                            },
-                        });
-                    } else {
-                        let blob = self
-                            .stage_blob(bytes, remaining(*work, budget)?, cancellation)
-                            .await
-                            .map_err(|failure| {
-                                failure.map_with_prior_work(*work, std::convert::identity)
-                            })?;
-                        *work = add(*work, blob.work)?;
-                        operations.push(Mutation::Create {
-                            path: path.clone(),
-                            record: FileRecord {
-                                file_id,
-                                kind: FileKind::Regular,
-                                link_count: 1,
-                                metadata: metadata.value,
-                                payload: FilePayload::InlineRegular(
-                                    InlineFileData::new(&[]).map_err(|error| {
-                                        OperationFailure::new(error.into(), *work)
-                                    })?,
-                                ),
-                            },
-                        });
-                        operations.push(Mutation::Write {
-                            path,
-                            offset: 0,
-                            length: blob.value.logical_bytes,
-                            content: blob.value.root,
-                            content_offset: 0,
-                        });
-                    }
-                    Ok(Some(file_id))
+                    self.compile_create_file(
+                        path,
+                        bytes,
+                        metadata,
+                        file_id,
+                        operations,
+                        work,
+                        staged_metadata,
+                        budget,
+                        cancellation,
+                    )
+                    .await
+                    .map(Some)
                 }
                 AuthoredMutation::CreateFileFromContent {
                     path,
@@ -8091,6 +8043,88 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
     pub(crate) fn bind_authored_operation(&mut self, operation_id: OperationId) {
         self.authored_operation_id = Some(operation_id);
+    }
+
+    /// Compiles the creation of one regular file with identity `file_id`
+    /// and exact initial `bytes`.
+    #[allow(clippy::too_many_arguments)]
+    async fn compile_create_file(
+        &self,
+        path: NamespacePath,
+        bytes: Bytes,
+        metadata: FileMetadata,
+        file_id: FileId,
+        operations: &mut Vec<Mutation>,
+        work: &mut WorkCounters,
+        staged_metadata: &mut AuthoredMetadataCache,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<FileId, OperationFailure<FsError>> {
+        in_heap(move || async move {
+            if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                > self.volume.config.limits.maximum_read_bytes
+            {
+                return Err(OperationFailure::new(
+                    FsError::FileRead(FileRangeReadError::InvalidRange),
+                    *work,
+                ));
+            }
+            let metadata = self
+                .stage_authored_metadata(
+                    metadata,
+                    staged_metadata,
+                    remaining(*work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(*work, std::convert::identity))?;
+            *work = add(*work, metadata.work)?;
+            if bytes.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
+                operations.push(Mutation::Create {
+                    path,
+                    record: FileRecord {
+                        file_id,
+                        kind: FileKind::Regular,
+                        link_count: 1,
+                        metadata: metadata.value,
+                        payload: FilePayload::InlineRegular(
+                            InlineFileData::new(&bytes)
+                                .map_err(|error| OperationFailure::new(error.into(), *work))?,
+                        ),
+                    },
+                });
+            } else {
+                let blob = self
+                    .stage_blob(bytes, remaining(*work, budget)?, cancellation)
+                    .await
+                    .map_err(|failure| {
+                        failure.map_with_prior_work(*work, std::convert::identity)
+                    })?;
+                *work = add(*work, blob.work)?;
+                operations.push(Mutation::Create {
+                    path: path.clone(),
+                    record: FileRecord {
+                        file_id,
+                        kind: FileKind::Regular,
+                        link_count: 1,
+                        metadata: metadata.value,
+                        payload: FilePayload::InlineRegular(
+                            InlineFileData::new(&[])
+                                .map_err(|error| OperationFailure::new(error.into(), *work))?,
+                        ),
+                    },
+                });
+                operations.push(Mutation::Write {
+                    path,
+                    offset: 0,
+                    length: blob.value.logical_bytes,
+                    content: blob.value.root,
+                    content_offset: 0,
+                });
+            }
+            Ok(file_id)
+        })
+        .await
     }
 
     fn authored_file_id(&self, kind: FileKind, path: &NamespacePath) -> FileId {
@@ -9717,16 +9751,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> FsResult<(Vec<Mutation>, GroupedOutcome)> {
         in_heap(move || async move {
             match change {
-                GroupedChange::CreateFile { path, metadata } => {
+                GroupedChange::CreateFile {
+                    path,
+                    metadata,
+                    file_id,
+                    bytes,
+                } => {
                     let mut operations = Vec::new();
                     let mut work = WorkCounters::default();
-                    let created = self
-                        .compile_authored_mutation(
-                            AuthoredMutation::CreateFile {
-                                path,
-                                bytes: Bytes::new(),
-                                metadata,
-                            },
+                    let file_id = self
+                        .compile_create_file(
+                            path,
+                            bytes,
+                            *metadata,
+                            file_id,
                             &mut operations,
                             &mut work,
                             staged_metadata,
@@ -9734,12 +9772,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             cancellation,
                         )
                         .await?;
-                    let file_id = created.ok_or_else(|| {
-                        OperationFailure::new(
-                            FsError::Mutation(GenerationMutationError::InconsistentState),
-                            work,
-                        )
-                    })?;
                     Ok(FsReceipt {
                         value: (operations, GroupedOutcome::Created(file_id)),
                         work,
