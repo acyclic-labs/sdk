@@ -3743,6 +3743,13 @@ impl ControlPlane {
             .map_err(display)?;
         match observation.batch {
             WatchBatch::Changes { .. } if source_advanced_elsewhere => {
+                // The whole tree is captured, so all of it must report.
+                physical
+                    .watcher
+                    .lock()
+                    .map_err(|_| "physical root watcher state is poisoned".to_owned())?
+                    .watch_tree(&RESERVED_ROOT_NAMES)
+                    .map_err(display)?;
                 capture_baseline_with_policy(
                     &mut checkout,
                     &capture,
@@ -3771,6 +3778,15 @@ impl ControlPlane {
                     .lock()
                     .map_err(|_| "physical root watcher state is poisoned".to_owned())?
                     .begin_rescan()
+                    .map_err(display)?;
+                // The whole tree is captured, so all of it must report; the
+                // watches go in before the scan, so nothing it reads can
+                // change unreported.
+                physical
+                    .watcher
+                    .lock()
+                    .map_err(|_| "physical root watcher state is poisoned".to_owned())?
+                    .watch_tree(&RESERVED_ROOT_NAMES)
                     .map_err(display)?;
                 capture_baseline_with_policy(
                     &mut checkout,
