@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_wasmreducer_free: (a: number, b: number) => void;
 export const admitBatch: (a: any) => [number, number, number];
+export const admitBatchRequest: (a: any) => [number, number, number];
 export const admitModelEvent: (a: any, b: any, c: any) => [number, number, number];
 export const admitTask: (a: any) => [number, number, number];
 export const batchMemberOperationId: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];

@@ -5631,6 +5631,23 @@ mod tests {
                 .as_slice(),
             ),
             (
+                "WasmBatchAdmissionRequest",
+                [
+                    "contract",
+                    "groupId",
+                    "batchId",
+                    "taskName",
+                    "revision",
+                    "implementationDigest",
+                    "parentTaskId",
+                    "policy",
+                    "members",
+                    "canonical",
+                    "inputDigest",
+                ]
+                .as_slice(),
+            ),
+            (
                 "WasmTaskAdmissionIdentities",
                 ["task", "machine"].as_slice(),
             ),
@@ -5644,6 +5661,7 @@ mod tests {
         let compact = source.split_whitespace().collect::<String>();
         for signature in [
             "exportfunctionadmitBatch(value:WasmBatchAdmissionInput):WasmDurableBatchWire;",
+            "exportfunctionadmitBatchRequest(value:WasmBatchAdmissionInput):WasmBatchAdmissionRequest;",
             "exportfunctionadmitTask(value:WasmTaskAdmissionInput):WasmTaskAdmissionWire;",
             "exportfunctiontaskAdmissionIdentities(value:WasmTaskIdentityInput):WasmTaskAdmissionIdentities;",
         ] {

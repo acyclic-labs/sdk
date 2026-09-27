@@ -1,7 +1,7 @@
 /** Explicitly initialized Rust contract validator with strongly typed v2 inputs. */
 import initWasm, * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
-  InitInput, WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer,
+  InitInput, WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
   WasmTaskIdentityInput,
 } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -14,13 +14,15 @@ import type {
 import type { ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, ExtensionRecord, ExtensionStateMigration } from "./extension.js";
 import type { ApprovalBinding, InteractionId, InteractionResolution, InteractionTicket, ResolutionReceipt } from "./interaction.js";
 import type { ProjectMergeReceipt } from "./project.js";
-import type { PrivateDirectoryPage } from "./runtime.js";
+import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, RuntimeTaskId } from "./runtime.js";
 import type { ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult } from "./model.js";
 import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
 
 /** Rust generated admission projection input and output shapes. */
 export type TaskAdmissionProjectionInput = WasmTaskAdmissionInput;
 export type BatchAdmissionProjectionInput = WasmBatchAdmissionInput;
+/** JSON value accepted by the Rust admission ABI after schema validation. */
+export type NativeJsonValue = WasmToolJsonValue;
 export type TaskAdmissionWire = WasmTaskAdmissionWire;
 export type DurableBatchWire = WasmDurableBatchWire;
 export type TaskAdmissionIdentities = WasmTaskAdmissionIdentities;
@@ -149,7 +151,7 @@ const REQUIRED_NATIVE_EXPORTS = [
   "validateWireResume", "validateWireObserve", "validateWireCancel",
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
   "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
-  "taskAdmissionIdentities", "admitTask", "admitBatch",
+  "taskAdmissionIdentities", "admitTask", "admitBatch", "admitBatchRequest",
   "fileDescriptor", "uuidFromDigestHalf", "decodeCanonicalJson", "decodeJson",
   "encodeCanonicalJson", "digestCanonicalJson",
 ] as const satisfies readonly (keyof typeof wasm)[];
@@ -376,6 +378,23 @@ export class NativeContracts {
       inputs: [...value.inputs],
       grants: [...value.grants],
     })));
+  }
+
+  /** Rust-owned complete batch envelope, members, and canonical digest. */
+  admitBatchRequest(value: BatchAdmissionProjectionInput): BatchAdmissionRequest {
+    const projected = normalizeTypedNativeValue(this.native.admitBatchRequest({
+      ...value,
+      requirements: [...value.requirements],
+      machine_digest: [...value.machine_digest],
+      inputs: [...value.inputs],
+      grants: [...value.grants],
+    }));
+    return freezeNative({
+      ...projected,
+      groupId: projected.groupId as GroupId,
+      batchId: projected.batchId as BatchId,
+      parentTaskId: projected.parentTaskId as RuntimeTaskId | null,
+    });
   }
 
   idFromDigest(digest: Uint8Array, kind: "operation"): OperationId;

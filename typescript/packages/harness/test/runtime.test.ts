@@ -114,17 +114,28 @@ test("Rust owns durable task and batch projection identities", () => {
   expect(task.machine).toEqual(identities.machine);
   expect(contracts.validate("task_admission", task)).toEqual(task);
 
-  const batch = contracts.admitBatch({
+  const batchInput = {
     ...common,
     group_id: "22345678-1234-4234-8234-123456789abc",
     batch_id: "32345678-1234-4234-8234-123456789abc",
     group_policy: "collect-all",
     inputs: [4, 5],
-  });
+  } as const;
+  const batch = contracts.admitBatch(batchInput);
   expect(contracts.validate("durable_batch_request", batch)).toEqual(batch);
   expect(batch.inputs).toEqual([4n, 5n]);
   expect(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0))
     .not.toBe(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 1));
+  const projected = contracts.admitBatchRequest(batchInput);
+  expect(projected.canonical).toEqual(batch);
+  expect(projected.policy).toEqual({ kind: "collect-all" });
+  expect(projected.members).toHaveLength(2);
+  expect(projected.members.map(member => member.operation_id)).toEqual([
+    contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0),
+    contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 1),
+  ]);
+  expect(projected.inputDigest).toEqual(Array.from(contracts.digestCanonicalJson(batch)));
+  expect(projected.implementationDigest).toBe("09".repeat(32));
   expect(() => contracts.admitBatch({ ...common,
     group_id: batch.group_id, batch_id: batch.batch_id, group_policy: "collect-all", inputs: ["wrong"],
   })).toThrow();

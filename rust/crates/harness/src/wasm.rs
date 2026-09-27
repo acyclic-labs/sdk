@@ -79,9 +79,9 @@ struct WasmTaskIdentityInput {
     name: String,
     #[tsify(type = "string")]
     version: String,
-    #[tsify(type = "unknown")]
+    #[tsify(type = "WasmToolJsonSchema")]
     input_schema: serde_json::Value,
-    #[tsify(type = "unknown")]
+    #[tsify(type = "WasmToolJsonSchema")]
     output_schema: serde_json::Value,
     #[tsify(type = "readonly string[]")]
     requirements: BTreeSet<String>,
@@ -99,11 +99,11 @@ struct WasmTaskAdmissionInput {
     name: String,
     #[tsify(type = "string")]
     version: String,
-    #[tsify(type = "unknown")]
+    #[tsify(type = "WasmToolJsonValue")]
     input: serde_json::Value,
-    #[tsify(type = "unknown")]
+    #[tsify(type = "WasmToolJsonSchema")]
     input_schema: serde_json::Value,
-    #[tsify(type = "unknown")]
+    #[tsify(type = "WasmToolJsonSchema")]
     output_schema: serde_json::Value,
     #[tsify(type = "readonly string[]")]
     requirements: BTreeSet<String>,
@@ -137,11 +137,11 @@ struct WasmBatchAdmissionInput {
     name: String,
     #[tsify(type = "string")]
     version: String,
-    #[tsify(type = "readonly unknown[]")]
+    #[tsify(type = "readonly WasmToolJsonValue[]")]
     inputs: Vec<serde_json::Value>,
-    #[tsify(type = "unknown")]
+    #[tsify(type = "WasmToolJsonSchema")]
     input_schema: serde_json::Value,
-    #[tsify(type = "unknown")]
+    #[tsify(type = "WasmToolJsonSchema")]
     output_schema: serde_json::Value,
     #[tsify(type = "readonly string[]")]
     requirements: BTreeSet<String>,
@@ -159,6 +159,47 @@ struct WasmBatchAdmissionInput {
     policy: Option<crate::registry::ComponentIdentity>,
     #[tsify(type = "WasmExecutionPlacementWire | null")]
     execution: Option<crate::runtime::ExecutionPlacement>,
+}
+
+/// Complete public durable batch admission returned by the Rust projection.
+/// The outer request uses the SDK's camelCase host shape while `canonical` and
+/// each member retain the exact Rust-owned v2 wire envelopes. Keeping this
+/// projection together prevents TypeScript callers from accidentally changing
+/// the member list, digest, or implementation identity independently.
+#[derive(Serialize)]
+struct WasmBatchAdmissionRequest {
+    contract: &'static str,
+    #[serde(rename = "groupId")]
+    group_id: GroupId,
+    #[serde(rename = "batchId")]
+    batch_id: BatchId,
+    #[serde(rename = "taskName")]
+    task_name: String,
+    revision: String,
+    #[serde(rename = "implementationDigest")]
+    implementation_digest: String,
+    #[serde(rename = "parentTaskId")]
+    parent_task_id: Option<TaskId>,
+    policy: WasmGroupPolicy,
+    members: Vec<serde_json::Value>,
+    canonical: serde_json::Value,
+    #[serde(rename = "inputDigest")]
+    input_digest: Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct WasmGroupPolicy {
+    kind: BatchGroupPolicy,
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 fn wasm_limits(input: WasmLimitsInput) -> Result<Limits, crate::Error> {
@@ -211,6 +252,9 @@ export interface WasmMachineIdentityWire {
 }
 export type WasmToolJsonValue = null | string | number | boolean | readonly WasmToolJsonValue[] | Readonly<{ [key: string]: WasmToolJsonValue }>;
 export type WasmToolJsonSchema = boolean | Readonly<{ [key: string]: WasmToolJsonValue }>;
+export type WasmGroupPolicy =
+    | Readonly<{ kind: "collect-all" }>
+    | Readonly<{ kind: "cancel-on-failure" }>;
 export interface WasmNativeLimitsWire {
     readonly file_bytes: bigint;
     readonly path_bytes: bigint;
@@ -332,6 +376,19 @@ export interface WasmDurableBatchWire {
     readonly extensions: WasmExtensionAdmissionWire | null;
     readonly policy: WasmMachineIdentityWire | null;
     readonly execution: WasmExecutionPlacementWire | null;
+}
+export interface WasmBatchAdmissionRequest {
+    readonly contract: "harness.batch.v2";
+    readonly groupId: string;
+    readonly batchId: string;
+    readonly taskName: string;
+    readonly revision: string;
+    readonly implementationDigest: string;
+    readonly parentTaskId: string | null;
+    readonly policy: WasmGroupPolicy;
+    readonly members: readonly WasmTaskAdmissionWire[];
+    readonly canonical: WasmDurableBatchWire;
+    readonly inputDigest: readonly number[];
 }
 export interface WasmTaskAdmissionIdentities {
     readonly task: WasmMachineIdentityWire;
@@ -507,15 +564,10 @@ pub fn admit_task_wasm(
     to_js_admitted(&record.canonical_value())
 }
 
-/// Builds and validates the complete immutable batch request before any
-/// member admission. Inputs, task identity, limits, policy, and route are
-/// projected by the same Rust constructor used by native hosts.
-#[wasm_bindgen(js_name = admitBatch, unchecked_return_type = "WasmDurableBatchWire")]
-pub fn admit_batch_wasm(
-    #[wasm_bindgen(unchecked_param_type = "WasmBatchAdmissionInput")] value: JsValue,
-) -> Result<JsValue, JsValue> {
-    let input: WasmBatchAdmissionInput = from_js(value)?;
-    let request = DurableBatchRequest::from_parts(
+fn durable_batch_request_from_input(
+    input: WasmBatchAdmissionInput,
+) -> Result<DurableBatchRequest, JsValue> {
+    DurableBatchRequest::from_parts(
         input.group_id,
         input.batch_id,
         input.group_policy,
@@ -534,8 +586,62 @@ pub fn admit_batch_wasm(
         input.policy,
         input.execution,
     )
-    .map_err(js_error)?;
+    .map_err(js_error)
+}
+
+/// Builds and validates the complete immutable batch request before any
+/// member admission. Inputs, task identity, limits, policy, and route are
+/// projected by the same Rust constructor used by native hosts.
+#[wasm_bindgen(js_name = admitBatch, unchecked_return_type = "WasmDurableBatchWire")]
+pub fn admit_batch_wasm(
+    #[wasm_bindgen(unchecked_param_type = "WasmBatchAdmissionInput")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    let input: WasmBatchAdmissionInput = from_js(value)?;
+    let request = durable_batch_request_from_input(input)?;
     to_js_admitted(&request.canonical_value())
+}
+
+/// Builds the complete SDK-facing durable batch request in one Rust-owned
+/// projection. Member envelopes, policy, implementation digest, canonical
+/// manifest, and request digest all derive from the same validated request.
+#[wasm_bindgen(
+    js_name = admitBatchRequest,
+    unchecked_return_type = "WasmBatchAdmissionRequest"
+)]
+pub fn admit_batch_request_wasm(
+    #[wasm_bindgen(unchecked_param_type = "WasmBatchAdmissionInput")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    let input: WasmBatchAdmissionInput = from_js(value)?;
+    let implementation_digest = hex_bytes(&input.machine_digest);
+    let request = durable_batch_request_from_input(input)?;
+    let canonical = request.canonical_value();
+    let members = (0..request.inputs.len())
+        .map(|index| {
+            request
+                .member_admission(index)
+                .map(|member| member.canonical_value())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(js_error)?;
+    let input_digest = crate::contract::canonical_json_digest(&canonical)
+        .map_err(js_error)?
+        .to_vec();
+    let projection = WasmBatchAdmissionRequest {
+        contract: "harness.batch.v2",
+        group_id: request.group_id,
+        batch_id: request.batch_id,
+        task_name: request.task.name.clone(),
+        revision: request.task.version.clone(),
+        implementation_digest,
+        parent_task_id: request.parent,
+        policy: WasmGroupPolicy {
+            kind: request.group_policy,
+        },
+        members,
+        canonical,
+        input_digest,
+    };
+    to_js_admitted(&projection)
 }
 
 /// Derives a stable child operation/message identity from one admitted operation

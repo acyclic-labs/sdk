@@ -8,6 +8,9 @@ export interface WasmMachineIdentityWire {
 }
 export type WasmToolJsonValue = null | string | number | boolean | readonly WasmToolJsonValue[] | Readonly<{ [key: string]: WasmToolJsonValue }>;
 export type WasmToolJsonSchema = boolean | Readonly<{ [key: string]: WasmToolJsonValue }>;
+export type WasmGroupPolicy =
+| Readonly<{ kind: "collect-all" }>
+| Readonly<{ kind: "cancel-on-failure" }>;
 export interface WasmNativeLimitsWire {
     readonly file_bytes: bigint;
     readonly path_bytes: bigint;
@@ -130,6 +133,19 @@ export interface WasmDurableBatchWire {
     readonly policy: WasmMachineIdentityWire | null;
     readonly execution: WasmExecutionPlacementWire | null;
 }
+export interface WasmBatchAdmissionRequest {
+    readonly contract: "harness.batch.v2";
+    readonly groupId: string;
+    readonly batchId: string;
+    readonly taskName: string;
+    readonly revision: string;
+    readonly implementationDigest: string;
+    readonly parentTaskId: string | null;
+    readonly policy: WasmGroupPolicy;
+    readonly members: readonly WasmTaskAdmissionWire[];
+    readonly canonical: WasmDurableBatchWire;
+    readonly inputDigest: readonly number[];
+}
 export interface WasmTaskAdmissionIdentities {
     readonly task: WasmMachineIdentityWire;
     readonly machine: WasmMachineIdentityWire;
@@ -161,9 +177,9 @@ export interface WasmBatchAdmissionInput {
     group_policy: "collect-all" | "cancel-on-failure";
     name: string;
     version: string;
-    inputs: readonly unknown[];
-    input_schema: unknown;
-    output_schema: unknown;
+    inputs: readonly WasmToolJsonValue[];
+    input_schema: WasmToolJsonSchema;
+    output_schema: WasmToolJsonSchema;
     requirements: readonly string[];
     machine_digest: readonly number[];
     parent: string | null;
@@ -190,9 +206,9 @@ export interface WasmTaskAdmissionInput {
     operation_id: string;
     name: string;
     version: string;
-    input: unknown;
-    input_schema: unknown;
-    output_schema: unknown;
+    input: WasmToolJsonValue;
+    input_schema: WasmToolJsonSchema;
+    output_schema: WasmToolJsonSchema;
     requirements: readonly string[];
     machine_digest: readonly number[];
     parent: string | null;
@@ -207,8 +223,8 @@ export interface WasmTaskAdmissionInput {
 export interface WasmTaskIdentityInput {
     name: string;
     version: string;
-    input_schema: unknown;
-    output_schema: unknown;
+    input_schema: WasmToolJsonSchema;
+    output_schema: WasmToolJsonSchema;
     requirements: readonly string[];
     machine_digest: readonly number[];
 }
@@ -361,6 +377,13 @@ export class WasmReducer {
  * projected by the same Rust constructor used by native hosts.
  */
 export function admitBatch(value: WasmBatchAdmissionInput): WasmDurableBatchWire;
+
+/**
+ * Builds the complete SDK-facing durable batch request in one Rust-owned
+ * projection. Member envelopes, policy, implementation digest, canonical
+ * manifest, and request digest all derive from the same validated request.
+ */
+export function admitBatchRequest(value: WasmBatchAdmissionInput): WasmBatchAdmissionRequest;
 
 /**
  * Admits one provider model event with the native stream rules and returns
@@ -586,6 +609,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
     readonly admitBatch: (a: any) => [number, number, number];
+    readonly admitBatchRequest: (a: any) => [number, number, number];
     readonly admitModelEvent: (a: any, b: any, c: any) => [number, number, number];
     readonly admitTask: (a: any) => [number, number, number];
     readonly batchMemberOperationId: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];

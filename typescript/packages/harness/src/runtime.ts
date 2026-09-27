@@ -1,7 +1,7 @@
 import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
-import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
+import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
 import { validateModelContent as validateModelContentWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import type { SelectedModelContext } from "./projection.js";
@@ -877,7 +877,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
         group_policy: this.policy.kind,
         name: definition.name,
         version: definition.revision,
-        inputs,
+        inputs: inputs as readonly NativeJsonValue[],
         input_schema: definition.options.input!.document,
         output_schema: definition.options.output!.document,
         requirements,
@@ -890,29 +890,19 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
         policy,
         execution: null,
       });
-      const base = contracts.admitBatch(baseInput());
+      const base = contracts.admitBatchRequest(baseInput());
       let execution = retainedExecution ?? null;
       if (retainedExecution === undefined && this.#harness.components.execution) {
         try {
-          execution = contracts.validate("execution_placement", await this.#harness.components.execution.qualifyBatch(base));
+          execution = contracts.validate("execution_placement", await this.#harness.components.execution.qualifyBatch(base.canonical));
         } catch (error) {
           throw new ExecutionQualificationError(error instanceof Error ? error.message : String(error));
         }
       }
       this.#harness.validateExecutionPlacement(execution);
-      const canonical = execution === null ? base : contracts.admitBatch({ ...baseInput(), execution });
-      const admittedMembers = inputs.map((input, index) => this.#harness.admissionRecord(
-        contracts.batchMemberOperationId(this.id, batch.id, index), definition, input,
-        this.parentTaskId, execution));
-      const body = { contract: "harness.batch.v2" as const, groupId: this.id, batchId: batch.id,
-        taskName: definition.name, revision: definition.revision,
-        implementationDigest: definition.options.implementationDigest,
-        parentTaskId: this.parentTaskId ?? null, policy: this.policy, members: admittedMembers, canonical };
-      if (contracts.encodeCanonicalJson(canonical).byteLength > this.#harness.limits.file_bytes) {
-        throw new BatchInputError("batch request exceeds file limit");
-      }
-      const inputDigest = contracts.digestCanonicalJson(canonical);
-      request = freezeSchema({ ...body, policy: { ...this.policy }, members: [...admittedMembers], inputDigest: Array.from(inputDigest) });
+      request = execution === null
+        ? base
+        : contracts.admitBatchRequest({ ...baseInput(), execution });
     }
     catch (error) {
       if (error instanceof BatchInputError || error instanceof BatchProviderError
@@ -1855,7 +1845,7 @@ export class AgentHarness {
       operation_id: operationId,
       name: definition.name,
       version: definition.revision,
-      input,
+      input: input as NativeJsonValue,
       input_schema: definition.options.input.document,
       output_schema: definition.options.output.document,
       requirements: [...definition.options.requirements ?? []],
