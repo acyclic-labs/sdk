@@ -32,6 +32,7 @@ pub mod interaction;
 pub mod live;
 #[cfg(feature = "machines")]
 pub mod machines;
+pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
 #[cfg(feature = "objects")]

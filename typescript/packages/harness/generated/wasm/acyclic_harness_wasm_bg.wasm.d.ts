@@ -1,6 +1,7 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const __wbg_wasmcontentstore_free: (a: number, b: number) => void;
 export const __wbg_wasmreducer_free: (a: number, b: number) => void;
 export const admitBatch: (a: any) => [number, number, number];
 export const admitBatchRequest: (a: any) => [number, number, number];
@@ -43,6 +44,14 @@ export const validateWireObserve: (a: number, b: number) => [number, number];
 export const validateWireResume: (a: number, b: number) => [number, number];
 export const validateWireStatus: (a: number, b: number, c: number, d: number) => [number, number];
 export const verifyFileBytes: (a: any, b: number, c: number) => [number, number];
+export const wasmcontentstore_generation: (a: number) => [number, number, number];
+export const wasmcontentstore_has: (a: number, b: any) => [number, number, number];
+export const wasmcontentstore_list: (a: number, b: number, c: number, d: any, e: number, f: number, g: number) => [number, number, number];
+export const wasmcontentstore_new: (a: any, b: number, c: number, d: number, e: number) => [number, number, number];
+export const wasmcontentstore_pathConflicts: (a: number, b: number, c: number) => number;
+export const wasmcontentstore_read: (a: number, b: any) => [number, number, number, number];
+export const wasmcontentstore_read_path: (a: number, b: number, c: number, d: any) => [number, number, number];
+export const wasmcontentstore_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
 export const wasmreducer_apply: (a: number, b: any) => [number, number, number];
 export const wasmreducer_applyWire: (a: number, b: number, c: number) => [number, number, number, number];
 export const wasmreducer_attenuate: (a: number, b: any, c: number, d: number, e: any) => [number, number, number];
