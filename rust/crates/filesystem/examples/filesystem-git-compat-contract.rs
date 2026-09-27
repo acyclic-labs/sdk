@@ -1,9 +1,10 @@
 #![allow(missing_docs)]
 
 use acyclic_fs::git_compat::{
-    GIT_COMPAT_BYTE_WIRE_FIELDS, GIT_COMPAT_IDENTITY_WIRE_FIELDS, GIT_COMPAT_OPAQUE_WIRE_PATHS,
-    GIT_COMPAT_OUTPUT_VARIANTS, GIT_COMPAT_PENDING_WIRE_FIELDS, GIT_COMPAT_PUBLIC_WIRE_ALIASES,
-    GIT_COMPAT_TIMESTAMP_WIRE_FIELDS, GIT_COMPAT_TRANSITION_ID_BYTES, GIT_COMPAT_UUID_WIRE_PATHS,
+    GIT_COMPAT_ACTION_VARIANTS, GIT_COMPAT_BYTE_WIRE_FIELDS, GIT_COMPAT_IDENTITY_WIRE_FIELDS,
+    GIT_COMPAT_OPAQUE_WIRE_PATHS, GIT_COMPAT_OUTPUT_VARIANTS, GIT_COMPAT_PENDING_WIRE_FIELDS,
+    GIT_COMPAT_PUBLIC_WIRE_ALIASES, GIT_COMPAT_RESULT_VARIANTS, GIT_COMPAT_TIMESTAMP_WIRE_FIELDS,
+    GIT_COMPAT_TRANSITION_ID_BYTES, GIT_COMPAT_UUID_WIRE_PATHS,
 };
 use serde::Serialize;
 
@@ -22,6 +23,8 @@ struct ByteField<'a> {
 #[derive(Serialize)]
 struct Contract<'a> {
     output_variants: &'a [&'a str],
+    action_variants: &'a [&'a str],
+    result_variants: &'a [&'a str],
     identity_fields: Vec<IdentityField<'a>>,
     byte_fields: Vec<ByteField<'a>>,
     timestamp_fields: &'a [&'a str],
@@ -39,6 +42,8 @@ fn main() -> Result<(), serde_json::Error> {
         .collect();
     let contract = Contract {
         output_variants: GIT_COMPAT_OUTPUT_VARIANTS,
+        action_variants: GIT_COMPAT_ACTION_VARIANTS,
+        result_variants: GIT_COMPAT_RESULT_VARIANTS,
         identity_fields,
         byte_fields: GIT_COMPAT_BYTE_WIRE_FIELDS
             .iter()

@@ -1188,6 +1188,29 @@ pub const GIT_COMPAT_OUTPUT_VARIANTS: &[&str] = &[
     "Paths",
 ];
 
+/// Tagged action and result names emitted by the filesystem executor wire
+/// projection. These stay beside the canonical Rust enums so adapters do not
+/// maintain a second variant inventory.
+pub const GIT_COMPAT_ACTION_VARIANTS: &[&str] = &[
+    "CaptureCommit",
+    "ForkBranch",
+    "SwitchWorkspace",
+    "Diff",
+    "RestoreGeneration",
+    "RestorePaths",
+    "Join",
+    "ApplyCommit",
+    "Blame",
+    "Grep",
+    "Clean",
+    "Archive",
+    "ApplyPatch",
+    "CheckIgnore",
+];
+
+/// Tagged result names emitted by the filesystem executor wire projection.
+pub const GIT_COMPAT_RESULT_VARIANTS: &[&str] = &["Captured", "Forked", "Applied", "Data"];
+
 impl GitCommandOutput {
     /// Returns the canonical serde/TypeScript tag for this output.
     #[must_use]
