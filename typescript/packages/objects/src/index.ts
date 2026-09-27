@@ -147,3 +147,4 @@ export interface MultipartProvider {
 export * from "./client.js";
 export * from "./memory.js";
 export * from "./http.js";
+export type { HttpResponseFor, HttpRoute } from "./http-contract.js";

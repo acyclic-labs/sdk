@@ -42,18 +42,26 @@ const output = outputArgument
 const declarationPath = resolve(output, "acyclic_objects_wasm.d.ts");
 const declaration = readFileSync(declarationPath, "utf8");
 const decoder = "export function decode_http_response(route: string, response_json: string): any;";
+const memoryProjector = "export function projectMemoryResponse(operation: string, input: Uint8Array): unknown;";
 if (!declaration.includes(decoder)) {
   throw new Error("objects WASM declaration no longer contains the expected HTTP decoder signature");
+}
+if (!declaration.includes(memoryProjector)) {
+  throw new Error("objects WASM declaration no longer contains the expected memory projector signature");
 }
 writeFileSync(
   declarationPath,
   declaration
     .replace(
       "/* tslint:disable */\n/* eslint-disable */\n",
-      "/* tslint:disable */\n/* eslint-disable */\n\nimport type { HttpResponseFor, HttpRoute } from \"../../src/http-contract.js\";\n",
+      "/* tslint:disable */\n/* eslint-disable */\n\nimport type { HttpResponseFor, HttpRoute } from \"@acyclic-labs/objects\";\n",
     )
     .replace(
       decoder,
       "export function decode_http_response<Route extends HttpRoute>(route: Route, response_json: string): HttpResponseFor<Route>;",
-    ),
+    )
+    .replace(
+      memoryProjector,
+      "export function projectMemoryResponse<Operation extends MemoryResponseOperation>(operation: Operation, input: Uint8Array): MemoryResponseFor<Operation>;",
+    )
 );

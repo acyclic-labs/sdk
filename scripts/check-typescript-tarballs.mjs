@@ -27,6 +27,7 @@ for (const entry of publishedPackageEntries) {
 }
 const packageEntries = workspacePackageEntries;
 const packageDirectories = packageEntries.map(item => item.directory);
+const rootManifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const rootTsconfig = JSON.parse(await readFile(join(root, "tsconfig.json"), "utf8"));
 const checkedProjects = new Set(rootTsconfig.references.map(reference =>
   relative(packagesRoot, resolve(root, reference.path)).split(sep).join("/")));
@@ -166,7 +167,7 @@ const main = async () => {
       private: true,
       type: "module",
       workspaces: [],
-      dependencies: { ...dependencies, ...peerDependencies },
+      dependencies: { ...dependencies, ...peerDependencies, "@types/node": rootManifest.devDependencies["@types/node"] },
       overrides: Object.fromEntries([...tarballs].map(([name, file]) => [name, tarballSpec(file)])),
     }, null, 2));
     await writeFile(join(tempRoot, "probe.mjs"), probeSource("Bun", expectedExports));
@@ -174,7 +175,19 @@ const main = async () => {
     run("bun", ["probe.mjs"], { cwd: tempRoot });
     await writeFile(join(tempRoot, "probe-node.mjs"), probeSource("Node", expectedExports));
     run("node", ["probe-node.mjs"], { cwd: tempRoot });
-    console.log(`TypeScript tarball smoke passed: ${tarballs.size} workspace packages (${publishedPackageEntries.length} published, ${tarballs.size - publishedPackageEntries.length} workspace-only); Bun and Node imports verified`);
+    const typeImports = Object.entries(expectedExports).map(([name, exportName], index) =>
+      `import { ${exportName} as package${index} } from ${JSON.stringify(name)};`);
+    await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\n`);
+    await writeFile(join(tempRoot, "tsconfig.types.json"), JSON.stringify({
+      compilerOptions: {
+        target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext",
+        lib: ["ESNext", "DOM", "DOM.Iterable"], strict: true, noEmit: true,
+        skipLibCheck: false, types: ["node"],
+      },
+      files: ["probe-types.ts"],
+    }, null, 2));
+    run("node", [join(root, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.types.json"], { cwd: tempRoot });
+    console.log(`TypeScript tarball smoke passed: ${tarballs.size} workspace packages (${publishedPackageEntries.length} published, ${tarballs.size - publishedPackageEntries.length} workspace-only); Bun and Node imports and strict declarations verified`);
   } finally {
     const prefix = `${tempBase}${sep}acyclic-sdk-tarball-smoke-`;
     if (!resolve(tempRoot).startsWith(prefix)) throw new Error("refusing to remove an unexpected tarball smoke directory");

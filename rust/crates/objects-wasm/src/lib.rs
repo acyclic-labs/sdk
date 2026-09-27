@@ -13,6 +13,60 @@ use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
 mod http;
+mod memory_projection;
+
+// Keep the memory response relationship in Rust beside the projector. The WASM declaration
+// receives this section from wasm-bindgen, while the build script only specializes the exported
+// function's operation generic.
+macro_rules! define_memory_response_contract {
+    ($( $variant:ident => $operation:literal => $response:literal ),+ $(,)?) => {
+        #[derive(Clone, Copy)]
+        pub(crate) enum MemoryResponseOperation {
+            $( $variant ),+
+        }
+
+        impl MemoryResponseOperation {
+            pub(crate) fn parse(value: &str) -> Result<Self, String> {
+                match value {
+                    $( $operation => Ok(Self::$variant), )+
+                    _ => Err(format!("unsupported Objects response operation: {value}")),
+                }
+            }
+        }
+
+        #[wasm_bindgen(typescript_custom_section)]
+        const MEMORY_RESPONSE_CONTRACT: &'static str = concat!(
+            "import type { BucketRef, ListPage, ObjectVersion, SnapshotRef, UploadedPart } from \"@acyclic-labs/objects\";\n\n",
+            "export type MemoryResponseOperation =\n",
+            $("  | \"", $operation, "\"\n",)+
+            ";\n",
+            "export interface MemoryResponseMap {\n",
+            $("  ", $operation, ": ", $response, ";\n",)+
+            "}\n\n",
+            "export type MemoryResponseFor<Operation extends MemoryResponseOperation> = MemoryResponseMap[Operation];\n",
+        );
+    };
+}
+
+define_memory_response_contract!(
+    CreateBucket => "create_bucket" => "BucketRef",
+    HeadBucket => "head_bucket" => "BucketRef",
+    ForkBucket => "fork_bucket" => "BucketRef",
+    ForkSnapshot => "fork_snapshot" => "BucketRef",
+    DeleteBucket => "delete_bucket" => "{ readonly existed: boolean }",
+    AbortMultipart => "abort_multipart" => "{ readonly existed: boolean }",
+    DestroySnapshot => "destroy_snapshot" => "{ readonly existed: boolean }",
+    Put => "put" => "ObjectVersion",
+    Head => "head" => "ObjectVersion",
+    GetVersion => "get_version" => "ObjectVersion",
+    CompleteMultipart => "complete_multipart" => "ObjectVersion",
+    Delete => "delete" => "{ readonly existed: boolean; readonly marker?: ObjectVersion }",
+    List => "list" => "ListPage",
+    Snapshot => "snapshot" => "SnapshotRef",
+    CreateMultipart => "create_multipart" => "{ readonly uploadId: string }",
+    UploadPart => "upload_part" => "UploadedPart",
+    ListParts => "list_parts" => "readonly UploadedPart[]",
+);
 
 fn invalid(message: &'static str) -> ObjectsError {
     ObjectsError::Invalid(message)
@@ -166,7 +220,11 @@ fn code(error: &ObjectsError) -> ObjectsErrorCode {
 }
 
 fn js_error_with_code(error: &ObjectsError, public_code: ObjectsErrorCode) -> JsValue {
-    let value = js_sys::Error::new(&error.to_string());
+    js_error_message_with_code(&error.to_string(), public_code)
+}
+
+fn js_error_message_with_code(message: &str, public_code: ObjectsErrorCode) -> JsValue {
+    let value = js_sys::Error::new(message);
     let _property_result = js_sys::Reflect::set(
         value.as_ref(),
         &JsValue::from_str("code"),
@@ -217,6 +275,23 @@ pub fn objects_list_page_entries() -> u32 {
 #[wasm_bindgen]
 pub fn objects_multipart_parts() -> u32 {
     acyclic_objects::limits::MULTIPART_PARTS
+}
+
+/// Decode one unary memory-provider response into the public JavaScript result shape.
+///
+/// The protobuf response remains the canonical wire contract. Rust owns the response projection
+/// so uint64 values, metadata maps, timestamps, and optional fields have the same behavior for
+/// the memory and hosted providers.
+#[wasm_bindgen(js_name = projectMemoryResponse, unchecked_return_type = "unknown")]
+pub fn project_memory_response(operation: &str, input: &[u8]) -> Result<JsValue, JsValue> {
+    memory_projection::project(operation, input).map_err(|error| match error {
+        memory_projection::ProjectionError::Invalid(message) => {
+            js_error_message_with_code(&message, ObjectsErrorCode::InvalidArgument)
+        }
+        memory_projection::ProjectionError::Unavailable(message) => {
+            js_error_message_with_code(&message, ObjectsErrorCode::Unavailable)
+        }
+    })
 }
 
 fn operation_error(operation: &str, error: &ObjectsError) -> JsValue {

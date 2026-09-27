@@ -323,9 +323,7 @@ fn encode_value(value: &JsValue, active: &Set<JsValue>) -> Result<Option<Value>>
     }
     if let Some(value) = value.as_f64() {
         return Ok(Some(
-            serde_json::Number::from_f64(value)
-                .map(Value::Number)
-                .unwrap_or(Value::Null),
+            serde_json::Number::from_f64(value).map_or(Value::Null, Value::Number),
         ));
     }
     if value.is_bigint() {
@@ -416,7 +414,12 @@ fn descriptor_value(object: &Object, key: &JsValue) -> Result<Option<JsValue>> {
         .map_err(|_| "could not inspect request property".to_owned())
 }
 
-fn project(value: &Value) -> Result<JsValue> {
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::map_unwrap_or,
+    clippy::too_many_lines
+)]
+pub(crate) fn project(value: &Value) -> Result<JsValue> {
     match value {
         Value::Null => Ok(JsValue::NULL),
         Value::Bool(value) => Ok(JsValue::from_bool(*value)),

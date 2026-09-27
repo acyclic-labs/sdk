@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { HttpObjectsProvider, MemoryObjectsProvider, ObjectError, Objects, ObjectsTransportError, bytesCodec, idempotencyKey, jsonCodec, type IdempotencyKey } from "../src/index.js";
+import { create, toBinary } from "@bufbuild/protobuf";
+import { TimestampSchema } from "@bufbuild/protobuf/wkt";
+import { BucketSchema, HeadObjectResponseSchema, ListEntrySchema, ListObjectsResponseSchema, ListPartsResponseSchema, ObjectVersionSchema, SnapshotSchema, UploadedPartSchema } from "../generated/proto/objects/v1/objects_pb.js";
+import { projectMemoryResponse } from "../generated/wasm/acyclic_objects_wasm.js";
+import { ensureObjectsWasm } from "../src/wasm-runtime.js";
 
 const key = (value: string) => value as IdempotencyKey;
 const parseNumber = (value: unknown): number => {
@@ -14,6 +19,77 @@ const parseAnswer = (value: unknown): { readonly answer: number } => {
 };
 
 describe("objects", () => {
+  test("Rust memory response projection owns defaults, timestamps, and multipart receipts", async () => {
+    await ensureObjectsWasm();
+    const response = toBinary(ObjectVersionSchema, create(ObjectVersionSchema, {
+      versionId: "version",
+      etag: "etag",
+      size: 7n,
+      deleteMarker: false,
+    }));
+    const version = projectMemoryResponse("put", response) as { readonly metadata: { readonly contentType: string; readonly user: ReadonlyMap<string, string> }; readonly createdAt: Date | undefined; readonly createdAtUnixNanos: bigint | undefined };
+    expect(version.metadata.contentType).toBe("");
+    expect(version.metadata.user).toBeInstanceOf(Map);
+    expect(version.metadata.user.size).toBe(0);
+    expect(version.createdAt).toBeUndefined();
+    expect(version.createdAtUnixNanos).toBeUndefined();
+
+    const timestamp = create(TimestampSchema, { seconds: 2n, nanos: 123_000_000 });
+    const timed = toBinary(ObjectVersionSchema, create(ObjectVersionSchema, {
+      versionId: "version",
+      etag: "etag",
+      size: 7n,
+      createdAt: timestamp,
+    }));
+    const projected = projectMemoryResponse("put", timed) as { readonly createdAt: Date; readonly createdAtUnixNanos: bigint };
+    expect(projected.createdAt.toISOString()).toBe("1970-01-01T00:00:02.123Z");
+    expect(projected.createdAtUnixNanos).toBe(2_123_000_000n);
+
+    const invalidNanos = toBinary(ObjectVersionSchema, create(ObjectVersionSchema, {
+      versionId: "version",
+      etag: "etag",
+      createdAt: create(TimestampSchema, { seconds: 0n, nanos: -1 }),
+    }));
+    let invalidTimestampError: unknown;
+    try { projectMemoryResponse("put", invalidNanos); } catch (error) { invalidTimestampError = error; }
+    expect(invalidTimestampError).toMatchObject({ code: "invalid_argument" });
+    expect(invalidTimestampError).toMatchObject({ message: expect.stringContaining("invalid nanoseconds") });
+    const outOfRange = toBinary(ObjectVersionSchema, create(ObjectVersionSchema, {
+      versionId: "version",
+      etag: "etag",
+      createdAt: create(TimestampSchema, { seconds: 9_000_000_000_000_000n }),
+    }));
+    expect(() => projectMemoryResponse("put", outOfRange)).toThrow("outside the JavaScript Date range");
+
+    const part = toBinary(UploadedPartSchema, create(UploadedPartSchema, { partNumber: 2, etag: "etag", size: 11n }));
+    expect(projectMemoryResponse("upload_part", part)).toEqual({ partNumber: 2, etag: "etag", size: 11n });
+    const parts = toBinary(ListPartsResponseSchema, create(ListPartsResponseSchema, { parts: [create(UploadedPartSchema, { partNumber: 2, etag: "etag", size: 11n })] }));
+    expect(projectMemoryResponse("list_parts", parts)).toEqual([{ partNumber: 2, etag: "etag", size: 11n }]);
+  });
+
+  test("Rust memory response projection preserves unavailable integrity errors", async () => {
+    await ensureObjectsWasm();
+    const expectUnavailable = (operation: Parameters<typeof projectMemoryResponse>[0], response: Uint8Array) => {
+      let error: unknown;
+      try { projectMemoryResponse(operation, response); } catch (caught) { error = caught; }
+      expect(error).toMatchObject({ code: "unavailable" });
+    };
+    const omittedBucket = toBinary(BucketSchema, create(BucketSchema, {}));
+    expect(() => projectMemoryResponse("create_bucket", omittedBucket)).toThrow(/response omitted bucket/);
+    expectUnavailable("create_bucket", omittedBucket);
+
+    const omittedVersion = toBinary(HeadObjectResponseSchema, create(HeadObjectResponseSchema, {}));
+    expectUnavailable("head", omittedVersion);
+
+    const omittedSnapshot = toBinary(SnapshotSchema, create(SnapshotSchema, {}));
+    expectUnavailable("snapshot", omittedSnapshot);
+
+    const omittedEntryVersion = toBinary(ListObjectsResponseSchema, create(ListObjectsResponseSchema, {
+      entries: [create(ListEntrySchema, { objectKey: "missing-version" })],
+    }));
+    expectUnavailable("list", omittedEntryVersion);
+  });
+
   test("bounds idempotency keys by Rust-owned UTF-8 byte limit", () => {
     expect(idempotencyKey(" ")).toBe(" ");
     expect(() => idempotencyKey("")).toThrow(/required/);
