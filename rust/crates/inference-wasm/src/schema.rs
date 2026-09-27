@@ -627,13 +627,19 @@ mod tests {
 
     #[test]
     fn fixed_width_metadata_comes_from_field_options() {
-        let metadata = fixed_width_metadata().expect("descriptor metadata should load");
-        assert!(metadata.contains(
-            r#"{"message":"inference.customer.v1.RequestIdentity","field":"request_id","width":16}"#
-        ));
-        assert!(metadata.contains(
-            r#"{"message":"inference.customer.v1.ContextView","field":"revision","width":32}"#
-        ));
-        assert!(!metadata.contains(r#""width":0"#));
+        let metadata = fixed_width_metadata();
+        assert!(
+            metadata.is_ok(),
+            "descriptor metadata should load: {metadata:?}"
+        );
+        if let Ok(metadata) = metadata {
+            assert!(metadata.contains(
+                r#"{"message":"inference.customer.v1.RequestIdentity","field":"request_id","width":16}"#
+            ));
+            assert!(metadata.contains(
+                r#"{"message":"inference.customer.v1.ContextView","field":"revision","width":32}"#
+            ));
+            assert!(!metadata.contains(r#""width":0"#));
+        }
     }
 }
