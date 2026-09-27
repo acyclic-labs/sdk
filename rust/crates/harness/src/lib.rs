@@ -94,10 +94,11 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 
 pub use bundle::{HarnessBuilder, HarnessBundle as Harness};
 pub use contract::{
-    Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, Capabilities, ConversationId,
+    Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, COMPONENT_LABEL_FORBIDDEN_EXACT,
+    COMPONENT_LABEL_FORBIDDEN_SEPARATORS, COMPONENT_LABEL_MAX_BYTES, Capabilities, ConversationId,
     EffectAttemptId, EffectId, Error, GroupId, IdempotencyKey, InteractionId, InteractionRejection,
     OperationId, Outcome, PolicyLayer, ProtocolIdentity, Result, SessionId, TaskId, TurnId,
-    resolve_policies, resolve_policy_layers,
+    is_valid_component_label, resolve_policies, resolve_policy_layers,
 };
 pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionLeases, ExtensionLinker, ExtensionRegistry,

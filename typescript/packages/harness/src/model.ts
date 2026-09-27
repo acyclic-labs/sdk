@@ -2,6 +2,7 @@ import type { TaskContext, ToolContext } from "./runtime.js";
 import type { Attachment, FileRef } from "./conversation.js";
 import type { SelectedModelContext } from "./projection.js";
 import type { MachineIdentityWire } from "./native-contracts.js";
+import { isValidComponentLabel } from "./component-label-contract.js";
 
 export interface Model<Options = unknown> { readonly provider: string; readonly name: string; readonly revision: string; readonly options: Options }
 export type ModelContentPart =
@@ -58,8 +59,7 @@ export interface ToolRef<Input, Output> {
 }
 export type LiveTool<Input, Output> = (context: ToolContext, input: Input) => Output | Promise<Output>;
 export function validateComponentLabel(value: string, field: string): void {
-  if (typeof value !== "string" || !value || new TextEncoder().encode(value).byteLength > 255 || /[\s\p{Cc}\\/]/u.test(value)
-    || value === "." || value === "..") throw new TypeError(`${field} is invalid`);
+  if (typeof value !== "string" || !isValidComponentLabel(value)) throw new TypeError(`${field} is invalid`);
 }
 export function validateToolName(name: string): void {
   validateComponentLabel(name, "tool name");
