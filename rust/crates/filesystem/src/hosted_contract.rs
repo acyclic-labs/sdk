@@ -417,12 +417,12 @@ mod tests {
     }
 
     #[test]
-    fn generated_contract_contains_all_maps_and_preserves_public_values() {
+    fn generated_contract_contains_all_maps_and_preserves_public_values() -> Result<(), &'static str>
+    {
         let contract = contract_json();
-        let maps = contract
-            .get("maps")
-            .and_then(Value::as_object)
-            .expect("maps");
+        let Some(maps) = contract.get("maps").and_then(Value::as_object) else {
+            return Err("generated hosted contract has no maps object");
+        };
         assert_eq!(maps.len(), 13);
         assert_public_values(
             "filesystem_profile",
@@ -572,6 +572,7 @@ mod tests {
                 Some("idempotency-conflict"),
             ],
         );
+        Ok(())
     }
 
     fn assert_public_values<E: HostedWireEnum>(
