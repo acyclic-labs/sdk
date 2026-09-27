@@ -718,6 +718,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         .await
     }
 
+    /// Whether a path holds the same thing in two states: the same record,
+    /// or one file state under another identity or timestamps (see
+    /// `Fs::same_file_state`), as when a capture records afresh a file a
+    /// publication wrote. A hard link's identity is its other names, so it
+    /// must match exactly.
+    async fn same_path_state(
+        &self,
+        left: Option<crate::kernel::FileRecord>,
+        right: Option<crate::kernel::FileRecord>,
+    ) -> Result<bool, WorkspaceError> {
+        match (left, right) {
+            (Some(left), Some(right)) if left != right => {
+                self.volume
+                    .fs
+                    .same_file_state(&self.volume, left, right)
+                    .await
+            }
+            (left, right) => Ok(left == right),
+        }
+    }
+
     /// Applies an exact three-way path delta under one writer permit.
     #[allow(
         clippy::too_many_lines,
@@ -836,10 +857,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             let current_record = current_records
                 .next()
                 .ok_or_else(|| WorkspaceError::engine("missing batch lookup result"))?;
-            if same_path_state(current_record, source_record) {
+            if self.same_path_state(current_record, source_record).await? {
                 continue;
             }
-            if !same_path_state(current_record, base_record) {
+            if !self.same_path_state(current_record, base_record).await? {
                 conflicts.push(WorkspacePathConflict {
                     path: relative.to_owned(),
                     kind: path_conflict_kind(base_record, current_record, source_record),
@@ -5639,27 +5660,6 @@ fn regular_file_bytes(record: crate::kernel::FileRecord) -> Result<u64, Workspac
         }
         FilePayload::Regular { logical_bytes, .. } => Ok(logical_bytes),
         _ => Err(WorkspaceError::NotRegularFile),
-    }
-}
-
-/// Whether a path holds the same thing in two states: the same record, or
-/// the same bytes and metadata under another identity, as when a capture
-/// records the same file afresh. A hard link's identity is its other names,
-/// so it must match exactly.
-fn same_path_state(
-    left: Option<crate::kernel::FileRecord>,
-    right: Option<crate::kernel::FileRecord>,
-) -> bool {
-    match (left, right) {
-        (Some(left), Some(right)) => {
-            left == right
-                || (left.link_count == 1
-                    && right.link_count == 1
-                    && left.kind == right.kind
-                    && left.metadata == right.metadata
-                    && left.payload == right.payload)
-        }
-        (left, right) => left == right,
     }
 }
 

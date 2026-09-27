@@ -3001,7 +3001,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             // change to them alone is no change of the directory's.
             if host_kind == FileKind::Directory
                 && prior_metadata.is_some_and(|prior| {
-                    without_timestamps(prior) == without_timestamps(canonical_metadata)
+                    prior.without_timestamps() == canonical_metadata.without_timestamps()
                 })
             {
                 receipt.examined_paths = checked_increment(receipt.examined_paths, receipt.work)?;
@@ -4152,17 +4152,6 @@ fn capture_metadata(metadata: &cap_std::fs::Metadata) -> FileMetadata {
     };
     populate_platform_metadata(metadata, &mut result);
     result
-}
-
-/// `metadata` without the timestamps its entries' changes move.
-fn without_timestamps(metadata: FileMetadata) -> FileMetadata {
-    FileMetadata {
-        created_ns: MetadataField::Unavailable,
-        modified_ns: MetadataField::Unavailable,
-        accessed_ns: MetadataField::Unavailable,
-        changed_ns: MetadataField::Unavailable,
-        ..metadata
-    }
 }
 
 fn preserve_unobserved_metadata(observed: FileMetadata, prior: FileMetadata) -> FileMetadata {
