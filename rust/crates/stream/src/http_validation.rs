@@ -134,6 +134,16 @@ fn validate_append_result(value: &Value) -> Result {
     Ok(())
 }
 
+fn validate_bounds(value: &Value) -> Result {
+    let item = object(value)?;
+    let trim_point = u64_string(field(item, "trimPoint")?)?;
+    let tail = u64_string(field(item, "tail")?)?;
+    if trim_point > tail {
+        return Err("stream replay bounds are invalid");
+    }
+    Ok(())
+}
+
 fn validate_fork_receipt(value: &Value) -> Result {
     let item = object(value)?;
     path(field(item, "source")?)?;
@@ -274,6 +284,7 @@ pub fn validate(route: &str, value: &Value) -> Result {
             u64_string(value)?;
             Ok(())
         }
+        Some("bounds") => validate_bounds(value),
         Some("append") => validate_append_result(value),
         Some("fork") => validate_fork_receipt(value),
         Some("trim") => validate_trim_receipt(value),
@@ -342,6 +353,29 @@ mod tests {
         let bad_path = r#"[{"path":"events//child"}]"#;
         assert!(super::validate("children", &json_fixture(bad_path)?).is_err());
         assert!(super::validate("tail", &json_fixture("1")?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn hosted_http_validation_checks_bounds_order_and_decimal_u64s() -> serde_json::Result<()> {
+        assert!(
+            super::validate("bounds", &json_fixture(r#"{"trimPoint":"2","tail":"3"}"#)?).is_ok()
+        );
+        assert!(
+            super::validate("bounds", &json_fixture(r#"{"trimPoint":"4","tail":"3"}"#)?).is_err()
+        );
+        assert!(
+            super::validate("bounds", &json_fixture(r#"{"trimPoint":"01","tail":"3"}"#)?).is_err()
+        );
+        assert!(
+            super::validate(
+                "bounds",
+                &json_fixture(
+                    r#"{"trimPoint":"18446744073709551616","tail":"18446744073709551616"}"#
+                )?
+            )
+            .is_err()
+        );
         Ok(())
     }
 

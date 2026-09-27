@@ -58,6 +58,7 @@ pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("idempotency/inspect", "observation"),
     ("tail", "sequence"),
+    ("bounds", "bounds"),
     ("append", "append"),
     ("fork", "fork"),
     ("trim", "trim"),

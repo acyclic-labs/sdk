@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const KINDS = new Set([
-  "observation", "sequence", "append", "fork", "trim", "delete",
+  "observation", "sequence", "bounds", "append", "fork", "trim", "delete",
   "records", "children", "commit", "envelope", "token",
 ]);
 
@@ -44,7 +44,7 @@ function renderSources(root) {
   const source = `${header}import { decodeHttpResponse as decodeHttpResponseWasm } from "../generated/wasm/acyclic_stream_wasm.js";
 import type {
   AccessToken, AppendResult, CommittedEnvelope, EncodedRecord, ForkReceipt,
-  IdempotencyObservation, TrimReceipt, DeleteReceipt, CommitResult, Sequence,
+  IdempotencyObservation, TrimReceipt, DeleteReceipt, CommitResult, Sequence, StreamBounds,
 } from "./types.js";
 
 export const HTTP_RESPONSE_CONTRACT = Object.freeze({
@@ -56,6 +56,7 @@ export type HttpRoute = keyof typeof HTTP_RESPONSE_CONTRACT;
 type HttpResponseByKind = {
   observation: IdempotencyObservation | undefined;
   sequence: Sequence;
+  bounds: StreamBounds;
   append: AppendResult;
   fork: ForkReceipt;
   trim: TrimReceipt;
