@@ -41,8 +41,9 @@ import {
   WatchRunRequestSchema,
   type InferenceTransport,
 } from "../src/index.js";
-import { runTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
+import { runTerminalMetadata, validateRunTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
 import { MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES } from "../generated/defaults.js";
+import { RUN_TERMINAL_METADATA } from "../generated/terminal-metadata.js";
 
 const bytes = (value: number) => new Uint8Array([value]);
 const revision = (value: number) => new Uint8Array(32).fill(value);
@@ -77,11 +78,23 @@ test("derived HTTP route validation rejects URL escape paths", () => {
 
 test("Rust reflection supplies every nonzero terminal and validates request shape", async () => {
   const metadata = await runTerminalMetadata();
+  expect(metadata).toEqual(RUN_TERMINAL_METADATA);
   expect(metadata.map(item => item.kind)).toEqual([
     "completed", "output-limited", "tool-call", "refusal", "cancelled", "failed", "indeterminate",
   ]);
   expect(metadata.filter(item => item.partial).map(item => item.kind)).toEqual(["cancelled", "failed", "indeterminate"]);
   await expect(validateRuntimeShape(CreateContextRequestSchema, JSON.parse('{"model":7}'))).rejects.toThrow("invalid protobuf type");
+});
+
+test("terminal metadata validation rejects Rust/protobuf drift", () => {
+  const valid = RUN_TERMINAL_METADATA.map(item => ({ ...item }));
+  expect(validateRunTerminalMetadata(JSON.stringify(valid))).toEqual(valid);
+  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.slice(1)))).toThrow("does not cover the generated enum");
+  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.map((item, index) =>
+    index === 0 ? { ...item, kind: "renamed" } : item)))).toThrow("does not cover the generated enum");
+  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.map((item, index) =>
+    index === 0 ? { ...item, partial: !item.partial } : item)))).toThrow("does not cover the generated enum");
+  expect(() => validateRunTerminalMetadata("[{\"number\":1,\"kind\":\"completed\"}]")).toThrow("invalid entry");
 });
 const receipt = (value: number) => create(MutationReceiptSchema, { revision: revision(value), commandDigest: revision(value + 32), sequence: 1n });
 const contextView = (value: Uint8Array, model = "model") => create(ContextViewSchema, {

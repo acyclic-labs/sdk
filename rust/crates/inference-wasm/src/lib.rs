@@ -3,6 +3,11 @@
 
 mod schema;
 
+/// Return the current Rust-owned Run terminal metadata for code generators.
+pub fn run_terminal_metadata_native() -> Result<String, &'static str> {
+    schema::terminal_metadata()
+}
+
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
