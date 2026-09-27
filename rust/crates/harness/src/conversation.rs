@@ -20,9 +20,26 @@ pub type ContentFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// A freshly authorized content grant paired with its residency verifier.
 pub type ContentMount = (ContentGrant, Arc<dyn ContentResidencyVerifier>);
 
-const MAX_PATH_BYTES: usize = 4_096;
-const MAX_LABEL_BYTES: usize = 255;
-const MAX_EXACT_JS_INTEGER: u64 = (1_u64 << 53) - 1;
+/// Maximum normalized UTF-8 path length admitted by the Harness protocol.
+pub const MAX_PATH_BYTES: usize = 4_096;
+/// Maximum UTF-8 bytes in a protocol label or display name.
+pub const MAX_LABEL_BYTES: usize = 255;
+/// Largest integer that can be represented exactly by a JavaScript number.
+pub const MAX_EXACT_JS_INTEGER: u64 = (1_u64 << 53) - 1;
+/// Maximum file byte length accepted by the limits validator.
+pub const MAX_LIMIT_FILE_BYTES: u64 = MAX_EXACT_JS_INTEGER;
+/// Maximum rendered byte length implied by the file byte ceiling.
+pub const MAX_LIMIT_RENDER_BYTES: u64 = MAX_EXACT_JS_INTEGER;
+/// Maximum number of attachments in one message.
+pub const MAX_LIMIT_ATTACHMENTS: usize = 65_536;
+/// Maximum model steps, events, and context messages under the wire contract.
+pub const MAX_LIMIT_MODEL_STEPS: usize = 1_000_000;
+/// Maximum streamed model events per step.
+pub const MAX_LIMIT_MODEL_EVENTS_PER_STEP: usize = 1_000_000;
+/// Maximum tool calls per step before the event bound is applied.
+pub const MAX_LIMIT_TOOL_CALLS_PER_STEP: usize = 1_000_000;
+/// Maximum canonical messages selected into one model request.
+pub const MAX_LIMIT_CONTEXT_MESSAGES: usize = 1_000_000;
 
 /// Admission and rendering bounds. Each value may narrow the protocol ceiling;
 /// provider adapters may impose a still lower physical limit.
@@ -66,21 +83,23 @@ impl Limits {
     /// Prevents zero bounds or configuration that widens the wire protocol.
     pub fn validate(&self) -> Result<()> {
         if self.file_bytes == 0
-            || self.file_bytes > MAX_EXACT_JS_INTEGER
+            || self.file_bytes > MAX_LIMIT_FILE_BYTES
             || self.path_bytes == 0
             || self.path_bytes > MAX_PATH_BYTES
             || self.attachments == 0
-            || self.attachments > 65_536
+            || self.attachments > MAX_LIMIT_ATTACHMENTS
             || self.render_bytes == 0
+            || self.render_bytes > MAX_LIMIT_RENDER_BYTES
             || self.render_bytes > self.file_bytes
             || self.model_steps == 0
-            || self.model_steps > 1_000_000
+            || self.model_steps > MAX_LIMIT_MODEL_STEPS
             || self.model_events_per_step == 0
-            || self.model_events_per_step > 1_000_000
+            || self.model_events_per_step > MAX_LIMIT_MODEL_EVENTS_PER_STEP
             || self.tool_calls_per_step == 0
+            || self.tool_calls_per_step > MAX_LIMIT_TOOL_CALLS_PER_STEP
             || self.tool_calls_per_step > self.model_events_per_step
             || self.context_messages == 0
-            || self.context_messages > 1_000_000
+            || self.context_messages > MAX_LIMIT_CONTEXT_MESSAGES
         {
             return Err(Error::Invalid("harness limits are invalid".into()));
         }

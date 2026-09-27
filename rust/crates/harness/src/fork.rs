@@ -20,11 +20,16 @@ use std::{future::Future, pin::Pin};
 
 /// Hard protocol ceiling applied before allocating attached-reader state.
 pub const MAX_FORK_AGENTS: usize = 1_024;
-const MAX_FORK_RESOURCES: usize = 4_096;
-const MAX_FORK_REFERENCES: usize = 65_536;
-const MAX_FORK_ATTACHMENT_MANIFEST_BYTES: u64 = 64 * 1_024 * 1_024;
-const MAX_FORK_INHERITED_BYTES: u64 = 64 * 1_024 * 1_024;
-const MAX_FORK_REFERENCE_BYTES: u64 = 64 * 1_024 * 1_024 * 1_024;
+/// Maximum selected resources in one fork request or seed.
+pub const MAX_FORK_RESOURCES: usize = 4_096;
+/// Maximum references or grants in one fork.
+pub const MAX_FORK_REFERENCES: usize = 65_536;
+/// Maximum aggregate attachment manifest bytes in one fork seed.
+pub const MAX_FORK_ATTACHMENT_MANIFEST_BYTES: u64 = 64 * 1_024 * 1_024;
+/// Maximum inherited context bytes in one fork preparation.
+pub const MAX_FORK_INHERITED_BYTES: u64 = 64 * 1_024 * 1_024;
+/// Maximum aggregate referenced file bytes in one fork seed.
+pub const MAX_FORK_REFERENCE_BYTES: u64 = 64 * 1_024 * 1_024 * 1_024;
 /// Hard ceiling independent of a deployment's lower configured prefix limit.
 pub const MAX_FORK_INHERITED_MESSAGES: u64 = 16_384;
 

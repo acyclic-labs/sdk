@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   conversationMessageId, decodeAttachmentManifest, descriptorFor,
-  verifyFileBytes, DEFAULT_LIMITS,
+  verifyFileBytes, DEFAULT_LIMITS, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_LIMITS, MAX_PATH_BYTES,
   type ConversationMessage, type ConversationMessageId, type FileRef, type TaskOutcomeRecord,
 } from "../src/conversation.js";
 import type { AgentId } from "../src/index.js";
@@ -10,6 +10,22 @@ import { NativeContracts } from "../src/native-contracts.js";
 const contracts = await NativeContracts.create();
 const agent = "01010101-0101-0101-0101-010101010101" as AgentId;
 const fixtureId = (value: string): ConversationMessageId => value as ConversationMessageId;
+
+test("Rust-owned limits contract preserves defaults, ceilings, and number semantics", () => {
+  expect(DEFAULT_LIMITS.path_bytes).toBe(MAX_PATH_BYTES);
+  expect(MAX_LIMITS.path_bytes).toBe(MAX_PATH_BYTES);
+  expect(MAX_EXACT_JS_INTEGER).toBe(MAX_LIMITS.file_bytes);
+  expect(MAX_LABEL_BYTES).toBeGreaterThan(0);
+  expect(Object.isFrozen(DEFAULT_LIMITS)).toBe(true);
+  expect(Object.isFrozen(MAX_LIMITS)).toBe(true);
+  expect(Object.values(DEFAULT_LIMITS).every(value => typeof value === "number")).toBe(true);
+  expect(() => contracts.validate("limits", {
+    ...MAX_LIMITS, file_bytes: MAX_EXACT_JS_INTEGER + 1,
+  })).toThrow("unsafe JavaScript Number");
+  expect(() => contracts.validate("limits", {
+    ...MAX_LIMITS, path_bytes: MAX_PATH_BYTES + 1,
+  })).toThrow("harness limits are invalid");
+});
 
 function fixtureMessage(value: unknown): ConversationMessage {
   if (value === null || typeof value !== "object" || !("sequence" in value)

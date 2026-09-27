@@ -2,9 +2,16 @@
 import type { FileRef, ProviderRef, VolumeRef } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
 import type { AgentId, Authority, OperationId } from "./index.js";
-
-/** Protocol ceiling for a child-owned inherited conversation prefix. */
-export const MAX_FORK_INHERITED_MESSAGES = 16_384n;
+import { MAX_FORK_INHERITED_MESSAGES } from "./limits-contract.js";
+export {
+  MAX_FORK_AGENTS,
+  MAX_FORK_ATTACHMENT_MANIFEST_BYTES,
+  MAX_FORK_INHERITED_BYTES,
+  MAX_FORK_INHERITED_MESSAGES,
+  MAX_FORK_REFERENCE_BYTES,
+  MAX_FORK_REFERENCES,
+  MAX_FORK_RESOURCES,
+} from "./limits-contract.js";
 
 export type ResourceKind = "workspace" | "generation" | "artifact" | "sandbox" | "checkpoint" | "stream" | "context" | "run";
 type ResourceProvider<Kind extends ResourceKind> =
