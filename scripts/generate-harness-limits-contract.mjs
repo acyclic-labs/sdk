@@ -56,7 +56,10 @@ function readRustContract(root) {
   const jsonLine = (result.stdout ?? "").trim().split(/\r?\n/).filter(Boolean).at(-1);
   if (!jsonLine) throw new Error("Rust Harness limits contract generator produced no JSON");
   const contract = JSON.parse(jsonLine);
-  assertExactKeys(contract, ["limits", "fork", "projection"], "contract");
+  assertExactKeys(contract, ["limits", "batch_inputs", "fork", "projection"], "contract");
+  if (!Number.isSafeInteger(contract.batch_inputs) || contract.batch_inputs <= 0) {
+    throw new Error("Harness batch contract has invalid maximum input count");
+  }
   const limits = contract.limits;
   if (!limits || typeof limits !== "object") throw new Error("Harness limits contract is missing limits");
   if (!limits.default || typeof limits.default !== "object" ||
@@ -133,6 +136,8 @@ function renderContract(root) {
     `export const HARNESS_MAX_EXACT_JS_INTEGER = ${renderValue(limits.exact_js_integer)};`,
     `export const HARNESS_MAX_PATH_BYTES = ${renderValue(limits.max_path_bytes)};`,
     `export const HARNESS_MAX_LABEL_BYTES = ${renderValue(limits.max_label_bytes)};`,
+    `export const HARNESS_MAX_BATCH_INPUTS = ${renderValue(contract.batch_inputs)};`,
+    `export const HARNESS_MAX_ATTACHMENT_COUNT = ${renderValue(limits.maximum.attachments)};`,
   ];
   for (const [field, kind] of forkFields) {
     lines.push(`export const MAX_FORK_${field.toUpperCase()} = ${renderValue(fork[field], kind)};`);

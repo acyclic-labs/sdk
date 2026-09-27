@@ -15,6 +15,7 @@ use acyclic_harness::projection::{
     DEFAULT_PROJECTION_MAX_RESOLVED_BYTES, MAX_PROJECTION_JSON_BYTES,
     MAX_PROJECTION_PROJECTED_ATTACHMENTS,
 };
+use acyclic_harness::runtime::MAX_BATCH_INPUTS;
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -41,6 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "max_path_bytes": MAX_PATH_BYTES,
                 "max_label_bytes": MAX_LABEL_BYTES,
             },
+            "batch_inputs": MAX_BATCH_INPUTS,
             "fork": {
                 "agents": MAX_FORK_AGENTS,
                 "resources": MAX_FORK_RESOURCES,

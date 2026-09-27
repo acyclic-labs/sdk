@@ -71,7 +71,7 @@ impl Default for Limits {
         Self {
             file_bytes: 64 * 1024 * 1024,
             path_bytes: MAX_PATH_BYTES,
-            attachments: 65_536,
+            attachments: MAX_LIMIT_ATTACHMENTS,
             render_bytes: 128 * 1024,
             model_steps: 64,
             model_events_per_step: 4_096,
@@ -1149,7 +1149,7 @@ impl Attachment {
 /// Unlike generic canonical JSON, this preserves the typed serde field order
 /// required by manifest admission across Rust and WASM producers.
 pub fn encode_attachment_manifest(items: &[Attachment]) -> Result<Vec<u8>> {
-    if items.len() > 65_536 {
+    if items.len() > MAX_LIMIT_ATTACHMENTS {
         return Err(Error::Invalid("attachment count exceeds limit".into()));
     }
     for item in items {
@@ -1301,7 +1301,7 @@ impl ReferencedAttachments {
                 item_count,
             } => {
                 manifest.validate()?;
-                if *item_count > 65_536
+                if *item_count as usize > MAX_LIMIT_ATTACHMENTS
                     || manifest.descriptor().media_type()
                         != "application/vnd.acyclic.harness.attachments+json"
                 {

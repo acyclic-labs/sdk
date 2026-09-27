@@ -48,6 +48,8 @@ pub const MAX_CHILD_PAGE: usize = 1_024;
 pub const DEFAULT_CHILD_PAGE: usize = 256;
 /// Maximum UTF-8 byte length of a parent-local child slot.
 pub const MAX_CHILD_SLOT_BYTES: usize = 255;
+/// Maximum number of inputs admitted by one durable batch.
+pub const MAX_BATCH_INPUTS: usize = 65_536;
 
 type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> BoxFuture<'static, Result<O>> + Send + Sync;
 
@@ -4540,7 +4542,7 @@ impl DurableBatchRequest {
     /// Validates the complete retained manifest before any child is observed
     /// or admitted. A syntactically valid JSON envelope is not sufficient.
     pub fn validate(&self) -> Result<()> {
-        if self.inputs.len() > 65_536 {
+        if self.inputs.len() > MAX_BATCH_INPUTS {
             return Err(Error::Invalid("batch has too many inputs".into()));
         }
         validate_identity(&self.task.name, &self.task.version)?;
@@ -4969,7 +4971,7 @@ impl RuntimeGroup {
                 "durable batch policy overrides require a pinned host policy".into(),
             ));
         }
-        if batch.inputs.len() > 65_536 {
+        if batch.inputs.len() > MAX_BATCH_INPUTS {
             return Err(Error::Invalid("batch has too many inputs".into()));
         }
         let registered = self

@@ -20,6 +20,7 @@ import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, Run
 import type { ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult } from "./model.js";
 import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
 import { assertHarnessWasmExports, REQUIRED_HARNESS_WASM_EXPORTS } from "./wasm-runtime.js";
+import { HARNESS_MAX_ATTACHMENT_COUNT } from "./limits-contract.js";
 
 /** Rust generated admission projection input and output shapes. */
 export type TaskAdmissionProjectionInput = WasmTaskAdmissionInput;
@@ -202,7 +203,7 @@ export class NativeContracts {
   }
 
   decodeAttachmentManifest(manifest: FileRef, bytes: Uint8Array, itemCount: number): readonly Attachment[] {
-    if (!Number.isSafeInteger(itemCount) || itemCount < 0 || itemCount > 65_536) {
+    if (!Number.isSafeInteger(itemCount) || itemCount < 0 || itemCount > HARNESS_MAX_ATTACHMENT_COUNT) {
       throw new TypeError("attachment count is outside the protocol limit");
     }
     return freezeNative(normalizeNativeValue(this.native.decodeAttachmentManifest(manifest, bytes, itemCount))) as readonly Attachment[];

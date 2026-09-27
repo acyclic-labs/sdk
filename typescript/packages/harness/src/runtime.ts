@@ -3,6 +3,7 @@ import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type Volume
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
 import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "./child-page-contract.js";
+import { HARNESS_MAX_BATCH_INPUTS } from "./limits-contract.js";
 import { validateModelContent as validateModelContentWasm, validateModelMessages as validateModelMessagesWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import type { SelectedModelContext } from "./projection.js";
@@ -869,7 +870,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     admittedInputs?: readonly Input[]): Promise<BatchAdmissionRequest> {
     if (definition.implementation.kind !== "resumable" || !definition.options.input
       || !definition.options.implementationDigest) throw new BatchInputError("durable batch needs a pinned resumable task");
-    if (batch.inputs.length > 65_536) throw new BatchInputError("batch has too many inputs");
+    if (batch.inputs.length > HARNESS_MAX_BATCH_INPUTS) throw new BatchInputError("batch has too many inputs");
     let request: BatchAdmissionRequest;
     try {
       const contracts = this.#harness.contracts;
@@ -924,7 +925,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
   #validateBatchInputs<Input>(definition: TaskDefinition<Input, Output>, batch: Batch<Input>): readonly Input[] {
     if (definition.implementation.kind !== "resumable" || !definition.options.input
       || !definition.options.implementationDigest) throw new BatchInputError("durable batch needs a pinned resumable task");
-    if (batch.inputs.length > 65_536) throw new BatchInputError("batch has too many inputs");
+    if (batch.inputs.length > HARNESS_MAX_BATCH_INPUTS) throw new BatchInputError("batch has too many inputs");
     try {
       const contracts = this.#harness.contracts;
       const admittedInputs: Input[] = [];
