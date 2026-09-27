@@ -4408,6 +4408,7 @@ mod tests {
         inner: D,
         lookups: AtomicU64,
         watched: bool,
+        reports: Arc<Mutex<Vec<SourceChange>>>,
     }
 
     impl<D> Counted<D> {
@@ -4416,11 +4417,56 @@ mod tests {
                 inner,
                 lookups: AtomicU64::new(0),
                 watched,
+                reports: Arc::default(),
             }
         }
 
         fn lookups(&self) -> u64 {
             self.lookups.load(Ordering::Acquire)
+        }
+
+        #[cfg(target_os = "macos")]
+        fn report_count(&self) -> usize {
+            self.reports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len()
+        }
+
+        #[cfg(target_os = "macos")]
+        fn reports_cover(&self, names: &[&[u8]]) -> bool {
+            let reports = self.reports.lock().unwrap_or_else(PoisonError::into_inner);
+            if reports
+                .iter()
+                .any(|change| matches!(change, SourceChange::Everything))
+            {
+                return true;
+            }
+            names.iter().all(|name| {
+                reports.iter().any(|change| {
+                    let (SourceChange::Name(path) | SourceChange::Entry(path)) = change else {
+                        return false;
+                    };
+                    path.components()
+                        .last()
+                        .is_some_and(|component| component.as_bytes() == *name)
+                })
+            })
+        }
+    }
+
+    struct CountedSink {
+        inner: Arc<dyn SourceChangeSink>,
+        reports: Arc<Mutex<Vec<SourceChange>>>,
+    }
+
+    impl SourceChangeSink for CountedSink {
+        fn source_changed(&self, changes: &[SourceChange]) {
+            self.reports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend_from_slice(changes);
+            self.inner.source_changed(changes);
         }
     }
 
@@ -4435,7 +4481,10 @@ mod tests {
             sink: Arc<dyn SourceChangeSink>,
         ) -> Result<Option<Box<dyn SourceWatch>>, DemandError> {
             if self.watched {
-                self.inner.watch(sink)
+                self.inner.watch(Arc::new(CountedSink {
+                    inner: sink,
+                    reports: Arc::clone(&self.reports),
+                }))
             } else {
                 Ok(None)
             }
@@ -4511,8 +4560,6 @@ mod tests {
     fn a_watched_source_is_read_again_only_for_what_it_reports_changed()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = tempfile::tempdir()?;
-        std::fs::write(source.path().join("a"), b"short")?;
-        std::fs::write(source.path().join("b"), b"other")?;
         let runtime = tokio::runtime::Runtime::new()?;
         let demand = Arc::new(Counted::new(
             runtime.block_on(native_source(source.path()))?,
@@ -4523,6 +4570,38 @@ mod tests {
         let size = |path: &MountPath| -> Result<Option<u64>, MountSourceError> {
             Ok(view.lookup(path)?.map(|lookup| lookup.node.logical_bytes))
         };
+
+        // Create the initial entries after the watch starts. Linux and
+        // Windows can fence these reports exactly. FSEvents has no delivery
+        // barrier, so wait for the names (or a conservative everything
+        // report) and then for its report stream to go quiet before reading
+        // the first answers. This keeps startup notifications out of the
+        // cache-counting assertion below.
+        std::fs::write(source.path().join("a"), b"short")?;
+        std::fs::write(source.path().join("b"), b"other")?;
+        #[cfg(target_os = "macos")]
+        {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut reports = demand.report_count();
+            let mut quiet = 0;
+            while quiet < 10 || !demand.reports_cover(&[b"a", b"b"]) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the startup notifications never settled"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                let current = demand.report_count();
+                if current == reports {
+                    quiet += 1;
+                } else {
+                    reports = current;
+                    quiet = 0;
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        view.fence_changes()?;
+
         assert_eq!(size(&a)?, Some(5));
         assert_eq!(size(&b)?, Some(5));
         assert_eq!(size(&absent)?, None);
