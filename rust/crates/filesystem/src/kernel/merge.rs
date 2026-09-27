@@ -360,16 +360,10 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
                 resolved = OptionalResolution::Resolved(Some(record));
             }
         }
-        if matches!(resolved, OptionalResolution::Conflict)
-            && base.is_some()
-            && ours_value.is_some()
-            && theirs_value.is_some()
-        {
-            resolved = merge_file_fields_async(
+        if matches!(resolved, OptionalResolution::Conflict) {
+            resolved = merge_records_async(
                 store,
-                base.ok_or_else(|| invalid(work))?,
-                ours_value.ok_or_else(|| invalid(work))?,
-                theirs_value.ok_or_else(|| invalid(work))?,
+                [base, ours_value, theirs_value],
                 limits,
                 budget,
                 cancellation,
@@ -379,28 +373,6 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
             .map_or(OptionalResolution::Conflict, |record| {
                 OptionalResolution::Resolved(Some(record))
             });
-        }
-        // Both sides added this file with the same bytes, as when each
-        // captured its own copy of one source file: only timestamps differ.
-        if matches!(resolved, OptionalResolution::Conflict)
-            && base.is_none()
-            && let (Some(ours), Some(theirs)) = (ours_value, theirs_value)
-            && ours.kind == theirs.kind
-            && ours.link_count == theirs.link_count
-            && ours.payload == theirs.payload
-            && let Some(metadata) = merge_metadata_async(
-                store,
-                None,
-                ours.metadata,
-                theirs.metadata,
-                limits,
-                budget,
-                cancellation,
-                &mut work,
-            )
-            .await?
-        {
-            resolved = OptionalResolution::Resolved(Some(FileRecord { metadata, ..ours }));
         }
         let OptionalResolution::Resolved(resolved) = resolved else {
             if let Some(resolution) = request.resolutions.get(&MergeConflict::File(file_id)) {
@@ -1315,6 +1287,54 @@ async fn merge_file_fields_async<S: AsyncObjectStore>(
     }))
 }
 
+/// A record both sides changed, merged field by field; `None` is a
+/// conflict. One file both sides added merges only with the same bytes, as
+/// when each captured its own copy of one source file: only timestamps may
+/// differ.
+async fn merge_records_async<S: AsyncObjectStore>(
+    store: &S,
+    [base, ours, theirs]: [Option<FileRecord>; 3],
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    work: &mut WorkCounters,
+) -> Result<Option<FileRecord>, OperationFailure<MergeGenerationError>> {
+    let (Some(ours), Some(theirs)) = (ours, theirs) else {
+        return Ok(None);
+    };
+    if let Some(base) = base {
+        return merge_file_fields_async(
+            store,
+            base,
+            ours,
+            theirs,
+            limits,
+            budget,
+            cancellation,
+            work,
+        )
+        .await;
+    }
+    if ours.kind != theirs.kind
+        || ours.link_count != theirs.link_count
+        || ours.payload != theirs.payload
+    {
+        return Ok(None);
+    }
+    let metadata = merge_metadata_async(
+        store,
+        None,
+        ours.metadata,
+        theirs.metadata,
+        limits,
+        budget,
+        cancellation,
+        work,
+    )
+    .await?;
+    Ok(metadata.map(|metadata| FileRecord { metadata, ..ours }))
+}
+
 /// Three-way merge of one record's metadata reference; without a base, of
 /// two sides that added the same file.
 ///
@@ -1701,7 +1721,7 @@ pub(crate) fn merge_added_metadata_fields(
     ours: FileMetadata,
     theirs: FileMetadata,
 ) -> Option<FileMetadata> {
-    fn same<T: PartialEq>(ours: T, theirs: T) -> Option<T> {
+    fn same<T: Copy + PartialEq>(ours: T, theirs: T) -> Option<T> {
         (ours == theirs).then_some(ours)
     }
     fn later(ours: MetadataField<i64>, theirs: MetadataField<i64>) -> MetadataField<i64> {

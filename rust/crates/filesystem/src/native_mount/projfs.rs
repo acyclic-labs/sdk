@@ -22,6 +22,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
@@ -624,7 +625,7 @@ impl Placeholders {
 
     /// Lists `directory` again and reconciles what it holds with the names
     /// it was last written with (see [`Placeholders`]). A file the source
-    /// lost is its placeholder's to delete, once superseded.
+    /// lost is replaced, so deleted unless modified.
     fn reconcile(&self, projection: Projection<'_>, directory: &MountPath) -> Result<(), String> {
         let _tree = lock_recover(&self.tree);
         let Some(known) = lock_recover(&self.state)
@@ -669,8 +670,21 @@ impl Placeholders {
             }
         }
         for (name, was_directory) in &known {
-            if *was_directory && !names.contains_key(name) {
-                self.remove_tree(projection, &directory.child(name.clone()));
+            if names.contains_key(name) {
+                continue;
+            }
+            let child = directory.child(name.clone());
+            if *was_directory {
+                self.remove_tree(projection, &child);
+            } else {
+                // Replaced like any superseded placeholder: deleted unless
+                // modified, and tried again while held open.
+                let mut state = lock_recover(&self.state);
+                let placeholder = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
+                    file_id: FileId::from_bytes([0; 16]),
+                    basis: None,
+                });
+                state.pending.insert(child, placeholder);
             }
         }
         lock_recover(&self.state)
@@ -1519,15 +1533,22 @@ fn placeholder_info(
 }
 
 /// The placeholder for `info` that carries exactly `pin`.
+///
+/// `ProjFS` updates a placeholder only when its version differs, so each
+/// placeholder written also carries a version of its own after the pin:
+/// a rewrite with new attributes or unpinned content is never skipped.
 fn pinned_placeholder(
     info: PRJ_FILE_BASIC_INFO,
     pin: Option<MountContentPin>,
 ) -> Option<PRJ_PLACEHOLDER_INFO> {
+    static WRITTEN: AtomicU64 = AtomicU64::new(0);
     let mut version = PRJ_PLACEHOLDER_VERSION_INFO::default();
+    let (pinned, written) = version.ContentID.split_at_mut(size_of::<MountContentPin>());
     if let Some(pin) = pin {
         *version.ProviderID.first_chunk_mut()? = *CONTENT_PIN_PROVIDER;
-        *version.ContentID.first_chunk_mut()? = pin.0;
+        *pinned.first_chunk_mut()? = pin.0;
     }
+    *written.first_chunk_mut()? = WRITTEN.fetch_add(1, Ordering::Relaxed).to_le_bytes();
     Some(PRJ_PLACEHOLDER_INFO {
         FileBasicInfo: info,
         VersionInfo: version,
@@ -3805,6 +3826,11 @@ mod tests {
             .VersionInfo;
         callback.VersionInfo = &raw mut unpinned;
         assert_eq!(placeholder_pin(&callback), None);
+        // Every write is a new version, so `ProjFS` never skips a rewrite.
+        let again = placeholder_info(&lookup, None)
+            .expect("regular file placeholder")
+            .VersionInfo;
+        assert_ne!(again.ContentID, unpinned.ContentID);
 
         // Another provider's version information is never read as a pin.
         let mut foreign = pinned;
