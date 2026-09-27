@@ -895,31 +895,31 @@ function liveTransactionResult(value: Awaited<ReturnType<NativeRawCheckout["muta
 }
 
 function nativeTransactionOperation(value: TransactionOperation): NativeRawTransactionOperation {
-  const operation = nativeBoundary<NativeRawTransactionOperation>({
+  const operation: NativeRawTransactionOperation = {
     kind: value.kind,
-    path: "path" in value ? value.path : undefined,
-    source: "source" in value ? value.source : undefined,
-    destination: "destination" in value ? value.destination : undefined,
-    bytes: "bytes" in value ? copyBytes(value.bytes) : undefined,
-    target: "target" in value ? copyBytes(value.target) : undefined,
-    payload: "payload" in value ? copyBytes(value.payload) : undefined,
-    expectedFileId: "expectedFileId" in value && value.expectedFileId !== undefined
-      ? copyBytes(value.expectedFileId) : undefined,
-    fileKind: "fileKind" in value ? value.fileKind : undefined,
-    offset: "offset" in value ? value.offset : undefined,
-    sourceOffset: "sourceOffset" in value ? value.sourceOffset : undefined,
-    destinationOffset: "destinationOffset" in value ? value.destinationOffset : undefined,
-    length: "length" in value ? value.length : undefined,
-    logicalBytes: "logicalBytes" in value ? value.logicalBytes : undefined,
-    major: "major" in value ? value.major : undefined,
-    minor: "minor" in value ? value.minor : undefined,
-    replace: "replace" in value ? value.replace : undefined,
-    allocated: "allocated" in value ? value.allocated : undefined,
-    extend: "extend" in value ? value.extend : undefined,
-    keepSize: "keepSize" in value ? value.keepSize : undefined,
-    canonicalBytes: "canonicalBytes" in value ? copyBytes(value.canonicalBytes) : undefined,
-  });
-  return nativeBoundary<NativeRawTransactionOperation>(operation);
+    ...("path" in value ? { path: value.path } : {}),
+    ...("source" in value ? { source: value.source } : {}),
+    ...("destination" in value ? { destination: value.destination } : {}),
+    ...("bytes" in value ? { bytes: copyBytes(value.bytes) } : {}),
+    ...("target" in value ? { target: copyBytes(value.target) } : {}),
+    ...("payload" in value ? { payload: copyBytes(value.payload) } : {}),
+    ...("expectedFileId" in value && value.expectedFileId !== undefined
+      ? { expectedFileId: copyBytes(value.expectedFileId) } : {}),
+    ...("fileKind" in value ? { fileKind: value.fileKind } : {}),
+    ...("offset" in value ? { offset: value.offset } : {}),
+    ...("sourceOffset" in value ? { sourceOffset: value.sourceOffset } : {}),
+    ...("destinationOffset" in value ? { destinationOffset: value.destinationOffset } : {}),
+    ...("length" in value ? { length: value.length } : {}),
+    ...("logicalBytes" in value ? { logicalBytes: value.logicalBytes } : {}),
+    ...("major" in value ? { major: value.major } : {}),
+    ...("minor" in value ? { minor: value.minor } : {}),
+    ...("replace" in value ? { replace: value.replace } : {}),
+    ...("allocated" in value ? { allocated: value.allocated } : {}),
+    ...("extend" in value ? { extend: value.extend } : {}),
+    ...("keepSize" in value ? { keepSize: value.keepSize } : {}),
+    ...("canonicalBytes" in value ? { canonicalBytes: copyBytes(value.canonicalBytes) } : {}),
+  };
+  return operation;
 }
 
 function adaptWorkspace(

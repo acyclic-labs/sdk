@@ -37,6 +37,7 @@ import {
   type TaskMessage,
   type ModelMessage,
   type ModelToolDefinition,
+  type UserContentPart,
   type FileRef,
   type VolumeRef,
   type ConversationMessageId,
@@ -1591,6 +1592,44 @@ describe("typed agent runtime", () => {
     }).build();
     await runtime.run({ prompt: "describe", content: [{ kind: "file", file, policy: "native" }] });
     expect(observed[0]?.content).toEqual([{ kind: "text", text: "describe" }, { kind: "file", file, policy: "native" }]);
+  });
+
+  test("content-only turns dispatch exactly the content admitted by Rust validation", async () => {
+    let observed: readonly ModelMessage[] = [];
+    const file = {
+      volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "project", class: "project" as const, owner: { kind: "project" as const, id: "project" } },
+      path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
+    };
+    const runtime = Harness.builder(contracts).model(testModel, {
+      async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    }).build();
+    await runtime.run({ prompt: "", content: [{ kind: "file", file, policy: "native" }] });
+    expect(observed[0]?.content).toEqual([{ kind: "file", file, policy: "native" }]);
+  });
+
+  test("direct input is snapshotted before validation and model dispatch", async () => {
+    let observed: readonly ModelMessage[] = [];
+    let contentReads = 0;
+    const file = {
+      volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "project", class: "project" as const, owner: { kind: "project" as const, id: "project" } },
+      path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
+    };
+    const validContent: readonly UserContentPart[] = [{ kind: "file", file, policy: "native" }];
+    const input = {
+      prompt: "",
+      get content(): readonly UserContentPart[] {
+        contentReads += 1;
+        return contentReads === 1 ? validContent : [{ kind: "text", text: "" }];
+      },
+    };
+    const runtime = Harness.builder(contracts).model(testModel, {
+      async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    }).build();
+    await runtime.run(input);
+    expect(contentReads).toBe(1);
+    expect(observed[0]?.content).toEqual(validContent);
   });
 
   test("model identity and options are pinned at binding, including scoped overrides", async () => {
