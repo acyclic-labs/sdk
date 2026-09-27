@@ -150,6 +150,138 @@ struct WasmTaskAdmissionInput {
     execution: Option<crate::runtime::ExecutionPlacement>,
 }
 
+/// Tsify declarations for the provider-neutral model values.  These wrappers
+/// deliberately mirror the serde model DTOs instead of maintaining a second
+/// TypeScript-owned wire union.
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelWire {
+    provider: String,
+    name: String,
+    revision: String,
+    #[tsify(type = "WasmModelJsonValue")]
+    options: serde_json::Value,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
+#[serde(rename_all = "snake_case")]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+enum WasmModelRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
+#[serde(rename_all = "snake_case")]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+enum WasmFileProjectionPolicy {
+    Reference,
+    BoundedFull,
+    Native,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+enum WasmModelContentPart {
+    Text {
+        text: String,
+    },
+    File {
+        #[tsify(type = "WasmFileRefWire")]
+        file: FileRef,
+        policy: WasmFileProjectionPolicy,
+    },
+    ToolCall {
+        #[serde(rename = "call_id", alias = "callId")]
+        call_id: String,
+        name: String,
+        #[tsify(type = "WasmModelJsonValue")]
+        arguments: serde_json::Value,
+    },
+    ToolResult {
+        #[serde(rename = "call_id", alias = "callId")]
+        call_id: String,
+        name: String,
+        #[tsify(type = "WasmModelJsonValue")]
+        value: serde_json::Value,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(untagged)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+enum WasmModelContent {
+    Text(String),
+    Part(WasmModelContentPart),
+    Parts(Vec<WasmModelContentPart>),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelMessageWire {
+    role: WasmModelRole,
+    content: WasmModelContent,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelToolDefinitionWire {
+    name: String,
+    revision: String,
+    description: String,
+    #[tsify(type = "WasmModelJsonSchema")]
+    input_schema: serde_json::Value,
+    #[tsify(type = "WasmModelJsonSchema")]
+    output_schema: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelRequestWire {
+    model: WasmModelWire,
+    messages: Vec<WasmModelMessageWire>,
+    tools: Vec<WasmModelToolDefinitionWire>,
+    max_output_tokens: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+enum WasmModelEvent {
+    Content { delta: String },
+    Reasoning { delta: String },
+    ToolCall {
+        #[serde(rename = "call_id", alias = "callId")]
+        call_id: String,
+        name: String,
+        #[tsify(type = "WasmModelJsonValue")]
+        arguments: serde_json::Value,
+    },
+    Completed {
+        #[tsify(type = "WasmModelJsonValue")]
+        metadata: serde_json::Value,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelAttemptWire {
+    #[tsify(type = "string")]
+    operation_id: OperationId,
+    step: u32,
+    #[tsify(type = "readonly number[]")]
+    request_digest: [u8; 32],
+    observed: Vec<WasmModelEvent>,
+}
+
 #[derive(Deserialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(deny_unknown_fields)]
@@ -446,6 +578,49 @@ export interface WasmTurnPreparation {
     readonly selection_is_new: boolean;
     readonly disposition: WasmTurnDisposition;
 }
+"#;
+
+// JSON aliases and validator limits are the only model declarations that are
+// not emitted directly by Tsify. The DTOs above own the generated Rust wire
+// types; these aliases describe the public camelCase input view.
+#[wasm_bindgen(typescript_custom_section)]
+const MODEL_TYPES: &'static str = r#"
+export type WasmModelJsonValue =
+    | null
+    | string
+    | number
+    | boolean
+    | bigint
+    | readonly WasmModelJsonValue[]
+    | Readonly<{ readonly [key: string]: WasmModelJsonValue }>;
+export type WasmModelJsonSchema =
+    | boolean
+    | Readonly<{ readonly [key: string]: WasmModelJsonValue }>;
+export interface WasmModelLimitsInput {
+    readonly file_bytes: number | bigint;
+    readonly path_bytes: number | bigint;
+    readonly attachments: number | bigint;
+    readonly render_bytes: number | bigint;
+    readonly model_steps: number | bigint;
+    readonly model_events_per_step: number | bigint;
+    readonly tool_calls_per_step: number | bigint;
+    readonly context_messages: number | bigint;
+}
+type WasmModelCamelContentPart<Part extends WasmModelContentPart> =
+    Part extends { readonly kind: "tool_call"; readonly call_id: string }
+        ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
+        : Part extends { readonly kind: "tool_result"; readonly call_id: string }
+            ? Omit<Part, "call_id" | "value"> & Readonly<{ callId: string; value: unknown }>
+            : Part;
+export type WasmModelContentPartInput = WasmModelCamelContentPart<WasmModelContentPart>;
+export type WasmModelContentInput = string | WasmModelContentPartInput | readonly WasmModelContentPartInput[];
+type WasmModelCamelEvent<Event extends WasmModelEvent> =
+    Event extends { readonly kind: "tool_call"; readonly call_id: string }
+        ? Omit<Event, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
+        : Event extends { readonly kind: "completed" }
+            ? Omit<Event, "metadata"> & Readonly<{ metadata: unknown }>
+        : Event;
+export type WasmModelEventInput = WasmModelCamelEvent<WasmModelEvent>;
 "#;
 
 /// Exact bytes captured by the owner-facing TypeScript adapter before Rust
@@ -2121,69 +2296,44 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
 }
 
 /// Validates provider-neutral model content under the exact native limits.
-#[wasm_bindgen(js_name = validateModelContent)]
-pub fn validate_model_content(content: JsValue, limits: JsValue) -> Result<(), JsValue> {
+#[wasm_bindgen(
+    js_name = validateModelContent,
+)]
+pub fn validate_model_content(
+    #[wasm_bindgen(unchecked_param_type = "WasmModelContentInput")] content: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<(), JsValue> {
     let content: ModelContent = from_js(content)?;
     let limits: Limits = from_js(limits)?;
     content.validate_limits(limits).map_err(js_error)
 }
 
 /// Validates one human-authored model input using the native content rules.
-#[wasm_bindgen(js_name = validateUserInput)]
-pub fn validate_user_input(content: JsValue) -> Result<(), JsValue> {
+#[wasm_bindgen(
+    js_name = validateUserInput,
+)]
+pub fn validate_user_input(
+    #[wasm_bindgen(unchecked_param_type = "WasmModelContentInput")] content: JsValue,
+) -> Result<(), JsValue> {
     let content: ModelContent = from_js(content)?;
     content.validate_user_input().map_err(js_error)
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Tsify)]
+#[serde(deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
 struct WasmModelEventAdmissionState {
-    #[serde(flatten)]
-    admission: ModelEventAdmissionState,
-    #[serde(default)]
+    #[tsify(type = "number")]
+    count: usize,
+    calls: Vec<String>,
+    completed: bool,
+    #[tsify(type = "number")]
     text_bytes: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum WasmModelEvent {
-    Content {
-        delta: String,
-    },
-    Reasoning {
-        delta: String,
-    },
-    ToolCall {
-        #[serde(rename = "callId")]
-        call_id: String,
-        name: String,
-        arguments: serde_json::Value,
-    },
-    Completed {
-        metadata: serde_json::Value,
-    },
-}
-
-impl From<ModelEvent> for WasmModelEvent {
-    fn from(event: ModelEvent) -> Self {
-        match event {
-            ModelEvent::Content { delta } => Self::Content { delta },
-            ModelEvent::Reasoning { delta } => Self::Reasoning { delta },
-            ModelEvent::ToolCall {
-                call_id,
-                name,
-                arguments,
-            } => Self::ToolCall {
-                call_id,
-                name,
-                arguments,
-            },
-            ModelEvent::Completed { metadata } => Self::Completed { metadata },
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct WasmModelEventAdmissionResult {
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+struct WasmModelEventAdmission {
     event: WasmModelEvent,
     state: WasmModelEventAdmissionState,
 }
@@ -2191,11 +2341,14 @@ struct WasmModelEventAdmissionResult {
 /// Admits one provider model event with the native stream rules and returns
 /// the detached state needed for the next event. Text accounting is cumulative
 /// across model steps while event and tool-call bounds reset at each step.
-#[wasm_bindgen(js_name = admitModelEvent)]
+#[wasm_bindgen(
+    js_name = admitModelEvent,
+    unchecked_return_type = "WasmModelEventAdmission",
+)]
 pub fn admit_model_event(
-    event: JsValue,
-    limits: JsValue,
-    state: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelEventInput")] event: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelEventAdmissionState | null")] state: JsValue,
 ) -> Result<JsValue, JsValue> {
     let event: ModelEvent = from_js(event)?;
     let limits: Limits = from_js(limits)?;
@@ -2211,8 +2364,13 @@ pub fn admit_model_event(
         ));
     }
     let prior_text_bytes = state.text_bytes;
+    let admission_state = ModelEventAdmissionState {
+        count: state.count,
+        calls: state.calls,
+        completed: state.completed,
+    };
     let mut admission =
-        ModelEventAdmission::from_state(state.admission, limits).map_err(js_error)?;
+        ModelEventAdmission::from_state(admission_state, limits).map_err(js_error)?;
     admission.observe(&event, limits).map_err(js_error)?;
     let text_bytes = match &event {
         ModelEvent::Content { delta } => prior_text_bytes
@@ -2226,11 +2384,20 @@ pub fn admit_model_event(
         return Err(JsValue::from_str("assistant output exceeds file limit"));
     }
     let state = WasmModelEventAdmissionState {
-        admission: admission.state(),
+        count: admission.state().count,
+        calls: admission.state().calls,
+        completed: admission.state().completed,
         text_bytes,
     };
-    let output = WasmModelEventAdmissionResult {
-        event: event.into(),
+    let output = WasmModelEventAdmission {
+        event: match event {
+            ModelEvent::Content { delta } => WasmModelEvent::Content { delta },
+            ModelEvent::Reasoning { delta } => WasmModelEvent::Reasoning { delta },
+            ModelEvent::ToolCall { call_id, name, arguments } => {
+                WasmModelEvent::ToolCall { call_id, name, arguments }
+            }
+            ModelEvent::Completed { metadata } => WasmModelEvent::Completed { metadata },
+        },
         state,
     };
     let js = to_js(&output)?;
@@ -2238,7 +2405,7 @@ pub fn admit_model_event(
     set_js_field(
         &js_state,
         "count",
-        &exact_js_number(output.state.admission.count as u64)?,
+        &exact_js_number(output.state.count as u64)?,
     )?;
     set_js_field(
         &js_state,

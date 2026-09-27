@@ -3,7 +3,8 @@ import initWasm, * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   InitInput, WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
-  WasmTaskIdentityInput, WasmTurnPreparation,
+  WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
+  WasmModelEvent, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelEventInput, WasmModelRole,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationPage, FileDescriptor, FileRef, Limits, MessageKind, ProviderRef, ReferencedAttachments, TaskOutcomeRecord, VolumeClass, VolumeRef,
@@ -55,36 +56,29 @@ export interface NativeLimitsWire {
 }
 
 /** Rust-owned per-step model event admission state with cumulative text bytes. */
-export interface ModelEventAdmissionState {
-  readonly count: number;
-  readonly calls: readonly string[];
-  readonly completed: boolean;
-  readonly text_bytes: number;
-}
+export type ModelEventAdmissionState = Readonly<Omit<WasmModelEventAdmissionState, "calls"> & Readonly<{
+  calls: readonly string[];
+}>>;
 
 /** Detached model event paired with its Rust admission state. */
-export interface ModelEventAdmission {
-  readonly event: ModelEvent;
-  readonly state: ModelEventAdmissionState;
-}
+export type ModelEventAdmission = Omit<WasmModelEventAdmission, "event" | "state"> & Readonly<{
+  event: ModelEvent;
+  state: ModelEventAdmissionState;
+}>;
 
 /** Serde shape returned by the canonical Rust context projector. */
 export type NativeFileRef = Omit<FileRef, "descriptor"> & Readonly<{
   descriptor: Omit<FileDescriptor, "byte_length"> & Readonly<{ byte_length: number | bigint }>;
 }>;
-export type NativeModelContentPart =
-  | Readonly<{ kind: "text"; text: string }>
-  | Readonly<{ kind: "file"; file: NativeFileRef; policy: "reference" | "bounded_full" | "native" }>
-  | Readonly<{ kind: "tool_call"; call_id: string; name: string; arguments: unknown }>
-  | Readonly<{ kind: "tool_result"; call_id: string; name: string; value: unknown }>;
-export type NativeModelContent = string | NativeModelContentPart | readonly NativeModelContentPart[];
+export type NativeModelContentPart = WasmModelContentPart;
+export type NativeModelContent = WasmModelContent;
 export interface NativeSelectedModelContext {
   readonly selection: Readonly<{
     readonly conversation_revision: bigint;
     readonly message_ids: readonly ConversationMessageId[];
   }>;
   readonly messages: readonly Readonly<{
-    role: "system" | "user" | "assistant" | "tool";
+    role: WasmModelRole;
     content: NativeModelContent;
   }>[];
 }
@@ -265,7 +259,15 @@ export class NativeContracts {
     // Model arguments and completion metadata are provider JSON and may carry
     // full-width integers. Preserve those BigInts while normalizing the
     // bounded admission counters below to the public Number state shape.
-    const admitted = normalizeNativeValue(this.native.admitModelEvent(event, limits, state ?? null), true, true) as ModelEventAdmission;
+    const admitted = normalizeNativeValue(
+      this.native.admitModelEvent(
+        wasmModelEventInput(event),
+        limits,
+        state === undefined ? null : { ...state, calls: [...state.calls] },
+      ),
+      true,
+      true,
+    ) as WasmModelEventAdmission;
     const admittedState = normalizeNativeValue(admitted.state, true) as ModelEventAdmissionState;
     if (admitted.event === null || typeof admitted.event !== "object"
       || !Number.isSafeInteger(admittedState.count) || admittedState.count < 0
@@ -273,7 +275,10 @@ export class NativeContracts {
       || !Array.isArray(admittedState.calls) || typeof admittedState.completed !== "boolean") {
       throw new TypeError("native model event admission returned an invalid state");
     }
-    return freezeNative({ ...admitted, state: { ...admittedState, calls: [...admittedState.calls] } });
+    return freezeNative({
+      event: publicModelEvent(admitted.event),
+      state: { ...admittedState, calls: [...admittedState.calls] },
+    });
   }
 
   /** Runs the bounded canonical Rust projection over owner-captured bytes. */
@@ -501,6 +506,29 @@ function nativeToolDefinition(
     inputSchema: definition.inputSchema,
     outputSchema: definition.outputSchema,
   };
+}
+
+/** Map only the Rust serde spelling that is intentionally hidden by the public facade. */
+function publicModelEvent(event: WasmModelEvent): ModelEvent {
+  if (event.kind === "tool_call") {
+    const { call_id: callId, ...rest } = event;
+    return { ...rest, callId } as ModelEvent;
+  }
+  return event as ModelEvent;
+}
+
+/** Keep the public camelCase event boundary explicit when entering generated WASM. */
+function wasmModelEventInput(event: ModelEvent): WasmModelEventInput {
+  switch (event.kind) {
+    case "tool_call":
+      return { ...event, callId: event.callId };
+    case "completed":
+      return event;
+    case "content":
+      return event;
+    case "reasoning":
+      return event;
+  }
 }
 
 /** Rust owns typed integer projection; JS only unwraps bytes and maps. */

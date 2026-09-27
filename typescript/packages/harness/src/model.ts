@@ -2,19 +2,48 @@ import type { TaskContext, ToolContext } from "./runtime.js";
 import type { Attachment, FileRef } from "./conversation.js";
 import type { SelectedModelContext } from "./projection.js";
 import type { MachineIdentityWire } from "./native-contracts.js";
+import type {
+  WasmModelContentPart,
+  WasmModelEvent,
+  WasmModelJsonSchema,
+  WasmModelJsonValue,
+  WasmModelRequestWire,
+  WasmModelToolDefinitionWire,
+  WasmModelWire,
+  WasmModelAttemptWire,
+  WasmModelRole,
+  WasmToolJsonSchema,
+  WasmToolJsonValue,
+} from "../generated/wasm/acyclic_harness_wasm.js";
 import { isValidComponentLabel } from "./component-label-contract.js";
 
-export interface Model<Options = unknown> { readonly provider: string; readonly name: string; readonly revision: string; readonly options: Options }
-export type ModelContentPart =
-  | Readonly<{ kind: "text"; text: string }>
-  | Readonly<{ kind: "file"; file: FileRef; policy: "reference" | "bounded_full" | "native" }>
-  | Readonly<{ kind: "tool_call"; callId: string; name: string; arguments: unknown }>
-  | Readonly<{ kind: "tool_result"; callId: string; name: string; value: unknown }>;
+/** Public model options retain the Rust model's JSON boundary while allowing provider-specific typing. */
+export type Model<Options = unknown> = Readonly<Omit<WasmModelWire, "options"> & { options: Options }>;
+export type ModelRole = WasmModelRole;
+
+type PublicModelContentPart<Part extends WasmModelContentPart, Arguments, Result> =
+  Part extends Readonly<{ kind: "tool_call" }>
+    ? Readonly<Omit<Part, "call_id" | "arguments"> & { callId: string; arguments: Arguments }>
+    : Part extends Readonly<{ kind: "tool_result" }>
+      ? Readonly<Omit<Part, "call_id" | "value"> & { callId: string; value: Result }>
+      : Part extends Readonly<{ kind: "file" }>
+        ? Readonly<Omit<Part, "file"> & { file: FileRef }>
+        : Readonly<Part>;
+
+/** CamelCase facade derived from the Rust serde content union. */
+export type ModelContentPart<Arguments = unknown, Result = unknown> =
+  PublicModelContentPart<WasmModelContentPart, Arguments, Result>;
 export type UserContentPart = Extract<ModelContentPart, { kind: "text" | "file" }>;
-export type ModelContent = string | ModelContentPart | readonly ModelContentPart[];
-export interface ModelMessage<Content = ModelContent, Role extends string = "system" | "user" | "assistant" | "tool"> { readonly role: Role; readonly content: Content }
-export type ToolJsonValue = null | string | number | boolean | readonly ToolJsonValue[] | Readonly<{ [key: string]: ToolJsonValue }>;
-export type ToolJsonSchema = boolean | Readonly<{ [key: string]: ToolJsonValue }>;
+export type ModelContent<Arguments = unknown, Result = unknown> =
+  string | ModelContentPart<Arguments, Result> | readonly ModelContentPart<Arguments, Result>[];
+export interface ModelMessage<Content = ModelContent, Role extends string = ModelRole> {
+  readonly role: Role;
+  readonly content: Content;
+}
+export type ToolJsonValue = WasmToolJsonValue;
+export type ToolJsonSchema = WasmToolJsonSchema;
+export type ModelJsonValue = WasmModelJsonValue;
+export type ModelJsonSchema = WasmModelJsonSchema;
 export interface ToolDefinition<Input = unknown, Output = unknown, InputSchema extends ToolJsonSchema = ToolJsonSchema, OutputSchema extends ToolJsonSchema = ToolJsonSchema> {
   readonly name: string;
   readonly revision: string;
@@ -28,14 +57,33 @@ export interface ToolDefinition<Input = unknown, Output = unknown, InputSchema e
   readonly handler?: LiveTool<Input, Output>;
 }
 /** Only the declarative schema crosses the model boundary; executors stay private. */
-export type ModelToolDefinition<InputSchema extends ToolJsonSchema = ToolJsonSchema, OutputSchema extends ToolJsonSchema = ToolJsonSchema> = Pick<ToolDefinition<unknown, unknown, InputSchema, OutputSchema>, "name" | "revision" | "description" | "inputSchema" | "outputSchema">;
-export interface ModelRequest<ModelOptions = unknown, Content = ModelContent> { readonly model: Model<ModelOptions>; readonly messages: readonly ModelMessage<Content>[]; readonly tools: readonly ModelToolDefinition[]; readonly maxOutputTokens?: number; readonly signal?: AbortSignal }
+export type ModelToolDefinition<InputSchema extends ToolJsonSchema = ToolJsonSchema, OutputSchema extends ToolJsonSchema = ToolJsonSchema> =
+  Readonly<Omit<WasmModelToolDefinitionWire, "input_schema" | "output_schema"> & {
+    inputSchema: InputSchema;
+    outputSchema: OutputSchema;
+  }>;
+export type ModelRequest<ModelOptions = unknown, Content = ModelContent> =
+  Readonly<Omit<WasmModelRequestWire, "model" | "messages" | "tools" | "max_output_tokens"> & {
+    model: Model<ModelOptions>;
+    messages: readonly ModelMessage<Content>[];
+    tools: readonly ModelToolDefinition[];
+    maxOutputTokens?: number;
+    signal?: AbortSignal;
+  }>;
+type PublicModelEvent<Event extends WasmModelEvent, Arguments, Metadata> =
+  Event extends Readonly<{ kind: "tool_call" }>
+    ? Readonly<Omit<Event, "call_id" | "arguments"> & { callId: string; arguments: Arguments }>
+    : Event extends Readonly<{ kind: "completed" }>
+      ? Readonly<Omit<Event, "metadata"> & { metadata: Metadata }>
+      : Readonly<Event>;
 export type ModelEvent<Arguments = unknown, Metadata = unknown> =
-  | { readonly kind: "content"; readonly delta: string }
-  | { readonly kind: "reasoning"; readonly delta: string }
-  | { readonly kind: "tool_call"; readonly callId: string; readonly name: string; readonly arguments: Arguments }
-  | { readonly kind: "completed"; readonly metadata: Metadata };
-export interface ModelAttempt<Event extends ModelEvent = ModelEvent> { readonly operationId: string; readonly step: number; readonly requestDigest: Uint8Array; readonly observed: readonly Event[] }
+  PublicModelEvent<WasmModelEvent, Arguments, Metadata>;
+export type ModelAttempt<Event extends ModelEvent = ModelEvent> =
+  Readonly<Omit<WasmModelAttemptWire, "operation_id" | "request_digest" | "observed"> & {
+    operationId: string;
+    requestDigest: Uint8Array;
+    observed: readonly Event[];
+  }>;
 export interface ModelProvider<Request extends ModelRequest = ModelRequest, Event extends ModelEvent = ModelEvent> { generate(request: Request): AsyncIterable<Event>; reconcile(attempt: ModelAttempt<Event>): Promise<readonly Event[] | undefined> }
 
 export interface ToolInvocation<Input = unknown> {

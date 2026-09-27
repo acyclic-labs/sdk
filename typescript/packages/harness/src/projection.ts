@@ -247,9 +247,10 @@ function projectNativeContext(value: NativeSelectedModelContext): SelectedModelC
       return { kind: part.kind, callId: part.call_id, name: part.name, value: normalizeModelJson(part.value) };
     }
     if (part.kind === "file") {
-      return { ...part, file: { ...part.file,
+      const file = { ...part.file,
         descriptor: { ...part.file.descriptor, byte_length: normalizeModelInteger(part.file.descriptor.byte_length) },
-      } };
+      } as FileRef;
+      return { ...part, file };
     }
     return part;
   };

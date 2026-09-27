@@ -46,7 +46,7 @@ test("WASM model validators preserve Rust limits and tool-name checks", async ()
   expect(() => validateModelContent({ kind: "tool_call", callId: "call", name: "lookup", arguments: { value: 1 } }, DEFAULT_LIMITS)).not.toThrow();
   expect(() => validateModelContent({ kind: "tool_call", callId: "call", name: "bad name", arguments: {} }, DEFAULT_LIMITS)).toThrow();
   expect(() => validateModelContent({ kind: "text", text: "x".repeat(DEFAULT_LIMITS.render_bytes + 1) }, DEFAULT_LIMITS)).toThrow();
-  expect(() => validateModelContent({ kind: "unknown", value: true }, DEFAULT_LIMITS)).toThrow();
+  expect(() => validateModelContent({ kind: "unknown", value: true } as never, DEFAULT_LIMITS)).toThrow();
 });
 
 test("WASM user-input validator rejects empty, tool, and malformed content", async () => {

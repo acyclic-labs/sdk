@@ -165,6 +165,45 @@ export interface WasmTaskChildrenPageInput {
 
 
 
+export type WasmModelJsonValue =
+| null
+| string
+| number
+| boolean
+| bigint
+| readonly WasmModelJsonValue[]
+| Readonly<{ readonly [key: string]: WasmModelJsonValue }>;
+export type WasmModelJsonSchema =
+| boolean
+| Readonly<{ readonly [key: string]: WasmModelJsonValue }>;
+export interface WasmModelLimitsInput {
+    readonly file_bytes: number | bigint;
+    readonly path_bytes: number | bigint;
+    readonly attachments: number | bigint;
+    readonly render_bytes: number | bigint;
+    readonly model_steps: number | bigint;
+    readonly model_events_per_step: number | bigint;
+    readonly tool_calls_per_step: number | bigint;
+    readonly context_messages: number | bigint;
+}
+type WasmModelCamelContentPart<Part extends WasmModelContentPart> =
+Part extends { readonly kind: "tool_call"; readonly call_id: string }
+    ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
+    : Part extends { readonly kind: "tool_result"; readonly call_id: string }
+    ? Omit<Part, "call_id" | "value"> & Readonly<{ callId: string; value: unknown }>
+    : Part;
+export type WasmModelContentPartInput = WasmModelCamelContentPart<WasmModelContentPart>;
+export type WasmModelContentInput = string | WasmModelContentPartInput | readonly WasmModelContentPartInput[];
+type WasmModelCamelEvent<Event extends WasmModelEvent> =
+Event extends { readonly kind: "tool_call"; readonly call_id: string }
+    ? Omit<Event, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
+    : Event extends { readonly kind: "completed" }
+    ? Omit<Event, "metadata"> & Readonly<{ metadata: unknown }>
+    : Event;
+export type WasmModelEventInput = WasmModelCamelEvent<WasmModelEvent>;
+
+
+
 export type WasmTurnDisposition = "dispatch" | "reconcile" | "indeterminate" | "completed";
 export interface WasmTurnPreparation {
     readonly user_id: string;
@@ -197,6 +236,18 @@ export interface ProtocolIdentity {
     descriptor_digest: string;
 }
 
+/**
+ * Tsify declarations for the provider-neutral model values.  These wrappers
+ * deliberately mirror the serde model DTOs instead of maintaining a second
+ * TypeScript-owned wire union.
+ */
+export interface WasmModelWire {
+    provider: string;
+    name: string;
+    revision: string;
+    options: WasmModelJsonValue;
+}
+
 export interface WasmBatchAdmissionInput {
     group_id: string;
     batch_id: string;
@@ -226,6 +277,45 @@ export interface WasmLimitsInput {
     model_events_per_step: bigint;
     tool_calls_per_step: bigint;
     context_messages: bigint;
+}
+
+export interface WasmModelAttemptWire {
+    operation_id: string;
+    step: number;
+    request_digest: readonly number[];
+    observed: WasmModelEvent[];
+}
+
+export interface WasmModelEventAdmission {
+    event: WasmModelEvent;
+    state: WasmModelEventAdmissionState;
+}
+
+export interface WasmModelEventAdmissionState {
+    count: number;
+    calls: string[];
+    completed: boolean;
+    text_bytes: number;
+}
+
+export interface WasmModelMessageWire {
+    role: WasmModelRole;
+    content: WasmModelContent;
+}
+
+export interface WasmModelRequestWire {
+    model: WasmModelWire;
+    messages: WasmModelMessageWire[];
+    tools: WasmModelToolDefinitionWire[];
+    max_output_tokens: number | undefined;
+}
+
+export interface WasmModelToolDefinitionWire {
+    name: string;
+    revision: string;
+    description: string;
+    input_schema: WasmModelJsonSchema;
+    output_schema: WasmModelJsonSchema;
 }
 
 export interface WasmTaskAdmissionInput {
@@ -260,6 +350,16 @@ export interface WasmTaskRunLimitsInput {
     max_steps: bigint | null;
     deadline_epoch_ms: bigint | null;
 }
+
+export type WasmFileProjectionPolicy = "reference" | "bounded_full" | "native";
+
+export type WasmModelContent = string | WasmModelContentPart | WasmModelContentPart[];
+
+export type WasmModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; value: WasmModelJsonValue };
+
+export type WasmModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
+
+export type WasmModelRole = "system" | "user" | "assistant" | "tool";
 
 
 /**
@@ -456,7 +556,7 @@ export function admitBatchRequest(value: WasmBatchAdmissionInput): WasmBatchAdmi
  * the detached state needed for the next event. Text accounting is cumulative
  * across model steps while event and tool-call bounds reset at each step.
  */
-export function admitModelEvent(event: any, limits: any, state: any): any;
+export function admitModelEvent(event: WasmModelEventInput, limits: WasmModelLimitsInput, state: WasmModelEventAdmissionState | null): WasmModelEventAdmission;
 
 /**
  * Builds and validates the complete owner-retained task admission envelope.
@@ -593,7 +693,7 @@ export function validateIdentity(kind: string, value: string): string;
 /**
  * Validates provider-neutral model content under the exact native limits.
  */
-export function validateModelContent(content: any, limits: any): void;
+export function validateModelContent(content: WasmModelContentInput, limits: WasmModelLimitsInput): void;
 
 /**
  * Validates selection order and tool linkage before the host resolves any
@@ -631,7 +731,7 @@ export function validateToolValue(schema: any, value: any): any;
 /**
  * Validates one human-authored model input using the native content rules.
  */
-export function validateUserInput(content: any): void;
+export function validateUserInput(content: WasmModelContentInput): void;
 
 /**
  * Validates a protobuf admission identity; returns encoded `Error` bytes, or empty on success.
