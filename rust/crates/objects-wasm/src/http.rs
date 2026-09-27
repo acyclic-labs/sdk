@@ -17,6 +17,35 @@ mod response_contract;
 
 pub use response_contract::HTTP_RESPONSE_CONTRACT;
 
+fn nullish_field<'a>(
+    outer: &'a serde_json::Map<String, Value>,
+    nested: Option<&'a serde_json::Map<String, Value>>,
+    name: &str,
+) -> Option<&'a Value> {
+    outer
+        .get(name)
+        .filter(|value| !value.is_null())
+        .or_else(|| nested.and_then(|value| value.get(name)))
+}
+
+fn error_fields(value: Value) -> Option<(String, Option<String>)> {
+    match value {
+        Value::String(code) => Some((code, None)),
+        Value::Object(object) => {
+            let nested = object.get("error").and_then(Value::as_object);
+            let code = nullish_field(&object, nested, "code")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())?;
+            let message = nullish_field(&object, nested, "message")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            Some((code.to_owned(), message))
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => None,
+    }
+}
+
 /// Decode the small hosted error envelope and project its code through the
 /// Rust-owned public Objects error contract.  Invalid JSON, unknown codes, and
 /// non-object envelopes deliberately return `undefined` at the JS boundary so
@@ -25,28 +54,8 @@ pub fn decode_http_error(route: &str, response_json: &str) -> JsValue {
     let Ok(value) = serde_json::from_str::<Value>(response_json) else {
         return JsValue::UNDEFINED;
     };
-    let (raw_code, raw_message) = match value {
-        Value::String(code) => (code, None),
-        Value::Object(object) => {
-            let nested = object.get("error").and_then(Value::as_object);
-            let code = object
-                .get("code")
-                .or_else(|| nested.and_then(|value| value.get("code")))
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty());
-            let message = object
-                .get("message")
-                .or_else(|| nested.and_then(|value| value.get("message")))
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty());
-            let Some(code) = code else {
-                return JsValue::UNDEFINED;
-            };
-            (code.to_owned(), message.map(str::to_owned))
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => {
-            return JsValue::UNDEFINED;
-        }
+    let Some((raw_code, raw_message)) = error_fields(value) else {
+        return JsValue::UNDEFINED;
     };
     let Some(code) = public_http_error_code(&raw_code, route) else {
         return JsValue::UNDEFINED;
@@ -629,7 +638,23 @@ fn timestamp_js(value: &Value) -> Result<(JsValue, JsValue)> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate;
+    use super::{error_fields, validate};
+
+    #[test]
+    fn null_outer_error_fields_fall_back_to_nested_fields() {
+        let fields = error_fields(serde_json::json!({
+            "code": null,
+            "message": null,
+            "error": {
+                "code": "bucket_exists",
+                "message": "name taken"
+            }
+        }));
+        assert_eq!(
+            fields,
+            Some(("bucket_exists".to_owned(), Some("name taken".to_owned())))
+        );
+    }
 
     #[test]
     fn validates_all_response_families() {
