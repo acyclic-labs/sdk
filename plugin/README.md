@@ -94,7 +94,7 @@ The plugin keeps its durable state in the per-user `state-v5` namespace.
 
 ## Platform notes
 
-On Windows, a subagent's workspace is projected with ProjFS, which cannot
+On Windows, a subagent's workspace is projected with `ProjFS`, which cannot
 rename a directory that came from the parent's checkout: such a rename fails
 with "The request is not supported". Directories the subagent created rename
 normally, and copying a directory then deleting the original works everywhere.
