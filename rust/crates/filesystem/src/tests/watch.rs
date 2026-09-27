@@ -153,8 +153,9 @@ fn paired_rename_is_exact_and_an_unpaired_half_is_platform_defined()
             VolumeLimits::default(),
         );
         // inotify pairs halves by cookie before `map_event`, so a lone half
-        // there is a lost half; FSEvents and `ReadDirectoryChangesW` never
-        // pair, so a lone half is an ordinary "this path changed" hint.
+        // there is a lost half. `ReadDirectoryChangesW` never pairs but says
+        // which end each half is: a name arrived or went away. FSEvents says
+        // neither, so a lone half is an ordinary "this path changed" hint.
         if cfg!(target_os = "linux") {
             assert_eq!(unpaired, Err(WatchInvalidationReason::AmbiguousRename));
         } else {
@@ -164,7 +165,12 @@ fn paired_rename_is_exact_and_an_unpaired_half_is_platform_defined()
                 FilesystemProfile::Portable,
                 VolumeLimits::default(),
             )?;
-            assert_eq!(unpaired, Ok(vec![WatchChange::Modified(one_sided)]));
+            let expected = match mode {
+                _ if !cfg!(windows) => WatchChange::Modified(one_sided),
+                RenameMode::To => WatchChange::Arrived(one_sided),
+                _ => WatchChange::Removed(one_sided),
+            };
+            assert_eq!(unpaired, Ok(vec![expected]));
         }
     }
     Ok(())
@@ -621,6 +627,7 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
     assert!(observed.iter().any(|change| match change {
         WatchChange::Created(path)
         | WatchChange::Modified(path)
+        | WatchChange::Arrived(path)
         | WatchChange::MetadataChanged(path)
         | WatchChange::Removed(path) => path.depth() <= 1,
         WatchChange::Renamed { from, to } => from.depth() <= 1 && to.depth() <= 1,
@@ -666,6 +673,7 @@ fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directorie
                 if changes.iter().any(|change| match change {
                     WatchChange::Created(path)
                     | WatchChange::Modified(path)
+                    | WatchChange::Arrived(path)
                     | WatchChange::MetadataChanged(path)
                     | WatchChange::Removed(path) => path.depth() == 2,
                     WatchChange::Renamed { from, to } => from.depth() == 2 || to.depth() == 2,
@@ -712,6 +720,7 @@ fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory(
                 if changes.iter().any(|change| match change {
                     WatchChange::Created(path)
                     | WatchChange::Modified(path)
+                    | WatchChange::Arrived(path)
                     | WatchChange::MetadataChanged(path)
                     | WatchChange::Removed(path) => path.depth() == 1,
                     WatchChange::Renamed { from, to } => from.depth() == 1 || to.depth() == 1,
@@ -869,6 +878,7 @@ fn fence_queues_every_completed_write_and_hides_its_cookie()
     assert!(observed.iter().all(|change| match change {
         WatchChange::Created(path)
         | WatchChange::Modified(path)
+        | WatchChange::Arrived(path)
         | WatchChange::MetadataChanged(path)
         | WatchChange::Removed(path) => !excluded.iter().any(|excluded| path.is_within(excluded)),
         WatchChange::Renamed { .. } => false,
@@ -909,5 +919,26 @@ fn an_unplaceable_fence_demands_a_rescan_instead_of_failing()
             ..
         }
     ));
+    Ok(())
+}
+
+/// A fork can create a directory that the physical source never had; the lazy
+/// source then observes it as a parent. That must mean "absent", not an I/O
+/// failure (it surfaced as EIO creating `handlers/refunds.rs` in a fork).
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_demand_watch_accepts_directories_absent_from_the_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("present"))?;
+    let mut options = NativeWatchOptions::new(VolumeLimits::default());
+    options.recursive = false;
+    let mut watch = NativeWatch::open(root.path(), options)?;
+    watch.accept_lazy_baseline()?;
+    for absent in ["/handlers", "/present/handlers", "/present/handlers/deeper"] {
+        let portable = crate::path::PortablePath::parse(absent, VolumeLimits::default())?;
+        let path = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
+        watch.watch_directory(&path)?;
+    }
     Ok(())
 }

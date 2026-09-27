@@ -35,7 +35,7 @@ async-trait = "0.1.89"
 axum = { version = "0.8.9", features = ["ws"] }
 blake3 = "1.8.2"
 clap = { version = "4", features = ["derive", "env"] }
-diffy = "0.4.2"
+diffy = "0.5.2"
 bytes = "1.10.1"
 fs2 = "0.4.3"
 futures = "0.3.31"
@@ -43,7 +43,7 @@ hex = "0.4.3"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 indexed_db_futures = { version = "0.6.4", features = ["tx-done", "typed-arrays"] }
-jsonschema = { version = "0.55.0", default-features = false }
+jsonschema = { version = "0.57.0", default-features = false }
 js-sys = "0.3.94"
 napi = { version = "3.6.1", features = ["async", "napi8", "serde-json"] }
 napi-derive = "3.3.3"
@@ -140,6 +140,14 @@ dbg_macro = "warn"
 missing_panics_doc = "warn"
 semicolon_if_nothing_returned = "warn"
 uninlined_format_args = "warn"
+
+# The CLI hashes its own executable to name its service. Unoptimized, that
+# takes ~20 s for a Linux debug binary and outlasts the client's readiness wait.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.blake3]
+opt-level = 3
 
 [profile.release]
 incremental = true

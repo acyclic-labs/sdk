@@ -1,5 +1,26 @@
 # @acyclic-labs/plugin changelog
 
+## Unreleased
+
+- Merging a subagent carries everything it did to its parent: edits,
+  creations, deletions and renames of files it only read from the shared
+  checkout, and extended attributes on Linux. A deletion survives
+  `acyclic git merge --continue` and crash recovery, and a parent's newer edit
+  of the same file is kept.
+- Sibling subagents no longer conflict on files they never touched. Files and
+  directories created independently under one name merge by path; only
+  differing contents conflict.
+- Forks keep working after the parent's checkout changes underneath them
+  (no more stale-handle errors creating files), and reading a file through a
+  fork no longer rewrites anything in the parent.
+- Aborting a conflict that changed nothing in the parent succeeds.
+- Windows runs the same fork/join conformance suite as Linux and macOS.
+- A crashed installer's lock is reclaimed at once even when the OS has given
+  its process ID to another process.
+- The Codex hook server keeps answering after a request too large to isolate
+  or a failing hook call, which it answers as a denial for isolated tools
+  instead of exiting.
+
 ## 0.1.5 - 2026-09-25
 
 - Preserves executable permissions while testing a read-only installation,

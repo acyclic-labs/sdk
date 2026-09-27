@@ -541,6 +541,71 @@ mod capture_policy_tests {
         Ok(())
     }
 
+    /// A directory modified in place is covered by its entries' own events:
+    /// its unnamed entries (unobserved in a lazy checkout) stay out, while a
+    /// directory that arrived by rename brings its whole subtree.
+    #[cfg(not(target_os = "macos"))]
+    #[tokio::test]
+    async fn watch_expands_only_directories_that_appeared() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temporary = tempfile::tempdir()?;
+        for directory in ["modified", "arrived"] {
+            std::fs::create_dir(temporary.path().join(directory))?;
+            std::fs::write(temporary.path().join(directory).join("inner.txt"), b"x")?;
+        }
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-expansion")
+            .await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        capture_watch_batch_with_policy(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(3),
+                changes: vec![
+                    WatchChange::Modified(path("/modified")?),
+                    WatchChange::Arrived(path("/arrived")?),
+                ],
+            },
+            &CaptureOptions {
+                source_root: temporary.path().to_path_buf(),
+                expected_root_identity: capture_root_identity(temporary.path())?,
+                maximum_paths: 8,
+                maximum_extent_spans: 8,
+            },
+            &CapturePolicy::allow_all(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let token = CancellationToken::new();
+        let mut captured = Vec::new();
+        for candidate in [
+            "/modified",
+            "/modified/inner.txt",
+            "/arrived",
+            "/arrived/inner.txt",
+        ] {
+            if checkout
+                .lookup_no_follow(&path(candidate)?, WorkBudget::UNBOUNDED, &token)
+                .await?
+                .value
+                .record
+                .is_some()
+            {
+                captured.push(candidate);
+            }
+        }
+        assert_eq!(captured, ["/modified", "/arrived", "/arrived/inner.txt"]);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn watch_nested_file_replaces_a_stale_non_directory_ancestor()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2096,6 +2161,7 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
         for change in changes.into_iter().filter_map(|change| match &change {
             WatchChange::Created(path)
             | WatchChange::Modified(path)
+            | WatchChange::Arrived(path)
             | WatchChange::Removed(path)
             | WatchChange::MetadataChanged(path) => (!policy.excludes(path)).then_some(change),
             WatchChange::Renamed { from, to } => match (policy.excludes(from), policy.excludes(to))
@@ -2116,6 +2182,15 @@ pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObj
                     ordinary
                         .entry(path)
                         .or_insert((current, CaptureIntent::Complete));
+                }
+                WatchChange::Arrived(path) => {
+                    let current = current_record(&rename_records, &moved_away, &path);
+                    let entry = ordinary
+                        .entry(path)
+                        .or_insert((current, CaptureIntent::Arrived));
+                    if entry.1 != CaptureIntent::Replace {
+                        entry.1 = CaptureIntent::Arrived;
+                    }
                 }
                 WatchChange::MetadataChanged(path) => {
                     let current = current_record(&rename_records, &moved_away, &path);
@@ -2590,6 +2665,8 @@ fn remap_renamed_directory_path(
 enum CaptureIntent {
     MetadataOnly,
     Complete,
+    /// As `Complete`, for a name a rename bound: a directory's subtree is new.
+    Arrived,
     Replace,
 }
 
@@ -2639,7 +2716,19 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let limits = checkout.volume_config().limits;
         let profile = checkout.volume_config().profile;
         let mut roots = Vec::new();
-        for path in ordinary.keys() {
+        for (path, (_, intent)) in ordinary.iter() {
+            // Only a directory that appeared at its path (created, or renamed
+            // in) holds entries no event names. A directory modified in place
+            // is covered by its entries' own reports, and expanding it would
+            // capture every entry beneath it, most of them unchanged and
+            // unobserved: a lazy checkout would take each as new. FSEvents
+            // reports appearance only as modification, so there every hint
+            // expands.
+            if !cfg!(target_os = "macos")
+                && !matches!(intent, CaptureIntent::Replace | CaptureIntent::Arrived)
+            {
+                continue;
+            }
             let host_path = namespace_to_host_path(path)
                 .map_err(|error| OperationFailure::new(error, receipt.work))?;
             let observation = observe_host_path(source_root, &host_path)

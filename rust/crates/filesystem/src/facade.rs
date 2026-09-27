@@ -5921,6 +5921,73 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         })
     }
 
+    /// Reads every named attribute under one metadata attribute root, in
+    /// order, with its complete value. The total value bytes are bounded by
+    /// the volume's maximum read size.
+    ///
+    /// # Errors
+    ///
+    /// Returns measured attribute-tree, blob, cancellation, storage,
+    /// allocation, or bounded-work failures, and an invalid range when the
+    /// values together exceed the read bound.
+    pub async fn read_named_attributes(
+        &self,
+        root: ObjectId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> FsResult<Vec<(AttributeName, Bytes)>> {
+        let mut work = WorkCounters::default();
+        let mut attributes = Vec::new();
+        let mut total = 0_u64;
+        let mut after: Option<AttributeName> = None;
+        loop {
+            let listing = list_attributes_async(
+                &self.volume.fs.inner.objects,
+                root,
+                after.as_ref(),
+                256,
+                decode_limits(self.volume.config),
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, FsError::AttributeList))?;
+            work = add(work, listing.work)?;
+            for entry in listing.entries {
+                total = total.saturating_add(entry.value_bytes);
+                if total > self.volume.config.limits.maximum_read_bytes {
+                    return Err(OperationFailure::new(
+                        FsError::FileRead(FileRangeReadError::InvalidRange),
+                        work,
+                    ));
+                }
+                let read = read_blob_range_async(
+                    &self.volume.fs.inner.objects,
+                    entry.value,
+                    ByteRange {
+                        offset: 0,
+                        length: entry.value_bytes,
+                    },
+                    decode_limits(self.volume.config),
+                    remaining(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, FsError::BlobRead))?;
+                work = add(work, read.work)?;
+                after = Some(entry.name.clone());
+                attributes.push((entry.name, read.bytes));
+            }
+            if !listing.has_more {
+                break;
+            }
+        }
+        Ok(FsReceipt {
+            value: attributes,
+            work,
+        })
+    }
+
     /// Describes an ordered path batch while sharing namespace and object traversal.
     pub async fn describe_files(
         &self,

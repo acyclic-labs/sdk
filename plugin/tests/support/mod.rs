@@ -860,7 +860,9 @@ pub fn make_writable(root: &Path) {
             use std::os::unix::fs::PermissionsExt as _;
             permissions.set_mode(if metadata.is_dir() { 0o755 } else { 0o644 });
         }
+        // Windows has only the read-only attribute; clearing it is exact.
         #[cfg(windows)]
+        #[allow(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
         fs::set_permissions(path, permissions).expect("restore package permissions");
         if metadata.is_dir() {

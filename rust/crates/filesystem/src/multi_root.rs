@@ -925,6 +925,11 @@ where
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        if paths.is_empty() {
+            // The conflicted projection changed no path in the target (every
+            // conflicting record was held back), so there is nothing to undo.
+            return Ok(current.id());
+        }
         let reservation = self
             .reserve_operation(
                 &target,
@@ -1437,14 +1442,13 @@ fn conflict_abort_materialization_operation_id(
     OperationId::from_bytes(bytes)
 }
 
+/// The portable text of a path in any encoding the volume stores (UTF-8 or
+/// Windows UTF-16); `None` only for a name with no Unicode text.
 fn portable_namespace_path(path: &crate::kernel::NamespacePath) -> Option<String> {
     let mut value = String::new();
     for component in path.components() {
-        if component.encoding() != crate::kernel::NameEncoding::Utf8 {
-            return None;
-        }
         value.push('/');
-        value.push_str(std::str::from_utf8(component.as_bytes()).ok()?);
+        value.push_str(&component.unicode_text()?);
     }
     if value.is_empty() {
         value.push('/');
@@ -3408,7 +3412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn independent_same_name_directory_creations_return_a_binding_conflict()
+    async fn independent_same_name_directory_creations_merge_by_path()
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
         let parent = fs.create_workspace("directory-race-parent").await?;
@@ -3441,69 +3445,55 @@ mod tests {
                 (child.id(), child.clone()),
             ])),
         };
-        let publisher = WorkspaceMultiRootPublisher::new(resolver);
-        let root = MultiRootMergeRoot {
-            source_workspace_id: child.id(),
-            merge_workspace_id: None,
-            source_generation: child.head().await?.id(),
-            target_workspace_id: parent.id(),
-            target_generation: parent.head().await?.id(),
-            base_generation: base.id(),
-            child_wins_bindings: BTreeSet::from([
-                "/scratch.tmp".to_owned(),
-                "/sub/cache.tmp".to_owned(),
-            ]),
-        };
-        let MultiRootPrepare::Conflicted(plan) = publisher
-            .prepare(
-                OperationId::from_bytes([83; 16]),
-                WorkspaceRootId::from_bytes([84; 16]),
-                &root,
-                &BTreeMap::new(),
-            )
-            .await?
-        else {
-            return Err("independently created directories did not conflict".into());
-        };
-        let directory_conflict = plan
-            .conflicts
-            .iter()
-            .find(|conflict| {
-                conflict.kind == crate::ConflictKind::Binding
-                    && conflict.path.as_deref() == Some("/sub")
-            })
-            .ok_or("directory binding conflict missing")?;
-        let MultiRootPrepare::Ready(fence) = publisher
-            .prepare(
-                OperationId::from_bytes([83; 16]),
-                WorkspaceRootId::from_bytes([84; 16]),
-                &root,
-                &BTreeMap::from([(
-                    directory_conflict.key.clone(),
-                    MergeResolution::Select(ConflictSide::Theirs),
+        // Both sides created /sub on their own: directories merge by path, so
+        // only the files inside can conflict, and the child-wins bindings
+        // settle those.
+        let root_id = WorkspaceRootId::from_bytes([84; 16]);
+        let operation = OperationId::from_bytes([83; 16]);
+        let parent_context = WorkspaceContextId::from_bytes([86; 16]);
+        let candidate = MultiRootMergeCandidate {
+            plan: MultiRootMergePlan {
+                operation_id: operation,
+                parent_context_id: parent_context,
+                child_context_id: WorkspaceContextId::from_bytes([87; 16]),
+                roots: BTreeMap::from([(
+                    root_id,
+                    MultiRootMergeRoot {
+                        source_workspace_id: child.id(),
+                        merge_workspace_id: None,
+                        source_generation: child.head().await?.id(),
+                        target_workspace_id: parent.id(),
+                        target_generation: parent.head().await?.id(),
+                        base_generation: base.id(),
+                        child_wins_bindings: BTreeSet::from([
+                            "/scratch.tmp".to_owned(),
+                            "/sub/cache.tmp".to_owned(),
+                        ]),
+                    },
                 )]),
-            )
-            .await?
-        else {
-            return Err("resolved directory binding was not ready".into());
+            },
+            resolutions: BTreeMap::from([(root_id, BTreeMap::new())]),
         };
-        publisher
-            .release(
-                OperationId::from_bytes([83; 16]),
-                WorkspaceRootId::from_bytes([84; 16]),
-                &fence,
-            )
-            .await?;
-        publisher
-            .project_conflict(
-                OperationId::from_bytes([85; 16]),
-                WorkspaceRootId::from_bytes([84; 16]),
-                &root,
-                Some(&plan),
-            )
-            .await?;
-        assert_eq!(parent.read("/sub/cache.tmp", 16).await?.as_ref(), b"parent");
-        assert_eq!(child.read("/sub/cache.tmp", 16).await?.as_ref(), b"child");
+        let coordinator = MultiRootPublicationCoordinator::new(
+            MemoryMultiRootPublicationStore::default(),
+            WorkspaceMultiRootPublisher::new(resolver),
+            Allow,
+        );
+        assert!(matches!(
+            coordinator.publish(candidate).await?,
+            Publication::Applied(_)
+        ));
+        assert_eq!(parent.read("/sub/cache.tmp", 16).await?.as_ref(), b"child");
+        assert_eq!(parent.read("/scratch.tmp", 16).await?.as_ref(), b"child");
+        assert_eq!(
+            parent.read("/sub/nested/deep.tmp", 32).await?.as_ref(),
+            b"nested child"
+        );
+        assert_eq!(
+            parent.read("/sub/.gitignore", 16).await?.as_ref(),
+            b"*.tmp
+"
+        );
         Ok(())
     }
 
@@ -3726,6 +3716,85 @@ mod tests {
             b"preserved\n"
         );
         assert!(aborting.pending_operations().await?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn aborting_a_conflict_that_changed_no_target_path_succeeds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Both sides add the same path with different bytes and no merge
+        // driver: the projection holds the record back, so it differs from the
+        // pre-merge target in no path. Abort must still clear the operation.
+        let fs = Fs::memory();
+        let parent = fs.create_workspace("empty-abort-parent").await?;
+        let mut base_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        base_tx.write_text("/keep.txt", "base\n").await?;
+        let TransactionCommit::Committed(base) = base_tx.commit().await? else {
+            return Err("base did not commit".into());
+        };
+        let child = parent
+            .fork(
+                "empty-abort-child",
+                ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+            )
+            .await?;
+        let mut child_tx = child.begin_transaction(IdempotencyKey::new()).await?;
+        child_tx.write_text("/added.txt", "from child\n").await?;
+        let TransactionCommit::Committed(child_head) = child_tx.commit().await? else {
+            return Err("child did not commit".into());
+        };
+        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        parent_tx.write_text("/added.txt", "from parent\n").await?;
+        let TransactionCommit::Committed(parent_head) = parent_tx.commit().await? else {
+            return Err("parent did not commit".into());
+        };
+        let resolver = Resolver {
+            workspaces: Mutex::new(BTreeMap::from([
+                (parent.id(), parent.clone()),
+                (child.id(), child.clone()),
+            ])),
+        };
+        let root_id = WorkspaceRootId::from_bytes([82; 16]);
+        let operation = OperationId::from_bytes([85; 16]);
+        let parent_context = WorkspaceContextId::from_bytes([86; 16]);
+        let candidate = MultiRootMergeCandidate {
+            plan: MultiRootMergePlan {
+                operation_id: operation,
+                parent_context_id: parent_context,
+                child_context_id: WorkspaceContextId::from_bytes([87; 16]),
+                roots: BTreeMap::from([(
+                    root_id,
+                    MultiRootMergeRoot {
+                        source_workspace_id: child.id(),
+                        merge_workspace_id: None,
+                        source_generation: child_head.id(),
+                        target_workspace_id: parent.id(),
+                        target_generation: parent_head.id(),
+                        base_generation: base.id(),
+                        child_wins_bindings: BTreeSet::new(),
+                    },
+                )]),
+            },
+            resolutions: BTreeMap::from([(root_id, BTreeMap::new())]),
+        };
+        let coordinator = MultiRootPublicationCoordinator::new(
+            MemoryMultiRootPublicationStore::default(),
+            WorkspaceMultiRootPublisher::new(resolver),
+            Allow,
+        );
+        assert!(matches!(
+            coordinator.publish(candidate).await?,
+            Publication::Conflicted(_)
+        ));
+        coordinator
+            .abort_conflicted(operation, parent_context)
+            .await?;
+        assert_eq!(
+            parent.read("/added.txt", 32).await?.as_ref(),
+            b"from parent\n"
+        );
+        assert_eq!(parent.read("/keep.txt", 32).await?.as_ref(), b"base\n");
+        assert!(coordinator.pending_operations().await?.is_empty());
         Ok(())
     }
 }

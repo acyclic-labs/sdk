@@ -15,14 +15,11 @@
 //! lifecycle belongs to the `SessionStart` and `SessionEnd` command hooks
 //! (see [`super::ServiceStart::Forbidden`]).
 
-use super::{
-    HookFailure, MAXIMUM_CONTROL_MESSAGE_BYTES, ServiceStart, display, forward_native_hook,
-    local_native_hook_answer,
-};
+use super::{HookFailure, ServiceStart, display, forward_native_hook, local_native_hook_answer};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tokio::sync::Mutex;
 
 /// The server's name in the plugin's `.mcp.json` and in every hook's
@@ -169,6 +166,11 @@ pub(crate) fn serve() -> Result<(), String> {
 /// Answers every request line on `input`. Tool calls run concurrently, so a
 /// slow hook (a subagent fork) never delays another thread's tool hook; each
 /// response is written as one whole line.
+///
+/// Codex runs a tool whose hook it gets no answer for, and never restarts
+/// this server, so nothing a request holds may end it: only the stream
+/// itself closing or failing does. A request too large for the service is
+/// answered as that hook's failure, like any request the service refuses.
 async fn serve_stream(
     input: impl tokio::io::AsyncRead + Unpin,
     output: impl tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -183,16 +185,9 @@ async fn serve_stream(
             finished.map_err(display)??;
         }
         let mut line = Vec::new();
-        let read = (&mut input)
-            .take((MAXIMUM_CONTROL_MESSAGE_BYTES + 1) as u64)
-            .read_until(b'\n', &mut line)
-            .await
-            .map_err(display)?;
+        let read = input.read_until(b'\n', &mut line).await.map_err(display)?;
         if read == 0 {
             break;
-        }
-        if line.len() > MAXIMUM_CONTROL_MESSAGE_BYTES {
-            return Err("Acyclic MCP request exceeds the maximum frame size".to_owned());
         }
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
@@ -215,10 +210,7 @@ async fn serve_stream(
         if method == "tools/call" {
             let output = Arc::clone(&output);
             calls.spawn(async move {
-                let response = match call_result(&params).await {
-                    Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-                    Err(error) => error_response(&id, -32602, &error),
-                };
+                let response = answer_call(&id, params).await;
                 write_line(&output, &response).await
             });
             continue;
@@ -251,6 +243,35 @@ async fn serve_stream(
     Ok(())
 }
 
+/// The response to one `tools/call`, whatever happens while answering it.
+/// Codex runs a tool whose hook gets an error instead of an answer, so a tool
+/// hook that fails even by panicking is answered with its failure decision.
+async fn answer_call(id: &Value, params: Value) -> Value {
+    let event = params
+        .pointer("/arguments/event")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let answered = match tokio::spawn(async move { call_result(&params).await }).await {
+        Ok(answered) => answered,
+        Err(error) => match event.as_deref() {
+            Some(event @ "PreToolUse") => {
+                text_result(&HookFailure::classify(HOST, event, None).answer(&display(error)))
+            }
+            _ => Err(display(error)),
+        },
+    };
+    match answered {
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err(error) => error_response(id, -32602, &error),
+    }
+}
+
+/// A hook's answer as the tool's text content.
+fn text_result(answer: &Value) -> Result<Value, String> {
+    let text = serde_json::to_string(answer).map_err(display)?;
+    Ok(json!({"content": [{"type": "text", "text": text}]}))
+}
+
 /// The result of one `tools/call`: the hook's answer as text content.
 async fn call_result(params: &Value) -> Result<Value, String> {
     if params.get("name").and_then(Value::as_str) != Some(TOOL) {
@@ -279,8 +300,7 @@ async fn call_result(params: &Value) -> Result<Value, String> {
             _ => return Err(error),
         },
     };
-    let text = serde_json::to_string(&answer).map_err(display)?;
-    Ok(json!({"content": [{"type": "text", "text": text}]}))
+    text_result(&answer)
 }
 
 /// The event, working directory and hook input of one call: the fields its
@@ -338,6 +358,7 @@ async fn write_line(
 #[allow(clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt as _;
 
     /// Codex 0.155.1's generated input schema for `event`.
     fn codex_input_schema(event: &str) -> Value {
@@ -533,6 +554,55 @@ mod tests {
                 );
                 assert_eq!(responses[3]["error"]["code"], -32602);
                 assert_eq!(responses[4]["error"]["code"], -32601);
+            });
+    }
+
+    #[test]
+    fn a_request_larger_than_any_control_frame_is_answered_and_serving_continues() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let large = "x".repeat(2 * crate::MAXIMUM_CONTROL_MESSAGE_BYTES);
+                let requests = [
+                    json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+                        "name":"hook",
+                        "arguments":{"event":"PreToolUse","hook":{
+                            "session_id":"s","turn_id":"t","cwd":"/w","tool_name":"web.run",
+                            "tool_input":{"query":large},"tool_use_id":"u"
+                        }},
+                        "_meta":{"threadId":"s"}
+                    }}),
+                    json!({"jsonrpc":"2.0","id":2,"method":"ping"}),
+                ];
+                let mut input = Vec::new();
+                for request in requests {
+                    input.extend(serde_json::to_vec(&request).expect("request"));
+                    input.push(b'\n');
+                }
+                let (client, server) = tokio::io::duplex(64 * 1024);
+                let reader = tokio::spawn(async move {
+                    let mut output = String::new();
+                    tokio::io::BufReader::new(client)
+                        .read_to_string(&mut output)
+                        .await
+                        .expect("responses");
+                    output
+                });
+                serve_stream(input.as_slice(), server).await.expect("serve");
+                let mut ids = reader
+                    .await
+                    .expect("reader")
+                    .lines()
+                    .map(|line| serde_json::from_str::<Value>(line).expect("response"))
+                    .map(|response| {
+                        assert!(response.get("result").is_some(), "{response}");
+                        response["id"].as_i64()
+                    })
+                    .collect::<Vec<_>>();
+                ids.sort_unstable();
+                assert_eq!(ids, [Some(1), Some(2)]);
             });
     }
 }
