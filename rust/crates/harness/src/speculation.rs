@@ -1248,6 +1248,7 @@ mod host {
                                 message: format!("winning attempt {slot} did not merge: {message}"),
                             },
                             fence: None,
+                            execution_duration_ns: None,
                         },
                     )
                     .await?;
@@ -1576,6 +1577,7 @@ mod tests {
                         operation_id: *id,
                         outcome: outcome.clone(),
                         fence: fences.get(id).cloned(),
+                        execution_duration_ns: None,
                     },
                 )
                 .await?;
@@ -1935,6 +1937,7 @@ mod tests {
                             operation_id: NODE,
                             outcome,
                             fence: None,
+                            execution_duration_ns: None,
                         },
                     )
                     .await,

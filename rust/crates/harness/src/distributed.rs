@@ -817,7 +817,10 @@ mod tests {
         assert!(event.committed_at_ms.is_some_and(|time| time > 0));
         assert!(matches!(event.event, SchedulerEvent::Declared { .. }));
         let replayed = read_coordinator_event_page(&client, 0, 1).await?;
-        assert_eq!(replayed[0].committed_at_ms, event.committed_at_ms);
+        assert_eq!(
+            replayed.first().map(|value| value.committed_at_ms),
+            Some(event.committed_at_ms)
+        );
         assert!(read_coordinator_event_page(&client, 1, 1).await?.is_empty());
         assert!(read_coordinator_event_page(&client, 0, 0).await.is_err());
         Ok(())
@@ -1048,6 +1051,7 @@ mod tests {
                     operation_id: first,
                     outcome: crate::Outcome::Succeeded(Value::Null),
                     fence: Some(LeaseFence::from(&first_lease.reservation)),
+                    execution_duration_ns: None,
                 },
             )
             .await?;
@@ -1190,7 +1194,8 @@ mod tests {
                     SchedulerEvent::Completed {
                         operation_id,
                         outcome: crate::Outcome::Succeeded(Value::Null),
-                        fence: Some(LeaseFence::from(&first.reservation))
+                        fence: Some(LeaseFence::from(&first.reservation)),
+                        execution_duration_ns: None,
                     }
                 )
                 .await,
