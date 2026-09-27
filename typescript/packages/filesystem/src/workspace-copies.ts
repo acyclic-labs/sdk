@@ -5,13 +5,20 @@ import type {
 } from "./contracts.js";
 import type { BrowserWorkCounters } from "../generated/wasm/acyclic_fs_wasm.js";
 
-const workCounterKeys: readonly (keyof WorkCounters)[] = [
+/** Keep the public copy exhaustive when Rust adds a generated work counter. */
+function exhaustiveKeys<T>() {
+  return <Keys extends readonly (keyof T)[]>(
+    keys: Exclude<keyof T, Keys[number]> extends never ? Keys : never,
+  ): Keys => keys;
+}
+
+const workCounterKeys = exhaustiveKeys<WorkCounters>()([
   "authorityRecordsRead", "authorityRecordsAppended", "authorityBytesRead", "authorityBytesWritten",
   "objectProbes", "backendReadOperations", "backendWriteOperations", "durabilityOperations", "pageReads",
   "pageWrites", "objectBytesRead", "objectBytesWritten", "bytesHashed", "bytesCopied", "bytesEncoded",
   "sourceBytesRead", "sourcePathComponents", "sourceEntriesVisited", "outputBytes", "itemsExamined", "itemsReturned", "allocationOperations",
   "peakAllocationBytes", "materializations",
-];
+]);
 
 function safeWorkNumber(value: bigint, key: string): number {
   const number = Number(value);
