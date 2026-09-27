@@ -1,6 +1,8 @@
 /** Parent-controlled, provider-neutral fork values. Rust owns durable admission. */
 import type { FileRef, ProviderRef, VolumeRef } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
+import type { ResourceKind } from "./enums.js";
+export type { ResourceKind } from "./enums.js";
 import type { AgentId, Authority, OperationId } from "./index.js";
 import { MAX_FORK_INHERITED_MESSAGES } from "./limits-contract.js";
 export {
@@ -13,7 +15,6 @@ export {
   MAX_FORK_RESOURCES,
 } from "./limits-contract.js";
 
-export type ResourceKind = "workspace" | "generation" | "artifact" | "sandbox" | "checkpoint" | "stream" | "context" | "run";
 type ResourceProvider<Kind extends ResourceKind> =
   Kind extends "stream" ? ProviderRef<"stream">
   : Kind extends "checkpoint" ? ProviderRef<"machines">

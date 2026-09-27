@@ -7,6 +7,9 @@ import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import type { SelectedModelContext } from "./projection.js";
 import type { ForkPreparer, ForkPublisher, ForkReport, ForkRequest, ForkSeed, ResourceRef } from "./fork.js";
 import type { ProjectWorkspaceProvider } from "./project.js";
+import type { GroupPolicy } from "./enums.js";
+import { groupPolicies } from "./enums.js";
+export type { GroupPolicy } from "./enums.js";
 export * from "./model.js";
 
 function compareUtf8(left: string, right: string): number {
@@ -487,8 +490,7 @@ export class ExecutionScope {
   withLimits(value: EffectiveScope["limits"]): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, this.policyProvider, this.grants, value, this.grantsExplicit, this.executionProvider); }
 }
 
-export type GroupPolicy = { readonly kind: "collect-all" } | { readonly kind: "cancel-on-failure" };
-export const GroupPolicies = Object.freeze({ collectAll: { kind: "collect-all" } as const, cancelOnFailure: { kind: "cancel-on-failure" } as const });
+export const GroupPolicies = groupPolicies;
 
 export class Batch<Input> {
   constructor(readonly id: BatchId, readonly inputs: readonly Input[]) { if (!id) throw new TypeError("batch id is required"); }

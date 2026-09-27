@@ -1,7 +1,6 @@
 import { WasmReducer, type InitInput } from "../generated/wasm/acyclic_harness_wasm.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
-  AggregateKind as WireAggregateKind,
   ApplyResponseSchema,
   ApplyState,
   AuthoritySchema,
@@ -21,8 +20,11 @@ import type { InteractionId } from "./interaction.js";
 import type { ResourceRef } from "./fork.js";
 import type { PrivateDirectoryPage } from "./runtime.js";
 import { NativeContracts } from "./native-contracts.js";
+import { aggregateKindToWire, decodeAggregateKind } from "./enums.js";
+import type { AggregateKind, AuthorityLevel } from "./enums.js";
 
 export * from "./cache.js";
+export * from "./enums.js";
 export * from "./conversation.js";
 export * from "./native-contracts.js";
 export * from "./fork.js";
@@ -67,8 +69,6 @@ export async function parseIdentity<Kind extends IdentityKind>(
 ): Promise<IdentityKindMap[Kind]> {
   return (await NativeContracts.create()).validateIdentity(kind, value);
 }
-export type AggregateKind = "agent" | "conversation" | "session" | "turn" | "task";
-
 export interface Authority<Kind extends AggregateKind = AggregateKind> {
   readonly kind: Kind;
   readonly id: string;
@@ -90,8 +90,6 @@ export interface RecordedScope {
   readonly issuer: string;
   readonly agent: AgentId | null;
 }
-
-export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | "turn" | "task" | "invocation";
 
 export interface PolicyLayer {
   readonly level: AuthorityLevel;
@@ -500,28 +498,12 @@ export class Harness {
 }
 
 function encodeAuthority(authority: Authority) {
-  const kinds: Record<AggregateKind, WireAggregateKind> = {
-    agent: WireAggregateKind.AGENT,
-    conversation: WireAggregateKind.CONVERSATION,
-    session: WireAggregateKind.SESSION,
-    turn: WireAggregateKind.TURN,
-    task: WireAggregateKind.TASK,
-  };
-  return create(AuthoritySchema, { kind: kinds[authority.kind], id: authority.id });
+  return create(AuthoritySchema, { kind: aggregateKindToWire[authority.kind], id: authority.id });
 }
 
-function decodeAuthority(authority: { kind: WireAggregateKind; id: string } | undefined): Authority {
+function decodeAuthority(authority: { kind: number; id: string } | undefined): Authority {
   if (authority === undefined) throw new Error("event authority is missing");
-  const kinds: Partial<Record<WireAggregateKind, AggregateKind>> = {
-    [WireAggregateKind.AGENT]: "agent",
-    [WireAggregateKind.CONVERSATION]: "conversation",
-    [WireAggregateKind.SESSION]: "session",
-    [WireAggregateKind.TURN]: "turn",
-    [WireAggregateKind.TASK]: "task",
-  };
-  const kind = kinds[authority.kind];
-  if (kind === undefined) throw new Error("event authority kind is invalid");
-  return { kind, id: authority.id };
+  return { kind: decodeAggregateKind(authority.kind), id: authority.id };
 }
 
 function encodeReference(reference: EventReference) {
@@ -532,7 +514,7 @@ function encodeReference(reference: EventReference) {
 }
 
 function decodeReference(reference: {
-  authority?: { kind: WireAggregateKind; id: string } | undefined;
+  authority?: { kind: number; id: string } | undefined;
   revision: bigint;
 }): EventReference {
   return { authority: decodeAuthority(reference.authority), revision: reference.revision };
