@@ -56,6 +56,7 @@ pub struct MemoryHarnessStorage {
     stream: StreamClient<MemoryStream>,
     conversation: Authority,
     maximum_file_bytes: u64,
+    memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
 /// Ready-to-run local Harness with an isolated conversation and private volume.
@@ -339,6 +340,9 @@ impl ToolExecutor for LocalStageFileTool {
         Box::pin(async move {
             let input: StageFileInput = serde_json::from_value(invocation.arguments)
                 .map_err(|error| Error::Invalid(format!("stage_file input is invalid: {error}")))?;
+            if input.text.len() as u64 > self.maximum_bytes {
+                return Err(Error::Invalid("staged file exceeds harness limits".into()));
+            }
             let retry =
                 IdempotencyKey::new(format!("local-tool-stage:{}", invocation.operation_id))?;
             let file = self
@@ -355,6 +359,11 @@ impl ToolExecutor for LocalStageFileTool {
                     &retry,
                 )
                 .await?;
+            self.publisher
+                .memory_store
+                .lock()
+                .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
+                .stage_reference(&file, input.text.as_bytes(), true)?;
             Ok(ToolResult {
                 value: json!({"file": file}),
             })
@@ -439,6 +448,7 @@ struct MemoryContentPublisher {
     volume: VolumeRef,
     write: ContentGrant,
     maximum_file_bytes: u64,
+    memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
 impl ContentPublisher for MemoryContentPublisher {
@@ -460,7 +470,8 @@ impl ContentPublisher for MemoryContentPublisher {
                 "local-upload:{operation_id}:{}",
                 path_digest.to_hex()
             ))?;
-            self.host
+            let persisted = self
+                .host
                 .put_content(
                     &self.volume,
                     &self.write,
@@ -471,7 +482,14 @@ impl ContentPublisher for MemoryContentPublisher {
                     self.maximum_file_bytes,
                     &retry,
                 )
-                .await
+                .await?;
+            let staged = self
+                .memory_store
+                .lock()
+                .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
+                .stage_reference(&persisted, bytes, true)?;
+            debug_assert_eq!(persisted, staged);
+            Ok(persisted)
         })
     }
 }
@@ -611,6 +629,15 @@ impl MemoryHarnessStorage {
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
         )?;
+        let memory_store = Arc::new(std::sync::Mutex::new(
+            crate::memory_store::MemoryStore::new(
+                volume.clone(),
+                maximum_file_bytes,
+                crate::conversation::MAX_PATH_BYTES as u64,
+                u64::MAX,
+                u64::MAX,
+            )?,
+        ));
         host.create_volume(&volume).await?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
@@ -674,6 +701,7 @@ impl MemoryHarnessStorage {
             volume: volume.clone(),
             write: write.clone(),
             maximum_file_bytes,
+            memory_store: memory_store.clone(),
         });
         Ok(Self {
             journal,
@@ -689,6 +717,7 @@ impl MemoryHarnessStorage {
             stream,
             conversation,
             maximum_file_bytes,
+            memory_store,
         })
     }
 
@@ -1202,6 +1231,14 @@ impl MemoryHarnessStorage {
 
     /// Reads a pinned owner-private version after verifying its descriptor.
     pub async fn read(&self, file: &FileRef) -> Result<Vec<u8>> {
+        if let Ok(bytes) = self
+            .memory_store
+            .lock()
+            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
+            .read(file)
+        {
+            return Ok(bytes);
+        }
         self.content_verifier.read(file).await
     }
 
@@ -1215,7 +1252,8 @@ impl MemoryHarnessStorage {
         after: Option<&LogicalName>,
         maximum_entries: u32,
     ) -> Result<(GenerationRef, WorkspaceDirectoryPage)> {
-        self.content_verifier
+        let page = self
+            .content_verifier
             .list_private_directory(
                 &self.volume,
                 "",
@@ -1224,7 +1262,24 @@ impl MemoryHarnessStorage {
                 after,
                 maximum_entries,
             )
-            .await
+            .await?;
+        // Exercise the same bounded path/generation core used by WASM for
+        // every native owner listing. The filesystem page remains the source
+        // of its provider generation proof; direct host-owned files may not
+        // exist in the ephemeral shared index and are retained in that page.
+        let after_text = after.and_then(LogicalName::unicode_text);
+        let core = self
+            .memory_store
+            .lock()
+            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?;
+        let generation = core.generation();
+        let _shared_page = core.list(
+            path,
+            Some(generation),
+            after_text.as_deref(),
+            maximum_entries as usize,
+        )?;
+        Ok(page)
     }
 
     /// Publishes one owner-mediated exact-file read scope to another agent,
@@ -1288,9 +1343,28 @@ impl MemoryHarnessStorage {
         path: &str,
         expected_generation: Option<&GenerationRef>,
     ) -> Result<(FileRef, Vec<u8>)> {
-        self.delegated_reader(scope)?
+        let resolved = self
+            .delegated_reader(scope)?
             .read_private_path(&self.volume, granted_prefix, path, expected_generation)
-            .await
+            .await?;
+        // A delegated read still uses the filesystem verifier for the signed
+        // scope and generation proof. When the path is also present in the
+        // shared core (all content staged through this storage), use the core
+        // path head and resident bytes for the returned payload. Direct
+        // provider files, such as host-owned manifests, intentionally fall
+        // back to the verifier result.
+        let core = self
+            .memory_store
+            .lock()
+            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?;
+        let shared = core.read_path(path, None);
+        match shared {
+            Ok(reference) if reference == resolved.0 => {
+                let bytes = core.read(&reference)?;
+                Ok((reference, bytes))
+            }
+            _ => Ok(resolved),
+        }
     }
 
     fn delegated_reader(

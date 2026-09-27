@@ -10,13 +10,29 @@ const REQUIRED_WASM_VALIDATORS = [
   "validateToolDefinition", "validateToolInvocation", "validateToolResult",
   "validateModelContent", "validateUserInput", "admitModelEvent", "selectModelContext",
   "validateModelContextSelection",
+  "WasmContentStore",
+] as const;
+
+// `initWasm()` resolves to the raw instance exports. The generated JS module
+// exposes WasmContentStore as a wrapper class, but its methods call these ABI
+// symbols on the raw instance.
+const REQUIRED_WASM_CONTENT_EXPORTS = [
+  "__wbg_wasmcontentstore_free", "wasmcontentstore_generation",
+  "wasmcontentstore_has", "wasmcontentstore_list", "wasmcontentstore_new",
+  "wasmcontentstore_pathConflicts", "wasmcontentstore_read",
+  "wasmcontentstore_read_path", "wasmcontentstore_stage",
 ] as const;
 
 /** Reject a stale binding before runtime code can call a missing validator. */
 export function assertHarnessWasmExports(value: unknown): void {
-  if (value === null || typeof value !== "object" || REQUIRED_WASM_VALIDATORS.some(
-    name => typeof (value as Record<string, unknown>)[name] !== "function",
-  )) {
+  if (value === null || typeof value !== "object") {
+    throw new Error("harness WASM does not provide the required validators");
+  }
+  const exports = value as Record<string, unknown>;
+  const required = typeof exports.WasmContentStore === "function"
+    ? REQUIRED_WASM_VALIDATORS
+    : [...REQUIRED_WASM_VALIDATORS.filter(name => name !== "WasmContentStore"), ...REQUIRED_WASM_CONTENT_EXPORTS];
+  if (required.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }

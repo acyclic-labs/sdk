@@ -249,6 +249,46 @@ export interface WasmTaskRunLimitsInput {
 
 
 /**
+ * Bounded Rust-owned content state for the WASM MemoryConversation adapter.
+ * The native filesystem provider uses the same crate-level core while
+ * retaining its signed provider-generation proof around delegated reads.
+ */
+export class WasmContentStore {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Returns the current path generation as an exact JavaScript bigint.
+     */
+    generation(): any;
+    /**
+     * Tests local residency without exposing mutable storage maps.
+     */
+    has(file: any): boolean;
+    /**
+     * Returns a generation-pinned directory page from Rust-owned path state.
+     */
+    list(path: string, generation: any, after: string | null | undefined, maximum: number): any;
+    constructor(volume: any, maximum_file_bytes: number, maximum_path_bytes: number, maximum_resident_bytes: number, maximum_resident_files: number);
+    /**
+     * Reports whether a new file at `path` would conflict with a file or
+     * directory already retained by this provider.
+     */
+    pathConflicts(path: string): boolean;
+    /**
+     * Reads only an exact, resident immutable reference owned by this store.
+     */
+    read(file: any): Uint8Array;
+    /**
+     * Resolves a path at or before an explicit generation.
+     */
+    read_path(path: string, generation: any): any;
+    /**
+     * Stores one immutable file and optionally advances its path head.
+     */
+    stage(path: string, bytes: Uint8Array, media_type: string, display_name: string, update_path: boolean): any;
+}
+
+/**
  * Opaque synchronous reducer hosted in WebAssembly.
  */
 export class WasmReducer {
@@ -625,6 +665,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_wasmcontentstore_free: (a: number, b: number) => void;
     readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
     readonly admitBatch: (a: any) => [number, number, number];
     readonly admitBatchRequest: (a: any) => [number, number, number];
@@ -668,6 +709,14 @@ export interface InitOutput {
     readonly validateWireResume: (a: number, b: number) => [number, number];
     readonly validateWireStatus: (a: number, b: number, c: number, d: number) => [number, number];
     readonly verifyFileBytes: (a: any, b: number, c: number) => [number, number];
+    readonly wasmcontentstore_generation: (a: number) => [number, number, number];
+    readonly wasmcontentstore_has: (a: number, b: any) => [number, number, number];
+    readonly wasmcontentstore_list: (a: number, b: number, c: number, d: any, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmcontentstore_new: (a: any, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly wasmcontentstore_pathConflicts: (a: number, b: number, c: number) => number;
+    readonly wasmcontentstore_read: (a: number, b: any) => [number, number, number, number];
+    readonly wasmcontentstore_read_path: (a: number, b: number, c: number, d: any) => [number, number, number];
+    readonly wasmcontentstore_stage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
     readonly wasmreducer_apply: (a: number, b: any) => [number, number, number];
     readonly wasmreducer_applyWire: (a: number, b: number, c: number) => [number, number, number, number];
     readonly wasmreducer_attenuate: (a: number, b: any, c: number, d: number, e: any) => [number, number, number];

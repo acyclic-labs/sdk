@@ -6,9 +6,11 @@ import {
   validateModelContent, validateUserInput,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import * as harnessWasm from "../generated/wasm/acyclic_harness_wasm.js";
-import { assertHarnessWasmExports } from "../src/wasm-runtime.js";
+import initWasm from "../generated/wasm/acyclic_harness_wasm.js";
+import { assertHarnessWasmExports, ensureHarnessWasm } from "../src/wasm-runtime.js";
 
 const contracts = await NativeContracts.create();
+const rawWasmExports = await initWasm();
 const agent = "07070707-0707-0707-0707-070707070707" as AgentId;
 
 test("stale WASM modules fail compatibility checks before model dispatch", () => {
@@ -16,6 +18,13 @@ test("stale WASM modules fail compatibility checks before model dispatch", () =>
   expect(() => assertHarnessWasmExports({ ...harnessWasm, validateModelContent: undefined })).toThrow("required validators");
   expect(() => assertHarnessWasmExports({ ...harnessWasm, validateUserInput: undefined })).toThrow("required validators");
   expect(() => assertHarnessWasmExports({ ...harnessWasm, admitModelEvent: undefined })).toThrow("required validators");
+  expect(() => assertHarnessWasmExports({ ...harnessWasm, WasmContentStore: undefined })).toThrow("required validators");
+  expect(() => assertHarnessWasmExports(rawWasmExports)).not.toThrow();
+  expect(() => assertHarnessWasmExports({ ...rawWasmExports, wasmcontentstore_stage: undefined })).toThrow("required validators");
+});
+
+test("fresh WASM initialization accepts the raw content-store ABI", async () => {
+  await ensureHarnessWasm();
 });
 
 async function file(): Promise<FileRef> {
