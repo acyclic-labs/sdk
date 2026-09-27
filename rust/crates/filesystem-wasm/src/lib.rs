@@ -47,7 +47,9 @@ mod bindings {
         TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace, WorkspaceContextId,
         WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind,
         WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase, WorkspaceRootId,
-        WorkspaceStat, decode_generation_export_manifest, encode_generation_export_manifest,
+        WorkspaceStat, canonicalize_git_output_json, canonicalize_git_pending_transition_json,
+        decode_generation_export_manifest, encode_generation_export_manifest,
+        parse_git_public_command,
     };
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
@@ -2781,6 +2783,43 @@ mod bindings {
                 .await
                 .map_err(js_error)?;
             serde_json::to_string(&output).map_err(js_error)
+        }
+
+        /// Executes a natural JavaScript Git command through the Rust
+        /// projection shared with the native binding.
+        #[wasm_bindgen(js_name = executePublicJson)]
+        pub async fn execute_public_json(
+            &self,
+            command_json: String,
+            workspace_generation: Vec<u8>,
+        ) -> Result<String, JsValue> {
+            let command = parse_git_public_command(&command_json).map_err(js_error)?;
+            let generation = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                &workspace_generation,
+                "workspace generation",
+            )?));
+            let output = self
+                .inner
+                .execute(command, generation)
+                .await
+                .map_err(js_error)?;
+            serde_json::to_string(&output).map_err(js_error)
+        }
+
+        /// Validates and canonicalizes a Rust Git output before JS projection.
+        #[wasm_bindgen(js_name = canonicalizeOutputJson)]
+        pub fn canonicalize_output_json(&self, value_json: String) -> Result<String, JsValue> {
+            canonicalize_git_output_json(&value_json).map_err(js_error)
+        }
+
+        /// Validates and canonicalizes a durable pending transition before JS
+        /// projection.
+        #[wasm_bindgen(js_name = canonicalizePendingTransitionJson)]
+        pub fn canonicalize_pending_transition_json(
+            &self,
+            value_json: String,
+        ) -> Result<String, JsValue> {
+            canonicalize_git_pending_transition_json(&value_json).map_err(js_error)
         }
     }
 

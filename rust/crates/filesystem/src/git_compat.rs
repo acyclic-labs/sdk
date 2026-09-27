@@ -904,6 +904,158 @@ pub enum GitCommand {
     },
 }
 
+/// Natural JavaScript command discriminators paired with the canonical Rust
+/// serde tags. The test below compares this table with the exhaustive enum
+/// inventory, so adding a Rust command cannot silently bypass the public
+/// parser.
+pub const GIT_COMPAT_PUBLIC_COMMAND_KINDS: &[(&str, &str)] = &[
+    ("status", "Status"),
+    ("diff", "Diff"),
+    ("log", "Log"),
+    ("show", "Show"),
+    ("add", "Add"),
+    ("commit", "Commit"),
+    ("branch", "Branch"),
+    ("switch", "Switch"),
+    ("restore", "Restore"),
+    ("reset", "Reset"),
+    ("merge", "Merge"),
+    ("merge-continue", "MergeContinue"),
+    ("merge-abort", "MergeAbort"),
+    ("rebase", "Rebase"),
+    ("stash-push", "StashPush"),
+    ("stash-pop", "StashPop"),
+    ("cherry-pick", "CherryPick"),
+    ("revert", "Revert"),
+    ("tag", "Tag"),
+    ("blame", "Blame"),
+    ("grep", "Grep"),
+    ("clean", "Clean"),
+    ("archive", "Archive"),
+    ("apply", "Apply"),
+    ("bisect", "Bisect"),
+    ("rev-parse", "RevParse"),
+    ("symbolic-ref", "SymbolicRef"),
+    ("merge-base", "MergeBase"),
+    ("ls-files", "LsFiles"),
+    ("check-ignore", "CheckIgnore"),
+];
+
+fn public_git_command_variant(kind: &str) -> Option<&'static str> {
+    GIT_COMPAT_PUBLIC_COMMAND_KINDS
+        .iter()
+        .find_map(|(public, wire)| (*public == kind).then_some(*wire))
+}
+
+/// Parses the natural JavaScript command projection into the canonical serde
+/// command.  The JavaScript façade uses a small `kind` discriminator and
+/// camel-case names for the two fields whose public spelling differs from the
+/// Rust wire contract.  Keeping this translation here means native and WASM
+/// callers share the same defaults, enum validation, and integer bounds.
+pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
+    let mut value: serde_json::Value = serde_json::from_str(value)
+        .map_err(|error| format!("invalid Git command JSON: {error}"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "Git command must be an object".to_owned())?;
+    let kind = object
+        .remove("kind")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| "Git command kind must be a string".to_owned())?;
+    let variant = public_git_command_variant(&kind)
+        .ok_or_else(|| format!("unknown Git command kind: {kind}"))?;
+    if object.values().any(|value| value.is_null()) {
+        // serde accepts omitted Option fields and rejects null for required
+        // fields. Preserve explicit null only where the canonical enum uses
+        // an Option; dropping it gives both forms one validation path.
+        object.retain(|_, value| !value.is_null());
+    }
+    if let Some(mut value) = object.remove("authoredAtSeconds") {
+        if let Some(text) = value.as_str() {
+            let number = text
+                .parse::<i64>()
+                .map_err(|_| "Git authoredAtSeconds must be an i64".to_owned())?;
+            if number.unsigned_abs() > 9_007_199_254_740_991 {
+                return Err("Git authoredAtSeconds must fit a safe JSON integer".to_owned());
+            }
+            value = serde_json::Value::Number(number.into());
+        }
+        object.insert("authored_at_seconds".to_owned(), value);
+    }
+    if let Some(value) = object.get("authored_at_seconds") {
+        let number = value
+            .as_i64()
+            .ok_or_else(|| "Git authoredAtSeconds must be an i64".to_owned())?;
+        if number.unsigned_abs() > 9_007_199_254_740_991 {
+            return Err("Git authoredAtSeconds must fit a safe JSON integer".to_owned());
+        }
+    }
+    if let Some(value) = object.remove("dryRun") {
+        object.insert("dry_run".to_owned(), value);
+    }
+    if variant == "Diff" && !object.contains_key("cached") {
+        object.insert("cached".to_owned(), serde_json::Value::Bool(false));
+    }
+    if variant == "Switch" && !object.contains_key("create") {
+        object.insert("create".to_owned(), serde_json::Value::Bool(false));
+    }
+    if variant == "Tag" && !object.contains_key("delete") {
+        object.insert("delete".to_owned(), serde_json::Value::Bool(false));
+    }
+    if variant == "Clean" && !object.contains_key("dry_run") {
+        object.insert("dry_run".to_owned(), serde_json::Value::Bool(false));
+    }
+    if variant == "SymbolicRef" && !object.contains_key("short") {
+        object.insert("short".to_owned(), serde_json::Value::Bool(false));
+    }
+    if variant == "Reset" && object.contains_key("mode") {
+        let mode = object
+            .get("mode")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Git reset mode must be a string".to_owned())?;
+        let mode = match mode {
+            "soft" => "Soft",
+            "mixed" => "Mixed",
+            "hard" => "Hard",
+            _ => return Err(format!("unsupported Git reset mode: {mode}")),
+        };
+        object.insert(
+            "mode".to_owned(),
+            serde_json::Value::String(mode.to_owned()),
+        );
+    }
+    let unit_variant = matches!(
+        variant,
+        "Status" | "MergeContinue" | "MergeAbort" | "StashPush" | "StashPop" | "LsFiles"
+    );
+    let wire = if unit_variant && object.is_empty() {
+        serde_json::Value::String(variant.to_owned())
+    } else {
+        let mut tagged = serde_json::Map::new();
+        tagged.insert(variant.to_owned(), value);
+        serde_json::Value::Object(tagged)
+    };
+    serde_json::from_value(wire).map_err(|error| format!("invalid Git command: {error}"))
+}
+
+/// Validates and reserializes one canonical command output at a language
+/// binding boundary. This keeps malformed fixtures and executor adapters on
+/// the same serde path as the engine itself.
+pub fn canonicalize_git_output_json(value: &str) -> Result<String, String> {
+    let output: GitCommandOutput = serde_json::from_str(value)
+        .map_err(|error| format!("invalid Git command output JSON: {error}"))?;
+    serde_json::to_string(&output)
+        .map_err(|error| format!("failed to serialize Git command output: {error}"))
+}
+
+/// Validates and reserializes one durable pending transition.
+pub fn canonicalize_git_pending_transition_json(value: &str) -> Result<String, String> {
+    let pending: GitPendingTransition = serde_json::from_str(value)
+        .map_err(|error| format!("invalid Git pending transition JSON: {error}"))?;
+    serde_json::to_string(&pending)
+        .map_err(|error| format!("failed to serialize Git pending transition: {error}"))
+}
+
 /// Filesystem work emitted by the compatibility state machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -1451,7 +1603,7 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ),
     (
         "ApplyPatch",
-        r#"{ readonly ApplyPatch: { readonly patch: readonly number[] } }"#,
+        r#"{ readonly ApplyPatch: { readonly patch: Uint8Array } }"#,
     ),
     (
         "CheckIgnore",
@@ -5650,6 +5802,82 @@ mod tests {
             [9; 16],
             &WorkspaceName::new("repo").expect("valid test workspace"),
         )
+    }
+
+    #[test]
+    fn public_command_kinds_cover_every_canonical_command_variant() {
+        let public_wire = GIT_COMPAT_PUBLIC_COMMAND_KINDS
+            .iter()
+            .map(|(_, wire)| *wire)
+            .collect::<BTreeSet<_>>();
+        let canonical = GIT_COMPAT_COMMAND_VARIANTS
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(public_wire, canonical);
+        assert_eq!(GIT_COMPAT_PUBLIC_COMMAND_KINDS.len(), canonical.len());
+    }
+
+    #[test]
+    fn public_command_projection_uses_canonical_defaults_and_integer_bounds() {
+        assert_eq!(
+            parse_git_public_command(r#"{"kind":"status"}"#).expect("status"),
+            GitCommand::Status,
+        );
+        assert_eq!(
+            parse_git_public_command(r#"{"kind":"diff"}"#).expect("diff"),
+            GitCommand::Diff { cached: false },
+        );
+        assert_eq!(
+            parse_git_public_command(r#"{"kind":"show"}"#).expect("show"),
+            GitCommand::Show { object: None },
+        );
+        assert_eq!(
+            parse_git_public_command(r#"{"kind":"branch"}"#).expect("branch"),
+            GitCommand::Branch { create: None },
+        );
+        assert_eq!(
+            parse_git_public_command(r#"{"kind":"archive"}"#).expect("archive"),
+            GitCommand::Archive { object: None },
+        );
+        assert_eq!(
+            parse_git_public_command(r#"{"kind":"symbolic-ref"}"#).expect("symbolic-ref"),
+            GitCommand::SymbolicRef { short: false },
+        );
+        assert_eq!(
+            parse_git_public_command(
+                r#"{"kind":"commit","message":"m","author":"a","authoredAtSeconds":"9007199254740991"}"#,
+            )
+            .expect("safe timestamp"),
+            GitCommand::Commit {
+                message: "m".to_owned(),
+                author: "a".to_owned(),
+                authored_at_seconds: 9_007_199_254_740_991,
+            },
+        );
+        assert!(parse_git_public_command(
+            r#"{"kind":"commit","message":"m","author":"a","authoredAtSeconds":"9007199254740992"}"#,
+        )
+        .is_err());
+        assert!(
+            parse_git_public_command(r#"{"kind":"reset","target":"HEAD","mode":"invalid"}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn json_projectors_reject_raw_malformed_fixtures() {
+        assert_eq!(
+            canonicalize_git_output_json(r#""NoOp""#).expect("canonical no-op"),
+            r#""NoOp""#,
+        );
+        assert!(canonicalize_git_output_json(r#"{"Status":{"branch":"main"}}"#).is_err());
+        assert!(
+            canonicalize_git_pending_transition_json(
+                r#"{"action":{"ApplyPatch":{"patch":[256]}},"mutation":"NoOp"}"#,
+            )
+            .is_err()
+        );
     }
 
     fn tree(byte: u8) -> GitTreeRef {

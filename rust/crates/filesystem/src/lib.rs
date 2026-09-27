@@ -195,9 +195,10 @@ pub use git_compat::{
     GitObjectName, GitPatchError, GitPendingMutation, GitPendingTransition, GitPublicationRecord,
     GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, IntoGitTreeRef,
     MemoryGitCompatStore, apply_git_patch, apply_git_patch_with_permit, blame_git_generations,
+    canonicalize_git_output_json, canonicalize_git_pending_transition_json,
     capture_git_compatible_generation, capture_git_compatible_generation_at,
     capture_git_compatible_generation_incremental, git_compatible_diff_counts, grep_git_generation,
-    walk_git_tree,
+    parse_git_public_command, walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{

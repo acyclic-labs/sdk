@@ -98,8 +98,11 @@ export const browsergeneration_readRange: (a: number, b: number, c: number, d: b
 export const browsergeneration_readSymbolicLink: (a: number, b: number, c: number) => any;
 export const browsergeneration_stat: (a: number, b: number, c: number) => any;
 export const browsergeneration_workspaceId: (a: number) => [number, number];
+export const browsergitcompatrepository_canonicalizeOutputJson: (a: number, b: number, c: number) => [number, number, number, number];
+export const browsergitcompatrepository_canonicalizePendingTransitionJson: (a: number, b: number, c: number) => [number, number, number, number];
 export const browsergitcompatrepository_executeArgvJson: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: bigint) => any;
 export const browsergitcompatrepository_executeJson: (a: number, b: number, c: number, d: number, e: number) => any;
+export const browsergitcompatrepository_executePublicJson: (a: number, b: number, c: number, d: number, e: number) => any;
 export const browsergitcompatrepository_new: (a: number, b: number) => [number, number, number];
 export const browserjoinplan_apply: (a: number, b: number, c: number, d: number, e: number) => any;
 export const browserjoinplan_commonAncestor: (a: number) => [number, number];

@@ -767,6 +767,19 @@ export declare class NativeGitCompatRepository {
   executeArgvJson(argv: Array<string>, workspaceGeneration: Buffer, defaultAuthor: string, nowSeconds: string): Promise<string>
   /** Executes one typed command encoded with the public Rust serde contract. */
   executeJson(commandJson: string, workspaceGeneration: Buffer): Promise<string>
+  /**
+   * Executes a natural JavaScript Git command through the Rust projection.
+   * The projection owns public discriminators, defaults, and enum parsing;
+   * TypeScript only supplies JSON-safe values at this boundary.
+   */
+  executePublicJson(commandJson: string, workspaceGeneration: Buffer): Promise<string>
+  /** Validates and canonicalizes a Rust Git output before JS projection. */
+  canonicalizeOutputJson(valueJson: string): string
+  /**
+   * Validates and canonicalizes a durable pending transition before JS
+   * projection.
+   */
+  canonicalizePendingTransitionJson(valueJson: string): string
   /** Returns any crash-recoverable prepared transition as stable JSON. */
   pendingTransitionJson(): Promise<string | null>
   /** Finalizes a prepared transition after its filesystem action succeeds. */

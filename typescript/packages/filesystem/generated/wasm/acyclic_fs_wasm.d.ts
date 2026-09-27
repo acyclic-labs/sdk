@@ -706,6 +706,15 @@ export class BrowserGitCompatRepository {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * Validates and canonicalizes a Rust Git output before JS projection.
+     */
+    canonicalizeOutputJson(value_json: string): string;
+    /**
+     * Validates and canonicalizes a durable pending transition before JS
+     * projection.
+     */
+    canonicalizePendingTransitionJson(value_json: string): string;
+    /**
      * Parses and executes a Git-shaped argv command using the Rust source of truth.
      */
     executeArgvJson(argv: string[], workspace_generation: Uint8Array, default_author: string, now_seconds: bigint): Promise<string>;
@@ -713,6 +722,11 @@ export class BrowserGitCompatRepository {
      * Executes one typed command encoded with the public serde contract.
      */
     executeJson(command_json: string, workspace_generation: Uint8Array): Promise<string>;
+    /**
+     * Executes a natural JavaScript Git command through the Rust
+     * projection shared with the native binding.
+     */
+    executePublicJson(command_json: string, workspace_generation: Uint8Array): Promise<string>;
     /**
      * Creates process-local compatibility state for one SDK workspace.
      */
@@ -1270,8 +1284,11 @@ export interface InitOutput {
     readonly browsergeneration_readSymbolicLink: (a: number, b: number, c: number) => any;
     readonly browsergeneration_stat: (a: number, b: number, c: number) => any;
     readonly browsergeneration_workspaceId: (a: number) => [number, number];
+    readonly browsergitcompatrepository_canonicalizeOutputJson: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly browsergitcompatrepository_canonicalizePendingTransitionJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly browsergitcompatrepository_executeArgvJson: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: bigint) => any;
     readonly browsergitcompatrepository_executeJson: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browsergitcompatrepository_executePublicJson: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsergitcompatrepository_new: (a: number, b: number) => [number, number, number];
     readonly browserjoinplan_apply: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserjoinplan_commonAncestor: (a: number) => [number, number];
