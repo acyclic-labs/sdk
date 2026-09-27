@@ -153,8 +153,9 @@ fn paired_rename_is_exact_and_an_unpaired_half_is_platform_defined()
             VolumeLimits::default(),
         );
         // inotify pairs halves by cookie before `map_event`, so a lone half
-        // there is a lost half; FSEvents and `ReadDirectoryChangesW` never
-        // pair, so a lone half is an ordinary "this path changed" hint.
+        // there is a lost half. `ReadDirectoryChangesW` never pairs but says
+        // which end each half is: a name arrived or went away. FSEvents says
+        // neither, so a lone half is an ordinary "this path changed" hint.
         if cfg!(target_os = "linux") {
             assert_eq!(unpaired, Err(WatchInvalidationReason::AmbiguousRename));
         } else {
@@ -164,7 +165,12 @@ fn paired_rename_is_exact_and_an_unpaired_half_is_platform_defined()
                 FilesystemProfile::Portable,
                 VolumeLimits::default(),
             )?;
-            assert_eq!(unpaired, Ok(vec![WatchChange::Modified(one_sided)]));
+            let expected = match mode {
+                _ if !cfg!(windows) => WatchChange::Modified(one_sided),
+                RenameMode::To => WatchChange::Arrived(one_sided),
+                _ => WatchChange::Removed(one_sided),
+            };
+            assert_eq!(unpaired, Ok(vec![expected]));
         }
     }
     Ok(())
@@ -621,6 +627,7 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
     assert!(observed.iter().any(|change| match change {
         WatchChange::Created(path)
         | WatchChange::Modified(path)
+        | WatchChange::Arrived(path)
         | WatchChange::MetadataChanged(path)
         | WatchChange::Removed(path) => path.depth() <= 1,
         WatchChange::Renamed { from, to } => from.depth() <= 1 && to.depth() <= 1,
@@ -869,6 +876,7 @@ fn fence_queues_every_completed_write_and_hides_its_cookie()
     assert!(observed.iter().all(|change| match change {
         WatchChange::Created(path)
         | WatchChange::Modified(path)
+        | WatchChange::Arrived(path)
         | WatchChange::MetadataChanged(path)
         | WatchChange::Removed(path) => !excluded.iter().any(|excluded| path.is_within(excluded)),
         WatchChange::Renamed { .. } => false,

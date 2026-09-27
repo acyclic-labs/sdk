@@ -1,11 +1,6 @@
 //! Production-boundary qualification for the packaged Acyclic plugin.
 
-#![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    clippy::permissions_set_readonly_false
-)]
+#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
 
 mod support;
 

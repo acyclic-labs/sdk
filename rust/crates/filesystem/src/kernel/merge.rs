@@ -241,6 +241,7 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
     let mut conflicts = Vec::new();
     let mut truncated = false;
     let mut folds = Vec::new();
+    let mut file_folds = Vec::new();
     for file_id in identities {
         let base = ours
             .get(&file_id)
@@ -325,6 +326,7 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
             conflicts.extend(directory.value.conflicts);
             truncated |= directory.value.truncated;
             folds.extend(directory.value.folds);
+            file_folds.extend(directory.value.file_folds);
             let Some(record) = directory.value.record else {
                 continue;
             };
@@ -404,7 +406,7 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
         };
         resolutions.insert(file_id, (ours_value, resolved));
     }
-    fold_directories(
+    fold_additions(
         store,
         folds,
         &mut resolutions,
@@ -412,6 +414,7 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
             conflicts: &mut conflicts,
             truncated: &mut truncated,
             remaining_changes: &mut remaining_changes,
+            file_folds: &mut file_folds,
         },
         request.maximum_conflicts,
         &request.resolutions,
@@ -876,6 +879,20 @@ pub(crate) struct DirectoryMergeResult {
     /// Names both sides added as directories under different identities:
     /// `(ours, theirs)`. Ours keeps the name; theirs' entries fold into it.
     pub(crate) folds: Vec<(FileId, FileId)>,
+    /// Names both sides added as non-directories under different identities.
+    pub(crate) file_folds: Vec<FileFold>,
+}
+
+/// One name both sides added as a non-directory under different identities
+/// (each captured the same host file, say). Ours keeps the name; theirs
+/// folds into it when both hold the same file, and the binding conflicts
+/// otherwise.
+#[derive(Clone, Debug)]
+pub(crate) struct FileFold {
+    directory_id: FileId,
+    name: LogicalName,
+    ours: FileId,
+    theirs: FileId,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -932,6 +949,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
         truncated: maximum_conflicts == 0,
         examined_changes: 0,
         folds: Vec::new(),
+        file_folds: Vec::new(),
     };
     // A driver resolving this directory's record supplies its metadata only:
     // the entries below are always merged, never replaced wholesale, so one
@@ -1042,6 +1060,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
     let mut truncated = false;
     let mut mutations = Vec::new();
     let mut folds = Vec::new();
+    let mut file_folds = Vec::new();
     for name in names {
         let base_value = ours_changes
             .get(&name)
@@ -1086,6 +1105,24 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
             }
             _ => None,
         });
+        // Files merge by path too: ours keeps the name, and the caller folds
+        // theirs into it or reports this binding.
+        let resolved = resolved.or_else(|| match (&base_value, &ours_value, &theirs_value) {
+            (None, Some(ours_entry), Some(theirs_entry))
+                if ours_entry.kind != super::FileKind::Directory
+                    && theirs_entry.kind != super::FileKind::Directory
+                    && ours_entry.file_id != theirs_entry.file_id =>
+            {
+                file_folds.push(FileFold {
+                    directory_id,
+                    name: name.clone(),
+                    ours: ours_entry.file_id,
+                    theirs: theirs_entry.file_id,
+                });
+                Some(ours_value.clone())
+            }
+            _ => None,
+        });
         let Some(resolved) = resolved else {
             if conflicts.len() < usize::try_from(maximum_conflicts).unwrap_or(usize::MAX) {
                 conflicts.push(MergeConflict::Binding { directory_id, name });
@@ -1108,6 +1145,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                 truncated,
                 examined_changes,
                 folds,
+                file_folds,
             },
             work,
         });
@@ -1142,6 +1180,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
             truncated,
             examined_changes,
             folds,
+            file_folds,
         },
         work,
     })
@@ -1305,14 +1344,16 @@ struct FoldState<'a> {
     conflicts: &'a mut Vec<MergeConflict>,
     truncated: &'a mut bool,
     remaining_changes: &'a mut u32,
+    file_folds: &'a mut Vec<FileFold>,
 }
 
 /// Folds each directory theirs added under a name ours also added as a
 /// directory: ours keeps its identity and gains theirs' entries (merged
 /// against an empty directory, which may fold further), and theirs' record,
-/// left without a name, is dropped.
+/// left without a name, is dropped. Then folds the files both sides added
+/// under one name, including those found inside folded directories.
 #[allow(clippy::too_many_arguments)]
-async fn fold_directories<S: AsyncObjectStore>(
+async fn fold_additions<S: AsyncObjectStore>(
     store: &S,
     mut folds: Vec<(FileId, FileId)>,
     resolutions: &mut BTreeMap<FileId, RecordChange>,
@@ -1359,10 +1400,91 @@ async fn fold_directories<S: AsyncObjectStore>(
         state.conflicts.extend(directory.value.conflicts);
         *state.truncated |= directory.value.truncated;
         folds.extend(directory.value.folds);
+        state.file_folds.extend(directory.value.file_folds);
         if let Some(record) = directory.value.record {
             resolutions.insert(ours_id, (ours_before, Some(record)));
         }
         resolutions.insert(theirs_id, (theirs_before, None));
+    }
+    fold_files(
+        store,
+        std::mem::take(state.file_folds),
+        resolutions,
+        state.conflicts,
+        state.truncated,
+        maximum_conflicts,
+        limits,
+        budget,
+        cancellation,
+        work,
+    )
+    .await
+}
+
+/// Folds each file theirs added under a name ours also added: one file when
+/// both records hold the same kind and content, each under this one name
+/// only, with authored metadata that agrees. Theirs' identity then leaves
+/// the table. Anything else is a real conflict at that binding.
+#[allow(clippy::too_many_arguments)]
+async fn fold_files<S: AsyncObjectStore>(
+    store: &S,
+    folds: Vec<FileFold>,
+    resolutions: &mut BTreeMap<FileId, RecordChange>,
+    conflicts: &mut Vec<MergeConflict>,
+    truncated: &mut bool,
+    maximum_conflicts: u32,
+    limits: DecodeLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    work: &mut WorkCounters,
+) -> Result<(), OperationFailure<MergeGenerationError>> {
+    for fold in folds {
+        let (Some((ours_before, Some(ours_record))), Some((theirs_before, Some(theirs_record)))) = (
+            resolutions.get(&fold.ours).copied(),
+            resolutions.get(&fold.theirs).copied(),
+        ) else {
+            return Err(invalid(*work));
+        };
+        let metadata = if ours_record.kind == theirs_record.kind
+            && ours_record.payload == theirs_record.payload
+            && ours_record.link_count == 1
+            && theirs_record.link_count == 1
+        {
+            converge_metadata_async(
+                store,
+                ours_record.metadata,
+                theirs_record.metadata,
+                limits,
+                budget,
+                cancellation,
+                work,
+            )
+            .await?
+        } else {
+            None
+        };
+        let Some(metadata) = metadata else {
+            if conflicts.len() < usize::try_from(maximum_conflicts).unwrap_or(usize::MAX) {
+                conflicts.push(MergeConflict::Binding {
+                    directory_id: fold.directory_id,
+                    name: fold.name,
+                });
+            } else {
+                *truncated = true;
+            }
+            continue;
+        };
+        resolutions.insert(
+            fold.ours,
+            (
+                ours_before,
+                Some(FileRecord {
+                    metadata,
+                    ..ours_record
+                }),
+            ),
+        );
+        resolutions.insert(fold.theirs, (theirs_before, None));
     }
     Ok(())
 }

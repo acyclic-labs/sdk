@@ -1442,14 +1442,13 @@ fn conflict_abort_materialization_operation_id(
     OperationId::from_bytes(bytes)
 }
 
+/// The portable text of a path in any encoding the volume stores (UTF-8 or
+/// Windows UTF-16); `None` only for a name with no Unicode text.
 fn portable_namespace_path(path: &crate::kernel::NamespacePath) -> Option<String> {
     let mut value = String::new();
     for component in path.components() {
-        if component.encoding() != crate::kernel::NameEncoding::Utf8 {
-            return None;
-        }
         value.push('/');
-        value.push_str(std::str::from_utf8(component.as_bytes()).ok()?);
+        value.push_str(&component.unicode_text()?);
     }
     if value.is_empty() {
         value.push('/');

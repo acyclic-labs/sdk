@@ -2686,6 +2686,93 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
     Ok(())
 }
 
+/// Two siblings each create the same file (under different identities, as two
+/// captures of one host file do). Files merge by path like directories: the
+/// same content folds into one file, and only different content conflicts.
+#[allow(clippy::expect_used, clippy::panic)]
+#[tokio::test]
+async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = fs.create_workspace("file-fold-main").await?;
+    main.write_text("/README.md", "base\n").await?;
+    let base = main.head().await?;
+    let mut forks = Vec::new();
+    for (name, other) in [
+        ("file-fold-first", "first\n"),
+        ("file-fold-second", "second\n"),
+    ] {
+        let fork = main
+            .fork(
+                name,
+                ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+            )
+            .await?;
+        fork.write_text("/same.rs", "same\n").await?;
+        fork.write_text("/other.rs", other).await?;
+        forks.push(fork);
+    }
+    let mut outcomes = Vec::new();
+    for fork in &forks {
+        let plan = fork.join_into(&main).plan().await?;
+        outcomes.push(
+            match plan
+                .apply(ApplyOptions {
+                    if_target: plan.target_head(),
+                    idempotency_key: IdempotencyKey::new(),
+                })
+                .await?
+            {
+                JoinOutcome::Applied(_) => Vec::new(),
+                JoinOutcome::Conflicted { conflicts, .. } => plan
+                    .describe_conflicts(&conflicts, false)
+                    .await?
+                    .conflicts
+                    .into_iter()
+                    .map(|conflict| conflict.path)
+                    .collect(),
+                _ => panic!("join did not apply"),
+            },
+        );
+    }
+    assert_eq!(outcomes, [Vec::new(), vec![Some("/other.rs".to_owned())]]);
+
+    let fork = main
+        .fork(
+            "file-fold-third",
+            ForkOptions::from_generation(base, IdempotencyKey::new()),
+        )
+        .await?;
+    fork.write_text("/same.rs", "same\n").await?;
+    let plan = fork.join_into(&main).plan().await?;
+    match plan
+        .apply(ApplyOptions {
+            if_target: plan.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        })
+        .await?
+    {
+        // Folded into the file main already holds: nothing left to publish.
+        JoinOutcome::NoChanges(_) => {}
+        JoinOutcome::Conflicted { conflicts, .. } => {
+            let described = plan.describe_conflicts(&conflicts, false).await?;
+            panic!(
+                "an identical independent creation must fold: {:?}",
+                described.conflicts
+            );
+        }
+        _ => panic!("an identical independent creation changes nothing"),
+    }
+    assert_eq!(
+        main.read("/same.rs", 16).await?,
+        Bytes::from_static(b"same\n")
+    );
+    assert_eq!(
+        main.read("/other.rs", 16).await?,
+        Bytes::from_static(b"first\n")
+    );
+    Ok(())
+}
+
 /// The mount bumps a directory's modification time whenever a child is
 /// added, so two siblings adding files to one directory always diverge on its
 /// metadata. That must reconcile; only authored metadata (the mode) conflicts.

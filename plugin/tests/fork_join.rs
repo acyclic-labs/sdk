@@ -1,7 +1,7 @@
 //! Black-box fork/join conformance on live native mounts.
 //!
 //! Every assertion goes through the public surface only: host hook events,
-//! `acyclic git merge`, `acyclic discard`, `acyclic agents --json`, and POSIX
+//! `acyclic git merge`, `acyclic discard`, `acyclic agents --json`, and host file
 //! operations on the mounts the engine hands out. Nothing here knows how the
 //! filesystem layer is built, so these hold for whatever implements it.
 //!
@@ -9,7 +9,6 @@
 //! --test-threads=1 --skip support::` (the shared support module carries
 //! ignored tests of its own).
 
-#![cfg(any(target_os = "linux", target_os = "macos"))]
 #![allow(clippy::expect_used, clippy::panic)]
 
 #[allow(dead_code, unused_imports)]
@@ -247,7 +246,7 @@ fn files(root: &Path) -> Vec<String> {
                     path.strip_prefix(root)
                         .expect("under root")
                         .to_string_lossy()
-                        .into_owned(),
+                        .replace('\\', "/"),
                 );
             }
         }
