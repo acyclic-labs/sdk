@@ -26,7 +26,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.5"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.98"
 license = "Apache-2.0"
 repository = "https://github.com/acyclic-labs/sdk"
 publish = true
@@ -63,7 +63,7 @@ rustix = { version = "1.1.4", features = ["process"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11.19"
 serde_json = "1.0.145"
-s3s = "0.13.0"
+s3s = "0.17.0"
 schemars = "1"
 serde-wasm-bindgen = "0.6.5"
 serde_urlencoded = "0.7.1"

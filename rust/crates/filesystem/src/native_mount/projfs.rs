@@ -1846,13 +1846,7 @@ unsafe fn empty_destination(pointer: PCWSTR) -> bool {
 }
 
 fn decode_utf16_name(bytes: &[u8]) -> Option<Vec<u16>> {
-    if !bytes.len().is_multiple_of(2) {
-        return None;
-    }
-    bytes
-        .chunks_exact(2)
-        .map(|unit| unit.try_into().ok().map(u16::from_le_bytes))
-        .collect()
+    Some(crate::kernel::types::utf16le_units(bytes)?.collect())
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

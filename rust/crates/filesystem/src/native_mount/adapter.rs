@@ -2615,17 +2615,12 @@ impl<A, O> CheckoutMountSource<A, O> {
                 (NameEncoding::WindowsUtf16Le, bytes.to_vec())
             }
             (FilesystemProfile::Portable | FilesystemProfile::Browser, "windows") => {
-                if !bytes.len().is_multiple_of(2) {
-                    return Err(MountSourceError::Invalid(
-                        "native UTF-16 name has an odd byte length".to_owned(),
-                    ));
-                }
-                let units = bytes
-                    .chunks_exact(2)
-                    .map(|unit| {
-                        let bytes: [u8; 2] = unit.try_into().unwrap_or([0, 0]);
-                        u16::from_le_bytes(bytes)
-                    })
+                let units = crate::kernel::types::utf16le_units(bytes)
+                    .ok_or_else(|| {
+                        MountSourceError::Invalid(
+                            "native UTF-16 name has an odd byte length".to_owned(),
+                        )
+                    })?
                     .collect::<Vec<_>>();
                 let value = String::from_utf16(&units).map_err(|_| {
                     MountSourceError::Unsupported(

@@ -73,15 +73,9 @@ impl LogicalName {
                 }
             }
             NameEncoding::WindowsUtf16Le => {
-                if !bytes.len().is_multiple_of(2) {
+                let Some(units) = utf16le_units(&bytes) else {
                     return Err(TreePageError::InvalidName);
-                }
-                let units = bytes.chunks_exact(2).map(|pair| {
-                    let [low, high] = pair else {
-                        unreachable!("chunks_exact(2) always yields a length-2 slice")
-                    };
-                    u16::from_le_bytes([*low, *high])
-                });
+                };
                 if bytes == [b'.', 0]
                     || bytes == [b'.', 0, b'.', 0]
                     || units.clone().any(|unit| {
@@ -116,18 +110,10 @@ impl LogicalName {
             NameEncoding::Utf8 | NameEncoding::PosixBytes => {
                 std::str::from_utf8(&self.bytes).ok().map(Cow::Borrowed)
             }
-            NameEncoding::WindowsUtf16Le => {
-                let units = self.bytes.chunks_exact(2).map(|pair| {
-                    let [low, high] = pair else {
-                        unreachable!("chunks_exact(2) yields pairs")
-                    };
-                    u16::from_le_bytes([*low, *high])
-                });
-                char::decode_utf16(units)
-                    .collect::<Result<String, _>>()
-                    .ok()
-                    .map(Cow::Owned)
-            }
+            NameEncoding::WindowsUtf16Le => char::decode_utf16(utf16le_units(&self.bytes)?)
+                .collect::<Result<String, _>>()
+                .ok()
+                .map(Cow::Owned),
         }
     }
 
@@ -498,3 +484,11 @@ pub enum ExtentPageError {
 #[cfg(test)]
 #[path = "tests/types.rs"]
 mod tests;
+
+/// The UTF-16 code units little-endian `bytes` hold, or `None` for an odd
+/// length, which holds none.
+pub(crate) fn utf16le_units(bytes: &[u8]) -> Option<impl Iterator<Item = u16> + Clone + '_> {
+    let (units, rest) = bytes.as_chunks::<2>();
+    rest.is_empty()
+        .then(|| units.iter().map(|&unit| u16::from_le_bytes(unit)))
+}

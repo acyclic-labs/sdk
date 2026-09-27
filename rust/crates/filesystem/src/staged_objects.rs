@@ -110,13 +110,11 @@ struct IdentityHasher(u64);
 
 impl Hasher for IdentityHasher {
     fn write(&mut self, bytes: &[u8]) {
-        let mut words = bytes.chunks_exact(8);
-        for word in &mut words {
-            let mut buffer = [0_u8; 8];
-            buffer.copy_from_slice(word);
-            self.write_u64(u64::from_le_bytes(buffer));
+        let (words, rest) = bytes.as_chunks::<8>();
+        for &word in words {
+            self.write_u64(u64::from_le_bytes(word));
         }
-        for &byte in words.remainder() {
+        for &byte in rest {
             self.write_u64(u64::from(byte));
         }
     }

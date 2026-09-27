@@ -51,9 +51,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: ./.github/actions/rust-toolchain
         with:
-          toolchain: 1.94.0
           targets: ${{ matrix.rust_target }}
       - name: Restore Rust build cache
         uses: ./.github/actions/rust-build-cache
@@ -169,9 +168,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          toolchain: 1.94.0
+      - uses: ./.github/actions/rust-toolchain
       - name: Install Linux native-mount prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends fuse3 libfuse3-dev

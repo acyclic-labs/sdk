@@ -929,9 +929,12 @@ pub mod native {
                 return Ok(false);
             }
             let relative = self.relative(directory)?;
-            Ok(live
-                .iter()
-                .fold(false, |added, watch| watch.admit(&relative) || added))
+            // Every watch admits it, not just the first that does.
+            let mut added = false;
+            for watch in &live {
+                added |= watch.admit(&relative);
+            }
+            Ok(added)
         }
 
         /// One watch covers the whole root on every other host.
