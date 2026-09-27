@@ -1274,8 +1274,7 @@ mod http {
             "children_page" => (
                 "children/page",
                 children_page_value(
-                    wire::ChildrenPageResponse::decode(input)
-                        .map_err(|_| "invalid_response")?,
+                    wire::ChildrenPageResponse::decode(input).map_err(|_| "invalid_response")?,
                 )?,
             ),
             _ => return Err("invalid_argument"),

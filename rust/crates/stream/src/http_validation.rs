@@ -54,10 +54,8 @@ fn decode_base64(value: &str) -> Option<Vec<u8>> {
     }
     let mut output = Vec::with_capacity(value.len() / 4 * 3);
     let bytes = value.as_bytes();
-    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
-        let &[a_byte, b_byte, c_byte, d_byte] = chunk else {
-            return None;
-        };
+    let (chunks, _) = bytes.as_chunks::<4>();
+    for (index, &[a_byte, b_byte, c_byte, d_byte]) in chunks.iter().enumerate() {
         let a = sextet(a_byte)?;
         let b = sextet(b_byte)?;
         let c = if c_byte == b'=' { 0 } else { sextet(c_byte)? };

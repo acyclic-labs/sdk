@@ -245,7 +245,10 @@ struct WasmModelMessageWire {
 /// Public model-message input used by the runtime validator.  The content
 /// input intentionally reuses the generated camelCase facade type while the
 /// Rust parser below still consumes the canonical `ModelMessage` DTO.
-#[allow(dead_code, reason = "the struct exists to emit the generated TypeScript input type")]
+#[allow(
+    dead_code,
+    reason = "the struct exists to emit the generated TypeScript input type"
+)]
 #[derive(Deserialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
