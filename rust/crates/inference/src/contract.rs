@@ -324,18 +324,127 @@ pub(crate) fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Res
     Ok(())
 }
 
-pub(crate) fn watch_run_start(view: &wire::RunView, from_sequence: u64) -> Result<bool, Error> {
-    if view.result.is_none() {
-        return Ok(false);
+/// Canonical state carried while consuming an ordered Run event stream.
+///
+/// The state is intentionally opaque to language bindings. They pass it back
+/// to [`WatchRunState::advance_wire`] for every decoded event and to
+/// [`WatchRunState::finish`] when the stream closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WatchRunState {
+    expected: u64,
+    terminal: bool,
+}
+
+impl WatchRunState {
+    /// Whether the stream has already observed its terminal event.
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        self.terminal
     }
-    let end = view
-        .last_sequence
+
+    /// Validate and consume one encoded Run event in place.
+    ///
+    /// # Errors
+    /// Rejects malformed protobuf, a gap or duplicate, post-terminal data,
+    /// an invalid terminal enum, or cursor exhaustion.
+    pub fn advance_wire(&mut self, message: &[u8]) -> Result<(), &'static str> {
+        use prost::Message;
+        if message.len() > MAXIMUM_MESSAGE_BYTES {
+            return Err("message exceeds transport ceiling");
+        }
+        let event = wire::RunEvent::decode(message).map_err(|_| "malformed protobuf message")?;
+        watch_run_event(self, &event).map_err(|Error::Invalid(message)| message)
+    }
+
+    /// Confirm that a stream closed only after its terminal event.
+    ///
+    /// # Errors
+    /// Returns an error when the stream ended before terminal evidence.
+    pub fn finish(self) -> Result<(), &'static str> {
+        if self.terminal {
+            Ok(())
+        } else {
+            Err("run stream ended before terminal")
+        }
+    }
+}
+
+pub(crate) fn watch_run_start(
+    view: &wire::RunView,
+    from_sequence: u64,
+) -> Result<WatchRunState, Error> {
+    let terminal = if view.result.is_none() {
+        false
+    } else {
+        let end = view
+            .last_sequence
+            .checked_add(1)
+            .ok_or(Error::Invalid("Run sequence exhausted"))?;
+        if from_sequence > end {
+            return Err(Error::Invalid("Run cursor exceeds retained events"));
+        }
+        from_sequence == end
+    };
+    Ok(WatchRunState {
+        expected: from_sequence,
+        terminal,
+    })
+}
+
+pub(crate) fn watch_run_event(
+    state: &mut WatchRunState,
+    event: &wire::RunEvent,
+) -> Result<(), Error> {
+    if state.terminal || event.sequence != state.expected {
+        return Err(Error::Invalid("run event order or shape differs"));
+    }
+    validate_run_event(event)?;
+    state.expected = state
+        .expected
         .checked_add(1)
         .ok_or(Error::Invalid("Run sequence exhausted"))?;
-    if from_sequence > end {
-        return Err(Error::Invalid("Run cursor exceeds retained events"));
+    if matches!(event.event, Some(wire::run_event::Event::Terminal(_))) {
+        state.terminal = true;
     }
-    Ok(from_sequence == end)
+    Ok(())
+}
+
+fn validate_run_event(event: &wire::RunEvent) -> Result<(), Error> {
+    match event.event.as_ref() {
+        None => Err(Error::Invalid("run event is absent")),
+        Some(wire::run_event::Event::Terminal(value))
+            if wire::RunTerminal::try_from(*value).unwrap_or(wire::RunTerminal::Unspecified)
+                == wire::RunTerminal::Unspecified =>
+        {
+            Err(Error::Invalid("run terminal is invalid"))
+        }
+        Some(_) => Ok(()),
+    }
+}
+
+/// Start the canonical watch state from a validated encoded Run view.
+///
+/// # Errors
+/// Rejects a malformed view, mismatched identity, or invalid cursor.
+pub fn watch_run_start_state_wire(
+    message: &[u8],
+    expected: &[u8],
+    from_sequence: &str,
+) -> Result<WatchRunState, &'static str> {
+    use prost::Message;
+    let inner = || -> Result<WatchRunState, Error> {
+        if message.len() > MAXIMUM_MESSAGE_BYTES {
+            return Err(Error::Invalid("message exceeds transport ceiling"));
+        }
+        let view = wire::RunView::decode(message)
+            .map_err(|_| Error::Invalid("malformed protobuf message"))?;
+        validate_run_view(&view, fixed::<16>(expected)?)?;
+        let cursor = from_sequence
+            .parse::<u64>()
+            .map_err(|_| Error::Invalid("Run cursor is invalid"))?;
+        watch_run_start(&view, cursor)
+    };
+    inner().map_err(|Error::Invalid(message)| message)
 }
 
 /// Decide whether a completed Run has any events left at the requested cursor.
@@ -359,7 +468,7 @@ pub fn watch_run_start_wire(
         let cursor = from_sequence
             .parse::<u64>()
             .map_err(|_| Error::Invalid("Run cursor is invalid"))?;
-        watch_run_start(&view, cursor)
+        Ok(watch_run_start(&view, cursor)?.is_terminal())
     };
     inner().map_err(|Error::Invalid(message)| message)
 }
@@ -511,17 +620,7 @@ fn validate_customer_wire_inner(
         }
         "run_event" => {
             let event = decode!(wire::RunEvent);
-            match event.event.as_ref() {
-                None => Err(Error::Invalid("run event is absent")),
-                Some(wire::run_event::Event::Terminal(value))
-                    if wire::RunTerminal::try_from(*value)
-                        .unwrap_or(wire::RunTerminal::Unspecified)
-                        == wire::RunTerminal::Unspecified =>
-                {
-                    Err(Error::Invalid("run terminal is invalid"))
-                }
-                Some(_) => Ok(()),
-            }
+            validate_run_event(&event)
         }
         _ => Err(Error::Invalid("unknown inference message kind")),
     }
@@ -596,6 +695,71 @@ mod tests {
         exhausted.last_sequence = u64::MAX;
         assert_eq!(
             watch_run_start_wire(&exhausted.encode_to_vec(), &[2; 16], "0"),
+            Err("Run sequence exhausted")
+        );
+    }
+
+    #[test]
+    fn watch_state_owns_order_terminal_eof_and_overflow_rules() {
+        let view = wire::RunView {
+            run_id: vec![2; 16],
+            input: vec![3; 32],
+            model: "model".to_owned(),
+            last_sequence: 0,
+            ..Default::default()
+        };
+        let mut state =
+            watch_run_start_state_wire(&view.encode_to_vec(), &[2; 16], "0").expect("valid start");
+        let progress = |sequence| wire::RunEvent {
+            sequence,
+            event: Some(wire::run_event::Event::Progress(wire::RunProgress {
+                kind: "queued".to_owned(),
+            })),
+        };
+        state
+            .advance_wire(&progress(0).encode_to_vec())
+            .expect("ordered progress");
+        assert!(!state.is_terminal());
+        assert_eq!(
+            state.advance_wire(&progress(0).encode_to_vec()),
+            Err("run event order or shape differs")
+        );
+        assert_eq!(
+            state.advance_wire(&progress(2).encode_to_vec()),
+            Err("run event order or shape differs")
+        );
+        assert_eq!(state.finish(), Err("run stream ended before terminal"));
+
+        let terminal = wire::RunEvent {
+            sequence: 1,
+            event: Some(wire::run_event::Event::Terminal(
+                wire::RunTerminal::Completed.into(),
+            )),
+        };
+        state
+            .advance_wire(&terminal.encode_to_vec())
+            .expect("valid terminal");
+        assert!(state.is_terminal());
+        assert_eq!(state.finish(), Ok(()));
+        assert_eq!(
+            state.advance_wire(&progress(2).encode_to_vec()),
+            Err("run event order or shape differs")
+        );
+
+        let mut max_state = WatchRunState {
+            expected: u64::MAX,
+            terminal: false,
+        };
+        assert_eq!(
+            max_state.advance_wire(
+                &wire::RunEvent {
+                    sequence: u64::MAX,
+                    event: Some(wire::run_event::Event::Terminal(
+                        wire::RunTerminal::Completed.into(),
+                    )),
+                }
+                .encode_to_vec()
+            ),
             Err("Run sequence exhausted")
         );
     }

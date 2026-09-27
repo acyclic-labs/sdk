@@ -848,11 +848,11 @@ impl Run {
     /// Returns transport or authenticated service rejection before the stream is established.
     pub async fn watch(&self, from_sequence: u64) -> Result<RunEvents, Error> {
         let view = self.inspect().await?;
-        if contract::watch_run_start(&view, from_sequence).map_err(contract_error)? {
+        let state = contract::watch_run_start(&view, from_sequence).map_err(contract_error)?;
+        if state.is_terminal() {
             return Ok(RunEvents {
                 stream: None,
-                expected: from_sequence,
-                terminal: true,
+                state,
             });
         }
         let stream = self
@@ -866,8 +866,7 @@ impl Run {
             .into_inner();
         Ok(RunEvents {
             stream: Some(stream),
-            expected: from_sequence,
-            terminal: false,
+            state,
         })
     }
 
@@ -890,8 +889,7 @@ impl Run {
 /// Validating event-stream observation. Dropping it never cancels the Run.
 pub struct RunEvents {
     stream: Option<tonic::Streaming<wire::RunEvent>>,
-    expected: u64,
-    terminal: bool,
+    state: contract::WatchRunState,
 }
 
 impl RunEvents {
@@ -905,26 +903,10 @@ impl RunEvents {
             return Ok(None);
         };
         let Some(event) = stream.message().await? else {
-            if self.terminal {
-                return Ok(None);
-            }
-            return Err(Error::Invalid("Run stream ended before terminal"));
+            self.state.finish().map_err(Error::Invalid)?;
+            return Ok(None);
         };
-        if self.terminal || event.sequence != self.expected || event.event.is_none() {
-            return Err(Error::Invalid("Run event order or shape differs"));
-        }
-        self.expected = self
-            .expected
-            .checked_add(1)
-            .ok_or(Error::Invalid("Run sequence exhausted"))?;
-        if let Some(wire::run_event::Event::Terminal(value)) = event.event {
-            if wire::RunTerminal::try_from(value).unwrap_or(wire::RunTerminal::Unspecified)
-                == wire::RunTerminal::Unspecified
-            {
-                return Err(Error::Invalid("Run terminal is invalid"));
-            }
-            self.terminal = true;
-        }
+        contract::watch_run_event(&mut self.state, &event).map_err(contract_error)?;
         Ok(Some(event))
     }
 }

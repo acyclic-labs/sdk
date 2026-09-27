@@ -1,5 +1,5 @@
 import { create, fromJson, toBinary, toJsonString, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
-import { InferenceProtocolError, validateContract, watchRunAlreadyComplete } from "./contract.js";
+import { InferenceProtocolError, validateContract, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
 import {
   ContextViewSchema,
   CreateEvaluationRequestSchema,
@@ -127,21 +127,17 @@ export class InferenceClient {
     requireFixed(runId, 16, "run ID");
     if (fromSequence < 0n) throw new InferenceProtocolError("run cursor must be non-negative");
     const view = await this.inspectRun(runId, signal);
-    if (await watchRunAlreadyComplete(toBinary(RunViewSchema, view), runId, fromSequence)) return;
-    let expected = fromSequence;
-    let terminal = false;
-    for await (const event of this.transport.watchRun(create(WatchRunRequestSchema, { runId, fromSequence }), signal)) {
-      if (terminal || event.sequence !== expected) {
-        throw new InferenceProtocolError("run event order or shape differs");
+    const state = await watchRunStart(toBinary(RunViewSchema, view), runId, fromSequence);
+    try {
+      if (state.terminal) return;
+      for await (const event of this.transport.watchRun(create(WatchRunRequestSchema, { runId, fromSequence }), signal)) {
+        watchRunAdvance(state, event);
+        yield event;
       }
-      await validateContract("run_event", RunEventSchema, event);
-      expected += 1n;
-      if (event.event.case === "terminal") {
-        terminal = true;
-      }
-      yield event;
+      watchRunFinish(state);
+    } finally {
+      state.free();
     }
-    if (!terminal) throw new InferenceProtocolError("run stream ended before terminal");
   }
   async cancelRun(runId: Uint8Array): Promise<RunView> {
     requireFixed(runId, 16, "run ID");

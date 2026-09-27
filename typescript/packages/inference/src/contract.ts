@@ -1,6 +1,8 @@
 import { toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
+import { RunEventSchema, type RunEvent } from "../generated/proto/inference/v1/inference_pb.js";
 
 type InferenceWasm = typeof import("../generated/wasm/acyclic_inference_wasm.js");
+type WatchRunState = ReturnType<InferenceWasm["watch_run_start_state_wire"]>;
 
 export class InferenceProtocolError extends Error {}
 
@@ -40,15 +42,33 @@ export async function validateContract<Schema extends DescMessage>(
   }
 }
 
-/** Use the Rust watch-cursor decision for a validated protobuf Run view. */
-export async function watchRunAlreadyComplete(
+/** Start the Rust-owned ordered Run watch state from a validated protobuf view. */
+export async function watchRunStart(
   viewBytes: Uint8Array,
   runId: Uint8Array,
   fromSequence: bigint,
-): Promise<boolean> {
+): Promise<WatchRunState> {
   const module = await loadBinding();
   try {
-    return module.watch_run_start_wire(viewBytes, runId, fromSequence.toString());
+    return module.watch_run_start_state_wire(viewBytes, runId, fromSequence.toString());
+  } catch (error) {
+    throw new InferenceProtocolError(String(error));
+  }
+}
+
+/** Advance Rust-owned ordered Run watch state with one protobuf event. */
+export function watchRunAdvance(state: WatchRunState, event: RunEvent): void {
+  try {
+    state.advance(toBinary(RunEventSchema, event));
+  } catch (error) {
+    throw new InferenceProtocolError(String(error));
+  }
+}
+
+/** Confirm that a Rust-owned ordered Run watch ended after terminal evidence. */
+export function watchRunFinish(state: WatchRunState): void {
+  try {
+    state.finish();
   } catch (error) {
     throw new InferenceProtocolError(String(error));
   }

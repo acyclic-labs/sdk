@@ -15,6 +15,7 @@ import {
   HttpInferenceTransport,
   Inference,
   InferenceClient,
+  InferenceProtocolError,
   InferenceTransportError,
   WarmState,
   InspectContextRequestSchema,
@@ -227,8 +228,29 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   const malformed = new InferenceClient({ ...transport, async *watchRun() { yield create(RunEventSchema, { sequence: 2n }); } });
   await expect(async () => { for await (const _event of malformed.watchRun(id)) { /* exhaust */ } }).toThrow("run event order or shape differs");
 
+  const undefinedEvent = new InferenceClient({ ...transport, async *watchRun() { yield undefined as never; } });
+  await expect(async () => { for await (const _event of undefinedEvent.watchRun(id)) { /* exhaust */ } }).toThrow(InferenceProtocolError);
+
   const truncated = new InferenceClient({ ...transport, async *watchRun() { yield create(RunEventSchema, { sequence: 0n, event: { case: "progress", value: { kind: "queued" } } }); } });
   await expect(async () => { for await (const _event of truncated.watchRun(id)) { /* exhaust */ } }).toThrow("run stream ended before terminal");
+
+  const duplicate = new InferenceClient({ ...transport, async *watchRun() {
+    yield create(RunEventSchema, { sequence: 0n, event: { case: "progress", value: { kind: "queued" } } });
+    yield create(RunEventSchema, { sequence: 0n, event: { case: "terminal", value: RunTerminal.COMPLETED } });
+  } });
+  await expect(async () => { for await (const _event of duplicate.watchRun(id)) { /* exhaust */ } }).toThrow("run event order or shape differs");
+
+  const postTerminal = new InferenceClient({ ...transport, async *watchRun() {
+    yield create(RunEventSchema, { sequence: 0n, event: { case: "terminal", value: RunTerminal.COMPLETED } });
+    yield create(RunEventSchema, { sequence: 1n, event: { case: "progress", value: { kind: "late" } } });
+  } });
+  await expect(async () => { for await (const _event of postTerminal.watchRun(id)) { /* exhaust */ } }).toThrow("run event order or shape differs");
+
+  const overflow = new InferenceClient({ ...transport,
+    async inspectRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model" }); },
+    async *watchRun() { yield create(RunEventSchema, { sequence: (1n << 64n) - 1n, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
+  });
+  await expect(async () => { for await (const _event of overflow.watchRun(id, (1n << 64n) - 1n)) { /* exhaust */ } }).toThrow("Run sequence exhausted");
 
   expect(() => contextRevision(bytes(1))).toThrow("exactly 32 bytes");
   const substitutedContext = new InferenceClient({ ...transport, async inspectContext() { return contextView(revision(9)); } });
