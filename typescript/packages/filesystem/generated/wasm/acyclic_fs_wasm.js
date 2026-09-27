@@ -1391,7 +1391,7 @@ export class BrowserGeneration {
      * @param {string} path
      * @param {any | null | undefined} after
      * @param {number} maximum_entries
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceDirectoryPage>}
      */
     listDirectory(path, after, maximum_entries) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1415,7 +1415,7 @@ export class BrowserGeneration {
      * @param {bigint} offset
      * @param {bigint} length
      * @param {number} maximum_spans
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceExtentPlan>}
      */
     planExtents(path, offset, length, maximum_spans) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1459,7 +1459,7 @@ export class BrowserGeneration {
     }
     /**
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceStat>}
      */
     stat(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1635,7 +1635,7 @@ export class BrowserJoinPlan {
      * Applies this immutable plan through one exact target-head CAS.
      * @param {Uint8Array} if_target
      * @param {Uint8Array | null} [idempotency_key]
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserJoinResult>}
      */
     apply(if_target, idempotency_key) {
         const ptr0 = passArray8ToWasm0(if_target, wasm.__wbindgen_malloc);
@@ -2398,7 +2398,7 @@ export class BrowserWorkspace {
      * @param {number} maximum_generations
      * @param {number} maximum_changes
      * @param {number} maximum_conflicts
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceRebaseResult>}
      */
     liveRebase(idempotency_key, maximum_generations, maximum_changes, maximum_conflicts) {
         var ptr0 = isLikeNone(idempotency_key) ? 0 : passArray8ToWasm0(idempotency_key, wasm.__wbindgen_malloc);
@@ -2438,7 +2438,7 @@ export class BrowserWorkspace {
      * @param {bigint} offset
      * @param {bigint} length
      * @param {number} maximum_spans
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceExtentPlan>}
      */
     planExtents(path, offset, length, maximum_spans) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -2483,7 +2483,7 @@ export class BrowserWorkspace {
     /**
      * Removes one existing path atomically.
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceCommit>}
      */
     remove(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -2493,7 +2493,7 @@ export class BrowserWorkspace {
     }
     /**
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceStat>}
      */
     stat(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -2513,7 +2513,7 @@ export class BrowserWorkspace {
      * Atomically creates or replaces one complete file.
      * @param {string} path
      * @param {Uint8Array} bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceCommit>}
      */
     write(path, bytes) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -3604,23 +3604,23 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 987, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 989, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 810, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h36249d36b66faec8);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 811, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h65736f6e5215ff09);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 3, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hae8e6b71f70a0cdc);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h645af92b15c71abd);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 809, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h07c1b6ab92805486);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 812, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd45b3cccad240fdb);
             return ret;
         },
         __wbindgen_cast_0000000000000005: function(arg0) {
@@ -3671,12 +3671,12 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__h07c1b6ab92805486(arg0, arg1) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h07c1b6ab92805486(arg0, arg1);
+function wasm_bindgen__convert__closures_____invoke__hd45b3cccad240fdb(arg0, arg1) {
+    wasm.wasm_bindgen__convert__closures_____invoke__hd45b3cccad240fdb(arg0, arg1);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h36249d36b66faec8(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h36249d36b66faec8(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h65736f6e5215ff09(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h65736f6e5215ff09(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8(arg0, arg1, arg2) {
@@ -3686,8 +3686,8 @@ function wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8(arg0, arg
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__hae8e6b71f70a0cdc(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__hae8e6b71f70a0cdc(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h645af92b15c71abd(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h645af92b15c71abd(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }

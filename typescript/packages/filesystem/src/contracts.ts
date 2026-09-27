@@ -1247,11 +1247,11 @@ export interface RawWorkspaceContextRegistry {
 export type WasmRawWorkspaceContextRegistry = RawWorkspaceContextRegistry;
 
 /*
- * wasm-bindgen owns the class and method inventory. Its generated declaration
- * intentionally uses `any` for serde values because Rust values cross the
- * boundary as JavaScript objects. These helpers replace only erased result
- * values (and the few serde arguments whose wire shapes are in this contract),
- * while inheriting concrete signatures directly from the generated binding.
+ * wasm-bindgen owns the class and method inventory. Rust Tsify DTOs provide
+ * generated declarations for the workspace and generation result family;
+ * older serde values remain erased until their own DTO migration. These
+ * helpers inherit concrete signatures directly from the generated binding and
+ * replace only the remaining erased values whose wire shapes are in contract.
  */
 type WasmWithArgs<Base, Args extends object> = Omit<Base, keyof Args> & {
   [Key in keyof Args & keyof Base]: Base[Key] extends (...args: infer _Args) => infer Result
@@ -1287,19 +1287,13 @@ type WasmTypedClass<
   & WasmAssertKnownKeys<Base, SyncResults>
   & WasmAssertKnownKeys<Base, Properties>;
 
-export interface WasmRawMergeConflict {
-  readonly kind: string;
-  readonly fileId: Uint8Array | undefined;
-  readonly directoryId: Uint8Array | undefined;
-  readonly name: NativePathComponent | undefined;
-}
-
-export interface WasmRawJoinResult {
-  readonly status: string;
-  readonly generationId: Uint8Array | undefined;
-  readonly conflicts: readonly WasmRawMergeConflict[];
-  readonly truncated: boolean;
-}
+export type WasmRawMergeConflict = WasmBinding.MergeConflictResult;
+// Join and live-rebase share the same result envelope. Keeping the generated
+// Rust DTO union here lets the operation adapters accept each native status
+// union without recreating a handwritten overlay.
+export type WasmRawJoinResult =
+  | WasmBinding.BrowserJoinResult
+  | WasmBinding.BrowserWorkspaceRebaseResult;
 
 export interface WasmRawObjectCacheStats {
   readonly hits: string;
@@ -1397,10 +1391,10 @@ export interface WasmRawExtentSeekResult {
 export type WasmRawGeneration = WasmTypedClass<WasmBinding.BrowserGeneration, {
   listDirectory: [path: string, after: WorkspaceName | undefined, maximumEntries: number];
 }, {
-  listDirectory: WorkspaceDirectoryPage;
+  listDirectory: WasmBinding.BrowserWorkspaceDirectoryPage;
   pin: WasmRawGeneration;
-  planExtents: WorkspaceExtentPlan;
-  stat: WorkspaceStat;
+  planExtents: WasmBinding.BrowserWorkspaceExtentPlan;
+  stat: WasmBinding.BrowserWorkspaceStat;
 }>;
 
 export interface RawGenerationChangeSet<Diff> {
@@ -1420,7 +1414,7 @@ export type WasmRawChangeSet = WasmTypedClass<WasmBinding.BrowserChangeSet, {}, 
 }>;
 
 export type WasmRawJoinPlan = WasmTypedClass<WasmBinding.BrowserJoinPlan, {}, {
-  apply: WasmRawJoinResult;
+  apply: WasmBinding.BrowserJoinResult;
 }>;
 
 export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
@@ -1432,13 +1426,13 @@ export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
   fork: WasmRawWorkspace;
   forkAt: WasmRawWorkspace;
   joinInto: WasmRawJoinPlan;
-  liveRebase: WasmRawJoinResult;
+  liveRebase: WasmBinding.BrowserWorkspaceRebaseResult;
   pin: WasmRawGeneration;
-  planExtents: WorkspaceExtentPlan;
-  remove: WorkspaceCommit;
-  stat: WorkspaceStat;
+  planExtents: WasmBinding.BrowserWorkspaceExtentPlan;
+  remove: WasmBinding.BrowserWorkspaceCommit;
+  stat: WasmBinding.BrowserWorkspaceStat;
   sync: WasmRawGeneration;
-  write: WorkspaceCommit;
+  write: WasmBinding.BrowserWorkspaceCommit;
 }>;
 
 export interface RawWorkspaceTransaction<Commit = unknown> {

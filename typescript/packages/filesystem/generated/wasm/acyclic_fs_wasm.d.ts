@@ -1,5 +1,93 @@
 /* tslint:disable */
 /* eslint-disable */
+export interface BrowserJoinOptions {
+    history: string;
+    maximumGenerations: number;
+    maximumChanges: number;
+    maximumConflicts: number;
+}
+
+export interface BrowserJoinResult {
+    status: "applied" | "already-applied" | "no-changes" | "stale-target" | "conflicted" | "fenced" | "idempotency-conflict";
+    generationId: Uint8Array | undefined;
+    conflicts: MergeConflictResult[];
+    truncated: boolean;
+}
+
+export interface BrowserWorkspaceCommit {
+    status: "committed" | "already-committed" | "conflict" | "fenced" | "idempotency-conflict";
+    generationId: Uint8Array | undefined;
+}
+
+export interface BrowserWorkspaceDirectoryEntry {
+    name: BrowserWorkspaceName;
+    fileId: Uint8Array;
+    kind: "regular" | "directory" | "symbolic-link" | "fifo" | "socket" | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
+}
+
+export interface BrowserWorkspaceDirectoryPage {
+    entries: BrowserWorkspaceDirectoryEntry[];
+    hasMore: boolean;
+}
+
+export interface BrowserWorkspaceExtentPlan {
+    spans: BrowserWorkspaceExtentSpan[];
+}
+
+export interface BrowserWorkspaceExtentSpan {
+    offset: bigint;
+    length: bigint;
+    sourceEnd: bigint;
+    kind: "hole" | "allocated-zero" | "content";
+}
+
+export interface BrowserWorkspaceMetadata {
+    posixMode: number | undefined;
+    posixUid: number | undefined;
+    posixGid: number | undefined;
+    posixFlags: bigint | undefined;
+    windowsAttributes: number | undefined;
+    createdNs: bigint | undefined;
+    modifiedNs: bigint | undefined;
+    accessedNs: bigint | undefined;
+    changedNs: bigint | undefined;
+    hasNamedAttributes: boolean;
+    hasAcl: boolean;
+    hasSecurityDescriptor: boolean;
+}
+
+export interface BrowserWorkspaceName {
+    encoding: "utf8" | "posix-bytes" | "windows-utf16le";
+    bytes: Uint8Array;
+}
+
+export interface BrowserWorkspaceRebaseResult {
+    status: "rebased" | "already-rebased" | "current" | "stale" | "conflicted" | "fenced" | "idempotency-conflict";
+    generationId: Uint8Array | undefined;
+    conflicts: MergeConflictResult[];
+    truncated: boolean;
+}
+
+export interface BrowserWorkspaceStat {
+    fileId: Uint8Array;
+    kind: "regular" | "directory" | "symbolic-link" | "fifo" | "socket" | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
+    linkCount: bigint;
+    logicalBytes: bigint | undefined;
+    metadata: BrowserWorkspaceMetadata;
+}
+
+export interface MergeConflictResult {
+    kind: "file" | "binding";
+    fileId: Uint8Array | undefined;
+    directoryId: Uint8Array | undefined;
+    name: NameComponentResult | undefined;
+}
+
+export interface NameComponentResult {
+    encoding: "utf8" | "posix-bytes" | "windows-utf16le";
+    bytes: Uint8Array;
+}
+
 
 /**
  * One immutable semantic delta between exact generations.
@@ -676,19 +764,19 @@ export class BrowserGeneration {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    listDirectory(path: string, after: any | null | undefined, maximum_entries: number): Promise<any>;
+    listDirectory(path: string, after: any | null | undefined, maximum_entries: number): Promise<BrowserWorkspaceDirectoryPage>;
     /**
      * Retains this exact generation under one opaque identity.
      */
     pin(identity: string): Promise<BrowserGeneration>;
-    planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<any>;
+    planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserWorkspaceExtentPlan>;
     /**
      * Reads one complete file from this exact immutable state.
      */
     read(path: string, maximum_bytes: bigint): Promise<Uint8Array>;
     readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
     readSymbolicLink(path: string): Promise<Uint8Array>;
-    stat(path: string): Promise<any>;
+    stat(path: string): Promise<BrowserWorkspaceStat>;
     /**
      * Content-addressed generation identity.
      */
@@ -743,7 +831,7 @@ export class BrowserJoinPlan {
     /**
      * Applies this immutable plan through one exact target-head CAS.
      */
-    apply(if_target: Uint8Array, idempotency_key?: Uint8Array | null): Promise<any>;
+    apply(if_target: Uint8Array, idempotency_key?: Uint8Array | null): Promise<BrowserJoinResult>;
     /**
      * Exact discovered common ancestor.
      */
@@ -1035,12 +1123,12 @@ export class BrowserWorkspace {
     /**
      * Advances this fork onto its source workspace's current generation.
      */
-    liveRebase(idempotency_key: Uint8Array | null | undefined, maximum_generations: number, maximum_changes: number, maximum_conflicts: number): Promise<any>;
+    liveRebase(idempotency_key: Uint8Array | null | undefined, maximum_generations: number, maximum_changes: number, maximum_conflicts: number): Promise<BrowserWorkspaceRebaseResult>;
     /**
      * Retains the current generation under one opaque stable identity.
      */
     pin(identity: string): Promise<BrowserGeneration>;
-    planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<any>;
+    planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserWorkspaceExtentPlan>;
     /**
      * Reads one complete regular file under a byte bound.
      */
@@ -1050,8 +1138,8 @@ export class BrowserWorkspace {
     /**
      * Removes one existing path atomically.
      */
-    remove(path: string): Promise<any>;
-    stat(path: string): Promise<any>;
+    remove(path: string): Promise<BrowserWorkspaceCommit>;
+    stat(path: string): Promise<BrowserWorkspaceStat>;
     /**
      * Synchronizes prior operations and returns the exact immutable head.
      */
@@ -1059,7 +1147,7 @@ export class BrowserWorkspace {
     /**
      * Atomically creates or replaces one complete file.
      */
-    write(path: string, bytes: Uint8Array): Promise<any>;
+    write(path: string, bytes: Uint8Array): Promise<BrowserWorkspaceCommit>;
     /**
      * Stable opaque workspace identity.
      */
@@ -1371,10 +1459,10 @@ export interface InitOutput {
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__hae8e6b71f70a0cdc: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h645af92b15c71abd: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h084ada5e0839d1da: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h36249d36b66faec8: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h07c1b6ab92805486: (a: number, b: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h65736f6e5215ff09: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hd45b3cccad240fdb: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

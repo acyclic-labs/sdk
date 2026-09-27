@@ -53,6 +53,7 @@ mod bindings {
     };
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
+    use tsify_next::Tsify;
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
 
@@ -278,10 +279,13 @@ mod bindings {
         engine: BrowserTransactionEngine,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserWorkspaceCommit {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserWorkspaceCommit {
+        #[tsify(type = "\"committed\" | \"already-committed\" | \"conflict\" | \"fenced\" | \"idempotency-conflict\"")]
         status: &'static str,
+        #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
     }
 
@@ -310,17 +314,22 @@ mod bindings {
         actual: Option<serde_bytes::ByteBuf>,
     }
 
-    #[derive(Deserialize, Serialize)]
+    #[derive(Deserialize, Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserWorkspaceName {
+    #[tsify(from_wasm_abi)]
+    pub struct BrowserWorkspaceName {
+        #[tsify(type = "\"utf8\" | \"posix-bytes\" | \"windows-utf16le\"")]
         encoding: String,
         #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         bytes: Vec<u8>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserWorkspaceMetadata {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserWorkspaceMetadata {
         posix_mode: Option<u32>,
         posix_uid: Option<u32>,
         posix_gid: Option<u32>,
@@ -335,69 +344,104 @@ mod bindings {
         has_security_descriptor: bool,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserWorkspaceStat {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserWorkspaceStat {
         #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
+        #[tsify(type = "\"regular\" | \"directory\" | \"symbolic-link\" | \"fifo\" | \"socket\" | \"character-device\" | \"block-device\" | \"reparse-point\" | \"mount-boundary\"")]
         kind: &'static str,
         link_count: u64,
         logical_bytes: Option<u64>,
         metadata: BrowserWorkspaceMetadata,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserWorkspaceDirectoryEntry {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserWorkspaceDirectoryEntry {
         name: BrowserWorkspaceName,
         #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
+        #[tsify(type = "\"regular\" | \"directory\" | \"symbolic-link\" | \"fifo\" | \"socket\" | \"character-device\" | \"block-device\" | \"reparse-point\" | \"mount-boundary\"")]
         kind: &'static str,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserWorkspaceDirectoryPage {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserWorkspaceDirectoryPage {
         entries: Vec<BrowserWorkspaceDirectoryEntry>,
         has_more: bool,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserWorkspaceExtentSpan {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserWorkspaceExtentSpan {
         offset: u64,
         length: u64,
         source_end: u64,
+        #[tsify(type = "\"hole\" | \"allocated-zero\" | \"content\"")]
         kind: &'static str,
     }
 
-    #[derive(Serialize)]
-    struct BrowserWorkspaceExtentPlan {
+    #[derive(Serialize, Tsify)]
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserWorkspaceExtentPlan {
         spans: Vec<BrowserWorkspaceExtentSpan>,
     }
 
-    #[derive(Deserialize)]
+    #[cfg(all(test, target_arch = "wasm32"))]
+    pub(crate) fn test_workspace_extent_plan_js() -> JsValue {
+        BrowserWorkspaceExtentPlan {
+            spans: vec![BrowserWorkspaceExtentSpan {
+                offset: 9_007_199_254_740_993,
+                length: 1,
+                source_end: 9_007_199_254_740_994,
+                kind: "content",
+            }],
+        }
+        .into_js()
+        .expect("extent plan test DTO must serialize")
+        .into()
+    }
+
+    #[derive(Deserialize, Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserJoinOptions {
+    #[tsify(from_wasm_abi)]
+    pub struct BrowserJoinOptions {
         history: String,
         maximum_generations: u32,
         maximum_changes: u32,
         maximum_conflicts: u32,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserJoinResult {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserJoinResult {
+        #[tsify(type = "\"applied\" | \"already-applied\" | \"no-changes\" | \"stale-target\" | \"conflicted\" | \"fenced\" | \"idempotency-conflict\"")]
         status: &'static str,
+        #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
         conflicts: Vec<MergeConflictResult>,
         truncated: bool,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserWorkspaceRebaseResult {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserWorkspaceRebaseResult {
+        #[tsify(type = "\"rebased\" | \"already-rebased\" | \"current\" | \"stale\" | \"conflicted\" | \"fenced\" | \"idempotency-conflict\"")]
         status: &'static str,
+        #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
         conflicts: Vec<MergeConflictResult>,
         truncated: bool,
@@ -593,14 +637,14 @@ mod bindings {
         }
 
         #[wasm_bindgen]
-        pub async fn stat(&self, path: String) -> Result<JsValue, JsValue> {
+        pub async fn stat(&self, path: String) -> Result<BrowserWorkspaceStat, JsValue> {
             let value = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => value.stat(&path).await,
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => value.stat(&path).await,
                 BrowserWorkspaceEngine::Memory(value) => value.stat(&path).await,
             }
             .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&browser_workspace_stat(value)).map_err(js_error)
+            Ok(browser_workspace_stat(value))
         }
 
         #[wasm_bindgen(js_name = readSymbolicLink)]
@@ -623,7 +667,7 @@ mod bindings {
             offset: u64,
             length: u64,
             maximum_spans: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserWorkspaceExtentPlan, JsValue> {
             let value = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => {
                     value
@@ -642,12 +686,12 @@ mod bindings {
                 }
             }
             .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&browser_workspace_extent_plan(value)).map_err(js_error)
+            Ok(browser_workspace_extent_plan(value))
         }
 
         /// Atomically creates or replaces one complete file.
         #[wasm_bindgen]
-        pub async fn write(&self, path: String, bytes: Vec<u8>) -> Result<JsValue, JsValue> {
+        pub async fn write(&self, path: String, bytes: Vec<u8>) -> Result<BrowserWorkspaceCommit, JsValue> {
             let outcome = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => {
                     Box::pin(value.write(&path, bytes::Bytes::from(bytes)))
@@ -666,12 +710,12 @@ mod bindings {
                 }
             }
             .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&outcome).map_err(js_error)
+            Ok(outcome)
         }
 
         /// Removes one existing path atomically.
         #[wasm_bindgen]
-        pub async fn remove(&self, path: String) -> Result<JsValue, JsValue> {
+        pub async fn remove(&self, path: String) -> Result<BrowserWorkspaceCommit, JsValue> {
             let outcome = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => Box::pin(value.remove(&path))
                     .await
@@ -684,7 +728,7 @@ mod bindings {
                     .map(browser_workspace_commit),
             }
             .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&outcome).map_err(js_error)
+            Ok(outcome)
         }
 
         /// Forks the current generation into an independent named workspace.
@@ -831,7 +875,7 @@ mod bindings {
             maximum_generations: u32,
             maximum_changes: u32,
             maximum_conflicts: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserWorkspaceRebaseResult, JsValue> {
             let idempotency_key = idempotency_key.map_or_else(
                 || Ok(IdempotencyKey::new()),
                 |value| fixed_16_owned(value).map(IdempotencyKey::from_bytes),
@@ -866,7 +910,7 @@ mod bindings {
                     .map(browser_workspace_rebase_result),
             }
             .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&outcome).map_err(js_error)
+            Ok(outcome)
         }
 
         /// Computes one immutable bounded semantic delta between exact generations.
@@ -1108,7 +1152,7 @@ mod bindings {
             &self,
             if_target: Vec<u8>,
             idempotency_key: Option<Vec<u8>>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserJoinResult, JsValue> {
             let if_target = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
                 &if_target,
                 "target generation identity",
@@ -1132,7 +1176,7 @@ mod bindings {
                     browser_join_result(value.apply(options).await.map_err(js_error)?)
                 }
             };
-            serde_wasm_bindgen::to_value(&result).map_err(js_error)
+            Ok(result)
         }
     }
 
@@ -1209,14 +1253,14 @@ mod bindings {
         }
 
         #[wasm_bindgen]
-        pub async fn stat(&self, path: String) -> Result<JsValue, JsValue> {
+        pub async fn stat(&self, path: String) -> Result<BrowserWorkspaceStat, JsValue> {
             let value = match &self.engine {
                 BrowserGenerationEngine::IndexedDb(value) => value.stat(&path).await,
                 BrowserGenerationEngine::IndexedDbOpfs(value) => value.stat(&path).await,
                 BrowserGenerationEngine::Memory(value) => value.stat(&path).await,
             }
             .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&browser_workspace_stat(value)).map_err(js_error)
+            Ok(browser_workspace_stat(value))
         }
 
         #[wasm_bindgen(js_name = listDirectory)]
@@ -1225,7 +1269,7 @@ mod bindings {
             path: String,
             after: Option<JsValue>,
             maximum_entries: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserWorkspaceDirectoryPage, JsValue> {
             let after = after.map(browser_workspace_name).transpose()?;
             let value = match &self.engine {
                 BrowserGenerationEngine::IndexedDb(value) => {
@@ -1245,7 +1289,7 @@ mod bindings {
                 }
             }
             .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&browser_workspace_directory_page(value)).map_err(js_error)
+            Ok(browser_workspace_directory_page(value))
         }
 
         #[wasm_bindgen(js_name = readSymbolicLink)]
@@ -1268,7 +1312,7 @@ mod bindings {
             offset: u64,
             length: u64,
             maximum_spans: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserWorkspaceExtentPlan, JsValue> {
             let value = match &self.engine {
                 BrowserGenerationEngine::IndexedDb(value) => {
                     value
@@ -1287,7 +1331,7 @@ mod bindings {
                 }
             }
             .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&browser_workspace_extent_plan(value)).map_err(js_error)
+            Ok(browser_workspace_extent_plan(value))
         }
 
         /// Retains this exact generation under one opaque identity.
@@ -2487,10 +2531,14 @@ mod bindings {
         after: Option<FileRecordResult>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct NameComponentResult {
+    #[tsify(into_wasm_abi)]
+    pub struct NameComponentResult {
+        #[tsify(type = "\"utf8\" | \"posix-bytes\" | \"windows-utf16le\"")]
         encoding: &'static str,
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         bytes: Vec<u8>,
     }
 
@@ -2520,12 +2568,16 @@ mod bindings {
         work: acyclic_fs::WorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct MergeConflictResult {
+    #[tsify(into_wasm_abi)]
+    pub struct MergeConflictResult {
+        #[tsify(type = "\"file\" | \"binding\"")]
         kind: &'static str,
-        file_id: Option<Vec<u8>>,
-        directory_id: Option<Vec<u8>>,
+        #[tsify(type = "Uint8Array | undefined")]
+        file_id: Option<serde_bytes::ByteBuf>,
+        #[tsify(type = "Uint8Array | undefined")]
+        directory_id: Option<serde_bytes::ByteBuf>,
         name: Option<NameComponentResult>,
     }
 
@@ -6811,14 +6863,14 @@ mod bindings {
         match conflict {
             MergeConflict::File(file_id) => MergeConflictResult {
                 kind: "file",
-                file_id: Some(file_id.into_bytes().to_vec()),
+                file_id: Some(serde_bytes::ByteBuf::from(file_id.into_bytes().to_vec())),
                 directory_id: None,
                 name: None,
             },
             MergeConflict::Binding { directory_id, name } => MergeConflictResult {
                 kind: "binding",
                 file_id: None,
-                directory_id: Some(directory_id.into_bytes().to_vec()),
+                directory_id: Some(serde_bytes::ByteBuf::from(directory_id.into_bytes().to_vec())),
                 name: Some(encode_name_component(&name)),
             },
         }
@@ -7472,3 +7524,29 @@ pub use bindings::{
     encode_merge_candidate_json, encode_merge_plan_json, encode_multi_root_candidate_json,
     encode_multi_root_plan_json, encode_publication_json, open_browser_fs, open_memory_fs,
 };
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_abi_tests {
+    use super::bindings::test_workspace_extent_plan_js;
+    use js_sys::{Array, BigInt, Reflect};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn workspace_extent_plan_preserves_u64_as_bigint() {
+        let plan = test_workspace_extent_plan_js();
+        let spans = Reflect::get(&plan, &JsValue::from_str("spans"))
+            .expect("extent plan spans must be present")
+            .dyn_into::<Array>()
+            .expect("extent plan spans must be an array");
+        let span = spans
+            .get(0)
+            .dyn_into::<js_sys::Object>()
+            .expect("extent plan span must be an object");
+        let offset = Reflect::get(&span, &JsValue::from_str("offset"))
+            .expect("extent span offset must be present")
+            .dyn_into::<BigInt>()
+            .expect("extent span offset must be a bigint");
+        assert_eq!(offset.to_string(10).unwrap().as_string().unwrap(), "9007199254740993");
+    }
+}

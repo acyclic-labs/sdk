@@ -12,10 +12,12 @@ import type {
   WasmRawWorkspaceContextRegistry,
   WorkCounters,
 } from "../src/contracts.js";
+import * as GeneratedWasm from "../generated/wasm/acyclic_fs_wasm.js";
 import {
   adaptWasmWorkspaceContextRegistry,
 } from "../src/wasm-adapter.js";
 import { openBrowserOperationWindowCoordinator } from "../src/browser.js";
+import { DEFAULT_MEMORY_FS_OPTIONS, openMemoryFs } from "../src/memory-node.js";
 import { adaptWorkspaceContextRegistry } from "../src/workspace-context.js";
 import { copyMergeConflict, decodeMergeConflict, parseJoinResult, parseMergePreparation, parseWorkspaceCommit, parseWorkspaceRebaseResult } from "../src/workspace-results.js";
 
@@ -190,5 +192,123 @@ describe("WASM adapter canonical boundaries", () => {
     await expect(openBrowserOperationWindowCoordinator()).rejects.toThrow(
       "browser operation windows are unsupported by the persistent authority",
     );
+  });
+
+  test("preserves typed WASM workspace stat, directory, extent, and join results", async () => {
+    const engine = await openMemoryFs();
+    try {
+      const workspace = await engine.createWorkspace("typed-results");
+      const payload = Uint8Array.of(97, 98, 99);
+      expect((await workspace.write("/typed", payload)).status).toBe("committed");
+
+      const stat = await workspace.stat("/typed");
+      expect(stat.fileId).toBeInstanceOf(Uint8Array);
+      expect(stat.linkCount).toBe(1n);
+      expect(stat.logicalBytes).toBe(3n);
+      expect(stat.metadata.createdNs === undefined || typeof stat.metadata.createdNs === "bigint").toBe(true);
+      const fileId = stat.fileId.slice();
+      stat.fileId.fill(0);
+      expect((await workspace.stat("/typed")).fileId).toEqual(fileId);
+
+      const generation = await workspace.sync();
+      const page = await generation.listDirectory("/", undefined, 8);
+      const entry = page.entries.find(item => new TextDecoder().decode(item.name.bytes) === "typed");
+      expect(entry).toBeDefined();
+      expect(entry?.name.bytes).toBeInstanceOf(Uint8Array);
+      expect(entry?.fileId).toBeInstanceOf(Uint8Array);
+      expect(entry?.kind).toBe("regular");
+
+      const extentPlan = await generation.planExtents("/typed", 0n, 3n, 8);
+      expect(extentPlan.spans.length).toBeGreaterThan(0);
+      expect(extentPlan.spans[0]?.offset).toBe(0n);
+      expect(extentPlan.spans[0]?.length).toBe(3n);
+      expect(typeof extentPlan.spans[0]?.sourceEnd).toBe("bigint");
+
+      const target = await workspace.fork("typed-target");
+      expect((await workspace.write("/joined", Uint8Array.of(4))).status).toBe("committed");
+      const joinPlan = await workspace.joinInto(target, {
+        history: "merge", maximumGenerations: 8, maximumChanges: 16, maximumConflicts: 8,
+      });
+      const joined = await joinPlan.apply(joinPlan.targetHead);
+      expect(joined.status).toBe("applied");
+      expect(joined.generationId).toBeInstanceOf(Uint8Array);
+      expect(await target.read("/joined", 1n)).toEqual(Uint8Array.of(4));
+    } finally {
+      await engine.close();
+    }
+  });
+
+  test("keeps large extent coordinates as bigint in the raw WASM ABI", async () => {
+    const engine = await openMemoryFs();
+    engine.close();
+    const rawFs = GeneratedWasm.openMemoryFs(DEFAULT_MEMORY_FS_OPTIONS);
+    try {
+      const rawWorkspace = await rawFs.createWorkspace("raw-bigint");
+      await rawWorkspace.write("/large", Uint8Array.of(1));
+      const transaction = await rawWorkspace.beginTransaction();
+      await transaction.resize("/large", 2n ** 54n);
+      await transaction.commit();
+      const generation = await rawWorkspace.sync();
+      const plan = await generation.planExtents("/large", (2n ** 54n) - 1n, 1n, 8);
+      expect(plan.spans.some(span => typeof span.offset === "bigint" && span.offset > 2n ** 53n)).toBe(true);
+    } finally {
+      rawFs.free();
+    }
+  });
+
+  test("preserves conflicting join and rebase IDs and names as byte arrays", async () => {
+    const engine = await openMemoryFs();
+    try {
+      const source = await engine.createWorkspace("conflict-source");
+      await source.write("/shared", Uint8Array.of(1));
+      const target = await source.fork("conflict-target");
+      await source.write("/shared", Uint8Array.of(2));
+      await target.write("/shared", Uint8Array.of(3));
+      const join = await source.joinInto(target, {
+        history: "merge", maximumGenerations: 8, maximumChanges: 16, maximumConflicts: 8,
+      });
+      const joined = await join.apply(join.targetHead);
+      expect(joined.status).toBe("conflicted");
+      expect(joined.generationId).toBeUndefined();
+      const fileConflict = joined.conflicts.find(conflict => conflict.kind === "file");
+      expect(fileConflict).toBeDefined();
+      if (fileConflict?.kind === "file") expect(fileConflict.fileId).toBeInstanceOf(Uint8Array);
+
+      const rebaseSource = await engine.createWorkspace("rebase-conflict-source");
+      await rebaseSource.write("/shared", Uint8Array.of(1));
+      const rebaseTarget = await rebaseSource.fork("rebase-conflict-target");
+      await rebaseTarget.write("/shared", Uint8Array.of(3));
+      await rebaseSource.write("/shared", Uint8Array.of(2));
+      const rebased = await rebaseTarget.liveRebase({
+        maximumGenerations: 8, maximumChanges: 16, maximumConflicts: 8,
+      });
+      expect(rebased.status).toBe("conflicted");
+      expect(rebased.generationId).toBeUndefined();
+      const rebaseConflict = rebased.conflicts.find(conflict => conflict.kind === "file");
+      expect(rebaseConflict).toBeDefined();
+      if (rebaseConflict?.kind === "file") expect(rebaseConflict.fileId).toBeInstanceOf(Uint8Array);
+
+      const bindingSource = await engine.createWorkspace("binding-conflict-source");
+      const bindingTarget = await bindingSource.fork("binding-conflict-target");
+      const sourceTx = await bindingSource.beginTransaction();
+      await sourceTx.createDirectory("/same-directory");
+      await sourceTx.commit();
+      const targetTx = await bindingTarget.beginTransaction();
+      await targetTx.createDirectory("/same-directory");
+      await targetTx.commit();
+      const bindingJoin = await bindingSource.joinInto(bindingTarget, {
+        history: "merge", maximumGenerations: 8, maximumChanges: 16, maximumConflicts: 8,
+      });
+      const bindingResult = await bindingJoin.apply(bindingJoin.targetHead);
+      expect(bindingResult.status).toBe("conflicted");
+      const bindingConflict = bindingResult.conflicts.find(conflict => conflict.kind === "binding");
+      expect(bindingConflict).toBeDefined();
+      if (bindingConflict?.kind === "binding") {
+        expect(bindingConflict.directoryId).toBeInstanceOf(Uint8Array);
+        expect(bindingConflict.name.bytes).toBeInstanceOf(Uint8Array);
+      }
+    } finally {
+      await engine.close();
+    }
   });
 });
