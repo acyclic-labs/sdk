@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -64,6 +65,19 @@ const run = (command, args, options = {}) => {
 const packageJson = async (directory) =>
   JSON.parse(await readFile(join(packagesRoot, directory, "package.json"), "utf8"));
 
+const hasExportedFiles = (manifest, packageDirectory) => {
+  const targets = [];
+  const collect = (value) => {
+    if (typeof value === "string") targets.push(value);
+    else if (value && typeof value === "object") {
+      for (const child of Object.values(value)) collect(child);
+    }
+  };
+  collect(manifest.exports);
+  return targets.length > 0 && targets.every((target) =>
+    target.startsWith("./") && existsSync(join(packageDirectory, target.slice(2))));
+};
+
 const probeSource = (runtime, names) => `
 const expected = ${JSON.stringify(names)};
 for (const [name, exportName] of Object.entries(expected)) {
@@ -124,6 +138,15 @@ const main = async () => {
         throw new Error(`release identity differs for ${packageDirectories[i]}`);
       }
       const packageDirectory = join(packagesRoot, packageDirectories[i]);
+      if (!hasExportedFiles(manifest, packageDirectory)) {
+        run("bun", ["run", "build"], { cwd: packageDirectory });
+      }
+      if (!hasExportedFiles(manifest, packageDirectory)) {
+        run("bun", ["x", "tsc", "-b", "--force"], { cwd: packageDirectory });
+      }
+      if (!hasExportedFiles(manifest, packageDirectory)) {
+        throw new Error(`${manifest.name} build did not produce its exported files`);
+      }
       const packedPath = run("bun", ["pm", "pack", "--destination", packDirectory, "--ignore-scripts", "--quiet"], { cwd: packageDirectory }).trim();
       if (!packedPath) throw new Error(`${manifest.name} did not produce a tarball path`);
       tarballs.set(manifest.name, resolve(packedPath));

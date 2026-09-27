@@ -177,11 +177,11 @@ async function exerciseSpeculation(fs, volume, checkout, operationSequence, acco
   }
   recordControl(accounting, await speculation.finishResidency(operationId, true));
   const metrics = recordControl(accounting, await speculation.metrics());
-  assert(metrics.residency.useful === 1n, "targeted browser residency usefulness diverged");
+  assert(metrics.residency.useful === "1", "targeted browser residency usefulness diverged");
   if (operationSequence === "speculative_promotion") {
-    assert(metrics.promotion.useful === 1n, "targeted browser promotion usefulness diverged");
+    assert(metrics.promotion.useful === "1", "targeted browser promotion usefulness diverged");
   } else {
-    assert(metrics.promotion.useful === 0n, "residency-only case mutated promotion outcomes");
+    assert(metrics.promotion.useful === "0", "residency-only case mutated promotion outcomes");
   }
   const objectBytes = Number(execution.objectBytes);
   assert(Number.isSafeInteger(objectBytes) && objectBytes > 0, "speculative object byte count is invalid");
