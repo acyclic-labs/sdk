@@ -26,7 +26,7 @@
       "version": "0.1.5",
       "crateVersion": "0.1.5",
       "schemaDigest": "sha256:89f9ce2677e2d6d28c3b3db176cc74dec0efdedbe98e6c2c3aeab9230b863809",
-      "descriptorDigest": "sha256:9da62b6afbf2e132f17b7a5e54ceab5ca42530df4397a19900aec2e33bc4e102",
+      "descriptorDigest": "sha256:4701187ac8ca87325d42aee0f99c7826ebb63ec2be0ae98c4768006d4ff31a51",
       "conformanceDigest": "sha256:a473cb36590f3d05d7c749f2e35c13e9783c2cbc8ef0bb569b91b2e88dbaad7b"
     },
     "machines": {
@@ -38,7 +38,7 @@
     "inference": {
       "version": "0.1.5",
       "schemaDigest": "sha256:06b8f34d971b4320faadf785e11ee4fc579c408b28137092c69f0807720993c6",
-      "descriptorDigest": "sha256:d8e4e0641003a937f31f60e330c926d7baa523862d7948b0f01e58a9deb72967",
+      "descriptorDigest": "sha256:c5303d6b7002158c12a28257b4af1820bc105ec685a6c2bc57c53bc511fe8cfb",
       "conformanceDigest": "sha256:9eb850dd6cbd5fa53745a00fe19800fc3a2773ed4fa5f70c5d7be84a33b9948c"
     }
   }
