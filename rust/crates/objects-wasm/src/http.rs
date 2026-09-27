@@ -10,10 +10,69 @@ use serde_json::Value;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wasm_bindgen::{JsCast, prelude::*};
 
+use crate::public_http_error_code;
+
 #[path = "response_contract.rs"]
 mod response_contract;
 
 pub use response_contract::HTTP_RESPONSE_CONTRACT;
+
+/// Decode the small hosted error envelope and project its code through the
+/// Rust-owned public Objects error contract.  Invalid JSON, unknown codes, and
+/// non-object envelopes deliberately return `undefined` at the JS boundary so
+/// the caller can retain its transport fallback.
+pub fn decode_http_error(route: &str, response_json: &str) -> JsValue {
+    let Ok(value) = serde_json::from_str::<Value>(response_json) else {
+        return JsValue::UNDEFINED;
+    };
+    let (raw_code, raw_message) = match value {
+        Value::String(code) => (code, None),
+        Value::Object(object) => {
+            let nested = object.get("error").and_then(Value::as_object);
+            let code = object
+                .get("code")
+                .or_else(|| nested.and_then(|value| value.get("code")))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty());
+            let message = object
+                .get("message")
+                .or_else(|| nested.and_then(|value| value.get("message")))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty());
+            let Some(code) = code else {
+                return JsValue::UNDEFINED;
+            };
+            (code.to_owned(), message.map(str::to_owned))
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => {
+            return JsValue::UNDEFINED;
+        }
+    };
+    let Some(code) = public_http_error_code(&raw_code, route) else {
+        return JsValue::UNDEFINED;
+    };
+    let result = Object::new();
+    if Reflect::set(
+        &result,
+        &JsValue::from_str("code"),
+        &JsValue::from_str(code.as_str()),
+    )
+    .is_err()
+    {
+        return JsValue::UNDEFINED;
+    }
+    if let Some(message) = raw_message
+        && Reflect::set(
+            &result,
+            &JsValue::from_str("message"),
+            &JsValue::from_str(&message),
+        )
+        .is_err()
+    {
+        return JsValue::UNDEFINED;
+    }
+    result.into()
+}
 
 type Result<T> = std::result::Result<T, String>;
 

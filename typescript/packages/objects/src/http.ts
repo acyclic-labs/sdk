@@ -1,6 +1,6 @@
 import type { BucketRef, ByteRange, Condition, HeadOptions, IdempotencyKey, ListPage, MultipartProvider, MultipartUpload, ObjectMetadata, ObjectsProvider, ObjectVersion, ReadTarget, SnapshotRef, StoredObject, UploadedPart, VersionId } from "./index.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
-import { decode_http_response, encode_http_request, publicHttpErrorCode } from "../generated/wasm/acyclic_objects_wasm.js";
+import { decodeHttpError, decode_http_response, encode_http_request } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ObjectError } from "./memory.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 
@@ -44,20 +44,10 @@ export class HttpObjectsProvider implements ObjectsProvider, MultipartProvider {
 export class ObjectsTransportError extends Error { constructor(message: string, readonly status: number) { super(message); } }
 function hostedError(route: HttpRoute, text: string, status: number): ObjectError | ObjectsTransportError {
   const fallback = text || `HTTP ${status}`;
-  let value: unknown;
-  try { value = JSON.parse(text); } catch { return new ObjectsTransportError(fallback, status); }
-  const envelope = typeof value === "string" ? { code: value } : value;
-  if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) return new ObjectsTransportError(fallback, status);
-  const outer = envelope as Record<string, unknown>;
-  const nested = outer.error !== null && typeof outer.error === "object" && !Array.isArray(outer.error)
-    ? outer.error as Record<string, unknown> : undefined;
-  const rawCode = outer.code ?? nested?.code;
-  const rawMessage = outer.message ?? nested?.message;
-  if (typeof rawCode !== "string" || rawCode.length === 0) return new ObjectsTransportError(fallback, status);
-  const code = publicHttpErrorCode(rawCode, route);
-  return code === undefined
+  const detail = decodeHttpError(route, text);
+  return detail === undefined
     ? new ObjectsTransportError(fallback, status)
-    : new ObjectError(code, typeof rawMessage === "string" && rawMessage.length > 0 ? rawMessage : fallback);
+    : new ObjectError(detail.code, detail.message ?? fallback);
 }
 async function boundedBytes(response: Response, maximum: number): Promise<Uint8Array> {
   const reader = response.body?.getReader();

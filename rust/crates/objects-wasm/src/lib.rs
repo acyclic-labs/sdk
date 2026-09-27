@@ -259,6 +259,16 @@ pub fn public_http_error_code(raw: &str, route: &str) -> Option<ObjectsErrorCode
     Some(code)
 }
 
+/// Decode a hosted error envelope through the Rust-owned public error contract.
+#[wasm_bindgen(js_name = decodeHttpError, unchecked_return_type = "ObjectsHttpError | undefined")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen exports owned JavaScript strings"
+)]
+pub fn decode_http_error(route: String, response_json: String) -> JsValue {
+    http::decode_http_error(&route, &response_json)
+}
+
 /// Type-only bridge for the complete Rust-owned Objects error-code contract.
 #[wasm_bindgen(js_name = __objectsErrorCodeContract)]
 pub fn objects_error_code_contract(value: ObjectsErrorCode) -> ObjectsErrorCode {
