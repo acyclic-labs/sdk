@@ -17,6 +17,7 @@ import {
   InferenceClient,
   InferenceProtocolError,
   InferenceTransportError,
+  itemId,
   deriveInferenceHttpRoutes,
   validateInferenceHttpPath,
   WarmState,
@@ -42,6 +43,7 @@ import {
   type InferenceTransport,
 } from "../src/index.js";
 import { runTerminalMetadata, validateRunTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
+import { INFERENCE_FIXED_WIDTHS, validateInferenceFixedWidthMetadata } from "../src/widths.js";
 import { MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES } from "../generated/defaults.js";
 import { RUN_TERMINAL_METADATA } from "../generated/terminal-metadata.js";
 
@@ -95,6 +97,24 @@ test("terminal metadata validation rejects Rust/protobuf drift", () => {
   expect(() => validateRunTerminalMetadata(JSON.stringify(valid.map((item, index) =>
     index === 0 ? { ...item, partial: !item.partial } : item)))).toThrow("does not cover the generated enum");
   expect(() => validateRunTerminalMetadata("[{\"number\":1,\"kind\":\"completed\"}]")).toThrow("invalid entry");
+});
+
+test("ergonomic identity helpers enforce Rust-derived fixed widths at both boundaries", () => {
+  expect(INFERENCE_FIXED_WIDTHS.runId).toBe(16);
+  expect(INFERENCE_FIXED_WIDTHS.contextRevision).toBe(32);
+  expect(() => runId(new Uint8Array(15))).toThrow("exactly 16 bytes");
+  expect(() => runId(new Uint8Array(17))).toThrow("exactly 16 bytes");
+  expect(itemId(new Uint8Array(15))).toHaveLength(15);
+  expect(itemId(new Uint8Array(16))).toHaveLength(16);
+  expect(itemId(new Uint8Array(17))).toHaveLength(17);
+  expect(itemId(new Uint8Array(0))).toHaveLength(0);
+  expect(() => contextRevision(new Uint8Array(31))).toThrow("exactly 32 bytes");
+  expect(() => contextRevision(new Uint8Array(33))).toThrow("exactly 32 bytes");
+  expect(runId(new Uint8Array(16))).toHaveLength(16);
+  expect(contextRevision(new Uint8Array(32))).toHaveLength(32);
+  expect(() => validateInferenceFixedWidthMetadata([{
+    message: "inference.customer.v1.RequestIdentity", field: "request_id", width: 0,
+  }])).toThrow("non-positive width");
 });
 const receipt = (value: number) => create(MutationReceiptSchema, { revision: revision(value), commandDigest: revision(value + 32), sequence: 1n });
 const contextView = (value: Uint8Array, model = "model") => create(ContextViewSchema, {
