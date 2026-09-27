@@ -673,6 +673,7 @@ fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directorie
                 if changes.iter().any(|change| match change {
                     WatchChange::Created(path)
                     | WatchChange::Modified(path)
+                    | WatchChange::Arrived(path)
                     | WatchChange::MetadataChanged(path)
                     | WatchChange::Removed(path) => path.depth() == 2,
                     WatchChange::Renamed { from, to } => from.depth() == 2 || to.depth() == 2,
@@ -719,6 +720,7 @@ fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory(
                 if changes.iter().any(|change| match change {
                     WatchChange::Created(path)
                     | WatchChange::Modified(path)
+                    | WatchChange::Arrived(path)
                     | WatchChange::MetadataChanged(path)
                     | WatchChange::Removed(path) => path.depth() == 1,
                     WatchChange::Renamed { from, to } => from.depth() == 1 || to.depth() == 1,

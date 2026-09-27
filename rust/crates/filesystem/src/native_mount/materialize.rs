@@ -72,9 +72,9 @@ impl MaterializeMode {
                 metadata.posix_flags = crate::kernel::MetadataField::Unavailable;
             }
         }
-        // Linux sets extended attributes one by one after the rest; other
-        // hosts still refuse them as unrepresentable.
-        #[cfg(target_os = "linux")]
+        // Linux and macOS set extended attributes one by one after the
+        // rest; Windows still refuses them as unrepresentable.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let named_attributes = match metadata.named_attributes {
             crate::kernel::MetadataField::Value(root) => {
                 metadata.named_attributes = crate::kernel::MetadataField::Unavailable;
@@ -82,7 +82,7 @@ impl MaterializeMode {
             }
             _ => None,
         };
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let named_attributes = None;
         HostMetadata {
             metadata,
@@ -1564,14 +1564,35 @@ async fn apply_host_attributes_offloaded(
     .map_err(linux_metadata_error)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+async fn apply_host_attributes_offloaded(
+    host_root: &Arc<HostRoot>,
+    host_path: &Path,
+    attributes: Vec<(Vec<u8>, Bytes)>,
+) -> Result<(), MaterializeError> {
+    if attributes.is_empty() {
+        return Ok(());
+    }
+    let root = Arc::clone(host_root);
+    let path = host_path.to_path_buf();
+    acyclic_native_runtime::run_blocking_io(move || {
+        root.open_macos_metadata_target(&path)?
+            .set_extended_attributes(&attributes)
+    })
+    .await
+    .map_err(MaterializeError::Io)?
+    .map_err(mac_metadata_error)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[allow(clippy::unused_async)]
 async fn apply_host_attributes_offloaded(
     _host_root: &Arc<HostRoot>,
     _host_path: &Path,
     attributes: Vec<(Vec<u8>, Bytes)>,
 ) -> Result<(), MaterializeError> {
-    // Only Linux projects attributes out of the record (see `host_metadata`).
+    // Only Linux and macOS project attributes out of the record (see
+    // `host_metadata`).
     if attributes.is_empty() {
         Ok(())
     } else {

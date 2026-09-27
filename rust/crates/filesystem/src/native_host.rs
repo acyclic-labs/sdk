@@ -1807,6 +1807,58 @@ fn open_macos_metadata_target(
 #[allow(unsafe_code)]
 #[cfg(any(feature = "native-mount", test))]
 impl MacMetadataTarget {
+    /// Sets each extended attribute on the held inode by its exact raw
+    /// name, and reads each back. A node no descriptor can hold (a socket,
+    /// say) takes none: asking for any on one fails closed.
+    pub(crate) fn set_extended_attributes(
+        &self,
+        attributes: &[(Vec<u8>, bytes::Bytes)],
+    ) -> Result<(), MacMetadataError> {
+        use std::os::fd::AsRawFd as _;
+
+        if attributes.is_empty() {
+            return Ok(());
+        }
+        let Self::Held(file) = self else {
+            return Err(MacMetadataError::Unsupported(
+                "named_attributes on a non-ordinary file kind",
+            ));
+        };
+        let fd = file.as_raw_fd();
+        for (name, value) in attributes {
+            let name = std::ffi::CString::new(name.clone())
+                .map_err(|_| MacMetadataError::Unsupported("named_attributes"))?;
+            // SAFETY: the name is NUL-terminated and lives for the call, and
+            // the value pointer covers exactly `value.len()` bytes.
+            if unsafe {
+                libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0)
+            } != 0
+            {
+                return Err(io::Error::last_os_error().into());
+            }
+            let mut readback = vec![0_u8; value.len().saturating_add(1)];
+            // SAFETY: the buffer is writable for its whole length.
+            let read = unsafe {
+                libc::fgetxattr(
+                    fd,
+                    name.as_ptr(),
+                    readback.as_mut_ptr().cast(),
+                    readback.len(),
+                    0,
+                    0,
+                )
+            };
+            if usize::try_from(read).ok() != Some(value.len())
+                || readback.get(..value.len()) != Some(value.as_ref())
+            {
+                return Err(MacMetadataError::Unsupported(
+                    "named_attributes readback mismatch",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Applies representable metadata to the held inode and reads it back.
     /// Canonical ctime requires a durable native-view baseline first.
     pub(crate) fn apply(
