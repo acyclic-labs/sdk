@@ -380,6 +380,28 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
                 OptionalResolution::Resolved(Some(record))
             });
         }
+        // Both sides added this file with the same bytes, as when each
+        // captured its own copy of one source file: only timestamps differ.
+        if matches!(resolved, OptionalResolution::Conflict)
+            && base.is_none()
+            && let (Some(ours), Some(theirs)) = (ours_value, theirs_value)
+            && ours.kind == theirs.kind
+            && ours.link_count == theirs.link_count
+            && ours.payload == theirs.payload
+            && let Some(metadata) = merge_metadata_async(
+                store,
+                None,
+                ours.metadata,
+                theirs.metadata,
+                limits,
+                budget,
+                cancellation,
+                &mut work,
+            )
+            .await?
+        {
+            resolved = OptionalResolution::Resolved(Some(FileRecord { metadata, ..ours }));
+        }
         let OptionalResolution::Resolved(resolved) = resolved else {
             if let Some(resolution) = request.resolutions.get(&MergeConflict::File(file_id)) {
                 let resolved = match resolution {
@@ -562,7 +584,7 @@ async fn merge_regular_record_async<S: AsyncObjectStore>(
     let mut work = WorkCounters::default();
     let Some(metadata) = merge_metadata_async(
         store,
-        base.metadata,
+        Some(base.metadata),
         ours.metadata,
         theirs.metadata,
         limits,
@@ -971,7 +993,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
     } else {
         let merged = merge_metadata_async(
             store,
-            base.metadata,
+            Some(base.metadata),
             ours.metadata,
             theirs.metadata,
             limits,
@@ -1272,7 +1294,7 @@ async fn merge_file_fields_async<S: AsyncObjectStore>(
     };
     let Some(metadata) = merge_metadata_async(
         store,
-        base.metadata,
+        Some(base.metadata),
         ours.metadata,
         theirs.metadata,
         limits,
@@ -1293,16 +1315,18 @@ async fn merge_file_fields_async<S: AsyncObjectStore>(
     }))
 }
 
-/// Three-way merge of one record's metadata reference.
+/// Three-way merge of one record's metadata reference; without a base, of
+/// two sides that added the same file.
 ///
 /// Identical or one-sided changes resolve without a read. When both sides
 /// moved the metadata, the records are decoded and merged field by field
-/// (see [`merge_metadata_fields`]); the merged record is stored unless it
-/// already equals one input. `None` is a real conflict.
+/// (see [`merge_metadata_fields`] and [`merge_added_metadata_fields`]); the
+/// merged record is stored unless it already equals one input. `None` is a
+/// real conflict.
 #[allow(clippy::too_many_arguments)]
 async fn merge_metadata_async<S: AsyncObjectStore>(
     store: &S,
-    base: ObjectId,
+    base: Option<ObjectId>,
     ours: ObjectId,
     theirs: ObjectId,
     limits: DecodeLimits,
@@ -1310,13 +1334,23 @@ async fn merge_metadata_async<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
     work: &mut WorkCounters,
 ) -> Result<Option<ObjectId>, OperationFailure<MergeGenerationError>> {
-    if let Some(resolved) = resolve_three(&base, &ours, &theirs) {
+    if ours == theirs {
+        return Ok(Some(ours));
+    }
+    if let Some(resolved) = base.and_then(|base| resolve_three(&base, &ours, &theirs)) {
         return Ok(Some(resolved));
     }
-    let base_fields = read_metadata(store, base, limits, budget, cancellation, work).await?;
     let ours_fields = read_metadata(store, ours, limits, budget, cancellation, work).await?;
     let theirs_fields = read_metadata(store, theirs, limits, budget, cancellation, work).await?;
-    let Some(merged) = merge_metadata_fields(base_fields, ours_fields, theirs_fields) else {
+    let merged = match base {
+        Some(base) => {
+            let base_fields =
+                read_metadata(store, base, limits, budget, cancellation, work).await?;
+            merge_metadata_fields(base_fields, ours_fields, theirs_fields)
+        }
+        None => merge_added_metadata_fields(ours_fields, theirs_fields),
+    };
+    let Some(merged) = merged else {
         return Ok(None);
     };
     let bytes =
@@ -1325,7 +1359,7 @@ async fn merge_metadata_async<S: AsyncObjectStore>(
         kind: ObjectKind::Metadata,
         digest: object_digest(ObjectKind::Metadata, &bytes),
     };
-    if object != base && object != ours && object != theirs {
+    if Some(object) != base && object != ours && object != theirs {
         let receipt = store
             .put(
                 object,
@@ -1658,6 +1692,43 @@ pub(crate) fn merge_metadata_fields(
             &ours.security_descriptor,
             &theirs.security_descriptor,
         )?,
+    })
+}
+
+/// Metadata of one file two sides added independently: everything but
+/// the timestamps must agree, and each timestamp is the later one.
+pub(crate) fn merge_added_metadata_fields(
+    ours: FileMetadata,
+    theirs: FileMetadata,
+) -> Option<FileMetadata> {
+    fn same<T: PartialEq>(ours: T, theirs: T) -> Option<T> {
+        (ours == theirs).then_some(ours)
+    }
+    fn later(ours: MetadataField<i64>, theirs: MetadataField<i64>) -> MetadataField<i64> {
+        match (ours, theirs) {
+            (MetadataField::Value(ours), MetadataField::Value(theirs)) => {
+                MetadataField::Value(ours.max(theirs))
+            }
+            (MetadataField::Value(value), MetadataField::Unavailable)
+            | (MetadataField::Unavailable, MetadataField::Value(value)) => {
+                MetadataField::Value(value)
+            }
+            (MetadataField::Unavailable, MetadataField::Unavailable) => MetadataField::Unavailable,
+        }
+    }
+    Some(FileMetadata {
+        posix_mode: same(ours.posix_mode, theirs.posix_mode)?,
+        posix_uid: same(ours.posix_uid, theirs.posix_uid)?,
+        posix_gid: same(ours.posix_gid, theirs.posix_gid)?,
+        posix_flags: same(ours.posix_flags, theirs.posix_flags)?,
+        windows_attributes: same(ours.windows_attributes, theirs.windows_attributes)?,
+        created_ns: later(ours.created_ns, theirs.created_ns),
+        modified_ns: later(ours.modified_ns, theirs.modified_ns),
+        accessed_ns: later(ours.accessed_ns, theirs.accessed_ns),
+        changed_ns: later(ours.changed_ns, theirs.changed_ns),
+        named_attributes: same(ours.named_attributes, theirs.named_attributes)?,
+        acl: same(ours.acl, theirs.acl)?,
+        security_descriptor: same(ours.security_descriptor, theirs.security_descriptor)?,
     })
 }
 

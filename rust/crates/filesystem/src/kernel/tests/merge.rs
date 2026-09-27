@@ -1015,6 +1015,17 @@ fn metadata_timestamps_reconcile_and_authored_fields_conflict() {
     assert!(merge_metadata_fields(base, ours, theirs).is_none());
 }
 
+#[allow(clippy::expect_used)]
+#[test]
+fn one_file_added_on_both_sides_keeps_the_later_times() {
+    let merged = merge_added_metadata_fields(timed(30, 0o644), timed(20, 0o644))
+        .expect("the same file added twice reconciles");
+    assert_eq!(merged.modified_ns, MetadataField::Value(30));
+    assert_eq!(merged.posix_mode, MetadataField::Value(0o644));
+    // Without a base, authored state must agree.
+    assert!(merge_added_metadata_fields(timed(30, 0o600), timed(20, 0o644)).is_none());
+}
+
 /// Two siblings each add an entry to one directory. Both bump its
 /// modification time, which is activity rather than authored state: the
 /// merge keeps both entries and the later time, and a driver that resolves
