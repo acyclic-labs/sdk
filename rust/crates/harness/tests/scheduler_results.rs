@@ -244,7 +244,8 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                         SchedulerEvent::Completed {
                             operation_id: child,
                             outcome: Outcome::Succeeded(corrupt),
-                            fence: Some(fence.clone())
+                            fence: Some(fence.clone()),
+                            execution_duration_ns: None,
                         }
                     )
                     .await
@@ -271,7 +272,8 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                         SchedulerEvent::Completed {
                             operation_id: child,
                             outcome: Outcome::Succeeded(missing),
-                            fence: Some(fence.clone())
+                            fence: Some(fence.clone()),
+                            execution_duration_ns: None,
                         }
                     )
                     .await
@@ -297,7 +299,8 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                         SchedulerEvent::Completed {
                             operation_id: child,
                             outcome: Outcome::Succeeded(invalid_type),
-                            fence: Some(fence.clone())
+                            fence: Some(fence.clone()),
+                            execution_duration_ns: None,
                         }
                     )
                     .await
@@ -318,6 +321,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     operation_id: child,
                     outcome: Outcome::Succeeded(result),
                     fence: Some(fence),
+                    execution_duration_ns: None,
                 },
             )
             .await?;
@@ -472,6 +476,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     operation_id: child,
                     outcome: Outcome::Succeeded(result),
                     fence: Some(fence),
+                    execution_duration_ns: None,
                 },
             )
             .await?;
@@ -576,6 +581,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 operation_id: child,
                 outcome: Outcome::Succeeded(result),
                 fence: Some(fence),
+                execution_duration_ns: None,
             },
         )
         .await?;
