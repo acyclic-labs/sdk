@@ -19,9 +19,14 @@ const generatedFiles = directory => {
   visit(directory, "");
   return files.sort();
 };
-const wasmPrivateClosureName = /wasm_bindgen__convert__closures_____invoke__h[0-9a-f]+/g;
+// Closure invoke names include private crate build hashes. Rust 1.98 expands
+// those names to include the closure's type, but the hashes still vary by host.
+const wasmPrivateClosureName = /wasm_bindgen__convert__closures_____invoke__h[0-9a-f]+|wasm_bindgen_[0-9a-f]{8,16}___convert__closures[A-Za-z0-9_]*/g;
+const canonicalPrivateClosureName = name => name.startsWith("wasm_bindgen__")
+  ? "wasm_bindgen__convert__closures_____invoke__h<private>"
+  : name.replace(/(wasm_bindgen|js_sys|web_sys|core)_[0-9a-f]{8,16}(?=_)/g, "$1_<private>");
 const canonicalGeneratedJs = source => source
-  .replace(wasmPrivateClosureName, "wasm_bindgen__convert__closures_____invoke__h<private>")
+  .replace(wasmPrivateClosureName, canonicalPrivateClosureName)
   .replace(/shim_idx: \d+/g, "shim_idx: <private>");
 const declarationBlocks = source => source
   .split(/\r?\n/)
@@ -31,7 +36,7 @@ const declarationBlocks = source => source
     return blocks;
   }, [])
   .map(block => block
-    .replace(wasmPrivateClosureName, "wasm_bindgen__convert__closures_____invoke__h<private>")
+    .replace(wasmPrivateClosureName, canonicalPrivateClosureName)
     .replace(/\s+/g, " ")
     .trim())
   .sort();
