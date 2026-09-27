@@ -152,6 +152,20 @@ export interface WasmTaskAdmissionIdentities {
 }
 
 
+
+export type WasmTurnDisposition = "dispatch" | "reconcile" | "indeterminate" | "completed";
+export interface WasmTurnPreparation {
+    readonly user_id: string;
+    readonly append_user: boolean;
+    readonly selection: Readonly<{
+        readonly conversation_revision: bigint;
+        readonly message_ids: readonly string[];
+    }>;
+    readonly selection_is_new: boolean;
+    readonly disposition: WasmTurnDisposition;
+}
+
+
 /**
  * Ordered authority-resolution level from the runtime root to one invocation.
  */
@@ -513,6 +527,14 @@ export function fileDescriptor(bytes: Uint8Array, media_type: string): any;
 export function forkSeedFromReport(report: any): any;
 
 /**
+ * Plans one deterministic conversation turn before any model or content
+ * callback runs.  The reducer state and payload checks are shared with the
+ * native filesystem memory host; JavaScript retains ownership of asynchronous
+ * reads and model dispatch after this plan is committed.
+ */
+export function prepareConversationTurn(conversation: any, operation_id: string, content: any, attachments: any, limits: any, existing_selection: any, has_completed_output: boolean, can_reconcile: boolean): WasmTurnPreparation;
+
+/**
  * Runs the canonical Rust conversation projection over bytes captured by the
  * owner.  TypeScript supplies a map rather than a callback so authorization
  * and async reads finish before this deterministic core is entered.
@@ -666,6 +688,7 @@ export interface InitOutput {
     readonly encodeCanonicalJson: (a: any) => [number, number, number, number];
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
+    readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
     readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];

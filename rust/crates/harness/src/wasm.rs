@@ -36,6 +36,7 @@ use crate::{
         batch_member_operation_id, task_admission_identities, task_definition_digest,
     },
     tool::{ToolDefinition, validate_value},
+    turn::prepare_turn,
 };
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
@@ -391,6 +392,21 @@ export interface WasmBatchAdmissionRequest {
 export interface WasmTaskAdmissionIdentities {
     readonly task: WasmMachineIdentityWire;
     readonly machine: WasmMachineIdentityWire;
+}
+"#;
+
+#[wasm_bindgen(typescript_custom_section)]
+const TURN_PREPARATION_TYPES: &'static str = r#"
+export type WasmTurnDisposition = "dispatch" | "reconcile" | "indeterminate" | "completed";
+export interface WasmTurnPreparation {
+    readonly user_id: string;
+    readonly append_user: boolean;
+    readonly selection: Readonly<{
+        readonly conversation_revision: bigint;
+        readonly message_ids: readonly string[];
+    }>;
+    readonly selection_is_new: boolean;
+    readonly disposition: WasmTurnDisposition;
 }
 "#;
 
@@ -1310,6 +1326,48 @@ pub async fn select_model_context_wasm(
     .await
     .map_err(js_error)?;
     to_js(&selected)
+}
+
+/// Plans one deterministic conversation turn before any model or content
+/// callback runs.  The reducer state and payload checks are shared with the
+/// native filesystem memory host; JavaScript retains ownership of asynchronous
+/// reads and model dispatch after this plan is committed.
+#[wasm_bindgen(
+    js_name = prepareConversationTurn,
+    unchecked_return_type = "WasmTurnPreparation"
+)]
+pub fn prepare_conversation_turn_wasm(
+    conversation: JsValue,
+    operation_id: String,
+    content: JsValue,
+    attachments: JsValue,
+    limits: JsValue,
+    existing_selection: JsValue,
+    has_completed_output: bool,
+    can_reconcile: bool,
+) -> Result<JsValue, JsValue> {
+    let conversation: ConversationState = from_js(conversation)?;
+    let operation_id = OperationId::parse(&operation_id).map_err(js_error)?;
+    let content: FileRef = from_js(content)?;
+    let attachments: ReferencedAttachments = from_js(attachments)?;
+    let limits: Limits = from_js(limits)?;
+    let existing_selection = if existing_selection.is_null() || existing_selection.is_undefined() {
+        None
+    } else {
+        Some(from_js::<ModelContextSelection>(existing_selection)?)
+    };
+    let preparation = prepare_turn(
+        &conversation,
+        operation_id,
+        content,
+        attachments,
+        limits,
+        existing_selection,
+        has_completed_output,
+        can_reconcile,
+    )
+    .map_err(js_error)?;
+    to_js(&preparation)
 }
 
 /// Validates selection order and tool linkage before the host resolves any

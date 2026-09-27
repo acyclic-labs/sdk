@@ -406,61 +406,40 @@ export class MemoryConversation {
     this.#core.validateFileUnderLimits(userContent, limits);
     await this.read(userContent);
     const list = await this.#attachments(operationId, "user", attachments, limits);
-    const userId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "user"));
     let state = this.conversation();
-    const unresolved = [...state.messages].reverse().find(message => message.kind === "user");
-    if (unresolved !== undefined && unresolved.id !== userId
-      && !state.messages.some(message => (message.kind === "assistant"
-        || (message.kind === "system" && Object.hasOwn(message.extensions, "acyclic.turn.outcome")))
-        && message.reply_to === unresolved.id)) {
-      throw new TypeError("previous conversation turn is unresolved; retry that operation first");
+    const completed = this.#outputs.get(operationId);
+    const assistantId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "assistant"));
+    const completedReady = completed !== undefined && state.messages.some(message => message.id === assistantId);
+    let committedSelection: { readonly conversation_revision: bigint; readonly message_ids: readonly ConversationMessageId[] } | null = null;
+    for (const event of this.#events()) {
+      if (event.operation_id === operationId && event.payload.kind === "model_context_selected") {
+        committedSelection = event.payload.selection;
+        break;
+      }
     }
-    const outcomeNotice = state.messages.find(message => message.kind === "system" && message.reply_to === userId
-      && Object.hasOwn(message.extensions, "acyclic.turn.outcome"));
-    if (outcomeNotice !== undefined) {
-      const abandonedId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "indeterminate-notice"));
-      throw new TypeError(outcomeNotice.id === abandonedId
-        ? "conversation turn was explicitly abandoned after an indeterminate model outcome"
-        : "conversation turn already has a terminal outcome");
-    }
-    const existing = state.messages.find(message => message.id === userId);
-    if (existing === undefined) {
+    const preparation = this.#core.prepareConversationTurn(
+      state, operationId, userContent, list, limits, committedSelection,
+      completed !== undefined, runtime.canReconcileSelectedTurn(),
+    );
+    const userId = this.#core.conversationMessageId(preparation.user_id);
+    if (preparation.append_user) {
       this.#append(this.#core.deriveOperationId(operationId, "user-event"), "user", {
         id: userId, sequence: BigInt(state.messages.length + 1), kind: "user", content: userContent,
         attachments: list, reply_to: null, tool_call_id: null, extensions: {},
       }, limits);
-    } else if (existing.kind !== "user" || this.#fileKey(existing.content) !== this.#fileKey(userContent)
-      || !this.#sameAttachments(existing.attachments, list)) {
-      throw new TypeError("turn identity is bound to another user message");
     }
-    const completed = this.#outputs.get(operationId);
-    const assistantId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "assistant"));
-    if (completed !== undefined && state.messages.some(message => message.id === assistantId)) {
+    if (preparation.disposition === "completed" && completed !== undefined && completedReady) {
       return structuredClone(completed);
     }
-    state = this.conversation();
-    let selection: { readonly conversation_revision: bigint; readonly message_ids: readonly ConversationMessageId[] } | undefined;
-    for (const event of this.#events()) {
-      if (event.operation_id === operationId && event.payload.kind === "model_context_selected") {
-        selection = event.payload.selection;
-        break;
-      }
-    }
-    const newSelection = selection === undefined;
-    if (selection === undefined) {
-      const current = state.messages.findIndex(message => message.id === userId);
-      const eligible = state.messages.slice(0, current + 1)
-        .filter(message => ["system", "user", "assistant", "tool_call", "tool_result"].includes(message.kind));
-      const suffix = eligible.slice(-limits.context_messages);
-      const included = new Set(suffix.map(message => message.id));
-      selection = { conversation_revision: BigInt(state.messages.length),
-        message_ids: suffix.filter(message => message.kind !== "tool_result"
-          || (message.reply_to !== null && included.has(message.reply_to))).map(message => message.id) };
-    }
-    if (selection.message_ids.at(-1) !== userId) throw new TypeError("operation is bound to another context selection");
-    if (!newSelection && completed === undefined && !runtime.canReconcileSelectedTurn()) {
+    if (preparation.disposition === "indeterminate") {
       throw new IndeterminateModelTurnError(operationId);
     }
+    state = this.conversation();
+    const selection = {
+      conversation_revision: preparation.selection.conversation_revision,
+      message_ids: preparation.selection.message_ids.map(id => this.#core.conversationMessageId(id)),
+    };
+    const newSelection = preparation.selection_is_new;
     let stableOutput = completed;
     if (stableOutput === undefined) {
       const selectedLength = Number(selection.conversation_revision);

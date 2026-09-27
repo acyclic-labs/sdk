@@ -1,12 +1,31 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { Harness, NativeContracts, parseIdentity, type AgentId, type OperationId } from "../src/index.js";
+import { DEFAULT_LIMITS, Harness, MemoryConversation, NativeContracts, parseIdentity, type AgentId, type ConversationMessageId, type OperationId } from "../src/index.js";
 import { WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 
 const wasm = readFileSync(
   fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)),
 );
+
+test("WASM turn planner emits a fresh selection and rejects stale retry state", async () => {
+  const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
+  const operation = "01010101-0101-0101-0101-010101010101" as OperationId;
+  const host = await MemoryConversation.create({ agent, wasm });
+  const contracts = await NativeContracts.create(wasm);
+  try {
+    const content = await host.stage("turns/planner/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
+    const fresh = contracts.prepareConversationTurn(host.conversation(), operation, content,
+      { kind: "inline", items: [] }, DEFAULT_LIMITS, null, false, true);
+    expect(fresh.disposition).toBe("dispatch");
+    expect(fresh.append_user).toBe(true);
+    expect(fresh.selection.conversation_revision).toBe(1n);
+    expect(() => contracts.prepareConversationTurn(host.conversation(), operation, content,
+      { kind: "inline", items: [] }, DEFAULT_LIMITS,
+      { conversation_revision: 0n, message_ids: fresh.selection.message_ids as readonly ConversationMessageId[] }, false, true,
+    )).toThrow();
+  } finally { host.free(); }
+});
 
 test("local Rust contracts and reducer share one default WASM initialization", async () => {
   const harness = await Harness.create({
