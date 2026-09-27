@@ -2,6 +2,10 @@ import { expect, test } from "bun:test";
 import { composeContentBindings, DEFAULT_LIMITS,
   descriptorFor, NativeContracts, projectModelFile, verifiedContentResolver, selectModelContext,
   type AgentId, type Attachment, type ConversationMessage, type ConversationMessageId, type FileRef, type ProjectableConversation } from "../src/index.js";
+import {
+  HARNESS_PROJECTION_MAX_JSON_BYTES,
+  HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS,
+} from "../src/limits-contract.js";
 
 const contracts = await NativeContracts.create();
 const agent = "01010101-0101-0101-0101-010101010101" as AgentId;
@@ -108,6 +112,9 @@ test("explicit model selection resolves complete manifest-backed attachments bey
     resolveManifest: async () => { oversizedManifestReads++; return manifestBytes; },
   })).rejects.toThrow("attachment projection limit");
   expect(oversizedManifestReads).toBe(0);
+  await expect(selectModelContext(state, { conversationRevision: 1n, messageIds: [id] }, {
+    ...options, maxProjectedAttachments: HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS + 1,
+  })).rejects.toThrow("invalid projection limits");
   await expect(selectModelContext(state, { conversationRevision: 1n, messageIds: [id] }, { resolveManifest: async () => new Uint8Array([0]) })).rejects.toThrow("file content does not match its descriptor");
   const noncanonicalBytes = new TextEncoder().encode(JSON.stringify(items, null, 2));
   const noncanonicalManifest = await reference("manifests/noncanonical.json", noncanonicalBytes, "application/vnd.acyclic.harness.attachments+json");
@@ -215,6 +222,13 @@ test("tool JSON artifacts retain the 16 MiB parser ceiling", async () => {
   await expect(selectModelContext(state, { conversationRevision: 1n, messageIds: [callId] }, {
     maxRenderBytes: 32 * 1024 * 1024,
     resolveFile: async () => oversizedBytes,
+  })).rejects.toThrow("JSON byte limit");
+
+  const declaredSmall = await reference("tool/forged-size.json", new TextEncoder().encode("{}"), "application/json");
+  const forgedSizeState = conversationState({ ...state.messages[0]!, content: declaredSmall });
+  await expect(selectModelContext(forgedSizeState, { conversationRevision: 1n, messageIds: [callId] }, {
+    maxRenderBytes: 32 * 1024 * 1024,
+    resolveFile: async () => new Uint8Array(HARNESS_PROJECTION_MAX_JSON_BYTES + 1),
   })).rejects.toThrow("JSON byte limit");
 });
 

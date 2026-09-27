@@ -4,6 +4,15 @@ import { DEFAULT_LIMITS, verifyFileBytes,
 import type { ModelContent, ModelContentPart, ModelMessage } from "./model.js";
 import { NativeContracts, type NativeModelContent, type NativeModelContentPart, type NativeSelectedModelContext } from "./native-contracts.js";
 import type { ContentBindings } from "./runtime.js";
+import {
+  HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS,
+  HARNESS_PROJECTION_DEFAULT_MAX_MANIFEST_BYTES,
+  HARNESS_PROJECTION_DEFAULT_MAX_MESSAGES,
+  HARNESS_PROJECTION_DEFAULT_MAX_RENDER_BYTES,
+  HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES,
+  HARNESS_PROJECTION_MAX_JSON_BYTES,
+  HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS,
+} from "./limits-contract.js";
 
 export interface ModelContextSelection {
   /** Exact conversation tail observed when this selection was made. */
@@ -89,7 +98,7 @@ export async function projectModelFile(
   if (!nativeImage && !boundedText) {
     throw new TypeError("unsupported file content for selected projection policy");
   }
-  const limit = options.maxResolvedBytes ?? 1_048_576;
+  const limit = options.maxResolvedBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES;
   if (!Number.isSafeInteger(limit) || limit < 0) throw new TypeError("maxResolvedBytes must be a non-negative safe integer");
   if (options.resolveFile === undefined) throw new TypeError("file byte resolution is unavailable");
   if (file.descriptor.byte_length > limit) throw new TypeError("file exceeds projection byte limit");
@@ -118,15 +127,16 @@ export async function selectModelContext(
     || selection.conversationRevision !== conversation.revision) {
     throw new TypeError("model context selection has a stale conversation revision");
   }
-  const maxManifestBytes = options.maxManifestBytes ?? 1_048_576;
-  const maxAttachments = options.maxAttachments ?? 256;
-  const maxMessages = options.maxMessages ?? 256;
-  const maxProjectedAttachments = options.maxProjectedAttachments ?? 1_022;
-  const maxRenderBytes = options.maxRenderBytes ?? 128 * 1024;
+  const maxManifestBytes = options.maxManifestBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_MANIFEST_BYTES;
+  const maxAttachments = options.maxAttachments ?? HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS;
+  const maxMessages = options.maxMessages ?? HARNESS_PROJECTION_DEFAULT_MAX_MESSAGES;
+  const maxProjectedAttachments = options.maxProjectedAttachments ?? HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS;
+  const maxRenderBytes = options.maxRenderBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_RENDER_BYTES;
   if (!Number.isSafeInteger(maxManifestBytes) || maxManifestBytes < 0
     || !Number.isSafeInteger(maxAttachments) || maxAttachments < 0
     || !Number.isSafeInteger(maxMessages) || maxMessages <= 0
-    || !Number.isSafeInteger(maxProjectedAttachments) || maxProjectedAttachments < 0 || maxProjectedAttachments > 1_022
+    || !Number.isSafeInteger(maxProjectedAttachments) || maxProjectedAttachments < 0
+      || maxProjectedAttachments > HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS
     || !Number.isSafeInteger(maxRenderBytes) || maxRenderBytes <= 0) {
     throw new TypeError("invalid projection limits");
   }
@@ -169,12 +179,25 @@ async function captureProjectionFiles(
   const files = new Map<string, Uint8Array>();
   const byId = new Map(messages.map(message => [message.id, message]));
   const fileKey = (file: FileRef): string => new TextDecoder().decode(contracts.encodeCanonicalJson(file));
-  const capture = async (file: FileRef, resolver: ConversationProjectionOptions["resolveFile"], label: string, limit: number) => {
+  const capture = async (
+    file: FileRef,
+    resolver: ConversationProjectionOptions["resolveFile"],
+    label: string,
+    limit: number,
+    ceiling?: number,
+  ) => {
     if (resolver === undefined) throw new TypeError(`${label} resolution is unavailable`);
     const reference = contracts.validate("file_ref", file);
+    if (ceiling !== undefined && reference.descriptor.byte_length > ceiling) {
+      throw new TypeError(`${label} exceeds JSON byte limit`);
+    }
     if (reference.descriptor.byte_length > limit) throw new TypeError(`${label} exceeds its rendering limit`);
     const bytes = await resolver(reference);
-    if (!(bytes instanceof Uint8Array) || bytes.byteLength > limit) throw new TypeError(`${label} exceeds its rendering limit`);
+    if (!(bytes instanceof Uint8Array)) throw new TypeError(`${label} resolver returned invalid bytes`);
+    if (ceiling !== undefined && bytes.byteLength > ceiling) {
+      throw new TypeError(`${label} exceeds JSON byte limit`);
+    }
+    if (bytes.byteLength > limit) throw new TypeError(`${label} exceeds its rendering limit`);
     await verifyFileBytes(reference, bytes);
     files.set(fileKey(reference), Uint8Array.from(bytes));
     return bytes;
@@ -195,7 +218,7 @@ async function captureProjectionFiles(
     const message = byId.get(id);
     if (message === undefined) throw new TypeError("selected conversation message is missing");
     if (message.kind === "tool_call") {
-      await capture(message.content, options.resolveFile, "tool artifact", maxRenderBytes);
+      await capture(message.content, options.resolveFile, "tool artifact", maxRenderBytes, HARNESS_PROJECTION_MAX_JSON_BYTES);
       continue;
     }
     let attachments: readonly Attachment[] | undefined;
@@ -204,7 +227,7 @@ async function captureProjectionFiles(
     if (message.kind === "tool_result") {
       const projection = attachments.find(attachment => attachment.label === "model_projection");
       if (projection === undefined) throw new TypeError("tool result lacks its model projection");
-      await capture(projection.file, options.resolveFile, "tool artifact", maxRenderBytes);
+      await capture(projection.file, options.resolveFile, "tool artifact", maxRenderBytes, HARNESS_PROJECTION_MAX_JSON_BYTES);
     }
   }
   return files;

@@ -15,6 +15,23 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+/// Default maximum bytes read when resolving a file for the provider-neutral
+/// projection helper.  Adapters may narrow this bound for their provider.
+pub const DEFAULT_PROJECTION_MAX_RESOLVED_BYTES: u64 = 1_024 * 1_024;
+/// Default maximum bytes read for an attachment manifest in the projection
+/// helper.  The owning provider may choose a lower bound.
+pub const DEFAULT_PROJECTION_MAX_MANIFEST_BYTES: u64 = 1_024 * 1_024;
+/// Default maximum number of attachments resolved from one selected message.
+pub const DEFAULT_PROJECTION_MAX_ATTACHMENTS: usize = 256;
+/// Default maximum number of selected messages in one provider request.
+pub const DEFAULT_PROJECTION_MAX_MESSAGES: usize = 256;
+/// Default maximum bytes rendered into one provider request.
+pub const DEFAULT_PROJECTION_MAX_RENDER_BYTES: u64 = 128 * 1_024;
+/// Protocol ceiling for attachments materialized into one model projection.
+pub const MAX_PROJECTION_PROJECTED_ATTACHMENTS: usize = 1_022;
+/// Maximum JSON artifact bytes accepted by the projection parser.
+pub const MAX_PROJECTION_JSON_BYTES: u64 = 16 * 1_024 * 1_024;
+
 #[derive(Debug, Deserialize)]
 struct ProjectedToolInvocation {
     call_id: String,
@@ -104,7 +121,7 @@ pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
         maximum_messages,
         maximum_attachments,
         maximum_render_bytes,
-        1_022,
+        MAX_PROJECTION_PROJECTED_ATTACHMENTS,
     )
     .await
 }
@@ -129,7 +146,7 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
     selection.validate(conversation)?;
     if maximum_messages == 0
         || maximum_render_bytes == 0
-        || maximum_projected_attachments > 1_022
+        || maximum_projected_attachments > MAX_PROJECTION_PROJECTED_ATTACHMENTS
         || selection.message_ids.len() > maximum_messages
     {
         return Err(Error::Invalid(
@@ -397,8 +414,7 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
     file: &FileRef,
     maximum_bytes: u64,
 ) -> Result<T> {
-    const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
-    if file.descriptor().byte_length() > MAX_JSON_BYTES {
+    if file.descriptor().byte_length() > MAX_PROJECTION_JSON_BYTES {
         return Err(Error::Invalid(
             "tool artifact exceeds JSON byte limit".into(),
         ));
@@ -411,7 +427,7 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
         ));
     }
     let bytes = resolver.read(file).await?;
-    if bytes.len() as u64 > MAX_JSON_BYTES {
+    if bytes.len() as u64 > MAX_PROJECTION_JSON_BYTES {
         return Err(Error::Invalid(
             "resolved tool artifact exceeds JSON byte limit".into(),
         ));
@@ -526,6 +542,28 @@ mod tests {
         }
     }
 
+    struct ArtifactResolver {
+        bytes: Vec<u8>,
+    }
+
+    impl AttachmentListResolver for ArtifactResolver {
+        fn resolve<'a>(
+            &'a self,
+            _manifest: &'a FileRef,
+            _item_count: u32,
+        ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
+            Box::pin(async {
+                Err(Error::Unsupported(
+                    "manifest resolution is unavailable".into(),
+                ))
+            })
+        }
+
+        fn read<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            Box::pin(async { Ok(self.bytes.clone()) })
+        }
+    }
+
     fn file(agent: AgentId, path: &str, media_type: &str) -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
@@ -611,6 +649,35 @@ mod tests {
             select_model_context(&conversation, selection, &resolver, 256, 2, 128 * 1024).await?;
         assert_eq!(projected.messages.len(), 1);
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn json_projection_checks_resolved_bytes_before_parsing() -> Result<()> {
+        let agent = AgentId::new();
+        let reference = FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("test", "filesystem", "2")?,
+                "private",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(agent),
+            )?,
+            "tool.json",
+            "v1",
+            FileDescriptor::from_bytes(b"{}", "application/json")?,
+            "tool.json",
+        )?;
+        let resolver = ArtifactResolver {
+            bytes: vec![0; (MAX_PROJECTION_JSON_BYTES + 1) as usize],
+        };
+        let error = read_json_artifact::<serde_json::Value, _>(
+            &resolver,
+            &reference,
+            MAX_PROJECTION_JSON_BYTES,
+        )
+        .await
+        .expect_err("oversized resolved bytes must be rejected");
+        assert!(error.to_string().contains("JSON byte limit"));
         Ok(())
     }
 }
