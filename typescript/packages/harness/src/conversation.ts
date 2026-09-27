@@ -1,5 +1,7 @@
 /** Payload-free v2 conversation values. Rust owns admission and replay rules. */
 import { NativeContracts } from "./native-contracts.js";
+import type { MessageKind, VolumeClass, VolumeOperation } from "./enums.js";
+export type { MessageKind, VolumeClass, VolumeOperation } from "./enums.js";
 import type { AgentId, OperationId } from "./index.js";
 import {
   HARNESS_LIMITS_DEFAULT,
@@ -9,7 +11,6 @@ import {
   HARNESS_MAX_PATH_BYTES,
 } from "./limits-contract.js";
 
-export type VolumeClass = "project" | "agent_private" | "session_shared";
 export type VolumeOwner =
   | Readonly<{ kind: "project"; id: string }>
   | Readonly<{ kind: "agent"; id: AgentId }>
@@ -74,9 +75,6 @@ export type ReferencedAttachments =
   | Readonly<{ kind: "inline"; items: readonly Attachment[] }>
   | Readonly<{ kind: "manifest"; manifest: FileRef; item_count: number }>;
 
-export type MessageKind =
-  | "user" | "assistant" | "system" | "tool_call" | "tool_result"
-  | "interaction" | "permission" | "fork" | "merge";
 
 declare const conversationMessageIdBrand: unique symbol;
 export type ConversationMessageId = string & Readonly<{ readonly [conversationMessageIdBrand]: true }>;
@@ -116,8 +114,6 @@ export interface ConversationPage extends ConversationState {
   /** Exclusive message-sequence cursor; null marks the final page. */
   readonly next_sequence: bigint | null;
 }
-
-export type VolumeOperation = "read" | "write";
 
 export async function descriptorFor(bytes: Uint8Array, mediaType: string): Promise<FileDescriptor> {
   return (await NativeContracts.create()).fileDescriptor(bytes, mediaType);

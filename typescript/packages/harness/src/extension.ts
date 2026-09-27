@@ -10,8 +10,8 @@ import type {
   InteractionHandler,
 } from "./runtime.js";
 import { NativeContracts } from "./native-contracts.js";
-
-export type ExtensionForkPolicy = "inherit" | "reset" | "reject";
+import type { ExtensionForkPolicy } from "./enums.js";
+export type { ExtensionForkPolicy } from "./enums.js";
 
 /** Exact installed revision selected for new admissions or required by another extension. */
 export interface ExtensionDependency {
