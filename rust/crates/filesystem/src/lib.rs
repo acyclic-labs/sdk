@@ -85,6 +85,8 @@ pub mod git_compat;
 mod heap_future;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted;
+#[doc(hidden)]
+pub mod hosted_contract;
 pub mod kernel;
 pub mod lazy_workspace;
 pub mod lineage;
