@@ -24,6 +24,7 @@ use crate::{
     fork::{ForkReport, ForkRequest, ForkSeed, ReferenceGrant, ResourceRevision},
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
     merge::ProjectMergeReceipt,
+    model::ModelContent,
     resources::{ProviderRef, ResourceRef},
     runtime::{DurableBatchRequest, batch_member_operation_id, task_definition_digest},
     tool::{ToolDefinition, validate_value},
@@ -1357,6 +1358,21 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
     definition.validate().map_err(js_error)?;
     let result: WasmToolResultInput = from_js(result)?;
     validate_value(&definition.output_schema, &result.value, "tool output").map_err(js_error)
+}
+
+/// Validates provider-neutral model content under the exact native limits.
+#[wasm_bindgen(js_name = validateModelContent)]
+pub fn validate_model_content(content: JsValue, limits: JsValue) -> Result<(), JsValue> {
+    let content: ModelContent = from_js(content)?;
+    let limits: Limits = from_js(limits)?;
+    content.validate_limits(limits).map_err(js_error)
+}
+
+/// Validates one human-authored model input using the native content rules.
+#[wasm_bindgen(js_name = validateUserInput)]
+pub fn validate_user_input(content: JsValue) -> Result<(), JsValue> {
+    let content: ModelContent = from_js(content)?;
+    content.validate_user_input().map_err(js_error)
 }
 
 /// Validates a protobuf handshake; returns encoded `Error` bytes, or empty on success.

@@ -130,7 +130,10 @@ impl ModelContent {
                         return Err(Error::Invalid("model file exceeds render limit".into()));
                     }
                 }
-                ModelContentPart::ToolCall { arguments, .. } => {
+                ModelContentPart::ToolCall {
+                    name, arguments, ..
+                } => {
+                    crate::registry::validate_component_label(name, "tool name")?;
                     if crate::contract::canonical_json_bytes(arguments)?.len() as u64
                         > limits.render_bytes
                     {
@@ -139,7 +142,8 @@ impl ModelContent {
                         ));
                     }
                 }
-                ModelContentPart::ToolResult { value, .. } => {
+                ModelContentPart::ToolResult { name, value, .. } => {
+                    crate::registry::validate_component_label(name, "tool name")?;
                     if crate::contract::canonical_json_bytes(value)?.len() as u64
                         > limits.render_bytes
                     {
@@ -218,6 +222,7 @@ pub enum ModelContentPart {
     /// Assistant tool request.
     ToolCall {
         /// Stable call identity.
+        #[serde(alias = "callId")]
         call_id: String,
         /// Registered tool name.
         name: String,
@@ -227,6 +232,7 @@ pub enum ModelContentPart {
     /// Tool result with matching call identity.
     ToolResult {
         /// Matching call identity.
+        #[serde(alias = "callId")]
         call_id: String,
         /// Registered tool name.
         name: String,

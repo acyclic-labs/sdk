@@ -7,6 +7,7 @@ export function createGenerationAdapter(
   decodeStat: (value: WorkspaceStat) => WorkspaceStat,
   decodePage: (value: WorkspaceDirectoryPage) => WorkspaceDirectoryPage,
   decodePlan: (value: WorkspaceExtentPlan) => WorkspaceExtentPlan,
+  ownerLabel = "filesystem runtime",
 ) {
   const handles = new WeakMap<FsGeneration, WasmRawGeneration>();
   function adaptGeneration(raw: WasmRawGeneration): FsGeneration {
@@ -36,7 +37,7 @@ export function createGenerationAdapter(
   }
   function rawGeneration(generation: FsGeneration): WasmRawGeneration {
     const raw = handles.get(generation);
-    if (raw === undefined) throw new TypeError("generation belongs to another filesystem runtime");
+    if (raw === undefined) throw new TypeError(`generation belongs to another ${ownerLabel}`);
     return raw;
   }
   return { adaptGeneration, rawGeneration };

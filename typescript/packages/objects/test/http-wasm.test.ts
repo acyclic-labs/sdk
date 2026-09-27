@@ -1,9 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import { HttpObjectsProvider, ObjectsTransportError } from "../src/index.js";
+import { HttpObjectsProvider, ObjectError, ObjectsTransportError } from "../src/index.js";
 
 const bucket = { bucketId: "bucket" as never, name: "objects" };
 
 describe("hosted Objects WASM response projection", () => {
+  test("preserves Rust-owned hosted domain errors and rejects unknown codes", async () => {
+    const provider = (body: unknown) => new HttpObjectsProvider({
+      endpoint: "https://example.test",
+      token: "token",
+      fetcher: async () => new Response(JSON.stringify(body), { status: 409 }),
+    });
+    await expect(provider({ error: { code: "bucket_exists", message: "name taken" } }).createBucket("taken"))
+      .rejects.toMatchObject({ code: "bucket_exists", message: "name taken" });
+    await expect(provider({ code: "precondition_failed", message: "bucket has objects" }).deleteBucket(bucket))
+      .rejects.toMatchObject({ code: "bucket_not_empty", message: "bucket has objects" });
+    await expect(provider({ code: "new_server_code" }).createBucket("taken"))
+      .rejects.toBeInstanceOf(ObjectsTransportError);
+    await expect(provider({ code: "not_found" }).headBucket(bucket))
+      .rejects.toBeInstanceOf(ObjectError);
+  });
+
   test("forwards Rust head validators and version selection", async () => {
     let requestBody = "";
     const provider = new HttpObjectsProvider({

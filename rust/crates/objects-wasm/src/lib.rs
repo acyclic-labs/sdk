@@ -188,6 +188,19 @@ pub fn is_objects_error_code(value: &str) -> bool {
     ObjectsErrorCode::from_str(value).is_some()
 }
 
+/// Project a hosted error code through the Rust-owned public Objects contract.
+/// The delete-bucket route uses a more specific public precondition error.
+#[wasm_bindgen(js_name = publicHttpErrorCode)]
+pub fn public_http_error_code(raw: &str, route: &str) -> Option<ObjectsErrorCode> {
+    let code = ObjectsErrorCode::from_str(raw)?;
+    let code = if route == "buckets/delete" && code == ObjectsErrorCode::PreconditionFailed {
+        ObjectsErrorCode::BucketNotEmpty
+    } else {
+        code
+    };
+    Some(code)
+}
+
 /// Type-only bridge for the complete Rust-owned Objects error-code contract.
 #[wasm_bindgen(js_name = __objectsErrorCodeContract)]
 pub fn objects_error_code_contract(value: ObjectsErrorCode) -> ObjectsErrorCode {

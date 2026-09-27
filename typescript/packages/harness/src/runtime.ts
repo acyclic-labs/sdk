@@ -1,7 +1,8 @@
-import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelContentPart, type ModelEvent, type ModelMessage, type ModelProvider, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
+import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type NativeLimitsWire, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
+import { validateModelContent as validateModelContentWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import type { SelectedModelContext } from "./projection.js";
 import type { ForkPreparer, ForkPublisher, ForkReport, ForkRequest, ForkSeed, ResourceRef } from "./fork.js";
@@ -251,7 +252,7 @@ export type SelectedAgentInput =
   | { readonly selectedContext: SelectedModelContext; readonly prompt?: never; readonly content?: never };
 type RuntimeAgentInput = AgentInput<UserContentPart> & { readonly selectedContext?: SelectedModelContext };
 
-async function validateSelectedContext(selected: SelectedModelContext, limits: Limits, contracts: NativeContracts): Promise<void> {
+function validateSelectedContext(selected: SelectedModelContext, limits: Limits): void {
   if (typeof selected.selection.conversationRevision !== "bigint"
     || selected.selection.conversationRevision <= 0n
     || selected.messages.length === 0
@@ -261,45 +262,12 @@ async function validateSelectedContext(selected: SelectedModelContext, limits: L
     throw new TypeError("selected context must end with the current user message");
   }
   const user = selected.messages.at(-1)!.content;
-  const userParts: readonly ModelContentPart[] = typeof user === "string" ? [{ kind: "text", text: user }]
-    : Array.isArray(user) ? user : [user as ModelContentPart];
-  if (userParts.length === 0 || userParts.length > 1_024
-    || userParts.some(part => (part.kind !== "text" && part.kind !== "file")
-      || (part.kind === "text" && !part.text))) {
-    throw new TypeError("selected user input contains an unsupported part");
-  }
-  for (const message of selected.messages) await validateModelContent(message.content, limits, contracts);
+  validateUserInputWasm(user);
+  for (const message of selected.messages) validateModelContent(message.content, limits);
 }
 
-async function validateModelContent(content: ModelContent, limits: Limits, contracts: NativeContracts): Promise<void> {
-  if (typeof content === "string") {
-    if (new TextEncoder().encode(content).byteLength > limits.render_bytes) throw new TypeError("model text exceeds render limit");
-    return;
-  }
-  const parts: readonly ModelContentPart[] = Array.isArray(content) ? content : [content as ModelContentPart];
-  if (parts.length > limits.attachments + 1) throw new TypeError("model content exceeds attachment limit");
-  for (const part of parts) {
-    if (part.kind === "file") {
-      const file = contracts.validate("file_ref", part.file);
-      if (!["reference", "bounded_full", "native"].includes(part.policy)
-        || file.descriptor.byte_length > limits.file_bytes
-        || new TextEncoder().encode(file.path).byteLength > limits.path_bytes
-        || (part.policy === "bounded_full" && file.descriptor.byte_length > limits.render_bytes)) {
-        throw new TypeError("model file exceeds harness limits");
-      }
-    } else if (part.kind === "text" && new TextEncoder().encode(part.text).byteLength > limits.render_bytes) {
-      throw new TypeError("model text exceeds render limit");
-    } else if (part.kind === "tool_call" || part.kind === "tool_result") {
-      validateToolName(part.name);
-      const encoded = contracts.encodeCanonicalJson(
-        part.kind === "tool_call" ? part.arguments : part.value);
-      if (encoded.byteLength > limits.render_bytes) {
-        throw new TypeError("model tool projection exceeds render limit");
-      }
-    } else if (part.kind !== "text") {
-      throw new TypeError("model content contains an unsupported part");
-    }
-  }
+function validateModelContent(content: ModelContent, limits: Limits): void {
+  validateModelContentWasm(content, limits);
 }
 
 async function boundedToolValue(value: unknown, renderLimit: number, contracts: NativeContracts): Promise<unknown> {
@@ -2224,7 +2192,7 @@ export class AgentHarness {
   async runSelectedContext(selectedContext: SelectedModelContext, operationId?: OperationId): Promise<RunOutput> {
     if (this.host?.executeSelectedTurn !== undefined) {
       if (operationId === undefined) throw new TypeError("durable selected turns require a stable operation ID");
-      await validateSelectedContext(selectedContext, this.limits, this.contracts);
+      validateSelectedContext(selectedContext, this.limits);
       this.#assertPolicyIdentity();
       const outcome = await this.host.executeSelectedTurn(operationId, selectedContext, this);
       this.#assertPolicyIdentity();
@@ -2255,21 +2223,19 @@ export class AgentHarness {
     const input: RuntimeAgentInput = typeof value === "string" ? { prompt: value }
       : value.selectedContext === undefined ? value as AgentInput<UserContentPart>
       : { prompt: "", selectedContext: value.selectedContext };
-    if (input.selectedContext !== undefined) await validateSelectedContext(input.selectedContext, this.limits, this.contracts);
+    if (input.selectedContext !== undefined) validateSelectedContext(input.selectedContext, this.limits);
     else {
       if (typeof input.prompt !== "string" || !Array.isArray(input.content ?? [])) {
         throw new TypeError("user input shape is invalid");
       }
-      if (input.content !== undefined && (input.content.length > this.limits.attachments || input.content.length > 1_024)) {
+      if (input.content !== undefined && input.content.length > this.limits.attachments) {
         throw new TypeError("turn attachments exceed harness limits");
       }
-      if (!input.prompt && !input.content?.length) throw new TypeError("user input is empty");
-      if (input.content?.some(part => (part.kind !== "text" && part.kind !== "file")
-        || (part.kind === "text" && !part.text))) {
-        throw new TypeError("user input contains an unsupported part");
-      }
-      await validateModelContent(input.content === undefined
-        ? input.prompt : [{ kind: "text", text: input.prompt }, ...input.content], this.limits, this.contracts);
+      const userContent: ModelContent = input.content === undefined
+        ? input.prompt
+        : input.prompt ? [{ kind: "text", text: input.prompt }, ...input.content] : input.content;
+      validateUserInputWasm(userContent);
+      validateModelContent(userContent, this.limits);
     }
     const receipts: RunReceipt[] = [];
     const definition = TaskDefinition.live<RuntimeAgentInput, AgentOutput>("acyclic.default-agent", "1", async (context, input) => {
@@ -2291,7 +2257,7 @@ export class AgentHarness {
         if (!["system", "user", "assistant", "tool"].includes(message.role)) {
           throw new TypeError("context builder returned an unsupported role");
         }
-        await validateModelContent(message.content, this.limits, this.contracts);
+        validateModelContent(message.content, this.limits);
       }
       let text = "";
       let textBytes = 0;

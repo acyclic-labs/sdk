@@ -4,6 +4,7 @@ import type { FsChangeSet, FsGeneration, GenerationDiff, RawGenerationChangeSet 
 export function createChangeSetAdapter<RawDiff>(
   adaptGeneration: (raw: RawGenerationChangeSet<RawDiff>["from"]) => FsGeneration,
   decodeDiff: (raw: RawDiff) => GenerationDiff,
+  ownerLabel = "filesystem runtime",
 ) {
   const handles = new WeakMap<FsChangeSet, RawGenerationChangeSet<RawDiff>>();
   function adaptChangeSet(raw: RawGenerationChangeSet<RawDiff>): FsChangeSet {
@@ -23,7 +24,7 @@ export function createChangeSetAdapter<RawDiff>(
   }
   function rawChangeSet(changeSet: FsChangeSet): RawGenerationChangeSet<RawDiff> {
     const raw = handles.get(changeSet);
-    if (raw === undefined) throw new TypeError("change set belongs to another filesystem runtime");
+    if (raw === undefined) throw new TypeError(`change set belongs to another ${ownerLabel}`);
     return raw;
   }
   return { adaptChangeSet, rawChangeSet };

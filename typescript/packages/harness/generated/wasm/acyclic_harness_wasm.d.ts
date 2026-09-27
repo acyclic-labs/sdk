@@ -259,6 +259,11 @@ export function validateConversationMessageId(value: string): string;
 export function validateIdentity(kind: string, value: string): string;
 
 /**
+ * Validates provider-neutral model content under the exact native limits.
+ */
+export function validateModelContent(content: any, limits: any): void;
+
+/**
  * Validates a model-visible tool definition using the native contract.
  */
 export function validateToolDefinition(definition: any): void;
@@ -278,6 +283,11 @@ export function validateToolResult(definition: any, result: any): void;
  * a TypeScript facade turns an untrusted model value into a typed argument.
  */
 export function validateToolValue(schema: any, value: any): any;
+
+/**
+ * Validates one human-authored model input using the native content rules.
+ */
+export function validateUserInput(content: any): void;
 
 /**
  * Validates a protobuf admission identity; returns encoded `Error` bytes, or empty on success.
@@ -352,10 +362,12 @@ export interface InitOutput {
     readonly validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
     readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
     readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly validateModelContent: (a: any, b: any) => [number, number];
     readonly validateToolDefinition: (a: any) => [number, number];
     readonly validateToolInvocation: (a: any, b: any) => [number, number];
     readonly validateToolResult: (a: any, b: any) => [number, number];
     readonly validateToolValue: (a: any, b: any) => [number, number, number];
+    readonly validateUserInput: (a: any) => [number, number];
     readonly validateWireAdmission: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateWireCancel: (a: number, b: number) => [number, number];
     readonly validateWireCancellation: (a: number, b: number, c: number, d: number) => [number, number];
