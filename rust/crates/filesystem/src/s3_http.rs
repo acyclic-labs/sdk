@@ -2821,6 +2821,14 @@ mod tests {
         timestamp: &str,
         scope_date: &str,
     ) -> Result<http::Request<axum::body::Body>, Box<dyn std::error::Error>> {
+        signed_bucket_request(Method::HEAD, timestamp, scope_date)
+    }
+
+    fn signed_bucket_request(
+        method: Method,
+        timestamp: &str,
+        scope_date: &str,
+    ) -> Result<http::Request<axum::body::Body>, Box<dyn std::error::Error>> {
         let path = "/bucket";
         let payload_hash = hex::encode(Sha256::digest([]));
         let signed_headers = "host;x-amz-content-sha256;x-amz-date";
@@ -2829,16 +2837,15 @@ mod tests {
         writeln!(canonical_headers, "x-amz-content-sha256:{payload_hash}")?;
         writeln!(canonical_headers, "x-amz-date:{timestamp}")?;
         let canonical_request =
-            format!("HEAD\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
-        let signing_date = timestamp
-            .get(..8)
-            .ok_or_else(|| std::io::Error::other("timestamp has no signing date"))?;
+            format!("{method}\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
+        // Signed consistently for the stated scope, so a scope date that
+        // differs from `timestamp` fails only the date rule, not the signature.
         let scope = format!("{scope_date}/auto/s3/aws4_request");
         let string_to_sign = format!(
-            "{SIGNATURE_ALGORITHM}\n{timestamp}\n{signing_date}/auto/s3/aws4_request\n{}",
+            "{SIGNATURE_ALGORITHM}\n{timestamp}\n{scope}\n{}",
             hex::encode(Sha256::digest(canonical_request.as_bytes()))
         );
-        let date_key = hmac(b"AWS4secret", signing_date.as_bytes())?;
+        let date_key = hmac(b"AWS4secret", scope_date.as_bytes())?;
         let region_key = hmac(&date_key, b"auto")?;
         let service_key = hmac(&region_key, b"s3")?;
         let signing_key = hmac(&service_key, b"aws4_request")?;
@@ -2847,7 +2854,7 @@ mod tests {
             "{SIGNATURE_ALGORITHM} Credential=access/{scope}, SignedHeaders={signed_headers}, Signature={signature}"
         );
         Ok(http::Request::builder()
-            .method(Method::HEAD)
+            .method(method)
             .uri(path)
             .header("host", "localhost")
             .header("x-amz-content-sha256", payload_hash)
@@ -2930,10 +2937,21 @@ mod tests {
         }
         let (timestamp, _) = signature_time(time::Duration::ZERO);
         let mismatched_scope = service
-            .oneshot(signed_head_bucket(&timestamp, "20000101")?)
+            .oneshot(signed_bucket_request(Method::GET, &timestamp, "20000101")?)
             .await
             .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
         assert_eq!(mismatched_scope.status(), http::StatusCode::FORBIDDEN);
+        let body = mismatched_scope
+            .into_body()
+            .store_all_limited(64 * 1024)
+            .await
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        assert!(
+            String::from_utf8_lossy(&body)
+                .contains("credential scope date does not match x-amz-date"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
         Ok(())
     }
 
