@@ -132,6 +132,17 @@ pub fn prepare_turn_with_user_id(
             attachment.validate()?;
             limits.validate_file(&attachment.file)?;
         }
+    } else if let ReferencedAttachments::Manifest {
+        manifest,
+        item_count,
+    } = &attachments
+    {
+        if *item_count as usize > limits.attachments {
+            return Err(Error::Invalid(
+                "turn attachments exceed harness limits".into(),
+            ));
+        }
+        limits.validate_file(manifest)?;
     }
 
     let user_id = user_id_override.unwrap_or_else(|| canonical_user_message_id(operation_id));
@@ -272,13 +283,29 @@ mod tests {
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::new()),
         )?;
-        Ok(FileRef::new(
+        FileRef::new(
             volume,
             name,
             "v1",
             FileDescriptor::from_bytes(b"body", "text/plain")?,
             name,
-        )?)
+        )
+    }
+
+    fn manifest_file(name: &str) -> Result<FileRef> {
+        let volume = VolumeRef::new(
+            ProviderRef::new("test", "memory", "1")?,
+            "turns",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::new()),
+        )?;
+        FileRef::new(
+            volume,
+            name,
+            "v1",
+            FileDescriptor::from_bytes(br"[]", "application/vnd.acyclic.harness.attachments+json")?,
+            name,
+        )
     }
 
     fn conversation() -> Result<ConversationState> {
@@ -352,6 +379,35 @@ mod tests {
     }
 
     #[test]
+    fn manifest_count_uses_turn_attachment_limit() -> Result<()> {
+        let mut limits = limits();
+        limits.attachments = 1;
+        let Err(error) = prepare_turn(
+            &conversation()?,
+            OperationId::new(),
+            file("user.txt")?,
+            ReferencedAttachments::Manifest {
+                manifest: manifest_file("attachments.json")?,
+                item_count: 2,
+            },
+            limits,
+            None,
+            false,
+            true,
+        ) else {
+            return Err(Error::Invalid(
+                "manifest count above the turn limit was admitted".into(),
+            ));
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("turn attachments exceed harness limits")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn changed_payload_is_rejected() -> Result<()> {
         let operation = OperationId::new();
         let first = prepare_turn(
@@ -370,7 +426,7 @@ mod tests {
                 .user_message
                 .ok_or_else(|| Error::Invalid("planner omitted user message".into()))?,
         )?;
-        let error = match prepare_turn(
+        let Err(error) = prepare_turn(
             &state,
             operation,
             file("second.txt")?,
@@ -379,9 +435,8 @@ mod tests {
             Some(first.selection),
             false,
             true,
-        ) {
-            Ok(_) => return Err(Error::Invalid("changed payload was admitted".into())),
-            Err(error) => error,
+        ) else {
+            return Err(Error::Invalid("changed payload was admitted".into()));
         };
         assert!(error.to_string().contains("another user message"));
         Ok(())
@@ -405,7 +460,7 @@ mod tests {
                 .user_message
                 .ok_or_else(|| Error::Invalid("planner omitted user message".into()))?,
         )?;
-        let error = match prepare_turn(
+        let Err(error) = prepare_turn(
             &state,
             OperationId::new(),
             file("second.txt")?,
@@ -414,9 +469,8 @@ mod tests {
             None,
             false,
             true,
-        ) {
-            Ok(_) => return Err(Error::Invalid("unresolved turn was admitted".into())),
-            Err(error) => error,
+        ) else {
+            return Err(Error::Invalid("unresolved turn was admitted".into()));
         };
         assert!(
             error
@@ -453,7 +507,7 @@ mod tests {
         )?;
         let mut stale = first.selection;
         stale.conversation_revision = 0;
-        let error = match prepare_turn(
+        let Err(error) = prepare_turn(
             &state,
             operation,
             content,
@@ -462,9 +516,8 @@ mod tests {
             Some(stale),
             false,
             true,
-        ) {
-            Ok(_) => return Err(Error::Invalid("stale selection was admitted".into())),
-            Err(error) => error,
+        ) else {
+            return Err(Error::Invalid("stale selection was admitted".into()));
         };
         assert!(error.to_string().contains("stale conversation revision"));
         Ok(())

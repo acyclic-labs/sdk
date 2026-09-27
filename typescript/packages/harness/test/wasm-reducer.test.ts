@@ -28,6 +28,27 @@ test("WASM turn planner emits a fresh selection and rejects stale retry state", 
   } finally { host.free(); }
 });
 
+test("WASM turn planner applies attachment limits to manifest counts", async () => {
+  const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
+  const operation = "02020202-0202-0202-0202-020202020202" as OperationId;
+  const host = await MemoryConversation.create({ agent, wasm });
+  const contracts = await NativeContracts.create(wasm);
+  try {
+    const content = await host.stage(
+      "turns/planner/manifest-user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt",
+    );
+    const manifest = await host.stage(
+      "turns/planner/attachments.json", new TextEncoder().encode("[]"),
+      "application/vnd.acyclic.harness.attachments+json", "attachments.json",
+    );
+    expect(() => contracts.prepareConversationTurn(
+      host.conversation(), operation, content,
+      { kind: "manifest", manifest, item_count: 2 },
+      { ...DEFAULT_LIMITS, attachments: 1 }, null, false, true,
+    )).toThrow("turn attachments exceed harness limits");
+  } finally { host.free(); }
+});
+
 test("local Rust contracts and reducer share one default WASM initialization", async () => {
   const harness = await Harness.create({
     authority: { kind: "conversation", id: crypto.randomUUID() },
