@@ -249,7 +249,7 @@ export interface WasmTaskRunLimitsInput {
 
 
 /**
- * Bounded Rust-owned content state for the WASM MemoryConversation adapter.
+ * Bounded Rust-owned content state for the WASM `MemoryConversation` adapter.
  * The native filesystem provider uses the same crate-level core while
  * retaining its signed provider-generation proof around delegated reads.
  */
