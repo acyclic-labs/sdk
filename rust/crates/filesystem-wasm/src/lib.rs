@@ -2807,6 +2807,7 @@ mod bindings {
         }
 
         /// Validates and canonicalizes a Rust Git output before JS projection.
+        #[allow(clippy::needless_pass_by_value)] // WASM owns JavaScript strings at the ABI boundary.
         #[wasm_bindgen(js_name = canonicalizeOutputJson)]
         pub fn canonicalize_output_json(&self, value_json: String) -> Result<String, JsValue> {
             canonicalize_git_output_json(&value_json).map_err(js_error)
@@ -2814,6 +2815,7 @@ mod bindings {
 
         /// Validates and canonicalizes a durable pending transition before JS
         /// projection.
+        #[allow(clippy::needless_pass_by_value)] // WASM owns JavaScript strings at the ABI boundary.
         #[wasm_bindgen(js_name = canonicalizePendingTransitionJson)]
         pub fn canonicalize_pending_transition_json(
             &self,
