@@ -5,6 +5,21 @@ import {
   DEFAULT_VOLUME_LIMITS as GENERATED_VOLUME_LIMITS,
 } from "../generated/defaults.js";
 
+/**
+ * The workspace and generation DTOs are emitted from the Rust WASM boundary.
+ * Keep the customer-facing contracts readonly while deriving their field
+ * names, optionality, and literal unions from that generated source.
+ */
+type ReadonlyDeep<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends Uint8Array
+    ? Uint8Array
+  : T extends readonly (infer Value)[]
+    ? readonly ReadonlyDeep<Value>[]
+    : T extends object
+      ? { readonly [Key in keyof T]: ReadonlyDeep<T[Key]> }
+      : T;
+
 export type FsProfile = "portable" | "posix" | "windows" | "browser";
 
 export interface EngineCapabilities {
@@ -106,48 +121,18 @@ export interface HostedFsEngine extends FsEngine {
   openWorkspace(name: string): Promise<HostedFsWorkspace>;
 }
 
-export type WorkspaceCommitStatus =
-  | "committed"
-  | "already-committed"
-  | "conflict"
-  | "fenced"
-  | "idempotency-conflict";
-
-export interface WorkspaceCommit {
-  readonly status: WorkspaceCommitStatus;
-  readonly generationId: Uint8Array | undefined;
-}
-
-export type WorkspaceFileKind =
-  | "regular" | "directory" | "symbolic-link" | "fifo" | "socket"
-  | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
-export type WorkspaceNameEncoding = "utf8" | "posix-bytes" | "windows-utf16le";
-export interface WorkspaceName { readonly encoding: WorkspaceNameEncoding; readonly bytes: Uint8Array; }
-export interface WorkspaceMetadata {
-  readonly posixMode: number | undefined; readonly posixUid: number | undefined;
-  readonly posixGid: number | undefined; readonly posixFlags: bigint | undefined;
-  readonly windowsAttributes: number | undefined; readonly createdNs: bigint | undefined;
-  readonly modifiedNs: bigint | undefined; readonly accessedNs: bigint | undefined;
-  readonly changedNs: bigint | undefined; readonly hasNamedAttributes: boolean;
-  readonly hasAcl: boolean; readonly hasSecurityDescriptor: boolean;
-}
-export interface WorkspaceStat {
-  readonly fileId: Uint8Array; readonly kind: WorkspaceFileKind;
-  readonly linkCount: bigint; readonly logicalBytes: bigint | undefined;
-  readonly metadata: WorkspaceMetadata;
-}
-export interface WorkspaceDirectoryEntry {
-  readonly name: WorkspaceName; readonly fileId: Uint8Array; readonly kind: WorkspaceFileKind;
-}
-export interface WorkspaceDirectoryPage {
-  readonly entries: readonly WorkspaceDirectoryEntry[]; readonly hasMore: boolean;
-}
-export type WorkspaceExtentKind = "hole" | "allocated-zero" | "content";
-export interface WorkspaceExtentSpan {
-  readonly offset: bigint; readonly length: bigint; readonly sourceEnd: bigint;
-  readonly kind: WorkspaceExtentKind;
-}
-export interface WorkspaceExtentPlan { readonly spans: readonly WorkspaceExtentSpan[]; }
+export type WorkspaceCommitStatus = WasmBinding.BrowserWorkspaceCommit["status"];
+export type WorkspaceCommit = ReadonlyDeep<WasmBinding.BrowserWorkspaceCommit>;
+export type WorkspaceFileKind = WasmBinding.BrowserWorkspaceDirectoryEntry["kind"];
+export type WorkspaceNameEncoding = WasmBinding.BrowserWorkspaceName["encoding"];
+export type WorkspaceName = ReadonlyDeep<WasmBinding.BrowserWorkspaceName>;
+export type WorkspaceMetadata = ReadonlyDeep<WasmBinding.BrowserWorkspaceMetadata>;
+export type WorkspaceStat = ReadonlyDeep<WasmBinding.BrowserWorkspaceStat>;
+export type WorkspaceDirectoryEntry = ReadonlyDeep<WasmBinding.BrowserWorkspaceDirectoryEntry>;
+export type WorkspaceDirectoryPage = ReadonlyDeep<WasmBinding.BrowserWorkspaceDirectoryPage>;
+export type WorkspaceExtentKind = WasmBinding.BrowserWorkspaceExtentSpan["kind"];
+export type WorkspaceExtentSpan = ReadonlyDeep<WasmBinding.BrowserWorkspaceExtentSpan>;
+export type WorkspaceExtentPlan = ReadonlyDeep<WasmBinding.BrowserWorkspaceExtentPlan>;
 
 /** Small customer-facing handle over one independently versioned filesystem. */
 export interface FsWorkspace {
@@ -210,14 +195,7 @@ export interface JoinOptions {
   readonly maximumConflicts: number;
 }
 
-export type JoinStatus =
-  | "applied"
-  | "already-applied"
-  | "no-changes"
-  | "stale-target"
-  | "conflicted"
-  | "fenced"
-  | "idempotency-conflict";
+export type JoinStatus = WasmBinding.BrowserJoinResult["status"];
 
 export interface JoinResult {
   readonly status: JoinStatus;
@@ -232,14 +210,7 @@ export interface WorkspaceRebaseOptions {
   readonly maximumConflicts: number;
 }
 
-export type WorkspaceRebaseStatus =
-  | "rebased"
-  | "already-rebased"
-  | "current"
-  | "stale"
-  | "conflicted"
-  | "fenced"
-  | "idempotency-conflict";
+export type WorkspaceRebaseStatus = WasmBinding.BrowserWorkspaceRebaseResult["status"];
 
 export interface WorkspaceRebaseResult {
   readonly status: WorkspaceRebaseStatus;
@@ -858,22 +829,7 @@ export type NamedAttributeWriteMode = "upsert" | "create" | "replace";
 export type EmptySpecialKind = "fifo" | "socket" | "mount-boundary";
 export type DeviceKind = "character-device" | "block-device";
 
-export type TransactionOperation =
-  | { readonly kind: "create-file"; readonly path: string; readonly bytes: Uint8Array }
-  | { readonly kind: "create-directory"; readonly path: string }
-  | { readonly kind: "create-symbolic-link"; readonly path: string; readonly target: Uint8Array }
-  | { readonly kind: "create-special"; readonly path: string; readonly fileKind: EmptySpecialKind }
-  | { readonly kind: "create-device"; readonly path: string; readonly fileKind: DeviceKind; readonly major: number; readonly minor: number }
-  | { readonly kind: "create-reparse-point"; readonly path: string; readonly payload: Uint8Array }
-  | { readonly kind: "remove"; readonly path: string; readonly expectedFileId: Uint8Array | undefined }
-  | { readonly kind: "rename"; readonly source: string; readonly destination: string; readonly replace: boolean }
-  | { readonly kind: "hard-link"; readonly source: string; readonly destination: string }
-  | { readonly kind: "write"; readonly path: string; readonly offset: bigint; readonly bytes: Uint8Array }
-  | { readonly kind: "set-metadata"; readonly path: string; readonly canonicalBytes: Uint8Array }
-  | { readonly kind: "resize"; readonly path: string; readonly logicalBytes: bigint }
-  | { readonly kind: "zero-range"; readonly path: string; readonly offset: bigint; readonly length: bigint; readonly allocated: boolean; readonly extend: boolean }
-  | { readonly kind: "preallocate"; readonly path: string; readonly offset: bigint; readonly length: bigint; readonly keepSize: boolean }
-  | { readonly kind: "clone-range"; readonly source: string; readonly sourceOffset: bigint; readonly destination: string; readonly destinationOffset: bigint; readonly length: bigint };
+export type TransactionOperation = ReadonlyDeep<WasmBinding.TransactionOperation>;
 
 export interface TransactionResult {
   readonly createdFileIds: readonly (Uint8Array | undefined)[];
