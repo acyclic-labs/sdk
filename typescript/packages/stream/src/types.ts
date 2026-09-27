@@ -19,6 +19,9 @@ import type {
   CreateTokenRequest as WireCreateTokenRequest, TokenGrant as WireTokenGrant,
 } from "../generated/proto/stream/v2/stream_pb.js";
 import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
+import type { TokenOperation } from "./token-operations.js";
+export { TOKEN_OPERATIONS } from "./token-operations.js";
+export type { TokenOperation } from "./token-operations.js";
 
 type PublicWire<Wire, Overrides extends object = object, Omitted extends keyof Wire = never> =
   Readonly<Omit<Wire, "$typeName" | "$unknown" | keyof Overrides | Omitted> & Overrides>;
@@ -118,8 +121,6 @@ export type IdempotencyOutcome =
   | { readonly type: Extract<IdempotencyKind, "delete">; readonly receipt: DeleteReceipt }
   | { readonly type: Extract<IdempotencyKind, "commit">; readonly outcome: CommitResult };
 export type IdempotencyObservation = PublicWire<WireIdempotencyObservation, { readonly idempotencyKey: IdempotencyKey; readonly outcome: IdempotencyOutcome }>;
-export const TOKEN_OPERATIONS = ["list", "read", "follow", "append", "fork", "create", "trim", "delete", "commit"] as const;
-export type TokenOperation = (typeof TOKEN_OPERATIONS)[number];
 export type TokenGrant = PublicWire<WireTokenGrant, { readonly operations: readonly TokenOperation[] }>;
 export type CreateTokenRequest = PublicWire<WireCreateTokenRequest, { readonly allow: readonly TokenGrant[] }>;
 export interface AccessToken { readonly token: string; readonly expiresAt: Date }

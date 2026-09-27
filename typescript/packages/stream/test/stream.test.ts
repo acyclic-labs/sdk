@@ -3,7 +3,7 @@ import { create, toBinary } from "@bufbuild/protobuf";
 import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, DeleteRequestSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema, TrimRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
 import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm } from "../src/contract.js";
-import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
+import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
 
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
 const encodedCommitId = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
@@ -49,6 +49,11 @@ describe("website Stream contract", () => {
     expect(() => StreamClient.memory().tokens.create({
       expiresIn: "1h", allow: [{ path: "runs", operations: ["read"] }],
     })).toThrow("provider does not support token creation");
+  });
+
+  test("exports the Rust-owned token operation vocabulary in canonical order", () => {
+    expect(TOKEN_OPERATIONS).toEqual(["list", "read", "follow", "append", "fork", "create", "trim", "delete", "commit"]);
+    expect(new Set(TOKEN_OPERATIONS).size).toBe(TOKEN_OPERATIONS.length);
   });
 
   test("JSON streams reject values that cannot satisfy their declared recursive type", () => {

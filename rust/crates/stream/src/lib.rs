@@ -70,6 +70,15 @@ pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("tokens/create", "token"),
 ];
 
+/// Canonical operation vocabulary accepted by Stream access-token grants.
+///
+/// The TypeScript client derives its public `TokenOperation` union from this
+/// ordered inventory. Keep entries stable because the order is part of the
+/// generated artifact and makes additions visible in code review.
+pub const TOKEN_OPERATIONS: &[&str] = &[
+    "list", "read", "follow", "append", "fork", "create", "trim", "delete", "commit",
+];
+
 /// Permanent account-relative slash-separated ASCII path.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct StreamPath(Arc<str>);
@@ -980,6 +989,25 @@ pub enum StreamError {
     /// The provider cannot supply a required semantic capability.
     #[error("stream capability unsupported")]
     Unsupported,
+}
+
+#[cfg(test)]
+mod token_operation_tests {
+    use super::TOKEN_OPERATIONS;
+
+    #[test]
+    fn inventory_is_ordered_and_unique() {
+        assert_eq!(
+            TOKEN_OPERATIONS,
+            &[
+                "list", "read", "follow", "append", "fork", "create", "trim", "delete", "commit",
+            ]
+        );
+        let mut sorted = TOKEN_OPERATIONS.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), TOKEN_OPERATIONS.len());
+    }
 }
 
 #[cfg(test)]
