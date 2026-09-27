@@ -2301,6 +2301,7 @@ fn map_error(error: WorkspaceError) -> Error {
         | WorkspaceError::NoCommonAncestor
         | WorkspaceError::LineageLimit
         | WorkspaceError::JoinLimit
+        | WorkspaceError::StaleTarget
         | WorkspaceError::InvalidMergeResolution
         | WorkspaceError::ChangeSetContinuity
         | WorkspaceError::ChangedPathLimit
