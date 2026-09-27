@@ -9,6 +9,12 @@ use acyclic_harness::fork::{
     MAX_FORK_AGENTS, MAX_FORK_ATTACHMENT_MANIFEST_BYTES, MAX_FORK_INHERITED_BYTES,
     MAX_FORK_INHERITED_MESSAGES, MAX_FORK_REFERENCE_BYTES, MAX_FORK_REFERENCES, MAX_FORK_RESOURCES,
 };
+use acyclic_harness::projection::{
+    DEFAULT_PROJECTION_MAX_ATTACHMENTS, DEFAULT_PROJECTION_MAX_MANIFEST_BYTES,
+    DEFAULT_PROJECTION_MAX_MESSAGES, DEFAULT_PROJECTION_MAX_RENDER_BYTES,
+    DEFAULT_PROJECTION_MAX_RESOLVED_BYTES, MAX_PROJECTION_JSON_BYTES,
+    MAX_PROJECTION_PROJECTED_ATTACHMENTS,
+};
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,6 +49,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "inherited_bytes": MAX_FORK_INHERITED_BYTES,
                 "reference_bytes": MAX_FORK_REFERENCE_BYTES,
                 "inherited_messages": MAX_FORK_INHERITED_MESSAGES,
+            },
+            "projection": {
+                "default_max_resolved_bytes": DEFAULT_PROJECTION_MAX_RESOLVED_BYTES,
+                "default_max_manifest_bytes": DEFAULT_PROJECTION_MAX_MANIFEST_BYTES,
+                "default_max_attachments": DEFAULT_PROJECTION_MAX_ATTACHMENTS,
+                "default_max_messages": DEFAULT_PROJECTION_MAX_MESSAGES,
+                "default_max_render_bytes": DEFAULT_PROJECTION_MAX_RENDER_BYTES,
+                "max_projected_attachments": MAX_PROJECTION_PROJECTED_ATTACHMENTS,
+                "max_json_bytes": MAX_PROJECTION_JSON_BYTES,
             },
         })
     );
