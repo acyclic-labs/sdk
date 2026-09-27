@@ -478,14 +478,23 @@ impl UnixMillisClock for SystemUnixMillisClock {
     fn now_unix_millis(&self) -> u64 {
         #[cfg(target_arch = "wasm32")]
         {
-            return js_sys::Date::now().max(0.0).min(u64::MAX as f64).floor() as u64;
+            let now = js_sys::Date::now().max(0.0).floor();
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "JavaScript Date returns f64; the integer cast saturates at u64 bounds"
+            )]
+            let millis = now as u64;
+            millis
         }
         #[cfg(not(target_arch = "wasm32"))]
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| {
-                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-            })
+        {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                })
+        }
     }
 }
 

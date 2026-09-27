@@ -1100,11 +1100,8 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "each index is preceded by an assert_eq! on the corresponding Vec's len(), so the index is proven in-bounds"
-    )]
-    fn descriptor_contains_only_customer_contract() -> Result<(), Box<dyn std::error::Error>> {
+    fn descriptor_contains_customer_and_validation_files() -> Result<(), Box<dyn std::error::Error>>
+    {
         let descriptor = prost_types::FileDescriptorSet::decode(DESCRIPTOR)?;
         assert_eq!(descriptor.file.len(), 3);
         let descriptor_names: Vec<_> = descriptor
@@ -1130,6 +1127,22 @@ mod tests {
             file.dependency,
             vec!["validation/v1/options.proto".to_owned()]
         );
+        Ok(())
+    }
+
+    #[test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "each index is preceded by an assert_eq! on the corresponding Vec's len(), so the index is proven in-bounds"
+    )]
+    fn descriptor_exposes_customer_services_and_messages() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let descriptor = prost_types::FileDescriptorSet::decode(DESCRIPTOR)?;
+        let file = descriptor
+            .file
+            .iter()
+            .find(|file| file.name.as_deref() == Some("inference/v1/inference.proto"))
+            .ok_or("inference descriptor is missing")?;
         assert_eq!(file.service.len(), 5);
         assert_eq!(file.service[0].name.as_deref(), Some("ModelsService"));
         assert_eq!(file.service[0].method.len(), 1);

@@ -42,15 +42,7 @@ elif command -v wslpath >/dev/null 2>&1; then
 fi
 
 cd "$root"
-wasm_output="$work/inference-wasm"
-wasm_output_argument="$wasm_output"
-if command -v cygpath >/dev/null 2>&1; then
-  wasm_output_argument="$(cygpath -w "$wasm_output")"
-elif command -v wslpath >/dev/null 2>&1; then
-  wasm_output_argument="$(wslpath -w "$wasm_output")"
-fi
-mkdir -p "$wasm_output"
-bun scripts/build-inference-wasm.mjs "$wasm_output_argument"
+bun scripts/build-inference-wasm.mjs
 bun x tsc -b typescript/packages/inference/tsconfig.json
 bun test typescript/packages/inference/test
 npm_stage="$work/npm-package"

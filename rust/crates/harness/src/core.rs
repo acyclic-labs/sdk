@@ -33,6 +33,12 @@ pub enum AggregateKind {
     Task,
 }
 
+/// Exact aggregate identities that cannot name a Stream path segment.
+pub const AUTHORITY_ID_FORBIDDEN_EXACT: [&str; 2] = [".", ".."];
+
+/// Separators that cannot appear in an aggregate identity.
+pub const AUTHORITY_ID_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
+
 /// Stable identity of one independently ordered history.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,9 +53,8 @@ impl Authority {
     /// Returns the only Stream path that may own this aggregate.
     pub fn stream_path(&self) -> Result<String> {
         if self.id.is_empty()
-            || self.id == "."
-            || self.id == ".."
-            || self.id.contains(['/', '\\'])
+            || AUTHORITY_ID_FORBIDDEN_EXACT.contains(&self.id.as_str())
+            || self.id.contains(AUTHORITY_ID_FORBIDDEN_SEPARATORS)
             || self.id.chars().any(char::is_control)
         {
             return Err(Error::Invalid(

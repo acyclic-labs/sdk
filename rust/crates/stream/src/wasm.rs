@@ -187,6 +187,20 @@ pub struct WasmFollow {
     state: Arc<FollowState>,
 }
 
+async fn dispatch_commit(provider: &MemoryStream, input: &[u8]) -> Result<Vec<u8>, JsValue> {
+    let request = decode::<wire::CommitRequest>(input)?;
+    let deadline_unix_millis = request.deadline_unix_millis;
+    let request = wire_codec::commit_from_wire(request).map_err(js_error)?;
+    let response = match deadline_unix_millis {
+        Some(deadline) => provider
+            .commit_before(request, deadline)
+            .await
+            .map_err(js_error)?,
+        None => provider.commit(request).await.map_err(js_error)?,
+    };
+    Ok(wire_codec::commit_outcome_to_wire(response).encode_to_vec())
+}
+
 #[wasm_bindgen]
 impl WasmMemoryStream {
     #[wasm_bindgen(constructor)]
@@ -275,20 +289,7 @@ impl WasmMemoryStream {
                 let response = self.provider.delete(path, key).await.map_err(js_error)?;
                 wire_codec::delete_receipt_to_wire(&response).encode_to_vec()
             }
-            "commit" => {
-                let request = decode::<wire::CommitRequest>(input)?;
-                let deadline_unix_millis = request.deadline_unix_millis;
-                let request = wire_codec::commit_from_wire(request).map_err(js_error)?;
-                let response = match deadline_unix_millis {
-                    Some(deadline) => self
-                        .provider
-                        .commit_before(request, deadline)
-                        .await
-                        .map_err(js_error)?,
-                    None => self.provider.commit(request).await.map_err(js_error)?,
-                };
-                wire_codec::commit_outcome_to_wire(response).encode_to_vec()
-            }
+            "commit" => dispatch_commit(&self.provider, input).await?,
             "read_commit" => {
                 let request = decode::<wire::ReadCommitRequest>(input)?;
                 let commit_id = <[u8; 32]>::try_from(request.commit_id.as_ref())
