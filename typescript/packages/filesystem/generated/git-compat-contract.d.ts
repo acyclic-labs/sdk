@@ -2,6 +2,8 @@
 
 export declare const GIT_COMPAT_OUTPUT_VARIANTS: ReadonlySet<"Status" | "Commits" | "Branches" | "Tags" | "Committed" | "Bisect" | "Action" | "Prepared" | "Filesystem" | "Text" | "Paths">;
 export declare function isGitCompatOutputVariant(value: string): boolean;
+export declare const GIT_COMPAT_ACTION_VARIANTS: ReadonlySet<"CaptureCommit" | "ForkBranch" | "SwitchWorkspace" | "Diff" | "RestoreGeneration" | "RestorePaths" | "Join" | "ApplyCommit" | "Blame" | "Grep" | "Clean" | "Archive" | "ApplyPatch" | "CheckIgnore">;
+export declare const GIT_COMPAT_RESULT_VARIANTS: ReadonlySet<"Captured" | "Forked" | "Applied" | "Data">;
 export declare const GIT_COMPAT_IDENTITY_LENGTHS: Readonly<{
   readonly "workspace_id": 16;
   readonly "source_workspace": 16;

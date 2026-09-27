@@ -1193,32 +1193,31 @@ export interface SourceResult {
   readonly generationId: Uint8Array | undefined;
 }
 
-export interface WasmBindings {
-  default(
-    moduleOrPath?:
-      | { readonly module_or_path: WebAssembly.Module | RequestInfo | URL | Response | BufferSource }
-      | WebAssembly.Module
-      | RequestInfo
-      | URL
-      | Response
-      | BufferSource,
-  ): Promise<unknown>;
+/*
+ * Keep the module-level factory surface tied to wasm-bindgen's generated
+ * exports. The only refinements here are the serde option/result types that
+ * this package validates at its adapter boundary.
+ */
+type GeneratedWasmFactories = Pick<
+  typeof WasmBinding,
+  | "default"
+  | "encodeMergePlanJson"
+  | "decodeMergePlanJson"
+  | "encodeMergeCandidateJson"
+  | "decodeMergeCandidateJson"
+  | "encodeMultiRootPlanJson"
+  | "decodeMultiRootPlanJson"
+  | "encodeMultiRootCandidateJson"
+  | "decodeMultiRootCandidateJson"
+  | "encodePublicationJson"
+  | "decodePublicationJson"
+>;
+
+export type WasmBindings = GeneratedWasmFactories & {
   openBrowserFs(options: BrowserFsOptions): Promise<WasmRawFs>;
-  openMemoryFs(options: MemoryFsOptions): Promise<WasmRawFs>;
-  readonly BrowserWorkspaceContextRegistry: {
-    new(): WasmRawWorkspaceContextRegistry;
-  };
-  encodeMergePlanJson(valueJson: string): string;
-  decodeMergePlanJson(valueJson: string): string;
-  encodeMergeCandidateJson(valueJson: string): string;
-  decodeMergeCandidateJson(valueJson: string): string;
-  encodeMultiRootPlanJson(valueJson: string): string;
-  decodeMultiRootPlanJson(valueJson: string): string;
-  encodeMultiRootCandidateJson(valueJson: string): string;
-  decodeMultiRootCandidateJson(valueJson: string): string;
-  encodePublicationJson(valueJson: string): string;
-  decodePublicationJson(valueJson: string): string;
-}
+  openMemoryFs(options: MemoryFsOptions): WasmRawFs;
+  readonly BrowserWorkspaceContextRegistry: typeof WasmBinding.BrowserWorkspaceContextRegistry;
+};
 
 export interface RawWorkspaceContextRegistry {
   registerRoot(contextId: Uint8Array, rootsWire: Uint8Array): Promise<Uint8Array>;

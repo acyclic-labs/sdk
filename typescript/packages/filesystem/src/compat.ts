@@ -6,12 +6,22 @@ import type {
   WorkspaceRebaseResult,
 } from "./contracts.js";
 import {
+  GIT_COMPAT_BYTE_FIELDS,
   GIT_COMPAT_IDENTITY_LENGTHS,
+  GIT_COMPAT_OPAQUE_PATHS,
+  GIT_COMPAT_ACTION_VARIANTS,
   GIT_COMPAT_OUTPUT_VARIANTS,
+  GIT_COMPAT_PENDING_FIELDS,
+  GIT_COMPAT_PUBLIC_ALIASES,
+  GIT_COMPAT_RESULT_VARIANTS,
+  GIT_COMPAT_TIMESTAMP_FIELDS,
   GIT_COMPAT_TRANSITION_IDENTITY_BYTES,
+  GIT_COMPAT_UUID_PATHS,
 } from "../generated/git-compat-contract.js";
 
 const gitCompatOutputVariants = [...GIT_COMPAT_OUTPUT_VARIANTS] as const;
+const gitCompatActionVariants = [...GIT_COMPAT_ACTION_VARIANTS] as const;
+const gitCompatResultVariants = [...GIT_COMPAT_RESULT_VARIANTS] as const;
 
 export type WorkspaceIdentity = Uint8Array;
 export type GenerationIdentity = Uint8Array;
@@ -644,9 +654,11 @@ export function parseGitCompatOutputJson(json: string): GitCompatOutput {
 /** Decode one durable pending transition returned by the native store. */
 export function parseGitPendingTransitionJson(json: string): GitPendingTransition {
   const pending = object(parseGitJson(json), "pending transition");
-  if (!("mutation" in pending)) throw new TypeError("Git pending transition lacks its mutation");
+  for (const field of GIT_COMPAT_PENDING_FIELDS) {
+    if (!(field in pending)) throw new TypeError(`Git pending transition lacks its ${field}`);
+  }
   return {
-    id: uuidIdentity(pending.id, "pending transition ID"),
+    id: uuidAt(pending.id, "pending transition ID", "pending.id"),
     action: normalizeAction(pending.action),
     mutation: pending.mutation,
   };
@@ -716,6 +728,10 @@ function normalizeGitCompatOutput(value: unknown): GitCompatOutput {
   switch (kind) {
     case "Status": {
       const status = object(body, "Status output");
+      const allChangesStagedKey = GIT_COMPAT_PUBLIC_ALIASES["Status.all_changes_staged"];
+      if (allChangesStagedKey !== "allChangesStaged") {
+        throw new TypeError("Git Status output alias contract is malformed");
+      }
       if (typeof status.branch !== "string"
         || !["clean", "dirty", "unknown"].includes(status.dirty as string)
         || status.all_changes_staged !== true) {
@@ -726,7 +742,7 @@ function normalizeGitCompatOutput(value: unknown): GitCompatOutput {
         head: optionalCommit(status.head, "status head"),
         workspace: treeRef(status.workspace, "status workspace"),
         dirty: status.dirty as GitCompatStatus["dirty"],
-        allChangesStaged: true,
+        [allChangesStagedKey]: true,
       } };
     }
     case "Commits": {
@@ -760,7 +776,7 @@ function normalizeGitCompatOutput(value: unknown): GitCompatOutput {
     case "Prepared": {
       const prepared = object(body, "Prepared output");
       return { Prepared: {
-        transition: uuidIdentity(prepared.transition, "prepared transition"),
+        transition: uuidAt(prepared.transition, "prepared transition", "Prepared.transition"),
         action: normalizeAction(prepared.action),
       } };
     }
@@ -771,7 +787,7 @@ function normalizeGitCompatOutput(value: unknown): GitCompatOutput {
 function normalizeAction(value: unknown): GitFilesystemAction {
   const [kind, body] = tagged(
     value,
-    ["CaptureCommit", "ForkBranch", "SwitchWorkspace", "Diff", "RestoreGeneration", "RestorePaths", "Join", "ApplyCommit", "Blame", "Grep", "Clean", "Archive", "ApplyPatch", "CheckIgnore"],
+    gitCompatActionVariants,
     "filesystem action",
   );
   const data = object(body, `${kind} action`);
@@ -783,7 +799,7 @@ function normalizeAction(value: unknown): GitFilesystemAction {
       tracked_paths: strings(data.tracked_paths, "capture tracked paths"),
       message: text(data.message, "capture message"),
       author: text(data.author, "capture author"),
-      authored_at_seconds: integer(data.authored_at_seconds, "capture timestamp"),
+      authored_at_seconds: timestamp(data.authored_at_seconds, "capture timestamp", "authored_at_seconds"),
       expected_head: optionalCommit(data.expected_head, "capture expected head"),
     } };
     case "ForkBranch": return { ForkBranch: {
@@ -843,7 +859,7 @@ function normalizeAction(value: unknown): GitFilesystemAction {
       tree: treeRef(data.tree, "archive tree"),
     } };
     case "ApplyPatch": return { ApplyPatch: {
-      patch: bytes(data.patch, undefined, "patch"),
+      patch: bytes(data.patch, GIT_COMPAT_BYTE_FIELDS.patch ?? undefined, "patch"),
     } };
     case "CheckIgnore": return { CheckIgnore: {
       paths: strings(data.paths, "ignore paths"),
@@ -853,7 +869,7 @@ function normalizeAction(value: unknown): GitFilesystemAction {
 }
 
 function normalizeResult(value: unknown): GitFilesystemResult {
-  const [kind, body] = tagged(value, ["Captured", "Forked", "Applied", "Data"], "filesystem result");
+  const [kind, body] = tagged(value, gitCompatResultVariants, "filesystem result");
   const data = object(body, `${kind} result`);
   switch (kind) {
     case "Captured": return { Captured: {
@@ -870,7 +886,7 @@ function normalizeResult(value: unknown): GitFilesystemResult {
     } };
     case "Data": return { Data: {
       kind: text(data.kind, "data result kind"),
-      value: data.value,
+      value: opaque(data.value, "Filesystem.Data"),
     } };
   }
 }
@@ -949,7 +965,7 @@ function captureProof(value: unknown): GitCaptureProof {
   return {
     fork_parent: treeRef(proof.fork_parent, "capture fork parent"),
     initial_generation: gitIdentity(proof.initial_generation, "initial_generation", "capture initial generation"),
-    operation_id: uuidIdentity(proof.operation_id, "capture operation"),
+    operation_id: uuidAt(proof.operation_id, "capture operation", "capture_proof.operation_id"),
   };
 }
 
@@ -976,7 +992,7 @@ function captureProofJson(value: unknown): Readonly<Record<string, unknown>> {
   return {
     fork_parent: treeRefJson(proof.fork_parent, "capture fork parent"),
     initial_generation: gitBytes(proof.initial_generation, "initial_generation", "capture initial generation"),
-    operation_id: uuidString(proof.operation_id, "capture operation"),
+    operation_id: uuidStringAt(proof.operation_id, "capture operation", "capture_proof.operation_id"),
   };
 }
 
@@ -1016,6 +1032,34 @@ function gitBytes(value: unknown, field: GitIdentityField, label: string): numbe
 }
 function gitIdentity(value: unknown, field: GitIdentityField, label: string): Uint8Array {
   return Uint8Array.from(gitBytes(value, field, label));
+}
+
+function uuidAt(value: unknown, label: string, path: string): OperationIdentity {
+  if (!GIT_COMPAT_UUID_PATHS.has(path)) {
+    throw new TypeError(`Git UUID path ${path} is absent from the generated contract`);
+  }
+  return uuidIdentity(value, label);
+}
+
+function uuidStringAt(value: unknown, label: string, path: string): string {
+  if (!GIT_COMPAT_UUID_PATHS.has(path)) {
+    throw new TypeError(`Git UUID path ${path} is absent from the generated contract`);
+  }
+  return uuidString(value, label);
+}
+
+function timestamp(value: unknown, label: string, field: string): number {
+  if (!GIT_COMPAT_TIMESTAMP_FIELDS.has(field)) {
+    throw new TypeError(`Git timestamp field ${field} is absent from the generated contract`);
+  }
+  return integer(value, label);
+}
+
+function opaque(value: unknown, path: string): unknown {
+  if (!GIT_COMPAT_OPAQUE_PATHS.has(path)) {
+    throw new TypeError(`Git opaque path ${path} is absent from the generated contract`);
+  }
+  return value;
 }
 
 // Lazy source epochs are Rust u64 values. Read the original JSON token before

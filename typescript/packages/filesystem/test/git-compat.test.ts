@@ -181,6 +181,10 @@ describe("Git compatibility command codec", () => {
       },
     }))).toThrow(TypeError);
     expect(() => parseGitCompatOutputJson('{"Unknown":{}}')).toThrow(TypeError);
+    expect(() => parseGitPendingTransitionJson(JSON.stringify({
+      action: { ApplyPatch: { patch: [1] } },
+      mutation: "NoOp",
+    }))).toThrow(TypeError);
   });
 });
 

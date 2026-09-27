@@ -2,6 +2,8 @@
 
 export const GIT_COMPAT_OUTPUT_VARIANTS = new Set(["Status","Commits","Branches","Tags","Committed","Bisect","Action","Prepared","Filesystem","Text","Paths"]);
 export function isGitCompatOutputVariant(value) { return GIT_COMPAT_OUTPUT_VARIANTS.has(value); }
+export const GIT_COMPAT_ACTION_VARIANTS = new Set(["CaptureCommit","ForkBranch","SwitchWorkspace","Diff","RestoreGeneration","RestorePaths","Join","ApplyCommit","Blame","Grep","Clean","Archive","ApplyPatch","CheckIgnore"]);
+export const GIT_COMPAT_RESULT_VARIANTS = new Set(["Captured","Forked","Applied","Data"]);
 export const GIT_COMPAT_IDENTITY_LENGTHS = Object.freeze({"workspace_id":16,"source_workspace":16,"generation":32,"id":32,"authored_generation":32,"identity":16,"overlay":32,"shadows":32,"initial_generation":32});
 export const GIT_COMPAT_BYTE_FIELDS = Object.freeze({"workspace_id":16,"source_workspace":16,"generation":32,"id":32,"authored_generation":32,"identity":16,"overlay":32,"shadows":32,"initial_generation":32,"patch":null});
 export const GIT_COMPAT_TIMESTAMP_FIELDS = Object.freeze(new Set(["authored_at_seconds"]));

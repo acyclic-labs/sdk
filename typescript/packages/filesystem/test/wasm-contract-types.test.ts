@@ -13,7 +13,9 @@ import type {
   CheckoutOptions,
   JoinOptions,
   WorkspaceCommit,
+  WasmBindings,
 } from "../src/contracts.js";
+import type * as GeneratedWasm from "../generated/wasm/acyclic_fs_wasm.js";
 
 type IsAny<Value> = 0 extends (1 & Value) ? true : false;
 type AnyMethodNames<Value> = {
@@ -131,6 +133,29 @@ export type _WorkspaceWriteResult = AssertExtends<
 export type _WorkspaceRemoveResult = AssertExtends<
   Awaited<ReturnType<WasmRawWorkspace["remove"]>>,
   WorkspaceCommit
+>;
+
+type GeneratedFactoryExports = Pick<
+  typeof GeneratedWasm,
+  | "default"
+  | "encodeMergePlanJson"
+  | "decodeMergePlanJson"
+  | "encodeMergeCandidateJson"
+  | "decodeMergeCandidateJson"
+  | "encodeMultiRootPlanJson"
+  | "decodeMultiRootPlanJson"
+  | "encodeMultiRootCandidateJson"
+  | "decodeMultiRootCandidateJson"
+  | "encodePublicationJson"
+  | "decodePublicationJson"
+> & {
+  readonly BrowserWorkspaceContextRegistry: typeof GeneratedWasm.BrowserWorkspaceContextRegistry;
+};
+
+/** The adapter's module loader cannot silently lose a generated factory export. */
+export type _GeneratedFactoryExportsAreRepresented = AssertExtends<
+  GeneratedFactoryExports,
+  Pick<WasmBindings, keyof GeneratedFactoryExports>
 >;
 
 export {};
