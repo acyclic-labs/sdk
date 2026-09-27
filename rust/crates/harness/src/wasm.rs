@@ -1411,6 +1411,10 @@ pub async fn select_model_context_wasm(
     js_name = prepareConversationTurn,
     unchecked_return_type = "WasmTurnPreparation"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keep the generated WASM signature aligned with the native turn contract"
+)]
 pub fn prepare_conversation_turn_wasm(
     conversation: JsValue,
     operation_id: String,
