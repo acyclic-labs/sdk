@@ -1,5 +1,9 @@
 import type * as NativeBinding from "../generated/native/binding.js";
 import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
+import {
+  DEFAULT_OBJECT_CACHE_OPTIONS as GENERATED_OBJECT_CACHE_OPTIONS,
+  DEFAULT_VOLUME_LIMITS as GENERATED_VOLUME_LIMITS,
+} from "../generated/defaults.js";
 
 export type FsProfile = "portable" | "posix" | "windows" | "browser";
 
@@ -439,21 +443,7 @@ export interface VolumeLimits {
   readonly maximumGenerationBytes: bigint;
 }
 
-export const DEFAULT_VOLUME_LIMITS: VolumeLimits = Object.freeze({
-  maximumPathBytes: 32 * 1024,
-  maximumComponentBytes: 255,
-  maximumPathDepth: 1024,
-  maximumObjectBytes: 64n * 1024n * 1024n,
-  maximumMutationsPerBatch: 2048,
-  maximumPathsPerBatch: 65_536,
-  maximumCheckoutDependencies: 262_144,
-  maximumDirectoryPageEntries: 1024,
-  maximumPageHeight: 64,
-  maximumReadBytes: 16n * 1024n * 1024n,
-  maximumFilesPerGeneration: 16n * 1024n * 1024n,
-  maximumObjectsPerGeneration: 64n * 1024n * 1024n,
-  maximumGenerationBytes: 1024n * 1024n * 1024n * 1024n,
-});
+export const DEFAULT_VOLUME_LIMITS: VolumeLimits = GENERATED_VOLUME_LIMITS;
 
 export function portableVolumeOptions(
   lifecycle: VolumeOptions["lifecycle"],
@@ -1106,11 +1096,14 @@ export interface ObjectCacheOptions {
   readonly maximumWaitersPerObject: number;
 }
 
+const generatedCacheBytes = Number(GENERATED_OBJECT_CACHE_OPTIONS.maximumBytes);
+if (!Number.isSafeInteger(generatedCacheBytes)) {
+  throw new RangeError("Rust object cache default exceeds JavaScript's safe integer range");
+}
+
 export const DEFAULT_OBJECT_CACHE_OPTIONS: ObjectCacheOptions = Object.freeze({
-  maximumEntries: 4096,
-  maximumBytes: 256 * 1024 * 1024,
-  maximumInFlight: 1024,
-  maximumWaitersPerObject: 1024,
+  ...GENERATED_OBJECT_CACHE_OPTIONS,
+  maximumBytes: generatedCacheBytes,
 });
 
 export interface ObjectCacheStats {
