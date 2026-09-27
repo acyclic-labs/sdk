@@ -3,7 +3,7 @@ import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type Volume
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
 import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "./child-page-contract.js";
-import { validateModelContent as validateModelContentWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
+import { validateModelContent as validateModelContentWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import type { SelectedModelContext } from "./projection.js";
 import type { ForkPreparer, ForkPublisher, ForkReport, ForkRequest, ForkSeed, ResourceRef } from "./fork.js";
@@ -273,17 +273,7 @@ export type SelectedAgentInput =
 type RuntimeAgentInput = AgentInput<UserContentPart> & { readonly selectedContext?: SelectedModelContext };
 
 function validateSelectedContext(selected: SelectedModelContext, limits: Limits): void {
-  if (typeof selected.selection.conversationRevision !== "bigint"
-    || selected.selection.conversationRevision <= 0n
-    || selected.messages.length === 0
-    || selected.messages.length > limits.context_messages
-    || selected.messages.length !== selected.selection.messageIds.length
-    || selected.messages.at(-1)?.role !== "user") {
-    throw new TypeError("selected context must end with the current user message");
-  }
-  const user = selected.messages.at(-1)!.content;
-  validateUserInputWasm(user);
-  for (const message of selected.messages) validateModelContent(message.content, limits);
+  validateSelectedModelContextWasm(selected, limits);
 }
 
 /** Builds the one canonical model content value for a direct user turn. */

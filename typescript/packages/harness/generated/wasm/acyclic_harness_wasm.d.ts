@@ -702,6 +702,11 @@ export function validateModelContent(content: WasmModelContentInput, limits: Was
 export function validateModelContextSelection(conversation: any, selection: any): void;
 
 /**
+ * Admits an already projected, provider-proven context with native model bounds.
+ */
+export function validateSelectedModelContext(selected: any, limits: any): void;
+
+/**
  * Validates and reprojects one owner-retained direct-child page using the
  * same bounds and bytewise slot ordering as native Harness hosts.
  */
@@ -816,6 +821,7 @@ export interface InitOutput {
     readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly validateModelContent: (a: any, b: any) => [number, number];
     readonly validateModelContextSelection: (a: any, b: any) => [number, number];
+    readonly validateSelectedModelContext: (a: any, b: any) => [number, number];
     readonly validateTaskChildrenPage: (a: any) => [number, number, number];
     readonly validateToolDefinition: (a: any) => [number, number];
     readonly validateToolInvocation: (a: any, b: any) => [number, number];

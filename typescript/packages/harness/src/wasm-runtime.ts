@@ -9,7 +9,7 @@ const REQUIRED_WASM_VALIDATORS = [
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
   "validateToolDefinition", "validateToolInvocation", "validateToolResult",
   "validateModelContent", "validateUserInput", "admitModelEvent", "selectModelContext",
-  "validateModelContextSelection",
+  "validateModelContextSelection", "validateSelectedModelContext",
   "prepareConversationTurn",
   "WasmContentStore",
 ] as const;

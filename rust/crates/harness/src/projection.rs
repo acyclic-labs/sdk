@@ -5,7 +5,7 @@ use crate::{
     Error, Result,
     conversation::{
         Attachment, ContentResidencyVerifier, ConversationMessage, ConversationState, FileRef,
-        MessageKind, ReferencedAttachments,
+        Limits, MessageKind, ReferencedAttachments,
     },
     model::{FileProjectionPolicy, ModelContent, ModelContentPart, ModelMessage, ModelRole},
     tool::ToolInvocation,
@@ -150,6 +150,29 @@ pub fn bounded_model_context_selection(
 }
 
 impl SelectedModelContext {
+    /// Admits a provider-proven context before dispatch without needing the
+    /// owning conversation or reimplementing model bounds in a host adapter.
+    pub fn validate_for_dispatch(&self, limits: Limits) -> Result<()> {
+        limits.validate()?;
+        let last = self.messages.last().ok_or_else(|| {
+            Error::Invalid("selected context must end with the current user message".into())
+        })?;
+        if self.selection.conversation_revision == 0
+            || self.messages.len() > limits.context_messages
+            || self.messages.len() != self.selection.message_ids.len()
+            || last.role != ModelRole::User
+        {
+            return Err(Error::Invalid(
+                "selected context must end with the current user message".into(),
+            ));
+        }
+        last.content.validate_user_input()?;
+        for message in &self.messages {
+            message.content.validate_limits(limits)?;
+        }
+        Ok(())
+    }
+
     /// Checks that a projected selection preserves one-to-one provenance and
     /// ends in the exact current user input rather than duplicating it.
     pub fn validate_for_input(&self, input: &ModelContent) -> Result<()> {
@@ -645,6 +668,32 @@ mod tests {
             FileDescriptor::from_bytes(b"data", media_type)?,
             "data",
         )
+    }
+
+    #[test]
+    fn projected_context_dispatch_admission_uses_native_model_bounds() {
+        let id = Uuid::new_v4();
+        let mut selected = SelectedModelContext {
+            selection: ModelContextSelection {
+                conversation_revision: 1,
+                message_ids: vec![id],
+            },
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("hello".into()),
+            }],
+        };
+        assert!(selected.validate_for_dispatch(Limits::default()).is_ok());
+
+        let mut limits = Limits::default();
+        limits.render_bytes = 4;
+        assert!(selected.validate_for_dispatch(limits).is_err());
+
+        selected.messages[0].role = ModelRole::Assistant;
+        assert!(selected.validate_for_dispatch(Limits::default()).is_err());
+        selected.messages[0].role = ModelRole::User;
+        selected.selection.message_ids.clear();
+        assert!(selected.validate_for_dispatch(Limits::default()).is_err());
     }
 
     #[tokio::test]

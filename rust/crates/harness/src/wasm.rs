@@ -25,9 +25,9 @@ use crate::{
     fork::{ForkReport, ForkRequest, ForkSeed, ReferenceGrant, ResourceRevision},
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
     merge::ProjectMergeReceipt,
-    model::{ModelContent, ModelEvent},
+    model::{ModelContent, ModelEvent, ModelMessage},
     projection::{
-        AttachmentListResolver, select_model_context_at_revision,
+        AttachmentListResolver, SelectedModelContext, select_model_context_at_revision,
         validate_model_context_selection_at_revision,
     },
     resources::{ProviderRef, ResourceRef},
@@ -59,6 +59,20 @@ struct WasmLimitsInput {
     model_events_per_step: u64,
     tool_calls_per_step: u64,
     context_messages: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WasmPublicModelContextSelection {
+    conversation_revision: u64,
+    message_ids: Vec<uuid::Uuid>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WasmPublicSelectedModelContext {
+    selection: WasmPublicModelContextSelection,
+    messages: Vec<ModelMessage>,
 }
 
 #[derive(Deserialize, Tsify)]
@@ -255,8 +269,12 @@ struct WasmModelRequestWire {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[tsify(from_wasm_abi, into_wasm_abi)]
 enum WasmModelEvent {
-    Content { delta: String },
-    Reasoning { delta: String },
+    Content {
+        delta: String,
+    },
+    Reasoning {
+        delta: String,
+    },
     ToolCall {
         #[serde(rename = "call_id", alias = "callId")]
         call_id: String,
@@ -2319,6 +2337,22 @@ pub fn validate_user_input(
     content.validate_user_input().map_err(js_error)
 }
 
+/// Admits an already projected, provider-proven context with native model bounds.
+#[wasm_bindgen(js_name = validateSelectedModelContext)]
+pub fn validate_selected_model_context(selected: JsValue, limits: JsValue) -> Result<(), JsValue> {
+    let selected: WasmPublicSelectedModelContext = from_js(selected)?;
+    let limits: Limits = from_js(limits)?;
+    SelectedModelContext {
+        selection: ModelContextSelection {
+            conversation_revision: selected.selection.conversation_revision,
+            message_ids: selected.selection.message_ids,
+        },
+        messages: selected.messages,
+    }
+    .validate_for_dispatch(limits)
+    .map_err(js_error)
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, Tsify)]
 #[serde(deny_unknown_fields)]
 #[tsify(from_wasm_abi, into_wasm_abi)]
@@ -2393,9 +2427,15 @@ pub fn admit_model_event(
         event: match event {
             ModelEvent::Content { delta } => WasmModelEvent::Content { delta },
             ModelEvent::Reasoning { delta } => WasmModelEvent::Reasoning { delta },
-            ModelEvent::ToolCall { call_id, name, arguments } => {
-                WasmModelEvent::ToolCall { call_id, name, arguments }
-            }
+            ModelEvent::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } => WasmModelEvent::ToolCall {
+                call_id,
+                name,
+                arguments,
+            },
             ModelEvent::Completed { metadata } => WasmModelEvent::Completed { metadata },
         },
         state,
