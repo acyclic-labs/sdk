@@ -743,7 +743,9 @@ impl Scheduler {
                 }
                 let operation = self.mutable(operation_id)?;
                 if operation.phase == OperationPhase::Terminal {
-                    if operation.outcome.as_ref() == Some(&outcome) {
+                    if operation.outcome.as_ref() == Some(&outcome)
+                        && execution_duration_ns.is_none()
+                    {
                         return Ok(());
                     }
                     return Err(Error::Conflict(
