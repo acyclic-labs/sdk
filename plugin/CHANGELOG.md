@@ -14,6 +14,16 @@
   (no more stale-handle errors creating files), and reading a file through a
   fork no longer rewrites anything in the parent.
 - Aborting a conflict that changed nothing in the parent succeeds.
+- Aborting a conflicted merge restores the parent exactly: it no longer
+  deletes files the subagent only read, and it succeeds when the subagent
+  added files to an existing directory.
+- A merge carries only what the subagent wrote; files it only read are no
+  longer copied into the parent's history.
+- Editing a file in the root checkout no longer hides the rest of its
+  directory from subagents started afterwards.
+- A deletion merged from a grandchild shows in its parent's workspace at once.
+- On Windows, subagents can rename directories they inherited from the
+  parent's checkout (it failed with "The request is not supported").
 - On macOS, listing a directory no longer fails with "Stale NFS file
   handle" when the parent's checkout changes while the listing starts (it
   did on first use of a fresh mount about one run in ten).

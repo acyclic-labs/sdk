@@ -397,6 +397,21 @@ where
         advanced.map_err(MountLifecycleError::Source)
     }
 
+    /// Makes changes another handle on the mounted workspace made at
+    /// `paths` (workspace paths), and everything beneath them, visible
+    /// through the mount once this returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns a source failure for an invalid path, or a driver failure
+    /// when the kernel refuses an invalidation.
+    pub fn changed_outside(&self, paths: &[String]) -> Result<(), MountLifecycleError> {
+        self.source
+            .changed_outside(paths)
+            .map_err(MountLifecycleError::Source)?;
+        revalidate_session(&self.session)
+    }
+
     /// Makes every change made to the source outside the mount, and
     /// completed before the call, visible through it once this returns.
     ///

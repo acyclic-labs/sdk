@@ -4343,6 +4343,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
+        // The source is exactly what the target already is: there is
+        // nothing to join, and a merge of a generation with itself has no
+        // second parent.
+        if normalized_source_object == target_object && current_target == expected_target {
+            return Ok(WorkspaceJoinOutcome::NoChanges(current_target));
+        }
         let merged = merge_generation_async(
             &self.inner.objects,
             MergeGenerationRequest {

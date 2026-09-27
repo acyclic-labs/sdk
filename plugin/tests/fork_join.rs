@@ -328,6 +328,38 @@ fn a_deleted_directory_keeps_what_the_parent_changed_in_it() {
 
 #[test]
 #[ignore = "requires live native mounts"]
+fn renaming_a_source_directory_moves_it_in_the_parent() {
+    let session = Session::open("directory-rename");
+    let fork = session.spawn(&session.root(), "mover");
+    fs::rename(fork.path.join("pkg"), fork.path.join("lib")).expect("rename directory");
+    assert_eq!(sorted_names(&fork.path), ["README.md", "lib"]);
+    assert_eq!(read(&fork.path.join("lib/shared.rs")), "VALUE = 1\n");
+    session.merge(&fork).expect("merge");
+    assert_eq!(session.files(), ["README.md", "lib/shared.rs"]);
+    assert_eq!(read(&session.repo.join("lib/shared.rs")), "VALUE = 1\n");
+}
+
+#[test]
+#[ignore = "requires live native mounts"]
+fn a_parent_edit_keeps_its_directory_whole_in_later_forks() {
+    let session = Session::open("parent-edit");
+    fs::write(session.repo.join("pkg/other.rs"), "other\n").expect("other");
+    let first = session.spawn(&session.root(), "first");
+    assert_eq!(
+        files(&first.path),
+        ["README.md", "pkg/other.rs", "pkg/shared.rs"]
+    );
+    fs::write(session.repo.join("pkg/shared.rs"), "VALUE = 2\n").expect("parent edit");
+    let second = session.spawn(&session.root(), "second");
+    assert_eq!(
+        files(&second.path),
+        ["README.md", "pkg/other.rs", "pkg/shared.rs"]
+    );
+    assert_eq!(read(&second.path.join("pkg/shared.rs")), "VALUE = 2\n");
+}
+
+#[test]
+#[ignore = "requires live native mounts"]
 fn a_deletion_travels_up_one_parent_at_a_time() {
     let session = Session::open("deletion");
     let child = session.spawn(&session.root(), "child");
@@ -435,6 +467,24 @@ fn a_conflict_is_reported_aborted_and_does_not_block_later_merges() {
     session.merge(&third).expect("merge third");
     assert_eq!(read(&session.repo.join("README.md")), "from first\n");
     assert_eq!(session.files(), ["README.md", "pkg/shared.rs", "third.rs"]);
+}
+
+#[test]
+#[ignore = "requires live native mounts"]
+fn an_aborted_merge_keeps_the_directory_it_added_to() {
+    let session = Session::open("abort-directory");
+    let first = session.spawn(&session.root(), "first");
+    let second = session.spawn(&session.root(), "second");
+    fs::write(first.path.join("README.md"), "from first\n").expect("first");
+    fs::write(second.path.join("README.md"), "from second\n").expect("second");
+    fs::write(second.path.join("pkg/added.rs"), "added\n").expect("second adds");
+    session.merge(&first).expect("merge first");
+    let conflicts = session
+        .merge(&second)
+        .expect_err("the second edit conflicts");
+    assert_eq!(conflicts, ["/README.md"]);
+    assert_eq!(session.files(), ["README.md", "pkg/shared.rs"]);
+    assert_eq!(read(&session.repo.join("pkg/shared.rs")), "VALUE = 1\n");
 }
 
 #[test]

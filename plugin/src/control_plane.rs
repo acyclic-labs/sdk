@@ -2966,48 +2966,10 @@ impl ControlPlane {
                 .await
                 .map_err(display)?;
             let lazy_source = self.lazy_workspace_root(&route, *root_id).await?;
-            // What any ancestor gained since this child forked (a sibling's
-            // merge, a refresh of the physical root) is on the physical root
-            // the child's unresolved view reads, and is not the child's work:
-            // exactified, each path would take a fresh identity and conflict
-            // with the ancestor's copy. Every ancestor counts, since a sibling
-            // of the parent may have merged into the root meanwhile.
-            let mut inherited = BTreeSet::new();
-            inherited_additions(&source, &target, &lazy_source, &mut inherited).await?;
-            let mut upper = parent_context.clone();
-            while let Some(grandparent_id) = upper.parent_context_id {
-                let grandparent = registry.resolve(grandparent_id).await.map_err(display)?;
-                let (Some(upper_child), Some(upper_parent)) =
-                    (upper.roots.get(root_id), grandparent.roots.get(root_id))
-                else {
-                    break;
-                };
-                let upper_source = self
-                    .distributed
-                    .workspace(upper_child.workspace_id)
-                    .await
-                    .map_err(display)?;
-                let upper_target = self
-                    .distributed
-                    .workspace(upper_parent.workspace_id)
-                    .await
-                    .map_err(display)?;
-                inherited_additions(&upper_source, &upper_target, &lazy_source, &mut inherited)
-                    .await?;
-                upper = grandparent;
-            }
-            for path in &inherited {
-                // The child only reads these through the source: hiding one is
-                // no deletion of the child's, so no merge carries it.
-                match lazy_source.hide_source_path(path).await {
-                    Ok(()) | Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
-                    Err(error) => return Err(display(error)),
-                }
-            }
-            lazy_source
-                .exactify(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .map_err(display)?;
+            // The child's generation holds exactly what it authored; what it
+            // only reads from the physical root is no change of its own, as
+            // the parent's generations hold only what the parent authored.
+            // Source paths the child deleted travel as source deletions.
             let plan = source.join_into(&target).plan().await.map_err(display)?;
             let target_head = plan.target_head();
             let parent_repository_id = self.parent_repository_id(caller, *root_id, target.id())?;
@@ -4157,48 +4119,6 @@ impl ControlPlane {
     }
 }
 
-/// Adds to `inherited` every path `parent` added since `child` forked from it
-/// that `child_view` still reads only from the source: the parent's copy of it
-/// is authoritative whatever identity each side derived for it.
-async fn inherited_additions(
-    child: &LocalWorkspace,
-    parent: &LocalWorkspace,
-    child_view: &LocalLazyWorkspace,
-    inherited: &mut BTreeSet<String>,
-) -> Result<(), String> {
-    let fork_point = child
-        .join_into(parent)
-        .plan()
-        .await
-        .map_err(display)?
-        .common_ancestor();
-    let base = parent.generation(fork_point).await.map_err(display)?;
-    let head = parent.head().await.map_err(display)?;
-    if base.id() == head.id() {
-        return Ok(());
-    }
-    let changes = base
-        .diff_to(&head, u32::MAX)
-        .await
-        .map_err(display)?
-        .changed_paths(u32::MAX)
-        .await
-        .map_err(display)?;
-    for change in changes {
-        if change.before.is_some() || change.after.is_none() {
-            continue;
-        }
-        let path = namespace_path_text(&change.path)?;
-        if matches!(
-            child_view.lookup(&path).await,
-            Ok(acyclic_fs::LazyLookup::Source(_))
-        ) {
-            inherited.insert(path);
-        }
-    }
-    Ok(())
-}
-
 /// Adds every path that differs from `base` to `head` to `changed`.
 async fn changed_paths_into(
     base: &LocalGeneration,
@@ -4405,11 +4325,15 @@ impl ControlPlane {
                     .cloned()
                     .ok_or_else(|| "parent route is unavailable".to_owned())?;
                 let view = self.lazy_workspace_root(&parent_route, root_id).await?;
-                for path in paths {
-                    match view.remove(&path).await {
+                for path in &paths {
+                    match view.remove(path).await {
                         Ok(()) | Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
                         Err(error) => return Err(format!("cannot delete {path}: {error}")),
                     }
+                }
+                // Removed around the parent's mount, which learns of it here.
+                if let Some(mount) = self.mounts.get(parent) {
+                    mount.changed_outside(&route_name(root_id), &paths)?;
                 }
             }
         }

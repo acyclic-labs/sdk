@@ -400,6 +400,16 @@ impl LocalMount {
         Ok(())
     }
 
+    /// Makes changes made to one route's workspace outside its mount, at
+    /// `paths` and beneath them, visible through the mount.
+    pub(crate) fn changed_outside(&self, name: &str, paths: &[String]) -> Result<(), String> {
+        self.routes
+            .get(name)
+            .ok_or_else(|| "mounted root route is missing".to_owned())?
+            .changed_outside(paths)
+            .map_err(display)
+    }
+
     /// Publishes every route, then detaches them all, so a publication
     /// failure leaves every route mounted and publishing again.
     pub(crate) async fn unmount(&self) -> Result<(), String> {
