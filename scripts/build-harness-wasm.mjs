@@ -58,7 +58,10 @@ const generatedDeclarationFiles = [
   resolve(outputDirectory, "acyclic_harness_wasm.d.ts"),
   resolve(outputDirectory, "acyclic_harness_wasm_bg.wasm.d.ts"),
 ];
-const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen__convert__closures_____invoke__h[0-9a-f]+:.*\r?\n/gm;
+// Older toolchains name it `wasm_bindgen__convert__closures_____invoke__h<hash>`;
+// newer ones spell out the closure type with each crate's build hash, which
+// Cargo derives from the host triple among other things.
+const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen_(?:[0-9a-f]+)?_+convert__closures_+invoke_[^:\s]*:.*\r?\n/gm;
 for (const declaration of generatedDeclarationFiles) {
   const source = readFileSync(declaration, "utf8");
   const normalized = source.replace(closureInvokeShim, "");
