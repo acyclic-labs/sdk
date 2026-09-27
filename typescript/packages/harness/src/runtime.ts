@@ -3,7 +3,7 @@ import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type Volume
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
 import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "./child-page-contract.js";
-import { validateModelContent as validateModelContentWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
+import { validateModelContent as validateModelContentWasm, validateModelMessages as validateModelMessagesWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import type { SelectedModelContext } from "./projection.js";
 import type { ForkPreparer, ForkPublisher, ForkReport, ForkRequest, ForkSeed, ResourceRef } from "./fork.js";
@@ -2306,15 +2306,7 @@ export class AgentHarness {
       const selected = input.selectedContext;
       const base = selected?.messages ?? [first];
       const messages: ModelMessage[] = [...(await contextBuilder?.build(input, base) ?? base)];
-      if (messages.length === 0 || messages.length > this.limits.context_messages) {
-        throw new TypeError("context builder exceeded the message limit");
-      }
-      for (const message of messages) {
-        if (!["system", "user", "assistant", "tool"].includes(message.role)) {
-          throw new TypeError("context builder returned an unsupported role");
-        }
-        validateModelContent(message.content, this.limits);
-      }
+      validateModelMessagesWasm(messages, nativeLimits(this.limits));
       let text = "";
       let previousAdmission: ModelEventAdmissionState = { count: 0, calls: [], completed: false, text_bytes: 0 };
       const maxSteps = Math.min(this.scope.limits.maxSteps ?? this.limits.model_steps, this.limits.model_steps);

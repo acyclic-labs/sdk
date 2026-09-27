@@ -242,6 +242,20 @@ struct WasmModelMessageWire {
     content: WasmModelContent,
 }
 
+/// Public model-message input used by the runtime validator.  The content
+/// input intentionally reuses the generated camelCase facade type while the
+/// Rust parser below still consumes the canonical `ModelMessage` DTO.
+#[allow(dead_code, reason = "the struct exists to emit the generated TypeScript input type")]
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+struct WasmModelMessageInput {
+    #[tsify(type = "WasmModelRole")]
+    role: WasmModelRole,
+    #[tsify(type = "WasmModelContentInput")]
+    content: WasmModelContent,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 #[tsify(from_wasm_abi, into_wasm_abi)]
@@ -2324,6 +2338,29 @@ pub fn validate_model_content(
     let content: ModelContent = from_js(content)?;
     let limits: Limits = from_js(limits)?;
     content.validate_limits(limits).map_err(js_error)
+}
+
+/// Validates a complete provider-neutral model message list with the native
+/// role, message-count, and content bounds.  Context builders and the stock
+/// TypeScript loop therefore share the same closed role set and limits as
+/// native durable execution.
+#[wasm_bindgen(
+    js_name = validateModelMessages,
+)]
+pub fn validate_model_messages(
+    #[wasm_bindgen(unchecked_param_type = "readonly WasmModelMessageInput[]")] messages: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<(), JsValue> {
+    let messages: Vec<ModelMessage> = from_js(messages)?;
+    let limits: Limits = from_js(limits)?;
+    limits.validate().map_err(js_error)?;
+    if messages.is_empty() || messages.len() > limits.context_messages {
+        return Err(JsValue::from_str("model context count is invalid"));
+    }
+    for message in messages {
+        message.content.validate_limits(limits).map_err(js_error)?;
+    }
+    Ok(())
 }
 
 /// Validates one human-authored model input using the native content rules.

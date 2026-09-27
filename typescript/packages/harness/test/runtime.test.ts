@@ -1859,6 +1859,20 @@ describe("typed agent runtime", () => {
     expect(dispatched).toBe(0);
   });
 
+  test("custom context builders use the native closed model-message contract", async () => {
+    let dispatched = 0;
+    const runtime = Harness.builder(contracts).context({
+      async build() {
+        return [{ role: "developer" as never, content: "safe" }];
+      },
+    }).model(testModel, {
+      async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    }).build();
+    await expect(runtime.run("safe")).rejects.toThrow();
+    expect(dispatched).toBe(0);
+  });
+
   test("model context tool values are admitted by Rust canonical JSON before dispatch", async () => {
     let dispatched = 0;
     const runtime = Harness.builder(contracts).context({

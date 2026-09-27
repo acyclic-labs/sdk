@@ -223,6 +223,16 @@ export interface WasmTurnPreparation {
 export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | "turn" | "task" | "invocation";
 
 /**
+ * Public model-message input used by the runtime validator.  The content
+ * input intentionally reuses the generated camelCase facade type while the
+ * Rust parser below still consumes the canonical `ModelMessage` DTO.
+ */
+export interface WasmModelMessageInput {
+    role: WasmModelRole;
+    content: WasmModelContentInput;
+}
+
+/**
  * Stable wire identity used during compatibility handshakes.
  */
 export interface ProtocolIdentity {
@@ -702,6 +712,14 @@ export function validateModelContent(content: WasmModelContentInput, limits: Was
 export function validateModelContextSelection(conversation: any, selection: any): void;
 
 /**
+ * Validates a complete provider-neutral model message list with the native
+ * role, message-count, and content bounds.  Context builders and the stock
+ * TypeScript loop therefore share the same closed role set and limits as
+ * native durable execution.
+ */
+export function validateModelMessages(messages: readonly WasmModelMessageInput[], limits: WasmModelLimitsInput): void;
+
+/**
  * Admits an already projected, provider-proven context with native model bounds.
  */
 export function validateSelectedModelContext(selected: any, limits: any): void;
@@ -821,6 +839,7 @@ export interface InitOutput {
     readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly validateModelContent: (a: any, b: any) => [number, number];
     readonly validateModelContextSelection: (a: any, b: any) => [number, number];
+    readonly validateModelMessages: (a: any, b: any) => [number, number];
     readonly validateSelectedModelContext: (a: any, b: any) => [number, number];
     readonly validateTaskChildrenPage: (a: any) => [number, number, number];
     readonly validateToolDefinition: (a: any) => [number, number];
