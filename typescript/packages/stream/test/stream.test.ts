@@ -84,9 +84,24 @@ describe("website Stream contract", () => {
       expect(() => client.bytes(path)).toThrow();
     }
     const stream = client.bytes("bounded");
-    await expect(stream.appendBatch([])).rejects.toThrow("records");
-    await expect(stream.appendBatch([new Uint8Array(65_537)])).rejects.toThrow("record");
-    await expect(stream.appendBatch(Array(1_025).fill(new Uint8Array()))).rejects.toThrow("records");
+    await expect(stream.appendBatch([])).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(stream.appendBatch([new Uint8Array(65_537)])).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(stream.appendBatch(Array(1_025).fill(new Uint8Array()))).rejects.toMatchObject({ code: "limit_exceeded" });
+    const customProvider = new MemoryStreamProvider();
+    let customCalls = 0;
+    const originalAppend = customProvider.append.bind(customProvider);
+    customProvider.append = (...args) => { customCalls += 1; return originalAppend(...args); };
+    await expect(new StreamClient(customProvider).bytes("custom").appendBatch(Array(1_025).fill(new Uint8Array()))).rejects.toMatchObject({ code: "limit_exceeded" });
+    expect(customCalls).toBe(0);
+    await expect(customProvider.append("bad path", [new Uint8Array()], { ifTail: -1n })).rejects.toMatchObject({ code: "invalid_path" });
+    await expect(customProvider.childrenPage(null as never)).rejects.toMatchObject({ code: "invalid_argument" });
+    let hostedCalls = 0;
+    const hosted = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => {
+      hostedCalls += 1;
+      return new Response("null");
+    } });
+    await expect(hosted.append("bounded", [])).rejects.toMatchObject({ code: "limit_exceeded" });
+    expect(hostedCalls).toBe(0);
     await expect(stream.read({ from: 0n, limit: 1_025 }).next()).rejects.toThrow("limit");
     expect(() => client.children(undefined, 1_025)).toThrow("limit");
     const cursor = client.bytes("cursor-bounds");

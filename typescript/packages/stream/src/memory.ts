@@ -139,12 +139,17 @@ export class MemoryStreamProvider implements StreamProvider {
     }
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    const input = wireRequest({ kind: "children_page",
+    if (request === null || typeof request !== "object") {
+      throw new StreamError("invalid_argument", "children page request must be an object");
+    }
+    const authored = { kind: "children_page" as const,
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
       limit: request.limit,
-    });
+    };
+    await validateWireRequest(authored);
+    const input = wireRequest(authored);
     return this.#project<ChildrenPage>("children_page", input);
   }
 

@@ -38,7 +38,7 @@ type PublicWasm<T> = T extends WasmBinding.BrowserWorkCounters
         ? { readonly [Key in keyof T]: PublicWasm<T[Key]> }
         : T;
 
-export type FsProfile = "portable" | "posix" | "windows" | "browser";
+export type FsProfile = WasmBinding.BrowserVolumeOptions["profile"];
 
 export interface EngineCapabilities {
   readonly version: string;

@@ -8,8 +8,7 @@ import type {
   StreamBounds, StreamProvider, TrimReceipt,
 } from "./types.js";
 import { StreamError, compareStreamPaths } from "./types.js";
-import { idempotencyKey } from "./types.js";
-import { normalizeWireCommit, validatePathValue, validateSequenceValue, validateWireAppend } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommit, validatePathValue, validateSequenceValue, validateWireAppend } from "./contract.js";
 
 export interface Codec<Value> {
   encode(value: Value): Uint8Array;
@@ -160,8 +159,9 @@ export class Stream<Value = Uint8Array> {
   bounds(): Promise<StreamBounds> { return this.provider.bounds(this.path); }
   append(value: Value, options?: AppendOptions): Promise<AppendResult> { return this.appendBatch([value], options); }
   appendBatch(values: readonly Value[], options?: AppendOptions): Promise<AppendResult> {
-    if (values.length === 0) return Promise.reject(new RangeError(`append requires 1..${StreamLimit.MAX_ITEMS} records`));
-    if (options?.ifTail !== undefined) sequence(options.ifTail);
+    if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) {
+      return Promise.reject(new StreamError("limit_exceeded", `append requires 1..${StreamLimit.MAX_ITEMS} records`));
+    }
     return this.provider.append(this.path, values.map(value => this.codec.encode(value)), options);
   }
   async fork(destination: string, options?: ForkOptions): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {
@@ -197,6 +197,7 @@ export function sequence(value: bigint): bigint {
 export function positiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > StreamLimit.MAX_ITEMS) throw new RangeError(`${name} must be between 1 and ${StreamLimit.MAX_ITEMS}`);
 }
+/** Synchronous compatibility helper; provider append admission is Rust-owned. */
 export function validateRecords(values: readonly Uint8Array[]): void {
   if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) throw new RangeError(`append requires 1..${StreamLimit.MAX_ITEMS} records`);
   for (const value of values) {
@@ -204,10 +205,10 @@ export function validateRecords(values: readonly Uint8Array[]): void {
   }
 }
 export async function validateAppend(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<void> {
-  pathValue(path);
-  validateRecords(values);
+  // Validate path before optional fields so the canonical path error wins.
+  await ensureStreamWasm();
+  validatePathValue(path);
   if (options?.ifTail !== undefined) sequence(options.ifTail);
-  if (options?.idempotencyKey !== undefined) idempotencyKey(options.idempotencyKey);
   await validateWireAppend(path, values, options);
 }
 function environmentValue(name: string): string {

@@ -207,6 +207,11 @@ function requireLimitType(value: unknown): void {
 }
 
 export function wireAppendRequest(path: string, records: readonly Uint8Array[], options?: AppendOptions): Uint8Array {
+  requirePathType(path);
+  if (!Array.isArray(records)) throw new StreamError("invalid_argument", "append records must be an array");
+  for (const record of records) requireBytesType(record);
+  if (options?.ifTail !== undefined) requireSequenceType(options.ifTail);
+  if (options?.idempotencyKey !== undefined) requireBytesType(options.idempotencyKey);
   return toBinary(AppendRequestSchema, create(AppendRequestSchema, {
     path, records: [...records],
     ...(options?.ifTail === undefined ? {} : { ifTail: options.ifTail }),
