@@ -459,41 +459,41 @@ mod bindings {
     }
 
     #[cfg(all(test, target_arch = "wasm32"))]
-    pub(crate) fn test_checkout_mutation_result_js() -> JsValue {
+    pub(crate) fn test_checkout_mutation_result_js() -> Result<JsValue, JsValue> {
         BrowserMutationResult {
             file_id: Some(vec![7; 16].into()),
             work: test_browser_work(),
         }
         .into_js()
-        .expect("mutation result DTO must serialize")
-        .into()
+        .map(Into::into)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     #[cfg(all(test, target_arch = "wasm32"))]
-    pub(crate) fn test_checkout_metadata_result_js() -> JsValue {
+    pub(crate) fn test_checkout_metadata_result_js() -> Result<JsValue, JsValue> {
         BrowserMetadataResult {
-            canonical_bytes: vec![0, 255, 1].into(),
+            canonical_bytes: vec![0, 255, 1],
             work: test_browser_work(),
         }
         .into_js()
-        .expect("metadata result DTO must serialize")
-        .into()
+        .map(Into::into)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     #[cfg(all(test, target_arch = "wasm32"))]
-    pub(crate) fn test_checkout_export_manifest_result_js() -> JsValue {
+    pub(crate) fn test_checkout_export_manifest_result_js() -> Result<JsValue, JsValue> {
         BrowserExportManifestResult {
-            manifest_bytes: vec![9, 8, 7].into(),
+            manifest_bytes: vec![9, 8, 7],
             objects: vec![vec![1, 2].into(), vec![3, 4].into()],
             work: test_browser_work(),
         }
         .into_js()
-        .expect("export manifest DTO must serialize")
-        .into()
+        .map(Into::into)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     #[cfg(all(test, target_arch = "wasm32"))]
-    pub(crate) fn test_checkout_commit_result_js() -> JsValue {
+    pub(crate) fn test_checkout_commit_result_js() -> Result<JsValue, JsValue> {
         BrowserCommitResult {
             status: "committed",
             generation_id: Some(vec![5; 32].into()),
@@ -503,8 +503,8 @@ mod bindings {
             work: test_browser_work(),
         }
         .into_js()
-        .expect("commit result DTO must serialize")
-        .into()
+        .map(Into::into)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     #[derive(Deserialize, Serialize, Tsify)]
@@ -7841,48 +7841,33 @@ mod wasm_abi_tests {
     }
 
     #[wasm_bindgen_test]
-    fn checkout_dtos_preserve_bytes_options_bigints_and_work_counters() {
-        let mutation = test_checkout_mutation_result_js();
-        let file_id = Reflect::get(&mutation, &JsValue::from_str("fileId"))
-            .expect("mutation file id must be present")
-            .dyn_into::<js_sys::Uint8Array>()
-            .expect("mutation file id must be Uint8Array");
+    fn checkout_dtos_preserve_bytes_options_bigints_and_work_counters() -> Result<(), JsValue> {
+        let mutation = test_checkout_mutation_result_js()?;
+        let file_id = Reflect::get(&mutation, &JsValue::from_str("fileId"))?
+            .dyn_into::<js_sys::Uint8Array>()?;
         assert_eq!(file_id.length(), 16);
 
-        let metadata = test_checkout_metadata_result_js();
-        let canonical = Reflect::get(&metadata, &JsValue::from_str("canonicalBytes"))
-            .expect("metadata bytes must be present")
-            .dyn_into::<js_sys::Uint8Array>()
-            .expect("metadata bytes must be Uint8Array");
+        let metadata = test_checkout_metadata_result_js()?;
+        let canonical = Reflect::get(&metadata, &JsValue::from_str("canonicalBytes"))?
+            .dyn_into::<js_sys::Uint8Array>()?;
         assert_eq!(canonical.to_vec(), vec![0, 255, 1]);
 
-        let manifest = test_checkout_export_manifest_result_js();
-        let objects = Reflect::get(&manifest, &JsValue::from_str("objects"))
-            .expect("manifest objects must be present")
-            .dyn_into::<Array>()
-            .expect("manifest objects must be an array");
+        let manifest = test_checkout_export_manifest_result_js()?;
+        let objects =
+            Reflect::get(&manifest, &JsValue::from_str("objects"))?.dyn_into::<Array>()?;
         assert_eq!(objects.length(), 2);
 
-        let commit = test_checkout_commit_result_js();
-        let epoch = Reflect::get(&commit, &JsValue::from_str("epoch"))
-            .expect("commit epoch must be present")
-            .dyn_into::<BigInt>()
-            .expect("commit epoch must be a bigint");
+        let commit = test_checkout_commit_result_js()?;
+        let epoch = Reflect::get(&commit, &JsValue::from_str("epoch"))?.dyn_into::<BigInt>()?;
         assert_eq!(
-            epoch.to_string(10).unwrap().as_string().unwrap(),
-            "9007199254740993"
+            epoch.to_string(10)?.as_string().as_deref(),
+            Some("9007199254740993")
         );
-        let work =
-            Reflect::get(&commit, &JsValue::from_str("work")).expect("commit work must be present");
-        let copied = Reflect::get(&work, &JsValue::from_str("bytesCopied"))
-            .expect("work bytesCopied must be present")
-            .dyn_into::<BigInt>()
-            .expect("work counters must preserve u64 values as bigint");
-        assert_eq!(copied.to_string(10).unwrap().as_string().unwrap(), "17");
-        assert!(
-            Reflect::get(&commit, &JsValue::from_str("sequence"))
-                .expect("optional sequence must be present")
-                .is_undefined()
-        );
+        let work = Reflect::get(&commit, &JsValue::from_str("work"))?;
+        let copied =
+            Reflect::get(&work, &JsValue::from_str("bytesCopied"))?.dyn_into::<BigInt>()?;
+        assert_eq!(copied.to_string(10)?.as_string().as_deref(), Some("17"));
+        assert!(Reflect::get(&commit, &JsValue::from_str("sequence"))?.is_undefined());
+        Ok(())
     }
 }
