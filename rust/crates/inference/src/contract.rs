@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn watch_state_owns_order_terminal_eof_and_overflow_rules() {
+    fn watch_state_owns_order_terminal_eof_and_overflow_rules() -> Result<(), &'static str> {
         let view = wire::RunView {
             run_id: vec![2; 16],
             input: vec![3; 32],
@@ -708,17 +708,14 @@ mod tests {
             last_sequence: 0,
             ..Default::default()
         };
-        let mut state =
-            watch_run_start_state_wire(&view.encode_to_vec(), &[2; 16], "0").expect("valid start");
+        let mut state = watch_run_start_state_wire(&view.encode_to_vec(), &[2; 16], "0")?;
         let progress = |sequence| wire::RunEvent {
             sequence,
             event: Some(wire::run_event::Event::Progress(wire::RunProgress {
                 kind: "queued".to_owned(),
             })),
         };
-        state
-            .advance_wire(&progress(0).encode_to_vec())
-            .expect("ordered progress");
+        state.advance_wire(&progress(0).encode_to_vec())?;
         assert!(!state.is_terminal());
         assert_eq!(
             state.advance_wire(&progress(0).encode_to_vec()),
@@ -736,9 +733,7 @@ mod tests {
                 wire::RunTerminal::Completed.into(),
             )),
         };
-        state
-            .advance_wire(&terminal.encode_to_vec())
-            .expect("valid terminal");
+        state.advance_wire(&terminal.encode_to_vec())?;
         assert!(state.is_terminal());
         assert_eq!(state.finish(), Ok(()));
         assert_eq!(
@@ -762,5 +757,6 @@ mod tests {
             ),
             Err("Run sequence exhausted")
         );
+        Ok(())
     }
 }
