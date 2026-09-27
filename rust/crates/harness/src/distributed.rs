@@ -1645,6 +1645,7 @@ mod tests {
                     operation_id: first,
                     outcome: crate::Outcome::Succeeded(state_ref()?),
                     fence: Some(LeaseFence::from(&first_lease.reservation)),
+                    execution_duration_ns: None,
                 },
             )
             .await?;
@@ -1782,7 +1783,8 @@ mod tests {
                     SchedulerEvent::Completed {
                         operation_id,
                         outcome: crate::Outcome::Succeeded(state_ref()?),
-                        fence: Some(LeaseFence::from(&first.reservation))
+                        fence: Some(LeaseFence::from(&first.reservation)),
+                        execution_duration_ns: None,
                     }
                 )
                 .await,

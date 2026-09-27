@@ -265,6 +265,10 @@ pub enum SchedulerEvent {
         outcome: Outcome<FileRef>,
         /// Required for worker-owned completion; absent for reconciliation/cancellation.
         fence: Option<LeaseFence>,
+        /// Measured monotonic worker execution duration. Absent from historical events and
+        /// non-worker reconciliation; never inferred from coordinator commit timestamps.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_duration_ns: Option<u64>,
     },
     /// Atomically commits a structured-concurrency decision.
     Orchestrated {
@@ -725,7 +729,15 @@ impl Scheduler {
                 operation_id,
                 outcome,
                 fence,
+                execution_duration_ns,
             } => {
+                if execution_duration_ns.is_some()
+                    && (fence.is_none() || matches!(outcome, Outcome::Indeterminate { .. }))
+                {
+                    return Err(Error::Invalid(
+                        "worker duration requires a fenced terminal completion".into(),
+                    ));
+                }
                 if let Outcome::Succeeded(reference) = &outcome {
                     reference.validate()?;
                 }
@@ -1424,6 +1436,77 @@ mod tests {
     }
 
     #[test]
+    fn worker_duration_is_additive_and_fenced() -> Result<()> {
+        let legacy = SchedulerEvent::Completed {
+            operation_id: id(1),
+            outcome: Outcome::Succeeded(result_ref(b"null")?),
+            fence: Some(LeaseFence {
+                reservation_id: "lease-1".into(),
+                placement: "worker-1".into(),
+            }),
+            execution_duration_ns: None,
+        };
+        let legacy_json =
+            serde_json::to_value(&legacy).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(legacy_json.get("execution_duration_ns").is_none());
+        assert_eq!(
+            serde_json::from_value::<SchedulerEvent>(legacy_json)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            legacy
+        );
+
+        let mut measured = legacy;
+        let SchedulerEvent::Completed {
+            execution_duration_ns,
+            ..
+        } = &mut measured
+        else {
+            return Err(Error::Invalid("expected completion".into()));
+        };
+        *execution_duration_ns = Some(1_234_567_890);
+        let measured_json =
+            serde_json::to_value(&measured).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(measured_json["execution_duration_ns"], 1_234_567_890_u64);
+        assert_eq!(
+            serde_json::from_value::<SchedulerEvent>(measured_json)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            measured
+        );
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Leaf)?)?)?;
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: id(1),
+            reservation: Reservation {
+                id: "lease-1".into(),
+                placement: "worker-1".into(),
+                admitted: ResourceRequest::default(),
+            },
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: id(1),
+            fence: LeaseFence {
+                reservation_id: "lease-1".into(),
+                placement: "worker-1".into(),
+            },
+        })?;
+        scheduler.apply(measured.clone())?;
+        assert_eq!(
+            scheduler.operation(id(1)).map(|operation| operation.phase),
+            Some(OperationPhase::Terminal)
+        );
+        let mut unfenced = measured;
+        let SchedulerEvent::Completed { fence, .. } = &mut unfenced else {
+            return Err(Error::Invalid("expected completion".into()));
+        };
+        *fence = None;
+        assert!(matches!(
+            Scheduler::new().apply(unfenced),
+            Err(Error::Invalid(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn waiting_parent_releases_execution_capacity() -> Result<()> {
         let mut scheduler = Scheduler::new();
         scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join)?)?)?;
@@ -1511,6 +1594,7 @@ mod tests {
                 reservation_id: "lease-b".into(),
                 placement: "worker".into(),
             }),
+            execution_duration_ns: None,
         })?;
         assert_eq!(
             scheduler.orchestration(id(1)),
@@ -1784,6 +1868,7 @@ mod tests {
             operation_id: id(12),
             outcome: Outcome::Succeeded(result_ref(b"2")?),
             fence: Some(child_fence),
+            execution_duration_ns: None,
         })?;
         let OrchestrationDecision::Reduce { values, .. } = scheduler.orchestration(id(11)) else {
             return Err(Error::Conflict("reducer not ready".into()));
@@ -1843,6 +1928,7 @@ mod tests {
                 reservation_id: "dependency".into(),
                 placement: "worker".into(),
             }),
+            execution_duration_ns: None,
         })?;
         let mut dependent = spec(id(2), Orchestration::Leaf)?;
         dependent.dependencies.insert(id(1));
