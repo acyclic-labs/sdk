@@ -369,6 +369,13 @@ describe("Machines simulation", () => {
         contract: { ...machine.contract, image: { kind: "checkpoint", checkpointId: substitutedCheckpoint } },
       })),
     }).fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"))).rejects.toThrow("checkpoint");
+    await expect(serve({
+      ...checkpointForked,
+      machines: checkpointForked.machines.map(machine => ({
+        ...machine,
+        contract: { ...machine.contract, performance: "dedicated" as const },
+      })),
+    }).fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"))).rejects.toThrow("performance");
 
     const forked = await simulated.forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"));
     if (forked.kind !== "machine-forked") throw new Error("wrong machine fork outcome");
