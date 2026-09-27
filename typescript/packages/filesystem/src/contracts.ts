@@ -1,4 +1,5 @@
 import type * as NativeBinding from "../generated/native/binding.js";
+import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
 
 export type FsProfile = "portable" | "posix" | "windows" | "browser";
 
@@ -1246,98 +1247,46 @@ export interface RawWorkspaceContextRegistry {
 
 export type WasmRawWorkspaceContextRegistry = RawWorkspaceContextRegistry;
 
-export interface WasmRawFs {
-  readonly capabilities: EngineCapabilities;
-  createWorkspace(name: string): Promise<WasmRawWorkspace>;
-  openWorkspace(name: string): Promise<WasmRawWorkspace>;
-  objectCacheStats(): WasmRawObjectCacheStats;
-  clearObjectCache(): void;
-  createSpeculation(
-    volumeId: Uint8Array,
-    generationId: Uint8Array,
-    options: SpeculationOptions,
-  ): WasmRawSpeculation;
-  createVolume(options: VolumeOptions): Promise<WasmRawVolume>;
-  createVolumeWithId(volumeId: Uint8Array, options: VolumeOptions): Promise<WasmRawVolume>;
-  openVolume(volumeId: Uint8Array): Promise<WasmRawVolume>;
-  exportObject(objectId: Uint8Array, maximumBytes: bigint): Promise<FileReadResult>;
-  importObject(objectId: Uint8Array, bytes: Uint8Array): Promise<MutationResult>;
-  exportGenerationBatch(
-    manifest: WasmImportManifest,
-    cursor: bigint,
-    maximumObjects: number,
-    maximumObjectBytes: bigint,
-  ): Promise<{
-    readonly firstObject: string;
-    readonly nextObject: string | undefined;
-    readonly objects: readonly Uint8Array[];
-    readonly work: WorkCounters;
-  }>;
-  importGenerationBatch(
-    manifest: WasmImportManifest,
-    cursor: bigint,
-    objects: readonly Uint8Array[],
-    maximumObjects: number,
-  ): Promise<{ readonly nextObject: string; readonly work: WorkCounters }>;
-  restoreVolume(manifest: WasmImportManifest, operationId: Uint8Array): Promise<WasmRawVolume>;
-  close(): void;
-}
-
-export interface RawWorkspace<Commit, ChangeSet, JoinPlan, Self> {
-  readonly name: string;
-  readonly id: Uint8Array;
-  head(): Promise<Uint8Array>;
-  sync(): Promise<WasmRawGeneration>;
-  checkpoint(label: string): Promise<WasmRawGeneration>;
-  pin(identity: string): Promise<WasmRawGeneration>;
-  delete(idempotencyKey?: Uint8Array): Promise<string>;
-  read(path: string, maximumBytes: bigint): Promise<Uint8Array>;
-  readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
-  stat(path: string): Promise<WorkspaceStat>;
-  readSymbolicLink(path: string): Promise<Uint8Array>;
-  planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan>;
-  write(path: string, bytes: Uint8Array): Promise<Commit>;
-  remove(path: string): Promise<Commit>;
-  fork(destination: string, idempotencyKey?: Uint8Array): Promise<Self>;
-  forkAt(destination: string, generation: WasmRawGeneration): Promise<Self>;
-  beginTransaction(idempotencyKey?: Uint8Array): Promise<RawWorkspaceTransaction<Commit>>;
-  liveRebase(
-    idempotencyKey: Uint8Array | undefined,
-    maximumGenerations: number,
-    maximumChanges: number,
-    maximumConflicts: number,
-  ): Promise<WasmRawJoinResult>;
-  diff(
-    from: WasmRawGeneration,
-    to: WasmRawGeneration,
-    maximumChanges: number,
-  ): Promise<ChangeSet>;
-  joinInto(target: Self, options: JoinOptions): Promise<JoinPlan>;
-}
-
-export interface WasmRawWorkspace extends RawWorkspace<unknown, WasmRawChangeSet, WasmRawJoinPlan, WasmRawWorkspace> {}
-
-export interface RawGenerationChangeSet<Diff> {
-  readonly from: WasmRawGeneration;
-  readonly to: WasmRawGeneration;
-  changes(): Diff;
-  compose(next: RawGenerationChangeSet<Diff>, maximumChanges: number): Promise<RawGenerationChangeSet<Diff>>;
-}
-
-export type WasmRawChangeSet = RawGenerationChangeSet<WasmRawGenerationDiff>;
-
-export interface WasmRawJoinPlan {
-  readonly targetHead: Uint8Array;
-  readonly commonAncestor: Uint8Array;
-  apply(ifTarget: Uint8Array, idempotencyKey?: Uint8Array): Promise<WasmRawJoinResult>;
-}
-
-export interface WasmRawJoinResult {
-  readonly status: string;
-  readonly generationId: Uint8Array | undefined;
-  readonly conflicts: readonly WasmRawMergeConflict[];
-  readonly truncated: boolean;
-}
+/*
+ * wasm-bindgen owns the class and method inventory. Its generated declaration
+ * intentionally uses `any` for serde values because Rust values cross the
+ * boundary as JavaScript objects. These helpers replace only erased result
+ * values (and the few serde arguments whose wire shapes are in this contract),
+ * while inheriting concrete signatures directly from the generated binding.
+ */
+type WasmWithArgs<Base, Args extends object> = Omit<Base, keyof Args> & {
+  [Key in keyof Args & keyof Base]: Base[Key] extends (...args: infer _Args) => infer Result
+    ? (...args: Args[Key] extends readonly unknown[] ? Args[Key] : never) => Result
+    : never;
+};
+type WasmWithAsyncResults<Base, Results extends object> = Omit<Base, keyof Results> & {
+  [Key in keyof Results & keyof Base]: Base[Key] extends (...args: infer Args) => unknown
+    ? (...args: Args) => Promise<Results[Key]>
+    : never;
+};
+type WasmWithSyncResults<Base, Results extends object> = Omit<Base, keyof Results> & {
+  [Key in keyof Results & keyof Base]: Base[Key] extends (...args: infer Args) => unknown
+    ? (...args: Args) => Results[Key]
+    : never;
+};
+type WasmWithProperties<Base, Properties extends object> = Omit<Base, keyof Properties> & Properties;
+type WasmAssertKnownKeys<Base, Overrides extends object> =
+  Exclude<keyof Overrides, keyof Base> extends never
+    ? unknown
+    : { readonly __unknownGeneratedWasmKeys__: Exclude<keyof Overrides, keyof Base> };
+type WasmTypedClass<
+  Base,
+  Args extends object = {},
+  AsyncResults extends object = {},
+  SyncResults extends object = {},
+  Properties extends object = {},
+> = WasmWithProperties<
+  WasmWithSyncResults<WasmWithAsyncResults<WasmWithArgs<Base, Args>, AsyncResults>, SyncResults>,
+  Properties
+> & WasmAssertKnownKeys<Base, Args>
+  & WasmAssertKnownKeys<Base, AsyncResults>
+  & WasmAssertKnownKeys<Base, SyncResults>
+  & WasmAssertKnownKeys<Base, Properties>;
 
 export interface WasmRawMergeConflict {
   readonly kind: string;
@@ -1346,56 +1295,11 @@ export interface WasmRawMergeConflict {
   readonly name: NativePathComponent | undefined;
 }
 
-export interface WasmRawGeneration {
-  readonly id: Uint8Array;
-  readonly workspaceId: Uint8Array;
-  read(path: string, maximumBytes: bigint): Promise<Uint8Array>;
-  readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
-  stat(path: string): Promise<WorkspaceStat>;
-  listDirectory(path: string, after: WorkspaceName | undefined, maximumEntries: number): Promise<WorkspaceDirectoryPage>;
-  readSymbolicLink(path: string): Promise<Uint8Array>;
-  planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan>;
-  pin(identity: string): Promise<WasmRawGeneration>;
-}
-
-export interface RawWorkspaceTransaction<Commit = unknown> {
-  createDirAll(path: string): Promise<void>;
-  createDirectory(path: string): Promise<void>;
-  createSymbolicLink(path: string, target: Uint8Array): Promise<void>;
-  write(path: string, bytes: Uint8Array): Promise<void>;
-  remove(path: string): Promise<void>;
-  copy(source: string, destination: string): Promise<void>;
-  rename(source: string, destination: string): Promise<void>;
-  hardLink(source: string, destination: string): Promise<void>;
-  writeRange(path: string, offset: bigint, bytes: Uint8Array): Promise<void>;
-  resize(path: string, logicalBytes: bigint): Promise<void>;
-  zeroRange(path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<void>;
-  preallocate(path: string, offset: bigint, length: bigint, keepSize: boolean): Promise<void>;
-  cloneRange(source: string, sourceOffset: bigint, destination: string, destinationOffset: bigint, length: bigint): Promise<void>;
-  rebase(maximumConflicts: number): Promise<TransactionRebaseResult>;
-  commit(): Promise<Commit>;
-}
-
-export type WasmRawTransaction = RawWorkspaceTransaction;
-
-export interface WasmRawSpeculation {
-  observe(observation: ResidencyObservation): { readonly status: string; readonly rejection?: string };
-  executeResidency(operationId: Uint8Array): Promise<{ readonly objectBytes: string; readonly work: WorkCounters }>;
-  finishResidency(operationId: Uint8Array, useful: boolean): void;
-  planPromotion(request: PromotionRequest): {
-    readonly status: string;
-    readonly rejection?: string;
-    readonly operationId?: Uint8Array;
-    readonly objectId?: Uint8Array;
-    readonly sourceLocationId?: Uint8Array;
-    readonly destinationLocationId?: Uint8Array;
-    readonly estimatedCostUnits?: string;
-  };
-  finishPromotion(operationId: Uint8Array, useful: boolean): void;
-  preemptForForeground(bytes: bigint): SpeculationPreemption;
-  replaceGeneration(generationId: Uint8Array): SpeculationPreemption;
-  metrics(): Record<string, Record<string, string>>;
-  cancel(): void;
+export interface WasmRawJoinResult {
+  readonly status: string;
+  readonly generationId: Uint8Array | undefined;
+  readonly conflicts: readonly WasmRawMergeConflict[];
+  readonly truncated: boolean;
 }
 
 export interface WasmRawObjectCacheStats {
@@ -1448,197 +1352,266 @@ export interface WasmRawGenerationDiff {
   readonly work: WorkCounters;
 }
 
-export interface WasmRawVolume {
-  readonly id: Uint8Array;
-  readonly acquisitionWork: WorkCounters;
-  diffGenerations(
-    before: Uint8Array,
-    after: Uint8Array,
-    maximumChanges: number,
-  ): Promise<WasmRawGenerationDiff>;
-  checkout(options: CheckoutOptions): Promise<WasmRawCheckout>;
-}
-
-export interface WasmRawCheckout {
-  readonly acquisitionWork: WorkCounters;
-  applyTransaction(operations: readonly TransactionOperation[]): Promise<TransactionResult>;
-  checkpoint(): Promise<CheckpointResult>;
-  refreshHead(): Promise<CheckpointResult>;
-  refreshLive(): Promise<CheckpointResult>;
-  exportManifest(): Promise<WasmRawExportManifest>;
-  prepareMerge(
-    theirs: Uint8Array,
-    maximumChanges: number,
-    maximumConflicts: number,
-  ): Promise<MergePreparationResult>;
-  lookupNoFollow(path: string): Promise<LookupResult>;
-  lookupBatchNoFollow(paths: readonly string[]): Promise<{
-    readonly entries: readonly BatchLookupEntry[];
-    readonly retainedAllocationBytes: string;
-    readonly work: WorkCounters;
-  }>;
-  statNoFollow(path: string): Promise<{
-    readonly exists: boolean;
-    readonly record: WasmRawFileRecordSnapshot | undefined;
-    readonly metadataCanonicalBytes: Uint8Array | undefined;
-    readonly work: WorkCounters;
-  }>;
-  readFileRecordById(fileId: Uint8Array): Promise<{
-    readonly record: WasmRawFileRecordSnapshot;
-    readonly work: WorkCounters;
-  }>;
-  readMetadata(path: string): Promise<MetadataResult>;
-  readMetadataById(fileId: Uint8Array): Promise<MetadataResult>;
-  setMetadata(path: string, canonicalBytes: Uint8Array): Promise<MutationResult>;
-  setMetadataById(fileId: Uint8Array, canonicalBytes: Uint8Array): Promise<MutationResult>;
-  setAttributes(path: string, canonicalBytes: Uint8Array, logicalBytes: bigint | undefined): Promise<MutationResult>;
-  setAttributesById(fileId: Uint8Array, canonicalBytes: Uint8Array, logicalBytes: bigint | undefined): Promise<MutationResult>;
-  readNamedAttribute(path: string, attributeClass: NamedAttributeClass, name: Uint8Array): Promise<NamedAttributeResult>;
-  listNamedAttributes(path: string, afterClass: NamedAttributeClass | undefined, afterName: Uint8Array | undefined, maximumEntries: number): Promise<NamedAttributePage>;
-  writeNamedAttribute(path: string, attributeClass: NamedAttributeClass, name: Uint8Array, bytes: Uint8Array, mode: NamedAttributeWriteMode): Promise<MutationResult>;
-  removeNamedAttribute(path: string, attributeClass: NamedAttributeClass, name: Uint8Array): Promise<MutationResult>;
-  resolveFiles(paths: readonly string[]): Promise<WasmRawResolvedFiles>;
-  readFileRange(path: string, offset: bigint, length: bigint): Promise<FileReadResult>;
-  readFileRangeById(fileId: Uint8Array, offset: bigint, length: bigint): Promise<FileReadResult>;
-  planFileExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<{
-    readonly kind: "inline" | "sparse";
-    readonly spans?: readonly {
-      readonly kind: "hole" | "allocated-zero" | "content";
-      readonly offset: string;
-      readonly length: string;
-      readonly sourceEnd: string;
-      readonly objectId?: Uint8Array;
-      readonly objectOffset?: string;
-    }[];
-    readonly retainedAllocationBytes?: string;
-    readonly work: WorkCounters;
-  }>;
-  planFileExtentsById(fileId: Uint8Array, offset: bigint, length: bigint, maximumSpans: number): Promise<{
-    readonly kind: "inline" | "sparse";
-    readonly spans?: readonly {
-      readonly kind: "hole" | "allocated-zero" | "content";
-      readonly offset: string;
-      readonly length: string;
-      readonly sourceEnd: string;
-      readonly objectId?: Uint8Array;
-      readonly objectOffset?: string;
-    }[];
-    readonly retainedAllocationBytes?: string;
-    readonly work: WorkCounters;
-  }>;
-  seekFileExtent(path: string, offset: bigint, target: ExtentSeekTarget): Promise<{ readonly offset: string | undefined; readonly work: WorkCounters }>;
-  seekFileExtentById(fileId: Uint8Array, offset: bigint, target: ExtentSeekTarget): Promise<{ readonly offset: string | undefined; readonly work: WorkCounters }>;
-  readSymbolicLink(path: string): Promise<FileReadResult>;
-  readReparsePoint(path: string): Promise<FileReadResult>;
-  listDirectory(
-    path: string,
-    after: string | undefined,
-    maximumEntries: number,
-  ): Promise<DirectoryPage>;
-  listDirectoryRecords(
-    path: string,
-    after: string | undefined,
-    maximumEntries: number,
-  ): Promise<{
-    readonly entries: readonly {
-      readonly name: Uint8Array;
-      readonly record: WasmRawFileRecordSnapshot;
-      readonly metadataCanonicalBytes: Uint8Array;
-    }[];
-    readonly hasMore: boolean;
-    readonly work: WorkCounters;
-  }>;
-  createFile(path: string, bytes: Uint8Array): Promise<MutationResult>;
-  createDirectory(path: string): Promise<MutationResult>;
-  createSymbolicLink(path: string, target: Uint8Array): Promise<MutationResult>;
-  createSpecial(path: string, kind: EmptySpecialKind): Promise<MutationResult>;
-  createDevice(path: string, kind: DeviceKind, major: number, minor: number): Promise<MutationResult>;
-  createReparsePoint(path: string, payload: Uint8Array): Promise<MutationResult>;
-  writeFile(path: string, offset: bigint, bytes: Uint8Array): Promise<MutationResult>;
-  writeFileById(fileId: Uint8Array, offset: bigint, bytes: Uint8Array): Promise<MutationResult>;
-  remove(path: string, expectedFileId: Uint8Array | undefined): Promise<MutationResult>;
-  rename(source: string, destination: string, replace: boolean): Promise<MutationResult>;
-  hardLink(source: string, destination: string): Promise<MutationResult>;
-  resizeFile(path: string, logicalBytes: bigint): Promise<MutationResult>;
-  resizeFileById(fileId: Uint8Array, logicalBytes: bigint): Promise<MutationResult>;
-  zeroFileRange(
-    path: string,
-    offset: bigint,
-    length: bigint,
-    allocated: boolean,
-    extend: boolean,
-  ): Promise<MutationResult>;
-  zeroFileRangeById(fileId: Uint8Array, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<MutationResult>;
-  preallocateFile(
-    path: string,
-    offset: bigint,
-    length: bigint,
-    keepSize: boolean,
-  ): Promise<MutationResult>;
-  preallocateFileById(fileId: Uint8Array, offset: bigint, length: bigint, keepSize: boolean): Promise<MutationResult>;
-  cloneFileRange(
-    source: string,
-    sourceOffset: bigint,
-    destination: string,
-    destinationOffset: bigint,
-    length: bigint,
-  ): Promise<MutationResult>;
-  cloneFileRangeById(sourceFileId: Uint8Array, sourceOffset: bigint, destinationFileId: Uint8Array, destinationOffset: bigint, length: bigint): Promise<MutationResult>;
-  commit(operationId: Uint8Array): Promise<{
-    readonly status: CommitResult["status"];
-    readonly generationId: Uint8Array | undefined;
-    readonly epoch: string | undefined;
-    readonly sequence: string | undefined;
-    readonly committedFingerprint: Uint8Array | undefined;
-    readonly work: WorkCounters;
-  }>;
-  mutateLive(
-    operations: readonly TransactionOperation[],
-    operationId: Uint8Array,
-    maximumAttempts: number,
-    maximumConflicts: number,
-  ): Promise<{
-    readonly createdFileIds: readonly (Uint8Array | undefined)[];
-    readonly status: LiveMutationResult["status"];
-    readonly generationId: Uint8Array | undefined;
-    readonly epoch: string | undefined;
-    readonly sequence: string | undefined;
-    readonly conflictCount: number;
-    readonly truncated: boolean;
-    readonly committedFingerprint: Uint8Array | undefined;
-    readonly work: WorkCounters;
-  }>;
-  resumeLive(
-    operationId: Uint8Array,
-    maximumAttempts: number,
-    maximumConflicts: number,
-  ): Promise<{
-    readonly status: LiveMutationResult["status"];
-    readonly generationId: Uint8Array | undefined;
-    readonly epoch: string | undefined;
-    readonly sequence: string | undefined;
-    readonly conflictCount: number;
-    readonly truncated: boolean;
-    readonly committedFingerprint: Uint8Array | undefined;
-    readonly work: WorkCounters;
-  }>;
-  rebaseHead(maximumConflicts: number): Promise<RebaseResult>;
-  discard(): Promise<MutationResult>;
-}
-
-export interface WasmRawResolvedFile {
-  readonly kind: string;
-  readonly logicalBytes: bigint;
-  readonly metadataCanonicalBytes: Uint8Array;
-  readRange(offset: bigint, length: bigint): Promise<FileReadResult>;
-  readSymbolicLink(): Promise<FileReadResult>;
-}
-
-export interface WasmRawResolvedFiles {
-  readonly length: number;
+export interface WasmRawCommitResult {
+  readonly status: CommitResult["status"];
+  readonly generationId: Uint8Array | undefined;
+  readonly epoch: string | undefined;
+  readonly sequence: string | undefined;
+  readonly committedFingerprint: Uint8Array | undefined;
   readonly work: WorkCounters;
-  take(index: number): WasmRawResolvedFile | undefined;
 }
+
+export interface WasmRawLiveMutationResult {
+  readonly status: LiveMutationResult["status"];
+  readonly generationId: Uint8Array | undefined;
+  readonly epoch: string | undefined;
+  readonly sequence: string | undefined;
+  readonly conflictCount: number;
+  readonly truncated: boolean;
+  readonly committedFingerprint: Uint8Array | undefined;
+  readonly work: WorkCounters;
+}
+
+export interface WasmRawLiveTransactionResult extends WasmRawLiveMutationResult {
+  readonly createdFileIds: readonly (Uint8Array | undefined)[];
+}
+
+export interface WasmRawFileExtentPlan {
+  readonly kind: "inline" | "sparse";
+  readonly spans?: readonly {
+    readonly kind: "hole" | "allocated-zero" | "content";
+    readonly offset: string;
+    readonly length: string;
+    readonly sourceEnd: string;
+    readonly objectId?: Uint8Array;
+    readonly objectOffset?: string;
+  }[];
+  readonly retainedAllocationBytes?: string;
+  readonly work: WorkCounters;
+}
+
+export interface WasmRawExtentSeekResult {
+  readonly offset: string | undefined;
+  readonly work: WorkCounters;
+}
+
+export type WasmRawGeneration = WasmTypedClass<WasmBinding.BrowserGeneration, {
+  listDirectory: [path: string, after: WorkspaceName | undefined, maximumEntries: number];
+}, {
+  listDirectory: WorkspaceDirectoryPage;
+  pin: WasmRawGeneration;
+  planExtents: WorkspaceExtentPlan;
+  stat: WorkspaceStat;
+}>;
+
+export interface RawGenerationChangeSet<Diff> {
+  readonly from: WasmRawGeneration;
+  readonly to: WasmRawGeneration;
+  changes(): Diff;
+  compose(next: RawGenerationChangeSet<Diff>, maximumChanges: number): Promise<RawGenerationChangeSet<Diff>>;
+}
+
+export type WasmRawChangeSet = WasmTypedClass<WasmBinding.BrowserChangeSet, {}, {
+  compose: WasmRawChangeSet;
+}, {
+  changes: WasmRawGenerationDiff;
+}, {
+  readonly from: WasmRawGeneration;
+  readonly to: WasmRawGeneration;
+}>;
+
+export type WasmRawJoinPlan = WasmTypedClass<WasmBinding.BrowserJoinPlan, {}, {
+  apply: WasmRawJoinResult;
+}>;
+
+export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
+  joinInto: [target: WasmRawWorkspace, options: JoinOptions];
+}, {
+  beginTransaction: WasmRawTransaction;
+  checkpoint: WasmRawGeneration;
+  diff: WasmRawChangeSet;
+  fork: WasmRawWorkspace;
+  forkAt: WasmRawWorkspace;
+  joinInto: WasmRawJoinPlan;
+  liveRebase: WasmRawJoinResult;
+  pin: WasmRawGeneration;
+  planExtents: WorkspaceExtentPlan;
+  remove: WorkspaceCommit;
+  stat: WorkspaceStat;
+  sync: WasmRawGeneration;
+  write: WorkspaceCommit;
+}>;
+
+export interface RawWorkspaceTransaction<Commit = unknown> {
+  createDirAll(path: string): Promise<void>;
+  createDirectory(path: string): Promise<void>;
+  createSymbolicLink(path: string, target: Uint8Array): Promise<void>;
+  write(path: string, bytes: Uint8Array): Promise<void>;
+  remove(path: string): Promise<void>;
+  copy(source: string, destination: string): Promise<void>;
+  rename(source: string, destination: string): Promise<void>;
+  hardLink(source: string, destination: string): Promise<void>;
+  writeRange(path: string, offset: bigint, bytes: Uint8Array): Promise<void>;
+  resize(path: string, logicalBytes: bigint): Promise<void>;
+  zeroRange(path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<void>;
+  preallocate(path: string, offset: bigint, length: bigint, keepSize: boolean): Promise<void>;
+  cloneRange(source: string, sourceOffset: bigint, destination: string, destinationOffset: bigint, length: bigint): Promise<void>;
+  rebase(maximumConflicts: number): Promise<TransactionRebaseResult>;
+  commit(): Promise<Commit>;
+}
+
+export type WasmRawTransaction = WasmTypedClass<WasmBinding.BrowserTransaction, {}, {
+  commit: WorkspaceCommit;
+  rebase: TransactionRebaseResult;
+}>;
+
+export type WasmRawSpeculation = WasmTypedClass<WasmBinding.BrowserSpeculation, {
+  observe: [observation: ResidencyObservation];
+  planPromotion: [request: PromotionRequest];
+}, {
+  executeResidency: { readonly objectBytes: string; readonly work: WorkCounters };
+}, {
+  observe: { readonly status: string; readonly rejection?: string };
+  metrics: Record<string, Record<string, string>>;
+  planPromotion: {
+    readonly status: string;
+    readonly rejection?: string;
+    readonly operationId?: Uint8Array;
+    readonly objectId?: Uint8Array;
+    readonly sourceLocationId?: Uint8Array;
+    readonly destinationLocationId?: Uint8Array;
+    readonly estimatedCostUnits?: string;
+  };
+  preemptForForeground: SpeculationPreemption;
+  replaceGeneration: SpeculationPreemption;
+}>;
+
+export type WasmRawVolume = WasmTypedClass<WasmBinding.BrowserVolume, {
+  checkout: [options: CheckoutOptions];
+}, {
+  checkout: WasmRawCheckout;
+  diffGenerations: WasmRawGenerationDiff;
+}, {}, {
+  readonly acquisitionWork: WorkCounters;
+}>;
+
+export type WasmRawCheckout = WasmTypedClass<
+  WasmBinding.BrowserCheckout,
+  {
+    applyTransaction: [operations: readonly TransactionOperation[]];
+    createDevice: [path: string, kind: DeviceKind, major: number, minor: number];
+    createSpecial: [path: string, kind: EmptySpecialKind];
+    listDirectory: [path: string, after: string | undefined, maximumEntries: number];
+    listDirectoryRecords: [path: string, after: string | undefined, maximumEntries: number];
+    listNamedAttributes: [path: string, afterClass: NamedAttributeClass | undefined, afterName: Uint8Array | undefined, maximumEntries: number];
+    lookupBatchNoFollow: [paths: readonly string[]];
+    mutateLive: [operations: readonly TransactionOperation[], operationId: Uint8Array, maximumAttempts: number, maximumConflicts: number];
+    resolveFiles: [paths: readonly string[]];
+    remove: [path: string, expectedFileId: Uint8Array | undefined];
+    seekFileExtent: [path: string, offset: bigint, target: ExtentSeekTarget];
+    seekFileExtentById: [fileId: Uint8Array, offset: bigint, target: ExtentSeekTarget];
+    setAttributes: [path: string, canonicalBytes: Uint8Array, logicalBytes: bigint | undefined];
+    setAttributesById: [fileId: Uint8Array, canonicalBytes: Uint8Array, logicalBytes: bigint | undefined];
+    writeNamedAttribute: [path: string, attributeClass: NamedAttributeClass, name: Uint8Array, bytes: Uint8Array, mode: NamedAttributeWriteMode];
+  },
+  {
+    applyTransaction: TransactionResult;
+    checkpoint: CheckpointResult;
+    cloneFileRange: MutationResult;
+    cloneFileRangeById: MutationResult;
+    commit: WasmRawCommitResult;
+    createDevice: MutationResult;
+    createDirectory: MutationResult;
+    createFile: MutationResult;
+    createReparsePoint: MutationResult;
+    createSpecial: MutationResult;
+    createSymbolicLink: MutationResult;
+    discard: MutationResult;
+    exportManifest: WasmRawExportManifest;
+    hardLink: MutationResult;
+    listDirectory: DirectoryPage;
+    listDirectoryRecords: DirectoryRecordPage;
+    listNamedAttributes: NamedAttributePage;
+    lookupBatchNoFollow: BatchLookupResult;
+    lookupNoFollow: LookupResult;
+    mutateLive: WasmRawLiveTransactionResult;
+    planFileExtents: WasmRawFileExtentPlan;
+    planFileExtentsById: WasmRawFileExtentPlan;
+    preallocateFile: MutationResult;
+    preallocateFileById: MutationResult;
+    prepareMerge: MergePreparationResult;
+    readFileRange: FileReadResult;
+    readFileRangeById: FileReadResult;
+    readFileRecordById: FileRecordReadResult;
+    readMetadata: MetadataResult;
+    readMetadataById: MetadataResult;
+    readNamedAttribute: NamedAttributeResult;
+    readReparsePoint: FileReadResult;
+    readSymbolicLink: FileReadResult;
+    rebaseHead: RebaseResult;
+    refreshHead: CheckpointResult;
+    refreshLive: CheckpointResult;
+    remove: MutationResult;
+    removeNamedAttribute: MutationResult;
+    rename: MutationResult;
+    resizeFile: MutationResult;
+    resizeFileById: MutationResult;
+    resolveFiles: WasmRawResolvedFiles;
+    resumeLive: WasmRawLiveMutationResult;
+    seekFileExtent: WasmRawExtentSeekResult;
+    seekFileExtentById: WasmRawExtentSeekResult;
+    setAttributes: MutationResult;
+    setAttributesById: MutationResult;
+    setMetadata: MutationResult;
+    setMetadataById: MutationResult;
+    statNoFollow: StatResult;
+    writeFile: MutationResult;
+    writeFileById: MutationResult;
+    writeNamedAttribute: MutationResult;
+    zeroFileRange: MutationResult;
+    zeroFileRangeById: MutationResult;
+  },
+  {},
+  { readonly acquisitionWork: WorkCounters }
+>;
+
+export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
+  createSpeculation: [volumeId: Uint8Array, generationId: Uint8Array, options: SpeculationOptions];
+  createVolume: [options: VolumeOptions];
+  createVolumeWithId: [volumeId: Uint8Array, options: VolumeOptions];
+  exportGenerationBatch: [manifest: WasmImportManifest, cursor: bigint, maximumObjects: number, maximumObjectBytes: bigint];
+  importGenerationBatch: [manifest: WasmImportManifest, cursor: bigint, objects: readonly Uint8Array[], maximumObjects: number];
+  restoreVolume: [manifest: WasmImportManifest, operationId: Uint8Array];
+}, {
+  createWorkspace: WasmRawWorkspace;
+  openWorkspace: WasmRawWorkspace;
+  createVolume: WasmRawVolume;
+  createVolumeWithId: WasmRawVolume;
+  openVolume: WasmRawVolume;
+  exportObject: FileReadResult;
+  importObject: MutationResult;
+  exportGenerationBatch: {
+    readonly firstObject: string;
+    readonly nextObject: string | undefined;
+    readonly objects: readonly Uint8Array[];
+    readonly work: WorkCounters;
+  };
+  importGenerationBatch: { readonly nextObject: string; readonly work: WorkCounters };
+  restoreVolume: WasmRawVolume;
+}, {
+  createSpeculation: WasmRawSpeculation;
+  objectCacheStats: WasmRawObjectCacheStats;
+}, {
+  readonly capabilities: EngineCapabilities;
+}>;
+export type WasmRawResolvedFile = WasmTypedClass<WasmBinding.BrowserResolvedFile, {}, {
+  readRange: FileReadResult;
+  readSymbolicLink: FileReadResult;
+}>;
+
+export type WasmRawResolvedFiles = WasmWithProperties<WasmBinding.BrowserResolvedFiles, {
+  readonly work: WorkCounters;
+}> & { take(index: number): WasmRawResolvedFile | undefined };
 
 // Native companion declarations are generated by NAPI-RS from the canonical
 // Rust binding. Keep the adapter's historical Raw aliases, but make every one

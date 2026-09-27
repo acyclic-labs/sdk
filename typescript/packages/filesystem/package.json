@@ -47,6 +47,7 @@
     "build:clean": "bun run clean && bun run build",
     "build:wasm": "bun scripts/build-wasm.mjs",
     "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
+    "check:types": "bun x tsc -p tsconfig.type-tests.json --pretty false",
     "test": "bun run build && bun run test:composition && bun run test:s3",
     "test:composition": "bun test/node-memory.mjs",
     "test:s3": "bun test test/hosted-s3.test.mjs",

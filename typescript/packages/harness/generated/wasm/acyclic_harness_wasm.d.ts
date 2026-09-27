@@ -156,6 +156,13 @@ export class WasmReducer {
 }
 
 /**
+ * Admits one provider model event with the native stream rules and returns
+ * the detached state needed for the next event. Text accounting is cumulative
+ * across model steps while event and tool-call bounds reset at each step.
+ */
+export function admitModelEvent(event: any, limits: any, state: any): any;
+
+/**
  * Derives the same immutable per-slot operation as Rust durable admission.
  */
 export function batchMemberOperationId(group: string, batch: string, index: number): string;
@@ -344,6 +351,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
+    readonly admitModelEvent: (a: any, b: any, c: any) => [number, number, number];
     readonly batchMemberOperationId: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly decodeAggregateKind: (a: number) => [number, number, number];
     readonly decodeApplyResponse: (a: number, b: number) => [number, number, number];

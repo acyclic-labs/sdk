@@ -268,7 +268,7 @@ pub struct ModelRequest {
 
 /// Ordered event emitted by a model run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelEvent {
     /// User-visible content fragment.
     Content {
@@ -283,6 +283,7 @@ pub enum ModelEvent {
     /// Complete request to invoke one registered tool.
     ToolCall {
         /// Provider/model-owned call identity.
+        #[serde(alias = "callId")]
         call_id: String,
         /// Registered tool name.
         name: String,

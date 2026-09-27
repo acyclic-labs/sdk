@@ -1,7 +1,7 @@
 import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
-import { NativeContracts, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type NativeLimitsWire, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
+import { NativeContracts, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeLimitsWire, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
 import { validateModelContent as validateModelContentWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import type { SelectedModelContext } from "./projection.js";
@@ -2260,40 +2260,27 @@ export class AgentHarness {
         validateModelContent(message.content, this.limits);
       }
       let text = "";
-      let textBytes = 0;
+      let previousAdmission: ModelEventAdmissionState = { count: 0, calls: [], completed: false, text_bytes: 0 };
       const maxSteps = Math.min(this.scope.limits.maxSteps ?? this.limits.model_steps, this.limits.model_steps);
       for (let step = 0; step < maxSteps; step += 1) {
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
-        const callIds = new Set<string>();
-        let eventCount = 0;
-        let completed = false;
+        let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
         for await (const event of model.provider.generate({ model: model.identity, messages, tools: this.#modelToolDefinitions(), signal: context.signal })) {
-          if (completed) throw new TypeError("model emitted an event after completion");
-          if (++eventCount > this.limits.model_events_per_step) throw new TypeError("model event limit exceeded");
-          if (event.kind === "content") {
-            const deltaBytes = new TextEncoder().encode(event.delta).byteLength;
-            if (textBytes + deltaBytes > this.limits.file_bytes) {
-              throw new TypeError("assistant output exceeds file limit");
-            }
-            textBytes += deltaBytes;
-            text += event.delta;
+          const admitted = this.contracts.admitModelEvent(event, this.limits, admission);
+          admission = admitted.state;
+          const admittedEvent = admitted.event;
+          if (admittedEvent.kind === "content") {
+            text += admittedEvent.delta;
           }
-          else if (event.kind === "tool_call") {
-            validateToolName(event.name);
-            if (!event.callId || new TextEncoder().encode(event.callId).byteLength > 255
-              || /[\p{Cc}\\/]/u.test(event.callId) || callIds.has(event.callId)) {
-              throw new TypeError("model tool call identity is invalid or repeated");
-            }
-            if (calls.length >= this.limits.tool_calls_per_step) throw new TypeError("model tool-call limit exceeded");
-            callIds.add(event.callId);
-            calls.push(event);
+          else if (admittedEvent.kind === "tool_call") {
+            calls.push(admittedEvent);
           }
-          else if (event.kind === "completed") {
-            completed = true;
-            receipts.push({ kind: "model-completed", metadata: event.metadata });
+          else if (admittedEvent.kind === "completed") {
+            receipts.push({ kind: "model-completed", metadata: admittedEvent.metadata });
           }
         }
-        if (!completed) throw new Error("model attempt ended without completion");
+        if (!admission.completed) throw new Error("model attempt ended without completion");
+        previousAdmission = admission;
         if (calls.length === 0) return { text };
         for (const call of calls) {
           const toolOperationId = this.contracts.idFromDigest(this.contracts.digestCanonicalJson({

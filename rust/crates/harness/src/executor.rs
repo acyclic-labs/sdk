@@ -1123,6 +1123,17 @@ pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
         .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))
 }
 
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub(crate) struct ModelEventAdmissionState {
+    #[serde(default)]
+    pub(crate) count: usize,
+    #[serde(default)]
+    pub(crate) calls: Vec<String>,
+    #[serde(default)]
+    pub(crate) completed: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct ModelEventAdmission {
     count: usize,
@@ -1131,6 +1142,48 @@ pub(crate) struct ModelEventAdmission {
 }
 
 impl ModelEventAdmission {
+    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+    pub(crate) fn from_state(state: ModelEventAdmissionState, limits: Limits) -> Result<Self> {
+        if state.count > limits.model_events_per_step {
+            return Err(Error::Invalid(
+                "model event admission state exceeds its limit".into(),
+            ));
+        }
+        let call_count = state.calls.len();
+        if call_count > limits.tool_calls_per_step {
+            return Err(Error::Invalid(
+                "model tool call admission state exceeds its limit".into(),
+            ));
+        }
+        let calls = state
+            .calls
+            .into_iter()
+            .map(|call_id| {
+                ToolInvocation::validate_identity(&call_id, "admitted.tool")?;
+                Ok(call_id)
+            })
+            .collect::<Result<BTreeSet<_>>>()?;
+        if calls.len() != call_count {
+            return Err(Error::Invalid(
+                "model tool call admission state contains repeated identities".into(),
+            ));
+        }
+        Ok(Self {
+            count: state.count,
+            calls,
+            completed: state.completed,
+        })
+    }
+
+    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+    pub(crate) fn state(&self) -> ModelEventAdmissionState {
+        ModelEventAdmissionState {
+            count: self.count,
+            calls: self.calls.iter().cloned().collect(),
+            completed: self.completed,
+        }
+    }
+
     pub(crate) fn observe(&mut self, event: &ModelEvent, limits: Limits) -> Result<()> {
         if self.count >= limits.model_events_per_step {
             return Err(Error::Invalid("model event limit exceeded".into()));

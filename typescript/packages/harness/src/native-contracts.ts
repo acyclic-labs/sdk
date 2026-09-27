@@ -11,7 +11,7 @@ import type { ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, E
 import type { ApprovalBinding, InteractionId, InteractionResolution, InteractionTicket, ResolutionReceipt } from "./interaction.js";
 import type { ProjectMergeReceipt } from "./project.js";
 import type { PrivateDirectoryPage } from "./runtime.js";
-import type { ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult } from "./model.js";
+import type { ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult } from "./model.js";
 import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
 
 /** Exact serde shape admitted by Rust `DurableBatchRequest`; hosts retain this value. */
@@ -39,6 +39,20 @@ export interface NativeLimitsWire {
   readonly model_events_per_step: bigint;
   readonly tool_calls_per_step: bigint;
   readonly context_messages: bigint;
+}
+
+/** Rust-owned per-step model event admission state with cumulative text bytes. */
+export interface ModelEventAdmissionState {
+  readonly count: number;
+  readonly calls: readonly string[];
+  readonly completed: boolean;
+  readonly text_bytes: number;
+}
+
+/** Detached model event paired with its Rust admission state. */
+export interface ModelEventAdmission {
+  readonly event: ModelEvent;
+  readonly state: ModelEventAdmissionState;
 }
 
 export interface MachineIdentityWire {
@@ -134,7 +148,7 @@ const REQUIRED_NATIVE_EXPORTS = [
   "validateContract", "verifyFileBytes", "decodeAttachmentManifest",
   "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
   "validateToolDefinition", "validateToolInvocation", "validateToolResult",
-  "validateModelContent", "validateUserInput",
+  "validateModelContent", "validateUserInput", "admitModelEvent",
   "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
   "validateWireResume", "validateWireObserve", "validateWireCancel",
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
@@ -243,6 +257,22 @@ export class NativeContracts {
     result: ToolResult,
   ): void {
     this.native.validateToolResult(nativeToolDefinition(definition), result);
+  }
+
+  /** Rust owns model stream event, tool-call, completion, and UTF-8 byte admission. */
+  admitModelEvent(event: ModelEvent, limits: Limits, state?: ModelEventAdmissionState): ModelEventAdmission {
+    // Model arguments and completion metadata are provider JSON and may carry
+    // full-width integers. Preserve those BigInts while normalizing the
+    // bounded admission counters below to the public Number state shape.
+    const admitted = normalizeNativeValue(this.native.admitModelEvent(event, limits, state ?? null)) as ModelEventAdmission;
+    const admittedState = normalizeNativeValue(admitted.state, true) as ModelEventAdmissionState;
+    if (admitted.event === null || typeof admitted.event !== "object"
+      || !Number.isSafeInteger(admittedState.count) || admittedState.count < 0
+      || !Number.isSafeInteger(admittedState.text_bytes) || admittedState.text_bytes < 0
+      || !Array.isArray(admittedState.calls) || typeof admittedState.completed !== "boolean") {
+      throw new TypeError("native model event admission returned an invalid state");
+    }
+    return freezeNative({ ...admitted, state: { ...admittedState, calls: [...admittedState.calls] } });
   }
 
   validateWireHandshake(request: Uint8Array, response: Uint8Array): Uint8Array {

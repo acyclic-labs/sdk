@@ -1662,6 +1662,26 @@ describe("typed agent runtime", () => {
     expect(produced).toBe(3);
   });
 
+  test("model loop consumes the detached event returned by Rust admission", async () => {
+    let reads = 0;
+    const event = {
+      kind: "content" as const,
+      get delta(): string {
+        reads += 1;
+        return reads === 1 ? "ok" : "x".repeat(3);
+      },
+    };
+    const runtime = Harness.builder(contracts).limits({ file_bytes: 2, render_bytes: 2 }).model(testModel, {
+      async *generate() {
+        yield event;
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile() { return undefined; },
+    }).build();
+    await expect(runtime.run("x")).resolves.toMatchObject({ text: "ok" });
+    expect(reads).toBe(1);
+  });
+
   test("custom context builders cannot bypass model-content bounds", async () => {
     let dispatched = 0;
     const runtime = Harness.builder(contracts).limits({ render_bytes: 8 }).context({
@@ -1709,10 +1729,12 @@ describe("typed agent runtime", () => {
 
   test("reused provider call IDs have distinct internal tool operations", async () => {
     const operations: string[] = [];
+    const argumentsSeen: number[] = [];
     const tool = defineTool<number, number>({ name: "again", revision: "1", description: "again",
       inputSchema: {}, outputSchema: {}, parseInput: parseNumber, parseOutput: parseNumber }, async (context, input) => {
       expect(context.callId).toBe("provider-call");
       operations.push(context.operationId!);
+      argumentsSeen.push(input);
       return input;
     });
     let step = 0;
@@ -1728,5 +1750,6 @@ describe("typed agent runtime", () => {
     expect((await runtime.run("again")).text).toBe("done");
     expect(operations).toHaveLength(2);
     expect(new Set(operations).size).toBe(2);
+    expect(argumentsSeen).toEqual([1, 2]);
   });
 });

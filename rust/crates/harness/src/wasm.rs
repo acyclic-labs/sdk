@@ -21,10 +21,11 @@ use crate::{
         ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
         ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
     },
+    executor::{ModelEventAdmission, ModelEventAdmissionState},
     fork::{ForkReport, ForkRequest, ForkSeed, ReferenceGrant, ResourceRevision},
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
     merge::ProjectMergeReceipt,
-    model::ModelContent,
+    model::{ModelContent, ModelEvent},
     resources::{ProviderRef, ResourceRef},
     runtime::{DurableBatchRequest, batch_member_operation_id, task_definition_digest},
     tool::{ToolDefinition, validate_value},
@@ -1373,6 +1374,119 @@ pub fn validate_model_content(content: JsValue, limits: JsValue) -> Result<(), J
 pub fn validate_user_input(content: JsValue) -> Result<(), JsValue> {
     let content: ModelContent = from_js(content)?;
     content.validate_user_input().map_err(js_error)
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct WasmModelEventAdmissionState {
+    #[serde(flatten)]
+    admission: ModelEventAdmissionState,
+    #[serde(default)]
+    text_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum WasmModelEvent {
+    Content {
+        delta: String,
+    },
+    Reasoning {
+        delta: String,
+    },
+    ToolCall {
+        #[serde(rename = "callId")]
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    Completed {
+        metadata: serde_json::Value,
+    },
+}
+
+impl From<ModelEvent> for WasmModelEvent {
+    fn from(event: ModelEvent) -> Self {
+        match event {
+            ModelEvent::Content { delta } => Self::Content { delta },
+            ModelEvent::Reasoning { delta } => Self::Reasoning { delta },
+            ModelEvent::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } => Self::ToolCall {
+                call_id,
+                name,
+                arguments,
+            },
+            ModelEvent::Completed { metadata } => Self::Completed { metadata },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct WasmModelEventAdmissionResult {
+    event: WasmModelEvent,
+    state: WasmModelEventAdmissionState,
+}
+
+/// Admits one provider model event with the native stream rules and returns
+/// the detached state needed for the next event. Text accounting is cumulative
+/// across model steps while event and tool-call bounds reset at each step.
+#[wasm_bindgen(js_name = admitModelEvent)]
+pub fn admit_model_event(
+    event: JsValue,
+    limits: JsValue,
+    state: JsValue,
+) -> Result<JsValue, JsValue> {
+    let event: ModelEvent = from_js(event)?;
+    let limits: Limits = from_js(limits)?;
+    limits.validate().map_err(js_error)?;
+    let state: WasmModelEventAdmissionState = if state.is_null() || state.is_undefined() {
+        WasmModelEventAdmissionState::default()
+    } else {
+        from_js(state)?
+    };
+    if state.text_bytes > limits.file_bytes {
+        return Err(JsValue::from_str(
+            "model output admission state exceeds file limit",
+        ));
+    }
+    let prior_text_bytes = state.text_bytes;
+    let mut admission =
+        ModelEventAdmission::from_state(state.admission, limits).map_err(js_error)?;
+    admission.observe(&event, limits).map_err(js_error)?;
+    let text_bytes = match &event {
+        ModelEvent::Content { delta } => prior_text_bytes
+            .checked_add(delta.len() as u64)
+            .ok_or_else(|| JsValue::from_str("model output size overflow"))?,
+        ModelEvent::Reasoning { .. }
+        | ModelEvent::ToolCall { .. }
+        | ModelEvent::Completed { .. } => prior_text_bytes,
+    };
+    if text_bytes > limits.file_bytes {
+        return Err(JsValue::from_str("assistant output exceeds file limit"));
+    }
+    let state = WasmModelEventAdmissionState {
+        admission: admission.state(),
+        text_bytes,
+    };
+    let output = WasmModelEventAdmissionResult {
+        event: event.into(),
+        state,
+    };
+    let js = to_js(&output)?;
+    let js_state = js_sys::Reflect::get(&js, &JsValue::from_str("state"))?;
+    set_js_field(
+        &js_state,
+        "count",
+        &exact_js_number(output.state.admission.count as u64)?,
+    )?;
+    set_js_field(
+        &js_state,
+        "text_bytes",
+        &exact_js_number(output.state.text_bytes)?,
+    )?;
+    Ok(js)
 }
 
 /// Validates a protobuf handshake; returns encoded `Error` bytes, or empty on success.

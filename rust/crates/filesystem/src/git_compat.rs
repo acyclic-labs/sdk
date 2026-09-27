@@ -549,6 +549,66 @@ impl GitTransitionId {
     }
 }
 
+/// Byte widths and tagged-output names used by language bindings for the
+/// JSON compatibility projection. Keep these beside the canonical Git types
+/// so generated bindings cannot silently drift when an identity or output
+/// variant changes.
+pub const GIT_COMPAT_IDENTITY_WIRE_FIELDS: &[(&str, usize)] = &[
+    ("workspace_id", std::mem::size_of::<WorkspaceId>()),
+    ("source_workspace", std::mem::size_of::<WorkspaceId>()),
+    ("generation", std::mem::size_of::<GenerationId>()),
+    ("id", std::mem::size_of::<GenerationId>()),
+    ("authored_generation", std::mem::size_of::<GenerationId>()),
+    ("identity", std::mem::size_of::<WorkspaceId>()),
+    ("overlay", std::mem::size_of::<GenerationId>()),
+    ("shadows", std::mem::size_of::<GenerationId>()),
+    ("initial_generation", std::mem::size_of::<GenerationId>()),
+];
+
+/// Field names that language bindings decode as owned byte arrays. `None`
+/// denotes an unbounded byte payload, currently the patch in `ApplyPatch`.
+pub const GIT_COMPAT_BYTE_WIRE_FIELDS: &[(&str, Option<usize>)] = &[
+    ("workspace_id", Some(std::mem::size_of::<WorkspaceId>())),
+    ("source_workspace", Some(std::mem::size_of::<WorkspaceId>())),
+    ("generation", Some(std::mem::size_of::<GenerationId>())),
+    ("id", Some(std::mem::size_of::<GenerationId>())),
+    (
+        "authored_generation",
+        Some(std::mem::size_of::<GenerationId>()),
+    ),
+    ("identity", Some(std::mem::size_of::<WorkspaceId>())),
+    ("overlay", Some(std::mem::size_of::<GenerationId>())),
+    ("shadows", Some(std::mem::size_of::<GenerationId>())),
+    (
+        "initial_generation",
+        Some(std::mem::size_of::<GenerationId>()),
+    ),
+    ("patch", None),
+];
+
+/// Field names using the signed JSON timestamp representation.
+pub const GIT_COMPAT_TIMESTAMP_WIRE_FIELDS: &[&str] = &["authored_at_seconds"];
+
+/// Paths whose values are UUID encoded operation identities.
+pub const GIT_COMPAT_UUID_WIRE_PATHS: &[&str] = &[
+    "Prepared.transition",
+    "pending.id",
+    "capture_proof.operation_id",
+];
+
+/// Tagged Rust variants containing opaque executor-owned JSON.
+pub const GIT_COMPAT_OPAQUE_WIRE_PATHS: &[&str] = &["Filesystem.Data"];
+
+/// Public spelling aliases applied by generated binding projections.
+pub const GIT_COMPAT_PUBLIC_WIRE_ALIASES: &[(&str, &str)] =
+    &[("Status.all_changes_staged", "allChangesStaged")];
+
+/// Required fields of the durable pending-transition JSON object.
+pub const GIT_COMPAT_PENDING_WIRE_FIELDS: &[&str] = &["id", "action", "mutation"];
+
+/// Width of the UUID encoded by `GitTransitionId` in compatibility JSON.
+pub const GIT_COMPAT_TRANSITION_ID_BYTES: usize = std::mem::size_of::<GitTransitionId>();
+
 impl Default for GitTransitionId {
     fn default() -> Self {
         Self::new()
@@ -1110,6 +1170,43 @@ pub enum GitCommandOutput {
     Text(String),
     /// Stable ordered portable-path result.
     Paths(Vec<String>),
+}
+
+/// Object variants emitted by the JSON compatibility output projection.
+/// `NoOp` is encoded as the literal JSON string and is absent here.
+pub const GIT_COMPAT_OUTPUT_VARIANTS: &[&str] = &[
+    "Status",
+    "Commits",
+    "Branches",
+    "Tags",
+    "Committed",
+    "Bisect",
+    "Action",
+    "Prepared",
+    "Filesystem",
+    "Text",
+    "Paths",
+];
+
+impl GitCommandOutput {
+    /// Returns the canonical serde/TypeScript tag for this output.
+    #[must_use]
+    pub const fn variant_name(&self) -> &'static str {
+        match self {
+            Self::NoOp => "NoOp",
+            Self::Status(_) => "Status",
+            Self::Commits(_) => "Commits",
+            Self::Branches { .. } => "Branches",
+            Self::Tags(_) => "Tags",
+            Self::Committed(_) => "Committed",
+            Self::Bisect(_) => "Bisect",
+            Self::Action(_) => "Action",
+            Self::Prepared { .. } => "Prepared",
+            Self::Filesystem(_) => "Filesystem",
+            Self::Text(_) => "Text",
+            Self::Paths(_) => "Paths",
+        }
+    }
 }
 
 /// Durable optimistic-concurrency adapter for private compatibility state.
@@ -5164,6 +5261,134 @@ mod tests {
 
     fn tree(byte: u8) -> GitTreeRef {
         GitTreeRef::exact(workspace(), generation(byte))
+    }
+
+    #[test]
+    fn git_wire_contract_matches_serde_tags_and_identity_widths() {
+        let commit = GitCommit::new(tree(1), Vec::new(), "agent", 0, "fixture");
+        let action = GitFilesystemAction::ApplyPatch {
+            patch: vec![1, 2, 3],
+        };
+        let outputs = vec![
+            GitCommandOutput::NoOp,
+            GitCommandOutput::Status(GitStatus {
+                branch: "main".to_owned(),
+                head: None,
+                workspace: tree(1),
+                dirty: GitDirtyState::Clean,
+                all_changes_staged: true,
+            }),
+            GitCommandOutput::Commits(vec![commit.clone()]),
+            GitCommandOutput::Branches {
+                current: "main".to_owned(),
+                branches: Vec::new(),
+            },
+            GitCommandOutput::Tags(std::collections::BTreeMap::new()),
+            GitCommandOutput::Committed(commit),
+            GitCommandOutput::Bisect(GitBisectResult {
+                active: false,
+                good: None,
+                bad: None,
+                current: None,
+                remaining: 0,
+                first_bad: None,
+            }),
+            GitCommandOutput::Action(action.clone()),
+            GitCommandOutput::Prepared {
+                transition: GitTransitionId::from_bytes([3; 16]),
+                action,
+            },
+            GitCommandOutput::Filesystem(GitFilesystemResult::Data {
+                kind: "fixture".to_owned(),
+                value: serde_json::json!({}),
+            }),
+            GitCommandOutput::Text("fixture".to_owned()),
+            GitCommandOutput::Paths(vec!["fixture".to_owned()]),
+        ];
+
+        let names: Vec<_> = outputs
+            .iter()
+            .filter(|output| output.variant_name() != "NoOp")
+            .map(|output| output.variant_name())
+            .collect();
+        assert_eq!(names, GIT_COMPAT_OUTPUT_VARIANTS);
+        for output in &outputs {
+            let json = serde_json::to_value(output).expect("Git output JSON");
+            if output.variant_name() == "NoOp" {
+                assert_eq!(json, serde_json::json!("NoOp"));
+            } else {
+                let object = json.as_object().expect("tagged Git output object");
+                assert_eq!(object.len(), 1);
+                assert!(object.contains_key(output.variant_name()));
+            }
+        }
+
+        let proof_operation = OperationId::from_bytes([3; 16]);
+        let committed_with_proof = GitCommit::new_with_capture_proof(
+            tree(2),
+            tree(1),
+            Some(GitCaptureProof {
+                fork_parent: tree(1),
+                initial_generation: generation(1),
+                operation_id: proof_operation,
+            }),
+            std::collections::BTreeSet::new(),
+            Vec::new(),
+            "agent",
+            0,
+            "fixture",
+        );
+        let committed_json =
+            serde_json::to_value(GitCommandOutput::Committed(committed_with_proof))
+                .expect("committed output JSON");
+        assert_eq!(
+            committed_json["Committed"]["capture_proof"]["operation_id"],
+            serde_json::json!("03030303-0303-0303-0303-030303030303")
+        );
+        assert!(GIT_COMPAT_UUID_WIRE_PATHS.contains(&"capture_proof.operation_id"));
+
+        let status_json = serde_json::to_value(GitCommandOutput::Status(GitStatus {
+            branch: "main".to_owned(),
+            head: None,
+            workspace: tree(1),
+            dirty: GitDirtyState::Clean,
+            all_changes_staged: true,
+        }))
+        .expect("status output JSON");
+        assert!(status_json["Status"]["workspace"].is_object());
+        assert!(
+            !GIT_COMPAT_IDENTITY_WIRE_FIELDS
+                .iter()
+                .any(|(key, _)| *key == "workspace")
+        );
+        assert!(
+            !GIT_COMPAT_BYTE_WIRE_FIELDS
+                .iter()
+                .any(|(key, _)| *key == "workspace")
+        );
+
+        for (key, width) in GIT_COMPAT_IDENTITY_WIRE_FIELDS {
+            assert!(!key.is_empty());
+            assert!(*width > 0);
+        }
+        assert_eq!(
+            GIT_COMPAT_IDENTITY_WIRE_FIELDS
+                .iter()
+                .find(|(key, _)| *key == "workspace_id")
+                .map(|(_, width)| *width),
+            Some(std::mem::size_of::<WorkspaceId>())
+        );
+        assert_eq!(
+            GIT_COMPAT_IDENTITY_WIRE_FIELDS
+                .iter()
+                .find(|(key, _)| *key == "generation")
+                .map(|(_, width)| *width),
+            Some(std::mem::size_of::<GenerationId>())
+        );
+        assert_eq!(
+            GIT_COMPAT_TRANSITION_ID_BYTES,
+            std::mem::size_of::<GitTransitionId>()
+        );
     }
 
     #[test]
