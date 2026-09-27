@@ -75,7 +75,6 @@ export class StreamClient {
       throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
     }
     positiveInteger(request.limit, "limit");
-    if (request.limit > 1_024) throw new RangeError("child page limit exceeds 1024");
     const page = await this.provider.childrenPage(request);
     if (page.hierarchyVersion.byteLength !== 32) throw new StreamError("invalid_page", "provider returned an invalid hierarchy version");
     const expectedVersion = request.hierarchyVersion;
@@ -101,7 +100,7 @@ export class StreamClient {
     return page;
   }
   /** Traverses all direct children, failing rather than silently skipping a concurrent hierarchy change. */
-  async *childrenAll(parent?: string, limit = 1_024): AsyncIterable<{ readonly path: string }> {
+  async *childrenAll(parent?: string, limit = StreamLimit.MAX_ITEMS): AsyncIterable<{ readonly path: string }> {
     let request: ChildrenPageRequest = { ...(parent === undefined ? {} : { parent }), limit };
     for (;;) {
       const page = await this.childrenPage(request);
@@ -175,7 +174,6 @@ export class Stream<Value = Uint8Array> {
   async *read(options: ReadOptions): AsyncIterable<Record<Value>> {
     sequence(options.from);
     positiveInteger(options.limit, "limit");
-    if (options.limit > 1_024) throw new RangeError("read limit exceeds 1024");
     for await (const item of this.provider.read(this.path, options)) yield { ...item, value: this.codec.decode(item.value) };
   }
   async *follow(options: FollowOptions): AsyncIterable<Record<Value>> {
