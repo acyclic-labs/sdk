@@ -196,6 +196,33 @@ describe("WASM adapter canonical boundaries", () => {
     );
   });
 
+  test("delegates memory option admission to the generated WASM boundary", async () => {
+    const initialized = await openMemoryFs();
+    initialized.close();
+    const invalidObjectBound = {
+      ...DEFAULT_MEMORY_FS_OPTIONS,
+      maximumObjectBytes: 0,
+    };
+    const invalidAggregateBound = {
+      ...DEFAULT_MEMORY_FS_OPTIONS,
+      maximumObjectBytes: 2,
+      maximumMemoryBytes: 1,
+    };
+
+    expect(() => GeneratedWasm.openMemoryFs(invalidObjectBound)).toThrow(
+      "memory filesystem options are invalid",
+    );
+    expect(() => GeneratedWasm.openMemoryFs(invalidAggregateBound)).toThrow(
+      "memory filesystem options are invalid",
+    );
+    await expect(openMemoryFs(invalidObjectBound)).rejects.toThrow(
+      "memory filesystem options are invalid",
+    );
+    await expect(openMemoryFs(invalidAggregateBound)).rejects.toThrow(
+      "memory filesystem options are invalid",
+    );
+  });
+
   test("preserves typed WASM workspace stat, directory, extent, and join results", async () => {
     const engine = await openMemoryFs();
     try {

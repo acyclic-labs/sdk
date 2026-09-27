@@ -15,17 +15,9 @@ export const DEFAULT_MEMORY_FS_OPTIONS: MemoryFsOptions = Object.freeze({
 });
 
 export function resolveMemoryFsOptions(options: MemoryFsOptions | undefined): MemoryFsOptions {
-  const resolved = options ?? DEFAULT_MEMORY_FS_OPTIONS;
-  if (!Number.isSafeInteger(resolved.maximumObjectBytes) || resolved.maximumObjectBytes <= 0) {
-    throw new RangeError("memory filesystem object bound must be a positive safe integer");
-  }
-  if (
-    !Number.isSafeInteger(resolved.maximumMemoryBytes)
-    || resolved.maximumMemoryBytes < resolved.maximumObjectBytes
-  ) {
-    throw new RangeError("memory filesystem aggregate bound must cover one maximum object");
-  }
-  return resolved;
+  // Rust owns memory option admission. Keep this helper limited to resolving
+  // the ergonomic JavaScript default before crossing the generated boundary.
+  return options ?? DEFAULT_MEMORY_FS_OPTIONS;
 }
 
 export async function openMemoryFsWith(
