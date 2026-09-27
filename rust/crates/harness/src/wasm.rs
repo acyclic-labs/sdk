@@ -2215,7 +2215,7 @@ struct WasmContentPage {
     has_more: bool,
 }
 
-/// Bounded Rust-owned content state for the WASM MemoryConversation adapter.
+/// Bounded Rust-owned content state for the WASM `MemoryConversation` adapter.
 /// The native filesystem provider uses the same crate-level core while
 /// retaining its signed provider-generation proof around delegated reads.
 #[wasm_bindgen]
@@ -2289,7 +2289,8 @@ impl WasmContentStore {
         maximum: f64,
     ) -> Result<JsValue, JsValue> {
         let generation = self.requested_generation(generation)?;
-        let maximum = exact_nonnegative_u64(maximum, "maximum")? as usize;
+        let maximum = usize::try_from(exact_nonnegative_u64(maximum, "maximum")?)
+            .map_err(|_| JsValue::from_str("maximum is outside the supported range"))?;
         let page = self
             .store
             .list(&path, Some(generation), after.as_deref(), maximum)
