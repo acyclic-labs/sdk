@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { create, toBinary } from "@bufbuild/protobuf";
-import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, DeleteRequestSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema, TrimRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
+import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, DeleteRequestSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema, TrimRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
 import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm } from "../src/contract.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
@@ -345,6 +345,27 @@ describe("website Stream contract", () => {
           records: [{ sequence: 0n, value: new Uint8Array([1]), commitId: new Uint8Array() }],
         } } }],
       } },
+    })))).toThrow();
+  });
+
+  test("Rust memory response projector owns children page validation and projection", () => {
+    const sourceHierarchyVersion = new Uint8Array(32).fill(8);
+    const projected = projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
+      hierarchyVersion: sourceHierarchyVersion,
+      children: [{ path: "runs/a" }, { path: "runs/b" }],
+      nextAfter: "runs/b",
+    }))) as { readonly hierarchyVersion: Uint8Array; readonly children: readonly { readonly path: string }[]; readonly nextAfter?: string };
+    expect(projected).toEqual({ hierarchyVersion: sourceHierarchyVersion, children: [{ path: "runs/a" }, { path: "runs/b" }], nextAfter: "runs/b" });
+    expect(projected.hierarchyVersion).not.toBe(sourceHierarchyVersion);
+    sourceHierarchyVersion[0] = 1;
+    expect(projected.hierarchyVersion[0]).toBe(8);
+
+    expect(() => projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema)))).toThrow();
+    expect(() => projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
+      hierarchyVersion: new Uint8Array(32).fill(8), children: [{ path: "runs/b" }, { path: "runs/a" }],
+    })))).toThrow();
+    expect(() => projectMemoryResponse("children_page", toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
+      hierarchyVersion: new Uint8Array(32).fill(8), children: [{ path: "runs/a" }], nextAfter: "runs/missing",
     })))).toThrow();
   });
 

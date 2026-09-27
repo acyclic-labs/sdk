@@ -3,7 +3,7 @@ import { is_stream_error_code, projectMemoryResponse, WasmMemoryStream } from ".
 import type { StreamErrorCode as WasmStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   AppendRequestSchema,
-  ChildrenRequestSchema, ChildrenResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema,
+  ChildrenRequestSchema, ChildrenResponseSchema, ChildrenPageRequestSchema,
   DeleteRequestSchema,
   ForkRequestSchema, FollowRequestSchema, InspectIdempotencyRequestSchema,
   ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema,
@@ -160,8 +160,7 @@ export class MemoryStreamProvider implements StreamProvider {
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
       limit: request.limit,
     }));
-    const response = fromBinary(ChildrenPageResponseSchema, await this.#dispatch("children_page", input));
-    return { hierarchyVersion: commitId(response.hierarchyVersion), children: response.children.map(item => ({ path: item.path })), ...(response.nextAfter === undefined ? {} : { nextAfter: response.nextAfter }) };
+    return this.#project<ChildrenPage>("children_page", input);
   }
 
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {

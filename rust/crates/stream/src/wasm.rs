@@ -1094,6 +1094,29 @@ mod http {
         ]))
     }
 
+    fn children_page_value(value: wire::ChildrenPageResponse) -> Result<Value> {
+        let mut entries = vec![
+            (
+                "hierarchyVersion",
+                json_bytes(value.hierarchy_version.as_ref()),
+            ),
+            (
+                "children",
+                Value::Array(
+                    value
+                        .children
+                        .into_iter()
+                        .map(|child| json_object(vec![("path", json_string(child.path))]))
+                        .collect(),
+                ),
+            ),
+        ];
+        if let Some(next_after) = value.next_after {
+            entries.push(("nextAfter", json_string(next_after)));
+        }
+        Ok(json_object(entries))
+    }
+
     fn conflict_value(value: &wire::CommitConflict) -> Result<Value> {
         let conflict = value.conflict.as_ref().ok_or("invalid_response")?;
         Ok(match conflict {
@@ -1246,6 +1269,13 @@ mod http {
                 "commits/read",
                 envelope_value(
                     wire::CommittedEnvelope::decode(input).map_err(|_| "invalid_response")?,
+                )?,
+            ),
+            "children_page" => (
+                "children/page",
+                children_page_value(
+                    wire::ChildrenPageResponse::decode(input)
+                        .map_err(|_| "invalid_response")?,
                 )?,
             ),
             _ => return Err("invalid_argument"),
