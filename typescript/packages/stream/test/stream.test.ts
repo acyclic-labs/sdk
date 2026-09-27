@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, DeleteRequestSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema, TrimRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
-import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
-import { ensureStreamWasm } from "../src/contract.js";
+import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validateRequest } from "../generated/wasm/acyclic_stream_wasm.js";
+import { ensureStreamWasm, wireAppendRequest, wireRequest } from "../src/contract.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
 
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
@@ -544,6 +544,24 @@ describe("website Stream contract", () => {
     const commitBody = encoded("commit", normalizeCommitRequest(toBinary(CommitRequestSchema, commit)));
     expect(commitBody).toEqual({ request: { conditions: [{ path: "events", ifTail: "8" }], mutations: [{ append: { path: "events", values: ["CQ=="] } }] }, options: { idempotencyKey: retryWire } });
     expect(encoded("commits/read", toBinary(ReadCommitRequestSchema, create(ReadCommitRequestSchema, { commitId: new Uint8Array(32).fill(7) })))).toEqual({ commitId: encodedCommitId });
+  });
+
+  test("the shared request adapter produces Rust-valid memory and hosted inputs", async () => {
+    await ensureStreamWasm();
+    const path = "adapter/events";
+    const requests = [
+      ["tail", wireRequest({ kind: "tail", path })],
+      ["bounds", wireRequest({ kind: "bounds", path })],
+      ["fork", wireRequest({ kind: "fork", source: path, destination: "adapter/copy" })],
+      ["trim", wireRequest({ kind: "trim", path, before: 0n })],
+      ["delete", wireRequest({ kind: "delete", path })],
+      ["read", wireRequest({ kind: "read", path, from: 0n, limit: 1 })],
+      ["follow", wireRequest({ kind: "follow", path, from: 0n })],
+      ["children", wireRequest({ kind: "children", parent: "adapter", limit: 1 })],
+      ["children_page", wireRequest({ kind: "children_page", parent: "adapter", limit: 1 })],
+    ] as const;
+    for (const [kind, input] of requests) expect(validateRequest(kind, input)).toBe("");
+    expect(validateAppendRequest(wireAppendRequest(path, [new Uint8Array([1])]))).toBe("");
   });
 
   test("hosted children pages use the Rust response contract", async () => {

@@ -10,6 +10,8 @@ import type {
   WasmRawTransaction,
   WasmRawVolume,
   WasmRawWorkspace,
+  VolumeLimits,
+  VolumeOptions,
   CheckoutOptions,
   JoinOptions,
   WorkspaceCommit,
@@ -125,6 +127,22 @@ export type _WorkspaceJoinParameters = AssertExtends<
 export type _VolumeCheckoutParameters = AssertExtends<
   Parameters<WasmRawVolume["checkout"]>,
   [options: CheckoutOptions]
+>;
+export type _VolumeOptionsUseGeneratedDto = AssertExtends<
+  VolumeOptions,
+  Readonly<GeneratedWasm.BrowserVolumeOptions>
+>;
+export type _VolumeLimitsUseGeneratedDto = AssertExtends<
+  VolumeLimits,
+  Readonly<GeneratedWasm.BrowserVolumeLimits>
+>;
+export type _CheckoutOptionsUseGeneratedDto = AssertExtends<
+  CheckoutOptions,
+  Readonly<GeneratedWasm.BrowserCheckoutOptions>
+>;
+export type _VolumeCreationParametersUseGeneratedDto = AssertExtends<
+  Parameters<WasmRawFs["createVolume"]>,
+  [options: GeneratedWasm.BrowserVolumeOptions]
 >;
 export type _WorkspaceWriteResult = AssertExtends<
   Awaited<ReturnType<WasmRawWorkspace["write"]>>,

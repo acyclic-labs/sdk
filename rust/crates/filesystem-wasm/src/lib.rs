@@ -2270,19 +2270,27 @@ mod bindings {
         waiters_per_object: u32,
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct VolumeOptions {
+    #[tsify(from_wasm_abi, large_number_types_as_bigints)]
+    pub struct BrowserVolumeOptions {
+        #[tsify(type = "\"portable\" | \"posix\" | \"windows\" | \"browser\"")]
         profile: Profile,
+        #[tsify(type = "\"exclusive-writer\" | \"optimistic\" | \"serialized-authority\"")]
         concurrency: Concurrency,
+        #[tsify(type = "\"ephemeral\" | \"durable\"")]
         lifecycle: VolumeLifecycle,
+        #[tsify(type = "\"sensitive\" | \"profile-folded\"")]
         case_sensitivity: NameCase,
+        #[tsify(type = "\"preserve\" | \"require-nfc\"")]
         unicode: Unicode,
         symbolic_links: bool,
         hard_links: bool,
         sparse_files: bool,
         limits: BrowserVolumeLimits,
     }
+
+    type VolumeOptions = BrowserVolumeOptions;
 
     #[derive(Deserialize)]
     #[serde(rename_all = "kebab-case")]
@@ -2322,10 +2330,11 @@ mod bindings {
         RequireNfc,
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Tsify)]
     #[serde(rename_all = "camelCase")]
+    #[tsify(from_wasm_abi, large_number_types_as_bigints)]
     #[allow(clippy::struct_field_names)]
-    struct BrowserVolumeLimits {
+    pub struct BrowserVolumeLimits {
         maximum_path_bytes: u32,
         maximum_component_bytes: u32,
         maximum_path_depth: u16,
@@ -2341,13 +2350,19 @@ mod bindings {
         maximum_generation_bytes: u64,
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct CheckoutOptions {
+    #[tsify(from_wasm_abi)]
+    pub struct BrowserCheckoutOptions {
+        #[tsify(type = "\"read-only\" | \"read-write\"")]
         access: CheckoutAccess,
+        #[tsify(type = "\"pinned\" | \"tracking-safe\" | \"live\" | \"manual\"")]
         consistency: Consistency,
+        #[tsify(type = "\"none\" | \"private-cow\" | \"direct-live\"")]
         mutation_mode: CheckoutMutationMode,
     }
+
+    type CheckoutOptions = BrowserCheckoutOptions;
 
     #[derive(Deserialize)]
     #[serde(rename_all = "kebab-case")]

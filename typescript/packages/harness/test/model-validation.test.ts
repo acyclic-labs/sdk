@@ -16,6 +16,7 @@ const agent = "07070707-0707-0707-0707-070707070707" as AgentId;
 test("stale WASM modules fail compatibility checks before model dispatch", () => {
   expect(() => assertHarnessWasmExports(harnessWasm)).not.toThrow();
   expect(() => assertHarnessWasmExports({ ...harnessWasm, validateModelContent: undefined })).toThrow("required validators");
+  expect(() => assertHarnessWasmExports({ ...harnessWasm, validateContract: undefined })).toThrow("required validators");
   expect(() => assertHarnessWasmExports({ ...harnessWasm, validateUserInput: undefined })).toThrow("required validators");
   expect(() => assertHarnessWasmExports({ ...harnessWasm, admitModelEvent: undefined })).toThrow("required validators");
   expect(() => assertHarnessWasmExports({ ...harnessWasm, WasmContentStore: undefined })).toThrow("required validators");

@@ -3,7 +3,10 @@ import initWasm, { type InitInput } from "../generated/wasm/acyclic_harness_wasm
 let initialization: Promise<void> | undefined;
 let loadedInput: InitInput | undefined;
 
-const REQUIRED_WASM_VALIDATORS = [
+/** Every JS function used by either Harness initialization path. */
+export const REQUIRED_HARNESS_WASM_EXPORTS = [
+  "validateContract", "verifyFileBytes", "decodeAttachmentManifest",
+  "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
   "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
   "validateWireResume", "validateWireObserve", "validateWireCancel",
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
@@ -11,8 +14,12 @@ const REQUIRED_WASM_VALIDATORS = [
   "validateModelContent", "validateModelMessages", "validateUserInput", "admitModelEvent", "selectModelContext",
   "validateModelContextSelection", "validateSelectedModelContext",
   "prepareConversationTurn",
-  "WasmContentStore",
-] as const;
+  "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
+  "taskAdmissionIdentities", "admitTask", "admitBatch", "admitBatchRequest",
+  "validateTaskChildrenPage",
+  "fileDescriptor", "uuidFromDigestHalf", "decodeCanonicalJson", "decodeJson",
+  "encodeCanonicalJson", "digestCanonicalJson",
+] as const satisfies readonly (keyof typeof import("../generated/wasm/acyclic_harness_wasm.js"))[];
 
 // `initWasm()` resolves to the raw instance exports. The generated JS module
 // exposes WasmContentStore as a wrapper class, but its methods call these ABI
@@ -30,10 +37,10 @@ export function assertHarnessWasmExports(value: unknown): void {
     throw new Error("harness WASM does not provide the required validators");
   }
   const exports = value as Record<string, unknown>;
-  const required = typeof exports.WasmContentStore === "function"
-    ? REQUIRED_WASM_VALIDATORS
-    : [...REQUIRED_WASM_VALIDATORS.filter(name => name !== "WasmContentStore"), ...REQUIRED_WASM_CONTENT_EXPORTS];
-  if (required.some(name => typeof exports[name] !== "function")) {
+  const contentStore = typeof exports.WasmContentStore === "function"
+    ? true
+    : REQUIRED_WASM_CONTENT_EXPORTS.every(name => typeof exports[name] === "function");
+  if (!contentStore || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }

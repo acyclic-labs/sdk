@@ -25,6 +25,12 @@ export interface BrowserBindingChangeResult {
     after: BrowserTreeEntryResult | undefined;
 }
 
+export interface BrowserCheckoutOptions {
+    access: "read-only" | "read-write";
+    consistency: "pinned" | "tracking-safe" | "live" | "manual";
+    mutationMode: "none" | "private-cow" | "direct-live";
+}
+
 export interface BrowserCheckpointResult {
     generationId: Uint8Array;
     work: BrowserWorkCounters;
@@ -274,6 +280,34 @@ export interface BrowserTreeEntryResult {
     name: NameComponentResult;
     fileId: Uint8Array;
     fileKind: string;
+}
+
+export interface BrowserVolumeLimits {
+    maximumPathBytes: number;
+    maximumComponentBytes: number;
+    maximumPathDepth: number;
+    maximumObjectBytes: bigint;
+    maximumMutationsPerBatch: number;
+    maximumPathsPerBatch: number;
+    maximumCheckoutDependencies: number;
+    maximumDirectoryPageEntries: number;
+    maximumPageHeight: number;
+    maximumReadBytes: bigint;
+    maximumFilesPerGeneration: bigint;
+    maximumObjectsPerGeneration: bigint;
+    maximumGenerationBytes: bigint;
+}
+
+export interface BrowserVolumeOptions {
+    profile: "portable" | "posix" | "windows" | "browser";
+    concurrency: "exclusive-writer" | "optimistic" | "serialized-authority";
+    lifecycle: "ephemeral" | "durable";
+    caseSensitivity: "sensitive" | "profile-folded";
+    unicode: "preserve" | "require-nfc";
+    symbolicLinks: boolean;
+    hardLinks: boolean;
+    sparseFiles: boolean;
+    limits: BrowserVolumeLimits;
 }
 
 export interface BrowserWorkCounters {

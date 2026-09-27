@@ -18,6 +18,7 @@ import type { ProjectMergeReceipt } from "./project.js";
 import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, RuntimeTaskId, TaskChildrenPage } from "./runtime.js";
 import type { ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult } from "./model.js";
 import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
+import { assertHarnessWasmExports, REQUIRED_HARNESS_WASM_EXPORTS } from "./wasm-runtime.js";
 
 /** Rust generated admission projection input and output shapes. */
 export type TaskAdmissionProjectionInput = WasmTaskAdmissionInput;
@@ -135,23 +136,7 @@ interface ContractValues {
 
 type SimpleContract = Exclude<keyof ContractValues, "conversation_message" | "interaction_resolution">;
 type FixedSimpleContract = Exclude<SimpleContract, "provider_ref" | "volume_ref" | "file_ref" | "resource_ref">;
-const REQUIRED_NATIVE_EXPORTS = [
-  "validateContract", "verifyFileBytes", "decodeAttachmentManifest",
-  "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
-  "validateToolDefinition", "validateToolInvocation", "validateToolResult",
-  "validateModelContent", "validateUserInput", "admitModelEvent", "selectModelContext",
-  "validateModelContextSelection",
-  "prepareConversationTurn",
-  "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
-  "validateWireResume", "validateWireObserve", "validateWireCancel",
-  "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
-  "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
-  "taskAdmissionIdentities", "admitTask", "admitBatch", "admitBatchRequest",
-  "validateTaskChildrenPage",
-  "fileDescriptor", "uuidFromDigestHalf", "decodeCanonicalJson", "decodeJson",
-  "encodeCanonicalJson", "digestCanonicalJson",
-] as const satisfies readonly (keyof typeof wasm)[];
-type NativeExports = Pick<typeof wasm, typeof REQUIRED_NATIVE_EXPORTS[number]>;
+type NativeExports = Pick<typeof wasm, typeof REQUIRED_HARNESS_WASM_EXPORTS[number]>;
 
 /** Rust performs admission validation; TypeScript preserves the exact public shape. */
 export class NativeContracts {
@@ -178,9 +163,7 @@ export class NativeContracts {
     }
     else await initWasm({ module_or_path: module });
     const native: NativeExports = wasm;
-    if (REQUIRED_NATIVE_EXPORTS.some(name => typeof native[name] !== "function")) {
-      throw new Error("Harness WASM contracts are unavailable");
-    }
+    assertHarnessWasmExports(native);
     return new NativeContracts(native);
   }
 

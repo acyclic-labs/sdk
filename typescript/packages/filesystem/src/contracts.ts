@@ -404,33 +404,11 @@ export interface Speculation {
   cancel(): void;
 }
 
-export interface VolumeOptions {
-  readonly profile: FsProfile;
-  readonly concurrency: "exclusive-writer" | "optimistic" | "serialized-authority";
-  readonly lifecycle: "ephemeral" | "durable";
-  readonly caseSensitivity: "sensitive" | "profile-folded";
-  readonly unicode: "preserve" | "require-nfc";
-  readonly symbolicLinks: boolean;
-  readonly hardLinks: boolean;
-  readonly sparseFiles: boolean;
-  readonly limits: VolumeLimits;
-}
+/** Volume configuration emitted from the Rust WASM input boundary. */
+export type VolumeOptions = ReadonlyDeep<WasmBinding.BrowserVolumeOptions>;
 
-export interface VolumeLimits {
-  readonly maximumPathBytes: number;
-  readonly maximumComponentBytes: number;
-  readonly maximumPathDepth: number;
-  readonly maximumObjectBytes: bigint;
-  readonly maximumMutationsPerBatch: number;
-  readonly maximumPathsPerBatch: number;
-  readonly maximumCheckoutDependencies: number;
-  readonly maximumDirectoryPageEntries: number;
-  readonly maximumPageHeight: number;
-  readonly maximumReadBytes: bigint;
-  readonly maximumFilesPerGeneration: bigint;
-  readonly maximumObjectsPerGeneration: bigint;
-  readonly maximumGenerationBytes: bigint;
-}
+/** Resource limits emitted from the Rust WASM input boundary. */
+export type VolumeLimits = ReadonlyDeep<WasmBinding.BrowserVolumeLimits>;
 
 export const DEFAULT_VOLUME_LIMITS: VolumeLimits = GENERATED_VOLUME_LIMITS;
 
@@ -450,11 +428,8 @@ export function portableVolumeOptions(
   };
 }
 
-export interface CheckoutOptions {
-  readonly access: "read-only" | "read-write";
-  readonly consistency: "pinned" | "tracking-safe" | "live" | "manual";
-  readonly mutationMode: "none" | "private-cow" | "direct-live";
-}
+/** Checkout mode emitted from the Rust WASM input boundary. */
+export type CheckoutOptions = ReadonlyDeep<WasmBinding.BrowserCheckoutOptions>;
 
 /** Bounded customer-side counters projected from the generated Rust DTO. */
 export type WorkCounters = Readonly<{

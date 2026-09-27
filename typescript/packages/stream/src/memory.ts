@@ -1,16 +1,11 @@
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { fromBinary } from "@bufbuild/protobuf";
 import { is_stream_error_code, projectMemoryResponse, WasmMemoryStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { StreamErrorCode as WasmStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  AppendRequestSchema,
-  ChildrenRequestSchema, ChildrenResponseSchema, ChildrenPageRequestSchema,
-  DeleteRequestSchema,
-  ForkRequestSchema, FollowRequestSchema, InspectIdempotencyRequestSchema,
-  ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema,
-  TailRequestSchema, TailResponseSchema, TrimRequestSchema,
+  ChildrenResponseSchema, ReadResponseSchema, TailResponseSchema,
 } from "../generated/proto/stream/v2/stream_pb.js";
 import { validateAppend } from "./client.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -54,18 +49,16 @@ export class MemoryStreamProvider implements StreamProvider {
   }
 
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
-    const request = toBinary(InspectIdempotencyRequestSchema, create(InspectIdempotencyRequestSchema, { idempotencyKey: idempotencyKey(key) }));
+    const request = wireInspectIdempotencyRequest(key);
     return this.#project<IdempotencyObservation | undefined>("inspect_idempotency", request);
   }
 
   async tail(path: string): Promise<Sequence> {
-    await validateWireRequest({ kind: "tail", path });
-    const request = toBinary(TailRequestSchema, create(TailRequestSchema, { path }));
+    const request = await this.#request("tail", path);
     return fromBinary(TailResponseSchema, await this.#dispatch("tail", request)).tail;
   }
   async bounds(path: string): Promise<StreamBounds> {
-    await validateWireRequest({ kind: "tail", path });
-    const response = fromBinary(TailResponseSchema, await this.#dispatch("bounds", toBinary(TailRequestSchema, create(TailRequestSchema, { path }))));
+    const response = fromBinary(TailResponseSchema, await this.#dispatch("bounds", await this.#request("bounds", path)));
     if (response.trimPoint === undefined) throw new StreamError("invalid_response", "Rust bounds response omitted trim point");
     return { trimPoint: response.trimPoint, tail: response.tail };
   }
@@ -74,43 +67,35 @@ export class MemoryStreamProvider implements StreamProvider {
     const records = values.map(value => value.slice());
     const authored = structuredClone(options);
     await validateAppend(path, records, authored);
-    const request = toBinary(AppendRequestSchema, create(AppendRequestSchema, {
-      path, records,
-      ...(authored.ifTail === undefined ? {} : { ifTail: authored.ifTail }),
-      ...(authored.idempotencyKey === undefined ? {} : { idempotencyKey: authored.idempotencyKey }),
-    }));
+    const request = wireAppendRequest(path, records, authored);
     return this.#project<AppendResult>("append", request);
   }
 
   async fork(source: string, destination: string, options: ForkOptions = {}): Promise<ForkReceipt> {
     const authored = structuredClone(options);
     await validateWireRequest({ kind: "fork", source, destination, options: authored });
-    const request = toBinary(ForkRequestSchema, create(ForkRequestSchema, {
-      source, destination,
-      ...(authored.atTail === undefined ? {} : { atTail: authored.atTail }),
-      ...(authored.idempotencyKey === undefined ? {} : { idempotencyKey: authored.idempotencyKey }),
-    }));
+    const request = wireRequest({ kind: "fork", source, destination, options: authored });
     return this.#project<ForkReceipt>("fork", request);
   }
 
   async trim(path: string, before: Sequence, key?: IdempotencyKey): Promise<TrimReceipt> {
     const retainedKey = key === undefined ? randomKey() : idempotencyKey(key);
     await validateWireRequest({ kind: "trim", path, before, key: retainedKey });
-    const request = toBinary(TrimRequestSchema, create(TrimRequestSchema, { path, before, idempotencyKey: retainedKey }));
+    const request = wireRequest({ kind: "trim", path, before, key: retainedKey });
     return this.#project<TrimReceipt>("trim", request);
   }
 
   async delete(path: string, key?: IdempotencyKey): Promise<DeleteReceipt> {
     const retainedKey = key === undefined ? randomKey() : idempotencyKey(key);
     await validateWireRequest({ kind: "delete", path, key: retainedKey });
-    const request = toBinary(DeleteRequestSchema, create(DeleteRequestSchema, { path, idempotencyKey: retainedKey }));
+    const request = wireRequest({ kind: "delete", path, key: retainedKey });
     return this.#project<DeleteReceipt>("delete", request);
   }
 
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
     const { from, limit } = options;
     await validateWireRequest({ kind: "read", path, from, limit });
-    const request = toBinary(ReadRequestSchema, create(ReadRequestSchema, { path, from, limit }));
+    const request = wireRequest({ kind: "read", path, from, limit });
     for (const value of await this.#read(request)) yield value;
   }
 
@@ -118,7 +103,7 @@ export class MemoryStreamProvider implements StreamProvider {
     const { from, signal } = options;
     await validateWireRequest({ kind: "follow", path, from });
     if (signal?.aborted) return;
-    const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from }));
+    const request = wireRequest({ kind: "follow", path, from });
     let handle: Awaited<ReturnType<WasmMemoryStream["open_follow"]>>;
     try { handle = await (await this.#inner).open_follow(request); }
     catch (error) { throw streamError(error, "follow"); }
@@ -143,7 +128,7 @@ export class MemoryStreamProvider implements StreamProvider {
 
   async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> {
     await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) });
-    const request = toBinary(ChildrenRequestSchema, create(ChildrenRequestSchema, { limit, ...(parent === undefined ? {} : { parent }) }));
+    const request = wireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) });
     let values: Uint8Array[];
     try { values = await (await this.#inner).children(request); }
     catch (error) { throw streamError(error, "children"); }
@@ -154,12 +139,12 @@ export class MemoryStreamProvider implements StreamProvider {
     }
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    const input = toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, {
+    const input = wireRequest({ kind: "children_page",
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
       limit: request.limit,
-    }));
+    });
     return this.#project<ChildrenPage>("children_page", input);
   }
 
@@ -172,8 +157,13 @@ export class MemoryStreamProvider implements StreamProvider {
   }
 
   async readCommit(value: CommitId): Promise<CommittedEnvelope> {
-    const request = toBinary(ReadCommitRequestSchema, create(ReadCommitRequestSchema, { commitId: commitId(value) }));
+    const request = wireReadCommitRequest(value);
     return this.#project<CommittedEnvelope>("read_commit", request);
+  }
+
+  async #request(kind: "tail" | "bounds", path: string): Promise<Uint8Array> {
+    await validateWireRequest({ kind, path });
+    return wireRequest({ kind, path });
   }
 
 }
