@@ -14,6 +14,9 @@
   (no more stale-handle errors creating files), and reading a file through a
   fork no longer rewrites anything in the parent.
 - Aborting a conflict that changed nothing in the parent succeeds.
+- On macOS, listing a directory no longer fails with "Stale NFS file
+  handle" when the parent's checkout changes while the listing starts (it
+  did on first use of a fresh mount about one run in ten).
 - Windows runs the same fork/join conformance suite as Linux and macOS.
 - A crashed installer's lock is reclaimed at once even when the OS has given
   its process ID to another process.
