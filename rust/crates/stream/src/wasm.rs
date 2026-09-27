@@ -554,7 +554,7 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
     let result = check_command_size(input)
         .map_err(|_| StreamError::LimitExceeded)
         .and_then(|_| match kind {
-            "tail" => wire::TailRequest::decode(input)
+            "tail" | "bounds" => wire::TailRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(|request| wire_codec::path(request.path).map(|_| ())),
             "fork" => wire::ForkRequest::decode(input)
@@ -903,7 +903,7 @@ mod http {
                     json_bytes(key.as_bytes()),
                 )]))
             }
-            "tail" => {
+            "tail" | "bounds" => {
                 let request = wire::TailRequest::decode(input).map_err(|_| "invalid_argument")?;
                 let path = wire_codec::path(request.path).map_err(|_| "invalid_path")?;
                 Ok(json_object(vec![("path", json_string(path.to_string()))]))
@@ -1388,6 +1388,19 @@ mod http {
         Ok(result.into())
     }
 
+    fn bounds_js(value: &Value) -> Result<JsValue> {
+        let item = object(value)?;
+        let trim_point = u64_string(field(item, "trimPoint")?)?;
+        let tail = u64_string(field(item, "tail")?)?;
+        if trim_point > tail {
+            return Err("stream replay bounds are invalid");
+        }
+        let result = Object::new();
+        set(&result, "trimPoint", &bigint_js(field(item, "trimPoint")?)?)?;
+        set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
+        Ok(result.into())
+    }
+
     fn delete_receipt_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
         path(field(item, "path")?)?;
@@ -1623,6 +1636,7 @@ mod http {
             .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
         {
             Some("sequence") => bigint_js(value),
+            Some("bounds") => bounds_js(value),
             Some("append") => append_result_js(value),
             Some("fork") => fork_receipt_js(value),
             Some("trim") => trim_receipt_js(value),

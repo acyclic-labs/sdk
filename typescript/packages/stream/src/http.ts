@@ -29,13 +29,9 @@ export class HttpStreamProvider implements StreamProvider {
   async tail(path: string): Promise<Sequence> { return this.#tail(path); }
   async bounds(path: string): Promise<StreamBounds> {
     pathValue(path);
-    return this.#requestRaw("bounds", { path }, value => {
-      const item = rawObject(value);
-      const trimPoint = rawU64(item.trimPoint, "trimPoint");
-      const tail = rawU64(item.tail, "tail");
-      if (trimPoint > tail) throw new TypeError("stream replay bounds are invalid");
-      return { trimPoint, tail };
-    });
+    await validateWireRequest({ kind: "bounds", path });
+    const input = wireRequest({ kind: "bounds", path });
+    return this.#request("bounds", await encodeHttpRequest("bounds", input));
   }
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); await validateAppend(path, records, authored); const input = wireAppendRequest(path, records, authored); return this.#request("append", await encodeHttpRequest("append", input)); }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const input = wireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); return this.#request("fork", await encodeHttpRequest("fork", input)); }
@@ -194,9 +190,8 @@ async function boundedText(response: Response, maximum: number): Promise<string>
 }
 async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> { if (signal?.aborted) return; await new Promise<void>(resolve => { const finish = () => { clearTimeout(timeout); signal?.removeEventListener("abort", finish); resolve(); }; const timeout = setTimeout(finish, milliseconds); signal?.addEventListener("abort", finish, { once: true }); }); }
 function rawObject(value: unknown): Record<string, unknown> { if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("expected object"); return value as Record<string, unknown>; }
-function rawString(value: unknown, name: string): string { if (typeof value !== "string" || value.length === 0) throw new TypeError(`${name} must be text`); return value; }
-function rawU64(value: unknown, name: string): bigint { const text = rawString(value, name); if (!/^(0|[1-9]\d*)$/.test(text)) throw new TypeError(`${name} must be a decimal uint64 string`); const result = BigInt(text); if (result > 0xffff_ffff_ffff_ffffn) throw new TypeError(`${name} exceeds uint64`); return result; }
 function rawBase64(value: Uint8Array): string { let binary = ""; for (const byte of value) binary += String.fromCharCode(byte); return btoa(binary); }
+function rawString(value: unknown, name: string): string { if (typeof value !== "string" || value.length === 0) throw new TypeError(`${name} must be text`); return value; }
 function rawBytes(value: unknown, name: string): Uint8Array { const encoded = rawString(value, name); try { return Uint8Array.from(atob(encoded), char => char.charCodeAt(0)); } catch { throw new TypeError(`${name} must be base64`); } }
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
 function decodeChildrenPage(value: unknown): ChildrenPage { const item = rawObject(value); const hierarchyVersion = commitId(rawBytes(item.hierarchyVersion, "hierarchyVersion")); const rawChildren = item.children; if (!Array.isArray(rawChildren)) throw new TypeError("children must be an array"); const children = rawChildren.map(child => { const path = rawObject(child).path; return { path: rawString(path, "child.path") }; }); const nextAfter = item.nextAfter === undefined || item.nextAfter === null ? undefined : rawString(item.nextAfter, "nextAfter"); if (nextAfter !== undefined && nextAfter !== children.at(-1)?.path) throw new TypeError("child continuation does not match final child"); return { hierarchyVersion, children, ...(nextAfter === undefined ? {} : { nextAfter }) }; }

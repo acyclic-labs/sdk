@@ -502,6 +502,7 @@ describe("website Stream contract", () => {
     const encoded = (route: Parameters<typeof encodeHttpRequest>[0], input: Uint8Array) => JSON.parse(encodeHttpRequest(route, input));
     expect(encoded("idempotency/inspect", toBinary(InspectIdempotencyRequestSchema, create(InspectIdempotencyRequestSchema, { idempotencyKey: retry })))).toEqual({ idempotencyKey: retryWire });
     expect(encoded("tail", toBinary(TailRequestSchema, create(TailRequestSchema, { path: "events" })))).toEqual({ path: "events" });
+    expect(encoded("bounds", toBinary(TailRequestSchema, create(TailRequestSchema, { path: "events" })))).toEqual({ path: "events" });
     expect(encoded("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [new Uint8Array([1, 2])], ifTail: 0xffff_ffff_ffff_ffffn, idempotencyKey: retry })))).toEqual({ path: "events", values: ["AQI="], options: { ifTail: "18446744073709551615", idempotencyKey: retryWire } });
     expect(encoded("fork", toBinary(ForkRequestSchema, create(ForkRequestSchema, { source: "events", destination: "copy", atTail: 3n, idempotencyKey: retry })))).toEqual({ source: "events", destination: "copy", options: { atTail: "3", idempotencyKey: retryWire } });
     expect(encoded("trim", toBinary(TrimRequestSchema, create(TrimRequestSchema, { path: "events", before: 4n, idempotencyKey: retry })))).toEqual({ path: "events", before: "4", idempotencyKey: retryWire });
@@ -595,6 +596,20 @@ describe("website Stream contract", () => {
       return route === "read" ? new Response("[]") : new Response('"1"');
     } });
     await expect(provider.read("events", { from: 2n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "out_of_range" });
+  });
+
+  test("hosted bounds use the Rust response contract and preserve uint64 values", async () => {
+    const maximum = 0xffff_ffff_ffff_ffffn;
+    let requestBody: unknown;
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ trimPoint: maximum.toString(), tail: maximum.toString() }));
+    } });
+    await expect(provider.bounds("events")).resolves.toEqual({ trimPoint: maximum, tail: maximum });
+    expect(requestBody).toEqual({ path: "events" });
+
+    const invalid = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ trimPoint: "2", tail: "1" })) });
+    await expect(invalid.bounds("events")).rejects.toMatchObject({ code: "invalid_response" });
   });
 
   test("HTTP provider rejects invalid paths and commit shapes before fetching", async () => {
@@ -710,6 +725,9 @@ describe("website Stream contract", () => {
     expect(record[0]?.value).toEqual(new Uint8Array([1, 2]));
     expect(record[0]?.commitId).toEqual(new Uint8Array(32).fill(7));
     expect(record[1]?.value).toEqual(new Uint8Array());
+
+    const bounds = decodeHttpResponse("bounds", JSON.stringify({ trimPoint: maximum.toString(), tail: maximum.toString() })) as { readonly trimPoint: bigint; readonly tail: bigint };
+    expect(bounds).toEqual({ trimPoint: maximum, tail: maximum });
 
     const token = decodeHttpResponse("tokens/create", JSON.stringify({ token: "secret", expiresAt: "2030-01-02T03:04:05.000Z" })) as { readonly token: string; readonly expiresAt: Date };
     expect(token.token).toBe("secret");

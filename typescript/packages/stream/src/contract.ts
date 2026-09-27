@@ -82,6 +82,7 @@ function validationError(error: unknown, operation: "append" | "commit" | "reque
 
 type WireRequest =
   | { readonly kind: "tail"; readonly path: string }
+  | { readonly kind: "bounds"; readonly path: string }
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
   | { readonly kind: "trim"; readonly path: string; readonly before: bigint; readonly key?: IdempotencyKey }
   | { readonly kind: "delete"; readonly path: string; readonly key?: IdempotencyKey }
@@ -119,6 +120,9 @@ export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array 
 export function wireRequest(request: WireRequest): Uint8Array {
   switch (request.kind) {
       case "tail":
+        requirePathType(request.path);
+        return toBinary(TailRequestSchema, create(TailRequestSchema, { path: request.path }));
+      case "bounds":
         requirePathType(request.path);
         return toBinary(TailRequestSchema, create(TailRequestSchema, { path: request.path }));
       case "fork":
