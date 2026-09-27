@@ -204,6 +204,13 @@ case "$lane" in
     finish napi release
     bun run test
     bun scripts/check-typescript-tarballs.mjs
+    # Native Rust hosts can assign different private wasm-bindgen closure names
+    # and indices to equivalent builds. Verify the fresh WASM against the
+    # committed package API and runtime before staging the exact release bytes.
+    git restore --worktree -- \
+      typescript/packages/filesystem/generated/wasm \
+      typescript/packages/stream/generated/wasm
+    bun run check:generated
     bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
     bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
     bun scripts/run-harness-conformance.mjs \
@@ -213,7 +220,6 @@ case "$lane" in
     bun run licenses
     bun x buf format -d --exit-code
     bun x buf lint
-    bun run check:generated
     bun scripts/check-boundaries.mjs
     bun scripts/check-metadata.mjs
     # No wire or JSON compatibility gate: each family's protocol identity
