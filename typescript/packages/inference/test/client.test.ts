@@ -17,6 +17,8 @@ import {
   InferenceClient,
   InferenceProtocolError,
   InferenceTransportError,
+  deriveInferenceHttpRoutes,
+  validateInferenceHttpPath,
   WarmState,
   InspectContextRequestSchema,
   InspectEvaluationRequestSchema,
@@ -44,6 +46,33 @@ import { runTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
 const bytes = (value: number) => new Uint8Array([value]);
 const revision = (value: number) => new Uint8Array(32).fill(value);
 const runIdentity = (value: number) => new Uint8Array(16).fill(value);
+
+test("protobuf method options derive every inference HTTP route and streaming kind", () => {
+  const routes = deriveInferenceHttpRoutes();
+  expect(new Set(routes.map(route => route.path)).size).toBe(routes.length);
+  expect(routes.map(route => `${route.method.parent.name}.${route.method.name}:${route.path}:${route.methodKind}`)).toEqual([
+    "ModelsService.List:models/list:unary",
+    "ContextsService.Create:contexts/create:unary",
+    "ContextsService.Inspect:contexts/inspect:unary",
+    "ContextsService.Mutate:contexts/mutate:unary",
+    "WarmContextsService.Retain:warm/retain:unary",
+    "WarmContextsService.Inspect:warm/inspect:unary",
+    "WarmContextsService.Renew:warm/renew:unary",
+    "WarmContextsService.Release:warm/release:unary",
+    "RunsService.Generate:runs/generate:unary",
+    "RunsService.Inspect:runs/inspect:unary",
+    "RunsService.Watch:runs/watch:server_streaming",
+    "RunsService.Cancel:runs/cancel:unary",
+    "EvaluationsService.Create:evaluations/create:unary",
+    "EvaluationsService.Inspect:evaluations/inspect:unary",
+  ]);
+});
+
+test("derived HTTP route validation rejects URL escape paths", () => {
+  for (const path of ["../escape", "runs\\watch", "runs/%2fwatch", "runs//watch", "runs/./watch", "runs/../watch", "/runs/watch", "runs/watch/"]) {
+    expect(() => validateInferenceHttpPath(path)).toThrow("inference HTTP route path is invalid");
+  }
+});
 
 test("Rust reflection supplies every nonzero terminal and validates request shape", async () => {
   const metadata = await runTerminalMetadata();

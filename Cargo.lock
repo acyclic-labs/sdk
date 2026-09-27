@@ -169,6 +169,7 @@ version = "0.1.5"
 dependencies = [
  "prost",
  "prost-build",
+ "prost-reflect",
  "prost-types",
  "sha2 0.10.9",
  "thiserror",

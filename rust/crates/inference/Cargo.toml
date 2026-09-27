@@ -33,6 +33,7 @@ prost-types.workspace = true
 tonic-prost-build.workspace = true
 
 [dev-dependencies]
+prost-reflect.workspace = true
 prost-types.workspace = true
 tokio.workspace = true
 

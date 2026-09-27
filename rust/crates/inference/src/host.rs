@@ -1203,6 +1203,62 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_declares_unique_http_routes_for_every_rpc()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = prost_reflect::DescriptorPool::decode(DESCRIPTOR)?;
+        let file = pool
+            .get_file_by_name("inference/v1/inference.proto")
+            .ok_or("inference descriptor is missing")?;
+        let extension = pool
+            .get_extension_by_name("acyclic.validation.v1.http_path")
+            .ok_or("http_path descriptor extension is missing")?;
+        let expected = [
+            "models/list",
+            "contexts/create",
+            "contexts/inspect",
+            "contexts/mutate",
+            "warm/retain",
+            "warm/inspect",
+            "warm/renew",
+            "warm/release",
+            "runs/generate",
+            "runs/inspect",
+            "runs/watch",
+            "runs/cancel",
+            "evaluations/create",
+            "evaluations/inspect",
+        ];
+        let mut routes = Vec::new();
+        for service in file.services() {
+            for method in service.methods() {
+                let options = method.options();
+                assert!(
+                    options.has_extension(&extension),
+                    "{}.{} has no http_path",
+                    service.name(),
+                    method.name()
+                );
+                let path = options.get_extension(&extension).into_owned();
+                let prost_reflect::Value::String(path) = path else {
+                    return Err(format!(
+                        "{}.{} has an invalid http_path option",
+                        service.name(),
+                        method.name()
+                    )
+                    .into());
+                };
+                assert!(!path.is_empty());
+                routes.push(path);
+            }
+        }
+        assert_eq!(routes.len(), expected.len());
+        assert_eq!(routes, expected);
+        let unique: std::collections::HashSet<_> = routes.iter().collect();
+        assert_eq!(unique.len(), routes.len());
+        Ok(())
+    }
+
+    #[test]
     fn rejects_incomplete_receipts_and_sensitive_credentials() -> Result<(), Error> {
         assert!(validate_receipt(&wire::MutationReceipt::default()).is_err());
         assert!(validate_warm_view(&wire::WarmView::default(), None, None).is_err());

@@ -6,7 +6,9 @@ import "validation/v1/options.proto";
 option go_package = "github.com/acyclic-labs/sdk/go/gen/inference/v1;inferencev1";
 
 service ModelsService {
-  rpc List(ListModelsRequest) returns (ListModelsResponse);
+  rpc List(ListModelsRequest) returns (ListModelsResponse) {
+    option (acyclic.validation.v1.http_path) = "models/list";
+  }
 }
 
 message ListModelsRequest {}
@@ -38,18 +40,32 @@ message RetentionProfile {
 // Immutable canonical content operations. Execution/retention guarantees are
 // advertised separately; these methods do not admit a Run or a warm promise.
 service ContextsService {
-  rpc Create(CreateContextRequest) returns (MutationReceipt);
-  rpc Inspect(InspectContextRequest) returns (ContextView);
-  rpc Mutate(MutateContextRequest) returns (MutationReceipt);
+  rpc Create(CreateContextRequest) returns (MutationReceipt) {
+    option (acyclic.validation.v1.http_path) = "contexts/create";
+  }
+  rpc Inspect(InspectContextRequest) returns (ContextView) {
+    option (acyclic.validation.v1.http_path) = "contexts/inspect";
+  }
+  rpc Mutate(MutateContextRequest) returns (MutationReceipt) {
+    option (acyclic.validation.v1.http_path) = "contexts/mutate";
+  }
 }
 
 // Customer warm-retention commitments. Placement, workers, allocations,
 // migration, rebalancing, and cleanup mechanics remain private.
 service WarmContextsService {
-  rpc Retain(RetainWarmRequest) returns (WarmView);
-  rpc Inspect(InspectWarmRequest) returns (WarmView);
-  rpc Renew(RenewWarmRequest) returns (WarmView);
-  rpc Release(ReleaseWarmRequest) returns (WarmView);
+  rpc Retain(RetainWarmRequest) returns (WarmView) {
+    option (acyclic.validation.v1.http_path) = "warm/retain";
+  }
+  rpc Inspect(InspectWarmRequest) returns (WarmView) {
+    option (acyclic.validation.v1.http_path) = "warm/inspect";
+  }
+  rpc Renew(RenewWarmRequest) returns (WarmView) {
+    option (acyclic.validation.v1.http_path) = "warm/renew";
+  }
+  rpc Release(ReleaseWarmRequest) returns (WarmView) {
+    option (acyclic.validation.v1.http_path) = "warm/release";
+  }
 }
 
 message RetainWarmRequest {
@@ -97,18 +113,30 @@ message WarmView {
 // Recoverable logical generation. Distribution, placement, migration, cache,
 // and worker identities are intentionally absent.
 service RunsService {
-  rpc Generate(GenerateRunRequest) returns (GenerateRunResponse);
-  rpc Inspect(InspectRunRequest) returns (RunView);
-  rpc Watch(WatchRunRequest) returns (stream RunEvent);
-  rpc Cancel(InspectRunRequest) returns (RunView);
+  rpc Generate(GenerateRunRequest) returns (GenerateRunResponse) {
+    option (acyclic.validation.v1.http_path) = "runs/generate";
+  }
+  rpc Inspect(InspectRunRequest) returns (RunView) {
+    option (acyclic.validation.v1.http_path) = "runs/inspect";
+  }
+  rpc Watch(WatchRunRequest) returns (stream RunEvent) {
+    option (acyclic.validation.v1.http_path) = "runs/watch";
+  }
+  rpc Cancel(InspectRunRequest) returns (RunView) {
+    option (acyclic.validation.v1.http_path) = "runs/cancel";
+  }
 }
 
 // Immutable, recoverable evaluation admissions. Candidate execution and grader
 // placement remain private; the customer contract contains only exact artifacts,
 // bounded suite inputs, metric semantics, and content-addressed observations.
 service EvaluationsService {
-  rpc Create(CreateEvaluationRequest) returns (EvaluationView);
-  rpc Inspect(InspectEvaluationRequest) returns (EvaluationView);
+  rpc Create(CreateEvaluationRequest) returns (EvaluationView) {
+    option (acyclic.validation.v1.http_path) = "evaluations/create";
+  }
+  rpc Inspect(InspectEvaluationRequest) returns (EvaluationView) {
+    option (acyclic.validation.v1.http_path) = "evaluations/inspect";
+  }
 }
 
 message EvaluationArtifact {
