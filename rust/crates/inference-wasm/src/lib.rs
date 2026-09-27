@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Protobuf byte boundary for the canonical inference contract.
 
+mod schema;
+
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 

@@ -39,10 +39,20 @@ import {
   WatchRunRequestSchema,
   type InferenceTransport,
 } from "../src/index.js";
+import { runTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
 
 const bytes = (value: number) => new Uint8Array([value]);
 const revision = (value: number) => new Uint8Array(32).fill(value);
 const runIdentity = (value: number) => new Uint8Array(16).fill(value);
+
+test("Rust reflection supplies every nonzero terminal and validates request shape", async () => {
+  const metadata = await runTerminalMetadata();
+  expect(metadata.map(item => item.kind)).toEqual([
+    "completed", "output-limited", "tool-call", "refusal", "cancelled", "failed", "indeterminate",
+  ]);
+  expect(metadata.filter(item => item.partial).map(item => item.kind)).toEqual(["cancelled", "failed", "indeterminate"]);
+  await expect(validateRuntimeShape(CreateContextRequestSchema, JSON.parse('{"model":7}'))).rejects.toThrow("invalid protobuf type");
+});
 const receipt = (value: number) => create(MutationReceiptSchema, { revision: revision(value), commandDigest: revision(value + 32), sequence: 1n });
 const contextView = (value: Uint8Array, model = "model") => create(ContextViewSchema, {
   revision: value,

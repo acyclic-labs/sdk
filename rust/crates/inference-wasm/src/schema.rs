@@ -11,13 +11,14 @@ use wasm_bindgen::{JsCast, prelude::*};
 const DESCRIPTOR_SET: &[u8] = include_bytes!("../inference_reflection_descriptor.bin");
 const VALIDATION_PACKAGE: &str = "acyclic.validation.v1.";
 
-fn pool() -> &'static DescriptorPool {
-    static POOL: OnceLock<DescriptorPool> = OnceLock::new();
-    POOL.get_or_init(|| DescriptorPool::decode(DESCRIPTOR_SET).unwrap_or_default())
+fn pool() -> Option<&'static DescriptorPool> {
+    static POOL: OnceLock<Option<DescriptorPool>> = OnceLock::new();
+    POOL.get_or_init(|| DescriptorPool::decode(DESCRIPTOR_SET).ok())
+        .as_ref()
 }
 
 fn option(message: &DynamicMessage, name: &str) -> Option<Value> {
-    let ext = pool().get_extension_by_name(&format!("{VALIDATION_PACKAGE}{name}"))?;
+    let ext = pool()?.get_extension_by_name(&format!("{VALIDATION_PACKAGE}{name}"))?;
     message
         .has_extension(&ext)
         .then(|| message.get_extension(&ext).into_owned())
@@ -35,9 +36,16 @@ fn bool_option(message: &DynamicMessage, name: &str) -> bool {
 /// by schema validation, so adding or renaming a terminal must update the
 /// protobuf contract before it can reach TypeScript.
 #[wasm_bindgen]
-pub fn run_terminal_metadata() -> String {
-    let Some(enumeration) = pool().get_enum_by_name("inference.customer.v1.RunTerminal") else {
-        return "[]".to_owned();
+pub fn run_terminal_metadata() -> Result<String, JsValue> {
+    let Some(pool) = pool() else {
+        return Err(JsValue::from_str(
+            "inference reflection descriptor is unavailable",
+        ));
+    };
+    let Some(enumeration) = pool.get_enum_by_name("inference.customer.v1.RunTerminal") else {
+        return Err(JsValue::from_str(
+            "inference RunTerminal descriptor is unavailable",
+        ));
     };
     let values = enumeration
         .values()
@@ -56,7 +64,7 @@ pub fn run_terminal_metadata() -> String {
             )
         })
         .collect::<Vec<_>>();
-    format!("[{}]", values.join(","))
+    Ok(format!("[{}]", values.join(",")))
 }
 
 fn u32_option(message: &DynamicMessage, name: &str) -> u32 {
@@ -209,7 +217,10 @@ fn validate_message(message: &DynamicMessage, path: &str) -> Option<String> {
 /// Returns a TypeScript-compatible diagnostic, or `None` when valid.
 #[wasm_bindgen]
 pub fn schema_error(message_name: &str, bytes: &[u8]) -> Option<String> {
-    let Some(descriptor) = pool().get_message_by_name(message_name) else {
+    let Some(pool) = pool() else {
+        return Some("inference reflection descriptor is unavailable".to_owned());
+    };
+    let Some(descriptor) = pool.get_message_by_name(message_name) else {
         return Some(format!("unknown protobuf message {message_name}"));
     };
     let Ok(message) = DynamicMessage::decode(descriptor, bytes) else {
@@ -301,6 +312,7 @@ fn validate_runtime_message(
     }
 
     for field in descriptor.fields() {
+        let field_path = format!("{path}.{}", field.json_name());
         let item = if let Some(oneof) = field
             .containing_oneof()
             .filter(|oneof| !oneof.is_synthetic())
@@ -318,7 +330,6 @@ fn validate_runtime_message(
         if item.is_undefined() {
             continue;
         }
-        let field_path = format!("{path}.{}", field.json_name());
         if field.is_list() {
             if !Array::is_array(&item) {
                 return Some(format!("{field_path} must be a list"));
@@ -377,7 +388,10 @@ fn validate_runtime_message(
 #[wasm_bindgen]
 #[allow(clippy::needless_pass_by_value)]
 pub fn runtime_shape_error(message_name: &str, value: JsValue) -> Option<String> {
-    let Some(descriptor) = pool().get_message_by_name(message_name) else {
+    let Some(pool) = pool() else {
+        return Some("inference reflection descriptor is unavailable".to_owned());
+    };
+    let Some(descriptor) = pool.get_message_by_name(message_name) else {
         return Some(format!("{message_name} is not a known protobuf message"));
     };
     validate_runtime_message(&descriptor, &value, descriptor.name())
@@ -516,7 +530,12 @@ fn runtime_message(
 /// cast followed by generated runtime coercion.
 #[wasm_bindgen]
 pub fn runtime_encode(message_name: &str, value: &JsValue) -> Result<Uint8Array, JsValue> {
-    let Some(descriptor) = pool().get_message_by_name(message_name) else {
+    let Some(pool) = pool() else {
+        return Err(JsValue::from_str(
+            "inference reflection descriptor is unavailable",
+        ));
+    };
+    let Some(descriptor) = pool.get_message_by_name(message_name) else {
         return Err(JsValue::from_str(&format!(
             "{message_name} is not a known protobuf message"
         )));
@@ -560,8 +579,14 @@ mod tests {
     #[test]
     fn terminal_metadata_comes_from_enum_options() {
         let metadata = run_terminal_metadata();
-        assert!(metadata.contains(r#""number":1,"kind":"completed","partial":false"#));
-        assert!(metadata.contains(r#""number":5,"kind":"cancelled","partial":true"#));
-        assert!(metadata.contains(r#""number":7,"kind":"indeterminate","partial":true"#));
+        assert!(
+            metadata.is_ok(),
+            "descriptor metadata should load: {metadata:?}"
+        );
+        if let Ok(metadata) = metadata {
+            assert!(metadata.contains(r#""number":1,"kind":"completed","partial":false"#));
+            assert!(metadata.contains(r#""number":5,"kind":"cancelled","partial":true"#));
+            assert!(metadata.contains(r#""number":7,"kind":"indeterminate","partial":true"#));
+        }
     }
 }

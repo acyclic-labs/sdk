@@ -1,5 +1,5 @@
 import { create, fromJson, toBinary, toJsonString, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
-import { InferenceProtocolError, validateContract, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
+import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
 import {
   ContextViewSchema,
   CreateEvaluationRequestSchema,
@@ -271,6 +271,7 @@ export class HttpInferenceTransport implements InferenceTransport {
   }
 
   async *watchRun(request: WatchRunRequest, signal?: AbortSignal): AsyncIterable<RunEvent> {
+    await validateRuntimeShape(WatchRunRequestSchema, request);
     const response = await this.#request("runs/watch", toJsonString(WatchRunRequestSchema, request), signal);
     if (response.body === null) throw new InferenceTransportError(response.status, "run watch has no body");
     const reader = response.body.getReader();
@@ -317,6 +318,7 @@ export class HttpInferenceTransport implements InferenceTransport {
     responseSchema: ResponseSchema,
     signal?: AbortSignal,
   ): Promise<MessageShape<ResponseSchema>> {
+    await validateRuntimeShape(requestSchema, request);
     const response = await this.#request(path, toJsonString(requestSchema, request), signal);
     return fromJson(responseSchema, JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "unary response")));
   }

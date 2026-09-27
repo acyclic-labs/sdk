@@ -13,8 +13,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 acyclic-inference = { version = "=0.1.5", path = "../inference", default-features = false }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+acyclic-inference-contract = { version = "=0.1.5", path = "../inference-contract" }
+js-sys.workspace = true
+prost.workspace = true
+prost-reflect.workspace = true
 wasm-bindgen.workspace = true
 
 [lints]
