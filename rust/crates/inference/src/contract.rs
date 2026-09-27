@@ -4,6 +4,9 @@ use crate::wire;
 
 /// Shared inference transport ceiling.
 pub const MAXIMUM_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+/// HTTP JSON/NDJSON ceiling, sized above ordinary base64 expansion of the wire
+/// limit while intentionally bounding escaped JSON strings separately.
+pub const MAXIMUM_HTTP_JSON_BYTES: usize = 16 * 1024 * 1024;
 /// Largest admitted candidate set.
 pub const MAXIMUM_EVALUATION_CANDIDATES: usize = 256;
 /// Largest admitted case set.
