@@ -1700,7 +1700,7 @@ export class HarnessBuilder {
     components.forkPublisher = this.#forkPublisher;
   } if ([...this.#tools.values()].some(tool => tool.machine) && !components.state?.executeTool) {
     throw new TypeError("resumable tools require owner-host durable tool execution");
-  } validateTaskRequirements(this.#tasks, this.#tools, components, this.#grants); return new AgentHarness(this.#tasks, this.#tools, components, ExecutionScope.create().grant(...this.#grants), new Map(), this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction); }
+  } validateTaskRequirements(this.contracts, this.#tasks, this.#tools, components, this.#grants); return new AgentHarness(this.#tasks, this.#tools, components, ExecutionScope.create().grant(...this.#grants), new Map(), this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction); }
 }
 
 interface AgentHarnessComponents { model?: BoundModel; loop?: AgentLoop; context?: ContextBuilder; interactions?: InteractionHandler; interactionResolver?: InteractionResolver; policy?: Policy; host?: HarnessRuntimeHost; state?: HarnessRuntimeState; spawner?: HarnessRuntimeSpawner; execution?: HarnessExecutionProvider; content?: ContentBindings; artifacts?: ContentBindings; forkPreparer?: ForkPreparer; forkPublisher?: ForkPublisher; workspaces?: ProjectWorkspaceProvider; limits?: Limits }
@@ -2514,48 +2514,45 @@ function durableMachineDigest<Input, Output>(definition: TaskDefinition<Input, O
   return bytes;
 }
 function validateTaskRequirements(
+  contracts: NativeContracts,
   tasks: ReadonlyMap<string, ErasedTaskDefinition>,
   tools: ReadonlyMap<string, ErasedRegisteredTool>,
   components: AgentHarnessComponents,
   grants: readonly string[],
 ): void {
-  const active = new Set<string>();
-  const complete = new Set<string>();
-  const visit = (name: string): void => {
-    if (complete.has(name)) return;
-    active.add(name);
-    const definition = tasks.get(name);
-    if (!definition) throw new Error(`unregistered task dependency: ${name}`);
-    for (const requirement of definition.options.requirements ?? []) {
-      if (requirement === "model" && components.model) continue;
-      if (requirement === "context" && components.context) continue;
-      if (requirement === "interactions" && components.interactions) continue;
-      if (requirement === "policy" && components.policy) continue;
-      if (requirement === "host" && (components.host || (components.state && components.spawner))) continue;
-      if (requirement === "state" && (components.state || components.host)) continue;
-      if (requirement === "spawner" && (components.spawner || components.host)) continue;
-      if (requirement === "content" && components.content) continue;
-      if (requirement === "artifacts" && components.artifacts) continue;
-      if (requirement === "content:write" && components.content?.writer
-        && grants.includes(components.content.writer.writeCapability())) continue;
-      if (requirement === "artifacts:write" && components.artifacts?.writer
-        && grants.includes(components.artifacts.writer.writeCapability())) continue;
-      const match = /^(task|tool):([^@]+)@([^@]+)$/.exec(requirement);
-      if (!match) throw new Error(`unsatisfied task requirement: ${requirement}`);
-      const [, kind, target, revision] = match;
-      if (kind === "tool") {
-        if (!tools.has(toolKey(target!, revision!))) throw new Error(`unsatisfied tool requirement: ${requirement}`);
-      } else {
-        const targetKey = taskKey(target!, revision!);
-        if (!tasks.has(targetKey)) throw new Error(`unsatisfied task requirement: ${requirement}`);
-        if (active.has(targetKey)) throw new Error(`task dependency cycle: ${[...active, targetKey].join(" -> ")}`);
-        visit(targetKey);
-      }
-    }
-    active.delete(name);
-    complete.add(name);
-  };
-  for (const name of tasks.keys()) visit(name);
+  const durable = components.host !== undefined
+    || (components.state !== undefined && components.spawner !== undefined);
+  contracts.validateTaskRequirements({
+    tasks: [...tasks.values()].map(definition => ({
+      name: definition.name,
+      version: definition.revision,
+      requirements: [...definition.options.requirements ?? []],
+    })),
+    tools: [...tools.values()].map(tool => ({
+      name: tool.definition.name,
+      version: tool.definition.revision,
+    })),
+    components: {
+      // Native composition admits these capabilities before optional providers
+      // are bound; a scoped task can receive the provider later.
+      model: grants.includes("model:generate"),
+      context: grants.includes("context:build"),
+      interactions: (components.interactions !== undefined || durable) && grants.includes("interaction:route"),
+      policy: components.policy !== undefined,
+      host: durable,
+      state: durable,
+      spawner: durable,
+      content: components.content !== undefined,
+      artifacts: components.artifacts !== undefined,
+      content_write: components.content?.writer !== undefined
+        && grants.includes(components.content.writer.writeCapability()),
+      artifacts_write: components.artifacts?.writer !== undefined
+        && grants.includes(components.artifacts.writer.writeCapability()),
+    },
+    grants: [...grants],
+    // No authenticated extension runtime is retained by the TS builder yet.
+    extensions: [],
+  });
 }
 function narrowGrants(parent: readonly string[], child: readonly string[], explicit: boolean): readonly string[] {
   if (!explicit) return parent;

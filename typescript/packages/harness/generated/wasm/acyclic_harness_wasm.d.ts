@@ -278,6 +278,11 @@ export interface WasmBatchAdmissionInput {
     execution: WasmExecutionPlacementWire | null;
 }
 
+export interface WasmExtensionDependencyDefinition {
+    name: string;
+    version: number;
+}
+
 export interface WasmLimitsInput {
     file_bytes: bigint;
     path_bytes: bigint;
@@ -346,6 +351,34 @@ export interface WasmTaskAdmissionInput {
     execution: WasmExecutionPlacementWire | null;
 }
 
+export interface WasmTaskDependencyComponents {
+    model: boolean;
+    context: boolean;
+    interactions: boolean;
+    policy: boolean;
+    host: boolean;
+    state: boolean;
+    spawner: boolean;
+    content: boolean;
+    artifacts: boolean;
+    content_write: boolean;
+    artifacts_write: boolean;
+}
+
+export interface WasmTaskDependencyDefinition {
+    name: string;
+    version: string;
+    requirements: readonly string[];
+}
+
+export interface WasmTaskDependencyInput {
+    tasks: readonly WasmTaskDependencyDefinition[];
+    tools: readonly WasmToolDependencyDefinition[];
+    components: WasmTaskDependencyComponents;
+    grants: readonly string[];
+    extensions: readonly WasmExtensionDependencyDefinition[];
+}
+
 export interface WasmTaskIdentityInput {
     name: string;
     version: string;
@@ -359,6 +392,11 @@ export interface WasmTaskRunLimitsInput {
     concurrency: bigint | null;
     max_steps: bigint | null;
     deadline_epoch_ms: bigint | null;
+}
+
+export interface WasmToolDependencyDefinition {
+    name: string;
+    version: string;
 }
 
 export type WasmFileProjectionPolicy = "reference" | "bounded_full" | "native";
@@ -731,6 +769,14 @@ export function validateSelectedModelContext(selected: any, limits: any): void;
 export function validateTaskChildrenPage(value: WasmTaskChildrenPageInput): WasmTaskChildrenPage;
 
 /**
+ * Validates the exact task dependency graph used by the TypeScript builder.
+ * The input is a contract projection only; no executable task handlers cross
+ * the WASM boundary and Rust owns graph traversal, revision matching, grants,
+ * and extension requirement admission.
+ */
+export function validateTaskRequirements(value: WasmTaskDependencyInput): void;
+
+/**
  * Validates a model-visible tool definition using the native contract.
  */
 export function validateToolDefinition(definition: any): void;
@@ -842,6 +888,7 @@ export interface InitOutput {
     readonly validateModelMessages: (a: any, b: any) => [number, number];
     readonly validateSelectedModelContext: (a: any, b: any) => [number, number];
     readonly validateTaskChildrenPage: (a: any) => [number, number, number];
+    readonly validateTaskRequirements: (a: any) => [number, number];
     readonly validateToolDefinition: (a: any) => [number, number];
     readonly validateToolInvocation: (a: any, b: any) => [number, number];
     readonly validateToolResult: (a: any, b: any) => [number, number];

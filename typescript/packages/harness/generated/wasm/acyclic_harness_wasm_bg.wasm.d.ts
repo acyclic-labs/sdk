@@ -33,6 +33,7 @@ export const validateModelContextSelection: (a: any, b: any) => [number, number]
 export const validateModelMessages: (a: any, b: any) => [number, number];
 export const validateSelectedModelContext: (a: any, b: any) => [number, number];
 export const validateTaskChildrenPage: (a: any) => [number, number, number];
+export const validateTaskRequirements: (a: any) => [number, number];
 export const validateToolDefinition: (a: any) => [number, number];
 export const validateToolInvocation: (a: any, b: any) => [number, number];
 export const validateToolResult: (a: any, b: any) => [number, number];

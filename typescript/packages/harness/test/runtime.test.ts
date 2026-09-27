@@ -452,6 +452,40 @@ describe("typed agent runtime", () => {
     expect(() => Harness.builder(contracts).task(left).task(right).build()).toThrow("task dependency cycle");
   });
 
+  test("admits exact grants but rejects unauthenticated extension requirements", () => {
+    const granted = TaskDefinition.live("granted-task", "1", () => 1,
+      { requirements: ["grant:task:run"] });
+    expect(() => Harness.builder(contracts).grant("task:run").task(granted).build()).not.toThrow();
+    expect(() => Harness.builder(contracts).task(granted).build()).toThrow("unsatisfied task requirement");
+    const extension = TaskDefinition.live("extension-task", "1", () => 1,
+      { requirements: ["extension:example.state@3"] });
+    expect(() => Harness.builder(contracts).task(extension).build()).toThrow("unsatisfied task requirement");
+  });
+
+  test("requires capability grants and a complete durable binding for task dependencies", () => {
+    const modelTask = TaskDefinition.live("model-task", "1", () => 1, { requirements: ["model"] });
+    const provider = {
+      async *generate() { yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    };
+    expect(() => Harness.builder(contracts).model(testModel, provider).task(modelTask).build())
+      .toThrow("unsatisfied task requirement");
+    expect(() => Harness.builder(contracts).model(testModel, provider)
+      .grant("model:generate").task(modelTask).build()).not.toThrow();
+    expect(() => Harness.builder(contracts).grant("model:generate").task(modelTask).build())
+      .not.toThrow();
+
+    const stateTask = TaskDefinition.live("state-task", "1", () => 1, { requirements: ["state"] });
+    const spawnerTask = TaskDefinition.live("spawner-task", "1", () => 1, { requirements: ["spawner"] });
+    const state = { policyIdentity: () => null } as unknown as HarnessRuntimeState;
+    const spawner = { policyIdentity: () => null } as unknown as HarnessRuntimeSpawner;
+    expect(() => Harness.builder(contracts).state(state).task(stateTask).build())
+      .toThrow("unsatisfied task requirement");
+    expect(() => Harness.builder(contracts).spawner(spawner).task(spawnerTask).build()).toThrow();
+    expect(() => Harness.builder(contracts).state(state).spawner(spawner)
+      .task(stateTask).task(spawnerTask).build()).not.toThrow();
+  });
+
   test("retains simultaneous pinned task revisions without an implicit latest", async () => {
     const first = TaskDefinition.live<void, number>("versioned", "1", () => 1);
     const second = TaskDefinition.live<void, number>("versioned", "2", () => 2);

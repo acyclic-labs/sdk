@@ -33,8 +33,9 @@ use crate::{
     resources::{ProviderRef, ResourceRef},
     runtime::{
         BatchGroupPolicy, DurableBatchRequest, TaskAdmissionRecord, TaskChild, TaskChildrenPage,
-        TaskRunLimits, batch_member_operation_id, task_admission_identities,
-        task_definition_digest, validate_children_page, validate_children_request,
+        TaskDependencyEnvironment, TaskRunLimits, batch_member_operation_id,
+        task_admission_identities, task_definition_digest, validate_children_page,
+        validate_children_request, validate_task_requirements,
     },
     tool::{ToolDefinition, validate_value},
     turn::prepare_turn,
@@ -128,6 +129,70 @@ struct WasmTaskIdentityInput {
     requirements: BTreeSet<String>,
     #[tsify(type = "readonly number[]")]
     machine_digest: Vec<u8>,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskDependencyDefinition {
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "string")]
+    version: String,
+    #[tsify(type = "readonly string[]")]
+    requirements: Vec<String>,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmToolDependencyDefinition {
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "string")]
+    version: String,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmExtensionDependencyDefinition {
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "number")]
+    version: u32,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskDependencyComponents {
+    model: bool,
+    context: bool,
+    interactions: bool,
+    policy: bool,
+    host: bool,
+    state: bool,
+    spawner: bool,
+    content: bool,
+    artifacts: bool,
+    content_write: bool,
+    artifacts_write: bool,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskDependencyInput {
+    #[tsify(type = "readonly WasmTaskDependencyDefinition[]")]
+    tasks: Vec<WasmTaskDependencyDefinition>,
+    #[tsify(type = "readonly WasmToolDependencyDefinition[]")]
+    tools: Vec<WasmToolDependencyDefinition>,
+    components: WasmTaskDependencyComponents,
+    #[tsify(type = "readonly string[]")]
+    grants: Vec<String>,
+    #[tsify(type = "readonly WasmExtensionDependencyDefinition[]")]
+    extensions: Vec<WasmExtensionDependencyDefinition>,
 }
 
 #[derive(Deserialize, Tsify)]
@@ -795,6 +860,61 @@ pub fn task_admission_identities_wasm(
     )
     .map_err(js_error)?;
     to_js_admitted(&serde_json::json!({ "task": task, "machine": machine }))
+}
+
+/// Validates the exact task dependency graph used by the TypeScript builder.
+/// The input is a contract projection only; no executable task handlers cross
+/// the WASM boundary and Rust owns graph traversal, revision matching, grants,
+/// and extension requirement admission.
+#[wasm_bindgen(js_name = validateTaskRequirements)]
+pub fn validate_task_requirements_wasm(
+    #[wasm_bindgen(unchecked_param_type = "WasmTaskDependencyInput")] value: JsValue,
+) -> Result<(), JsValue> {
+    let input: WasmTaskDependencyInput = from_js(value)?;
+    let mut tasks = std::collections::BTreeMap::new();
+    for definition in input.tasks {
+        let key = (definition.name, definition.version);
+        if tasks
+            .insert(key.clone(), definition.requirements.into_iter().collect())
+            .is_some()
+        {
+            return Err(js_error(crate::Error::Conflict(format!(
+                "conflicting task registration for {}@{}",
+                key.0, key.1
+            ))));
+        }
+    }
+    let tools = input
+        .tools
+        .into_iter()
+        .map(|definition| (definition.name, definition.version))
+        .collect();
+    let extensions = input
+        .extensions
+        .into_iter()
+        .map(|definition| (definition.name, definition.version))
+        .collect();
+    let environment = TaskDependencyEnvironment {
+        model: input.components.model,
+        context: input.components.context,
+        interactions: input.components.interactions,
+        policy: input.components.policy,
+        host: input.components.host,
+        state: input.components.state,
+        spawner: input.components.spawner,
+        content: input.components.content,
+        artifacts: input.components.artifacts,
+        content_write: input.components.content_write,
+        artifacts_write: input.components.artifacts_write,
+        extensions,
+    };
+    validate_task_requirements(
+        &tasks,
+        &tools,
+        &environment,
+        &input.grants.into_iter().collect(),
+    )
+    .map_err(js_error)
 }
 
 /// Builds and validates the complete owner-retained task admission envelope.

@@ -1748,6 +1748,176 @@ pub(crate) fn validate_policy_identity(identity: &ComponentIdentity) -> Result<(
     Ok(())
 }
 
+/// Provider capabilities visible to task dependency admission.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TaskDependencyEnvironment {
+    /// A model provider is bound for this composition.
+    pub model: bool,
+    /// A context builder is bound for this composition.
+    pub context: bool,
+    /// An interaction router is bound for this composition.
+    pub interactions: bool,
+    /// A policy provider is bound for this composition.
+    pub policy: bool,
+    /// A durable host is bound for this composition.
+    pub host: bool,
+    /// Owner-retained task state is bound for this composition.
+    pub state: bool,
+    /// Durable admission is bound for this composition.
+    pub spawner: bool,
+    /// Owner-retained content is bound for this composition.
+    pub content: bool,
+    /// Owner-retained artifacts are bound for this composition.
+    pub artifacts: bool,
+    /// The content writer and its capability grant are both available.
+    pub content_write: bool,
+    /// The artifact writer and its capability grant are both available.
+    pub artifacts_write: bool,
+    /// Exact extension versions selected for this composition.
+    pub extensions: BTreeSet<(String, u32)>,
+}
+
+/// Validates an immutable task dependency graph and its provider requirements.
+///
+/// Names and versions are always resolved exactly.  This is the contract used
+/// by both native Rust composition and the TypeScript builder through WASM;
+/// callers must not reproduce this graph walk in another language.
+pub fn validate_task_requirements(
+    tasks: &BTreeMap<(String, String), BTreeSet<String>>,
+    tools: &BTreeSet<(String, String)>,
+    environment: &TaskDependencyEnvironment,
+    grants: &BTreeSet<String>,
+) -> Result<()> {
+    let validator = TaskDependencyValidator {
+        tasks,
+        tools,
+        environment,
+        grants,
+    };
+    let mut marks = BTreeMap::new();
+    for key in tasks.keys() {
+        validator.visit(key, &mut marks)?;
+    }
+    Ok(())
+}
+
+struct TaskDependencyValidator<'a> {
+    tasks: &'a BTreeMap<(String, String), BTreeSet<String>>,
+    tools: &'a BTreeSet<(String, String)>,
+    environment: &'a TaskDependencyEnvironment,
+    grants: &'a BTreeSet<String>,
+}
+
+impl TaskDependencyValidator<'_> {
+    fn visit(
+        &self,
+        key: &(String, String),
+        marks: &mut BTreeMap<(String, String), u8>,
+    ) -> Result<()> {
+        match marks.get(key).copied() {
+            Some(1) => {
+                return Err(Error::Invalid(format!(
+                    "task dependency cycle at {}@{}",
+                    key.0, key.1
+                )));
+            }
+            Some(2) => return Ok(()),
+            _ => {}
+        }
+        let requirements = self.tasks.get(key).ok_or_else(|| {
+            Error::Invalid(format!(
+                "unsatisfied task requirement: task:{}@{}",
+                key.0, key.1
+            ))
+        })?;
+        marks.insert(key.clone(), 1);
+        for requirement in requirements {
+            self.validate_requirement(requirement, marks)?;
+        }
+        marks.insert(key.clone(), 2);
+        Ok(())
+    }
+
+    fn validate_requirement(
+        &self,
+        requirement: &str,
+        marks: &mut BTreeMap<(String, String), u8>,
+    ) -> Result<()> {
+        if let Some(target) = parse_dependency_target(requirement, "task:")? {
+            if !self.tasks.contains_key(&target) {
+                return Err(missing_task_requirement(requirement));
+            }
+            return self.visit(&target, marks);
+        }
+        if let Some(target) = parse_dependency_target(requirement, "tool:")? {
+            return self.tools.contains(&target).then_some(()).ok_or_else(|| {
+                Error::Invalid(format!("unsatisfied tool requirement: {requirement}"))
+            });
+        }
+        if self.provider_requirement_satisfied(requirement)? {
+            return Ok(());
+        }
+        Err(missing_task_requirement(requirement))
+    }
+
+    fn provider_requirement_satisfied(&self, requirement: &str) -> Result<bool> {
+        let available = match requirement {
+            "model" => Some(self.environment.model),
+            "context" => Some(self.environment.context),
+            "interactions" => Some(self.environment.interactions),
+            "policy" => Some(self.environment.policy),
+            "host" => Some(self.environment.host),
+            "state" => Some(self.environment.state),
+            "spawner" => Some(self.environment.spawner),
+            "content" => Some(self.environment.content),
+            "artifacts" => Some(self.environment.artifacts),
+            "content:write" => Some(self.environment.content_write),
+            "artifacts:write" => Some(self.environment.artifacts_write),
+            _ => None,
+        };
+        if let Some(available) = available {
+            return if available {
+                Ok(true)
+            } else {
+                Err(missing_task_requirement(requirement))
+            };
+        }
+        if let Some(grant) = requirement.strip_prefix("grant:") {
+            return Ok(!grant.is_empty() && self.grants.contains(grant));
+        }
+        if let Some(extension) = requirement.strip_prefix("extension:") {
+            let (name, version) = extension.rsplit_once('@').ok_or_else(|| {
+                Error::Invalid(format!("invalid extension dependency {requirement}"))
+            })?;
+            let version = version.parse::<u32>().map_err(|_| {
+                Error::Invalid(format!("invalid extension dependency {requirement}"))
+            })?;
+            return Ok(!name.is_empty()
+                && !name.contains('@')
+                && self
+                    .environment
+                    .extensions
+                    .contains(&(name.to_owned(), version)));
+        }
+        Ok(false)
+    }
+}
+
+fn parse_dependency_target(requirement: &str, prefix: &str) -> Result<Option<(String, String)>> {
+    let Some(value) = requirement.strip_prefix(prefix) else {
+        return Ok(None);
+    };
+    let target = value
+        .rsplit_once('@')
+        .filter(|(name, version)| !name.is_empty() && !version.is_empty() && !name.contains('@'))
+        .ok_or_else(|| Error::Invalid(format!("invalid {prefix} dependency {requirement}")))?;
+    Ok(Some((target.0.to_owned(), target.1.to_owned())))
+}
+
+fn missing_task_requirement(requirement: &str) -> Error {
+    Error::Invalid(format!("unsatisfied task requirement: {requirement}"))
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     reason = "the terminal outcome is consumed by this admission boundary"
@@ -3094,144 +3264,68 @@ fn validate_task_dependencies(
     artifacts: Option<&ArtifactBindings>,
     has_policy: bool,
 ) -> Result<()> {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "walk context remains explicit for dependency validation"
-    )]
-    fn visit(
-        key: &(String, String),
-        tasks: &TaskRegistry,
-        tools: &ToolRegistry,
-        resumable_tools: &ResumableToolRegistry,
-        scope: &RuntimeScope,
-        has_host: bool,
-        has_interactions: bool,
-        content: Option<&ContentBindings>,
-        artifacts: Option<&ArtifactBindings>,
-        has_policy: bool,
-        marks: &mut BTreeMap<(String, String), u8>,
-    ) -> Result<()> {
-        match marks.get(key).copied() {
-            Some(1) => {
-                return Err(Error::Invalid(format!(
-                    "task dependency cycle at {}@{}",
-                    key.0, key.1
-                )));
-            }
-            Some(2) => return Ok(()),
-            _ => {}
+    let task_requirements = tasks
+        .0
+        .iter()
+        .map(|(key, entry)| (key.clone(), entry.requirements.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut available_tools = BTreeSet::new();
+    for requirement in task_requirements.values().flat_map(BTreeSet::iter) {
+        let Some((name, version)) = requirement
+            .strip_prefix("tool:")
+            .and_then(|value| value.rsplit_once('@'))
+        else {
+            continue;
+        };
+        if tools.get_version(name, version).is_some()
+            || resumable_tools.get(name, version).is_some()
+        {
+            available_tools.insert((name.to_owned(), version.to_owned()));
         }
-        marks.insert(key.clone(), 1);
-        if let Some(entry) = tasks.0.get(key) {
-            for requirement in &entry.requirements {
-                if let Some(target) = requirement.strip_prefix("task:") {
-                    let (target, version) = target.rsplit_once('@').ok_or_else(|| {
-                        Error::Invalid(format!("invalid task dependency {requirement}"))
-                    })?;
-                    let target_key = (target.to_owned(), version.to_owned());
-                    if !tasks.0.contains_key(&target_key) {
-                        return Err(Error::Invalid(format!(
-                            "missing task dependency {requirement}"
-                        )));
-                    }
-                    visit(
-                        &target_key,
-                        tasks,
-                        tools,
-                        resumable_tools,
-                        scope,
-                        has_host,
-                        has_interactions,
-                        content,
-                        artifacts,
-                        has_policy,
-                        marks,
-                    )?;
-                } else if let Some(target) = requirement.strip_prefix("tool:") {
-                    let (target, version) = target.rsplit_once('@').ok_or_else(|| {
-                        Error::Invalid(format!("invalid tool dependency {requirement}"))
-                    })?;
-                    if tools.get_version(target, version).is_none()
-                        && resumable_tools.get(target, version).is_none()
-                    {
-                        return Err(Error::Invalid(format!(
-                            "missing tool dependency {requirement}"
-                        )));
-                    }
-                } else if requirement == "host" && has_host
-                    || requirement == "model" && scope.grants.contains("model:generate")
-                    || requirement == "context" && scope.grants.contains("context:build")
-                    || requirement == "interactions"
-                        && (has_interactions || has_host)
-                        && scope.grants.contains("interaction:route")
-                    || requirement == "policy" && has_policy
-                    || requirement == "content" && content.is_some()
-                    || requirement == "artifacts" && artifacts.is_some()
-                    || requirement == "content:write"
-                        && content
-                            .and_then(|binding| binding.writer.as_ref())
-                            .is_some_and(|writer| {
-                                writer
-                                    .volume()
-                                    .capability(VolumeOperation::Write)
-                                    .is_ok_and(|grant| scope.grants.contains(&grant))
-                            })
-                    || requirement == "artifacts:write"
-                        && artifacts
-                            .and_then(|binding| binding.writer.as_ref())
-                            .is_some_and(|writer| {
-                                writer
-                                    .volume()
-                                    .capability(VolumeOperation::Write)
-                                    .is_ok_and(|grant| scope.grants.contains(&grant))
-                            })
-                    || requirement
-                        .strip_prefix("grant:")
-                        .is_some_and(|grant| scope.grants.contains(grant))
-                    || requirement.strip_prefix("extension:").is_some_and(|value| {
-                        let Some((name, version)) = value.rsplit_once('@') else {
-                            return false;
-                        };
-                        let Ok(version) = version.parse::<u32>() else {
-                            return false;
-                        };
-                        scope.extension_runtime().is_some_and(|runtime| {
-                            runtime.accepts_new_admissions()
-                                && runtime.selected().iter().any(|identity| {
-                                    identity.name == name && identity.version == version
-                                })
-                        })
-                    })
-                {
-                    // The pinned composition satisfies this provider/capability dependency.
-                } else {
-                    return Err(Error::Invalid(format!(
-                        "task {} has missing dependency {requirement}",
-                        entry.identity.name
-                    )));
-                }
-            }
-        }
-        marks.insert(key.clone(), 2);
-        Ok(())
     }
-    let mut marks = BTreeMap::new();
-    for key in tasks.0.keys() {
-        visit(
-            key,
-            tasks,
-            tools,
-            resumable_tools,
-            scope,
-            has_host,
-            has_interactions,
-            content,
-            artifacts,
-            has_policy,
-            &mut marks,
-        )?;
-    }
-    Ok(())
+    let content_write = content
+        .and_then(|binding| binding.writer.as_ref())
+        .is_some_and(|writer| {
+            writer
+                .volume()
+                .capability(VolumeOperation::Write)
+                .is_ok_and(|grant| scope.grants.contains(&grant))
+        });
+    let artifacts_write = artifacts
+        .and_then(|binding| binding.writer.as_ref())
+        .is_some_and(|writer| {
+            writer
+                .volume()
+                .capability(VolumeOperation::Write)
+                .is_ok_and(|grant| scope.grants.contains(&grant))
+        });
+    let extensions = scope
+        .extension_runtime()
+        .filter(|runtime| runtime.accepts_new_admissions())
+        .map(|runtime| {
+            runtime
+                .selected()
+                .iter()
+                .map(|identity| (identity.name.clone(), identity.version))
+                .collect()
+        })
+        .unwrap_or_default();
+    let environment = TaskDependencyEnvironment {
+        model: scope.grants.contains("model:generate"),
+        context: scope.grants.contains("context:build"),
+        interactions: (has_interactions || has_host) && scope.grants.contains("interaction:route"),
+        policy: has_policy,
+        host: has_host,
+        state: has_host,
+        spawner: has_host,
+        content: content.is_some(),
+        artifacts: artifacts.is_some(),
+        content_write,
+        artifacts_write,
+        extensions,
+    };
+    let grants = scope.grants.iter().map(str::to_owned).collect();
+    validate_task_requirements(&task_requirements, &available_tools, &environment, &grants)
 }
 
 /// Capability-scoped context passed to live task code.
@@ -5459,7 +5553,7 @@ mod tests {
     use super::*;
     use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
     use crate::resources::ProviderRef;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn generated_interface_fields(source: &str, name: &str) -> BTreeSet<String> {
@@ -5501,6 +5595,117 @@ mod tests {
             .as_object()
             .map(|fields| fields.keys().cloned().collect())
             .unwrap_or_default()
+    }
+
+    fn dependency_fixture(
+        requirements: &[(&str, &[&str])],
+    ) -> BTreeMap<(String, String), BTreeSet<String>> {
+        requirements
+            .iter()
+            .map(|(name, requirements)| {
+                (
+                    (String::from(*name), String::from("1")),
+                    requirements
+                        .iter()
+                        .map(|value| String::from(*value))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn task_requirement_projection_rejects_missing_versions_and_cycles() {
+        let tools = BTreeSet::from([(String::from("tool"), String::from("2"))]);
+        let environment = TaskDependencyEnvironment::default();
+        let grants = BTreeSet::new();
+        let missing = dependency_fixture(&[("parent", &["task:leaf@1"])]);
+        assert!(validate_task_requirements(&missing, &tools, &environment, &grants).is_err());
+
+        let cycle = dependency_fixture(&[("left", &["task:right@1"]), ("right", &["task:left@1"])]);
+        let result = validate_task_requirements(&cycle, &tools, &environment, &grants);
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert!(error.to_string().contains("task dependency cycle"));
+        }
+    }
+
+    #[test]
+    fn native_task_requirements_keep_provider_grants_bound() -> Result<()> {
+        let definition =
+            TaskDefinition::live("provider-bound", "1", |_context, _input: ()| async {
+                Ok::<(), Error>(())
+            })?
+            .requires("model")?
+            .requires("context")?
+            .requires("interactions")?;
+        let mut tasks = TaskRegistry::default();
+        tasks.register(definition)?;
+        let tools = ToolRegistry::new();
+        let all_grants = ["model:generate", "context:build", "interaction:route"];
+        let complete_scope = RuntimeScope::new(
+            Capabilities::new(all_grants.iter().copied()),
+            Limits::default(),
+        )?;
+        assert!(
+            validate_task_dependencies(
+                &tasks,
+                &tools,
+                &ResumableToolRegistry::default(),
+                &complete_scope,
+                false,
+                true,
+                None,
+                None,
+                false,
+            )
+            .is_ok()
+        );
+
+        for missing_grant in all_grants {
+            let scope = RuntimeScope::new(
+                Capabilities::new(
+                    all_grants
+                        .iter()
+                        .copied()
+                        .filter(|grant| *grant != missing_grant),
+                ),
+                Limits::default(),
+            )?;
+            assert!(
+                validate_task_dependencies(
+                    &tasks,
+                    &tools,
+                    &ResumableToolRegistry::default(),
+                    &scope,
+                    false,
+                    true,
+                    None,
+                    None,
+                    false,
+                )
+                .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn task_requirement_projection_checks_grants_and_extensions() {
+        let tasks =
+            dependency_fixture(&[("root", &["grant:task:run", "extension:example.state@3"])]);
+        let mut environment = TaskDependencyEnvironment::default();
+        environment
+            .extensions
+            .insert((String::from("example.state"), 3));
+        let grants = BTreeSet::from([String::from("task:run")]);
+        assert!(
+            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants).is_ok()
+        );
+        environment.extensions.clear();
+        assert!(
+            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants).is_err()
+        );
     }
 
     fn generated_wasm_declarations() -> Result<Option<String>> {

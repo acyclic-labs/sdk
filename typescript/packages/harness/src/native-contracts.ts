@@ -5,6 +5,7 @@ import type {
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
   WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
   WasmModelEvent, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelEventInput, WasmModelRole,
+  WasmTaskDependencyInput,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationPage, FileDescriptor, FileRef, Limits, MessageKind, ProviderRef, ReferencedAttachments, TaskOutcomeRecord, VolumeClass, VolumeRef,
@@ -165,6 +166,11 @@ export class NativeContracts {
     const native: NativeExports = wasm;
     assertHarnessWasmExports(native);
     return new NativeContracts(native);
+  }
+
+  /** Admit task dependencies with the same graph and capability rules as Rust. */
+  validateTaskRequirements(value: WasmTaskDependencyInput): void {
+    this.native.validateTaskRequirements(value);
   }
 
   validate<Family extends string>(kind: "provider_ref", value: ProviderRef<Family>): ProviderRef<Family>;
