@@ -5494,11 +5494,33 @@ mod tests {
             .unwrap_or_default()
     }
 
+    fn generated_wasm_declarations() -> Result<Option<String>> {
+        let workspace_typescript =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../typescript");
+        let path =
+            workspace_typescript.join("packages/harness/generated/wasm/acyclic_harness_wasm.d.ts");
+        match std::fs::read_to_string(path) {
+            Ok(source) => Ok(Some(source)),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && !workspace_typescript.is_dir() =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(Error::Storage(format!(
+                "generated WASM declaration is unavailable: {error}"
+            ))),
+        }
+    }
+
     #[test]
     fn generated_admission_declarations_cover_every_rust_owned_wire_field() -> Result<()> {
-        let source = include_str!(
-            "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts"
-        );
+        let Some(source) = generated_wasm_declarations()? else {
+            eprintln!(
+                "skipping generated WASM declaration freshness check: TypeScript package is absent"
+            );
+            return Ok(());
+        };
         let expected = [
             (
                 "WasmMachineIdentityWire",
@@ -5615,7 +5637,7 @@ mod tests {
         ];
         for (name, fields) in expected {
             assert_eq!(
-                generated_interface_fields(source, name),
+                generated_interface_fields(&source, name),
                 fields.iter().map(|field| (*field).to_owned()).collect()
             );
         }
@@ -5707,7 +5729,7 @@ mod tests {
         ] {
             assert_eq!(
                 serialized_object_fields(value),
-                generated_interface_fields(source, name),
+                generated_interface_fields(&source, name),
                 "generated declaration drift for serialized {name}"
             );
         }
@@ -5723,7 +5745,7 @@ mod tests {
         ] {
             assert_eq!(
                 serialized_object_fields(value),
-                generated_interface_fields(source, name),
+                generated_interface_fields(&source, name),
                 "generated declaration drift for serialized nested {name}"
             );
         }
@@ -5776,7 +5798,7 @@ mod tests {
         ] {
             assert_eq!(
                 serialized_object_fields(value),
-                generated_interface_fields(source, name),
+                generated_interface_fields(&source, name),
                 "generated declaration drift for populated nested {name}"
             );
         }
@@ -5799,9 +5821,10 @@ mod tests {
         )?;
         let value =
             serde_json::to_value(&file).map_err(|error| Error::Invalid(error.to_string()))?;
-        let source = include_str!(
-            "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts"
-        );
+        let Some(source) = generated_wasm_declarations()? else {
+            eprintln!("skipping generated FileRef declaration check: TypeScript package is absent");
+            return Ok(());
+        };
         let object_fields = |value: &Value| {
             value
                 .as_object()
@@ -5810,23 +5833,23 @@ mod tests {
         };
         assert_eq!(
             object_fields(&value),
-            generated_interface_fields(source, "WasmFileRefWire")
+            generated_interface_fields(&source, "WasmFileRefWire")
         );
         assert_eq!(
             object_fields(&value["volume"]),
-            generated_interface_fields(source, "WasmVolumeRefWire")
+            generated_interface_fields(&source, "WasmVolumeRefWire")
         );
         assert_eq!(
             object_fields(&value["volume"]["provider"]),
-            generated_interface_fields(source, "WasmProviderRefWire")
+            generated_interface_fields(&source, "WasmProviderRefWire")
         );
         assert_eq!(
             object_fields(&value["volume"]["owner"]),
-            generated_interface_fields(source, "WasmProjectVolumeOwnerWire")
+            generated_interface_fields(&source, "WasmProjectVolumeOwnerWire")
         );
         assert_eq!(
             object_fields(&value["descriptor"]),
-            generated_interface_fields(source, "WasmFileDescriptorWire")
+            generated_interface_fields(&source, "WasmFileDescriptorWire")
         );
         assert_eq!(value["volume"]["owner"]["kind"], "project");
         assert_eq!(value["descriptor"]["media_type"], "application/json");
