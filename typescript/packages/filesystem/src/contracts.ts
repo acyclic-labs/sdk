@@ -20,6 +20,24 @@ type ReadonlyDeep<T> = T extends (...args: never[]) => unknown
       ? { readonly [Key in keyof T]: ReadonlyDeep<T[Key]> }
       : T;
 
+/**
+ * Project one generated browser DTO into the public API shape.  The WASM
+ * boundary reports work counters as bigint so it cannot lose precision while
+ * crossing the Rust boundary; the public adapters intentionally expose the
+ * bounded counters as numbers after checking their range.  Keeping this
+ * projection here makes every result DTO inherit its fields and discriminants
+ * from the generated Rust contract instead of re-declaring them in TypeScript.
+ */
+type PublicWasm<T> = T extends WasmBinding.BrowserWorkCounters
+  ? WorkCounters
+  : T extends Uint8Array
+    ? Uint8Array
+    : T extends readonly (infer Value)[]
+      ? readonly PublicWasm<Value>[]
+      : T extends object
+        ? { readonly [Key in keyof T]: PublicWasm<T[Key]> }
+        : T;
+
 export type FsProfile = "portable" | "posix" | "windows" | "browser";
 
 export interface EngineCapabilities {
@@ -438,45 +456,14 @@ export interface CheckoutOptions {
   readonly mutationMode: "none" | "private-cow" | "direct-live";
 }
 
-export interface WorkCounters {
-  readonly authorityRecordsRead: number;
-  readonly authorityRecordsAppended: number;
-  readonly authorityBytesRead: number;
-  readonly authorityBytesWritten: number;
-  readonly objectProbes: number;
-  readonly backendReadOperations: number;
-  readonly backendWriteOperations: number;
-  readonly durabilityOperations: number;
-  readonly pageReads: number;
-  readonly pageWrites: number;
-  readonly objectBytesRead: number;
-  readonly objectBytesWritten: number;
-  readonly bytesHashed: number;
-  readonly bytesCopied: number;
-  readonly bytesEncoded: number;
-  readonly sourceBytesRead: number;
-  readonly sourcePathComponents: number;
-  readonly sourceEntriesVisited: number;
-  readonly outputBytes: number;
-  readonly itemsExamined: number;
-  readonly itemsReturned: number;
-  readonly allocationOperations: number;
-  readonly peakAllocationBytes: number;
-  readonly materializations: number;
-}
+/** Bounded customer-side counters projected from the generated Rust DTO. */
+export type WorkCounters = Readonly<{
+  [Key in keyof WasmBinding.BrowserWorkCounters]: number;
+}>;
 
-export interface LookupResult {
-  readonly exists: boolean;
-  readonly fileId: Uint8Array | undefined;
-  readonly fileKind: string | undefined;
-  readonly resolvedComponents: number;
-  readonly work: WorkCounters;
-}
+export type LookupResult = PublicWasm<WasmBinding.BrowserLookupResult>;
 
-export interface FileReadResult {
-  readonly bytes: Uint8Array;
-  readonly work: WorkCounters;
-}
+export type FileReadResult = PublicWasm<WasmBinding.BrowserFileReadResult>;
 
 /** One immutable file handle resolved against a pinned checkout generation. */
 export interface ResolvedFile {
@@ -526,28 +513,14 @@ export type FileExtentPlan =
       readonly work: WorkCounters;
     };
 
-export interface DirectoryEntry {
-  readonly name: Uint8Array;
-  readonly fileId: Uint8Array;
-  readonly fileKind: string;
-}
+export type DirectoryEntry = PublicWasm<WasmBinding.BrowserDirectoryEntryResult>;
 
-export interface DirectoryPage {
-  readonly entries: readonly DirectoryEntry[];
-  readonly hasMore: boolean;
-  readonly work: WorkCounters;
-}
+export type DirectoryPage = PublicWasm<WasmBinding.BrowserDirectoryPageResult>;
 
-export interface MutationResult {
-  readonly fileId: Uint8Array | undefined;
-  readonly work: WorkCounters;
-}
+export type MutationResult = PublicWasm<WasmBinding.BrowserMutationResult>;
 
 /** Immutable content-addressed candidate built without publishing authority. */
-export interface CheckpointResult {
-  readonly generationId: Uint8Array;
-  readonly work: WorkCounters;
-}
+export type CheckpointResult = PublicWasm<WasmBinding.BrowserCheckpointResult>;
 
 export interface MaterializeOptions {
   readonly destination: string;
@@ -633,117 +606,38 @@ export interface NativeWatcher {
 }
 
 /** Complete authenticated closure descriptor. Object identities are kind-tag + digest. */
-export interface GenerationExportManifest {
-  readonly manifestBytes: Uint8Array;
-  readonly objects: readonly Uint8Array[];
-  readonly work: WorkCounters;
-}
+export type GenerationExportManifest = PublicWasm<WasmBinding.BrowserExportManifestResult>;
 
 /** One manifest-ordered, resumable immutable-object transfer page. */
-export interface GenerationTransferBatch {
-  readonly firstObject: bigint;
-  readonly nextObject: bigint | undefined;
-  readonly objects: readonly Uint8Array[];
-  readonly work: WorkCounters;
-}
+export type GenerationTransferBatch = PublicWasm<WasmBinding.GenerationTransferBatchResult>;
 
 /** Cursor after an idempotently imported manifest-aligned page. */
-export interface GenerationTransferCursor {
-  readonly nextObject: bigint;
-  readonly work: WorkCounters;
-}
+export type GenerationTransferCursor = PublicWasm<WasmBinding.GenerationTransferCursorResult>;
 
-export interface CommitResult {
-  readonly status:
-    | "committed"
-    | "already-committed"
-    | "conflict"
-    | "fenced"
-    | "idempotency-conflict";
-  readonly generationId: Uint8Array | undefined;
-  readonly epoch: bigint | undefined;
-  readonly sequence: bigint | undefined;
-  readonly committedFingerprint: Uint8Array | undefined;
-  readonly work: WorkCounters;
-}
+export type CommitResult = PublicWasm<WasmBinding.BrowserCommitResult>;
 
-export interface RebaseResult {
-  readonly status: "safe" | "conflicted";
-  readonly generationId: Uint8Array | undefined;
-  readonly conflictCount: number;
-  readonly truncated: boolean;
-  readonly work: WorkCounters;
-}
+export type RebaseResult = PublicWasm<WasmBinding.BrowserRebaseResult>;
 
 /** Complete path-independent file record in a generation diff. */
-export interface FileRecordSnapshot {
-  readonly fileId: Uint8Array;
-  readonly fileKind: string;
-  readonly linkCount: bigint;
-  readonly metadataObject: Uint8Array;
-  readonly payloadKind: string;
-  readonly logicalBytes: bigint | undefined;
-  readonly payloadObject: Uint8Array | undefined;
-  readonly inlineBytes: Uint8Array | undefined;
-  readonly deviceMajor: number | undefined;
-  readonly deviceMinor: number | undefined;
-}
+export type FileRecordSnapshot = PublicWasm<WasmBinding.BrowserFileRecordResult>;
 
-export interface FileRecordReadResult {
-  readonly record: FileRecordSnapshot;
-  readonly work: WorkCounters;
-}
+export type FileRecordReadResult = PublicWasm<WasmBinding.BrowserFileRecordReadResult>;
 
-export interface BatchLookupEntry {
-  readonly exists: boolean;
-  readonly fileId: Uint8Array | undefined;
-  readonly fileKind: string | undefined;
-  readonly resolvedComponents: number;
-}
+export type BatchLookupEntry = PublicWasm<WasmBinding.BrowserBatchLookupEntryResult>;
 
-export interface BatchLookupResult {
-  readonly entries: readonly BatchLookupEntry[];
-  readonly retainedAllocationBytes: bigint;
-  readonly work: WorkCounters;
-}
+export type BatchLookupResult = PublicWasm<WasmBinding.BrowserBatchLookupResult>;
 
-export interface DirectoryRecordEntry {
-  readonly name: Uint8Array;
-  readonly record: FileRecordSnapshot;
-  readonly metadataCanonicalBytes: Uint8Array;
-}
+export type DirectoryRecordEntry = PublicWasm<WasmBinding.BrowserDirectoryRecordEntryResult>;
 
-export interface DirectoryRecordPage {
-  readonly entries: readonly DirectoryRecordEntry[];
-  readonly hasMore: boolean;
-  readonly work: WorkCounters;
-}
+export type DirectoryRecordPage = PublicWasm<WasmBinding.BrowserDirectoryRecordPageResult>;
 
-export interface FileRecordChange {
-  readonly fileId: Uint8Array;
-  readonly before: FileRecordSnapshot | undefined;
-  readonly after: FileRecordSnapshot | undefined;
-}
+export type FileRecordChange = PublicWasm<WasmBinding.BrowserFileRecordChangeResult>;
 
-export interface TreeEntrySnapshot {
-  readonly name: NativePathComponent;
-  readonly fileId: Uint8Array;
-  readonly fileKind: string;
-}
+export type TreeEntrySnapshot = PublicWasm<WasmBinding.BrowserTreeEntryResult>;
 
-export interface DirectoryBindingChange {
-  readonly directoryId: Uint8Array;
-  readonly name: NativePathComponent;
-  readonly before: TreeEntrySnapshot | undefined;
-  readonly after: TreeEntrySnapshot | undefined;
-}
+export type DirectoryBindingChange = PublicWasm<WasmBinding.BrowserBindingChangeResult>;
 
-export interface GenerationDiff {
-  readonly files: readonly FileRecordChange[];
-  readonly bindings: readonly DirectoryBindingChange[];
-  readonly truncated: boolean;
-  readonly work: WorkCounters;
-}
+export type GenerationDiff = PublicWasm<WasmBinding.BrowserGenerationDiffResult>;
 
 export type MergeConflict =
   | { readonly kind: "file"; readonly fileId: Uint8Array }
@@ -773,57 +667,21 @@ export type MergePreparationResult =
       readonly work: WorkCounters;
     };
 
-export interface LiveMutationResult {
-  readonly status:
-    | "committed"
-    | "already-committed"
-    | "conflicted"
-    | "retry-limit"
-    | "fenced"
-    | "idempotency-conflict";
-  readonly generationId: Uint8Array | undefined;
-  readonly epoch: bigint | undefined;
-  readonly sequence: bigint | undefined;
-  readonly conflictCount: number;
-  readonly truncated: boolean;
-  readonly committedFingerprint: Uint8Array | undefined;
-  readonly work: WorkCounters;
-}
+export type LiveMutationResult = PublicWasm<WasmBinding.BrowserLiveMutationResult>;
 
-export interface LiveTransactionResult extends LiveMutationResult {
-  readonly createdFileIds: readonly (Uint8Array | undefined)[];
-}
+export type LiveTransactionResult = PublicWasm<WasmBinding.BrowserLiveTransactionResult>;
 
 export type NamedAttributeClass = "posix-xattr" | "windows-stream" | "mac-resource-fork";
 
-export interface MetadataResult {
-  readonly canonicalBytes: Uint8Array;
-  readonly work: WorkCounters;
-}
+export type MetadataResult = PublicWasm<WasmBinding.BrowserMetadataResult>;
 
-export interface StatResult {
-  readonly exists: boolean;
-  readonly record: FileRecordSnapshot | undefined;
-  readonly metadataCanonicalBytes: Uint8Array | undefined;
-  readonly work: WorkCounters;
-}
+export type StatResult = PublicWasm<WasmBinding.BrowserStatResult>;
 
-export interface NamedAttributeResult {
-  readonly exists: boolean;
-  readonly bytes: Uint8Array | undefined;
-  readonly work: WorkCounters;
-}
+export type NamedAttributeResult = PublicWasm<WasmBinding.BrowserNamedAttributeResult>;
 
-export interface NamedAttributePage {
-  readonly entries: readonly NamedAttributeName[];
-  readonly hasMore: boolean;
-  readonly work: WorkCounters;
-}
+export type NamedAttributePage = PublicWasm<WasmBinding.BrowserNamedAttributePageResult>;
 
-export interface NamedAttributeName {
-  readonly attributeClass: NamedAttributeClass;
-  readonly name: Uint8Array;
-}
+export type NamedAttributeName = PublicWasm<WasmBinding.BrowserNamedAttributeNameResult>;
 
 export type NamedAttributeWriteMode = "upsert" | "create" | "replace";
 export type EmptySpecialKind = "fifo" | "socket" | "mount-boundary";
@@ -831,10 +689,7 @@ export type DeviceKind = "character-device" | "block-device";
 
 export type TransactionOperation = ReadonlyDeep<WasmBinding.TransactionOperation>;
 
-export interface TransactionResult {
-  readonly createdFileIds: readonly (Uint8Array | undefined)[];
-  readonly work: WorkCounters;
-}
+export type TransactionResult = PublicWasm<WasmBinding.BrowserTransactionResult>;
 
 export interface FsCheckout {
   /** Exact bounded work used to acquire this checkout handle. */
