@@ -3085,7 +3085,7 @@ async fn push_subtree_removals<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             }
         }
     }
-    found.sort_by(|left, right| right.0.depth().cmp(&left.0.depth()));
+    found.sort_by_key(|(path, _)| std::cmp::Reverse(path.depth()));
     for (path, record) in found {
         mutations.push(AuthoredMutation::Remove {
             path,
@@ -3881,15 +3881,8 @@ fn capture_host_name(component: &LogicalName) -> Result<std::ffi::OsString, Capt
             Ok(std::ffi::OsString::from_vec(component.as_bytes().to_vec()))
         }
         NameEncoding::WindowsUtf16Le => {
-            let units = component
-                .as_bytes()
-                .chunks_exact(2)
-                .map(|pair| {
-                    let [high, low] = pair else {
-                        unreachable!("chunks_exact(2) always yields exactly 2-byte chunks")
-                    };
-                    u16::from_le_bytes([*high, *low])
-                })
+            let units = crate::kernel::types::utf16le_units(component.as_bytes())
+                .ok_or(CaptureError::UnrepresentablePath)?
                 .collect::<Vec<_>>();
             String::from_utf16(&units)
                 .map(std::ffi::OsString::from)
@@ -3911,15 +3904,8 @@ fn capture_host_name(component: &LogicalName) -> Result<std::ffi::OsString, Capt
             Ok(std::ffi::OsString::from(name))
         }
         NameEncoding::WindowsUtf16Le => {
-            let units = component
-                .as_bytes()
-                .chunks_exact(2)
-                .map(|unit| {
-                    let [high, low] = unit else {
-                        unreachable!("chunks_exact(2) always yields exactly 2-byte chunks")
-                    };
-                    u16::from_le_bytes([*high, *low])
-                })
+            let units = crate::kernel::types::utf16le_units(component.as_bytes())
+                .ok_or(CaptureError::UnrepresentablePath)?
                 .collect::<Vec<_>>();
             Ok(std::ffi::OsString::from_wide(&units))
         }

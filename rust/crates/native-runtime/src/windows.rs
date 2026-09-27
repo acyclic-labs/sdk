@@ -766,13 +766,13 @@ impl DriverState {
             let op = ReadAt::new(fd.clone(), window.offset, buffer);
             match self.proactor.push(op) {
                 PushEntry::Ready(result) => self.read_done(batch, window.parts, requested, result),
-                PushEntry::Pending(mut key) => {
+                PushEntry::Pending(key) => {
                     let id = self.id();
                     let wake = Waker::from(Arc::new(CompletionWake {
                         id,
                         ready: self.ready_sender.clone(),
                     }));
-                    self.proactor.update_waker(&mut key, &wake);
+                    self.proactor.update_waker(&key, &wake);
                     self.pending.insert(
                         id,
                         Pending::Read {
@@ -895,13 +895,13 @@ impl DriverState {
         loop {
             let op = WriteAt::new(file.clone(), offset, bytes);
             match self.proactor.push(op) {
-                PushEntry::Pending(mut key) => {
+                PushEntry::Pending(key) => {
                     let id = self.id();
                     let wake = Waker::from(Arc::new(CompletionWake {
                         id,
                         ready: self.ready_sender.clone(),
                     }));
-                    self.proactor.update_waker(&mut key, &wake);
+                    self.proactor.update_waker(&key, &wake);
                     self.pending.insert(
                         id,
                         Pending::Write {

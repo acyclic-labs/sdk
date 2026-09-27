@@ -542,22 +542,18 @@ fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
                 .ok()
                 .map(std::borrow::Cow::Borrowed)
         }
-        NameEncoding::WindowsUtf16Le => {
-            let units = || {
-                bytes
-                    .chunks_exact(2)
-                    .map(|pair| <[u8; 2]>::try_from(pair).map_or(0, u16::from_le_bytes))
-            };
-            if units().all(|unit| unit < 0x80) {
+        NameEncoding::WindowsUtf16Le => match crate::kernel::types::utf16le_units(bytes) {
+            Some(units) if units.clone().all(|unit| unit < 0x80) => {
                 hasher.write_u8(TEXT);
-                hash_ascii_fold(units().map(|unit| unit.to_le_bytes()[0]), hasher);
+                hash_ascii_fold(units.map(|unit| unit.to_le_bytes()[0]), hasher);
                 return;
             }
-            char::decode_utf16(units())
+            Some(units) => char::decode_utf16(units)
                 .collect::<Result<String, _>>()
                 .ok()
-                .map(std::borrow::Cow::Owned)
-        }
+                .map(std::borrow::Cow::Owned),
+            None => None,
+        },
     };
     let Some(text) = text else {
         hasher.write_u8(RAW);

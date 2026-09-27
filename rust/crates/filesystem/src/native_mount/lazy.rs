@@ -1054,14 +1054,12 @@ where
         for component in path.components() {
             value.push('/');
             let text = if cfg!(target_os = "windows") {
-                if !component.len().is_multiple_of(2) {
-                    return Err(MountSourceError::Invalid(
-                        "native UTF-16 name has an odd byte length".to_owned(),
-                    ));
-                }
-                let units = component
-                    .chunks_exact(2)
-                    .filter_map(|pair| pair.try_into().ok().map(u16::from_le_bytes))
+                let units = crate::kernel::types::utf16le_units(component)
+                    .ok_or_else(|| {
+                        MountSourceError::Invalid(
+                            "native UTF-16 name has an odd byte length".to_owned(),
+                        )
+                    })?
                     .collect::<Vec<_>>();
                 String::from_utf16(&units).map_err(|_| {
                     MountSourceError::Unsupported(

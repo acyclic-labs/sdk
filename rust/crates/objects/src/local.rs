@@ -2666,12 +2666,7 @@ fn decode_lower_hex(encoded: &str, output: &mut [u8]) -> Result<(), LocalObjects
     if encoded.len() != output.len().saturating_mul(2) {
         return Err(LocalObjectsError::Corrupt);
     }
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
-        let &[high, low] = pair else {
-            unreachable!(
-                "the length check above guarantees encoded.len() is even, so chunks_exact(2) never yields a partial chunk"
-            )
-        };
+    for (index, &[high, low]) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let value = (hex_nibble(high)? << 4) | hex_nibble(low)?;
         *output.get_mut(index).ok_or(LocalObjectsError::Corrupt)? = value;
     }
@@ -2840,7 +2835,7 @@ fn segment_table_matches(
             .ok_or(ObjectsError::Unavailable)?,
     )
     .map_err(|_| ObjectsError::Unavailable)?;
-    for record in table.chunks_exact(SEGMENT_RECORD_BYTES) {
+    for record in table.as_chunks::<SEGMENT_RECORD_BYTES>().0 {
         let digest: [u8; 32] = record
             .get(..32)
             .ok_or(ObjectsError::Unavailable)?

@@ -16,7 +16,11 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 Set-StrictMode -Version Latest
 
-$toolchain = '1.94.0'
+# The one place the Rust release is named.
+$pinned = Select-String -LiteralPath (Join-Path $PSScriptRoot '..\rust-toolchain.toml') `
+    -Pattern '^channel = "([0-9]+\.[0-9]+\.[0-9]+)"$'
+if (-not $pinned) { throw 'rust-toolchain.toml pins no exact Rust release' }
+$toolchain = $pinned.Matches[0].Groups[1].Value
 $log = Join-Path $env:RUNNER_TEMP 'rust-setup.log'
 $status = Join-Path $env:RUNNER_TEMP 'rust-setup.status'
 $restored = Join-Path $env:RUNNER_TEMP 'rust-setup.dependencies'
