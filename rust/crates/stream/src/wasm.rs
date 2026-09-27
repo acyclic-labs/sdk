@@ -13,7 +13,8 @@ use tsify_next::Tsify;
 use wasm_bindgen::{JsCast, prelude::*};
 
 use crate::{
-    MAX_COMMAND_BYTES, MemoryStream, StreamError, StreamProvider, memory, wire, wire_codec,
+    MAX_COMMAND_BYTES, MemoryStream, StreamError, StreamProvider, TOKEN_OPERATIONS, memory, wire,
+    wire_codec,
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
@@ -684,18 +685,7 @@ mod http {
     }
 
     fn valid_token_operation(value: &str) -> bool {
-        matches!(
-            value,
-            "list"
-                | "read"
-                | "follow"
-                | "append"
-                | "fork"
-                | "create"
-                | "trim"
-                | "delete"
-                | "commit"
-        )
+        TOKEN_OPERATIONS.contains(&value)
     }
 
     fn valid_token_expiry(value: &str) -> bool {
