@@ -99,7 +99,7 @@ pub struct WorkCounters {
     pub source_bytes_read: u64,
     /// Components in requested source paths.
     pub source_path_components: u64,
-    /// Exact directory entries visited by demand requests.
+    /// Source entries observed by demand or native capture requests.
     pub source_entries_visited: u64,
     /// Bytes returned to an application or export sink.
     pub output_bytes: u64,
@@ -115,7 +115,69 @@ pub struct WorkCounters {
     pub materializations: u64,
 }
 
+/// Invokes `$apply` with every additive counter of [`WorkCounters`], in
+/// declaration order. `peak_allocation_bytes` is a maximum, not a sum, and is
+/// handled by each caller.
+macro_rules! additive_counters {
+    ($apply:ident) => {
+        $apply!(
+            authority_records_read,
+            authority_records_appended,
+            authority_bytes_read,
+            authority_bytes_written,
+            object_probes,
+            backend_read_operations,
+            backend_write_operations,
+            durability_operations,
+            page_reads,
+            page_writes,
+            object_bytes_read,
+            object_bytes_written,
+            bytes_hashed,
+            bytes_copied,
+            bytes_encoded,
+            source_bytes_read,
+            source_path_components,
+            source_entries_visited,
+            output_bytes,
+            items_examined,
+            items_returned,
+            allocation_operations,
+            materializations
+        )
+    };
+}
+
 impl WorkCounters {
+    /// No work at all, as a constant: [`WorkCounters::default`] usable in
+    /// `const` charges such as one page read.
+    pub(crate) const UNCHARGED: Self = Self {
+        authority_records_read: 0,
+        authority_records_appended: 0,
+        authority_bytes_read: 0,
+        authority_bytes_written: 0,
+        object_probes: 0,
+        backend_read_operations: 0,
+        backend_write_operations: 0,
+        durability_operations: 0,
+        page_reads: 0,
+        page_writes: 0,
+        object_bytes_read: 0,
+        object_bytes_written: 0,
+        bytes_hashed: 0,
+        bytes_copied: 0,
+        bytes_encoded: 0,
+        source_bytes_read: 0,
+        source_path_components: 0,
+        source_entries_visited: 0,
+        output_bytes: 0,
+        items_examined: 0,
+        items_returned: 0,
+        allocation_operations: 0,
+        peak_allocation_bytes: 0,
+        materializations: 0,
+    };
+
     /// An explicit unbounded permit for tests and administrative tooling.
     pub const UNBOUNDED: Self = Self {
         authority_records_read: u64::MAX,
@@ -149,45 +211,122 @@ impl WorkCounters {
     /// # Errors
     ///
     /// Returns [`WorkError::Overflow`] if any exact counter cannot be represented.
+    #[inline]
     pub fn checked_add(self, other: Self) -> Result<Self, WorkError> {
-        Ok(Self {
-            authority_records_read: add(self.authority_records_read, other.authority_records_read)?,
-            authority_records_appended: add(
-                self.authority_records_appended,
-                other.authority_records_appended,
-            )?,
-            authority_bytes_read: add(self.authority_bytes_read, other.authority_bytes_read)?,
-            authority_bytes_written: add(
-                self.authority_bytes_written,
-                other.authority_bytes_written,
-            )?,
-            object_probes: add(self.object_probes, other.object_probes)?,
-            backend_read_operations: add(
-                self.backend_read_operations,
-                other.backend_read_operations,
-            )?,
-            backend_write_operations: add(
-                self.backend_write_operations,
-                other.backend_write_operations,
-            )?,
-            durability_operations: add(self.durability_operations, other.durability_operations)?,
-            page_reads: add(self.page_reads, other.page_reads)?,
-            page_writes: add(self.page_writes, other.page_writes)?,
-            object_bytes_read: add(self.object_bytes_read, other.object_bytes_read)?,
-            object_bytes_written: add(self.object_bytes_written, other.object_bytes_written)?,
-            bytes_hashed: add(self.bytes_hashed, other.bytes_hashed)?,
-            bytes_copied: add(self.bytes_copied, other.bytes_copied)?,
-            bytes_encoded: add(self.bytes_encoded, other.bytes_encoded)?,
-            source_bytes_read: add(self.source_bytes_read, other.source_bytes_read)?,
-            source_path_components: add(self.source_path_components, other.source_path_components)?,
-            source_entries_visited: add(self.source_entries_visited, other.source_entries_visited)?,
-            output_bytes: add(self.output_bytes, other.output_bytes)?,
-            items_examined: add(self.items_examined, other.items_examined)?,
-            items_returned: add(self.items_returned, other.items_returned)?,
-            allocation_operations: add(self.allocation_operations, other.allocation_operations)?,
-            peak_allocation_bytes: self.peak_allocation_bytes.max(other.peak_allocation_bytes),
-            materializations: add(self.materializations, other.materializations)?,
-        })
+        // Every counter is summed without branching; one overflow flag
+        // decides the result, so the sum stays in registers instead of
+        // unwinding through two dozen early returns.
+        let mut overflow = false;
+        macro_rules! sum {
+            ($($field:ident),*) => {
+                Self {
+                    $($field: {
+                        let (value, overflowed) = self.$field.overflowing_add(other.$field);
+                        overflow |= overflowed;
+                        value
+                    },)*
+                    peak_allocation_bytes: self.peak_allocation_bytes.max(other.peak_allocation_bytes),
+                }
+            };
+        }
+        let combined = additive_counters!(sum);
+        if overflow {
+            return Err(WorkError::Overflow);
+        }
+        Ok(combined)
+    }
+
+    /// Checks, without changing `self`, that adding `delta` neither overflows
+    /// nor exceeds `budget`: exactly the outcome of `self.checked_add(*delta)`
+    /// followed by [`Self::verify`] of that sum.
+    ///
+    /// # Errors
+    ///
+    /// Returns overflow or the first counter the sum would exceed.
+    #[inline]
+    pub(crate) fn admit(&self, delta: &Self, budget: &WorkBudget) -> Result<(), WorkError> {
+        let mut overflow = false;
+        let mut within = true;
+        macro_rules! check {
+            ($($field:ident),*) => {
+                $({
+                    let (value, overflowed) = self.$field.overflowing_add(delta.$field);
+                    overflow |= overflowed;
+                    within &= value <= budget.$field;
+                })*
+            };
+        }
+        additive_counters!(check);
+        within &= self.peak_allocation_bytes.max(delta.peak_allocation_bytes)
+            <= budget.peak_allocation_bytes;
+        if overflow {
+            return Err(WorkError::Overflow);
+        }
+        if within {
+            return Ok(());
+        }
+        self.checked_add(*delta)?.exceeded(budget)
+    }
+
+    /// Adds `delta` in place once [`Self::admit`] accepts it: exactly
+    /// `*self = self.checked_add(*delta)?` after that sum verifies against
+    /// `budget`, but copies neither counter set. On failure `self` is
+    /// unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns overflow or the first counter the sum would exceed.
+    #[inline]
+    pub(crate) fn charge(&mut self, delta: &Self, budget: &WorkBudget) -> Result<(), WorkError> {
+        self.admit(delta, budget)?;
+        self.add_admitted(delta);
+        Ok(())
+    }
+
+    /// Adds `delta` in place: exactly `*self = self.checked_add(*delta)?`,
+    /// without copying either counter set. On overflow `self` is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkError::Overflow`] if any exact counter cannot be represented.
+    #[inline]
+    pub(crate) fn try_add_assign(&mut self, delta: &Self) -> Result<(), WorkError> {
+        let mut overflow = false;
+        macro_rules! check {
+            ($($field:ident),*) => {
+                $(overflow |= self.$field.checked_add(delta.$field).is_none();)*
+            };
+        }
+        additive_counters!(check);
+        if overflow {
+            return Err(WorkError::Overflow);
+        }
+        self.add_admitted(delta);
+        Ok(())
+    }
+
+    /// Adds `delta` in place after [`Self::admit`] or an equivalent overflow
+    /// check has accepted exactly this `self` and `delta`.
+    #[inline]
+    fn add_admitted(&mut self, delta: &Self) {
+        macro_rules! add_in_place {
+            ($($field:ident),*) => {
+                $(self.$field = self.$field.wrapping_add(delta.$field);)*
+            };
+        }
+        additive_counters!(add_in_place);
+        self.peak_allocation_bytes = self.peak_allocation_bytes.max(delta.peak_allocation_bytes);
+    }
+
+    /// Verifies every counter against `budget` by reference: exactly
+    /// [`Self::verify`], without copying either counter set.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first stable counter name that exceeded its bound.
+    #[inline]
+    pub(crate) fn verify_ref(&self, budget: &WorkBudget) -> Result<(), WorkError> {
+        self.verify_within(budget)
     }
 
     /// Verifies every counter against an admitted hard budget.
@@ -195,7 +334,90 @@ impl WorkCounters {
     /// # Errors
     ///
     /// Returns the first stable counter name that exceeded its bound.
+    #[inline]
     pub fn verify(self, budget: WorkBudget) -> Result<(), WorkError> {
+        self.verify_within(&budget)
+    }
+
+    /// Charges `count` examined items in place.
+    ///
+    /// Exactly equivalent to replacing `self` with its [`Self::checked_add`]
+    /// of `count` items once that sum verifies against `budget`, but copies
+    /// neither counter set: hot traversals charge once per examined item.
+    /// On failure `self` is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns overflow or the first counter exceeding `budget`.
+    #[inline]
+    pub fn charge_items(&mut self, count: u64, budget: &WorkBudget) -> Result<(), WorkError> {
+        let prior = self.items_examined;
+        self.items_examined = add(prior, count)?;
+        self.verify_within(budget).inspect_err(|_| {
+            self.items_examined = prior;
+        })
+    }
+
+    /// Charges `operations` allocations that leave `live_bytes` owned at
+    /// once, in place, with the same exactness and failure behavior as
+    /// [`Self::charge_items`]: peak allocation is the maximum ever live.
+    ///
+    /// # Errors
+    ///
+    /// Returns overflow or the first counter exceeding `budget`.
+    #[inline]
+    pub fn charge_allocation(
+        &mut self,
+        operations: u64,
+        live_bytes: u64,
+        budget: &WorkBudget,
+    ) -> Result<(), WorkError> {
+        let (prior_operations, prior_peak) =
+            (self.allocation_operations, self.peak_allocation_bytes);
+        self.allocation_operations = add(prior_operations, operations)?;
+        self.peak_allocation_bytes = prior_peak.max(live_bytes);
+        self.verify_within(budget).inspect_err(|_| {
+            self.allocation_operations = prior_operations;
+            self.peak_allocation_bytes = prior_peak;
+        })
+    }
+
+    #[inline]
+    fn verify_within(&self, budget: &WorkBudget) -> Result<(), WorkError> {
+        // Charged once per examined item on hot paths: compare every counter
+        // without branching and name the exceeded one only on failure.
+        if (self.authority_records_read <= budget.authority_records_read)
+            & (self.authority_records_appended <= budget.authority_records_appended)
+            & (self.authority_bytes_read <= budget.authority_bytes_read)
+            & (self.authority_bytes_written <= budget.authority_bytes_written)
+            & (self.object_probes <= budget.object_probes)
+            & (self.backend_read_operations <= budget.backend_read_operations)
+            & (self.backend_write_operations <= budget.backend_write_operations)
+            & (self.durability_operations <= budget.durability_operations)
+            & (self.page_reads <= budget.page_reads)
+            & (self.page_writes <= budget.page_writes)
+            & (self.object_bytes_read <= budget.object_bytes_read)
+            & (self.object_bytes_written <= budget.object_bytes_written)
+            & (self.bytes_hashed <= budget.bytes_hashed)
+            & (self.bytes_copied <= budget.bytes_copied)
+            & (self.bytes_encoded <= budget.bytes_encoded)
+            & (self.source_bytes_read <= budget.source_bytes_read)
+            & (self.source_path_components <= budget.source_path_components)
+            & (self.source_entries_visited <= budget.source_entries_visited)
+            & (self.output_bytes <= budget.output_bytes)
+            & (self.items_examined <= budget.items_examined)
+            & (self.items_returned <= budget.items_returned)
+            & (self.allocation_operations <= budget.allocation_operations)
+            & (self.peak_allocation_bytes <= budget.peak_allocation_bytes)
+            & (self.materializations <= budget.materializations)
+        {
+            return Ok(());
+        }
+        self.exceeded(budget)
+    }
+
+    #[cold]
+    fn exceeded(&self, budget: &WorkBudget) -> Result<(), WorkError> {
         let fields = [
             (
                 "authority_records_read",
@@ -302,8 +524,9 @@ impl WorkCounters {
     ///
     /// Returns the exact exceeded counter when already-spent work is outside
     /// the admitted budget.
+    #[inline]
     pub fn remaining(self, budget: WorkBudget) -> Result<WorkBudget, WorkError> {
-        self.verify(budget)?;
+        self.verify_within(&budget)?;
         Ok(WorkBudget {
             authority_records_read: budget.authority_records_read - self.authority_records_read,
             authority_records_appended: budget.authority_records_appended

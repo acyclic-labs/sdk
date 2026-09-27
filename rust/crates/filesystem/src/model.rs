@@ -190,6 +190,27 @@ impl VolumeConfig {
         }
     }
 
+    /// Constructs the host-native filesystem profile for a mounted checkout.
+    #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native(lifecycle: Lifecycle) -> Self {
+        let mut limits = VolumeLimits::default();
+        if cfg!(windows) {
+            // Windows names are encoded as UTF-16LE in the SDK; NTFS admits
+            // 255 code units per component, not 255 encoded bytes.
+            limits.maximum_component_bytes = 255 * 2;
+        }
+        Self {
+            profile: if cfg!(windows) {
+                FilesystemProfile::Windows
+            } else {
+                FilesystemProfile::Posix
+            },
+            limits,
+            ..Self::portable(lifecycle)
+        }
+    }
+
     /// Validates all limits and cross-field semantic requirements.
     ///
     /// # Errors

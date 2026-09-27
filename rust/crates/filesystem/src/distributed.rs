@@ -10,11 +10,11 @@ use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     AppendOutcome as FsAppendOutcome, AuthorityReceipt, AuthorityResult, AuthorityStoreError,
     CreateAuthorityOutcome, FenceOutcome, ObjectId, ObjectRead, ObjectReadRequest,
-    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError, ObjectWrite, ReplayLimit,
-    object_digest,
+    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError, ObjectWrite,
+    PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
 };
 use crate::streams_record::StreamsDurableRecord;
-use crate::{AsyncAuthorityStore, AsyncObjectStore};
+use crate::{AsyncAuthorityStore, AsyncObjectStore, WorkspaceForkCommit, WorkspaceForkOutcome};
 use acyclic_objects::{
     Condition, GetRequest, ObjectsError, ObjectsProvider, PutRequest, ReadTarget, wire,
 };
@@ -29,6 +29,8 @@ const EPOCH_DOMAIN: &[u8] = b"acyclic-fs-stream-epoch-v1\0";
 const LINEAGE_DOMAIN: &[u8] = b"acyclic-fs-stream-lineage-v1\0";
 const LINEAGE_TAIL_DOMAIN: &[u8] = b"acyclic-fs-stream-lineage-tail-v1\0";
 const AUTHORITY_MARKER: &[u8] = b"acyclic-fs-authority-v1\0";
+const PUBLICATION_GATE_FREE: &[u8] = b"acyclic-fs-publication-gate-v1\0free";
+const PUBLICATION_GATE_ACTIVE: &[u8] = b"acyclic-fs-publication-gate-v1\0active\0";
 
 /// Filesystem authority over native hierarchical Streams.
 ///
@@ -67,53 +69,51 @@ struct AuthoritySnapshot {
 }
 
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
-    /// Lists a bounded snapshot of exact filesystem authority identities.
+    /// Lists up to `maximum` exact filesystem authority identities, in order.
     ///
     /// Authorities are native direct children in Stream; no filesystem record or object is read.
     pub async fn authorities(&self, maximum: u32) -> Result<Vec<AuthorityId>, AuthorityStoreError> {
-        let request_limit = maximum.checked_add(1).ok_or_else(|| {
-            AuthorityStoreError::Rejected("authority listing bound is too large".to_owned())
-        })?;
+        /// Restarts tolerated when authorities come and go mid-listing.
+        const RESTARTS: usize = 16;
         let parent = acyclic_stream::StreamPath::new("fs/authorities").map_err(map_stream_error)?;
-        let mut children = self
-            .provider
-            .children(acyclic_stream::ChildrenRequest {
-                parent: Some(parent),
-                limit: request_limit,
-            })
-            .await
-            .map_err(map_stream_error)?;
-        let mut authorities = Vec::new();
-        while let Some(child) = children.next().await {
-            let child = child.map_err(map_stream_error)?;
-            let encoded = child
-                .path
-                .as_str()
-                .strip_prefix("fs/authorities/")
-                .ok_or_else(|| {
-                    AuthorityStoreError::Corrupt(
-                        "Stream authority child escaped its parent".to_owned(),
-                    )
-                })?;
-            if encoded.len() != 32 || encoded.contains('/') {
-                return Err(AuthorityStoreError::Corrupt(
-                    "Stream authority child has a noncanonical identity".to_owned(),
-                ));
+        let page = u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX);
+        'listing: for _ in 0..RESTARTS {
+            let mut authorities = Vec::new();
+            let mut after = None;
+            let mut hierarchy_version = None;
+            loop {
+                let listed = match self
+                    .provider
+                    .children_page(acyclic_stream::ChildrenPageRequest {
+                        parent: Some(parent.clone()),
+                        after: after.take(),
+                        hierarchy_version,
+                        limit: page,
+                    })
+                    .await
+                {
+                    Ok(listed) => listed,
+                    Err(acyclic_stream::StreamError::HierarchyChanged) => continue 'listing,
+                    Err(error) => return Err(map_stream_error(error)),
+                };
+                for child in &listed.children {
+                    authorities.push(authority_child(&child.path)?);
+                }
+                if authorities.len() > maximum as usize {
+                    return Err(AuthorityStoreError::Rejected(
+                        "authority listing bound exceeded".to_owned(),
+                    ));
+                }
+                let Some(next) = listed.next_after else {
+                    return Ok(authorities);
+                };
+                after = Some(next);
+                hierarchy_version = Some(listed.hierarchy_version);
             }
-            let mut bytes = [0_u8; 16];
-            hex::decode_to_slice(encoded, &mut bytes).map_err(|_| {
-                AuthorityStoreError::Corrupt(
-                    "Stream authority child has a noncanonical identity".to_owned(),
-                )
-            })?;
-            authorities.push(AuthorityId::from_bytes(bytes));
         }
-        if authorities.len() > maximum as usize {
-            return Err(AuthorityStoreError::Rejected(
-                "authority listing bound exceeded".to_owned(),
-            ));
-        }
-        Ok(authorities)
+        Err(AuthorityStoreError::Rejected(
+            "authorities kept changing while they were listed".to_owned(),
+        ))
     }
 
     async fn snapshot(
@@ -164,6 +164,59 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         })
     }
 
+    async fn publication_gate(
+        &self,
+        authority_id: AuthorityId,
+    ) -> Result<(u64, Option<OperationId>), AuthorityStoreError> {
+        let path = publication_gate_path(authority_id)?;
+        let tail = self
+            .provider
+            .tail(path.clone())
+            .await
+            .map_err(map_stream_error)?;
+        if tail == 0 {
+            return Err(AuthorityStoreError::Corrupt(
+                "authority publication gate is empty".to_owned(),
+            ));
+        }
+        let record = read_one(self.provider.as_ref(), path, tail - 1).await?;
+        Ok((tail, decode_publication_gate(&record.value)?))
+    }
+
+    /// Verifies that an existing authority carries its publication gate, which
+    /// every authority is created with.
+    async fn verify_publication_gate(
+        &self,
+        authority_id: AuthorityId,
+        mut work: WorkCounters,
+        budget: WorkBudget,
+    ) -> Result<WorkCounters, OperationFailure<AuthorityStoreError>> {
+        let path = publication_gate_path(authority_id).map_err(OperationFailure::before_work)?;
+        work = work
+            .checked_add(authority_read_work(2))
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        admit_authority(work, budget)?;
+        let tail = match self.provider.tail(path.clone()).await {
+            Ok(tail) => tail,
+            Err(acyclic_stream::StreamError::NotFound) => 0,
+            Err(error) => {
+                return Err(OperationFailure::new(map_stream_error(error), work));
+            }
+        };
+        if tail == 0 {
+            return Err(OperationFailure::new(
+                AuthorityStoreError::Corrupt("authority has no publication gate".to_owned()),
+                work,
+            ));
+        }
+        let record = read_one(self.provider.as_ref(), path, tail - 1)
+            .await
+            .map_err(|error| OperationFailure::new(error, work))?;
+        decode_publication_gate(&record.value)
+            .map_err(|error| OperationFailure::new(error, work))?;
+        Ok(work)
+    }
+
     async fn operation(
         &self,
         authority_id: AuthorityId,
@@ -194,7 +247,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         destination_authority: AuthorityId,
         source_generation: GenerationId,
         forked_at: u64,
-    ) -> Result<Option<Head>, AuthorityStoreError> {
+    ) -> Result<Option<AuthoritySnapshot>, AuthorityStoreError> {
         let snapshot = match self.snapshot(destination_authority).await {
             Ok(snapshot) => snapshot,
             Err(AuthorityStoreError::Missing) => return Ok(None),
@@ -213,7 +266,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         if located_tail == forked_at
             && decode_lineage_generation(&selected.value)? == source_generation
         {
-            Ok(Some(snapshot.head))
+            Ok(Some(snapshot))
         } else {
             Err(AuthorityStoreError::Rejected(
                 "destination generation fork conflicts with existing state".to_owned(),
@@ -267,7 +320,392 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     }
 }
 
+impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+    /// Builds the one commit that creates a forked workspace's retention
+    /// authority with its record and the destination authority with its
+    /// creation record, under the creation's own retry identity so the
+    /// operation is found like any appended one.
+    async fn workspace_fork_request(
+        &self,
+        fork: &WorkspaceForkCommit,
+    ) -> Result<(acyclic_stream::CommitRequest, WorkCounters), OperationFailure<AuthorityStoreError>>
+    {
+        let mut request = acyclic_stream::CommitRequest {
+            conditions: Vec::new(),
+            mutations: Vec::new(),
+            idempotency_key: operation_key(fork.destination, fork.creation.operation_id)
+                .map_err(OperationFailure::before_work)?,
+        };
+        let mut work = WorkCounters::default();
+        let lineage = match fork.lineage {
+            Some(source) if source.lineage == crate::GenerationFork::PublishedPrefix => {
+                let (source_lineage, forked_at) = self
+                    .resolve_source_fork_point(source.authority, source.generation)
+                    .await?;
+                work = authority_read_work(3);
+                Some(ForkedLineage {
+                    source_lineage,
+                    forked_at,
+                    source_generation: source.generation,
+                })
+            }
+            Some(_) | None => None,
+        };
+        let (records, bytes) =
+            first_record_commit(&mut request, fork.retention, &fork.retained, None)
+                .map_err(OperationFailure::before_work)?;
+        let (more_records, more_bytes) =
+            first_record_commit(&mut request, fork.destination, &fork.creation, lineage)
+                .map_err(OperationFailure::before_work)?;
+        work = work
+            .checked_add(authority_write_work(
+                records.saturating_add(more_records),
+                bytes.saturating_add(more_bytes),
+            ))
+            .map_err(|error| OperationFailure::before_work(error.into()))?;
+        Ok((request, work))
+    }
+}
+
+impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+    /// Deletes `path` and every path beneath it, deepest first.
+    fn retire_subtree<'a>(
+        &'a self,
+        path: acyclic_stream::StreamPath,
+        work: &'a mut WorkCounters,
+        cancellation: &'a CancellationToken,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), AuthorityStoreError>> + Send + 'a>> {
+        Box::pin(async move {
+            loop {
+                cancellation
+                    .check()
+                    .map_err(|_| AuthorityStoreError::Cancelled)?;
+                let children = self
+                    .provider
+                    .children(acyclic_stream::ChildrenRequest {
+                        parent: Some(path.clone()),
+                        limit: u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX),
+                    })
+                    .await
+                    .map_err(map_stream_error)?
+                    .map(|child| child.map(|child| child.path))
+                    .collect::<Vec<_>>()
+                    .await
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(map_stream_error)?;
+                *work = work.checked_add(authority_read_work(1))?;
+                if children.is_empty() {
+                    break;
+                }
+                for child in children {
+                    self.retire_subtree(child, work, cancellation).await?;
+                }
+            }
+            let key = stream_key(b"retire-path", path.as_str().as_bytes())?;
+            *work = work.checked_add(authority_write_work(0, 0))?;
+            match self.provider.delete(path, key).await {
+                Ok(_)
+                | Err(
+                    acyclic_stream::StreamError::NotFound | acyclic_stream::StreamError::Retired,
+                ) => Ok(()),
+                Err(error) => Err(map_stream_error(error)),
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+    /// Every generation in one authority's lineage, oldest first.
+    pub(crate) async fn generation_lineage(
+        &self,
+        authority: AuthorityId,
+    ) -> Result<Vec<GenerationId>, AuthorityStoreError> {
+        let path = lineage_path(authority)?;
+        let tail = self
+            .provider
+            .tail(path.clone())
+            .await
+            .map_err(map_stream_error)?;
+        let mut lineage = Vec::new();
+        for sequence in 0..tail {
+            let record = read_one(self.provider.as_ref(), path.clone(), sequence).await?;
+            lineage.push(decode_lineage_generation(&record.value)?);
+        }
+        Ok(lineage)
+    }
+
+    /// The lineage length at which one generation is located.
+    pub(crate) async fn generation_locator(
+        &self,
+        authority: AuthorityId,
+        generation: GenerationId,
+    ) -> Result<u64, AuthorityStoreError> {
+        let record = read_one(
+            self.provider.as_ref(),
+            generation_path(authority, generation)?,
+            0,
+        )
+        .await?;
+        decode_lineage_tail(&record.value)
+    }
+}
+
+/// The source lineage prefix a forked destination authority starts from.
+struct ForkedLineage {
+    source_lineage: acyclic_stream::StreamPath,
+    forked_at: u64,
+    source_generation: GenerationId,
+}
+
+/// Adds to `request` everything that creates `authority` with `commit` as
+/// its first record: the authority's genesis paths, its lineage forked from
+/// a source's prefix when `lineage` is given, and, for a record that
+/// publishes a generation, that generation's lineage entry and locator, as
+/// a creation or fork followed by an append would leave them. Returns the
+/// authority records and payload bytes it appends.
+fn first_record_commit(
+    request: &mut acyclic_stream::CommitRequest,
+    authority: AuthorityId,
+    commit: &ProposedCommit,
+    lineage: Option<ForkedLineage>,
+) -> Result<(u64, u64), AuthorityStoreError> {
+    use acyclic_stream::CommitCondition::Absent;
+    use acyclic_stream::CommitMutation::Append;
+    let epoch = Epoch::GENESIS;
+    let sequence = Sequence::new(1);
+    let previous = Head::genesis(epoch);
+    let durable = DurableCommit {
+        epoch,
+        sequence,
+        operation_id: commit.operation_id,
+        fingerprint: commit.fingerprint,
+        previous_digest: previous.digest,
+        digest: authority_commit_digest(
+            authority,
+            epoch,
+            sequence,
+            commit.operation_id,
+            commit.fingerprint,
+            previous.digest,
+            &commit.payload,
+        ),
+        payload: commit.payload.clone(),
+    };
+    let encoded = StreamsDurableRecord::encode(&durable, STREAM_RECORD_LIMIT)
+        .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
+    let mut appended_records = 1_u64;
+    let mut appended_bytes = u64::try_from(durable.payload.len()).unwrap_or(u64::MAX);
+    let root = authority_path(authority)?;
+    let records = records_path(authority)?;
+    let epochs = epochs_path(authority)?;
+    let gate = publication_gate_path(authority)?;
+    for path in [&root, &records, &epochs, &gate] {
+        request.conditions.push(Absent { path: path.clone() });
+    }
+    request.mutations.push(Append {
+        path: root,
+        records: vec![Bytes::from_static(AUTHORITY_MARKER)],
+    });
+    let generation = generation_from_payload(authority, sequence, &durable.payload)?;
+    let (lineage_records, lineage_bytes) = lineage_commit(request, authority, lineage, generation)?;
+    appended_records = appended_records.saturating_add(lineage_records);
+    appended_bytes = appended_bytes.saturating_add(lineage_bytes);
+    request.mutations.push(Append {
+        path: records,
+        records: vec![encode_epoch(GENESIS_DOMAIN, epoch), encoded],
+    });
+    request.mutations.push(Append {
+        path: epochs,
+        records: vec![encode_epoch(EPOCH_DOMAIN, epoch)],
+    });
+    request.mutations.push(Append {
+        path: gate,
+        records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
+    });
+    Ok((appended_records, appended_bytes))
+}
+
+/// Adds a new authority's lineage: the source's forked prefix, if any,
+/// extended in the same fork mutation by the entry of the generation its
+/// first record publishes, and that generation's locator.
+fn lineage_commit(
+    request: &mut acyclic_stream::CommitRequest,
+    authority: AuthorityId,
+    lineage: Option<ForkedLineage>,
+    generation: Option<GenerationId>,
+) -> Result<(u64, u64), AuthorityStoreError> {
+    use acyclic_stream::CommitCondition::Absent;
+    use acyclic_stream::CommitMutation::{Append, Fork};
+    if lineage.is_none() && generation.is_none() {
+        return Ok((0, 0));
+    }
+    let lineage_path = lineage_path(authority)?;
+    request.conditions.push(Absent {
+        path: lineage_path.clone(),
+    });
+    let entries = generation
+        .map(encode_lineage_generation)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut appended_records = u64::try_from(entries.len()).unwrap_or(u64::MAX);
+    let mut appended_bytes = entries.iter().fold(0_u64, |total, entry| {
+        total.saturating_add(u64::try_from(entry.len()).unwrap_or(u64::MAX))
+    });
+    let mut tail = 0;
+    let mut forked_locator = None;
+    match lineage {
+        Some(forked) => {
+            let locator = generation_path(authority, forked.source_generation)?;
+            request.conditions.push(Absent {
+                path: locator.clone(),
+            });
+            request.mutations.push(Fork {
+                source: forked.source_lineage,
+                destination: lineage_path,
+                at_tail: forked.forked_at,
+                records: entries,
+            });
+            request.mutations.push(Append {
+                path: locator.clone(),
+                records: vec![encode_lineage_tail(forked.forked_at)],
+            });
+            tail = forked.forked_at;
+            forked_locator = Some(locator);
+        }
+        None => request.mutations.push(Append {
+            path: lineage_path,
+            records: entries,
+        }),
+    }
+    if let Some(generation) = generation {
+        let locator = generation_path(authority, generation)?;
+        if forked_locator.as_ref() == Some(&locator) {
+            return Err(AuthorityStoreError::Rejected(
+                "a fork cannot publish its source generation again".to_owned(),
+            ));
+        }
+        let locator_record = encode_lineage_tail(tail.saturating_add(1));
+        appended_records = appended_records.saturating_add(1);
+        appended_bytes =
+            appended_bytes.saturating_add(u64::try_from(locator_record.len()).unwrap_or(u64::MAX));
+        request.conditions.push(Absent {
+            path: locator.clone(),
+        });
+        request.mutations.push(Append {
+            path: locator,
+            records: vec![locator_record],
+        });
+    }
+    Ok((appended_records, appended_bytes))
+}
+
 impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityStore<P> {
+    /// One durable commit creates the authority with its first record. An
+    /// authority that already exists, from an earlier attempt or another
+    /// writer, resolves through the ordinary idempotent append instead.
+    async fn create_authority_with_first_record(
+        &self,
+        authority: AuthorityId,
+        commit: ProposedCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<bool> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        // The commit carries the operation's own retry identity, so the
+        // operation is found like any appended one.
+        let mut request = acyclic_stream::CommitRequest {
+            conditions: Vec::new(),
+            mutations: Vec::new(),
+            idempotency_key: operation_key(authority, commit.operation_id)
+                .map_err(OperationFailure::before_work)?,
+        };
+        let (records, bytes) = first_record_commit(&mut request, authority, &commit, None)
+            .map_err(OperationFailure::before_work)?;
+        let mut work = authority_write_work(records, bytes);
+        admit_authority(work, budget)?;
+        match self.provider.commit(request).await {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => {
+                return authority_success(true, work, budget);
+            }
+            // The operation identity already named another request.
+            Err(acyclic_stream::StreamError::IdempotencyMismatch) => {
+                return authority_success(false, work, budget);
+            }
+            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => {}
+            Err(error) => return Err(OperationFailure::new(map_stream_error(error), work)),
+        }
+        // The authority exists: it is this creation exactly when its first
+        // record is this commit. The identity now retains the conflict, so
+        // no append under it is attempted.
+        work = work
+            .checked_add(authority_read_work(2))
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        admit_authority(work, budget)?;
+        let records =
+            records_path(authority).map_err(|error| OperationFailure::new(error, work))?;
+        let first = match self.provider.tail(records.clone()).await {
+            Ok(tail) if tail >= 2 => Some(
+                read_one(self.provider.as_ref(), records, 1)
+                    .await
+                    .and_then(|record| decode_durable(authority, &record.value))
+                    .map_err(|error| OperationFailure::new(error, work))?,
+            ),
+            Ok(_) | Err(acyclic_stream::StreamError::NotFound) => None,
+            Err(error) => return Err(OperationFailure::new(map_stream_error(error), work)),
+        };
+        authority_success(
+            first.is_some_and(|first| {
+                first.sequence == Sequence::new(1)
+                    && first.operation_id == commit.operation_id
+                    && first.fingerprint == commit.fingerprint
+            }),
+            work,
+            budget,
+        )
+    }
+
+    /// One durable commit creates the whole fork. Anything that stops it
+    /// from applying as a whole, such as an authority an earlier attempt or
+    /// another writer created, or a retry whose lineage changed, resolves
+    /// through the idempotent single-authority steps instead.
+    async fn commit_workspace_fork(
+        &self,
+        fork: WorkspaceForkCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<WorkspaceForkOutcome> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let (request, work) = self.workspace_fork_request(&fork).await?;
+        admit_authority(work, budget)?;
+        match self.provider.commit(request).await {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => {
+                return authority_success(WorkspaceForkOutcome::Committed, work, budget);
+            }
+            Ok(acyclic_stream::CommitOutcome::Conflict(_))
+            | Err(acyclic_stream::StreamError::IdempotencyMismatch) => {}
+            Err(error) => return Err(OperationFailure::new(map_stream_error(error), work)),
+        }
+        let stepped = crate::async_storage::commit_workspace_fork_in_steps(
+            self,
+            fork,
+            work.remaining(budget)
+                .map_err(|error| OperationFailure::new(error.into(), work))?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        let work = work
+            .checked_add(stepped.work)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        authority_success(stepped.value, work, budget)
+    }
+
     fn supports_generation_lineage_prefix(&self) -> bool {
         true
     }
@@ -299,16 +737,21 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             epochs_path(destination_authority).map_err(OperationFailure::before_work)?;
         let destination_lineage =
             lineage_path(destination_authority).map_err(OperationFailure::before_work)?;
+        let destination_gate =
+            publication_gate_path(destination_authority).map_err(OperationFailure::before_work)?;
         let destination_locator = generation_path(destination_authority, source.generation)
             .map_err(OperationFailure::before_work)?;
-        if let Some(head) = self
+        if let Some(snapshot) = self
             .existing_fork_destination(destination_authority, source.generation, forked_at)
             .await
             .map_err(OperationFailure::before_work)?
         {
+            let work = self
+                .verify_publication_gate(destination_authority, authority_read_work(8), budget)
+                .await?;
             return authority_success(
-                CreateAuthorityOutcome::Existing(head),
-                authority_read_work(8),
+                CreateAuthorityOutcome::Existing(snapshot.head),
+                work,
                 budget,
             );
         }
@@ -319,6 +762,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 epochs: destination_epochs,
                 locator: destination_locator,
                 lineage: destination_lineage,
+                gate: destination_gate,
             },
             source_lineage,
             forked_at,
@@ -338,7 +782,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 work = work
                     .checked_add(authority_read_work(6))
                     .map_err(|error| OperationFailure::new(error.into(), work))?;
-                let head = self
+                let snapshot = self
                     .existing_fork_destination(destination_authority, source.generation, forked_at)
                     .await
                     .map_err(|error| OperationFailure::new(error, work))?
@@ -351,7 +795,14 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                             work,
                         )
                     })?;
-                authority_success(CreateAuthorityOutcome::Existing(head), work, budget)
+                work = self
+                    .verify_publication_gate(destination_authority, work, budget)
+                    .await?;
+                authority_success(
+                    CreateAuthorityOutcome::Existing(snapshot.head),
+                    work,
+                    budget,
+                )
             }
             Err(error) => Err(OperationFailure::new(map_stream_error(error), work)),
         }
@@ -369,9 +820,12 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
         match self.snapshot(authority_id).await {
             Ok(snapshot) => {
+                let work = self
+                    .verify_publication_gate(authority_id, authority_read_work(2), budget)
+                    .await?;
                 return authority_success(
                     CreateAuthorityOutcome::Existing(snapshot.head),
-                    authority_read_work(2),
+                    work,
                     budget,
                 );
             }
@@ -381,6 +835,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         let records = records_path(authority_id).map_err(OperationFailure::before_work)?;
         let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
         let root = authority_path(authority_id).map_err(OperationFailure::before_work)?;
+        let gate = publication_gate_path(authority_id).map_err(OperationFailure::before_work)?;
         let request = acyclic_stream::CommitRequest {
             conditions: vec![
                 acyclic_stream::CommitCondition::Absent { path: root.clone() },
@@ -390,6 +845,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 acyclic_stream::CommitCondition::Absent {
                     path: epochs.clone(),
                 },
+                acyclic_stream::CommitCondition::Absent { path: gate.clone() },
             ],
             mutations: vec![
                 acyclic_stream::CommitMutation::Append {
@@ -403,6 +859,10 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 acyclic_stream::CommitMutation::Append {
                     path: epochs,
                     records: vec![encode_epoch(EPOCH_DOMAIN, genesis_epoch)],
+                },
+                acyclic_stream::CommitMutation::Append {
+                    path: gate,
+                    records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
                 },
             ],
             idempotency_key: stream_key(b"create", &authority_id.into_bytes())
@@ -447,10 +907,27 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         authority_success(snapshot.head, authority_read_work(2), budget)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one atomic Stream transaction keeps fencing, idempotency, and terminal mapping auditable together"
-    )]
+    /// Deletes the authority's whole subtree of Stream paths, each once
+    /// nothing lives beneath it; Stream then answers every path in it as
+    /// retired. Each deletion has its own retry identity, so an interrupted
+    /// retirement resumes where it stopped.
+    async fn retire_authority(
+        &self,
+        authority_id: AuthorityId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let root = authority_path(authority_id).map_err(OperationFailure::before_work)?;
+        let mut work = WorkCounters::default();
+        self.retire_subtree(root, &mut work, cancellation)
+            .await
+            .map_err(|error| OperationFailure::new(error, work))?;
+        authority_success((), work, budget)
+    }
+
     async fn compare_and_append(
         &self,
         authority_id: AuthorityId,
@@ -460,6 +937,37 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> AuthorityResult<FsAppendOutcome> {
+        self.compare_and_append_guarded(
+            crate::GuardedAppend {
+                authority_id,
+                epoch,
+                expected,
+                commit,
+                permit: PublicationPermit::Unrestricted,
+            },
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one atomic Stream transaction keeps fencing, idempotency, lineage, and terminal mapping auditable together"
+    )]
+    async fn compare_and_append_guarded(
+        &self,
+        request: crate::GuardedAppend,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<FsAppendOutcome> {
+        let crate::GuardedAppend {
+            authority_id,
+            epoch,
+            expected,
+            commit,
+            permit,
+        } = request;
         cancellation
             .check()
             .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -499,6 +1007,43 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 budget,
             );
         }
+        let (gate_tail, active_reservation) = self
+            .publication_gate(authority_id)
+            .await
+            .map_err(OperationFailure::before_work)?;
+        let reservation_admitted = match permit {
+            PublicationPermit::Reservation {
+                operation_id,
+                gate_tail: permitted_tail,
+                expected: reserved_head,
+            } => {
+                permitted_tail == gate_tail
+                    && active_reservation == Some(OperationId::from_bytes(operation_id))
+                    && reserved_head == expected
+            }
+            PublicationPermit::Unrestricted => active_reservation.is_none(),
+            PublicationPermit::Lease {
+                authority_id: permitted_authority,
+                workspace_id,
+                ..
+            } => {
+                let permitted_workspace = crate::WorkspaceId::from_bytes(workspace_id);
+                let derived_authority =
+                    crate::kernel::volume_authority_id(permitted_workspace.volume_id());
+                active_reservation.is_none()
+                    && AuthorityId::from_bytes(permitted_authority) == authority_id
+                    && derived_authority == authority_id
+            }
+        };
+        if !reservation_admitted {
+            return authority_success(
+                FsAppendOutcome::Fenced {
+                    actual_epoch: snapshot.head.epoch,
+                },
+                authority_read_work(3),
+                budget,
+            );
+        }
         let sequence = expected
             .sequence
             .checked_next()
@@ -526,6 +1071,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             })?;
         let records = records_path(authority_id).map_err(OperationFailure::before_work)?;
         let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
+        let gate = publication_gate_path(authority_id).map_err(OperationFailure::before_work)?;
         let mut conditions = vec![
             acyclic_stream::CommitCondition::Tail {
                 path: records.clone(),
@@ -535,7 +1081,33 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 path: epochs,
                 expected: snapshot.epoch_tail,
             },
+            acyclic_stream::CommitCondition::Tail {
+                path: gate.clone(),
+                expected: gate_tail,
+            },
         ];
+        let mut lease_deadline = None;
+        let lease_path = match permit {
+            PublicationPermit::Unrestricted | PublicationPermit::Reservation { .. } => None,
+            PublicationPermit::Lease {
+                authority_id: _,
+                workspace_id,
+                lease_id,
+                expires_at_millis,
+            } => {
+                lease_deadline = Some(expires_at_millis);
+                let path = crate::operation_window::stream_lease_path(
+                    crate::WorkspaceId::from_bytes(workspace_id),
+                    crate::OperationLeaseId::from_bytes(lease_id),
+                )
+                .map_err(|error| OperationFailure::before_work(map_stream_error(error)))?;
+                conditions.push(acyclic_stream::CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 1,
+                });
+                Some(path)
+            }
+        };
         let mut mutations = vec![acyclic_stream::CommitMutation::Append {
             path: records,
             records: vec![encoded],
@@ -627,11 +1199,16 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         };
         let work = authority_write_work(authority_records, authority_bytes);
         admit_authority(work, budget)?;
-        match self.provider.commit(request).await {
+        let commit_result = if let Some(deadline) = lease_deadline {
+            self.provider.commit_before(request, deadline).await
+        } else {
+            self.provider.commit(request).await
+        };
+        match commit_result {
             Ok(acyclic_stream::CommitOutcome::Committed(_)) => {
                 authority_success(FsAppendOutcome::Committed(durable), work, budget)
             }
-            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => {
+            Ok(acyclic_stream::CommitOutcome::Conflict(conflicts)) => {
                 if let Some(existing) = self
                     .operation(authority_id, durable.operation_id)
                     .await
@@ -651,7 +1228,26 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                     .await
                     .map_err(|error| OperationFailure::new(error, work))?
                     .head;
-                let value = if actual.epoch == epoch {
+                let gate_rejected = conflicts.iter().any(|conflict| match conflict {
+                    acyclic_stream::CommitConflict::Tail { path, .. }
+                    | acyclic_stream::CommitConflict::Exists { path }
+                    | acyclic_stream::CommitConflict::Retired { path } => path == &gate,
+                });
+                let permit_rejected = gate_rejected
+                    || lease_path.as_ref().is_some_and(|lease_path| {
+                        conflicts.iter().any(|conflict| match conflict {
+                            acyclic_stream::CommitConflict::Tail { path, .. }
+                            | acyclic_stream::CommitConflict::Exists { path }
+                            | acyclic_stream::CommitConflict::Retired { path } => {
+                                path == lease_path
+                            }
+                        })
+                    });
+                let value = if permit_rejected {
+                    FsAppendOutcome::Fenced {
+                        actual_epoch: actual.epoch,
+                    }
+                } else if actual.epoch == epoch {
                     FsAppendOutcome::Conflict { actual }
                 } else {
                     FsAppendOutcome::Fenced {
@@ -681,6 +1277,216 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                     budget,
                 )
             }
+            Err(acyclic_stream::StreamError::DeadlineElapsed) => authority_success(
+                FsAppendOutcome::Fenced {
+                    actual_epoch: epoch,
+                },
+                work,
+                budget,
+            ),
+            Err(error) => Err(OperationFailure::new(map_stream_error(error), work)),
+        }
+    }
+
+    async fn reserve_publication(
+        &self,
+        authority_id: AuthorityId,
+        expected: Head,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<ReservationOutcome> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let snapshot = self
+            .snapshot(authority_id)
+            .await
+            .map_err(OperationFailure::before_work)?;
+        if snapshot.head != expected {
+            return authority_success(
+                ReservationOutcome::Conflict {
+                    actual: snapshot.head,
+                },
+                authority_read_work(2),
+                budget,
+            );
+        }
+        let gate = publication_gate_path(authority_id).map_err(OperationFailure::before_work)?;
+        let (gate_tail, active) = self
+            .publication_gate(authority_id)
+            .await
+            .map_err(OperationFailure::before_work)?;
+        if active == Some(operation_id) {
+            return authority_success(
+                ReservationOutcome::AlreadyReserved(PublicationReservation {
+                    authority_id,
+                    operation_id,
+                    expected,
+                    gate_tail,
+                }),
+                authority_read_work(3),
+                budget,
+            );
+        }
+        if active.is_some() {
+            return authority_success(
+                ReservationOutcome::Conflict {
+                    actual: snapshot.head,
+                },
+                authority_read_work(3),
+                budget,
+            );
+        }
+        let records = records_path(authority_id).map_err(OperationFailure::before_work)?;
+        let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
+        let request = acyclic_stream::CommitRequest {
+            conditions: vec![
+                acyclic_stream::CommitCondition::Tail {
+                    path: records,
+                    expected: snapshot.record_tail,
+                },
+                acyclic_stream::CommitCondition::Tail {
+                    path: epochs,
+                    expected: snapshot.epoch_tail,
+                },
+                acyclic_stream::CommitCondition::Tail {
+                    path: gate.clone(),
+                    expected: gate_tail,
+                },
+            ],
+            mutations: vec![acyclic_stream::CommitMutation::Append {
+                path: gate,
+                records: vec![encode_active_reservation(operation_id)],
+            }],
+            idempotency_key: publication_reservation_key(
+                b"reserve-publication",
+                authority_id,
+                operation_id,
+                gate_tail,
+            )
+            .map_err(OperationFailure::before_work)?,
+        };
+        let work = authority_write_work(1, 16);
+        admit_authority(work, budget)?;
+        match self.provider.commit(request).await {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => authority_success(
+                ReservationOutcome::Reserved(PublicationReservation {
+                    authority_id,
+                    operation_id,
+                    expected,
+                    gate_tail: gate_tail + 1,
+                }),
+                work,
+                budget,
+            ),
+            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => {
+                let actual = self
+                    .snapshot(authority_id)
+                    .await
+                    .map_err(|error| OperationFailure::new(error, work))?
+                    .head;
+                authority_success(ReservationOutcome::Conflict { actual }, work, budget)
+            }
+            Err(error) => Err(OperationFailure::new(map_stream_error(error), work)),
+        }
+    }
+
+    async fn release_publication(
+        &self,
+        reservation: PublicationReservation,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let release_key = publication_reservation_key(
+            b"release-publication",
+            reservation.authority_id,
+            reservation.operation_id,
+            reservation.gate_tail,
+        )
+        .map_err(OperationFailure::before_work)?;
+        // The atomic release can commit even when its response is lost. Check the
+        // durable idempotency record before inspecting the now-free gate so an
+        // exact retry remains successful after the visible gate has advanced.
+        let mut work = authority_read_work(1);
+        admit_authority(work, budget)?;
+        if let Some(observation) = self
+            .provider
+            .inspect_idempotency(release_key.clone())
+            .await
+            .map_err(|error| OperationFailure::new(map_stream_error(error), work))?
+        {
+            return match observation.outcome {
+                acyclic_stream::IdempotencyOutcome::Commit(
+                    acyclic_stream::CommitOutcome::Committed(_),
+                ) => authority_success((), work, budget),
+                acyclic_stream::IdempotencyOutcome::Commit(
+                    acyclic_stream::CommitOutcome::Conflict(_),
+                ) => Err(OperationFailure::new(
+                    AuthorityStoreError::Rejected(
+                        "publication reservation is no longer active".to_owned(),
+                    ),
+                    work,
+                )),
+                _ => Err(OperationFailure::new(
+                    AuthorityStoreError::Corrupt(
+                        "publication release identity retained another Stream mutation family"
+                            .to_owned(),
+                    ),
+                    work,
+                )),
+            };
+        }
+        let gate = publication_gate_path(reservation.authority_id)
+            .map_err(|error| OperationFailure::new(error, work))?;
+        work = work
+            .checked_add(authority_read_work(2))
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        admit_authority(work, budget)?;
+        let (current_tail, active) = self
+            .publication_gate(reservation.authority_id)
+            .await
+            .map_err(|error| OperationFailure::new(error, work))?;
+        if current_tail != reservation.gate_tail || active != Some(reservation.operation_id) {
+            return Err(OperationFailure::new(
+                AuthorityStoreError::Rejected(
+                    "publication reservation is no longer owned by this operation".to_owned(),
+                ),
+                work,
+            ));
+        }
+        let request = acyclic_stream::CommitRequest {
+            conditions: vec![acyclic_stream::CommitCondition::Tail {
+                path: gate.clone(),
+                expected: reservation.gate_tail,
+            }],
+            mutations: vec![acyclic_stream::CommitMutation::Append {
+                path: gate,
+                records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
+            }],
+            idempotency_key: release_key,
+        };
+        work = work
+            .checked_add(authority_write_work(1, 0))
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        admit_authority(work, budget)?;
+        match self.provider.commit(request).await {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => authority_success((), work, budget),
+            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => Err(OperationFailure::new(
+                AuthorityStoreError::Rejected(
+                    "publication reservation is no longer active".to_owned(),
+                ),
+                work,
+            )),
+            Err(acyclic_stream::StreamError::IdempotencyMismatch) => Err(OperationFailure::new(
+                AuthorityStoreError::Rejected(
+                    "publication reservation release identity was reused".to_owned(),
+                ),
+                work,
+            )),
             Err(error) => Err(OperationFailure::new(map_stream_error(error), work)),
         }
     }
@@ -869,10 +1675,10 @@ fn provider_put_request(bucket: &wire::BucketRef, write: &ObjectWrite) -> PutReq
             ..wire::ObjectMetadata::default()
         },
         condition: Some(Condition::IfAbsent),
-        idempotency_key: Some(format!(
-            "fs-object-{}",
-            hex::encode(write.object_id.digest.as_bytes())
-        )),
+        // IfAbsent on a content-addressed key already makes a retry exact.
+        // A retained idempotency outcome would outlive a collection of the
+        // object and answer a later put of it without storing it.
+        idempotency_key: None,
     }
 }
 
@@ -929,10 +1735,10 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
                 ..wire::ObjectMetadata::default()
             },
             condition: Some(Condition::IfAbsent),
-            idempotency_key: Some(format!(
-                "fs-object-{}",
-                hex::encode(object_id.digest.as_bytes())
-            )),
+            // IfAbsent on a content-addressed key already makes a retry exact.
+            // A retained idempotency outcome would outlive a collection of the
+            // object and answer a later put of it without storing it.
+            idempotency_key: None,
         };
         match self.provider.put(request).await {
             Ok(version) if version.size == byte_count => success((), work, budget),
@@ -1196,12 +2002,47 @@ impl<P: ObjectsProvider> AsyncObjectStore for ProviderObjectStore<P> {
     }
 }
 
+/// The object an [`object_key`] names.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub(crate) fn object_id_from_key(key: &str) -> Option<ObjectId> {
+    let (tag, digest) = key.strip_prefix("fs/v1/")?.split_once('/')?;
+    let kind = crate::storage::ObjectKind::from_canonical_tag(tag.parse().ok()?).ok()?;
+    let digest = <[u8; 32]>::try_from(hex::decode(digest).ok()?).ok()?;
+    let object = ObjectId {
+        kind,
+        digest: crate::foundation::Digest::from_bytes(digest),
+    };
+    (object_key(object) == key).then_some(object)
+}
+
 pub(crate) fn object_key(object_id: ObjectId) -> String {
     format!(
         "fs/v1/{}/{}",
         object_id.kind.canonical_tag(),
         hex::encode(object_id.digest.as_bytes())
     )
+}
+
+/// The authority a direct child of `fs/authorities` names.
+fn authority_child(child: &acyclic_stream::StreamPath) -> Result<AuthorityId, AuthorityStoreError> {
+    let encoded = child
+        .as_str()
+        .strip_prefix("fs/authorities/")
+        .ok_or_else(|| {
+            AuthorityStoreError::Corrupt("Stream authority child escaped its parent".to_owned())
+        })?;
+    if encoded.len() != 32 || encoded.contains('/') {
+        return Err(AuthorityStoreError::Corrupt(
+            "Stream authority child has a noncanonical identity".to_owned(),
+        ));
+    }
+    let mut bytes = [0_u8; 16];
+    hex::decode_to_slice(encoded, &mut bytes).map_err(|_| {
+        AuthorityStoreError::Corrupt(
+            "Stream authority child has a noncanonical identity".to_owned(),
+        )
+    })?;
+    Ok(AuthorityId::from_bytes(bytes))
 }
 
 fn authority_prefix(authority_id: AuthorityId) -> String {
@@ -1228,6 +2069,36 @@ fn epochs_path(
         .map_err(map_stream_error)
 }
 
+fn publication_gate_path(
+    authority_id: AuthorityId,
+) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
+    acyclic_stream::StreamPath::new(format!(
+        "{}/publication-gate",
+        authority_prefix(authority_id)
+    ))
+    .map_err(map_stream_error)
+}
+
+fn encode_active_reservation(operation_id: OperationId) -> Bytes {
+    let mut value = Vec::with_capacity(PUBLICATION_GATE_ACTIVE.len() + 16);
+    value.extend_from_slice(PUBLICATION_GATE_ACTIVE);
+    value.extend_from_slice(&operation_id.into_bytes());
+    Bytes::from(value)
+}
+
+fn decode_publication_gate(value: &[u8]) -> Result<Option<OperationId>, AuthorityStoreError> {
+    if value == PUBLICATION_GATE_FREE {
+        return Ok(None);
+    }
+    let operation = value
+        .strip_prefix(PUBLICATION_GATE_ACTIVE)
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+        .ok_or_else(|| {
+            AuthorityStoreError::Corrupt("invalid publication gate record".to_owned())
+        })?;
+    Ok(Some(OperationId::from_bytes(operation)))
+}
+
 fn durable_from_operation_envelope(
     authority_id: AuthorityId,
     operation_id: OperationId,
@@ -1242,10 +2113,16 @@ fn durable_from_operation_envelope(
         if append.path != records {
             continue;
         }
-        let [record] = append.records.as_slice() else {
-            return Err(AuthorityStoreError::Corrupt(
-                "operation appended an invalid authority record count".to_owned(),
-            ));
+        // An operation that created its authority appends the genesis
+        // record before its own.
+        let record = match append.records.as_slice() {
+            [record] => record,
+            [genesis, record] if decode_epoch(&genesis.value, GENESIS_DOMAIN).is_ok() => record,
+            _ => {
+                return Err(AuthorityStoreError::Corrupt(
+                    "operation appended an invalid authority record count".to_owned(),
+                ));
+            }
         };
         let durable = decode_durable(authority_id, &record.value)?;
         if durable.operation_id != operation_id || retained.replace(durable).is_some() {
@@ -1301,6 +2178,7 @@ struct ForkDestinationPaths {
     epochs: acyclic_stream::StreamPath,
     locator: acyclic_stream::StreamPath,
     lineage: acyclic_stream::StreamPath,
+    gate: acyclic_stream::StreamPath,
 }
 
 /// Builds the one atomic commit that materializes a forked authority's root,
@@ -1328,6 +2206,9 @@ fn fork_generation_commit_request(
             acyclic_stream::CommitCondition::Absent {
                 path: destination.lineage.clone(),
             },
+            acyclic_stream::CommitCondition::Absent {
+                path: destination.gate.clone(),
+            },
         ],
         mutations: vec![
             acyclic_stream::CommitMutation::Append {
@@ -1338,6 +2219,7 @@ fn fork_generation_commit_request(
                 source: source_lineage,
                 destination: destination.lineage,
                 at_tail: forked_at,
+                records: Vec::new(),
             },
             acyclic_stream::CommitMutation::Append {
                 path: destination.records,
@@ -1350,6 +2232,10 @@ fn fork_generation_commit_request(
             acyclic_stream::CommitMutation::Append {
                 path: destination.locator,
                 records: vec![encode_lineage_tail(forked_at)],
+            },
+            acyclic_stream::CommitMutation::Append {
+                path: destination.gate,
+                records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
             },
         ],
         idempotency_key: stream_key(b"fork-authority", &operation_id.into_bytes())
@@ -1365,6 +2251,19 @@ fn operation_key(
     identity[..16].copy_from_slice(&authority_id.into_bytes());
     identity[16..].copy_from_slice(&operation_id.into_bytes());
     stream_key(b"operation", &identity)
+}
+
+fn publication_reservation_key(
+    domain: &[u8],
+    authority_id: AuthorityId,
+    operation_id: OperationId,
+    gate_tail: u64,
+) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
+    let mut identity = Vec::with_capacity(40);
+    identity.extend_from_slice(&authority_id.into_bytes());
+    identity.extend_from_slice(&operation_id.into_bytes());
+    identity.extend_from_slice(&gate_tail.to_le_bytes());
+    stream_key(domain, &identity)
 }
 
 fn encode_epoch(domain: &[u8], epoch: Epoch) -> Bytes {
@@ -1523,6 +2422,7 @@ fn decode_durable(
 fn map_stream_error(error: acyclic_stream::StreamError) -> AuthorityStoreError {
     match error {
         acyclic_stream::StreamError::NotFound => AuthorityStoreError::Missing,
+        acyclic_stream::StreamError::Retired => AuthorityStoreError::Retired,
         acyclic_stream::StreamError::Capacity => {
             AuthorityStoreError::Rejected("Stream capacity exhausted".to_owned())
         }
@@ -1673,11 +2573,307 @@ fn success<T>(value: T, work: WorkCounters, budget: WorkBudget) -> ObjectResult<
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::kernel::{VolumeCreated, encode_publication_payload, encode_volume_created};
     use crate::model::{Lifecycle, VolumeConfig};
     use crate::storage::ObjectKind;
+
+    #[tokio::test]
+    async fn authority_without_publication_gate_fails_closed() {
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
+        let authority_id = AuthorityId::from_bytes([0x31; 16]);
+        let root = authority_path(authority_id).expect("root path");
+        let records = records_path(authority_id).expect("records path");
+        let epochs = epochs_path(authority_id).expect("epochs path");
+        acyclic_stream::StreamProvider::commit(
+            stream.as_ref(),
+            acyclic_stream::CommitRequest {
+                conditions: vec![
+                    acyclic_stream::CommitCondition::Absent { path: root.clone() },
+                    acyclic_stream::CommitCondition::Absent {
+                        path: records.clone(),
+                    },
+                    acyclic_stream::CommitCondition::Absent {
+                        path: epochs.clone(),
+                    },
+                ],
+                mutations: vec![
+                    acyclic_stream::CommitMutation::Append {
+                        path: root,
+                        records: vec![Bytes::from_static(AUTHORITY_MARKER)],
+                    },
+                    acyclic_stream::CommitMutation::Append {
+                        path: records,
+                        records: vec![encode_epoch(GENESIS_DOMAIN, Epoch::GENESIS)],
+                    },
+                    acyclic_stream::CommitMutation::Append {
+                        path: epochs,
+                        records: vec![encode_epoch(EPOCH_DOMAIN, Epoch::GENESIS)],
+                    },
+                ],
+                idempotency_key: stream_key(b"gateless-authority", &authority_id.into_bytes())
+                    .expect("idempotency key"),
+            },
+        )
+        .await
+        .expect("seed gateless authority");
+
+        let authority = StreamAuthorityStore::new(Arc::clone(&stream));
+        let refused = authority
+            .create_authority(
+                authority_id,
+                Epoch::GENESIS,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("an authority without its publication gate is refused");
+        assert!(
+            matches!(refused.error, AuthorityStoreError::Corrupt(_)),
+            "unexpected refusal: {:?}",
+            refused.error
+        );
+        assert!(matches!(
+            acyclic_stream::StreamProvider::tail(
+                stream.as_ref(),
+                publication_gate_path(authority_id).expect("gate path"),
+            )
+            .await,
+            Err(acyclic_stream::StreamError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn existing_authority_rejects_a_corrupt_publication_gate() {
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
+        let authority = StreamAuthorityStore::new(Arc::clone(&stream));
+        let authority_id = AuthorityId::from_bytes([0x35; 16]);
+        let cancellation = CancellationToken::new();
+        authority
+            .create_authority(
+                authority_id,
+                Epoch::GENESIS,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("create authority");
+        let gate = publication_gate_path(authority_id).expect("gate path");
+        acyclic_stream::StreamProvider::commit(
+            stream.as_ref(),
+            acyclic_stream::CommitRequest {
+                conditions: vec![acyclic_stream::CommitCondition::Tail {
+                    path: gate.clone(),
+                    expected: 1,
+                }],
+                mutations: vec![acyclic_stream::CommitMutation::Append {
+                    path: gate,
+                    records: vec![Bytes::from_static(b"invalid-publication-gate")],
+                }],
+                idempotency_key: stream_key(
+                    b"corrupt-publication-gate",
+                    &authority_id.into_bytes(),
+                )
+                .expect("corruption key"),
+            },
+        )
+        .await
+        .expect("append invalid gate record");
+
+        let error = authority
+            .create_authority(
+                authority_id,
+                Epoch::GENESIS,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect_err("corrupt gate must fail authority reopen");
+        assert!(matches!(error.error, AuthorityStoreError::Corrupt(_)));
+    }
+
+    #[tokio::test]
+    async fn publication_reservation_excludes_unreserved_writers() {
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
+        let authority = StreamAuthorityStore::new(Arc::clone(&stream));
+        let authority_id = AuthorityId::from_bytes([0x41; 16]);
+        let cancellation = CancellationToken::new();
+        authority
+            .create_authority(
+                authority_id,
+                Epoch::GENESIS,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("create authority");
+        let head = authority
+            .head(authority_id, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .expect("head")
+            .value;
+        let operation_id = OperationId::from_bytes([0x42; 16]);
+        let reservation = match authority
+            .reserve_publication(
+                authority_id,
+                head,
+                operation_id,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("reserve")
+            .value
+        {
+            ReservationOutcome::Reserved(reservation) => reservation,
+            outcome => panic!("unexpected reservation outcome: {outcome:?}"),
+        };
+        let proposed = ProposedCommit {
+            operation_id: OperationId::from_bytes([0x43; 16]),
+            fingerprint: Digest::from_bytes([0x44; 32]),
+            payload: Bytes::from_static(b"reserved write"),
+        };
+        let ordinary = authority
+            .compare_and_append_guarded(
+                crate::GuardedAppend {
+                    authority_id,
+                    epoch: head.epoch,
+                    expected: head,
+                    commit: proposed.clone(),
+                    permit: PublicationPermit::Unrestricted,
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("ordinary writer is rejected")
+            .value;
+        assert!(matches!(ordinary, FsAppendOutcome::Fenced { .. }));
+        let reserved = authority
+            .compare_and_append_guarded(
+                crate::GuardedAppend {
+                    authority_id,
+                    epoch: head.epoch,
+                    expected: head,
+                    commit: proposed,
+                    permit: PublicationPermit::Reservation {
+                        operation_id: operation_id.into_bytes(),
+                        gate_tail: reservation.gate_tail,
+                        expected: reservation.expected,
+                    },
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("reserved writer")
+            .value;
+        assert!(matches!(reserved, FsAppendOutcome::Committed(_)));
+        let denied_release = authority
+            .release_publication(reservation, WorkBudget::default(), &cancellation)
+            .await
+            .expect_err("release must charge its idempotency read before doing work");
+        assert!(matches!(denied_release.error, AuthorityStoreError::Work(_)));
+        authority
+            .release_publication(reservation, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .expect("release");
+        authority
+            .release_publication(reservation, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .expect("exact release retry is idempotent");
+        let current = authority
+            .head(authority_id, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .expect("head after publication")
+            .value;
+        let reacquired = match authority
+            .reserve_publication(
+                authority_id,
+                current,
+                operation_id,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("reacquire")
+            .value
+        {
+            ReservationOutcome::Reserved(reservation) => reservation,
+            outcome => panic!("unexpected reacquisition outcome: {outcome:?}"),
+        };
+        let forged = PublicationReservation {
+            operation_id: OperationId::from_bytes([0x99; 16]),
+            ..reacquired
+        };
+        assert!(
+            authority
+                .release_publication(forged, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .is_err()
+        );
+        let gate = publication_gate_path(authority_id).expect("gate path");
+        let advanced = acyclic_stream::StreamProvider::commit(
+            stream.as_ref(),
+            acyclic_stream::CommitRequest {
+                conditions: vec![acyclic_stream::CommitCondition::Tail {
+                    path: gate.clone(),
+                    expected: reacquired.gate_tail,
+                }],
+                mutations: vec![acyclic_stream::CommitMutation::Append {
+                    path: gate.clone(),
+                    records: vec![encode_active_reservation(reacquired.operation_id)],
+                }],
+                idempotency_key: stream_key(b"advance-active-gate", &authority_id.into_bytes())
+                    .expect("advance key"),
+            },
+        )
+        .await
+        .expect("advance active gate");
+        assert!(matches!(
+            advanced,
+            acyclic_stream::CommitOutcome::Committed(_)
+        ));
+
+        let release_key = publication_reservation_key(
+            b"release-publication",
+            reacquired.authority_id,
+            reacquired.operation_id,
+            reacquired.gate_tail,
+        )
+        .expect("release key");
+        let retained_conflict = acyclic_stream::StreamProvider::commit(
+            stream.as_ref(),
+            acyclic_stream::CommitRequest {
+                conditions: vec![acyclic_stream::CommitCondition::Tail {
+                    path: gate.clone(),
+                    expected: reacquired.gate_tail,
+                }],
+                mutations: vec![acyclic_stream::CommitMutation::Append {
+                    path: gate,
+                    records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
+                }],
+                idempotency_key: release_key,
+            },
+        )
+        .await
+        .expect("retain release conflict");
+        assert!(matches!(
+            retained_conflict,
+            acyclic_stream::CommitOutcome::Conflict(_)
+        ));
+        authority
+            .release_publication(reacquired, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .expect_err("retained release conflict must not become success");
+        let (_, active) = authority
+            .publication_gate(authority_id)
+            .await
+            .expect("read active gate");
+        assert_eq!(active, Some(reacquired.operation_id));
+    }
 
     #[tokio::test]
     async fn provider_object_batch_reads_once_and_preserves_order()

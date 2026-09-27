@@ -363,7 +363,11 @@ impl MaterializationBackend for TreeBackend {
         Ok(MaterializationPreimage { image })
     }
 
-    async fn apply(&self, edit: &MaterializationEdit) -> Result<(), Self::Error> {
+    async fn apply(
+        &self,
+        edit: &MaterializationEdit,
+        _preimage: &MaterializationPreimage,
+    ) -> Result<(), Self::Error> {
         let mut entries = self.0.lock().map_err(|_| TreeBackendError)?;
         match edit {
             MaterializationEdit::Install { path, image } => {
@@ -505,8 +509,12 @@ impl MaterializationBackend for MutationCrashBackend {
         self.inner.capture(edit).await
     }
 
-    async fn apply(&self, edit: &MaterializationEdit) -> Result<(), Self::Error> {
-        self.inner.apply(edit).await?;
+    async fn apply(
+        &self,
+        edit: &MaterializationEdit,
+        preimage: &MaterializationPreimage,
+    ) -> Result<(), Self::Error> {
+        self.inner.apply(edit, preimage).await?;
         if Self::trips(&self.fail_apply) {
             return Err(TreeBackendError);
         }

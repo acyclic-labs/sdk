@@ -1,7 +1,7 @@
 # Language SDK layout
 
 Rust is the canonical implementation and TypeScript is the first additional
-surface. Future first-class SDKs are added in top-level `python`, `go`, `jvm`,
+surface. Future first-class SDKs are added in top-level `go`, `jvm`,
 `dotnet`, `swift`, `cpp`, `ruby`, `php`, and `dart` directories only when they
 contain installable, tested packages.
 

@@ -12,6 +12,11 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#define RPC_AUTH_SYS_MAX_GROUPS 16
+
+/* The identity of a caller without AUTH_SYS credentials: nobody. */
+#define RPC_NOBODY ((uid_t)-2)
+
 /* Parsed ONC RPC call header */
 typedef struct {
     uint32_t xid;
@@ -22,8 +27,9 @@ typedef struct {
     uint32_t cred_flavor;
     uid_t    cred_uid;
     gid_t    cred_gid;
-    /* Additional AUTH_SYS groups (we store count but skip them) */
+    /* Additional AUTH_SYS groups (RFC 5531 allows at most 16) */
     uint32_t cred_ngroups;
+    gid_t    cred_groups[RPC_AUTH_SYS_MAX_GROUPS];
 } rpc_call_header_t;
 
 /*

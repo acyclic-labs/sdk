@@ -3,10 +3,10 @@
 
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, AuthorityStoreError,
-    CancellationToken, CreateAuthorityOutcome, Digest, EmbeddedCapabilities, Epoch, FenceOutcome,
-    ForkOptions, Fs, GenerationFork, GenerationForkSource, GenerationId, Head, IdempotencyKey,
-    ObjectId, ObjectKind, OperationFailure, OperationId, ProposedCommit, ReplayLimit, Sequence,
-    WorkBudget, object_digest,
+    CancellationToken, CreateAuthorityOutcome, Digest, DistributedFs, EmbeddedCapabilities, Epoch,
+    FenceOutcome, ForkOptions, Fs, GenerationFork, GenerationForkSource, GenerationId, Head,
+    IdempotencyKey, ObjectId, ObjectKind, OperationFailure, OperationId, ProposedCommit,
+    ReplayLimit, Sequence, WorkBudget, object_digest,
 };
 use acyclic_fs::{ProviderObjectStore, StreamAuthorityStore};
 use acyclic_objects::{MemoryObjects, ObjectsProvider};
@@ -361,6 +361,50 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
     child.write_text("/child-only", "child").await?;
     assert!(child.read("/source-only", 16).await.is_err());
     assert!(source.read("/child-only", 16).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn distributed_facade_leases_authorize_workspace_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    let streams = Arc::new(MemoryStream::default());
+    let objects = Arc::new(MemoryObjects::default());
+    let bucket = objects
+        .create_bucket(
+            "distributed-leases".to_owned(),
+            Some("create-distributed-leases".to_owned()),
+        )
+        .await?
+        .bucket
+        .ok_or("bucket identity missing")?;
+    let fs = Fs::new(
+        StreamAuthorityStore::new(streams),
+        ProviderObjectStore::new(objects, bucket),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let workspace = fs.create_workspace("leased").await?;
+    let parent = workspace.head().await?;
+    let distributed = DistributedFs::new(fs, ());
+    let operations = distributed.operations();
+    let lease = operations
+        .begin(workspace.id(), parent.id(), "tool", 1, u64::MAX)
+        .await?;
+    let mut transaction = workspace
+        .begin_transaction(IdempotencyKey::from_bytes([0x81; 16]))
+        .await?;
+    transaction
+        .write_text("/published", "through lease")
+        .await?;
+    assert!(matches!(
+        transaction
+            .commit_with_permit(lease.publication_permit())
+            .await?,
+        acyclic_fs::TransactionCommit::Committed(_)
+    ));
+    assert_eq!(
+        workspace.read("/published", 32).await?,
+        Bytes::from_static(b"through lease")
+    );
     Ok(())
 }
 

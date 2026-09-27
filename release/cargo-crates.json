@@ -1,0 +1,10 @@
+[
+  "acyclic-inference",
+  "acyclic-machines",
+  "acyclic-native-runtime",
+  "acyclic-objects",
+  "acyclic-stream",
+  "acyclic-fs",
+  "acyclic-harness",
+  "acyclic-plugin"
+]

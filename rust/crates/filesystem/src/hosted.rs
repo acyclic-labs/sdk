@@ -6,7 +6,7 @@
 
 use crate::model::FilesystemProfile as EmbeddedProfile;
 use crate::wire::filesystem::v2 as wire;
-use crate::wire::harness::v1 as harness;
+use crate::wire::protocol::v1 as protocol;
 use crate::{
     Digest, Fs, GenerationId, HostedSourceInvalidation, HostedSourceResult, HostedSourceState,
     IdempotencyKey,
@@ -270,13 +270,13 @@ impl HostedFs {
             .max_decoding_message_size(options.maximum_response_bytes)
             .max_encoding_message_size(options.maximum_request_bytes);
         let mut handshake = Request::new(wire::HandshakeRequest {
-            harness: Some(harness::HandshakeRequest {
-                protocol: Some(harness::ProtocolIdentity {
+            protocol: Some(protocol::HandshakeRequest {
+                protocol: Some(protocol::ProtocolIdentity {
                     version: "1".to_owned(),
                     descriptor_digest: crate::descriptor_digest(),
                 }),
-                required: Some(harness::CapabilitySet {
-                    capabilities: vec![harness::Capability {
+                required: Some(protocol::CapabilitySet {
+                    capabilities: vec![protocol::Capability {
                         name: "filesystem".to_owned(),
                         version: "1".to_owned(),
                     }],
@@ -1420,7 +1420,7 @@ impl HostedTransaction {
 fn validate_handshake(
     response: wire::HandshakeResponse,
 ) -> Result<wire::Capabilities, HostedFsError> {
-    let handshake = response.harness.ok_or(HostedFsError::InvalidResponse(
+    let handshake = response.protocol.ok_or(HostedFsError::InvalidResponse(
         "handshake response is absent",
     ))?;
     let protocol = handshake.protocol.ok_or(HostedFsError::InvalidResponse(
@@ -1907,13 +1907,13 @@ mod tests {
         );
 
         let malformed = wire::HandshakeResponse {
-            harness: Some(harness::HandshakeResponse {
-                protocol: Some(harness::ProtocolIdentity {
+            protocol: Some(protocol::HandshakeResponse {
+                protocol: Some(protocol::ProtocolIdentity {
                     version: "1".to_owned(),
                     descriptor_digest: "substituted".to_owned(),
                 }),
-                supported: Some(harness::CapabilitySet {
-                    capabilities: vec![harness::Capability {
+                supported: Some(protocol::CapabilitySet {
+                    capabilities: vec![protocol::Capability {
                         name: "filesystem".to_owned(),
                         version: "1".to_owned(),
                     }],

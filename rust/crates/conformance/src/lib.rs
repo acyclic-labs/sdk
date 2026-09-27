@@ -7,8 +7,8 @@ pub mod runner;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
 use acyclic_machines::{
-    Capability, CompatibilityPolicy, CreateMachine, IdempotencyKey, Image, MachineState,
-    MachinesProvider, MutationOutcome, OperationPhase, Performance, ProviderError,
+    Capability, CompatibilityPolicy, CreateMachine, IdempotencyKey, Image, MachineObservation,
+    MachineState, MachinesProvider, MutationOutcome, OperationPhase, Performance, ProviderError,
 };
 use acyclic_objects::ObjectsProvider;
 use acyclic_stream::StreamProvider;
@@ -94,6 +94,7 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
         (Capability::LiveFork, 0x13, 0x23),
         (Capability::SuspendResume, 0x14, 0x24),
         (Capability::LiveMovement, 0x15, 0x25),
+        (Capability::DiskFork, 0x16, 0x26),
     ];
     for (capability, create_suffix, destroy_suffix) in capability_cases {
         let required = std::collections::BTreeSet::from([capability]);
@@ -248,6 +249,7 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
     {
         return Err("simulation usage receipt is malformed".into());
     }
+    live_fork(provider, &machine).await?;
     provider
         .destroy_checkpoint(checkpoint.id, key(6)?)
         .await
@@ -276,11 +278,97 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
     Ok(())
 }
 
+/// Live fork of a running machine: declared fidelity, exact fresh child set, exact replay,
+/// rebinding rejection, and children joined before their source.
+async fn live_fork(
+    provider: &dyn MachinesProvider,
+    machine: &MachineObservation,
+) -> Result<(), String> {
+    let key = |suffix: u8| {
+        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
+            .map_err(|error| error.to_string())
+    };
+    let count = NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN);
+    let admission = provider.fork_machine(machine.id, count, key(0x30)?).await;
+    let Some(expected) = machine.contract.fork_fidelity() else {
+        return if matches!(admission, Err(ProviderError::Unsupported(_))) {
+            Ok(())
+        } else {
+            Err("live fork without a declared capability did not fail as unsupported".into())
+        };
+    };
+    let outcome = admission.map_err(|error| error.to_string())?;
+    let MutationOutcome::MachineForked {
+        source,
+        fidelity,
+        children,
+    } = &outcome
+    else {
+        return Err("live fork returned the wrong outcome".into());
+    };
+    if *source != machine.id || *fidelity != expected {
+        return Err("live fork substituted its source or declared fidelity".into());
+    }
+    let [first, second] = children.as_slice() else {
+        return Err("live fork identities are not an exact fresh set".into());
+    };
+    if first.id == second.id || first.id == machine.id || second.id == machine.id {
+        return Err("live fork identities are not an exact fresh set".into());
+    }
+    for child in children {
+        if child.state != MachineState::Running
+            || child.contract != machine.contract
+            || child.last_checkpoint.is_some()
+        {
+            return Err("live fork child did not inherit the running source contract".into());
+        }
+    }
+    if provider
+        .fork_machine(machine.id, count, key(0x30)?)
+        .await
+        .map_err(|error| error.to_string())?
+        != outcome
+    {
+        return Err("live fork replay changed its outcome".into());
+    }
+    if !matches!(
+        provider
+            .fork_machine(machine.id, NonZeroU32::MIN, key(0x30)?)
+            .await,
+        Err(ProviderError::Conflict(_))
+    ) {
+        return Err("live fork idempotency key was rebound".into());
+    }
+    if provider
+        .inspect_machine(machine.id)
+        .await
+        .map_err(|error| error.to_string())?
+        .state
+        != MachineState::Running
+    {
+        return Err("live fork source did not keep running".into());
+    }
+    for (suffix, child) in [(0x31, first), (0x32, second)] {
+        if provider
+            .destroy_machine(child.id, key(suffix)?)
+            .await
+            .map_err(|error| error.to_string())?
+            != MutationOutcome::MachineDestroyed(child.id)
+        {
+            return Err("live fork child join substituted its outcome".into());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_memory::MemoryProfile;
+    use acyclic_machines::SimulatedMachines;
+    use acyclic_objects::MemoryObjects;
     use acyclic_objects::ReadTarget;
+    use acyclic_stream::MemoryStream;
+    use std::sync::Arc;
 
     #[test]
     fn exported_stream_inventory_matches_the_executable_suite() {
@@ -288,12 +376,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_profile_conforms() -> Result<(), String> {
-        let profile = MemoryProfile::new();
-        filesystem_smoke(&profile.filesystem).await?;
+    async fn family_memory_providers_conform() -> Result<(), String> {
+        let stream_provider = MemoryStream::default();
+        let (objects_provider, filesystem_bucket) = MemoryObjects::with_default_bucket();
+        let filesystem = acyclic_fs::Fs::from_memory_providers(
+            Arc::new(stream_provider.clone()),
+            Arc::new(objects_provider.clone()),
+            filesystem_bucket.clone(),
+        );
+        filesystem_smoke(&filesystem).await?;
 
-        let stream_children = profile
-            .stream
+        let stream_children = stream_provider
             .children(acyclic_stream::ChildrenRequest {
                 parent: None,
                 limit: 8,
@@ -309,10 +402,9 @@ mod tests {
         }) {
             return Err("filesystem did not publish through the profile's public Stream".into());
         }
-        let filesystem_objects = profile
-            .objects
+        let filesystem_objects = objects_provider
             .list(
-                ReadTarget::Bucket(profile.filesystem_bucket.clone()),
+                ReadTarget::Bucket(filesystem_bucket),
                 "fs/v1/".to_owned(),
                 None,
                 true,
@@ -327,9 +419,22 @@ mod tests {
             );
         }
 
-        stream(&profile.stream).await?;
-        objects(&profile.objects).await?;
-        machines(&profile.machines).await?;
+        stream(&stream_provider).await?;
+        objects(&objects_provider).await?;
+        machines(&SimulatedMachines::default()).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn machines_suite_covers_every_live_fork_fidelity() -> Result<(), String> {
+        use acyclic_machines::SimulatedMachines;
+        use std::collections::BTreeSet;
+        for capabilities in [
+            BTreeSet::from([Capability::DiskFork, Capability::SuspendResume]),
+            BTreeSet::from([Capability::SuspendResume]),
+        ] {
+            machines(&SimulatedMachines::with_capabilities(capabilities)).await?;
+        }
         Ok(())
     }
 }

@@ -14,20 +14,34 @@ The dependency graph is one way:
    customer client adapter, and deterministic in-memory implementation.
 3. Each `typescript/packages/<family>` owns its idiomatic facade and generated
    transport glue. Bun is the only JavaScript workspace tool.
-4. `acyclic-memory` only assembles family providers into a profile. Family
-   semantics never live in the profile crate.
-5. `acyclic-conformance` and `conformance/vectors` own black-box assertions used
+4. Each family's memory provider is constructed directly in qualification code;
+   no public profile or umbrella crate sits between applications and providers.
+5. The private `acyclic-conformance` workspace crate and `conformance/vectors` own black-box assertions used
    unchanged against memory, customer, and Acyclic implementations.
 6. `acyclic-harness` owns durable agent/task semantics, the replaceable runtime,
    and opaque cross-family references. Host adapters consume public provider
    traits; no family crate depends on harness internals.
-7. `acyclic-sdk`, the CLI, and examples are composition leaves.
-8. `acyclic-harness-http` and `acyclic-harness-grpc` contain framing and server
+7. The `acyclic-plugin` CLI and examples are composition leaves.
+8. The optional `acyclic-harness` HTTP and gRPC modules contain framing and server
    dependencies only. Both delegate to the same `HarnessWireApi`; neither owns
    reducer, admission, replay, or scheduling semantics.
-9. `acyclic-harness-filesystem` and `acyclic-harness-machines` are genuine
-   cross-family adapter boundaries. Provider-specific types never enter the
-   pure/WASM harness core.
+9. The optional `acyclic-harness` filesystem and machines modules are genuine
+   cross-family adapter boundaries. Provider-specific types remain feature-gated
+   out of the pure/WASM harness core.
+
+The root `proto/` schemas and Stream's crate-local schema feed Buf.
+`buf.gen.yaml` generates Rust bindings in `generated/rust/` and ESM-ready
+JavaScript plus declarations in `generated/typescript/`. `bun run generate`
+builds each family descriptor and copies the bindings needed by published
+TypeScript packages, using `scripts/generated-bindings.mjs` for descriptors,
+compatibility digests, and package copy paths. Filesystem carries Harness
+messages because its generated schema imports them.
+`bun run check:generated` compares fresh Buf Rust and TypeScript output and
+descriptors with the committed trees, then checks each packaged copy. Rust
+WASM exports are built from the Rust crates and packaged beside the TypeScript
+facades. Every family package's `./proto` export points directly to its
+generated module. Handwritten TypeScript should provide idiomatic APIs and
+runtime boundaries, not duplicate protobuf message definitions.
 
 ## Consumption rules
 
@@ -38,8 +52,7 @@ The dependency graph is one way:
   provider traits. A family never reaches through one client into another service.
 - The harness accepts family provider traits and composes them. Service clients
   and providers never depend on the harness or umbrella SDK.
-- Applications depend on `acyclic-sdk` for a tested profile or on individual
-  family packages for a smaller surface. Switching providers changes bindings
+- Applications depend on the individual family packages they use. Switching providers changes bindings
   and capability checks, not orchestration code.
 - Private services pin an exact public SDK commit or release, implement its public
   contract, and run its black-box conformance suite. Customer contract changes

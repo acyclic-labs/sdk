@@ -1,7 +1,5 @@
-//! Shared synchronous/asynchronous driver for resumable point frontiers.
+//! Shared synchronous driver and machine contract for resumable point frontiers.
 
-use crate::async_storage::AsyncObjectStore;
-use crate::cancellation::CancellationToken;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{ObjectFailure, ObjectId, ObjectRead, ObjectReceipt, ObjectStore};
 
@@ -44,38 +42,6 @@ where
             request.maximum_bytes,
             request.remaining,
         )
-        .map_err(|failure| machine.storage_failure(request.prospective, failure))?;
-        if let Some(output) = machine.accept(request.prospective, &receipt)? {
-            return Ok(output);
-        }
-    }
-}
-
-pub(crate) async fn drive_async<S, M>(
-    store: &S,
-    machine: &mut M,
-    cancellation: &CancellationToken,
-) -> Result<M::Output, M::Failure>
-where
-    S: AsyncObjectStore,
-    M: Machine,
-{
-    loop {
-        if cancellation.is_cancelled() {
-            return Err(machine.cancelled());
-        }
-        if let Some(output) = machine.complete()? {
-            return Ok(output);
-        }
-        let request = machine.prepare_read()?;
-        let receipt = AsyncObjectStore::read(
-            store,
-            request.page,
-            request.maximum_bytes,
-            request.remaining,
-            cancellation,
-        )
-        .await
         .map_err(|failure| machine.storage_failure(request.prospective, failure))?;
         if let Some(output) = machine.accept(request.prospective, &receipt)? {
             return Ok(output);

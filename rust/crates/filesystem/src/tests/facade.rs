@@ -6,6 +6,8 @@ use crate::memory::MemoryObjectStore as TestMemoryObjectStore;
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
 };
+use crate::storage::CreateAuthorityOutcome;
+use crate::storage::object_digest;
 use crate::storage::{AuthorityFailure, AuthorityResult, AuthorityStore};
 use crate::storage::{
     ObjectFailure, ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore, ObjectWrite,
@@ -88,6 +90,49 @@ fn writable_tracking() -> CheckoutMode {
     }
 }
 
+#[tokio::test]
+async fn workspace_fork_reads_the_verified_source_root_once()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tracked = Arc::new(std::sync::Mutex::new(None));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let fs = Fs::new(
+        crate::memory::MemoryAuthorityStore::default(),
+        CountingObjectStore {
+            inner: crate::memory::MemoryObjectStore::default(),
+            tracked: Arc::clone(&tracked),
+            reads: Arc::clone(&reads),
+        },
+        EmbeddedCapabilities::MEMORY,
+    );
+    let source = fs.create_workspace("fork-read-bound").await?;
+    source
+        .write("/payload", Bytes::from(vec![7_u8; 128 * 1_024]))
+        .await?;
+    let generation = source.head().await?;
+    *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
+        kind: ObjectKind::GenerationRoot,
+        digest: generation.id().digest(),
+    });
+    reads.store(0, Ordering::Relaxed);
+
+    source
+        .fork(
+            "fork-read-bound-child",
+            crate::workspace::ForkOptions::from_generation(
+                generation,
+                crate::IdempotencyKey::from_bytes([0x7a; 16]),
+            ),
+        )
+        .await?;
+
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        1,
+        "fork must read the source root to construct the child, but must not prove its closure twice"
+    );
+    Ok(())
+}
+
 fn writable_live() -> CheckoutMode {
     CheckoutMode {
         access: AccessMode::ReadWrite,
@@ -146,7 +191,6 @@ struct CheckoutState {
     base_root: GenerationRoot,
     root: GenerationRoot,
     authority_head: Option<Head>,
-    pending_operations: Vec<Mutation>,
     prepared_merge_parent: Option<ObjectId>,
     dependencies: CheckoutDependencies,
     mode: CheckoutMode,
@@ -154,15 +198,14 @@ struct CheckoutState {
 
 fn checkout_state<A, O>(checkout: &Checkout<A, O>) -> CheckoutState {
     CheckoutState {
-        base_generation_root: checkout.base_generation_root,
+        base_generation_root: checkout.root.base(),
         generation_root: checkout.generation_root,
         base_file_table: checkout.base_file_table,
         base_root: checkout.base_root.clone(),
         root: checkout.root.clone(),
         authority_head: checkout.authority_head,
-        pending_operations: checkout.pending_operations.clone(),
         prepared_merge_parent: checkout.prepared_merge_parent,
-        dependencies: checkout.dependencies.clone(),
+        dependencies: checkout.dependencies.proof().dependencies.clone(),
         mode: checkout.mode,
     }
 }
@@ -213,6 +256,24 @@ struct PostPutObjectStore {
 struct PostAppendAuthorityStore {
     inner: Arc<crate::memory::MemoryAuthorityStore>,
     control: Arc<FaultControl>,
+}
+
+struct CountingObjectStore {
+    inner: crate::memory::MemoryObjectStore,
+    tracked: Arc<std::sync::Mutex<Option<ObjectId>>>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl CountingObjectStore {
+    fn record(&self, object_id: ObjectId) {
+        if self
+            .tracked
+            .lock()
+            .is_ok_and(|tracked| tracked.as_ref() == Some(&object_id))
+        {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 impl FaultAuthorityStore {
@@ -448,6 +509,74 @@ impl AsyncObjectStore for FaultObjectStore {
         if self.control.should_fail() {
             return Err(Self::failure(true));
         }
+        ObjectStore::contains(&self.inner, object_id, budget)
+    }
+}
+
+impl AsyncObjectStore for CountingObjectStore {
+    async fn put(
+        &self,
+        object_id: ObjectId,
+        bytes: Bytes,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        ObjectStore::put(&self.inner, object_id, bytes, budget)
+    }
+
+    async fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        ObjectStore::put_many(&self.inner, writes, budget)
+    }
+
+    async fn read(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<ObjectRead> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        self.record(object_id);
+        ObjectStore::read(&self.inner, object_id, maximum_bytes, budget)
+    }
+
+    async fn read_many(
+        &self,
+        requests: &[ObjectReadRequest],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<Vec<ObjectRead>> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        for request in requests {
+            self.record(request.object_id);
+        }
+        ObjectStore::read_many(&self.inner, requests, budget)
+    }
+
+    async fn contains(
+        &self,
+        object_id: ObjectId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<bool> {
+        cancellation
+            .check()
+            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         ObjectStore::contains(&self.inner, object_id, budget)
     }
 }
@@ -1119,6 +1248,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
             path: path("fault-authored-content")?,
             content: staged,
             metadata: empty_metadata(),
+            file_id: None,
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -1515,32 +1645,48 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     ));
     assert_eq!(detached_attributes.value.entries.len(), 1);
     assert_eq!(detached_attributes.value.entries[0].name, attribute);
-    through_every_detached_cut!(detached.write_range(
-        256,
-        Bytes::from_static(b"detached atomic retry"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    through_every_detached_cut!(detached.zero_range(
-        ByteRange {
-            offset: 512,
-            length: 32,
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::Write {
+            offset: 256,
+            bytes: Bytes::from_static(b"detached atomic retry")
         },
-        true,
-        false,
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_detached_cut!(detached.preallocate(
-        ByteRange {
-            offset: 768,
-            length: 32,
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::ZeroRange {
+            range: ByteRange {
+                offset: 512,
+                length: 32,
+            },
+            allocated: true,
+            extend: false
         },
-        false,
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_detached_cut!(detached.resize(2_048, WorkBudget::UNBOUNDED, &cancellation,));
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::Preallocate {
+            range: ByteRange {
+                offset: 768,
+                length: 32,
+            },
+            keep_size: false
+        },
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ));
+    through_every_detached_cut!(detached.change_content(
+        ContentChange::Resize {
+            logical_bytes: 2_048
+        },
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ));
     through_every_detached_cut!(detached.remove_named_attribute(
         attribute.clone(),
         WorkBudget::UNBOUNDED,
@@ -2885,32 +3031,49 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
         .ok_or("lookup blocked")??;
     assert!(absent.value.record.is_none());
 
-    poll_ready(detached.write_range(
-        0,
-        Bytes::from_static(b"open"),
+    poll_ready(detached.change_content(
+        ContentChange::Write {
+            offset: 0,
+            bytes: Bytes::from_static(b"open"),
+        },
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("detached write blocked")??;
-    poll_ready(detached.write_range(4, Bytes::new(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("detached empty write blocked")??;
-    poll_ready(detached.preallocate(
-        ByteRange {
-            offset: 128,
-            length: 64,
+    poll_ready(detached.change_content(
+        ContentChange::Write {
+            offset: 4,
+            bytes: Bytes::new(),
         },
-        false,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("detached empty write blocked")??;
+    poll_ready(detached.change_content(
+        ContentChange::Preallocate {
+            range: ByteRange {
+                offset: 128,
+                length: 64,
+            },
+            keep_size: false,
+        },
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
     .ok_or("detached preallocation blocked")??;
-    poll_ready(detached.zero_range(
-        ByteRange {
-            offset: 64,
-            length: 16,
+    poll_ready(detached.change_content(
+        ContentChange::ZeroRange {
+            range: ByteRange {
+                offset: 64,
+                length: 16,
+            },
+            allocated: false,
+            extend: false,
         },
-        false,
-        false,
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -2926,8 +3089,13 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
     .ok_or("detached read blocked")??;
     assert_eq!(&read.value.bytes[..4], b"open");
     assert_eq!(&read.value.bytes[64..80], &[0; 16]);
-    poll_ready(detached.resize(192, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("detached resize blocked")??;
+    poll_ready(detached.change_content(
+        ContentChange::Resize { logical_bytes: 192 },
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("detached resize blocked")??;
     assert_eq!(detached.logical_bytes(), 192);
     poll_ready(detached.remove_named_attribute(
         attribute.clone(),
@@ -3278,6 +3446,95 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
             ))
     ));
 
+    Ok(())
+}
+
+#[test]
+fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([190; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let file = path("file")?;
+    let mut seed = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed checkout blocked")??
+    .value;
+    let file_id = poll_ready(seed.create_file(
+        file.clone(),
+        Bytes::from_static(b"abc"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed create blocked")??
+    .value;
+    poll_ready(seed.commit(
+        OperationId::from_bytes([190; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed commit blocked")??;
+
+    let mut reader = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        tracking(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("reader checkout blocked")??
+    .value;
+    let at_eof = poll_ready(reader.read_file_up_to_by_id(
+        file_id,
+        3,
+        16,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("EOF read blocked")??;
+    assert!(at_eof.value.bytes.is_empty());
+
+    let mut writer = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("writer checkout blocked")??
+    .value;
+    poll_ready(writer.write_file(
+        file,
+        3,
+        Bytes::from_static(b"d"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("append blocked")??;
+    poll_ready(writer.commit(
+        OperationId::from_bytes([191; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("append commit blocked")??;
+    let rebase = poll_ready(reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("reader rebase blocked")??;
+    assert!(matches!(
+        rebase.value,
+        RebaseDecision::Conflicted { ref conflicts, .. }
+            if conflicts.iter().any(|conflict| matches!(
+                conflict.region,
+                DependencyRegion::FileLength(actual) if actual == file_id
+            ))
+    ));
     Ok(())
 }
 
@@ -3678,7 +3935,7 @@ fn inline_extent_plans_validate_ranges_and_capture_identity_dependencies()
     ))
     .ok_or("inline identity plan blocked")??;
     assert!(plan.value.is_none());
-    assert_eq!(checkout.dependencies.len(), 1);
+    assert_eq!(checkout.dependencies.proof().len(), 1);
 
     let invalid = poll_ready(checkout.plan_file_extents_by_id(
         file_id,
@@ -3697,7 +3954,7 @@ fn inline_extent_plans_validate_ranges_and_capture_identity_dependencies()
         invalid.error,
         FsError::FileRead(FileRangeReadError::InvalidRange)
     ));
-    assert_eq!(checkout.dependencies.len(), 1);
+    assert_eq!(checkout.dependencies.proof().len(), 1);
 
     let path_plan = poll_ready(checkout.plan_file_extents(
         &file,
@@ -4634,6 +4891,93 @@ fn authored_transaction_is_atomic_and_preserves_result_positions()
 }
 
 #[test]
+fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let mut limited = config();
+    limited.limits.maximum_mutations_per_batch = 2;
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([244; 16]),
+        limited,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut checkout = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    let created = (0..5)
+        .map(|index| {
+            Ok(AuthoredMutation::CreateFile {
+                path: path(&format!("bulk{index}"))?,
+                bytes: Bytes::from_static(b"ok"),
+                metadata: empty_metadata(),
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    poll_ready(checkout.apply_authored_bulk_transaction(
+        created,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("bulk transaction blocked")??;
+    for index in 0..5 {
+        assert!(
+            poll_ready(checkout.lookup_no_follow(
+                &path(&format!("bulk{index}"))?,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ))
+            .ok_or("bulk lookup blocked")??
+            .value
+            .record
+            .is_some()
+        );
+    }
+    let failed = poll_ready(checkout.apply_authored_bulk_transaction(
+        vec![
+            AuthoredMutation::CreateFile {
+                path: path("should-not-appear")?,
+                bytes: Bytes::from_static(b"no"),
+                metadata: empty_metadata(),
+            },
+            AuthoredMutation::CreateFile {
+                path: path("should-not-appear-either")?,
+                bytes: Bytes::from_static(b"no"),
+                metadata: empty_metadata(),
+            },
+            AuthoredMutation::CreateFile {
+                path: path("bulk0")?,
+                bytes: Bytes::from_static(b"duplicate"),
+                metadata: empty_metadata(),
+            },
+        ],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("failing bulk transaction blocked")?;
+    assert!(failed.is_err());
+    assert!(
+        poll_ready(checkout.lookup_no_follow(
+            &path("should-not-appear")?,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("failed bulk lookup blocked")??
+        .value
+        .record
+        .is_none()
+    );
+    Ok(())
+}
+
+#[test]
 fn authored_transaction_reuses_a_staged_file_metadata_object()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -5254,6 +5598,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
     let source = path("source")?;
     let destination = path("destination")?;
     let streamed = path("streamed")?;
+    let streamed_identity = FileId::from_bytes([199; 16]);
     let hard_link = path("hard-link")?;
     let renamed = path("renamed")?;
     let mut replacement_metadata = empty_metadata();
@@ -5284,6 +5629,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
                 path: streamed.clone(),
                 content: staged_create,
                 metadata: empty_metadata(),
+                file_id: Some(streamed_identity),
             },
             AuthoredMutation::CreateSymbolicLink {
                 path: path("symbolic")?,
@@ -5357,6 +5703,10 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
     .ok_or("complete authored transaction blocked")??;
     assert_eq!(transaction.value.created_file_ids.len(), 17);
     assert_eq!(
+        transaction.value.created_file_ids.get(4),
+        Some(&Some(streamed_identity))
+    );
+    assert_eq!(
         transaction
             .value
             .created_file_ids
@@ -5380,6 +5730,20 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
         .bytes
         .as_ref(),
         b"streamedTAIL"
+    );
+    assert!(
+        poll_ready(checkout.apply_authored_transaction(
+            vec![AuthoredMutation::CreateFileFromContent {
+                path: path("duplicate-source-identity")?,
+                content: staged_create,
+                metadata: empty_metadata(),
+                file_id: Some(streamed_identity),
+            }],
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("duplicate identity transaction blocked")?
+        .is_err()
     );
     assert_eq!(
         poll_ready(checkout.read_file_range(
@@ -6304,9 +6668,12 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         FsError::FileRead(FileRangeReadError::InvalidRange)
     ));
     assert_eq!(*detached_read_failure.work, WorkCounters::default());
-    let detached_failure = poll_ready(detached.write_range(
-        0,
-        Bytes::from_static(b"12345"),
+    let detached_failure = poll_ready(detached.change_content(
+        ContentChange::Write {
+            offset: 0,
+            bytes: Bytes::from_static(b"12345"),
+        },
+        None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
@@ -7340,9 +7707,12 @@ fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
         "cancelled detached read"
     );
     cancelled!(
-        detached.write_range(
-            0,
-            Bytes::from_static(b"x"),
+        detached.change_content(
+            ContentChange::Write {
+                offset: 0,
+                bytes: Bytes::from_static(b"x")
+            },
+            None,
             WorkBudget::UNBOUNDED,
             &cancelled_token,
         ),
@@ -7535,7 +7905,7 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     ))
     .ok_or("inverse removal blocked")??;
     assert!(!inverse.has_pending_mutations());
-    assert!(inverse.dependencies.is_empty());
+    assert!(inverse.dependencies.proof().is_empty());
     let inverse_commit = poll_ready(inverse.commit(
         OperationId::from_bytes([16; 16]),
         WorkBudget::UNBOUNDED,
@@ -7846,10 +8216,10 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     assert_eq!(equal.work.object_probes, 0);
     assert_eq!(equal.work.backend_read_operations, 3);
 
-    assert!(!dirty.dependencies.is_empty());
+    assert!(!dirty.dependencies.proof().is_empty());
     poll_ready(dirty.discard(WorkBudget::UNBOUNDED, &cancellation)).ok_or("discard blocked")??;
     assert!(!dirty.has_pending_mutations());
-    assert!(dirty.dependencies.is_empty());
+    assert!(dirty.dependencies.proof().is_empty());
     assert!(
         poll_ready(
             dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,)
@@ -7876,18 +8246,116 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     Ok(())
 }
 
+#[test]
+fn private_candidate_rebases_more_changes_than_one_mutation_batch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let mut limited = config();
+    limited.limits.maximum_mutations_per_batch = 8;
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([241; 16]),
+        limited,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut local = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_manual(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("local checkout blocked")??
+    .value;
+    let mut remote = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote checkout blocked")??
+    .value;
+    for index in 0..20 {
+        poll_ready(local.create_file(
+            path(&format!("local{index}"))?,
+            Bytes::from_static(b"local"),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("local mutation blocked")??;
+    }
+    poll_ready(remote.create_file(
+        path("remote")?,
+        Bytes::from_static(b"remote"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote mutation blocked")??;
+    poll_ready(remote.commit(
+        OperationId::from_bytes([242; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote commit blocked")??;
+    assert!(matches!(
+        poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("rebase blocked")??
+            .value,
+        RebaseDecision::Safe { .. }
+    ));
+    assert!(matches!(
+        poll_ready(local.commit(
+            OperationId::from_bytes([243; 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("local commit blocked")??
+        .value,
+        CheckoutCommitOutcome::Committed { .. }
+    ));
+    for index in 0..20 {
+        assert!(
+            poll_ready(local.lookup_no_follow(
+                &path(&format!("local{index}"))?,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ))
+            .ok_or("local lookup blocked")??
+            .value
+            .record
+            .is_some()
+        );
+    }
+    assert!(
+        poll_ready(local.lookup_no_follow(&path("remote")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .ok_or("remote lookup blocked")??
+            .value
+            .record
+            .is_some()
+    );
+    Ok(())
+}
+
 #[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_facade_reopens_durable_volume_and_exact_generation()
 -> Result<(), Box<dyn std::error::Error>> {
+    use fs2::FileExt as _;
+
     let directory = tempfile::tempdir()?;
     let volume_id = VolumeId::from_bytes([48; 16]);
     let cancellation = CancellationToken::new();
     let generation_id;
+    let root_released;
     let mut durable = config();
     durable.lifecycle = Lifecycle::Durable;
     {
         let fs = Fs::local(LocalOptions::new(directory.path())).await?;
+        root_released = fs
+            .local_root_release_barrier()
+            .ok_or("local root has no release barrier")?;
         let created = fs
             .create_volume_with_id(volume_id, durable, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
@@ -7901,6 +8369,20 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
             )
             .await?;
         generation_id = checkout.value.generation_id();
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !root_released.is_released() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    for relative in ["stream/stream.lock", "objects/owner.lock"] {
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(directory.path().join(relative))?;
+        lock.try_lock_exclusive()?;
+        lock.unlock()?;
     }
     let objects_journal = directory.path().join("objects").join("mutations.log");
     let journal_bytes_before_reopen = std::fs::metadata(&objects_journal)?.len();
@@ -7924,6 +8406,152 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
         .await?;
     assert_eq!(exact.value.generation_id(), generation_id);
     assert_eq!(exact.value.volume_id(), volume_id);
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[test]
+fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn std::error::Error>> {
+    struct BlockingProviderDrop {
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl Drop for BlockingProviderDrop {
+        fn drop(&mut self) {
+            let _ = self.entered.send(());
+            let _ = self.release.recv();
+        }
+    }
+
+    let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+    let ownership = Arc::clone(&lifecycle).try_lock_owned()?;
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+    let inner = FsInner {
+        authority: BlockingProviderDrop {
+            entered: entered_tx,
+            release: release_rx,
+        },
+        objects: (),
+        capabilities: EmbeddedCapabilities::MEMORY,
+        workspace_namespace: [0; 16],
+        path_index: Arc::new(crate::path_index::MemoryGenerationPathIndex::default()),
+        _local_root_lifecycle: Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),
+    };
+    let dropping = std::thread::spawn(move || drop(inner));
+
+    entered_rx.recv()?;
+    assert!(
+        Arc::clone(&lifecycle).try_lock_owned().is_err(),
+        "replacement root ownership must remain fenced while providers are dropping"
+    );
+    release_tx.send(())?;
+    dropping
+        .join()
+        .map_err(|_| "provider drop thread panicked")?;
+    Arc::clone(&lifecycle).try_lock_owned()?;
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn detached_provider_handles_retain_local_root_ownership()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+    let ownership = Arc::clone(&lifecycle).lock_owned().await;
+    let fs = Fs::open_local_unshared(
+        LocalOptions::new(directory.path()),
+        Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),
+    )
+    .await?;
+    let stream = fs.inner.authority.provider();
+    let objects = Arc::clone(fs.inner.objects.inner().inner().provider());
+    drop(fs);
+
+    assert!(
+        Arc::clone(&lifecycle).try_lock_owned().is_err(),
+        "a detached Stream or Objects handle must retain the canonical root gate"
+    );
+    drop(stream);
+    assert!(
+        Arc::clone(&lifecycle).try_lock_owned().is_err(),
+        "the root gate must remain held until every detached provider is gone"
+    );
+    drop(objects);
+    Arc::clone(&lifecycle).try_lock_owned()?;
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test]
+async fn cancelled_local_open_keeps_the_canonical_lifecycle_gate()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let options = LocalOptions::new(directory.path());
+    let first = Fs::local(options.clone()).await?;
+    let retained = first
+        .inner
+        ._local_root_lifecycle
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("local root ownership"))?
+        .clone();
+    drop(first);
+
+    let retry_options = options.clone();
+    let opening = tokio::spawn(async move { Fs::local(retry_options).await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(!opening.is_finished());
+    let cancelled_options = options.clone();
+    let cancelled = tokio::spawn(async move { Fs::local(cancelled_options).await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(!cancelled.is_finished());
+    cancelled.abort();
+    assert!(cancelled.await.is_err_and(|error| error.is_cancelled()));
+
+    drop(retained);
+    let reopened = tokio::time::timeout(std::time::Duration::from_secs(2), opening).await???;
+    let coalesced = Fs::local(options).await?;
+    assert!(reopened.same_deployment(&coalesced));
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test]
+async fn cancelled_local_initialization_keeps_root_owned_until_startup_stops()
+-> Result<(), Box<dyn std::error::Error>> {
+    let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+    let ownership = Arc::clone(&lifecycle).lock_owned().await;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let opening = tokio::spawn(run_local_initialization(
+        ownership,
+        move |ownership| async move {
+            let _ownership = ownership;
+            let _ = started_tx.send(());
+            let _ = release_rx.await;
+            drop(_ownership);
+        },
+    ));
+
+    started_rx.await?;
+    opening.abort();
+    let cancelled = opening.await;
+    assert!(
+        cancelled.as_ref().is_err_and(|error| error.is_cancelled()),
+        "opening caller must be cancelled: {cancelled:?}"
+    );
+    assert!(
+        Arc::clone(&lifecycle).try_lock_owned().is_err(),
+        "caller cancellation must not release ownership from an active startup worker"
+    );
+    let _ = release_tx.send(());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        Arc::clone(&lifecycle).lock_owned(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -8381,9 +9009,46 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
     Ok(())
 }
 
+/// A rejected open must not leave a provider opening behind it: once the live
+/// engine drops, its providers belong to the next opener at once.
+#[cfg(feature = "local")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rejected_open_leaves_no_provider_opening_behind_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let options = LocalOptions::new(directory.path());
+    for iteration in 0..200_u32 {
+        let fs = Fs::local(options.clone()).await?;
+        assert!(
+            Fs::open_local_unshared(options.clone(), None)
+                .await
+                .is_err(),
+            "a live engine excludes a second owner"
+        );
+        drop(fs);
+        drop(
+            acyclic_objects::LocalObjects::open(
+                directory.path().join("objects"),
+                acyclic_objects::LocalObjectsLimits::default(),
+            )
+            .await
+            .map_err(|error| format!("objects still owned after iteration {iteration}: {error}"))?,
+        );
+        drop(
+            acyclic_stream::LocalStream::open(
+                directory.path().join("stream"),
+                acyclic_stream::LocalStreamLimits::default(),
+            )
+            .await
+            .map_err(|error| format!("stream still owned after iteration {iteration}: {error}"))?,
+        );
+    }
+    Ok(())
+}
+
 #[cfg(feature = "local")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines()
+async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let options = LocalOptions::new(directory.path());
@@ -8421,17 +9086,26 @@ async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines(
             &cancellation,
         )
         .await?;
-    assert!(
-        Fs::collect_local_garbage(
-            options.clone(),
-            8,
-            1_024,
+    // An open checkout's unpublished work survives a collection, and so
+    // does everything its publication then names.
+    let pending = path("pending.txt")?;
+    checkout
+        .create_file(
+            pending.clone(),
+            Bytes::from(vec![b'p'; 256 * 1_024]),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
-        .await
-        .is_err()
-    );
+        .await?;
+    fs.collect_local_garbage(None, &cancellation).await?;
+    checkout
+        .commit(
+            OperationId::from_bytes([50; 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    fs.collect_local_garbage(None, &cancellation).await?;
     drop(checkout);
     drop(volume);
     drop(fs);
@@ -8463,12 +9137,11 @@ async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines(
     )
     .await?;
     drop(objects);
-    let collected =
-        Fs::collect_local_garbage(options, 8, 1_024, WorkBudget::UNBOUNDED, &cancellation).await?;
-    assert!(collected.value.removed >= 1);
-    assert!(collected.value.segments_removed >= 1);
+    let reopened = Fs::local(options).await?;
+    let collected = reopened.collect_local_garbage(None, &cancellation).await?;
+    assert!(collected.removed >= 1);
+    assert!(collected.segments_removed >= 1);
 
-    let reopened = Fs::local(LocalOptions::new(directory.path())).await?;
     let volume = reopened
         .open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation)
         .await?;
@@ -8494,6 +9167,22 @@ async fn local_garbage_collection_authenticates_heads_and_excludes_live_engines(
         )
         .await?;
     assert_eq!(retained.value.bytes.as_ref(), b"retained");
+    let pending = checkout
+        .value
+        .read_file_range(
+            &pending,
+            ByteRange {
+                offset: 0,
+                length: 256 * 1_024,
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(
+        pending.value.bytes.as_ref(),
+        vec![b'p'; 256 * 1_024].as_slice()
+    );
     Ok(())
 }
 
@@ -8514,6 +9203,47 @@ async fn local_facade_centralizes_same_process_owners_and_rejects_option_drift()
         Fs::local(conflicting).await,
         Err(FsError::LocalOptionsConflict)
     ));
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_facade_waits_per_root_without_serializing_independent_roots()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let first_root = directory.path().join("first");
+    let second_root = directory.path().join("second");
+    let first = Fs::local(LocalOptions::new(&first_root)).await?;
+    let retained = first
+        .inner
+        ._local_root_lifecycle
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("local root ownership"))?
+        .clone();
+    drop(first);
+
+    let same_root = first_root.clone();
+    let reopening = tokio::spawn(async move { Fs::local(LocalOptions::new(first_root)).await });
+    let concurrent = tokio::spawn(async move { Fs::local(LocalOptions::new(same_root)).await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !reopening.is_finished(),
+        "retained native owner must fence reopening"
+    );
+    assert!(!concurrent.is_finished());
+
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        Fs::local(LocalOptions::new(second_root)),
+    )
+    .await??;
+    drop(second);
+    drop(retained);
+    let reopened = tokio::time::timeout(std::time::Duration::from_secs(2), reopening).await???;
+    let shared = tokio::time::timeout(std::time::Duration::from_secs(2), concurrent).await???;
+    assert!(reopened.same_deployment(&shared));
+    drop(shared);
+    drop(reopened);
     Ok(())
 }
 
@@ -9402,89 +10132,6 @@ fn directory_merge_helper_covers_scalar_binding_limit_and_invalid_diff_matrix()
         .error,
         FsError::Cancelled(CancellationError)
     ));
-    Ok(())
-}
-
-fn validation_mutation(value: &str) -> Result<Mutation, Box<dyn std::error::Error>> {
-    Ok(Mutation::ValidateRegular { path: path(value)? })
-}
-
-#[test]
-fn pending_mutation_retention_accounts_transfer_growth_and_bounds()
--> Result<(), Box<dyn std::error::Error>> {
-    let baseline = WorkCounters {
-        object_probes: 1,
-        ..WorkCounters::default()
-    };
-    let first = validation_mutation("first")?;
-    let second = validation_mutation("second")?;
-
-    let mut empty = Vec::new();
-    let transferred = retain_pending_operations(
-        &mut empty,
-        vec![first.clone()],
-        4,
-        baseline,
-        WorkBudget::UNBOUNDED,
-    )?;
-    assert_eq!(empty, vec![first.clone()]);
-    assert_eq!(transferred, baseline);
-
-    let mut reserved = Vec::with_capacity(4);
-    reserved.push(first.clone());
-    let retained = retain_pending_operations(
-        &mut reserved,
-        vec![second.clone()],
-        4,
-        baseline,
-        WorkBudget::UNBOUNDED,
-    )?;
-    assert_eq!(reserved, vec![first.clone(), second.clone()]);
-    assert_eq!(retained.allocation_operations, 0);
-    assert!(retained.bytes_copied > 0);
-
-    let mut growing = Vec::with_capacity(1);
-    growing.push(first.clone());
-    let grown = retain_pending_operations(
-        &mut growing,
-        vec![second.clone()],
-        4,
-        baseline,
-        WorkBudget::UNBOUNDED,
-    )?;
-    assert_eq!(growing, vec![first.clone(), second.clone()]);
-    assert_eq!(grown.allocation_operations, 1);
-    assert!(grown.peak_allocation_bytes > 0);
-    assert!(grown.bytes_copied > retained.bytes_copied);
-
-    let mut excessive = vec![first.clone()];
-    let bounded = retain_pending_operations(
-        &mut excessive,
-        vec![second.clone()],
-        1,
-        baseline,
-        WorkBudget::UNBOUNDED,
-    )
-    .err()
-    .ok_or("pending mutation bound was ignored")?;
-    assert!(matches!(bounded.error, FsError::TooManyPendingMutations));
-    assert_eq!(excessive, vec![first.clone()]);
-
-    let mut budgeted = Vec::with_capacity(2);
-    budgeted.push(first.clone());
-    let mut no_copy = WorkBudget::UNBOUNDED;
-    no_copy.bytes_copied = 0;
-    let rejected = retain_pending_operations(&mut budgeted, vec![second], 4, baseline, no_copy)
-        .err()
-        .ok_or("pending mutation copy escaped its budget")?;
-    assert!(matches!(
-        rejected.error,
-        FsError::Work(WorkError::BudgetExceeded {
-            counter: "bytes_copied",
-            ..
-        })
-    ));
-    assert_eq!(budgeted, vec![first]);
     Ok(())
 }
 
@@ -10474,5 +11121,555 @@ fn require_nfc_volume_rejects_non_normalized_names() -> Result<(), Box<dyn std::
         &cancellation,
     ))
     .ok_or("nfc create blocked")??;
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([131; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let timed = path("timed")?;
+    let untimed = path("untimed")?;
+    let mut seed = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed checkout blocked")??
+    .value;
+    let file_id = poll_ready(seed.create_file(
+        timed.clone(),
+        Bytes::from(vec![b'a'; 128]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed create blocked")??
+    .value;
+    poll_ready(seed.create_file(
+        untimed.clone(),
+        Bytes::from(vec![b'b'; 128]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("untimed create blocked")??;
+    let times = FileMetadata {
+        modified_ns: MetadataField::Value(1),
+        accessed_ns: MetadataField::Value(2),
+        changed_ns: MetadataField::Value(3),
+        ..FileMetadata::default()
+    };
+    poll_ready(seed.set_metadata_by_id(file_id, times, WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("seed metadata blocked")??;
+    poll_ready(seed.commit(
+        OperationId::from_bytes([132; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed commit blocked")??;
+
+    let mut stamped = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("stamped checkout blocked")??
+    .value;
+    let mut separate = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("separate checkout blocked")??
+    .value;
+    poll_ready(stamped.change_content_by_id(
+        file_id,
+        ContentChange::Write {
+            offset: 4,
+            bytes: Bytes::from_static(b"STAMP"),
+        },
+        ContentTimes::Stamp(99),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("stamped write blocked")??;
+    poll_ready(separate.write_file_by_id(
+        file_id,
+        4,
+        Bytes::from_static(b"STAMP"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("separate write blocked")??;
+    let mut expected =
+        poll_ready(separate.read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("separate metadata read blocked")??
+            .value;
+    assert_eq!(expected, times, "a preserving write leaves metadata intact");
+    assert!(expected.stamp_content_change(99));
+    poll_ready(separate.set_metadata_by_id(
+        file_id,
+        expected,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("separate stamp blocked")??;
+    assert_eq!(stamped.root(), separate.root());
+    let metadata =
+        poll_ready(stamped.read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("stamped metadata read blocked")??
+            .value;
+    assert_eq!(metadata.modified_ns, MetadataField::Value(99));
+    assert_eq!(metadata.changed_ns, MetadataField::Value(99));
+    assert_eq!(metadata.accessed_ns, MetadataField::Value(2));
+
+    // The change and its stamp are one mutation: a change that fails stamps nothing.
+    let before = stamped.root().clone();
+    assert!(
+        poll_ready(stamped.change_content_by_id(
+            file_id,
+            ContentChange::CloneFrom {
+                source: FileId::from_bytes([200; 16]),
+                source_offset: 0,
+                offset: 0,
+                length: 1,
+            },
+            ContentTimes::Stamp(100),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("failing stamped clone blocked")?
+        .is_err()
+    );
+    assert_eq!(stamped.root(), &before);
+
+    // A profile that represents no content times keeps its metadata object.
+    let untimed_before =
+        poll_ready(stamped.read_metadata(&untimed, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("untimed metadata read blocked")??
+            .value;
+    poll_ready(stamped.change_content(
+        untimed.clone(),
+        ContentChange::Resize { logical_bytes: 7 },
+        ContentTimes::Stamp(101),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("untimed resize blocked")??;
+    let untimed_after =
+        poll_ready(stamped.read_metadata(&untimed, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("untimed metadata reread blocked")??
+            .value;
+    assert_eq!(untimed_after, untimed_before);
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn grouped_changes_land_together_and_each_keeps_its_own_result()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([141; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut checkout = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    let existing = poll_ready(checkout.create_file(
+        path("existing")?,
+        Bytes::from(vec![b'a'; 128]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("seed create blocked")??
+    .value;
+    let content = |bytes: &'static [u8]| GroupedChange::Content {
+        file_id: existing,
+        change: ContentChange::Write {
+            offset: 0,
+            bytes: Bytes::from_static(bytes),
+        },
+        times: ContentTimes::Stamp(7),
+    };
+    let create = |name: &str| -> Result<GroupedChange, Box<dyn std::error::Error>> {
+        Ok(GroupedChange::CreateFile {
+            path: path(name)?,
+            metadata: Box::new(FileMetadata::default()),
+            file_id: FileId::new(),
+            bytes: Bytes::new(),
+        })
+    };
+
+    // Every change applies: one mutation, one result each.
+    let applied = poll_ready(checkout.apply_group(
+        vec![create("first")?, content(b"ONE"), create("second")?],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("group blocked")??
+    .value;
+    let [
+        Ok(GroupedOutcome::Created(first)),
+        Ok(GroupedOutcome::Changed),
+        Ok(GroupedOutcome::Created(second)),
+    ] = applied.as_slice()
+    else {
+        return Err(format!("unexpected grouped outcomes {applied:?}").into());
+    };
+    assert_ne!(first, second);
+
+    // A failing change fails alone; its neighbours still apply in order.
+    let mixed = poll_ready(checkout.apply_group(
+        vec![
+            create("third")?,
+            create("first")?,
+            GroupedChange::Content {
+                file_id: FileId::from_bytes([142; 16]),
+                change: ContentChange::Resize { logical_bytes: 1 },
+                times: ContentTimes::Stamp(8),
+            },
+            content(b"TWO"),
+        ],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("mixed group blocked")??
+    .value;
+    assert!(matches!(mixed[0], Ok(GroupedOutcome::Created(_))));
+    assert!(
+        mixed[1].is_err(),
+        "an existing name cannot be created again"
+    );
+    assert!(mixed[2].is_err(), "an absent identity cannot change");
+    assert!(matches!(mixed[3], Ok(GroupedOutcome::Changed)));
+
+    for name in ["existing", "first", "second", "third"] {
+        assert!(
+            poll_ready(checkout.lookup_no_follow(
+                &path(name)?,
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            ))
+            .ok_or("lookup blocked")??
+            .value
+            .record
+            .is_some(),
+            "{name} is bound"
+        );
+    }
+    let read = poll_ready(checkout.read_file_range_by_id(
+        existing,
+        ByteRange {
+            offset: 0,
+            length: 4,
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("read blocked")??
+    .value;
+    assert_eq!(read.bytes.as_ref(), b"TWOa");
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn repeated_lookups_observe_the_base_once_and_still_conflict()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([151; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut local = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_tracking(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("local checkout blocked")??
+    .value;
+    let mut remote = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote checkout blocked")??
+    .value;
+    poll_ready(local.create_file(
+        path("authored")?,
+        Bytes::from_static(b"local"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("local create blocked")??;
+
+    let observed = path("observed")?;
+    let first = poll_ready(local.lookup_no_follow_with_metadata(
+        &observed,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("first lookup blocked")??;
+    assert!(first.value.is_none());
+    let proof = local.dependencies.proof().dependencies.clone();
+    let second = poll_ready(local.lookup_no_follow_with_metadata(
+        &observed,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("second lookup blocked")??;
+    assert!(second.value.is_none());
+    assert_eq!(
+        local.dependencies.proof().dependencies,
+        proof,
+        "repeating an observation leaves the proof unchanged"
+    );
+    assert!(
+        second.work.page_reads < first.work.page_reads,
+        "the repeated lookup walks only the candidate"
+    );
+
+    // The observation absorbed once still fences a racing binding.
+    poll_ready(remote.create_file(
+        observed,
+        Bytes::from_static(b"remote"),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote create blocked")??;
+    poll_ready(remote.commit(
+        OperationId::from_bytes([152; 16]),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("remote commit blocked")??;
+    let rebase = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+        .ok_or("rebase blocked")??;
+    assert!(matches!(rebase.value, RebaseDecision::Conflicted { .. }));
+    Ok(())
+}
+
+#[test]
+fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Once with an unchanged candidate, whose one walk both answers and
+    // observes, and once with a private change, which observes the base.
+    for (seed, authored) in [(171_u8, false), (181, true)] {
+        let fs = Fs::memory();
+        let cancellation = CancellationToken::new();
+        let volume = poll_ready(fs.create_volume_with_id(
+            VolumeId::from_bytes([seed; 16]),
+            config(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("volume creation blocked")??
+        .value;
+        let mut local = poll_ready(volume.checkout(
+            GenerationSelector::Head,
+            writable_tracking(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("local checkout blocked")??
+        .value;
+        let mut remote = poll_ready(volume.checkout(
+            GenerationSelector::Head,
+            writable_pinned(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("remote checkout blocked")??
+        .value;
+        if authored {
+            poll_ready(local.create_file(
+                path("authored")?,
+                Bytes::from_static(b"local"),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ))
+            .ok_or("local create blocked")??;
+        }
+        let paths = [path("first")?, path("second")?];
+        let batch =
+            poll_ready(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))
+                .ok_or("batch lookup blocked")??;
+        assert!(
+            batch
+                .value
+                .entries
+                .iter()
+                .all(|entry| entry.record.is_none())
+        );
+        let proof = local.dependencies.proof().dependencies.clone();
+        poll_ready(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("repeated batch lookup blocked")??;
+        assert_eq!(local.dependencies.proof().dependencies, proof);
+
+        poll_ready(remote.create_file(
+            path("second")?,
+            Bytes::from_static(b"remote"),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("remote create blocked")??;
+        poll_ready(remote.commit(
+            OperationId::from_bytes([seed.wrapping_add(1); 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("remote commit blocked")??;
+        let rebase = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("rebase blocked")??;
+        assert!(matches!(rebase.value, RebaseDecision::Conflicted { .. }));
+    }
+    Ok(())
+}
+
+#[test]
+fn one_reader_answers_a_batch_of_identities() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([191; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut writer = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    let mut identities = Vec::new();
+    for name in ["a", "b"] {
+        poll_ready(writer.create_file(
+            path(name)?,
+            Bytes::from_static(b"x"),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("create blocked")??;
+        let record =
+            poll_ready(writer.lookup_no_follow(&path(name)?, WorkBudget::UNBOUNDED, &cancellation))
+                .ok_or("lookup blocked")??
+                .value
+                .record
+                .ok_or("created file missing")?;
+        identities.push(record);
+    }
+    let absent = FileId::from_bytes([192; 16]);
+    let reader = writer.pinned_reader()?;
+    assert_eq!(reader.generation_id(), writer.generation_id());
+    let records = poll_ready(reader.file_records_by_id(
+        &[identities[1].file_id, absent, identities[0].file_id],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("identity batch blocked")??;
+    assert_eq!(
+        records.value,
+        vec![Some(identities[1]), None, Some(identities[0])]
+    );
+    Ok(())
+}
+
+#[test]
+fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Error>> {
+    let fs = Fs::memory();
+    let cancellation = CancellationToken::new();
+    let volume = poll_ready(fs.create_volume_with_id(
+        VolumeId::from_bytes([161; 16]),
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("volume creation blocked")??
+    .value;
+    let mut checkout = poll_ready(volume.checkout(
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("checkout blocked")??
+    .value;
+    let mut files = Vec::new();
+    for (index, name) in ["one", "two", "three", "four"].into_iter().enumerate() {
+        let file_id = poll_ready(checkout.create_file(
+            path(name)?,
+            Bytes::from(vec![u8::try_from(index)?; 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("seed create blocked")??
+        .value;
+        files.push(file_id);
+    }
+    let write = |file_id: FileId, fill: u8| GroupedChange::Content {
+        file_id,
+        change: ContentChange::Write {
+            offset: 0,
+            bytes: Bytes::from(vec![fill; 4_096]),
+        },
+        times: ContentTimes::Preserve,
+    };
+    let single = poll_ready(checkout.apply_group(
+        vec![write(files[0], 1)],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("single group blocked")??;
+    assert!(single.value.iter().all(Result::is_ok));
+    // Enough for any one change, far from enough for three sharing it.
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.bytes_hashed = single.work.bytes_hashed * 3 / 2;
+    let group = poll_ready(checkout.apply_group(
+        vec![write(files[1], 2), write(files[2], 3), write(files[3], 4)],
+        budget,
+        &cancellation,
+    ))
+    .ok_or("group blocked")??;
+    assert!(
+        group.value.iter().all(Result::is_ok),
+        "a change failed on its neighbours' work: {:?}",
+        group.value
+    );
+    assert!(group.work.bytes_hashed > budget.bytes_hashed);
     Ok(())
 }

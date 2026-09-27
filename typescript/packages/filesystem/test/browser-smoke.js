@@ -152,7 +152,11 @@ async function run() {
   assert(wideRecord.record.logicalBytes === wideLogicalBytes, "identity record lost exact 64-bit logical size");
   const wideAfter = await wideCheckout.checkpoint();
   const wideDiff = await wideVolume.diffGenerations(wideBefore.generationId, wideAfter.generationId, 8);
-  assert(wideDiff.files[0]?.after?.logicalBytes === wideLogicalBytes, "generation diff lost exact 64-bit logical size");
+  // Diffs list changed files in identity order. The volume root, whose
+  // identity is derived from the volume's, changes too and can sort first.
+  const wideChange = wideDiff.files.find((change) =>
+    change.fileId.every((byte, index) => byte === wideCreate.fileId[index]));
+  assert(wideChange?.after?.logicalBytes === wideLogicalBytes, "generation diff lost exact 64-bit logical size");
   await checkout.createSpecial("/workspace/nested-volume", "mount-boundary");
   assert((await checkout.lookupNoFollow("/workspace/nested-volume")).fileKind === "mount-boundary", "special mount boundary was not preserved");
   const createdData = await checkout.createFile("/workspace/data.bin", encoder.encode("head"));

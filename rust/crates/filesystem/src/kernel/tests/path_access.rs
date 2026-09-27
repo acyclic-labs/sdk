@@ -469,7 +469,8 @@ fn observation_dependency_storage_is_admitted_with_cache_residency()
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store)?;
     let cache_entries = maximum_cache_entries(&path, config())?;
-    let (cache, _) = OperationReadCache::new(&store, cache_entries, WorkBudget::UNBOUNDED)?;
+    let (cache, cache_work) =
+        OperationReadCache::new(&store, cache_entries, WorkBudget::UNBOUNDED)?;
     let dependency_bytes = u64::try_from(path.depth().saturating_add(1))?
         .checked_mul(u64::try_from(size_of::<Dependency>())?)
         .ok_or("dependency byte count overflowed")?;
@@ -501,7 +502,10 @@ fn observation_dependency_storage_is_admitted_with_cache_residency()
         }) if observed == required_peak && maximum == required_peak - 1
     ));
     assert_eq!(failure.work.backend_read_operations, 0);
-    assert_eq!(failure.work.allocation_operations, 2);
+    assert_eq!(
+        failure.work.allocation_operations,
+        cache_work.allocation_operations + 1
+    );
 
     let first_name_bytes = u64::try_from(path.components()[0].as_bytes().len())?;
     let required_name_peak = required_peak
@@ -813,6 +817,57 @@ fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicates()
         WorkBudget::UNBOUNDED,
     )?;
     assert_eq!(borrowed, owned);
+    Ok(())
+}
+
+#[test]
+fn batch_observation_captures_exactly_each_paths_observation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let (generation, main) = fixture(&store)?;
+    let name = |bytes: &[u8]| LogicalName::new(NameEncoding::Utf8, bytes.to_vec(), 255);
+    let paths = [
+        main.clone(),
+        NamespacePath::new(vec![name(b"src")?, name(b"missing")?], config().limits)?,
+        NamespacePath::new(vec![name(b"absent")?, name(b"deeper")?], config().limits)?,
+        NamespacePath::new(vec![name(b"alias")?, name(b"main.rs")?], config().limits)?,
+        main,
+        NamespacePath::new(Vec::new(), config().limits)?,
+        NamespacePath::new(vec![name(b"src")?], config().limits)?,
+    ];
+    let cancellation = CancellationToken::new();
+    let observed = async_storage::poll_ready(observe_paths_async(
+        &store,
+        &generation,
+        &paths,
+        config(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .ok_or("observed batch blocked")??;
+    let looked_up = lookup_paths(&store, &generation, &paths, config(), WorkBudget::UNBOUNDED)?;
+    assert_eq!(observed.lookup.entries, looked_up.entries);
+    let mut expected = std::collections::BTreeMap::new();
+    for path in &paths {
+        let single = async_storage::poll_ready(observe_path_async(
+            &store,
+            &generation,
+            path,
+            config(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .ok_or("observed path blocked")??;
+        for dependency in single.dependencies {
+            expected.insert(dependency.region, dependency.expected);
+        }
+    }
+    let mut batched = std::collections::BTreeMap::new();
+    for dependency in observed.dependencies {
+        let prior = batched.insert(dependency.region, dependency.expected);
+        assert!(prior.is_none_or(|prior| prior == dependency.expected));
+    }
+    assert_eq!(batched, expected);
     Ok(())
 }
 
@@ -1281,6 +1336,23 @@ fn borrowed_sync_paths_and_private_accounting_helpers_are_total()
         })
     ));
     assert_eq!(*failure.work, prior);
+    Ok(())
+}
+
+#[test]
+fn batch_lookup_does_not_reserve_worst_case_page_frontiers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let (generation, _) = fixture(&store)?;
+    let missing = LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?;
+    let path = NamespacePath::new(vec![missing; 10], config().limits)?;
+    let paths = vec![&path; 1_224];
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.peak_allocation_bytes = 16 * 1024 * 1024;
+    let result = lookup_path_refs(&store, &generation, &paths, config(), budget)?;
+    assert_eq!(result.entries.len(), paths.len());
+    assert!(result.entries.iter().all(|entry| entry.record.is_none()));
+    assert!(result.work.peak_allocation_bytes <= budget.peak_allocation_bytes);
     Ok(())
 }
 

@@ -21,7 +21,11 @@ pub(super) fn probe(
     }
     // SAFETY: fstatfs succeeded and initialized the result.
     let stats = unsafe { stats.assume_init() };
-    let kind = stats.f_type.cast_unsigned();
+    // libc models statfs::f_type as signed for glibc and unsigned for musl.
+    // Fallible normalization keeps one boundary valid for both ABIs and
+    // rejects an impossible negative filesystem identifier.
+    let kind =
+        u64::try_from(stats.f_type).map_err(|_| NativeStorageCapabilityError::UnsupportedTarget)?;
     let filesystem = match kind {
         0xef53 => "ext",
         0x9123_683e => "btrfs",

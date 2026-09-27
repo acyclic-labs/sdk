@@ -1,0 +1,108 @@
+{
+  "description": "Maps Codex lifecycle and filesystem tools onto Acyclic workspace contexts.",
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex SessionStart",
+        "commandWindows": "& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex SessionStart",
+        "timeout": 120,
+        "statusMessage": "Acyclic is attaching the workspace"
+      }]
+    }],
+    "UserPromptSubmit": [{
+      "hooks": [{
+        "type": "mcp_tool",
+        "server": "acyclic-hooks",
+        "tool": "hook",
+        "input": {
+          "event": "UserPromptSubmit",
+          "hook": {"session_id": "${session_id}", "turn_id": "${turn_id}", "cwd": "${cwd}"}
+        },
+        "timeout": 30
+      }]
+    }],
+    "PreToolUse": [{
+      "hooks": [{
+        "type": "mcp_tool",
+        "server": "acyclic-hooks",
+        "tool": "hook",
+        "input": {
+          "event": "PreToolUse",
+          "hook": {
+            "session_id": "${session_id}",
+            "turn_id": "${turn_id}",
+            "cwd": "${cwd}",
+            "tool_name": "${tool_name}",
+            "tool_input": "${tool_input}",
+            "tool_use_id": "${tool_use_id}"
+          }
+        },
+        "timeout": 120
+      }]
+    }],
+    "PostToolUse": [{
+      "hooks": [{
+        "type": "mcp_tool",
+        "server": "acyclic-hooks",
+        "tool": "hook",
+        "input": {
+          "event": "PostToolUse",
+          "hook": {
+            "session_id": "${session_id}",
+            "turn_id": "${turn_id}",
+            "cwd": "${cwd}",
+            "tool_name": "${tool_name}",
+            "tool_input": "${tool_input}",
+            "tool_use_id": "${tool_use_id}"
+          }
+        },
+        "timeout": 120
+      }]
+    }],
+    "SubagentStart": [{
+      "hooks": [{
+        "type": "mcp_tool",
+        "server": "acyclic-hooks",
+        "tool": "hook",
+        "input": {
+          "event": "SubagentStart",
+          "hook": {
+            "session_id": "${session_id}",
+            "turn_id": "${turn_id}",
+            "cwd": "${cwd}",
+            "agent_id": "${agent_id}",
+            "agent_type": "${agent_type}"
+          }
+        },
+        "timeout": 120,
+        "statusMessage": "Acyclic is forking the subagent workspace"
+      }]
+    }],
+    "SubagentStop": [{
+      "hooks": [{
+        "type": "mcp_tool",
+        "server": "acyclic-hooks",
+        "tool": "hook",
+        "input": {
+          "event": "SubagentStop",
+          "hook": {
+            "session_id": "${session_id}",
+            "turn_id": "${turn_id}",
+            "cwd": "${cwd}",
+            "agent_id": "${agent_id}"
+          }
+        },
+        "timeout": 120
+      }]
+    }],
+    "SessionEnd": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex SessionEnd",
+        "commandWindows": "& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex SessionEnd",
+        "timeout": 3
+      }]
+    }]
+  }
+}

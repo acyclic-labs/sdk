@@ -1,0 +1,57 @@
+{
+  "items": [
+    {
+      "id": "6f1d2c3b-4a5e-4f60-9b71-8c2d3e4f5a61",
+      "labels": {
+        "acyclic.managed": "true",
+        "acyclic.key": "00000000-0000-0000-0000-000000000001",
+        "acyclic.kind": "create"
+      },
+      "state": "started",
+      "createdAt": "2026-09-11T10:15:30Z",
+      "updatedAt": "2026-09-11T10:16:02Z",
+      "sandboxClass": "linux-vm",
+      "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+    },
+    {
+      "id": "1a2b3c4d-5e6f-4a70-8b91-a2b3c4d5e6f7",
+      "labels": {
+        "acyclic.managed": "true",
+        "acyclic.key": "00000000-0000-0000-0000-000000000003",
+        "acyclic.kind": "fork",
+        "acyclic.index": "1"
+      },
+      "state": "creating",
+      "createdAt": "2026-09-11T10:30:00Z",
+      "updatedAt": "2026-09-11T10:30:00Z",
+      "sandboxClass": "linux-vm",
+      "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+    },
+    {
+      "id": "0a1b2c3d-4e5f-4a6b-8c7d-8e9fa0b1c2d3",
+      "labels": {
+        "acyclic.managed": "true",
+        "acyclic.key": "00000000-0000-0000-0000-000000000003",
+        "acyclic.kind": "fork",
+        "acyclic.index": "0"
+      },
+      "state": "started",
+      "createdAt": "2026-09-11T10:30:00Z",
+      "updatedAt": "2026-09-11T10:30:45Z",
+      "sandboxClass": "linux-vm",
+      "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+    },
+    {
+      "id": "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      "labels": {
+        "team": "unrelated"
+      },
+      "state": "stopped",
+      "createdAt": "2026-09-11T09:00:00Z",
+      "updatedAt": "2026-09-11T09:05:00Z",
+      "sandboxClass": "container",
+      "toolboxProxyUrl": "https://proxy.app.daytona.io/toolbox"
+    }
+  ],
+  "nextCursor": null
+}

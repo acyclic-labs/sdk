@@ -13,7 +13,12 @@ are compared independently.
 The macOS loopback NFS mount does not emit FSEvents, so that backend exercises
 the supported polling watcher. Linux and Windows exercise their native watcher.
 
-Every run writes an `acyclic-native-mount-qualification-v1` JSON receipt. A
+Every required run qualifies a release executable and writes an
+`acyclic-native-mount-qualification-v2` JSON receipt bound to its exact version
+and BLAKE3 executable digest. Local runs build that executable first; the tagged
+release workflow qualifies the exact downloaded Linux x64, macOS arm64, and
+Windows x64 release artifacts and cannot assemble or publish until all three
+backends pass. A
 developer may use `--allow-unsupported` when invoking the binary directly; that
 produces a successful `skipped` case with the capability probe's exact reason.
 The dedicated CI scripts always pass `--require-kind`, so a missing or different
@@ -28,8 +33,8 @@ persistent mount hosts.
 - `linux-fuse`: Linux x86-64, Rust 1.94, a readable/writable `/dev/fuse`, and
   `fusermount3`. The runner service account must be permitted to create FUSE
   mounts. Labels: `self-hosted,native-mount,linux-x64,fuse`.
-- `macos-nfs`: Apple silicon macOS, Rust 1.94, `/sbin/mount_nfs`, `/sbin/umount`,
-  and permission for the service account to mount the in-process loopback NFS
+- `macos-nfs`: Apple silicon macOS, Rust 1.94, `/sbin/mount_nfs`, and
+  permission for the service account to mount the in-process loopback NFS
   export. Labels: `self-hosted,native-mount,macos-arm64,loopback-nfs`.
 - `windows-projfs`: Windows x86-64, Rust 1.94, Developer Mode or an equivalent
   symbolic-link privilege, and the `Client-ProjFS` optional feature enabled.

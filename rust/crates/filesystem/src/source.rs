@@ -366,32 +366,56 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     operation: SourceOperation,
     terminal_state: SourceState,
 ) -> Result<ReconcileOutcome<A, O>, SourceError> {
-    session.watcher.begin_rescan().map_err(engine)?;
-    let policy = session.capture_policy.clone();
-    let capture = crate::capture_baseline_with_policy(
-        &mut session.checkout,
-        &session.capture,
-        &policy,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await;
-    if let Err(error) = capture {
-        let _ = session
-            .watcher
-            .abort_rescan(WatchInvalidationReason::BackendError);
-        let _ = persist_session_state(
-            session,
-            SourceState::NeedsRescan(WatchInvalidationReason::BackendError),
-        )
-        .await;
-        return Err(engine(error));
-    }
-    let trailing = session.watcher.finish_rescan().map_err(engine)?;
+    let trailing = {
+        let mut attempt = 0;
+        loop {
+            session.watcher.begin_rescan().map_err(engine)?;
+            let policy = session.capture_policy.clone();
+            let capture = crate::capture_baseline_with_policy(
+                &mut session.checkout,
+                &session.capture,
+                &policy,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await;
+            if let Err(error) = capture {
+                let _ = session
+                    .watcher
+                    .abort_rescan(WatchInvalidationReason::BackendError);
+                let _ = persist_session_state(
+                    session,
+                    SourceState::NeedsRescan(WatchInvalidationReason::BackendError),
+                )
+                .await;
+                discard_unpublished_capture(session).await?;
+                return Err(engine(error));
+            }
+            let batch = session.watcher.finish_rescan().map_err(engine)?;
+            if matches!(
+                batch,
+                WatchBatch::RescanRequired {
+                    reason: WatchInvalidationReason::NativeRescanRequired,
+                    ..
+                }
+            ) && attempt < 3
+            {
+                // Native backends may deliver a coalesced hint from before
+                // this scan after it completes. Never publish the partial
+                // checkout; retry the baseline under the same operation key.
+                discard_unpublished_capture(session).await?;
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                attempt += 1;
+                continue;
+            }
+            break batch;
+        }
+    };
     if let WatchBatch::RescanRequired { reason, .. } = trailing {
         let fact =
             persist_source_operation(session, SourceState::NeedsRescan(reason), key, operation)
                 .await?;
+        discard_unpublished_capture(session).await?;
         return reconcile_outcome_from_fact(session, fact);
     }
     let capture = session.capture.clone();
@@ -407,6 +431,25 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .await
     .map_err(engine)?;
     publish_session(session, key, operation, terminal_state).await
+}
+
+async fn discard_unpublished_capture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    session: &mut SourceSession<A, O>,
+) -> Result<(), SourceError> {
+    let base = session.checkout.generation_id();
+    session.checkout = session
+        .workspace
+        .volume
+        .checkout(
+            GenerationSelector::Exact(base),
+            CheckoutMode::tracking_transaction(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(engine)?
+        .value;
+    Ok(())
 }
 
 async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -639,8 +682,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .excluded_paths
                 .iter()
                 .map(|path| {
-                    crate::kernel::NamespacePath::from_portable(
+                    crate::kernel::NamespacePath::from_portable_in_profile(
                         path,
+                        workspace.volume.config().profile,
                         workspace.volume.config().limits,
                     )
                     .map_err(engine)
@@ -681,13 +725,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 authority_head,
             })),
         };
-        match source.rescan().await? {
-            ReconcileOutcome::Clean(_) => {}
-            ReconcileOutcome::NeedsRescan(_) | ReconcileOutcome::Conflict => {
-                return Err(SourceError::Engine(
-                    "initial source baseline did not become clean".to_owned(),
-                ));
-            }
+        if !matches!(source.rescan().await?, ReconcileOutcome::Clean(_)) {
+            return Err(SourceError::Engine(
+                "initial source baseline did not become clean".to_owned(),
+            ));
         }
         Ok(Workspace {
             source: Some(source),
@@ -728,8 +769,7 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             || latest.maximum_paths != options.maximum_paths
             || latest.maximum_extent_spans != options.maximum_extent_spans
             || latest.maximum_queued_changes != options.maximum_queued_changes
-            || (latest.schema_version == 1 && !options.excluded_paths.is_empty())
-            || (latest.schema_version >= 2 && latest.capture_policy != capture_policy)
+            || latest.capture_policy != capture_policy
         {
             return Err(SourceError::BindingMismatch);
         }
@@ -738,7 +778,6 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         workspace,
         head,
         SourceFact {
-            schema_version: 2,
             volume_id: workspace.volume.id(),
             root_identity: root_identity.to_bytes(),
             mode: durable_mode(options.mode),
@@ -1010,8 +1049,7 @@ fn validate_source_fact_binding<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         || fact.maximum_paths != session.capture.maximum_paths
         || fact.maximum_extent_spans != session.capture.maximum_extent_spans
         || fact.maximum_queued_changes != session.maximum_queued_changes
-        || (fact.schema_version == 1 && session.capture_policy != CapturePolicy::allow_all())
-        || (fact.schema_version >= 2 && fact.capture_policy != session.capture_policy.fingerprint())
+        || fact.capture_policy != session.capture_policy.fingerprint()
     {
         return Err(SourceError::BindingMismatch);
     }
@@ -1176,7 +1214,6 @@ fn source_fact<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation_id: crate::GenerationId,
 ) -> SourceFact {
     SourceFact {
-        schema_version: 2,
         volume_id: session.workspace.volume.id(),
         root_identity: session.watcher.root_identity().to_bytes(),
         mode: durable_mode(session.mode),
@@ -1819,14 +1856,25 @@ mod tests {
         assert_eq!(advanced, acknowledged);
 
         let key = IdempotencyKey::from_bytes([63; 16]);
-        assert!(matches!(
-            Box::pin(source.reconcile_with_key(key)).await?,
-            ReconcileOutcome::Conflict
-        ));
-        assert!(matches!(
-            Box::pin(source.reconcile_with_key(key)).await?,
-            ReconcileOutcome::Conflict
-        ));
+        match Box::pin(source.reconcile_with_key(key)).await? {
+            ReconcileOutcome::Conflict => assert!(matches!(
+                Box::pin(source.reconcile_with_key(key)).await?,
+                ReconcileOutcome::Conflict
+            )),
+            ReconcileOutcome::NeedsRescan(WatchInvalidationReason::NativeRescanRequired)
+                if cfg!(target_os = "macos") =>
+            {
+                assert!(matches!(
+                    Box::pin(source.reconcile_with_key(key)).await?,
+                    ReconcileOutcome::NeedsRescan(WatchInvalidationReason::NativeRescanRequired)
+                ));
+                assert!(matches!(
+                    Box::pin(source.rescan_with_key(IdempotencyKey::from_bytes([71; 16]))).await?,
+                    ReconcileOutcome::Conflict
+                ));
+            }
+            _ => return Err("source did not preserve conflict or rescan state".into()),
+        }
         assert!(matches!(
             Box::pin(source.reconcile_with_key(IdempotencyKey::from_bytes([72; 16]))).await?,
             ReconcileOutcome::Conflict
@@ -2009,7 +2057,6 @@ mod tests {
     async fn no_op_reconcile_conflicts_when_an_advance_wins_before_its_fence()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        std::fs::write(root.path().join("source.txt"), b"source")?;
         let gate = Arc::new(AppendGate::new());
         let authority = GatedAuthorityStore {
             inner: Arc::new(crate::memory::MemoryAuthorityStore::default()),

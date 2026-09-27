@@ -27,9 +27,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
+#include <sys/un.h>
 #include <stdatomic.h>
 
 /* ---- Client connection ---- */
@@ -40,7 +38,7 @@ typedef enum {
 } client_read_state_t;
 
 typedef struct {
-    int                 fd;
+    _Atomic int         fd;
     client_read_state_t read_state;
     uint8_t             mark_buf[4];
     size_t              mark_read;      /* bytes of record mark read so far */
@@ -48,10 +46,9 @@ typedef struct {
     size_t              payload_len;    /* expected payload length */
     size_t              payload_read;   /* bytes of payload read so far */
     int                 last_fragment;
-    nfs4_conn_state_t   nfs_state;
     pthread_mutex_t     write_lock;     /* serialize reply writes */
     _Atomic int         inflight;       /* in-flight work items (MT mode) */
-    int                 closing;        /* disconnect pending (MT mode) */
+    _Atomic int         closing;        /* disconnect pending (MT mode) */
 } client_conn_t;
 
 /* ---- Work queue for thread pool ---- */
@@ -77,12 +74,23 @@ typedef struct {
 struct darwinfuse_server {
     darwinfuse_config_t config;
     int                 listen_fd;
+    /* A private (0700) directory holding the listening socket */
+    char                socket_dir[32];
+    char                socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
     int                 wakeup_pipe[2]; /* self-pipe for stop signal */
     volatile int        running;
     int                 had_client;     /* true once a client connected */
 
     client_conn_t       clients[DFUSE_MAX_CLIENTS];
     int                 num_clients;
+
+    /* NFSv4 state belongs to the client, not to one connection (RFC 7530
+     * s9.1): after the kernel reconnects, its stateids still name the
+     * opens they named before. */
+    nfs4_conn_state_t   client_state;
+
+    /* Reply buffer for the single-threaded path; workers own their own */
+    uint8_t         *reply_buf;
 
     /* Thread pool (enabled by nfs4_server_set_multithreaded) */
     int              multithreaded;
@@ -101,48 +109,43 @@ static void set_nonblocking(int fd)
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-static void set_tcp_nodelay(int fd)
+/*
+ * Only the kernel's NFS client may speak to the server: it connects from
+ * process 0, which no user process can be.  The socket's private directory
+ * already keeps other users out; this also refuses the owner's processes,
+ * which could otherwise claim any identity in AUTH_SYS credentials.
+ */
+static int peer_is_kernel(int fd)
 {
-    int flag = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+    pid_t peer = -1;
+    socklen_t length = sizeof(peer);
+    if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &peer, &length) != 0)
+        return 0;
+    return peer == 0;
 }
 
 static void client_init(client_conn_t *c, int fd)
 {
     memset(c, 0, sizeof(*c));
-    c->fd = fd;
+    atomic_store(&c->fd, fd);
     c->read_state = CLIENT_STATE_READ_MARK;
 
-    /* Allocate initial open file tracking array */
-    c->nfs_state.open_files = calloc(OPEN_FILES_INITIAL_CAP,
-                                      sizeof(nfs4_open_file_t));
-    c->nfs_state.open_file_cap = OPEN_FILES_INITIAL_CAP;
-    c->nfs_state.open_file_count = 0;
-
-    /* Initialize mutexes */
-    pthread_mutex_init(&c->nfs_state.lock, NULL);
     pthread_mutex_init(&c->write_lock, NULL);
 
     /* MT state */
     atomic_store(&c->inflight, 0);
-    c->closing = 0;
+    atomic_store(&c->closing, 0);
 }
 
 static void client_close(client_conn_t *c)
 {
-    if (c->fd >= 0) {
-        close(c->fd);
-        c->fd = -1;
+    int fd = atomic_load(&c->fd);
+    if (fd >= 0) {
+        close(fd);
+        atomic_store(&c->fd, -1);
     }
     free(c->payload_buf);
     c->payload_buf = NULL;
-    free(c->nfs_state.open_files);
-    c->nfs_state.open_files = NULL;
-    c->nfs_state.open_file_count = 0;
-    c->nfs_state.open_file_cap = 0;
-
-    /* Destroy mutexes */
-    pthread_mutex_destroy(&c->nfs_state.lock);
     pthread_mutex_destroy(&c->write_lock);
 }
 
@@ -168,9 +171,16 @@ static void work_queue_destroy(work_queue_t *wq)
     pthread_cond_destroy(&wq->not_empty);
 }
 
-static void work_queue_push(work_queue_t *wq, nfs4_work_item_t *item)
+/* Admit without blocking the poll thread.  Closing the overloaded connection
+ * makes the kernel retry instead of allowing request memory to grow without
+ * bound while every worker is busy. */
+static int work_queue_try_push(work_queue_t *wq, nfs4_work_item_t *item)
 {
     pthread_mutex_lock(&wq->lock);
+    if (wq->shutdown || wq->count >= DFUSE_WORK_QUEUE_MAX) {
+        pthread_mutex_unlock(&wq->lock);
+        return 0;
+    }
     item->next = NULL;
     if (wq->tail)
         wq->tail->next = item;
@@ -180,6 +190,7 @@ static void work_queue_push(work_queue_t *wq, nfs4_work_item_t *item)
     wq->count++;
     pthread_cond_signal(&wq->not_empty);
     pthread_mutex_unlock(&wq->lock);
+    return 1;
 }
 
 /* Returns NULL on shutdown (after draining remaining items). */
@@ -211,14 +222,17 @@ static void work_queue_shutdown(work_queue_t *wq)
 
 /* ---- RPC message processing (shared by ST and MT paths) ---- */
 
+/* Each thread that processes RPCs reuses one reply buffer of this size. */
+#define DFUSE_REPLY_BUFSIZE (DFUSE_XDR_MAXBUF + 4)
+
 /*
- * Process an RPC message and produce a reply buffer.
- * On success, sets *out_buf (caller must free) and *out_len.
- * Returns 0 on success, -1 on error.
+ * Process an RPC message into reply_buf on the calling thread, with the
+ * server's private data as the FUSE context.
+ * On success, sets *out_len. Returns 0 on success, -1 on error.
  */
 static int process_rpc_message(darwinfuse_server_t *srv, client_conn_t *c,
                                 uint8_t *payload, size_t payload_len,
-                                uint8_t **out_buf, size_t *out_len)
+                                uint8_t *reply_buf, size_t *out_len)
 {
     xdr_buf_t req;
     xdr_init(&req, payload, payload_len);
@@ -229,9 +243,7 @@ static int process_rpc_message(darwinfuse_server_t *srv, client_conn_t *c,
         return -1;
     }
 
-    uint8_t *reply_buf = malloc(DFUSE_XDR_MAXBUF + 4);
-    if (!reply_buf)
-        return -1;
+    darwinfuse_set_private_data(srv->private_data);
 
     xdr_buf_t rep;
     xdr_init(&rep, reply_buf + 4, DFUSE_XDR_MAXBUF);
@@ -243,15 +255,15 @@ static int process_rpc_message(darwinfuse_server_t *srv, client_conn_t *c,
     } else if (rpc_hdr.procedure == NFSPROC4_NULL) {
         rpc_encode_reply_accepted(&rep, rpc_hdr.xid);
     } else if (rpc_hdr.procedure == NFSPROC4_COMPOUND) {
-        darwinfuse_set_context(rpc_hdr.cred_uid, rpc_hdr.cred_gid);
+        darwinfuse_set_context(rpc_hdr.cred_uid, rpc_hdr.cred_gid,
+                               rpc_hdr.cred_ngroups, rpc_hdr.cred_groups);
         rpc_encode_reply_accepted(&rep, rpc_hdr.xid);
 
         nfs4_request_ctx_t ctx;
         memset(&ctx, 0, sizeof(ctx));
-        if (nfs4_dispatch_compound(&srv->config, &c->nfs_state,
+        if (nfs4_dispatch_compound(&srv->config, &srv->client_state,
                                     &ctx, &req, &rep) < 0) {
             DFUSE_ERR("COMPOUND dispatch failed");
-            free(reply_buf);
             return -1;
         }
     } else {
@@ -261,7 +273,6 @@ static int process_rpc_message(darwinfuse_server_t *srv, client_conn_t *c,
     uint32_t reply_len = (uint32_t)xdr_getpos(&rep);
     rpc_encode_record_mark(reply_buf, reply_len, 1);
 
-    *out_buf = reply_buf;
     *out_len = 4 + reply_len;
     return 0;
 }
@@ -270,13 +281,22 @@ static int process_rpc_message(darwinfuse_server_t *srv, client_conn_t *c,
 static int write_reply(int fd, const uint8_t *buf, size_t len)
 {
     size_t written = 0;
+    int stalled_polls = 0;
     while (written < len) {
         ssize_t n = write(fd, buf + written, len - written);
         if (n < 0) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                usleep(100);
-                continue;
+                struct pollfd writable = { .fd = fd, .events = POLLOUT };
+                int ready = poll(&writable, 1, 100);
+                if (ready < 0 && errno == EINTR)
+                    continue;
+                if (ready <= 0 && ++stalled_polls < 50)
+                    continue;
+                if (ready > 0 && (writable.revents & POLLOUT))
+                    continue;
+                DFUSE_ERR("reply write stalled or disconnected");
+                return -1;
             }
             DFUSE_ERR("write failed: %s", strerror(errno));
             return -1;
@@ -289,16 +309,13 @@ static int write_reply(int fd, const uint8_t *buf, size_t len)
 /* Process one complete RPC message (single-threaded path) */
 static int handle_rpc_message(darwinfuse_server_t *srv, client_conn_t *c)
 {
-    uint8_t *reply_buf = NULL;
     size_t reply_len = 0;
 
     if (process_rpc_message(srv, c, c->payload_buf, c->payload_len,
-                             &reply_buf, &reply_len) < 0)
+                             srv->reply_buf, &reply_len) < 0)
         return -1;
 
-    int rc = write_reply(c->fd, reply_buf, reply_len);
-    free(reply_buf);
-    return rc;
+    return write_reply(atomic_load(&c->fd), srv->reply_buf, reply_len);
 }
 
 /* ---- Worker thread (MT path) ---- */
@@ -309,26 +326,29 @@ static void *worker_thread_func(void *arg)
 
     DFUSE_LOG("Worker thread started (tid=%p)", (void *)pthread_self());
 
+    /* Without a reply buffer this worker answers nothing, as any failed
+     * reply allocation did, but still drains so inflight accounting and
+     * shutdown stay exact. */
+    uint8_t *reply_buf = malloc(DFUSE_REPLY_BUFSIZE);
+    if (!reply_buf)
+        DFUSE_ERR("Failed to allocate worker reply buffer");
+
     while (1) {
         nfs4_work_item_t *item = work_queue_pop(&srv->work_queue);
         if (!item) break;  /* shutdown — queue drained */
 
         client_conn_t *c = item->client;
 
-        if (!c->closing) {
-            /* Set thread-local FUSE context for this worker */
-            darwinfuse_set_private_data(srv->private_data);
-
-            uint8_t *reply_buf = NULL;
+        if (reply_buf && !atomic_load(&c->closing)) {
             size_t reply_len = 0;
 
             if (process_rpc_message(srv, c, item->payload, item->payload_len,
-                                     &reply_buf, &reply_len) == 0) {
+                                     reply_buf, &reply_len) == 0) {
                 pthread_mutex_lock(&c->write_lock);
-                if (c->fd >= 0)
-                    write_reply(c->fd, reply_buf, reply_len);
+                int fd = atomic_load(&c->fd);
+                if (fd >= 0)
+                    write_reply(fd, reply_buf, reply_len);
                 pthread_mutex_unlock(&c->write_lock);
-                free(reply_buf);
             }
         }
 
@@ -337,6 +357,7 @@ static void *worker_thread_func(void *arg)
         atomic_fetch_sub(&c->inflight, 1);
     }
 
+    free(reply_buf);
     DFUSE_LOG("Worker thread exiting (tid=%p)", (void *)pthread_self());
     return NULL;
 }
@@ -348,7 +369,7 @@ static int client_read(darwinfuse_server_t *srv, client_conn_t *c)
         if (c->read_state == CLIENT_STATE_READ_MARK) {
             /* Read the 4-byte TCP record mark */
             size_t need = 4 - c->mark_read;
-            ssize_t n = read(c->fd, c->mark_buf + c->mark_read, need);
+            ssize_t n = read(atomic_load(&c->fd), c->mark_buf + c->mark_read, need);
             if (n == 0) return -1;  /* client disconnected */
             if (n < 0) {
                 if (errno == EINTR) continue;
@@ -374,7 +395,7 @@ static int client_read(darwinfuse_server_t *srv, client_conn_t *c)
 
         if (c->read_state == CLIENT_STATE_READ_PAYLOAD) {
             size_t need = c->payload_len - c->payload_read;
-            ssize_t n = read(c->fd, c->payload_buf + c->payload_read, need);
+            ssize_t n = read(atomic_load(&c->fd), c->payload_buf + c->payload_read, need);
             if (n == 0) return -1;
             if (n < 0) {
                 if (errno == EINTR) continue;
@@ -395,9 +416,14 @@ static int client_read(darwinfuse_server_t *srv, client_conn_t *c)
                     item->payload = c->payload_buf;
                     item->payload_len = c->payload_len;
                     item->next = NULL;
-                    c->payload_buf = NULL;  /* ownership transferred */
                     atomic_fetch_add(&c->inflight, 1);
-                    work_queue_push(&srv->work_queue, item);
+                    if (work_queue_try_push(&srv->work_queue, item)) {
+                        c->payload_buf = NULL;  /* ownership transferred */
+                    } else {
+                        atomic_fetch_sub(&c->inflight, 1);
+                        free(item);
+                        rc = -1;
+                    }
                 } else {
                     rc = -1;
                 }
@@ -420,15 +446,26 @@ static int client_read(darwinfuse_server_t *srv, client_conn_t *c)
     }
 }
 
+/* Remove the listening socket and its private directory. */
+static void remove_socket(darwinfuse_server_t *srv)
+{
+    if (srv->socket_path[0] != '\0')
+        unlink(srv->socket_path);
+    if (srv->socket_dir[0] != '\0')
+        rmdir(srv->socket_dir);
+}
+
 /* ---- Public API ---- */
 
-darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config,
-                                         uint16_t *port)
+darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config)
 {
     darwinfuse_server_t *srv = calloc(1, sizeof(*srv));
     if (!srv) return NULL;
 
     srv->config = *config;
+    atomic_init(&srv->config.namespace_change, 1);
+    atomic_init(&srv->config.fresh_change, 0);
+    arc4random_buf(srv->config.write_verifier, sizeof(srv->config.write_verifier));
     srv->listen_fd = -1;
     srv->wakeup_pipe[0] = -1;
     srv->wakeup_pipe[1] = -1;
@@ -441,48 +478,45 @@ darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config,
     set_nonblocking(srv->wakeup_pipe[0]);
     set_nonblocking(srv->wakeup_pipe[1]);
 
-    /* Create TCP listen socket */
-    srv->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    /* Listen on a local socket in a directory only this user can enter.
+     * (A short /tmp path: sun_path holds barely a hundred bytes.) */
+    strlcpy(srv->socket_dir, "/tmp/darwinfuse.XXXXXXXX", sizeof(srv->socket_dir));
+    if (!mkdtemp(srv->socket_dir)) {
+        DFUSE_ERR("mkdtemp: %s", strerror(errno));
+        srv->socket_dir[0] = '\0';
+        goto fail;
+    }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_LOCAL;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/nfs", srv->socket_dir);
+
+    srv->listen_fd = socket(AF_LOCAL, SOCK_STREAM, 0);
     if (srv->listen_fd < 0) {
         DFUSE_ERR("socket: %s", strerror(errno));
         goto fail;
     }
-
-    int reuse = 1;
-    setsockopt(srv->listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0;  /* ephemeral port */
-
     if (bind(srv->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         DFUSE_ERR("bind: %s", strerror(errno));
         goto fail;
     }
+    strlcpy(srv->socket_path, addr.sun_path, sizeof(srv->socket_path));
 
     if (listen(srv->listen_fd, 5) < 0) {
         DFUSE_ERR("listen: %s", strerror(errno));
         goto fail;
     }
 
-    /* Retrieve the assigned port */
-    socklen_t addrlen = sizeof(addr);
-    if (getsockname(srv->listen_fd, (struct sockaddr *)&addr, &addrlen) < 0) {
-        DFUSE_ERR("getsockname: %s", strerror(errno));
-        goto fail;
-    }
-    *port = ntohs(addr.sin_port);
-
     set_nonblocking(srv->listen_fd);
+    pthread_mutex_init(&srv->client_state.lock, NULL);
     srv->running = 1;
 
-    DFUSE_LOG("NFS server listening on 127.0.0.1:%u", *port);
+    DFUSE_LOG("NFS server listening on %s", srv->socket_path);
     return srv;
 
 fail:
     if (srv->listen_fd >= 0) close(srv->listen_fd);
+    remove_socket(srv);
     if (srv->wakeup_pipe[0] >= 0) close(srv->wakeup_pipe[0]);
     if (srv->wakeup_pipe[1] >= 0) close(srv->wakeup_pipe[1]);
     free(srv);
@@ -492,6 +526,14 @@ fail:
 int nfs4_server_run(darwinfuse_server_t *srv)
 {
     int result = 0;
+
+    if (!srv->multithreaded) {
+        srv->reply_buf = malloc(DFUSE_REPLY_BUFSIZE);
+        if (!srv->reply_buf) {
+            DFUSE_ERR("Failed to allocate reply buffer");
+            return -1;
+        }
+    }
 
     /* Start thread pool if multi-threaded */
     if (srv->multithreaded) {
@@ -554,7 +596,7 @@ int nfs4_server_run(darwinfuse_server_t *srv)
 
         /* Client connections (fd=-1 for closing clients — poll ignores them) */
         for (int i = 0; i < srv->num_clients; i++) {
-            pfds[nfds].fd = srv->clients[i].fd;
+            pfds[nfds].fd = atomic_load(&srv->clients[i].fd);
             pfds[nfds].events = POLLIN;
             pfds[nfds].revents = 0;
             nfds++;
@@ -579,44 +621,53 @@ int nfs4_server_run(darwinfuse_server_t *srv)
 
         /* Accept new connections */
         if (pfds[0].revents & POLLIN) {
-            struct sockaddr_in client_addr;
-            socklen_t client_len = sizeof(client_addr);
-            int cfd = accept(srv->listen_fd, (struct sockaddr *)&client_addr,
-                             &client_len);
-            if (cfd >= 0) {
-                if (srv->num_clients >= DFUSE_MAX_CLIENTS) {
+            int cfd = accept(srv->listen_fd, NULL, NULL);
+            if (cfd >= 0 && !peer_is_kernel(cfd)) {
+                DFUSE_ERR("Refused a connection from a user process");
+                close(cfd);
+            } else if (cfd >= 0) {
+                int slot = -1;
+                for (int i = 0; i < srv->num_clients; i++) {
+                    if (atomic_load(&srv->clients[i].fd) < 0 &&
+                        !atomic_load(&srv->clients[i].closing)) {
+                        slot = i;
+                        break;
+                    }
+                }
+                if (slot < 0 && srv->num_clients < DFUSE_MAX_CLIENTS)
+                    slot = srv->num_clients++;
+
+                if (slot < 0) {
                     close(cfd);
                 } else {
                     set_nonblocking(cfd);
-                    set_tcp_nodelay(cfd);
-                    client_init(&srv->clients[srv->num_clients], cfd);
-                    srv->num_clients++;
+                    client_init(&srv->clients[slot], cfd);
                     srv->had_client = 1;
-                    DFUSE_LOG("Client connected (fd=%d, total=%d)", cfd, srv->num_clients);
+                    DFUSE_LOG("Client connected (fd=%d, slot=%d, high_water=%d)",
+                              cfd, slot, srv->num_clients);
                 }
             }
         }
 
         /* Process client data */
         for (int i = 0; i < srv->num_clients; i++) {
-            if (srv->clients[i].closing || srv->clients[i].fd < 0)
+            if (atomic_load(&srv->clients[i].closing) ||
+                atomic_load(&srv->clients[i].fd) < 0)
                 continue;
             int pfd_idx = 2 + i;
             if (pfds[pfd_idx].revents & (POLLIN | POLLERR | POLLHUP)) {
                 if (client_read(srv, &srv->clients[i]) < 0) {
-                    DFUSE_LOG("Client disconnected (fd=%d)", srv->clients[i].fd);
+                    int fd = atomic_load(&srv->clients[i].fd);
+                    DFUSE_LOG("Client disconnected (fd=%d)", fd);
                     if (srv->multithreaded) {
                         /* Close fd but defer full cleanup until workers drain */
-                        srv->clients[i].closing = 1;
-                        close(srv->clients[i].fd);
-                        srv->clients[i].fd = -1;
+                        atomic_store(&srv->clients[i].closing, 1);
+                        pthread_mutex_lock(&srv->clients[i].write_lock);
+                        close(fd);
+                        atomic_store(&srv->clients[i].fd, -1);
+                        pthread_mutex_unlock(&srv->clients[i].write_lock);
                     } else {
                         client_close(&srv->clients[i]);
-                        /* Compact: move last client to this slot */
-                        srv->num_clients--;
-                        if (i < srv->num_clients)
-                            srv->clients[i] = srv->clients[srv->num_clients];
-                        i--;  /* re-check this slot */
                     }
                 }
             }
@@ -625,25 +676,28 @@ int nfs4_server_run(darwinfuse_server_t *srv)
         /* Reap fully-drained closing clients (MT mode) */
         if (srv->multithreaded) {
             for (int i = srv->num_clients - 1; i >= 0; i--) {
-                if (srv->clients[i].closing &&
+                if (atomic_load(&srv->clients[i].closing) &&
                     atomic_load(&srv->clients[i].inflight) == 0) {
                     client_close(&srv->clients[i]);
-                    srv->clients[i].closing = 0;
+                    atomic_store(&srv->clients[i].closing, 0);
                 }
             }
-            /* Shrink num_clients if trailing slots are dead */
-            while (srv->num_clients > 0 &&
-                   srv->clients[srv->num_clients - 1].fd < 0 &&
-                   !srv->clients[srv->num_clients - 1].closing)
-                srv->num_clients--;
         }
+
+        /* Keep a high-water mark while requests reference client slots, but
+         * release dead trailing slots once no worker can still hold them. */
+        while (srv->num_clients > 0 &&
+               atomic_load(&srv->clients[srv->num_clients - 1].fd) < 0 &&
+               !atomic_load(&srv->clients[srv->num_clients - 1].closing))
+            srv->num_clients--;
 
         /* Check if all clients disconnected (mount was unmounted) */
         if (srv->had_client) {
             if (srv->multithreaded) {
                 int alive = 0;
                 for (int i = 0; i < srv->num_clients; i++) {
-                    if (srv->clients[i].fd >= 0 || srv->clients[i].closing)
+                    if (atomic_load(&srv->clients[i].fd) >= 0 ||
+                        atomic_load(&srv->clients[i].closing))
                         alive++;
                 }
                 if (alive == 0) {
@@ -670,6 +724,8 @@ int nfs4_server_run(darwinfuse_server_t *srv)
         DFUSE_LOG("Thread pool stopped");
     }
 
+    free(srv->reply_buf);
+    srv->reply_buf = NULL;
     return result;
 }
 
@@ -707,37 +763,22 @@ void nfs4_server_destroy(darwinfuse_server_t *srv)
     for (int i = 0; i < srv->num_clients; i++)
         client_close(&srv->clients[i]);
 
+    /* Every connection is gone; release the handles its opens still hold. */
+    nfs4_release_open_files(&srv->config, &srv->client_state);
+    free(srv->client_state.open_files);
+    pthread_mutex_destroy(&srv->client_state.lock);
+
     if (srv->listen_fd >= 0) close(srv->listen_fd);
+    remove_socket(srv);
     if (srv->wakeup_pipe[0] >= 0) close(srv->wakeup_pipe[0]);
     if (srv->wakeup_pipe[1] >= 0) close(srv->wakeup_pipe[1]);
 
     free(srv);
 }
 
-void nfs4_server_close_inherited_fds(darwinfuse_server_t *srv)
+const char *nfs4_server_socket_path(const darwinfuse_server_t *srv)
 {
-    if (!srv) return;
-
-    /* Build a set of FDs the server needs to keep */
-    int keep[3 + DFUSE_MAX_CLIENTS];
-    int nkeep = 0;
-    if (srv->listen_fd >= 0) keep[nkeep++] = srv->listen_fd;
-    if (srv->wakeup_pipe[0] >= 0) keep[nkeep++] = srv->wakeup_pipe[0];
-    if (srv->wakeup_pipe[1] >= 0) keep[nkeep++] = srv->wakeup_pipe[1];
-    for (int i = 0; i < srv->num_clients; i++)
-        if (srv->clients[i].fd >= 0) keep[nkeep++] = srv->clients[i].fd;
-
-    /* Close everything from fd 3 up to a reasonable limit */
-    int maxfd = (int)sysconf(_SC_OPEN_MAX);
-    if (maxfd < 0 || maxfd > 4096) maxfd = 4096;
-
-    for (int fd = 3; fd < maxfd; fd++) {
-        int needed = 0;
-        for (int k = 0; k < nkeep; k++) {
-            if (keep[k] == fd) { needed = 1; break; }
-        }
-        if (!needed) close(fd);
-    }
+    return srv->socket_path;
 }
 
 void nfs4_server_set_ops(darwinfuse_server_t *srv,
@@ -747,42 +788,6 @@ void nfs4_server_set_ops(darwinfuse_server_t *srv,
     if (!srv) return;
     srv->config.ops = ops;
     srv->config.user_data = user_data;
-}
-
-void nfs4_server_set_inode_table(darwinfuse_server_t *srv,
-                                  dfuse_inode_table_t *tbl)
-{
-    if (!srv) return;
-    srv->config.inode_table = tbl;
-}
-
-void nfs4_server_close_inherited_pipes(darwinfuse_server_t *srv)
-{
-    if (!srv) return;
-
-    /* Build a set of PIPE FDs the server needs to keep */
-    int keep[2];
-    int nkeep = 0;
-    if (srv->wakeup_pipe[0] >= 0) keep[nkeep++] = srv->wakeup_pipe[0];
-    if (srv->wakeup_pipe[1] >= 0) keep[nkeep++] = srv->wakeup_pipe[1];
-
-    int maxfd = (int)sysconf(_SC_OPEN_MAX);
-    if (maxfd < 0 || maxfd > 4096) maxfd = 4096;
-
-    for (int fd = 3; fd < maxfd; fd++) {
-        /* Skip server's wakeup pipe */
-        int needed = 0;
-        for (int k = 0; k < nkeep; k++) {
-            if (keep[k] == fd) { needed = 1; break; }
-        }
-        if (needed) continue;
-
-        /* Only close PIPE-type FDs; keep regular files, sockets, etc. */
-        struct stat st;
-        if (fstat(fd, &st) == 0 && S_ISFIFO(st.st_mode)) {
-            close(fd);
-        }
-    }
 }
 
 void nfs4_server_set_multithreaded(darwinfuse_server_t *srv, int num_threads)
@@ -800,8 +805,27 @@ void nfs4_server_set_multithreaded(darwinfuse_server_t *srv, int num_threads)
     DFUSE_LOG("Multi-threaded mode enabled (%d threads)", num_threads);
 }
 
+void nfs4_server_set_durable_writes(darwinfuse_server_t *srv, int durable)
+{
+    if (!srv) return;
+    srv->config.durable_writes = durable;
+}
+
+void nfs4_server_set_node_identity(darwinfuse_server_t *srv, int node_identity)
+{
+    if (!srv) return;
+    srv->config.node_identity = node_identity;
+}
+
 void nfs4_server_set_private_data(darwinfuse_server_t *srv, void *private_data)
 {
     if (!srv) return;
     srv->private_data = private_data;
+}
+
+void nfs4_server_mark_namespace_changed(darwinfuse_server_t *srv)
+{
+    if (!srv) return;
+    atomic_fetch_add_explicit(&srv->config.namespace_change, 1,
+                              memory_order_acq_rel);
 }

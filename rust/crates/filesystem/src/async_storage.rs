@@ -4,10 +4,11 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, Epoch, GenerationId, Head, OperationId, ProposedCommit, Sequence,
 };
-use crate::performance::WorkBudget;
+use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
-    AppendOutcome, AuthorityResult, AuthorityStore, CreateAuthorityOutcome, FenceOutcome, ObjectId,
-    ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore, ObjectWrite, ReplayLimit,
+    AppendOutcome, AuthorityResult, AuthorityStore, CreateAuthorityOutcome, FenceOutcome,
+    GuardedAppend, ObjectId, ObjectRead, ObjectReadRequest, ObjectResult, ObjectStore, ObjectWrite,
+    PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
 };
 use bytes::Bytes;
 use std::any::{Any, TypeId};
@@ -135,6 +136,197 @@ pub struct GenerationForkSource {
     pub lineage: GenerationFork,
 }
 
+/// A new workspace's complete authority state: its own authority, holding
+/// its creation record, and the retention authority that keeps its source
+/// generation alive while the workspace may depend on it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceForkCommit {
+    /// Source lineage the destination authority starts from, on backends
+    /// that keep generation lineage; `None` starts it empty.
+    pub lineage: Option<GenerationForkSource>,
+    /// The new workspace's authority.
+    pub destination: AuthorityId,
+    /// Its creation record, the destination's first commit.
+    pub creation: ProposedCommit,
+    /// The authority retaining the source generation for the new workspace.
+    pub retention: AuthorityId,
+    /// The retention record, the retention authority's first commit.
+    pub retained: ProposedCommit,
+}
+
+/// How one workspace fork's authority state resolved.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceForkOutcome {
+    /// Both authorities hold exactly the requested first records, now or
+    /// from an earlier attempt.
+    Committed,
+    /// The retention authority already holds a different first record.
+    RetentionConflict,
+    /// The destination authority already holds a different first record.
+    CreationRejected,
+}
+
+/// Largest first record a fork compares when resolving a retry.
+const MAXIMUM_FIRST_RECORD_BYTES: u64 = 4 * 1024;
+
+/// Commits a workspace fork as ordered single-authority steps: the retention
+/// record first, so the source generation is retained before any workspace
+/// can depend on it, then the destination authority and its creation record.
+/// Every step is idempotent, so a retry after a crash at any step, or after
+/// a combined commit, completes exactly the missing steps.
+///
+/// This is the default [`AsyncAuthorityStore::commit_workspace_fork`], for
+/// backends that commit what they can atomically and resolve the rest here.
+pub async fn commit_workspace_fork_in_steps<S: AsyncAuthorityStore + ?Sized>(
+    store: &S,
+    fork: WorkspaceForkCommit,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> AuthorityResult<WorkspaceForkOutcome> {
+    let WorkspaceForkCommit {
+        lineage,
+        destination,
+        creation,
+        retention,
+        retained,
+    } = fork;
+    let retained = append_first_record(
+        store,
+        retention,
+        retained,
+        WorkCounters::default(),
+        budget,
+        cancellation,
+    )
+    .await?;
+    let mut work = retained.work;
+    if !retained.value {
+        return Ok(crate::storage::AuthorityReceipt {
+            value: WorkspaceForkOutcome::RetentionConflict,
+            work,
+        });
+    }
+    let remaining = remaining_authority(work, budget)?;
+    let created = match lineage {
+        Some(source) => {
+            store
+                .fork_generation_authority(
+                    source,
+                    destination,
+                    creation.operation_id,
+                    remaining,
+                    cancellation,
+                )
+                .await
+        }
+        None => {
+            store
+                .create_authority(destination, Epoch::GENESIS, remaining, cancellation)
+                .await
+        }
+    }
+    .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+    work = add_authority(work, created.work)?;
+    let created =
+        append_first_record(store, destination, creation, work, budget, cancellation).await?;
+    Ok(crate::storage::AuthorityReceipt {
+        value: if created.value {
+            WorkspaceForkOutcome::Committed
+        } else {
+            WorkspaceForkOutcome::CreationRejected
+        },
+        work: created.work,
+    })
+}
+
+/// Makes `commit` the first record of `authority`, creating the authority
+/// if needed. Answers whether the authority's first record is exactly that
+/// commit, including one an earlier attempt or a combined commit wrote under
+/// another retry identity. The receipt's work includes `prior`.
+///
+/// This is the default
+/// [`AsyncAuthorityStore::create_authority_with_first_record`], for backends
+/// that resolve an existing authority here.
+pub async fn append_first_record<S: AsyncAuthorityStore + ?Sized>(
+    store: &S,
+    authority: AuthorityId,
+    commit: ProposedCommit,
+    prior: WorkCounters,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> AuthorityResult<bool> {
+    let created = store
+        .create_authority(
+            authority,
+            Epoch::GENESIS,
+            remaining_authority(prior, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
+    let mut work = add_authority(prior, created.work)?;
+    let head = match created.value {
+        CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
+    };
+    let identity = (commit.operation_id, commit.fingerprint);
+    let appended = store
+        .compare_and_append(
+            authority,
+            head.epoch,
+            Head::genesis(head.epoch),
+            commit,
+            remaining_authority(work, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+    work = add_authority(work, appended.work)?;
+    let matches = match appended.value {
+        AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => true,
+        AppendOutcome::Conflict { .. } => {
+            let first = store
+                .replay(
+                    authority,
+                    Sequence::GENESIS,
+                    ReplayLimit {
+                        records: 1,
+                        payload_bytes: MAXIMUM_FIRST_RECORD_BYTES,
+                    },
+                    remaining_authority(work, budget)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+            work = add_authority(work, first.work)?;
+            first.value.first().is_some_and(|record| {
+                record.sequence == Sequence::new(1)
+                    && (record.operation_id, record.fingerprint) == identity
+            })
+        }
+        AppendOutcome::Fenced { .. } | AppendOutcome::IdempotencyConflict { .. } => false,
+    };
+    Ok(crate::storage::AuthorityReceipt {
+        value: matches,
+        work,
+    })
+}
+
+fn remaining_authority(
+    work: WorkCounters,
+    budget: WorkBudget,
+) -> Result<WorkBudget, crate::storage::AuthorityFailure> {
+    work.remaining(budget)
+        .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), work))
+}
+
+fn add_authority(
+    work: WorkCounters,
+    more: WorkCounters,
+) -> Result<WorkCounters, crate::storage::AuthorityFailure> {
+    work.checked_add(more)
+        .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), work))
+}
+
 /// Nonblocking authority-store contract. Futures are sendable on native
 /// targets and may remain JavaScript-thread-affine in browsers.
 pub trait AsyncAuthorityStore: StorageProvider {
@@ -165,6 +357,23 @@ pub trait AsyncAuthorityStore: StorageProvider {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = AuthorityResult<CreateAuthorityOutcome>> + StorageFuture;
 
+    /// Releases every durable fact of `authority_id`, whose workspace or
+    /// retention ended for good, and answers [`crate::storage::AuthorityStoreError::Retired`]
+    /// for it from then on. Retiring a retired authority succeeds. Backends
+    /// that keep every authority answer from its last record instead.
+    fn retire_authority(
+        &self,
+        authority_id: AuthorityId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<()>> + StorageFuture {
+        let _ = (authority_id, budget, cancellation);
+        std::future::ready(Ok(crate::storage::AuthorityReceipt {
+            value: (),
+            work: crate::WorkCounters::default(),
+        }))
+    }
+
     /// Asynchronously reads the linearizable head.
     fn head(
         &self,
@@ -183,6 +392,107 @@ pub trait AsyncAuthorityStore: StorageProvider {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = AuthorityResult<AppendOutcome>> + StorageFuture;
+
+    /// Asynchronously compares and appends under an optional operation-window
+    /// permit. Backends that cannot atomically evaluate lease gates reject
+    /// managed permits rather than using a read-then-write approximation.
+    fn compare_and_append_guarded(
+        &self,
+        request: GuardedAppend,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<AppendOutcome>> + StorageFuture {
+        async move {
+            if request.permit != PublicationPermit::Unrestricted {
+                return Err(crate::storage::AuthorityFailure::before_work(
+                    crate::storage::AuthorityStoreError::Rejected(
+                        "authority backend cannot atomically evaluate operation leases".to_owned(),
+                    ),
+                ));
+            }
+            self.compare_and_append(
+                request.authority_id,
+                request.epoch,
+                request.expected,
+                request.commit,
+                budget,
+                cancellation,
+            )
+            .await
+        }
+    }
+
+    /// Durably creates an authority whose first record is `commit`, or
+    /// confirms that it already exists with exactly that first record.
+    /// Answers whether its first record is `commit`. Backends that can
+    /// create an authority and append to it atomically do so in one durable
+    /// commit; the default creates the authority, then appends.
+    fn create_authority_with_first_record(
+        &self,
+        authority: AuthorityId,
+        commit: ProposedCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<bool>> + StorageFuture {
+        append_first_record(
+            self,
+            authority,
+            commit,
+            WorkCounters::default(),
+            budget,
+            cancellation,
+        )
+    }
+
+    /// Durably creates a forked workspace's authority state: the retention
+    /// authority with its record and the destination authority with its
+    /// creation record. Backends that can commit several authorities
+    /// atomically do so in one durable commit; the default applies ordered,
+    /// idempotent single-authority steps.
+    fn commit_workspace_fork(
+        &self,
+        fork: WorkspaceForkCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<WorkspaceForkOutcome>> + StorageFuture {
+        commit_workspace_fork_in_steps(self, fork, budget, cancellation)
+    }
+
+    /// Atomically acquires the exclusive publication gate at an exact head.
+    fn reserve_publication(
+        &self,
+        _authority_id: AuthorityId,
+        _expected: Head,
+        _operation_id: OperationId,
+        _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<ReservationOutcome>> + StorageFuture {
+        async move {
+            Err(crate::storage::AuthorityFailure::before_work(
+                crate::storage::AuthorityStoreError::Rejected(
+                    "authority backend does not support durable publication reservations"
+                        .to_owned(),
+                ),
+            ))
+        }
+    }
+
+    /// Releases an exact publication reservation. Exact retries are idempotent.
+    fn release_publication(
+        &self,
+        _reservation: PublicationReservation,
+        _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = AuthorityResult<()>> + StorageFuture {
+        async move {
+            Err(crate::storage::AuthorityFailure::before_work(
+                crate::storage::AuthorityStoreError::Rejected(
+                    "authority backend does not support durable publication reservations"
+                        .to_owned(),
+                ),
+            ))
+        }
+    }
 
     /// Asynchronously replays one bounded contiguous page.
     fn replay(
@@ -222,6 +532,23 @@ pub trait ImmediateAuthorityStore: AuthorityStore {}
 
 impl<T: ImmediateAuthorityStore + ?Sized> ImmediateAuthorityStore for Arc<T> {}
 
+/// The objects one authority record makes reachable, which must be durable
+/// before the record is appended.
+#[derive(Clone, Copy, Debug)]
+pub enum PublicationScope<'a> {
+    /// The complete authenticated closure of one published generation.
+    Closure {
+        /// Every object the record reaches.
+        objects: &'a [ObjectId],
+        /// The store's [`AsyncObjectStore::collection_sweeps`] before the
+        /// closure was proven.
+        proven_at: u64,
+    },
+    /// Every object admitted so far, for a record whose closure was not
+    /// enumerated.
+    Everything,
+}
+
 /// Nonblocking immutable-object contract suitable for `IndexedDB` and remote I/O.
 pub trait AsyncObjectStore: StorageProvider {
     /// Returns one exact decoded immutable representation when resident.
@@ -259,6 +586,20 @@ pub trait AsyncObjectStore: StorageProvider {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = ObjectResult<()>> + StorageFuture;
 
+    /// Asynchronously admits one object whose identity its construction
+    /// already proved. A store that verifies digests on admission may skip
+    /// hashing the same bytes again; the default verifies through
+    /// [`Self::put`].
+    fn put_hashed(
+        &self,
+        object: crate::storage::HashedObject,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
+        let (object_id, bytes) = object.into_parts();
+        self.put(object_id, bytes, budget, cancellation)
+    }
+
     /// Asynchronously admits an ordered bounded group of verified immutable objects.
     ///
     /// Implementations with a real batch primitive override this method. A
@@ -278,6 +619,61 @@ pub trait AsyncObjectStore: StorageProvider {
                 ),
             ))
         }
+    }
+
+    /// Asynchronously admits an ordered bounded group of objects whose
+    /// identities their construction already proved. A store that verifies
+    /// digests on admission may skip hashing the same bytes again; the
+    /// default verifies through [`Self::put_many`]. `budget` is what is
+    /// left after the caller's own allocations, which include one write
+    /// per object for this conversion.
+    fn put_many_hashed(
+        &self,
+        objects: &[crate::storage::HashedObject],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
+        let writes = objects
+            .iter()
+            .map(|object| ObjectWrite {
+                object_id: object.object_id(),
+                bytes: object.bytes().clone(),
+            })
+            .collect::<Vec<_>>();
+        async move { self.put_many(&writes, budget, cancellation).await }
+    }
+
+    /// Makes every admitted object in `scope` crash-durable before an
+    /// authority record may reference it, and keeps it from collection until
+    /// the returned hold drops, which the caller does after writing the
+    /// record. Ordinary stores already provide durability from
+    /// `put`/`put_many` and never collect; a bounded staging adapter
+    /// overrides this boundary to group physical writes and to admit the
+    /// closure against a running collection.
+    fn flush_before_publish(
+        &self,
+        _scope: PublicationScope<'_>,
+        _budget: WorkBudget,
+        _cancellation: &CancellationToken,
+    ) -> impl Future<Output = ObjectResult<crate::PublicationHold>> + StorageFuture {
+        async {
+            Ok(crate::storage::ObjectReceipt {
+                value: crate::PublicationHold::none(),
+                work: crate::WorkCounters::default(),
+            })
+        }
+    }
+
+    /// The collection this store runs while it stays open, if it collects.
+    fn collection(&self) -> Option<&Arc<crate::Collection>> {
+        None
+    }
+
+    /// The count a proof records before it starts, for
+    /// [`PublicationScope::Closure`].
+    fn collection_sweeps(&self) -> u64 {
+        self.collection()
+            .map_or(0, |collection| collection.sweeps())
     }
 
     /// Asynchronously reads one complete bounded object.

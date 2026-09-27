@@ -40,6 +40,7 @@ message TailRequest {
 }
 message TailResponse {
   uint64 tail = 1;
+  optional uint64 trim_point = 2;
 }
 
 message ForkRequest {
@@ -106,6 +107,19 @@ message ChildrenResponse {
   Child child = 1;
 }
 
+message ChildrenPageRequest {
+  optional string parent = 1;
+  optional string after = 2;
+  optional bytes hierarchy_version = 3;
+  uint32 limit = 4;
+}
+
+message ChildrenPageResponse {
+  bytes hierarchy_version = 1;
+  repeated Child children = 2;
+  optional string next_after = 3;
+}
+
 message TailCondition {
   string path = 1;
   uint64 expected = 2;
@@ -127,10 +141,13 @@ message AppendMutation {
   repeated bytes records = 2;
 }
 
+// Forks the source's prefix ending at `at_tail` into the new destination,
+// then appends `records` to the destination, all at one linearization point.
 message ForkMutation {
   string source = 1;
   string destination = 2;
   uint64 at_tail = 3;
+  repeated bytes records = 4;
 }
 
 message TrimMutation {
@@ -155,6 +172,7 @@ message CommitRequest {
   repeated CommitCondition conditions = 1;
   repeated CommitMutation mutations = 2;
   bytes idempotency_key = 3;
+  optional uint64 deadline_unix_millis = 4;
 }
 
 message CommittedAppend {
@@ -170,6 +188,7 @@ message CommittedFork {
   string destination = 2;
   uint64 forked_at = 3;
   uint64 tail = 4;
+  repeated Record records = 5;
 }
 
 message CommittedTrim {
@@ -261,6 +280,7 @@ service StreamService {
   rpc Read(ReadRequest) returns (stream ReadResponse);
   rpc Follow(FollowRequest) returns (stream ReadResponse);
   rpc Children(ChildrenRequest) returns (stream ChildrenResponse);
+  rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse);
   rpc Commit(CommitRequest) returns (CommitResponse);
   rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope);
 }

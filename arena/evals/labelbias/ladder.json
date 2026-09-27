@@ -1,0 +1,61 @@
+{
+ "rows": [
+  {
+   "rung": "identical",
+   "ab_first": 0.94,
+   "ab_second": 0.05500000000000005,
+   "nm_first": 0.83,
+   "nm_second": 0.17000000000000004
+  },
+  {
+   "rung": "cosmetic: comment",
+   "ab_first": 0.265,
+   "ab_second": 0.19999999999999996,
+   "nm_first": 0.255,
+   "nm_second": 0.45499999999999996
+  },
+  {
+   "rung": "rename loop var",
+   "ab_first": 0.525,
+   "ab_second": 0.345,
+   "nm_first": 0.575,
+   "nm_second": 0.55
+  },
+  {
+   "rung": "adds docstring",
+   "ab_first": 0.84,
+   "ab_second": 0.715,
+   "nm_first": 0.88,
+   "nm_second": 0.86
+  },
+  {
+   "rung": "adds type hints",
+   "ab_first": 0.88,
+   "ab_second": 0.675,
+   "nm_first": 0.895,
+   "nm_second": 0.88
+  },
+  {
+   "rung": "idiomatic min()",
+   "ab_first": 0.96,
+   "ab_second": 0.7949999999999999,
+   "nm_first": 0.915,
+   "nm_second": 0.86
+  },
+  {
+   "rung": "also adds a test",
+   "ab_first": 0.905,
+   "ab_second": 0.88,
+   "nm_first": 0.9,
+   "nm_second": 0.98
+  },
+  {
+   "rung": "other fork is wrong",
+   "ab_first": 1.0,
+   "ab_second": 1.0,
+   "nm_first": 0.99,
+   "nm_second": 1.0
+  }
+ ],
+ "usd": 0.001228584
+}

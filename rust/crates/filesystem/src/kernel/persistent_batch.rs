@@ -309,7 +309,7 @@ impl<'a, F: Format> Machine<'a, F> {
     fn visit(&mut self, page: ObjectId) -> Result<(), Failure> {
         let inserted = self
             .visited
-            .insert(page, &mut self.allocations, &mut self.work, self.budget)
+            .insert(page, &mut self.allocations, &mut self.work, &self.budget)
             .map_err(|error| failed(map_allocation(error), self.work))?;
         if !inserted.inserted {
             return Err(failed(Error::CycleOrAlias, self.work));
@@ -512,9 +512,9 @@ impl<'a, F: Format> Machine<'a, F> {
     }
 
     fn charge(&mut self, count: u64) -> Result<(), Failure> {
-        self.work = charge_work(self.work, count, self.budget)
-            .map_err(|error| failed(error.into(), self.work))?;
-        Ok(())
+        self.work
+            .charge_items(count, &self.budget)
+            .map_err(|error| failed(error.into(), self.work))
     }
 
     fn abort_cleanup(mut self) -> Result<(), Failure> {
@@ -638,19 +638,6 @@ fn admit_height(next_height: u16, maximum_height: u16) -> Result<(), Error> {
 
 fn next_index(index: usize) -> Result<usize, Error> {
     index.checked_add(1).ok_or(Error::InvalidRouting)
-}
-
-fn charge_work(
-    work: WorkCounters,
-    count: u64,
-    budget: WorkBudget,
-) -> Result<WorkCounters, WorkError> {
-    let charged = work.checked_add(WorkCounters {
-        items_examined: count,
-        ..WorkCounters::default()
-    })?;
-    charged.verify(budget)?;
-    Ok(charged)
 }
 
 fn sort_admission_bound(count: usize) -> Result<u64, Error> {

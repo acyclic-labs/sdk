@@ -10,11 +10,12 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{
-    ByteRange, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention,
-    ObjectReceipt, ObjectStore, ObjectStoreError, object_digest,
+    ByteRange, HashedObject, ObjectId, ObjectKind, ObjectRead, ObjectReadRequest,
+    ObjectReadRetention, ObjectReceipt, ObjectStore, ObjectStoreError, object_digest,
 };
 use bytes::Bytes;
 use std::future::Future;
@@ -355,6 +356,13 @@ pub trait AsyncBlobSource {
     ) -> impl Future<Output = std::io::Result<Option<Bytes>>> {
         async { Ok(None) }
     }
+
+    /// Drains exact work performed by the preceding read, when the source
+    /// already measures its own I/O. Returning `Some` replaces the builder's
+    /// inferred source-byte count for that read; `None` retains that count.
+    fn take_work(&mut self) -> Option<WorkCounters> {
+        None
+    }
 }
 
 impl<T: Read> AsyncBlobSource for T {
@@ -421,10 +429,17 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
             .saturating_add(1);
         let allocation = chunk_capacity.min(usize::try_from(detection_bytes).unwrap_or(usize::MAX));
         let retained = batching.retained_bytes();
-        let owned = source
-            .read_owned(allocation, cancellation)
-            .await
-            .map_err(|error| build_failed(BlobBuildError::Source(error), work))?;
+        let owned = source.read_owned(allocation, cancellation).await;
+        let source_work = source.take_work();
+        if let Some(measured) = source_work {
+            work = charge_source_work(
+                work,
+                measured,
+                retained.saturating_add(index.live_allocation_bytes),
+                budget,
+            )?;
+        }
+        let owned = owned.map_err(|error| build_failed(BlobBuildError::Source(error), work))?;
         if let Some(chunk) = owned {
             if chunk.is_empty() {
                 break;
@@ -436,7 +451,7 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
                 chunk,
                 allocation,
                 retained,
-                true,
+                source_work.is_none(),
                 logical_bytes,
                 options.maximum_blob_bytes,
                 budget,
@@ -521,23 +536,49 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             return Err(build_failed(BlobBuildError::Cancelled, work));
         }
         #[allow(clippy::indexing_slicing, reason = "bounded by while loop above")]
-        match AsyncBlobSource::read(source, &mut bytes[filled..], cancellation).await {
+        let read = AsyncBlobSource::read(source, &mut bytes[filled..], cancellation).await;
+        let measured = source.take_work();
+        if let Some(measured) = measured {
+            work = charge_source_work(work, measured, simultaneous, budget)?;
+        }
+        match read {
             Ok(0) => break,
             Ok(count) => {
+                if count > bytes.len() - filled {
+                    return Err(build_failed(BlobBuildError::TooLarge, work));
+                }
                 filled = filled.saturating_add(count);
-                work = build_add(
-                    work,
-                    WorkCounters {
-                        source_bytes_read: u64::try_from(count).unwrap_or(u64::MAX),
-                        ..WorkCounters::default()
-                    },
-                )?;
+                if measured.is_none() {
+                    work = build_add(
+                        work,
+                        WorkCounters {
+                            source_bytes_read: u64::try_from(count).unwrap_or(u64::MAX),
+                            ..WorkCounters::default()
+                        },
+                    )?;
+                }
                 build_verify(work, budget)?;
             }
             Err(error) => return Err(build_failed(BlobBuildError::Source(error), work)),
         }
     }
     Ok((bytes, filled, retained_capacity, simultaneous, work))
+}
+
+fn charge_source_work(
+    work: WorkCounters,
+    mut measured: WorkCounters,
+    live_bytes: u64,
+    budget: WorkBudget,
+) -> Result<WorkCounters, BlobBuildFailure> {
+    let simultaneous = live_bytes
+        .checked_add(measured.peak_allocation_bytes)
+        .ok_or_else(|| build_failed(BlobBuildError::TooLarge, work))?;
+    measured.peak_allocation_bytes = 0;
+    let mut combined = build_add(work, measured)?;
+    combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(simultaneous);
+    build_verify(combined, budget)?;
+    Ok(combined)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -554,62 +595,62 @@ async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
     work: WorkCounters,
     cancellation: &CancellationToken,
 ) -> Result<(u64, WorkCounters), BlobBuildFailure> {
-    if chunk.len() > allocation {
-        return Err(build_failed(BlobBuildError::TooLarge, work));
-    }
-    let retained_capacity = chunk.len() as u64;
-    let prospective = build_add(
-        work,
-        WorkCounters {
-            source_bytes_read: if owned_source { retained_capacity } else { 0 },
-            peak_allocation_bytes: index
-                .live_allocation_bytes
-                .saturating_add(retained)
-                .saturating_add(retained_capacity),
-            ..WorkCounters::default()
-        },
-    )?;
-    build_verify(prospective, budget)?;
-    let logical_bytes = logical_bytes
-        .checked_add(retained_capacity)
-        .ok_or_else(|| build_failed(BlobBuildError::TooLarge, prospective))?;
-    if logical_bytes > maximum_blob_bytes {
-        return Err(build_failed(BlobBuildError::TooLarge, prospective));
-    }
-    let first_offset = logical_bytes - retained_capacity;
-    let chunk_id = ObjectId {
-        kind: ObjectKind::BlobChunk,
-        digest: object_digest(ObjectKind::BlobChunk, &chunk),
-    };
-    let mut work = build_put(
-        batching,
-        chunk_id,
-        chunk,
-        PutAllocation {
-            retained: retained_capacity,
-            live: index
-                .live_allocation_bytes
-                .saturating_add(retained_capacity),
-        },
-        budget,
-        prospective,
-        cancellation,
-    )
-    .await?;
-    index
-        .push_chunk(
+    in_heap(move || async move {
+        if chunk.len() > allocation {
+            return Err(build_failed(BlobBuildError::TooLarge, work));
+        }
+        let retained_capacity = chunk.len() as u64;
+        let prospective = build_add(
+            work,
+            WorkCounters {
+                source_bytes_read: if owned_source { retained_capacity } else { 0 },
+                peak_allocation_bytes: index
+                    .live_allocation_bytes
+                    .saturating_add(retained)
+                    .saturating_add(retained_capacity),
+                ..WorkCounters::default()
+            },
+        )?;
+        build_verify(prospective, budget)?;
+        let logical_bytes = logical_bytes
+            .checked_add(retained_capacity)
+            .ok_or_else(|| build_failed(BlobBuildError::TooLarge, prospective))?;
+        if logical_bytes > maximum_blob_bytes {
+            return Err(build_failed(BlobBuildError::TooLarge, prospective));
+        }
+        let first_offset = logical_bytes - retained_capacity;
+        let chunk = HashedObject::new(ObjectKind::BlobChunk, chunk);
+        let chunk_id = chunk.object_id();
+        let mut work = build_put(
             batching,
-            BlobChunkRef {
-                first_offset,
-                end_offset: logical_bytes,
-                chunk: chunk_id,
+            chunk,
+            PutAllocation {
+                retained: retained_capacity,
+                live: index
+                    .live_allocation_bytes
+                    .saturating_add(retained_capacity),
             },
             budget,
-            &mut work,
+            prospective,
             cancellation,
         )
         .await?;
-    Ok((logical_bytes, work))
+        index
+            .push_chunk(
+                batching,
+                BlobChunkRef {
+                    first_offset,
+                    end_offset: logical_bytes,
+                    chunk: chunk_id,
+                },
+                budget,
+                &mut work,
+                cancellation,
+            )
+            .await?;
+        Ok((logical_bytes, work))
+    })
+    .await
 }
 
 fn validate_blob_build(
@@ -638,35 +679,38 @@ async fn finish_blob_batch<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<WorkCounters, BlobBuildFailure> {
-    let retained = batching.retained_bytes();
-    let mut remaining = work
-        .remaining(budget)
-        .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
-    remaining.peak_allocation_bytes = remaining
-        .peak_allocation_bytes
-        .checked_sub(retained)
-        .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
-    let receipt = batching
-        .finish(remaining, cancellation)
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, BlobBuildError::Storage))?;
-    let backend_peak = receipt.work.peak_allocation_bytes;
-    let mut backend_work = receipt.work;
-    backend_work.peak_allocation_bytes = 0;
-    let mut combined = build_add(work, backend_work)?;
-    let simultaneous = retained
-        .checked_add(backend_peak)
-        .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
-    combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(simultaneous);
-    build_verify(combined, budget)?;
-    Ok(combined)
+    in_heap(move || async move {
+        let retained = batching.retained_bytes();
+        let mut remaining = work
+            .remaining(budget)
+            .map_err(|error| build_failed(BlobBuildError::Work(error), work))?;
+        remaining.peak_allocation_bytes = remaining
+            .peak_allocation_bytes
+            .checked_sub(retained)
+            .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
+        let receipt = batching
+            .finish(remaining, cancellation)
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, BlobBuildError::Storage))?;
+        let backend_peak = receipt.work.peak_allocation_bytes;
+        let mut backend_work = receipt.work;
+        backend_work.peak_allocation_bytes = 0;
+        let mut combined = build_add(work, backend_work)?;
+        let simultaneous = retained
+            .checked_add(backend_peak)
+            .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
+        combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(simultaneous);
+        build_verify(combined, budget)?;
+        Ok(combined)
+    })
+    .await
 }
 
 const BLOB_BATCH_OBJECTS: usize = 4;
 const BLOB_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 
 struct BlobBatchState {
-    writes: Vec<crate::storage::ObjectWrite>,
+    writes: Vec<HashedObject>,
     bytes: u64,
 }
 
@@ -682,9 +726,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             allocation_operations: 1,
             peak_allocation_bytes: u64::try_from(BLOB_BATCH_OBJECTS)
                 .unwrap_or(u64::MAX)
-                .saturating_mul(
-                    u64::try_from(size_of::<crate::storage::ObjectWrite>()).unwrap_or(u64::MAX),
-                ),
+                .saturating_mul(u64::try_from(size_of::<HashedObject>()).unwrap_or(u64::MAX)),
             ..WorkCounters::default()
         };
         minimum
@@ -696,9 +738,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             .map_err(|_| build_failed(BlobBuildError::AllocationFailed, WorkCounters::default()))?;
         let vector_bytes = u64::try_from(writes.capacity())
             .unwrap_or(u64::MAX)
-            .saturating_mul(
-                u64::try_from(size_of::<crate::storage::ObjectWrite>()).unwrap_or(u64::MAX),
-            );
+            .saturating_mul(u64::try_from(size_of::<HashedObject>()).unwrap_or(u64::MAX));
         let admitted = WorkCounters {
             allocation_operations: 1,
             peak_allocation_bytes: vector_bytes,
@@ -736,7 +776,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         }
         let receipt = self
             .inner
-            .put_many(&self.state.writes, backend_budget, cancellation)
+            .put_many_hashed(&self.state.writes, backend_budget, cancellation)
             .await?;
         self.state.writes.clear();
         self.state.bytes = 0;
@@ -751,13 +791,12 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::storage::ObjectResult<()> {
-        self.flush_locked(budget, cancellation).await
+        in_heap(|| self.flush_locked(budget, cancellation)).await
     }
 
     async fn put_with_retained(
         &mut self,
-        object_id: ObjectId,
-        bytes: Bytes,
+        object: HashedObject,
         retained_bytes: u64,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -776,9 +815,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
                     ),
                 )
             })?;
-        self.state
-            .writes
-            .push(crate::storage::ObjectWrite { object_id, bytes });
+        self.state.writes.push(object);
         if self.state.writes.len() >= BLOB_BATCH_OBJECTS || self.state.bytes >= BLOB_BATCH_BYTES {
             return self.flush_locked(budget, cancellation).await;
         }
@@ -1040,6 +1077,7 @@ impl BlobIndexBuilder {
         work: &mut WorkCounters,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, BlobBuildFailure> {
+        in_heap(move || async move {
         if self.leaf.is_empty() && self.levels.is_empty() {
             return put_blob_page(
                 store,
@@ -1083,6 +1121,8 @@ impl BlobIndexBuilder {
             self.push_child(store, level + 1, child, budget, work, cancellation)
                 .await?;
         }
+    })
+        .await
     }
 }
 
@@ -1150,10 +1190,6 @@ async fn put_blob_page<S: AsyncObjectStore>(
             *work,
         ));
     }
-    let page_id = ObjectId {
-        kind: ObjectKind::Blob,
-        digest: object_digest(ObjectKind::Blob, &encoded),
-    };
     let encoded_bytes = u64::try_from(encoded.capacity()).unwrap_or(u64::MAX);
     let simultaneous = live_allocation_bytes
         .checked_add(encoded_bytes)
@@ -1170,10 +1206,11 @@ async fn put_blob_page<S: AsyncObjectStore>(
     )?;
     encoded_work.peak_allocation_bytes = encoded_work.peak_allocation_bytes.max(simultaneous);
     build_verify(encoded_work, budget)?;
+    let page = HashedObject::new(ObjectKind::Blob, Bytes::from(encoded));
+    let page_id = page.object_id();
     *work = build_put(
         store,
-        page_id,
-        Bytes::from(encoded),
+        page,
         PutAllocation {
             retained: encoded_bytes,
             live: simultaneous,
@@ -1194,8 +1231,7 @@ struct PutAllocation {
 
 async fn build_put<S: AsyncObjectStore>(
     store: &mut BlobBatchStore<'_, S>,
-    object: ObjectId,
-    bytes: Bytes,
+    object: HashedObject,
     allocation: PutAllocation,
     budget: WorkBudget,
     work: WorkCounters,
@@ -1209,7 +1245,7 @@ async fn build_put<S: AsyncObjectStore>(
         .checked_sub(allocation.live)
         .ok_or_else(|| build_failed(BlobBuildError::Work(WorkError::Overflow), work))?;
     match store
-        .put_with_retained(object, bytes, allocation.retained, remaining, cancellation)
+        .put_with_retained(object, allocation.retained, remaining, cancellation)
         .await
     {
         Ok(receipt) => {
@@ -1517,7 +1553,7 @@ impl BlobRangeMachine {
                 }
                 let visited = self
                     .visited
-                    .insert(page, &mut self.allocations, &mut self.work, self.budget)
+                    .insert(page, &mut self.allocations, &mut self.work, &self.budget)
                     .map_err(|error| failed(error.into(), self.work))?;
                 if !visited.inserted {
                     return Err(failed(BlobReadError::CycleOrHeight, self.work));

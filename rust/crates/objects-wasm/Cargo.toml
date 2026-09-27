@@ -1,0 +1,23 @@
+[package]
+name = "acyclic-objects-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Browser binding for the canonical Objects memory provider"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+acyclic-objects = { path = "../objects", default-features = false }
+bytes.workspace = true
+js-sys.workspace = true
+prost.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+
+[lints]
+workspace = true

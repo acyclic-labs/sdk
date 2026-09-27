@@ -528,10 +528,7 @@ fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
             u8::try_from(value)?;
             usize::try_from(retained_per_object)?
         ]);
-        let id = ObjectId {
-            kind: ObjectKind::BlobChunk,
-            digest: object_digest(ObjectKind::BlobChunk, &bytes),
-        };
+        let object = HashedObject::new(ObjectKind::BlobChunk, bytes);
         let residual = WorkBudget {
             peak_allocation_bytes: total_budget
                 .peak_allocation_bytes
@@ -540,8 +537,7 @@ fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
             ..WorkBudget::UNBOUNDED
         };
         crate::async_storage::poll_ready(batch.put_with_retained(
-            id,
-            bytes,
+            object,
             retained_per_object,
             residual,
             &cancellation,
@@ -560,14 +556,9 @@ fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
         ..WorkBudget::UNBOUNDED
     };
     let (mut final_batch, _) = BlobBatchStore::new(&final_store, final_budget)?;
-    let bytes = Bytes::from_static(b"one");
-    let id = ObjectId {
-        kind: ObjectKind::BlobChunk,
-        digest: object_digest(ObjectKind::BlobChunk, &bytes),
-    };
+    let object = HashedObject::new(ObjectKind::BlobChunk, Bytes::from_static(b"one"));
     crate::async_storage::poll_ready(final_batch.put_with_retained(
-        id,
-        bytes,
+        object,
         retained_per_object,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -1109,6 +1100,88 @@ fn async_and_sync_blob_build_share_exact_results_and_work() -> Result<(), Box<dy
     ))
     .ok_or("memory-backed asynchronous blob build unexpectedly blocked")??;
     assert_eq!(asynchronous, synchronous);
+    Ok(())
+}
+
+#[test]
+fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct MeasuredSource {
+        returned: bool,
+        work: Option<WorkCounters>,
+    }
+
+    impl AsyncBlobSource for MeasuredSource {
+        async fn read<'a>(
+            &'a mut self,
+            _destination: &'a mut [u8],
+            _cancellation: &'a CancellationToken,
+        ) -> std::io::Result<usize> {
+            Err(std::io::Error::other("owned source should not be copied"))
+        }
+
+        async fn read_owned(
+            &mut self,
+            _maximum: usize,
+            _cancellation: &CancellationToken,
+        ) -> std::io::Result<Option<Bytes>> {
+            if self.returned {
+                self.work = Some(WorkCounters::default());
+                return Ok(Some(Bytes::new()));
+            }
+            self.returned = true;
+            self.work = Some(WorkCounters {
+                source_bytes_read: 3,
+                source_path_components: 7,
+                ..WorkCounters::default()
+            });
+            Ok(Some(Bytes::from_static(b"abc")))
+        }
+
+        fn take_work(&mut self) -> Option<WorkCounters> {
+            self.work.take()
+        }
+    }
+
+    let options = BlobBuildOptions {
+        chunk_bytes: 3,
+        page_items: 2,
+        page_bytes: 127,
+        maximum_blob_bytes: 3,
+    };
+    let mut source = MeasuredSource {
+        returned: false,
+        work: None,
+    };
+    let built = crate::async_storage::poll_ready(build_blob_async(
+        &MemoryObjectStore::default(),
+        &mut source,
+        options,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    ))
+    .ok_or("measured source build blocked")??;
+    assert_eq!(built.work.source_bytes_read, 3);
+    assert_eq!(built.work.source_path_components, 7);
+
+    let mut source = MeasuredSource {
+        returned: false,
+        work: None,
+    };
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.source_path_components = 6;
+    let failed = crate::async_storage::poll_ready(build_blob_async(
+        &MemoryObjectStore::default(),
+        &mut source,
+        options,
+        budget,
+        &CancellationToken::new(),
+    ))
+    .ok_or("measured source budget check blocked")?
+    .err()
+    .ok_or("underbudgeted measured source unexpectedly built")?;
+    assert!(matches!(failed.error, BlobBuildError::Work(_)));
+    assert_eq!(failed.work.backend_write_operations, 0);
     Ok(())
 }
 

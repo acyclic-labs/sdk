@@ -10,14 +10,31 @@ const VERSION: u16 = 1;
 const HEAD_MAGIC: &[u8; 8] = b"ACYFSHED";
 const COMMIT_MAGIC: &[u8; 8] = b"ACYFSCMT";
 const OPERATION_MAGIC: &[u8; 8] = b"ACYFSOPR";
+const GATE_MAGIC: &[u8; 8] = b"ACYFSGAT";
 pub(crate) const HEAD_BYTES: usize = 58;
 pub(crate) const COMMIT_PREFIX_BYTES: usize = 146;
 pub(crate) const OPERATION_BYTES: usize = 50;
+pub(crate) const GATE_BYTES: usize = 43;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct OperationRecord {
     pub(crate) sequence: Sequence,
     pub(crate) fingerprint: Digest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PublicationGateRecord {
+    pub(crate) tail: u64,
+    pub(crate) active: Option<OperationId>,
+    pub(crate) released: Option<(OperationId, u64)>,
+}
+
+pub(crate) const fn free_publication_gate() -> PublicationGateRecord {
+    PublicationGateRecord {
+        tail: 0,
+        active: None,
+        released: None,
+    }
 }
 
 pub(crate) fn authority_key(authority_id: AuthorityId) -> String {
@@ -217,6 +234,46 @@ pub(crate) fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, Authorit
     })
 }
 
+pub(crate) fn encode_publication_gate(record: PublicationGateRecord) -> Vec<u8> {
+    let mut output = Vec::with_capacity(GATE_BYTES);
+    output.extend_from_slice(GATE_MAGIC);
+    output.extend_from_slice(&VERSION.to_le_bytes());
+    output.extend_from_slice(&record.tail.to_le_bytes());
+    let (state, operation_id, reservation_tail) = if let Some(operation_id) = record.active {
+        (1, operation_id.into_bytes(), record.tail)
+    } else if let Some((operation_id, reservation_tail)) = record.released {
+        (2, operation_id.into_bytes(), reservation_tail)
+    } else {
+        (0, [0; 16], 0)
+    };
+    output.push(state);
+    output.extend_from_slice(&operation_id);
+    output.extend_from_slice(&reservation_tail.to_le_bytes());
+    output
+}
+
+pub(crate) fn decode_publication_gate(
+    bytes: &[u8],
+) -> Result<PublicationGateRecord, AuthorityCodecError> {
+    if bytes.len() != GATE_BYTES || bytes.get(..8) != Some(GATE_MAGIC.as_slice()) {
+        return Err(AuthorityCodecError::InvalidPublicationGate);
+    }
+    check_version(bytes)?;
+    let operation_id = OperationId::from_bytes(read_array(bytes, 19)?);
+    let reservation_tail = read_u64(bytes, 35)?;
+    let (active, released) = match bytes.get(18).copied() {
+        Some(0) => (None, None),
+        Some(1) => (Some(operation_id), None),
+        Some(2) => (None, Some((operation_id, reservation_tail))),
+        _ => return Err(AuthorityCodecError::InvalidPublicationGate),
+    };
+    Ok(PublicationGateRecord {
+        tail: read_u64(bytes, 10)?,
+        active,
+        released,
+    })
+}
+
 fn check_version(bytes: &[u8]) -> Result<(), AuthorityCodecError> {
     let version = u16::from_le_bytes(read_array(bytes, 8)?);
     if version == VERSION {
@@ -263,6 +320,8 @@ pub(crate) enum AuthorityCodecError {
     InvalidCommit,
     #[error("browser authority operation record is invalid")]
     InvalidOperation,
+    #[error("browser authority publication gate is invalid")]
+    InvalidPublicationGate,
     #[error("browser authority record is truncated")]
     Truncated,
     #[error("browser authority record version {0} is unsupported")]
@@ -356,6 +415,35 @@ mod tests {
             fingerprint,
         };
         assert_eq!(decode_operation(&encode_operation(operation))?, operation);
+        Ok(())
+    }
+
+    #[test]
+    fn publication_gate_records_preserve_active_and_released_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let operation_id = OperationId::from_bytes([7; 16]);
+        let active = PublicationGateRecord {
+            tail: 11,
+            active: Some(operation_id),
+            released: None,
+        };
+        assert_eq!(
+            decode_publication_gate(&encode_publication_gate(active))?,
+            active
+        );
+        let released = PublicationGateRecord {
+            tail: 12,
+            active: None,
+            released: Some((operation_id, 11)),
+        };
+        assert_eq!(
+            decode_publication_gate(&encode_publication_gate(released))?,
+            released
+        );
+        assert_eq!(
+            decode_publication_gate(&encode_publication_gate(free_publication_gate()))?,
+            free_publication_gate()
+        );
         Ok(())
     }
 }

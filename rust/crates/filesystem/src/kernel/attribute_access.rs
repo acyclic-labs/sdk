@@ -193,7 +193,7 @@ pub async fn lookup_attribute_async<S: AsyncObjectStore>(
 
     for _ in 0..limits.maximum_page_height {
         let inserted = visited
-            .insert(page, &mut allocations, &mut work, budget)
+            .insert(page, &mut allocations, &mut work, &budget)
             .map_err(|error| failed(map_allocation(error), work))?;
         if !inserted.inserted {
             return Err(failed(AttributeLookupError::CycleOrAlias, work));
@@ -490,17 +490,8 @@ fn charge_items(
     count: u64,
     budget: WorkBudget,
 ) -> Result<(), AttributeLookupFailure> {
-    let prospective = work
-        .checked_add(WorkCounters {
-            items_examined: count,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| failed(error.into(), *work))?;
-    prospective
-        .verify(budget)
-        .map_err(|error| failed(error.into(), *work))?;
-    *work = prospective;
-    Ok(())
+    work.charge_items(count, &budget)
+        .map_err(|error| failed(error.into(), *work))
 }
 
 fn merge_backend_work(

@@ -363,6 +363,7 @@ mod tests {
             issuer: "runtime".into(),
             parent_proof: Vec::new(),
             proof: vec![1; 32],
+            agent_id: String::new(),
         };
         let observe = wire::ObserveRequest {
             protocol: Some(current_protocol()),

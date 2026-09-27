@@ -1,18 +1,21 @@
 //! `IndexedDB` authority and immutable-object persistence.
 
 use crate::authority_codec::{
-    COMMIT_PREFIX_BYTES, HEAD_BYTES, OPERATION_BYTES, OperationRecord, authority_key, commit_key,
-    decode_commit_owned, decode_head, decode_operation, encode_commit, encode_head,
-    encode_operation, operation_key,
+    COMMIT_PREFIX_BYTES, GATE_BYTES, HEAD_BYTES, OPERATION_BYTES, OperationRecord,
+    PublicationGateRecord, authority_key, commit_key, decode_commit_owned, decode_head,
+    decode_operation, decode_publication_gate, encode_commit, encode_head, encode_operation,
+    encode_publication_gate, free_publication_gate, operation_key,
 };
-use acyclic_fs::storage::FenceOutcome;
+use acyclic_fs::storage::{FenceOutcome, ObjectWrite};
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityFailure, AuthorityId,
     AuthorityReceipt, AuthorityResult, AuthorityStoreError, CancellationToken,
-    CreateAuthorityOutcome, DurableCommit, Epoch, GenerationFork, GenerationForkSource, Head,
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectRead, ObjectReadRetention,
-    ObjectReceipt, ObjectResult, ObjectStoreError, OperationId, ProposedCommit, ReplayLimit,
-    Sequence, WorkBudget, WorkCounters, authority_commit_digest, object_digest,
+    CreateAuthorityOutcome, DurableCommit, Epoch, GenerationFork, GenerationForkSource,
+    GuardedAppend, Head, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectRead,
+    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError, OperationId,
+    ProposedCommit, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
+    Sequence, WorkBudget, WorkCounters, WorkspaceForkCommit, WorkspaceForkOutcome,
+    authority_commit_digest, object_digest,
 };
 use bytes::Bytes;
 use indexed_db_futures::database::Database;
@@ -32,12 +35,13 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::Blob;
 
-const DATABASE_VERSION: u32 = 2;
+const DATABASE_VERSION: u32 = 3;
 const OBJECTS: &str = "objects";
 const OBJECT_METADATA: &str = "object_metadata";
 const AUTHORITY_HEADS: &str = "authority_heads";
 const AUTHORITY_COMMITS: &str = "authority_commits";
 const AUTHORITY_OPERATIONS: &str = "authority_operations";
+const AUTHORITY_GATES: &str = "authority_gates";
 const OBJECT_KEY_BYTES: u64 = 66;
 
 #[derive(Clone, Copy)]
@@ -306,15 +310,57 @@ impl IndexedDbObjectStore {
         })
     }
 
-    async fn put_existing(
-        transaction: Transaction<'_>,
+    /// Bounds and authenticates every write before any is stored.
+    fn admit_writes(
+        &self,
+        writes: &[ObjectWrite],
+        budget: WorkBudget,
+    ) -> Result<WorkCounters, ObjectFailure> {
+        let mut work = WorkCounters::default();
+        for write in writes {
+            let length = u64::try_from(write.bytes.len()).unwrap_or(u64::MAX);
+            if length > self.maximum_object_bytes {
+                return Err(Self::failure(
+                    ObjectStoreError::TooLarge {
+                        observed: length,
+                        maximum: self.maximum_object_bytes,
+                    },
+                    work,
+                ));
+            }
+            work = work
+                .checked_add(Self::initial_work())
+                .and_then(|work| {
+                    work.checked_add(WorkCounters {
+                        object_probes: 1,
+                        backend_read_operations: 1,
+                        bytes_hashed: length.saturating_add(OBJECT_DIGEST_ENVELOPE_BYTES),
+                        ..WorkCounters::default()
+                    })
+                })
+                .map_err(|error| Self::failure(error.into(), work))?;
+            work.verify(budget)
+                .map_err(|error| Self::failure(error.into(), work))?;
+            if object_digest(write.object_id.kind, &write.bytes) != write.object_id.digest {
+                return Err(Self::failure(ObjectStoreError::DigestMismatch, work));
+            }
+        }
+        Ok(work)
+    }
+
+    /// Fetches the stored object under `key` for [`Self::verify_existing`].
+    ///
+    /// Only `IndexedDB` requests may be awaited while a transaction is open:
+    /// awaiting anything else lets the browser commit it. Reading the blob's
+    /// bytes therefore waits until the transaction has finished.
+    async fn existing_blob(
+        transaction: &Transaction<'_>,
         key: &str,
-        bytes: &Bytes,
         length: u64,
         budget: WorkBudget,
         work: WorkCounters,
         cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+    ) -> Result<(Blob, WorkCounters), ObjectFailure> {
         let copied = Self::doubled(length, work)?;
         let peak_allocation_bytes = Self::peak_with_key(copied, work)?;
         let prospective = work
@@ -337,32 +383,39 @@ impl IndexedDbObjectStore {
             Self::get_blob(&objects, key, cancellation, work).await?
         }
         .ok_or_else(|| Self::failure(ObjectStoreError::Corrupt, work))?;
-        let existing =
-            Self::materialize_blob(&existing_blob, length, cancellation, prospective).await?;
-        if existing != *bytes {
-            return Err(Self::failure(ObjectStoreError::Corrupt, prospective));
-        }
-        Ok(ObjectReceipt {
-            value: (),
-            work: prospective,
-        })
+        Ok((existing_blob, prospective))
     }
 
+    /// Verifies that a stored object is exactly the bytes being admitted.
+    async fn verify_existing(
+        blob: &Blob,
+        bytes: &Bytes,
+        cancellation: &CancellationToken,
+        work: WorkCounters,
+    ) -> Result<(), ObjectFailure> {
+        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let existing = Self::materialize_blob(blob, length, cancellation, work).await?;
+        if existing != *bytes {
+            return Err(Self::failure(ObjectStoreError::Corrupt, work));
+        }
+        Ok(())
+    }
+
+    /// Adds `bytes` under `key` within `transaction`, which the caller commits.
     async fn put_new(
-        transaction: Transaction<'_>,
+        transaction: &Transaction<'_>,
         key: &str,
         bytes: &Bytes,
         length: u64,
         budget: WorkBudget,
         work: WorkCounters,
         cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+    ) -> Result<WorkCounters, ObjectFailure> {
         let copied = Self::doubled(length, work)?;
         let peak_allocation_bytes = Self::peak_with_key(copied, work)?;
         let prospective = work
             .checked_add(WorkCounters {
                 backend_write_operations: 2,
-                durability_operations: 1,
                 object_bytes_written: length,
                 bytes_copied: copied,
                 allocation_operations: 2 * u64::from(length != 0),
@@ -404,14 +457,7 @@ impl IndexedDbObjectStore {
                 .await
                 .map_err(|error| cancellable_failure(error, work))?;
         }
-        transaction
-            .commit()
-            .await
-            .map_err(|error| Self::backend(error, prospective))?;
-        Ok(ObjectReceipt {
-            value: (),
-            work: prospective,
-        })
+        Ok(prospective)
     }
 }
 
@@ -648,6 +694,39 @@ impl IndexedDbAuthorityStore {
         Ok(())
     }
 
+    /// Reads the authority's head, which must exist.
+    async fn read_head(
+        transaction: &Transaction<'_>,
+        key: &str,
+        cancellation: &CancellationToken,
+        work: WorkCounters,
+    ) -> Result<Head, AuthorityFailure> {
+        let heads = transaction
+            .object_store(AUTHORITY_HEADS)
+            .map_err(|error| Self::backend(error, work))?;
+        let encoded = Self::get_fixed(&heads, key, HEAD_BYTES, cancellation, work)
+            .await?
+            .ok_or_else(|| Self::failure(AuthorityStoreError::Missing, work))?;
+        decode_head(&encoded).map_err(|error| Self::corrupt(error, work))
+    }
+
+    /// Reads the authority's publication gate, which every authority is
+    /// created with.
+    async fn read_gate(
+        transaction: &Transaction<'_>,
+        key: &str,
+        cancellation: &CancellationToken,
+        work: WorkCounters,
+    ) -> Result<PublicationGateRecord, AuthorityFailure> {
+        let gates = transaction
+            .object_store(AUTHORITY_GATES)
+            .map_err(|error| Self::backend(error, work))?;
+        let encoded = Self::get_fixed(&gates, key, GATE_BYTES, cancellation, work)
+            .await?
+            .ok_or_else(|| Self::corrupt("authority has no publication gate", work))?;
+        decode_publication_gate(&encoded).map_err(|error| Self::corrupt(error, work))
+    }
+
     async fn resolve_existing_operation(
         &self,
         transaction: &Transaction<'_>,
@@ -832,6 +911,25 @@ impl IndexedDbAuthorityStore {
         prepared: PreparedAppend,
         cancellation: &CancellationToken,
     ) -> AuthorityResult<AppendOutcome> {
+        Self::write_prepared(&transaction, authority_id, &prepared, cancellation).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| Self::backend(error, prepared.work))?;
+        Ok(AuthorityReceipt {
+            value: AppendOutcome::Committed(prepared.durable),
+            work: prepared.work,
+        })
+    }
+
+    /// Writes one prepared append into `transaction`, which the caller
+    /// commits.
+    async fn write_prepared(
+        transaction: &Transaction<'_>,
+        authority_id: AuthorityId,
+        prepared: &PreparedAppend,
+        cancellation: &CancellationToken,
+    ) -> Result<(), AuthorityFailure> {
         let commit_blob = Self::create_blob(&prepared.encoded_commit, prepared.work)?;
         {
             let commits = transaction
@@ -872,14 +970,96 @@ impl IndexedDbAuthorityStore {
             )
             .await?;
         }
-        transaction
-            .commit()
-            .await
-            .map_err(|error| Self::backend(error, prepared.work))?;
-        Ok(AuthorityReceipt {
-            value: AppendOutcome::Committed(prepared.durable),
-            work: prepared.work,
-        })
+        Ok(())
+    }
+
+    /// Opens the one transaction that creates authorities with their first
+    /// records.
+    fn first_record_transaction(
+        &self,
+        work: WorkCounters,
+    ) -> Result<Transaction<'_>, AuthorityFailure> {
+        self.database
+            .transaction([
+                AUTHORITY_HEADS,
+                AUTHORITY_COMMITS,
+                AUTHORITY_OPERATIONS,
+                AUTHORITY_GATES,
+            ])
+            .with_mode(TransactionMode::Readwrite)
+            .with_options(strict_transaction_options())
+            .build()
+            .map_err(|error| Self::backend(error, work))
+    }
+
+    /// Whether `authority` already exists, read in `transaction`.
+    async fn authority_exists(
+        transaction: &Transaction<'_>,
+        authority: AuthorityId,
+        cancellation: &CancellationToken,
+        work: WorkCounters,
+    ) -> Result<bool, AuthorityFailure> {
+        let heads = transaction
+            .object_store(AUTHORITY_HEADS)
+            .map_err(|error| Self::backend(error, work))?;
+        Ok(Self::get_fixed(
+            &heads,
+            &authority_key(authority),
+            HEAD_BYTES,
+            cancellation,
+            work,
+        )
+        .await?
+        .is_some())
+    }
+
+    /// Writes, in `transaction`, a new authority whose first record is
+    /// `commit`. The caller has read that the authority does not exist.
+    async fn write_first_record(
+        &self,
+        transaction: &Transaction<'_>,
+        authority: AuthorityId,
+        commit: ProposedCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+        work: WorkCounters,
+    ) -> Result<WorkCounters, AuthorityFailure> {
+        let payload_bytes = u64::try_from(commit.payload.len()).unwrap_or(u64::MAX);
+        if payload_bytes > self.maximum_payload_bytes {
+            return Err(Self::failure(
+                AuthorityStoreError::PayloadTooLarge {
+                    observed: payload_bytes,
+                    maximum: self.maximum_payload_bytes,
+                },
+                work,
+            ));
+        }
+        let gate_work = work
+            .checked_add(authority_fixed_write_work(GATE_BYTES, 1))
+            .map_err(|error| Self::failure(error.into(), work))?;
+        Self::admit(gate_work, budget)?;
+        let gates = transaction
+            .object_store(AUTHORITY_GATES)
+            .map_err(|error| Self::backend(error, gate_work))?;
+        Self::add_fixed(
+            &gates,
+            &authority_key(authority),
+            &encode_publication_gate(free_publication_gate()),
+            cancellation,
+            gate_work,
+        )
+        .await?;
+        let prepared = Self::prepare_append(
+            authority,
+            Epoch::GENESIS,
+            Head::genesis(Epoch::GENESIS),
+            commit,
+            payload_bytes,
+            budget,
+            gate_work,
+        )?;
+        Self::write_prepared(transaction, authority, &prepared, cancellation).await?;
+        Ok(prepared.work)
     }
 
     async fn fetch_replay_blobs(
@@ -1111,16 +1291,22 @@ async fn open_database(database_name: &str) -> Result<Database, IndexedDbOpenErr
     Database::open(database_name)
         .with_version(DATABASE_VERSION)
         .with_on_upgrade_needed(|event, database| {
-            if event.old_version() > 0.5 && event.old_version() < 1.5 {
-                database.delete_object_store(OBJECTS)?;
-                database.delete_object_store(OBJECT_METADATA)?;
+            // Only a new database is created here: one of any other schema
+            // version is refused rather than converted.
+            if event.old_version() > 0.5 {
+                return Err(indexed_db_futures::error::Error::from(js_sys::Error::new(
+                    "unsupported Acyclic IndexedDB filesystem schema version",
+                )));
             }
-            if event.old_version() < f64::from(DATABASE_VERSION) {
-                database.create_object_store(OBJECTS).build()?;
-                database.create_object_store(OBJECT_METADATA).build()?;
-                database.create_object_store(AUTHORITY_HEADS).build()?;
-                database.create_object_store(AUTHORITY_COMMITS).build()?;
-                database.create_object_store(AUTHORITY_OPERATIONS).build()?;
+            for store in [
+                OBJECTS,
+                OBJECT_METADATA,
+                AUTHORITY_HEADS,
+                AUTHORITY_COMMITS,
+                AUTHORITY_OPERATIONS,
+                AUTHORITY_GATES,
+            ] {
+                database.create_object_store(store).build()?;
             }
             Ok(())
         })
@@ -1129,6 +1315,113 @@ async fn open_database(database_name: &str) -> Result<Database, IndexedDbOpenErr
 }
 
 impl AsyncAuthorityStore for IndexedDbAuthorityStore {
+    /// One strict transaction creates the authority with its first record.
+    /// An existing authority resolves through the ordinary idempotent append.
+    async fn create_authority_with_first_record(
+        &self,
+        authority: AuthorityId,
+        commit: ProposedCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<bool> {
+        cancellation
+            .check()
+            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let work = authority_fixed_read_work(HEAD_BYTES);
+        Self::admit(work, budget)?;
+        let transaction = self.first_record_transaction(work)?;
+        if Self::authority_exists(&transaction, authority, cancellation, work).await? {
+            drop(transaction);
+            let appended = acyclic_fs::append_first_record(
+                self,
+                authority,
+                commit,
+                work,
+                budget,
+                cancellation,
+            )
+            .await?;
+            return Ok(appended);
+        }
+        let work = self
+            .write_first_record(&transaction, authority, commit, budget, cancellation, work)
+            .await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| Self::backend(error, work))?;
+        Ok(AuthorityReceipt { value: true, work })
+    }
+
+    /// One strict transaction creates the retention and destination
+    /// authorities with their first records. `IndexedDB` keeps no lineage, so
+    /// every fork is independent. An authority that already exists resolves
+    /// through the idempotent single-authority steps.
+    async fn commit_workspace_fork(
+        &self,
+        fork: WorkspaceForkCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<WorkspaceForkOutcome> {
+        cancellation
+            .check()
+            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let published_prefix = fork
+            .lineage
+            .is_some_and(|source| source.lineage == GenerationFork::PublishedPrefix);
+        let work = authority_fixed_read_work(HEAD_BYTES)
+            .checked_add(authority_fixed_read_work(HEAD_BYTES))
+            .map_err(|error| Self::failure(error.into(), WorkCounters::default()))?;
+        Self::admit(work, budget)?;
+        let transaction = self.first_record_transaction(work)?;
+        if published_prefix
+            || Self::authority_exists(&transaction, fork.retention, cancellation, work).await?
+            || Self::authority_exists(&transaction, fork.destination, cancellation, work).await?
+        {
+            drop(transaction);
+            return acyclic_fs::commit_workspace_fork_in_steps(self, fork, budget, cancellation)
+                .await
+                .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))
+                .and_then(|stepped| {
+                    let work = work
+                        .checked_add(stepped.work)
+                        .map_err(|error| Self::failure(error.into(), work))?;
+                    Ok(AuthorityReceipt {
+                        value: stepped.value,
+                        work,
+                    })
+                });
+        }
+        let work = self
+            .write_first_record(
+                &transaction,
+                fork.retention,
+                fork.retained,
+                budget,
+                cancellation,
+                work,
+            )
+            .await?;
+        let work = self
+            .write_first_record(
+                &transaction,
+                fork.destination,
+                fork.creation,
+                budget,
+                cancellation,
+                work,
+            )
+            .await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| Self::backend(error, work))?;
+        Ok(AuthorityReceipt {
+            value: WorkspaceForkOutcome::Committed,
+            work,
+        })
+    }
+
     async fn fork_generation_authority(
         &self,
         source: GenerationForkSource,
@@ -1165,7 +1458,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         Self::admit(read_admission, budget)?;
         let transaction = self
             .database
-            .transaction(AUTHORITY_HEADS)
+            .transaction([AUTHORITY_HEADS, AUTHORITY_GATES])
             .with_mode(TransactionMode::Readwrite)
             .with_options(strict_transaction_options())
             .build()
@@ -1180,6 +1473,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         if let Some(encoded) = existing {
             let head =
                 decode_head(&encoded).map_err(|error| Self::corrupt(error, read_admission))?;
+            Self::read_gate(&transaction, &key, cancellation, read_admission).await?;
             return Ok(AuthorityReceipt {
                 value: CreateAuthorityOutcome::Existing(head),
                 work: read_admission,
@@ -1197,6 +1491,11 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 .object_store(AUTHORITY_HEADS)
                 .map_err(|error| Self::backend(error, read_work))?;
             Self::add_fixed(&heads, &key, &encoded, cancellation, write_work).await?;
+            let gates = transaction
+                .object_store(AUTHORITY_GATES)
+                .map_err(|error| Self::backend(error, write_work))?;
+            let encoded_gate = encode_publication_gate(free_publication_gate());
+            Self::add_fixed(&gates, &key, &encoded_gate, cancellation, write_work).await?;
         }
         transaction
             .commit()
@@ -1224,16 +1523,13 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .transaction(AUTHORITY_HEADS)
             .build()
             .map_err(|error| Self::backend(error, work))?;
-        let key = authority_key(authority_id);
-        let encoded = {
-            let heads = transaction
-                .object_store(AUTHORITY_HEADS)
-                .map_err(|error| Self::backend(error, work))?;
-            Self::get_fixed(&heads, &key, HEAD_BYTES, cancellation, work)
-                .await?
-                .ok_or_else(|| Self::failure(AuthorityStoreError::Missing, work))?
-        };
-        let value = decode_head(&encoded).map_err(|error| Self::corrupt(error, work))?;
+        let value = Self::read_head(
+            &transaction,
+            &authority_key(authority_id),
+            cancellation,
+            work,
+        )
+        .await?;
         Ok(AuthorityReceipt { value, work })
     }
 
@@ -1246,6 +1542,33 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> AuthorityResult<AppendOutcome> {
+        self.compare_and_append_guarded(
+            GuardedAppend {
+                authority_id,
+                epoch,
+                expected,
+                commit,
+                permit: PublicationPermit::Unrestricted,
+            },
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn compare_and_append_guarded(
+        &self,
+        request: GuardedAppend,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<AppendOutcome> {
+        let GuardedAppend {
+            authority_id,
+            epoch,
+            expected,
+            commit,
+            permit,
+        } = request;
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
@@ -1262,26 +1585,18 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         Self::admit(work, budget)?;
         let transaction = self
             .database
-            .transaction([AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS])
+            .transaction([
+                AUTHORITY_HEADS,
+                AUTHORITY_COMMITS,
+                AUTHORITY_OPERATIONS,
+                AUTHORITY_GATES,
+            ])
             .with_mode(TransactionMode::Readwrite)
             .with_options(strict_transaction_options())
             .build()
             .map_err(|error| Self::backend(error, work))?;
-        let actual = {
-            let heads = transaction
-                .object_store(AUTHORITY_HEADS)
-                .map_err(|error| Self::backend(error, work))?;
-            let encoded = Self::get_fixed(
-                &heads,
-                &authority_key(authority_id),
-                HEAD_BYTES,
-                cancellation,
-                work,
-            )
-            .await?
-            .ok_or_else(|| Self::failure(AuthorityStoreError::Missing, work))?;
-            decode_head(&encoded).map_err(|error| Self::corrupt(error, work))?
-        };
+        let key = authority_key(authority_id);
+        let actual = Self::read_head(&transaction, &key, cancellation, work).await?;
         if epoch != actual.epoch {
             return Ok(AuthorityReceipt {
                 value: AppendOutcome::Fenced {
@@ -1309,6 +1624,28 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 work,
             });
         }
+        let gate = Self::read_gate(&transaction, &key, cancellation, work).await?;
+        let admitted = match permit {
+            PublicationPermit::Reservation {
+                operation_id,
+                gate_tail,
+                expected: reserved_head,
+            } => {
+                gate.tail == gate_tail
+                    && gate.active == Some(OperationId::from_bytes(operation_id))
+                    && reserved_head == expected
+            }
+            PublicationPermit::Unrestricted => gate.active.is_none(),
+            PublicationPermit::Lease { .. } => false,
+        };
+        if !admitted {
+            return Ok(AuthorityReceipt {
+                value: AppendOutcome::Fenced {
+                    actual_epoch: actual.epoch,
+                },
+                work,
+            });
+        }
         let prepared = Self::prepare_append(
             authority_id,
             epoch,
@@ -1319,6 +1656,147 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             work,
         )?;
         Self::publish_prepared(transaction, authority_id, prepared, cancellation).await
+    }
+
+    async fn reserve_publication(
+        &self,
+        authority_id: AuthorityId,
+        expected: Head,
+        operation_id: OperationId,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<ReservationOutcome> {
+        cancellation
+            .check()
+            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let read_work = authority_fixed_read_work(HEAD_BYTES)
+            .checked_add(authority_fixed_read_work(GATE_BYTES))
+            .map_err(|error| AuthorityFailure::before_work(error.into()))?;
+        Self::admit(read_work, budget)?;
+        let transaction = self
+            .database
+            .transaction([AUTHORITY_HEADS, AUTHORITY_GATES])
+            .with_mode(TransactionMode::Readwrite)
+            .with_options(strict_transaction_options())
+            .build()
+            .map_err(|error| Self::backend(error, read_work))?;
+        let key = authority_key(authority_id);
+        let actual = Self::read_head(&transaction, &key, cancellation, read_work).await?;
+        let gate = Self::read_gate(&transaction, &key, cancellation, read_work).await?;
+        if actual != expected || gate.active.is_some_and(|active| active != operation_id) {
+            return Ok(AuthorityReceipt {
+                value: ReservationOutcome::Conflict { actual },
+                work: read_work,
+            });
+        }
+        if gate.active == Some(operation_id) {
+            return Ok(AuthorityReceipt {
+                value: ReservationOutcome::AlreadyReserved(PublicationReservation {
+                    authority_id,
+                    operation_id,
+                    expected,
+                    gate_tail: gate.tail,
+                }),
+                work: read_work,
+            });
+        }
+        let next_tail = gate.tail.checked_add(1).ok_or_else(|| {
+            Self::failure(
+                AuthorityStoreError::Rejected("publication gate tail exhausted".to_owned()),
+                read_work,
+            )
+        })?;
+        let next = PublicationGateRecord {
+            tail: next_tail,
+            active: Some(operation_id),
+            released: None,
+        };
+        let encoded = encode_publication_gate(next);
+        let write_work = read_work
+            .checked_add(authority_fixed_write_work(GATE_BYTES, 1))
+            .map_err(|error| Self::failure(error.into(), read_work))?;
+        Self::admit(write_work, budget)?;
+        let gates = transaction
+            .object_store(AUTHORITY_GATES)
+            .map_err(|error| Self::backend(error, write_work))?;
+        Self::put_fixed(&gates, &key, &encoded, cancellation, write_work).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| Self::backend(error, write_work))?;
+        Ok(AuthorityReceipt {
+            value: ReservationOutcome::Reserved(PublicationReservation {
+                authority_id,
+                operation_id,
+                expected,
+                gate_tail: next_tail,
+            }),
+            work: write_work,
+        })
+    }
+
+    async fn release_publication(
+        &self,
+        reservation: PublicationReservation,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<()> {
+        cancellation
+            .check()
+            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
+        let read_work = authority_fixed_read_work(GATE_BYTES);
+        Self::admit(read_work, budget)?;
+        let transaction = self
+            .database
+            .transaction(AUTHORITY_GATES)
+            .with_mode(TransactionMode::Readwrite)
+            .with_options(strict_transaction_options())
+            .build()
+            .map_err(|error| Self::backend(error, read_work))?;
+        let key = authority_key(reservation.authority_id);
+        let gate = Self::read_gate(&transaction, &key, cancellation, read_work).await?;
+        if gate.released == Some((reservation.operation_id, reservation.gate_tail)) {
+            return Ok(AuthorityReceipt {
+                value: (),
+                work: read_work,
+            });
+        }
+        if gate.tail != reservation.gate_tail || gate.active != Some(reservation.operation_id) {
+            return Err(Self::failure(
+                AuthorityStoreError::Rejected(
+                    "publication reservation is no longer owned by this operation".to_owned(),
+                ),
+                read_work,
+            ));
+        }
+        let next_tail = gate.tail.checked_add(1).ok_or_else(|| {
+            Self::failure(
+                AuthorityStoreError::Rejected("publication gate tail exhausted".to_owned()),
+                read_work,
+            )
+        })?;
+        let next = PublicationGateRecord {
+            tail: next_tail,
+            active: None,
+            released: Some((reservation.operation_id, reservation.gate_tail)),
+        };
+        let encoded = encode_publication_gate(next);
+        let write_work = read_work
+            .checked_add(authority_fixed_write_work(GATE_BYTES, 1))
+            .map_err(|error| Self::failure(error.into(), read_work))?;
+        Self::admit(write_work, budget)?;
+        let gates = transaction
+            .object_store(AUTHORITY_GATES)
+            .map_err(|error| Self::backend(error, write_work))?;
+        Self::put_fixed(&gates, &key, &encoded, cancellation, write_work).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| Self::backend(error, write_work))?;
+        Ok(AuthorityReceipt {
+            value: (),
+            work: write_work,
+        })
     }
 
     async fn replay(
@@ -1421,21 +1899,13 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .transaction([AUTHORITY_HEADS, AUTHORITY_COMMITS, AUTHORITY_OPERATIONS])
             .build()
             .map_err(|error| Self::backend(error, head_work))?;
-        {
-            let heads = transaction
-                .object_store(AUTHORITY_HEADS)
-                .map_err(|error| Self::backend(error, head_work))?;
-            let encoded = Self::get_fixed(
-                &heads,
-                &authority_key(authority_id),
-                HEAD_BYTES,
-                cancellation,
-                head_work,
-            )
-            .await?
-            .ok_or_else(|| Self::failure(AuthorityStoreError::Missing, head_work))?;
-            decode_head(&encoded).map_err(|error| Self::corrupt(error, head_work))?;
-        }
+        Self::read_head(
+            &transaction,
+            &authority_key(authority_id),
+            cancellation,
+            head_work,
+        )
+        .await?;
         let operation_admission = head_work
             .checked_add(authority_fixed_read_work(OPERATION_BYTES))
             .map_err(|error| Self::failure(error.into(), head_work))?;
@@ -1494,30 +1964,27 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
+        self.put_many(&[ObjectWrite { object_id, bytes }], budget, cancellation)
+            .await
+    }
+
+    /// Admits every write in one read-write transaction, so the batch
+    /// commits, and becomes durable, all at once or not at all.
+    async fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if length > self.maximum_object_bytes {
-            return Err(ObjectFailure::before_work(ObjectStoreError::TooLarge {
-                observed: length,
-                maximum: self.maximum_object_bytes,
-            }));
+        if writes.is_empty() {
+            return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
+                "object write batch is empty".to_owned(),
+            )));
         }
-        let work = Self::initial_work()
-            .checked_add(WorkCounters {
-                object_probes: 1,
-                backend_read_operations: 1,
-                bytes_hashed: length.saturating_add(OBJECT_DIGEST_ENVELOPE_BYTES),
-                ..WorkCounters::default()
-            })
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        if object_digest(object_id.kind, &bytes) != object_id.digest {
-            return Err(Self::failure(ObjectStoreError::DigestMismatch, work));
-        }
-        let key = Self::key(object_id);
+        let mut work = self.admit_writes(writes, budget)?;
         let transaction = self
             .database
             .transaction([OBJECTS, OBJECT_METADATA])
@@ -1525,37 +1992,63 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             .with_options(strict_transaction_options())
             .build()
             .map_err(|error| Self::backend(error, work))?;
-        let existing_length = {
-            let metadata = transaction
-                .object_store(OBJECT_METADATA)
-                .map_err(|error| Self::backend(error, work))?;
-            Self::metadata_length(&metadata, &key, cancellation, work).await?
-        };
-        if let Some(existing_length) = existing_length {
-            if existing_length != length {
-                return Err(Self::failure(ObjectStoreError::Corrupt, work));
-            }
-            return Self::put_existing(
-                transaction,
-                &key,
-                &bytes,
-                length,
-                budget,
-                work,
-                cancellation,
-            )
-            .await;
+        let mut added = false;
+        let mut existing = Vec::new();
+        for write in writes {
+            let key = Self::key(write.object_id);
+            let length = u64::try_from(write.bytes.len()).unwrap_or(u64::MAX);
+            let existing_length = {
+                let metadata = transaction
+                    .object_store(OBJECT_METADATA)
+                    .map_err(|error| Self::backend(error, work))?;
+                Self::metadata_length(&metadata, &key, cancellation, work).await?
+            };
+            work = match existing_length {
+                Some(existing_length) if existing_length != length => {
+                    return Err(Self::failure(ObjectStoreError::Corrupt, work));
+                }
+                Some(_) => {
+                    let (blob, work) =
+                        Self::existing_blob(&transaction, &key, length, budget, work, cancellation)
+                            .await?;
+                    existing.push((blob, &write.bytes));
+                    work
+                }
+                None => {
+                    added = true;
+                    Self::put_new(
+                        &transaction,
+                        &key,
+                        &write.bytes,
+                        length,
+                        budget,
+                        work,
+                        cancellation,
+                    )
+                    .await?
+                }
+            };
         }
-        Self::put_new(
-            transaction,
-            &key,
-            &bytes,
-            length,
-            budget,
-            work,
-            cancellation,
-        )
-        .await
+        if added {
+            work = work
+                .checked_add(WorkCounters {
+                    durability_operations: 1,
+                    ..WorkCounters::default()
+                })
+                .map_err(|error| Self::failure(error.into(), work))?;
+            work.verify(budget)
+                .map_err(|error| Self::failure(error.into(), work))?;
+            transaction
+                .commit()
+                .await
+                .map_err(|error| Self::backend(error, work))?;
+        } else {
+            drop(transaction);
+        }
+        for (blob, bytes) in existing {
+            Self::verify_existing(&blob, bytes, cancellation, work).await?;
+        }
+        Ok(ObjectReceipt { value: (), work })
     }
 
     async fn read(
@@ -2001,6 +2494,97 @@ mod tests {
         Ok(())
     }
 
+    fn blob_write(bytes: &'static [u8]) -> ObjectWrite {
+        let bytes = Bytes::from_static(bytes);
+        ObjectWrite {
+            object_id: ObjectId {
+                kind: ObjectKind::BlobChunk,
+                digest: object_digest(ObjectKind::BlobChunk, &bytes),
+            },
+            bytes,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue> {
+        const DATABASE_NAME: &str = "acyclic-fs-object-batch-v1";
+        Database::delete_by_name(DATABASE_NAME)
+            .map_err(js_error)?
+            .await
+            .map_err(js_error)?;
+        let store = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
+            .await
+            .map_err(js_error)?;
+        let cancellation = CancellationToken::new();
+        let first = blob_write(b"first batch object");
+        let second = blob_write(b"second batch object");
+        let written = AsyncObjectStore::put_many(
+            &store,
+            &[first.clone(), second.clone()],
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert_eq!(
+            written.work.object_bytes_written,
+            (first.bytes.len() + second.bytes.len()) as u64
+        );
+        assert_eq!(written.work.durability_operations, 1);
+
+        // A batch holding an object already stored verifies it and stores the rest.
+        let third = blob_write(b"third batch object");
+        let mixed = AsyncObjectStore::put_many(
+            &store,
+            &[first.clone(), third.clone()],
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert_eq!(mixed.work.object_bytes_written, third.bytes.len() as u64);
+        assert_eq!(mixed.work.object_bytes_read, first.bytes.len() as u64);
+
+        // One forged write rejects the whole batch before anything is stored.
+        let fourth = blob_write(b"fourth batch object");
+        let mut forged = blob_write(b"forged batch object");
+        forged.object_id.digest = Digest::from_bytes([9; 32]);
+        let rejected = AsyncObjectStore::put_many(
+            &store,
+            &[fourth.clone(), forged],
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .err()
+        .ok_or_else(|| JsValue::from_str("forged batch unexpectedly succeeded"))?;
+        assert!(matches!(rejected.error, ObjectStoreError::DigestMismatch));
+        assert!(
+            !AsyncObjectStore::contains(
+                &store,
+                fourth.object_id,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(js_error)?
+            .value
+        );
+        for write in [first, second, third] {
+            let read = AsyncObjectStore::read(
+                &store,
+                write.object_id,
+                1_024,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(js_error)?;
+            assert_eq!(read.value.bytes, write.bytes);
+        }
+        Ok(())
+    }
+
     #[wasm_bindgen_test]
     async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Result<(), JsValue>
     {
@@ -2102,6 +2686,113 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    async fn indexed_db_publication_reservations_are_atomic_and_idempotent() -> Result<(), JsValue>
+    {
+        const DATABASE_NAME: &str = "acyclic-fs-authority-reservation-v3";
+        let store = open_clean_authority(DATABASE_NAME).await?;
+        let authority_id = AuthorityId::from_bytes([31; 16]);
+        let cancellation = CancellationToken::new();
+        let genesis = Head::genesis(Epoch::GENESIS);
+        AsyncAuthorityStore::create_authority(
+            &store,
+            authority_id,
+            Epoch::GENESIS,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        let operation_id = OperationId::from_bytes([32; 16]);
+        let reserved = AsyncAuthorityStore::reserve_publication(
+            &store,
+            authority_id,
+            genesis,
+            operation_id,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        let ReservationOutcome::Reserved(reservation) = reserved.value else {
+            return Err(JsValue::from_str("publication gate was not reserved"));
+        };
+        let retry = AsyncAuthorityStore::reserve_publication(
+            &store,
+            authority_id,
+            genesis,
+            operation_id,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert_eq!(
+            retry.value,
+            ReservationOutcome::AlreadyReserved(reservation)
+        );
+        let proposal = ProposedCommit {
+            operation_id: OperationId::from_bytes([33; 16]),
+            fingerprint: Digest::from_bytes([34; 32]),
+            payload: Bytes::from_static(b"reserved"),
+        };
+        let blocked = AsyncAuthorityStore::compare_and_append(
+            &store,
+            authority_id,
+            Epoch::GENESIS,
+            genesis,
+            proposal.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert!(matches!(blocked.value, AppendOutcome::Fenced { .. }));
+        let committed = AsyncAuthorityStore::compare_and_append_guarded(
+            &store,
+            GuardedAppend {
+                authority_id,
+                epoch: Epoch::GENESIS,
+                expected: genesis,
+                commit: proposal,
+                permit: PublicationPermit::Reservation {
+                    operation_id: operation_id.into_bytes(),
+                    gate_tail: reservation.gate_tail,
+                    expected: genesis,
+                },
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert!(matches!(committed.value, AppendOutcome::Committed(_)));
+        release(&store, reservation, &cancellation)
+            .await
+            .map_err(js_error)?;
+        release(&store, reservation, &cancellation)
+            .await
+            .map_err(js_error)?;
+        let mut forged = reservation;
+        forged.operation_id = OperationId::from_bytes([99; 16]);
+        assert!(release(&store, forged, &cancellation).await.is_err());
+        Ok(())
+    }
+
+    async fn release(
+        store: &IndexedDbAuthorityStore,
+        reservation: PublicationReservation,
+        cancellation: &CancellationToken,
+    ) -> AuthorityResult<()> {
+        AsyncAuthorityStore::release_publication(
+            store,
+            reservation,
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await
+    }
+
+    #[wasm_bindgen_test]
     async fn indexed_db_authority_serializes_competing_connections() -> Result<(), JsValue> {
         const DATABASE_NAME: &str = "acyclic-fs-authority-race-v2";
         let creator = open_clean_authority(DATABASE_NAME).await?;
@@ -2199,6 +2890,103 @@ mod tests {
                 "second authority append was not committed",
             )),
         }
+    }
+
+    #[wasm_bindgen_test]
+    async fn indexed_db_forks_and_creates_in_one_transaction_and_resolves_retries()
+    -> Result<(), JsValue> {
+        const DATABASE_NAME: &str = "acyclic-fs-authority-fork-v1";
+        let store = open_clean_authority(DATABASE_NAME).await?;
+        let cancellation = CancellationToken::new();
+        let proposal = |seed: u8| ProposedCommit {
+            operation_id: OperationId::from_bytes([seed; 16]),
+            fingerprint: Digest::from_bytes([seed; 32]),
+            payload: Bytes::from(vec![seed; 8]),
+        };
+        let fork = WorkspaceForkCommit {
+            lineage: None,
+            destination: AuthorityId::from_bytes([31; 16]),
+            creation: proposal(32),
+            retention: AuthorityId::from_bytes([33; 16]),
+            retained: proposal(34),
+        };
+        // Both authorities and both first records land in one transaction.
+        let committed = AsyncAuthorityStore::commit_workspace_fork(
+            &store,
+            fork.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert_eq!(committed.value, WorkspaceForkOutcome::Committed);
+        for (authority, commit) in [
+            (fork.destination, &fork.creation),
+            (fork.retention, &fork.retained),
+        ] {
+            let head =
+                AsyncAuthorityStore::head(&store, authority, WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .map_err(js_error)?
+                    .value;
+            assert_eq!(head.sequence, Sequence::new(1));
+            let found = AsyncAuthorityStore::find_operation(
+                &store,
+                authority,
+                commit.operation_id,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(js_error)?
+            .value
+            .ok_or_else(|| JsValue::from_str("first record is not found by its operation"))?;
+            assert_eq!(found.fingerprint, commit.fingerprint);
+        }
+        // A retry finds both first records and changes nothing.
+        let retried = AsyncAuthorityStore::commit_workspace_fork(
+            &store,
+            fork.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert_eq!(retried.value, WorkspaceForkOutcome::Committed);
+        // Another creation at the same destination is rejected.
+        let rejected = AsyncAuthorityStore::commit_workspace_fork(
+            &store,
+            WorkspaceForkCommit {
+                creation: proposal(35),
+                ..fork.clone()
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(js_error)?;
+        assert_eq!(rejected.value, WorkspaceForkOutcome::CreationRejected);
+
+        // One authority with its first record, then its retry and a
+        // conflicting creation.
+        let volume = AuthorityId::from_bytes([36; 16]);
+        for (commit, expected) in [
+            (proposal(37), true),
+            (proposal(37), true),
+            (proposal(38), false),
+        ] {
+            let created = AsyncAuthorityStore::create_authority_with_first_record(
+                &store,
+                volume,
+                commit,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(js_error)?;
+            assert_eq!(created.value, expected);
+        }
+        Ok(())
     }
 
     async fn open_clean_authority(database_name: &str) -> Result<IndexedDbAuthorityStore, JsValue> {

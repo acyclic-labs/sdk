@@ -245,7 +245,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
                 CheckoutMode::read_only_pinned(),
             )
             .await?;
-        let path = key_path(key, checkout.volume_config().limits)?;
+        let path = key_path(key, checkout.volume_config())?;
         let record = checkout
             .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
@@ -315,7 +315,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
                 CheckoutMode::read_only_pinned(),
             )
             .await?;
-        let path = key_path(key, checkout.volume_config().limits)?;
+        let path = key_path(key, checkout.volume_config())?;
         checkout
             .read_file_range(
                 &path,
@@ -498,7 +498,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> S3Workspace<A, O> {
             .await?;
         let limits = checkout.volume_config().limits;
         let (frontier, frontier_key, frontier_name_prefix) =
-            listing_frontier(&options.prefix, limits)?;
+            listing_frontier(&options.prefix, checkout.volume_config())?;
         if !frontier.components().is_empty() {
             let record = checkout
                 .lookup_no_follow(&frontier, WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -784,8 +784,9 @@ fn empty_list() -> S3List {
 
 fn listing_frontier(
     prefix: &str,
-    limits: crate::model::VolumeLimits,
+    config: crate::model::VolumeConfig,
 ) -> Result<(NamespacePath, String, String), S3Error> {
+    let limits = config.limits;
     let Some(separator) = prefix.rfind('/') else {
         return Ok((
             NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::path)?,
@@ -799,7 +800,7 @@ fn listing_frontier(
     let path = if directory.is_empty() {
         NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::path)?
     } else {
-        key_path(directory, limits)?
+        key_path(directory, config)?
     };
     Ok((
         path,
@@ -968,9 +969,9 @@ pub(crate) async fn create_parent_directories<A: AsyncAuthorityStore, O: AsyncOb
     Ok(())
 }
 
-fn key_path(key: &str, limits: crate::model::VolumeLimits) -> Result<NamespacePath, S3Error> {
+fn key_path(key: &str, config: crate::model::VolumeConfig) -> Result<NamespacePath, S3Error> {
     validate_key(key)?;
-    crate::workspace::customer_path(&absolute_key(key), limits).map_err(Into::into)
+    crate::workspace::customer_path(&absolute_key(key), config).map_err(Into::into)
 }
 
 fn validate_key(key: &str) -> Result<(), S3Error> {

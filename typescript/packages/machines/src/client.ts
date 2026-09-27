@@ -1,5 +1,5 @@
 import type {
-  CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, MachineEvent, MachineId,
+  CheckpointId, CheckpointObservation, CreateMachine, ForkFidelity, IdempotencyKey, MachineEvent, MachineId,
   MachineObservation, MachinesProvider, MutationOutcome, OperationId, OperationObservation,
   Performance, SuspensionPolicy, UsageReceipt,
 } from "./index.js";
@@ -58,6 +58,8 @@ export class Machine {
   constructor(readonly provider: MachinesProvider, readonly id: MachineId) {}
   inspect(): Promise<MachineObservation> { return this.provider.inspectMachine(this.id); }
   async checkpoint(key: IdempotencyKey): Promise<Checkpoint> { return new Checkpoint(this.provider, expectOutcome(await this.provider.checkpoint(this.id, key), "checkpointed").checkpoint.id); }
+  /** Forks this running machine into `count` fresh children; see `MachinesProvider.forkMachine` for the exact semantics. */
+  async fork(count: number, key: IdempotencyKey): Promise<MachineFork> { const outcome = expectOutcome(await this.provider.forkMachine(this.id, count, key), "machine-forked"); if (outcome.source !== this.id) throw new MachineOutcomeError("machine-forked", outcome); return { fidelity: outcome.fidelity, children: outcome.children.map(value => new Machine(this.provider, value.id)) }; }
   suspend(key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "suspended" }>> { return this.#outcome("suspended", this.provider.suspend(this.id, key)); }
   wake(key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "woken" }>> { return this.#outcome("woken", this.provider.wake(this.id, key)); }
   setSuspensionPolicy(policy: SuspensionPolicy, key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "suspension-policy-set" }>> { return this.#outcome("suspension-policy-set", this.provider.setSuspensionPolicy(this.id, policy, key)); }
@@ -66,6 +68,9 @@ export class Machine {
   usage(startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.provider.usage(this.id, startUnixMs, endUnixMs); }
   async #outcome<Kind extends MutationOutcome["kind"]>(kind: Kind, value: Promise<MutationOutcome>): Promise<Extract<MutationOutcome, { kind: Kind }>> { return expectOutcome(await value, kind); }
 }
+
+/** Children of one `Machine.fork` and the fidelity they were forked at. */
+export interface MachineFork { readonly fidelity: ForkFidelity; readonly children: readonly Machine[] }
 
 export class Checkpoint {
   constructor(readonly provider: MachinesProvider, readonly id: CheckpointId) {}

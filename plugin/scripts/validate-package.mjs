@@ -1,0 +1,175 @@
+#!/usr/bin/env node
+
+import { createRequire } from "node:module";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+
+const require = createRequire(import.meta.url);
+const { sha256File } = require("../bin/verify.js");
+
+function fail(message) {
+  throw new Error(message);
+}
+
+function parseArguments(argv) {
+  const result = { require_target: [] };
+  for (const argument of argv) {
+    if (!result.package && !argument.startsWith("--")) result.package = argument;
+    else if (argument === "--require-universal") result.require_universal = true;
+    else if (result.pending_target) {
+      result.require_target.push(argument);
+      result.pending_target = false;
+    } else if (argument === "--require-target") result.pending_target = true;
+    else fail(`unknown argument: ${argument}`);
+  }
+  if (!result.package) fail("package path is required");
+  if (result.pending_target) fail("--require-target requires a value");
+  return result;
+}
+
+function walk(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const path = join(directory, entry.name);
+    return entry.isDirectory() ? walk(path) : [path];
+  });
+}
+
+const args = parseArguments(process.argv.slice(2));
+const root = resolve(args.package);
+const plugin = join(root, "plugin");
+const targetSchema = JSON.parse(readFileSync(join(plugin, "bin", "targets.json"), "utf8"));
+if (targetSchema.version !== 1 || !targetSchema.targets || Array.isArray(targetSchema.targets)) {
+  fail("unsupported Acyclic target schema");
+}
+const SUPPORTED_TARGETS = new Set(Object.keys(targetSchema.targets));
+const packageManifest = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
+const changelog = join(plugin, "CHANGELOG.md");
+const changelogText = existsSync(changelog) && statSync(changelog).isFile()
+  ? readFileSync(changelog, "utf8")
+  : "";
+if (changelogText.split(/\r?\n/, 1)[0].trim() !== `# ${packageManifest.name} changelog`
+  || !changelogText.split(/\r?\n/).some(line => line.startsWith(`## ${packageManifest.version} `))) {
+  fail(`missing or invalid package changelog: ${changelog}`);
+}
+const assets = {};
+for (const path of [
+  join(plugin, "plugin.json"),
+  join(plugin, ".codex-plugin", "plugin.json"),
+  join(plugin, ".mcp.json"),
+  join(plugin, "hooks", "hooks.json"),
+]) {
+  if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
+  assets[path] = JSON.parse(readFileSync(path, "utf8"));
+}
+// Codex delivers hooks to the plugin's one MCP server, which exposes no tool
+// to the model; the shell-capable package exposes no other MCP server.
+const HOOK_SERVER = "acyclic-hooks";
+const expectedMcp = {
+  mcpServers: {
+    [HOOK_SERVER]: {
+      type: "stdio",
+      command: "./bin/acyclic",
+      args: ["__mcp"],
+      cwd: ".",
+      env_vars: ["XDG_STATE_HOME"],
+      required: true,
+    },
+  },
+};
+if (JSON.stringify(assets[join(plugin, ".mcp.json")]) !== JSON.stringify(expectedMcp)) {
+  fail("the plugin MCP declaration must be exactly the Codex hook server");
+}
+if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== "./.mcp.json") {
+  fail("the Codex plugin manifest must declare ./.mcp.json");
+}
+const hookHandlers = Object.values(assets[join(plugin, "hooks", "hooks.json")].hooks ?? {})
+  .flat()
+  .flatMap(group => group.hooks ?? []);
+if (!hookHandlers.some(hook => hook.type === "mcp_tool")
+  || hookHandlers.some(hook => hook.type === "mcp_tool"
+    && (hook.server !== HOOK_SERVER || hook.tool !== "hook"))) {
+  fail("Codex MCP hooks must call the plugin's hook server");
+}
+
+// The `acyclic` command must link to an interpreter-less placeholder that the
+// installer replaces with the native executable; an interpreter line would make
+// Windows package managers wrap the command in that interpreter.
+const packageJson = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
+if (JSON.stringify(packageJson.bin) !== JSON.stringify({ acyclic: "bin/acyclic" })) {
+  fail("the acyclic command must link to bin/acyclic");
+}
+const placeholder = join(plugin, "bin", "acyclic");
+if (!existsSync(placeholder) || !statSync(placeholder).isFile() || statSync(placeholder).size > 4096
+  || readFileSync(placeholder, "utf8").startsWith("#!")) {
+  fail(`invalid acyclic command placeholder: ${placeholder}`);
+}
+for (const installed of ["acyclic.exe", "installed-binary.json", "install-transaction.json"]) {
+  if (existsSync(join(plugin, "bin", installed))) fail(`package contains installed state: bin/${installed}`);
+}
+
+const manifest = JSON.parse(readFileSync(join(plugin, "bin", "platform-binaries.json"), "utf8"));
+if (manifest.version !== 1 || !manifest.targets || typeof manifest.targets !== "object" || Array.isArray(manifest.targets)) {
+  fail("unsupported platform binary manifest");
+}
+const targets = new Set(Object.keys(manifest.targets));
+if (args.require_universal && (targets.size !== SUPPORTED_TARGETS.size || [...SUPPORTED_TARGETS].some(target => !targets.has(target)))) {
+  const missing = [...SUPPORTED_TARGETS].filter(target => !targets.has(target)).sort();
+  const extra = [...targets].filter(target => !SUPPORTED_TARGETS.has(target)).sort();
+  fail(`universal target mismatch; missing=${JSON.stringify(missing)}, extra=${JSON.stringify(extra)}`);
+}
+if (args.require_universal) {
+  const version = packageManifest.version;
+  const receipts = [
+    ["linux-x64-gnu", "linux", "x86_64", "linux-fuse"],
+    ["darwin-arm64", "macos", "aarch64", "macos-nfs"],
+    ["win32-x64", "windows", "x86_64", "windows-projfs"],
+  ];
+  for (const [target, os, arch, backend] of receipts) {
+    const path = join(plugin, "certification", `native-mount-${target}.json`);
+    if (!existsSync(path) || !statSync(path).isFile()) fail(`missing certification receipt: ${path}`);
+    const receipt = JSON.parse(readFileSync(path, "utf8"));
+    if (
+      receipt.schema !== "acyclic-native-mount-qualification-v2"
+      || receipt.os !== os
+      || receipt.arch !== arch
+      || receipt.required_kind !== backend
+      || receipt.release_version !== version
+      || receipt.passed !== true
+      || typeof receipt.executable_blake3 !== "string"
+      || !/^[0-9a-f]{64}$/.test(receipt.executable_blake3)
+      || receipt.capability?.kind !== backend
+      || receipt.capability?.available !== true
+      || receipt.capability?.writable !== true
+      || receipt.capability?.provider_process_io_observable !== (os !== "windows")
+      || receipt.capability?.session_isolation !== "SharedProcess"
+      || receipt.capability?.unavailable_reason !== null
+    ) fail(`invalid certification receipt: ${path}`);
+  }
+}
+for (const target of args.require_target) {
+  if (!targets.has(target)) fail(`release package is missing required target: ${target}`);
+}
+for (const [target, entry] of Object.entries(manifest.targets)) {
+  if (!SUPPORTED_TARGETS.has(target)) fail(`unsupported binary target: ${target}`);
+  if (!entry || typeof entry !== "object" || typeof entry.path !== "string") fail(`invalid binary entry: ${target}`);
+  const expectedName = targetSchema.targets[target];
+  const expectedPath = `${target}/${expectedName}`;
+  if (entry.path !== expectedPath) fail(`invalid binary path for ${target}`);
+  const binary = join(plugin, "bin", target, expectedName);
+  if (!existsSync(binary)) fail(`missing binary for ${target}`);
+  if (process.platform !== "win32" && !target.startsWith("win32-")
+    && (statSync(binary).mode & 0o111) !== 0o111) {
+    fail(`binary is not executable for ${target}`);
+  }
+  const actual = sha256File(binary);
+  if (actual !== entry.sha256) fail(`binary checksum mismatch for ${target}`);
+  const verified = spawnSync(process.execPath, [join(plugin, "bin", "verify.js"), target], {
+    cwd: plugin,
+    stdio: "inherit",
+  });
+  if (verified.status !== 0) fail(`verification failed for ${target}`);
+}
+if (walk(plugin).some(path => basename(path) === "Cargo.toml" || basename(path) === "Cargo.lock" || path.endsWith(".rs"))) {
+  fail("release package contains Rust sources or Cargo metadata");
+}

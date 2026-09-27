@@ -532,19 +532,37 @@ fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
         1
     );
 
+    // A file introduced on one side may lose its directory binding when the
+    // other side wins a same-name replacement. It must not remain orphaned in
+    // the merged file table merely because no binding changed relative to ours.
+    let introduced = record(33, 1, 1, FilePayload::Empty, FileKind::Fifo);
+    let introduced_id = introduced.file_id;
+    let mut resolutions = BTreeMap::from([(introduced_id, (None, Some(introduced)))]);
+    poll_ready(adjust_link_counts(
+        &store,
+        &mut resolutions,
+        &mut 8,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        &mut WorkCounters::default(),
+    ))
+    .ok_or("orphaned file adjustment unexpectedly suspended")??;
+    assert_eq!(
+        resolutions.get(&introduced_id).map(|(_, record)| *record),
+        Some(None)
+    );
+
     let renamed_directory = FileRecord {
         payload: FilePayload::Directory {
             entries: renamed_tree,
         },
         ..base_directory
     };
-    let mut resolutions = BTreeMap::from([
-        (
-            directory_id,
-            (Some(base_directory), Some(renamed_directory)),
-        ),
-        (target_id, (Some(target), Some(target))),
-    ]);
+    let mut resolutions = BTreeMap::from([(
+        directory_id,
+        (Some(base_directory), Some(renamed_directory)),
+    )]);
     let mut remaining_changes = 8;
     poll_ready(adjust_link_counts(
         &store,
@@ -556,14 +574,7 @@ fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
         &mut WorkCounters::default(),
     ))
     .ok_or("rename-neutral link adjustment unexpectedly suspended")??;
-    assert_eq!(
-        resolutions
-            .get(&target_id)
-            .and_then(|(_, record)| *record)
-            .ok_or("rename-neutral target record missing")?
-            .link_count,
-        2
-    );
+    assert!(!resolutions.contains_key(&target_id));
 
     let mut resolutions = BTreeMap::from([(
         directory_id,
@@ -582,6 +593,67 @@ fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
     .err()
     .ok_or("zero link frontier unexpectedly succeeded")?;
     assert!(matches!(limit.error, MergeGenerationError::ChangeLimit));
+    Ok(())
+}
+
+#[test]
+fn pruning_an_unbound_directory_recomputes_descendant_links()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let directory_id = FileId::from_bytes([90; 16]);
+    let child = record(91, 1, 1, FilePayload::Empty, FileKind::Fifo);
+    let child_id = child.file_id;
+    let entries = put_tree(
+        &store,
+        vec![TreeEntry {
+            name: LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 8)?,
+            file_id: child_id,
+            kind: FileKind::Fifo,
+        }],
+    )?;
+    let directory = FileRecord {
+        file_id: directory_id,
+        kind: FileKind::Directory,
+        link_count: 1,
+        metadata: object(ObjectKind::Metadata, 1),
+        payload: FilePayload::Directory { entries },
+    };
+    let mut resolutions = BTreeMap::from([
+        (directory_id, (None, Some(directory))),
+        (child_id, (None, Some(child))),
+    ]);
+    poll_ready(adjust_link_counts(
+        &store,
+        &mut resolutions,
+        &mut 8,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+        &mut WorkCounters::default(),
+    ))
+    .ok_or("orphan pruning unexpectedly suspended")??;
+    assert!(resolutions.values().all(|(_, resolved)| resolved.is_none()));
+    Ok(())
+}
+
+#[test]
+fn deleting_a_record_with_remaining_links_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let linked = record(92, 1, 2, FilePayload::Empty, FileKind::Fifo);
+    let mut resolutions = BTreeMap::from([(linked.file_id, (Some(linked), None))]);
+    let failure = poll_ready(adjust_link_counts(
+        &store,
+        &mut resolutions,
+        &mut 8,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+        &mut WorkCounters::default(),
+    ))
+    .ok_or("remaining-link adjustment unexpectedly suspended")?
+    .err()
+    .ok_or("remaining-link deletion unexpectedly succeeded")?;
+    assert!(matches!(failure.error, MergeGenerationError::InvalidDiff));
     Ok(())
 }
 

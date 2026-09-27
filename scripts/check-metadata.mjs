@@ -1,9 +1,50 @@
 import Ajv2020 from "ajv/dist/2020.js";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { compatibilityArtifacts, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 
 const root = new URL("..", import.meta.url);
+const rootPath = resolve(fileURLToPath(root));
 const load = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
+const retiredStem = "p" + "y";
+const retiredSuffixes = ["", "i", "c", "o"].map(suffix => `.${retiredStem}${suffix}`);
+const retiredTerms = ["p" + "ython", "py" + "test", "bo" + "to3", "boto" + "core"];
+const retiredPattern = `${retiredTerms.join("|")}|\\.${retiredStem}(?:i|c|o)?\\b`;
+const hasRetiredSuffix = path => retiredSuffixes.some(suffix => path.toLowerCase().endsWith(suffix));
+if (!retiredSuffixes.every(suffix => hasRetiredSuffix(`fixture${suffix}`)) || hasRetiredSuffix("fixture.mjs")) {
+  throw new Error("retired-runtime suffix gate failed its fixtures");
+}
+const fixturePattern = new RegExp(retiredPattern, "i");
+if (!fixturePattern.test(`${"p" + "ython"} fixture`) || fixturePattern.test("node fixture.mjs")) {
+  throw new Error("retired-runtime content gate failed its fixtures");
+}
+const git = (...args) => spawnSync("git", args, { cwd: rootPath, encoding: "utf8" });
+const tracked = git("ls-files", "-z", "--cached", "--others", "--exclude-standard");
+if (tracked.error || tracked.status !== 0) throw tracked.error ?? new Error(tracked.stderr.trim());
+const exemptPrefixes = ["arena/"];
+const isExempt = path => exemptPrefixes.some(prefix => path.startsWith(prefix));
+const presentFiles = tracked.stdout
+  .split("\0")
+  .filter(Boolean)
+  .filter(path => !isExempt(path))
+  .map(path => ({ path, fullPath: resolve(rootPath, path) }))
+  .filter(({ fullPath }) => {
+    if (fullPath !== rootPath && !fullPath.startsWith(`${rootPath}${sep}`)) {
+      throw new Error(`repository path escapes its root: ${fullPath}`);
+    }
+    return existsSync(fullPath);
+  });
+const retiredFile = presentFiles.find(({ path }) => hasRetiredSuffix(path))?.path;
+if (retiredFile) throw new Error(`retired-runtime source exists: ${retiredFile}`);
+const retiredContent = presentFiles.find(({ fullPath }) => {
+  const content = readFileSync(fullPath);
+  return !content.includes(0) && fixturePattern.test(content.toString("utf8"));
+})?.path;
+if (retiredContent) throw new Error(`retired-runtime reference exists: ${retiredContent}`);
 const ajv = new Ajv2020({ allErrors: true });
 ajv.compile(await load("rust/crates/conformance/schemas/runner-report.schema.json"));
 new Ajv2020({ allErrors: true }).compile(
@@ -29,6 +70,20 @@ const streamVersion = compatibility.families.stream.version;
 const streamCrateVersion = compatibility.families.stream.crateVersion ?? streamVersion;
 const harnessPackage = await load("typescript/packages/harness/package.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
+for (const item of await load("release/npm-packages.json")) {
+  const directory = item.source === "plugin"
+    ? "plugin"
+    : `typescript/packages/${item.directory}`;
+  const manifest = await load(`${directory}/package.json`);
+  if (manifest.name !== item.name || manifest.version !== sdkPackage.version || manifest.private !== false) {
+    throw new Error(`public npm package identity mismatch: ${item.name}`);
+  }
+  const readme = await readFile(new URL(`${directory}/README.md`, root), "utf8");
+  const changelog = await readFile(new URL(`${directory}/CHANGELOG.md`, root), "utf8");
+  if (!readme.startsWith("# ") || !changelog.includes(`## ${manifest.version}`)) {
+    throw new Error(`public npm package documentation mismatch: ${item.name}`);
+  }
+}
 const lock = Bun.JSONC.parse(await readFile(new URL("bun.lock", root), "utf8"));
 for (const [path, locked] of Object.entries(lock.workspaces)) {
   const manifest = await load(path ? `${path}/package.json` : "package.json");
@@ -67,8 +122,6 @@ for (const path of [
   "rust/crates/filesystem/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
   "rust/crates/harness/Cargo.toml",
-  "rust/crates/memory/Cargo.toml",
-  "rust/crates/sdk/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-stream = \{ version = "([^"]+)"/)?.[1];
@@ -88,9 +141,7 @@ if (
 }
 for (const path of [
   "rust/crates/conformance/Cargo.toml",
-  "rust/crates/harness-machines/Cargo.toml",
-  "rust/crates/memory/Cargo.toml",
-  "rust/crates/sdk/Cargo.toml",
+  "rust/crates/harness/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-machines = \{ version = "([^"]+)"/)?.[1];
@@ -106,10 +157,6 @@ const rustInferenceManifest = await readFile(new URL("rust/crates/inference/Carg
 if (rustInferenceManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1] !== inferenceVersion) {
   throw new Error("Rust inference package version mismatch");
 }
-const rustSdkManifest = await readFile(new URL("rust/crates/sdk/Cargo.toml", root), "utf8");
-if (rustSdkManifest.match(/acyclic-inference = \{ version = "([^"]+)"/)?.[1] !== `=${inferenceVersion}`) {
-  throw new Error("Rust SDK inference dependency version mismatch");
-}
 if ((await load("typescript/packages/sdk/package.json")).dependencies["@acyclic-labs/inference"] !== inferenceVersion) {
   throw new Error("TypeScript SDK inference dependency version mismatch");
 }
@@ -118,7 +165,8 @@ const objectsCrateVersion = compatibility.families.objects.crateVersion ?? objec
 const objectsManifest = await readFile(new URL("rust/crates/objects/Cargo.toml", root), "utf8");
 if (
   (await load("typescript/packages/objects/package.json")).version !== objectsVersion ||
-  sdkPackage.dependencies["@acyclic-labs/objects"] !== objectsVersion
+  sdkPackage.dependencies["@acyclic-labs/objects"] !== objectsVersion ||
+  harnessPackage.peerDependencies["@acyclic-labs/objects"] !== objectsVersion
 ) {
   throw new Error("Objects npm and umbrella dependency versions must match compatibility metadata");
 }
@@ -129,8 +177,7 @@ for (const path of [
   "rust/crates/conformance/Cargo.toml",
   "rust/crates/filesystem/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
-  "rust/crates/memory/Cargo.toml",
-  "rust/crates/sdk/Cargo.toml",
+  "rust/crates/harness/Cargo.toml",
 ]) {
   const manifest = await readFile(new URL(path, root), "utf8");
   const requirement = manifest.match(/acyclic-objects = \{ version = "([^"]+)"/)?.[1];
@@ -149,7 +196,6 @@ for (const path of [
   }
 }
 for (const path of [
-  "rust/crates/filesystem-daemon/Cargo.toml",
   "rust/crates/filesystem-napi/Cargo.toml",
   "rust/crates/filesystem-wasm/Cargo.toml",
 ]) {
@@ -167,55 +213,29 @@ const nativePackageVersion = nativeSource.match(/const PACKAGE_VERSION = "([^"]+
 if (nativePackageVersion !== filesystemVersion) {
   throw new Error("filesystem native companion version does not match package metadata");
 }
-const familyArtifacts = {
-  harness: {
-    schemaDigest: "proto/harness/v1/harness.proto",
-    conformanceDigest: "conformance/vectors/core.json",
-  },
-  filesystem: {
-    schemaDigest: "proto/filesystem/v2/filesystem.proto",
-    descriptorDigest: "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",
-    conformanceDigest: "conformance/vectors/filesystem/dependency-content-range-v1.json",
-  },
-  stream: {
-    schemaDigest: "rust/crates/stream/proto/stream/v2/stream.proto",
-    descriptorDigest: "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
-    conformanceDigest: "conformance/vectors/stream.json",
-  },
-  objects: {
-    schemaDigest: "proto/objects/v1/objects.proto",
-    descriptorDigest: "rust/crates/objects/src/generated/acyclic-objects-v1.bin",
-    conformanceDigest: "conformance/vectors/objects.json",
-  },
-  machines: {
-    schemaDigest: "proto/machines/v1/machines.proto",
-    descriptorDigest: "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
-    conformanceDigest: "conformance/vectors/machines.json",
-  },
-  inference: {
-    schemaDigest: "proto/inference/v1/inference.proto",
-    descriptorDigest: "rust/crates/inference/inference_descriptor.bin",
-    conformanceDigest: "conformance/vectors/inference.json",
-  },
-};
-for (const [family, artifacts] of Object.entries(familyArtifacts)) {
+for (const [family, artifacts] of Object.entries(compatibilityArtifacts)) {
   for (const [field, path] of Object.entries(artifacts)) {
     if (compatibility.families[family][field] !== await digest(path)) {
       throw new Error(`${family} ${field} mismatch`);
     }
   }
 }
+for (const [stem, packages] of packagedTypeScriptBindings) {
+  const family = stem.split("/")[0];
+  if (!packages.includes(family)) continue;
+  const manifest = await load(`typescript/packages/${family}/package.json`);
+  const prefix = `./generated/proto/${stem}`;
+  if (manifest.exports?.["./proto"]?.types !== `${prefix}.d.ts`
+    || manifest.exports["./proto"].default !== `${prefix}.js`
+    || !manifest.files?.some(path => path === "generated" || path === "generated/proto")
+    || manifest.dependencies?.["@bufbuild/protobuf"] !== "2.14.1") {
+    throw new Error(`${family} generated protobuf package export mismatch`);
+  }
+}
 
-for (const [canonical, packaged] of [
-  ["conformance/vectors/core.json", "rust/crates/conformance/vectors/harness.json"],
-  ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
-  ["conformance/vectors/stream.json", "rust/crates/conformance/vectors/stream.json"],
-  ["conformance/vectors/objects.json", "rust/crates/conformance/vectors/objects.json"],
-  ["conformance/vectors/machines.json", "rust/crates/conformance/vectors/machines.json"],
-  ["conformance/vectors/filesystem/dependency-content-range-v1.json", "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
-]) {
+for (const [canonical, packaged] of packagedSourceCopies) {
   if (await digest(canonical) !== await digest(packaged)) {
-    throw new Error(`packaged conformance vector drift: ${packaged}`);
+    throw new Error(`packaged source drift: ${packaged}`);
   }
 }
 

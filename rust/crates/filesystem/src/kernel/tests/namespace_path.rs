@@ -7,6 +7,17 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
     let converted = NamespacePath::from_portable(&portable, limits)?;
     assert_eq!(converted.depth(), 2);
     assert_eq!(converted.encoded_bytes(), 14);
+    let parent = converted
+        .parent()
+        .ok_or_else(|| std::io::Error::other("workspace parent is missing"))?;
+    assert_eq!(parent.depth(), 1);
+    assert_eq!(parent.encoded_bytes(), 10);
+    let root = parent
+        .parent()
+        .ok_or_else(|| std::io::Error::other("namespace root is missing"))?;
+    assert!(root.is_root());
+    assert_eq!(root.encoded_bytes(), 1);
+    assert!(root.parent().is_none());
 
     let posix = LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'a'], 255)?;
     let windows = LogicalName::new(
@@ -20,6 +31,45 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
         Some(&posix)
     );
     assert!(native.is_within(&NamespacePath::new(vec![posix], limits)?));
+    Ok(())
+}
+
+#[test]
+fn string_paths_use_the_volume_name_encoding() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = VolumeLimits::default();
+    let portable = PortablePath::parse("/é/𝄞", limits)?;
+    for (profile, encoding) in [
+        (FilesystemProfile::Portable, NameEncoding::Utf8),
+        (FilesystemProfile::Posix, NameEncoding::PosixBytes),
+        (FilesystemProfile::Windows, NameEncoding::WindowsUtf16Le),
+    ] {
+        let path = NamespacePath::from_portable_in_profile(&portable, profile, limits)?;
+        assert_eq!(
+            path.components()
+                .first()
+                .and_then(LogicalName::unicode_text)
+                .as_deref(),
+            Some("é")
+        );
+        assert!(
+            path.components()
+                .iter()
+                .all(|name| name.encoding() == encoding)
+        );
+        assert_eq!(
+            path.components().first().map(LogicalName::as_bytes),
+            Some(match profile {
+                FilesystemProfile::Windows => &[0xe9, 0x00][..],
+                _ => "é".as_bytes(),
+            })
+        );
+        if profile == FilesystemProfile::Windows {
+            assert_eq!(
+                path.components().get(1).map(LogicalName::as_bytes),
+                Some(&[0x34, 0xd8, 0x1e, 0xdd][..])
+            );
+        }
+    }
     Ok(())
 }
 

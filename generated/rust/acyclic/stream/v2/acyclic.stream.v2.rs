@@ -60,6 +60,8 @@ pub struct TailRequest {
 pub struct TailResponse {
     #[prost(uint64, tag = "1")]
     pub tail: u64,
+    #[prost(uint64, optional, tag = "2")]
+    pub trim_point: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ForkRequest {
@@ -156,6 +158,26 @@ pub struct ChildrenResponse {
     pub child: ::core::option::Option<Child>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ChildrenPageRequest {
+    #[prost(string, optional, tag = "1")]
+    pub parent: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "2")]
+    pub after: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bytes = "vec", optional, tag = "3")]
+    pub hierarchy_version: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(uint32, tag = "4")]
+    pub limit: u32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChildrenPageResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub hierarchy_version: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "2")]
+    pub children: ::prost::alloc::vec::Vec<Child>,
+    #[prost(string, optional, tag = "3")]
+    pub next_after: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TailCondition {
     #[prost(string, tag = "1")]
     pub path: ::prost::alloc::string::String,
@@ -189,6 +211,8 @@ pub struct AppendMutation {
     #[prost(bytes = "vec", repeated, tag = "2")]
     pub records: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
+/// Forks the source's prefix ending at `at_tail` into the new destination,
+/// then appends `records` to the destination, all at one linearization point.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ForkMutation {
     #[prost(string, tag = "1")]
@@ -197,6 +221,8 @@ pub struct ForkMutation {
     pub destination: ::prost::alloc::string::String,
     #[prost(uint64, tag = "3")]
     pub at_tail: u64,
+    #[prost(bytes = "vec", repeated, tag = "4")]
+    pub records: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TrimMutation {
@@ -237,6 +263,8 @@ pub struct CommitRequest {
     pub mutations: ::prost::alloc::vec::Vec<CommitMutation>,
     #[prost(bytes = "vec", tag = "3")]
     pub idempotency_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, optional, tag = "4")]
+    pub deadline_unix_millis: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CommittedAppend {
@@ -251,7 +279,7 @@ pub struct CommittedAppend {
     #[prost(message, repeated, tag = "5")]
     pub records: ::prost::alloc::vec::Vec<Record>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CommittedFork {
     #[prost(string, tag = "1")]
     pub source: ::prost::alloc::string::String,
@@ -261,6 +289,8 @@ pub struct CommittedFork {
     pub forked_at: u64,
     #[prost(uint64, tag = "4")]
     pub tail: u64,
+    #[prost(message, repeated, tag = "5")]
+    pub records: ::prost::alloc::vec::Vec<Record>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CommittedTrim {

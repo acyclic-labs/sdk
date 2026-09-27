@@ -112,49 +112,72 @@ fn pages_clone_without_changing_authenticated_frontiers() -> Result<(), Box<dyn 
     Ok(())
 }
 
+fn page_sizes(
+    lengths: &[usize],
+    limits: DecodeLimits,
+) -> Result<Vec<usize>, Error<TreeSemanticError>> {
+    let (mut chunks, examined) = PageChunks::new(lengths, limits, |length| Ok(*length))?;
+    assert_eq!(examined, u64::try_from(lengths.len()).unwrap_or(u64::MAX));
+    let mut sizes = Vec::new();
+    while let Some((page, examined)) = chunks.next()? {
+        assert_eq!(examined, u64::try_from(page.len()).unwrap_or(u64::MAX));
+        sizes.push(page.len());
+    }
+    assert_eq!(sizes.iter().sum::<usize>(), lengths.len());
+    Ok(sizes)
+}
+
 #[test]
 fn chunking_is_bounded_by_items_bytes_and_encoder_contracts()
 -> Result<(), Box<dyn std::error::Error>> {
-    let items = [1_u8, 2, 3];
     let mut limits = DecodeLimits {
         maximum_page_items: 2,
         maximum_page_bytes: 64,
         ..DecodeLimits::default()
     };
-    assert_eq!(
-        page_chunk_end::<_, TreeSemanticError>(&items, 0, limits, |_| Ok(1))?,
-        (2, 2)
-    );
-    assert_eq!(
-        page_chunk_end::<_, TreeSemanticError>(&items, 2, limits, |_| Ok(1))?,
-        (3, 1)
-    );
+    assert_eq!(page_sizes(&[1; 3], limits)?, [2, 1]);
+    limits.maximum_page_items = 4;
+    assert_eq!(page_sizes(&[1; 5], limits)?, [3, 2]);
 
     limits.maximum_page_items = 3;
     limits.maximum_page_bytes = 17;
-    assert_eq!(
-        page_chunk_end::<_, TreeSemanticError>(&items, 0, limits, |_| Ok(1))?,
-        (2, 3)
-    );
+    assert_eq!(page_sizes(&[1; 3], limits)?, [2, 1]);
 
     limits.maximum_page_bytes = 15;
     assert!(matches!(
-        page_chunk_end::<_, TreeSemanticError>(&items, 0, limits, |_| Ok(1)),
+        page_sizes(&[1; 3], limits),
         Err(Error::PageItemTooLarge)
     ));
     limits.maximum_page_items = 0;
     limits.maximum_page_bytes = 64;
     assert!(matches!(
-        page_chunk_end::<_, TreeSemanticError>(&items, 0, limits, |_| Ok(1)),
+        page_sizes(&[1; 3], limits),
         Err(Error::PageItemTooLarge)
     ));
     limits.maximum_page_items = 3;
     assert!(matches!(
-        page_chunk_end::<_, TreeSemanticError>(&items, 0, limits, |_| {
-            Err(CanonicalDecodeError::Truncated)
-        }),
-        Err(Error::Decode(CanonicalDecodeError::Truncated))
+        PageChunks::new(&[1_u8], limits, |_| Err(CanonicalDecodeError::Truncated))
+            .map(|(chunks, _)| chunks.start),
+        Err(Error::<TreeSemanticError>::Decode(
+            CanonicalDecodeError::Truncated
+        ))
     ));
+    Ok(())
+}
+
+#[test]
+fn chunking_balances_pages_around_the_soft_target() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = DecodeLimits::default();
+    let item = TARGET_PAGE_BYTES / 4;
+    // Ten quarter-target items need three pages and split evenly instead of
+    // leaving a small remainder after two full pages.
+    assert_eq!(page_sizes(&[item; 10], limits)?, [4, 3, 3]);
+    // One page past the target splits in half, leaving room on both sides.
+    assert_eq!(page_sizes(&[item; 5], limits)?, [3, 2]);
+    assert_eq!(page_sizes(&[item; 4], limits)?, [4]);
+    // Items at or above the soft target still pair up, so an internal level
+    // always shrinks; only the hard limits can force a single-item page.
+    assert_eq!(page_sizes(&[TARGET_PAGE_BYTES * 2; 3], limits)?, [2, 1]);
     Ok(())
 }
 

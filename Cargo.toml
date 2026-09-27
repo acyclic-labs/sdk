@@ -1,11 +1,29 @@
 [workspace]
-# rust/crates/* are the SDK families; plugin/crates/* is the acyclic CLI
-# product built on acyclic-fs (see plugin/README.md).
-members = ["rust/crates/*", "plugin/crates/*"]
+# Publishable SDK families, private qualification/binding crates, and the
+# single product binary are listed explicitly so retired crates cannot return.
+members = [
+  "rust/crates/conformance",
+  "rust/crates/filesystem",
+  "rust/crates/filesystem-napi",
+  "rust/crates/filesystem-wasm",
+  "rust/crates/harness",
+  "rust/crates/inference",
+  "rust/crates/inference-wasm",
+  "rust/crates/machines",
+  "rust/crates/machines-wasm",
+  "rust/crates/machines-daytona",
+  "rust/crates/native-runtime",
+  "rust/crates/objects",
+  "rust/crates/objects-wasm",
+  "rust/crates/proto-codegen",
+  "rust/crates/stream",
+  "rust/crates/stream-wasm",
+  "plugin",
+]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0-rc.1"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.94"
 license = "Apache-2.0"
@@ -22,7 +40,6 @@ bytes = "1.10.1"
 fs2 = "0.4.3"
 futures = "0.3.31"
 hex = "0.4.3"
-io-uring = "0.7.14"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 indexed_db_futures = { version = "0.6.4", features = ["tx-done", "typed-arrays"] }
@@ -30,12 +47,15 @@ jsonschema = { version = "0.55.0", default-features = false }
 js-sys = "0.3.94"
 napi = { version = "3.6.1", features = ["async", "napi8", "serde-json"] }
 napi-derive = "3.3.3"
-notify = "8.2.0"
+# The macOS FSEvents backend links CoreServices, which would load it into every
+# process at start; acyclic-fs loads FSEvents itself when a watch starts.
+notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
 prost = "0.14.4"
 prost-build = "0.14.4"
 prost-types = "0.14.4"
 prost-reflect = { version = "0.16.3", features = ["serde"] }
 protoc-bin-vendored = "3.2.0"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rmcp = { version = "3.3.0", features = ["server", "macros", "transport-io", "schemars"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rustix = { version = "1.1.4", features = ["process"] }
@@ -52,6 +72,7 @@ subtle = "2.6.1"
 sync_wrapper = { version = "=1.0.2", features = ["futures"] }
 time = "0.3.55"
 toml = "0.8"
+tracing = "0.1.44"
 tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tonic = { version = "0.14.6", features = ["transport", "tls-ring", "tls-webpki-roots"] }

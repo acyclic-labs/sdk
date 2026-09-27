@@ -6,24 +6,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let descriptors = prost_types::FileDescriptorSet::decode(
         include_bytes!("src/generated/acyclic-filesystem-v2.bin").as_slice(),
     )?;
-    let mut prost = tonic_prost_build::Config::new();
-    prost.extern_path(".acyclic.harness.v1", "crate::wire::harness::v1");
+    let prost = tonic_prost_build::Config::new();
+    let native_transport = std::env::var("CARGO_CFG_TARGET_ARCH")?.as_str() != "wasm32";
     tonic_prost_build::configure()
-        .build_client(true)
-        .build_server(true)
+        .build_client(native_transport)
+        .build_server(native_transport)
         .compile_fds_with_config(descriptors, prost)?;
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/generated/acyclic-filesystem-v2.bin");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NATIVE_MOUNT");
 
-    #[cfg(target_os = "macos")]
-    if std::env::var_os("CARGO_FEATURE_NATIVE_MOUNT").is_some() {
+    // A build script runs on the host, so the target comes from Cargo.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
+        && std::env::var_os("CARGO_FEATURE_NATIVE_MOUNT").is_some()
+    {
         build_darwin_mount();
     }
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 fn build_darwin_mount() {
     const SOURCES: &[&str] = &[
         "vendor/darwinfuse/src/nfs4_xdr.c",
@@ -35,10 +36,9 @@ fn build_darwin_mount() {
         "vendor/darwinfuse/src/darwinfuse.c",
         "src/native_mount/darwin_mount_bridge.c",
     ];
-    println!("cargo:rerun-if-changed=vendor/darwinfuse/LICENSE");
-    for source in SOURCES {
-        println!("cargo:rerun-if-changed={source}");
-    }
+    // The whole vendored tree, so a changed header also rebuilds.
+    println!("cargo:rerun-if-changed=vendor/darwinfuse");
+    println!("cargo:rerun-if-changed=src/native_mount/darwin_mount_bridge.c");
     cc::Build::new()
         .files(SOURCES)
         .include("vendor/darwinfuse/include")

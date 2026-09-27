@@ -21,6 +21,8 @@ mod generation;
 mod generation_mutation;
 mod list;
 mod live;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+mod mark;
 mod merge;
 mod metadata;
 mod mutation;
@@ -31,6 +33,7 @@ mod persistent_btree;
 mod persistent_diff;
 mod persistent_io;
 mod persistent_pagination;
+mod persistent_point;
 mod probe;
 mod publication;
 mod range;
@@ -74,6 +77,7 @@ pub use checkpoint::{
 };
 #[cfg(feature = "s3-http")]
 pub(crate) use closure::prove_blob_closure_async;
+pub(crate) use closure::prove_record_closure_async;
 pub use closure::{
     ClosureError, ClosureLimits, GenerationProof, GenerationProofFailure, prove_generation_closure,
     prove_generation_closure_async,
@@ -103,6 +107,7 @@ pub use file_table::{
     file_table_page_id, lookup_file_record, lookup_file_record_async, lookup_file_records,
     lookup_file_records_async,
 };
+pub(crate) use file_table::{decode_file_record, encode_file_record};
 pub use file_table_mutation::{
     FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt,
     FileTableSemanticError, apply_file_table_mutations, apply_file_table_mutations_async,
@@ -126,6 +131,10 @@ pub use live::{
     LiveMutationOutcome, LivePublicationObservation, LiveRetryAction, LiveRetryError,
     LiveRetryState,
 };
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use mark::MarkError;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub(crate) use mark::Marker;
 pub use merge::{
     MergeConflict, MergeConflictResolution, MergeConflictSide, MergeGenerationError,
     MergeGenerationOutcome, MergeGenerationRequest, MergeGenerationResult, merge_generation_async,
@@ -142,9 +151,10 @@ pub use mutation::{FileMutation, Mutation, MutationPlan, MutationPlanError, Muta
 pub use namespace_path::{NamespacePath, NamespacePathError};
 pub(crate) use path_access::observe_path_edges_async;
 pub use path_access::{
-    ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup, PathLookupError,
-    PathLookupFailure, lookup_path, lookup_path_async, lookup_path_refs, lookup_path_refs_async,
-    lookup_paths, lookup_paths_async, observe_path_async,
+    ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup,
+    PathLookupError, PathLookupFailure, lookup_path, lookup_path_async, lookup_path_refs,
+    lookup_path_refs_async, lookup_paths, lookup_paths_async, observe_path_async,
+    observe_paths_async,
 };
 pub(crate) use persistent_diff::{
     DiffError as PersistentDiffError, diff_file_records_async, diff_tree_entries_async,
@@ -152,14 +162,15 @@ pub(crate) use persistent_diff::{
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes,
 };
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) use publication::contextual_publication_fingerprint;
 #[cfg(test)]
 pub(crate) use publication::encode_publication_payload;
-pub(crate) use publication::publish_generation_async_with_context;
 pub use publication::{
     PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest,
     PublishedGeneration, decode_published_generation, publish_generation, publish_generation_async,
+};
+pub(crate) use publication::{
+    PublicationIntent, publish_generation_async_with_context, publish_generation_async_with_permit,
 };
 pub use range::{
     ExtentPlan, ExtentRangeRequest, ExtentReadError, ExtentReadFailure, ExtentSeekRequest,
@@ -182,13 +193,19 @@ pub use retention::{
     decode_workspace_deleted, encode_retention_created, encode_workspace_deleted,
     retention_authority_id,
 };
+#[cfg(all(
+    feature = "local",
+    feature = "native-watch",
+    not(target_arch = "wasm32")
+))]
+pub(crate) use source_state::decode_source_volume;
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub(crate) use source_state::source_authority_id;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) use source_state::{
     DurableSourceMode, DurableSourceState, SourceFact, SourceInvalidation, decode_source_fact,
     encode_source_fact,
 };
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-pub(crate) use source_state::{decode_source_volume, source_authority_id};
 pub use transfer::{
     GenerationTransferBatch, GenerationTransferError, GenerationTransferResult, TransferCursor,
     authenticate_generation_export_manifest_async, build_generation_export_manifest_async,

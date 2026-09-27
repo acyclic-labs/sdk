@@ -20,15 +20,17 @@ use tonic::{
 };
 
 use crate::wire_codec::{
-    condition_from_wire, condition_wire, mutation_from_wire, mutation_wire, optional_key, path,
-    required_key,
+    append_outcome_from_wire, append_outcome_wire, commit_id, commit_outcome_from_wire,
+    commit_outcome_wire, condition_from_wire, condition_wire, delete_receipt_wire,
+    envelope_from_wire, envelope_wire, fork_receipt_wire, mutation_from_wire, mutation_wire,
+    observation_from_wire, observation_wire, optional_key, path, record, record_wire, required_key,
+    trim_receipt_wire,
 };
 use crate::{
-    AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenRequest,
-    CommitConflict, CommitId, CommitOutcome, CommitRequest, CommittedAppend, CommittedDelete,
-    CommittedEnvelope, CommittedFork, CommittedMutation, CommittedTrim, DeleteReceipt, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, ReadRequest, Record,
-    RecordStream, StreamError, StreamPath, StreamProvider, TrimReceipt, wire,
+    AppendOutcome, AppendRequest, Child, ChildStream, ChildrenPage, ChildrenPageRequest,
+    ChildrenRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, DeleteReceipt,
+    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record,
+    RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider, TrimReceipt, wire,
 };
 
 const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -530,6 +532,25 @@ impl StreamProvider for Client {
         .map(|response| response.tail)
     }
 
+    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+        let response = self
+            .unary(
+                wire::TailRequest {
+                    path: path.to_string(),
+                },
+                |mut service, request| Box::pin(async move { service.tail(request).await }),
+            )
+            .await?;
+        let trim_point = response.trim_point.ok_or(StreamError::Unsupported)?;
+        if trim_point > response.tail {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(StreamBounds {
+            trim_point,
+            tail: response.tail,
+        })
+    }
+
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let idempotency_key = request.idempotency_key.map_or_else(
             || Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
@@ -665,6 +686,40 @@ impl StreamProvider for Client {
         Err(last.unwrap_or(StreamError::Unavailable))
     }
 
+    async fn children_page(
+        &self,
+        request: ChildrenPageRequest,
+    ) -> Result<ChildrenPage, StreamError> {
+        let response = self
+            .unary(
+                wire::ChildrenPageRequest {
+                    parent: request.parent.map(|path| path.to_string()),
+                    after: request.after.map(|path| path.to_string()),
+                    hierarchy_version: request
+                        .hierarchy_version
+                        .map(|version| Bytes::copy_from_slice(version.as_bytes())),
+                    limit: request.limit,
+                },
+                |mut service, request| {
+                    Box::pin(async move { service.children_page(request).await })
+                },
+            )
+            .await?;
+        Ok(ChildrenPage {
+            hierarchy_version: commit_id(&response.hierarchy_version)?,
+            children: response
+                .children
+                .into_iter()
+                .map(|child| {
+                    Ok(Child {
+                        path: path(child.path)?,
+                    })
+                })
+                .collect::<Result<_, StreamError>>()?,
+            next_after: response.next_after.map(path).transpose()?,
+        })
+    }
+
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let response = self
             .unary(
@@ -672,6 +727,26 @@ impl StreamProvider for Client {
                     conditions: request.conditions.into_iter().map(condition_wire).collect(),
                     mutations: request.mutations.into_iter().map(mutation_wire).collect(),
                     idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
+                    deadline_unix_millis: None,
+                },
+                |mut service, request| Box::pin(async move { service.commit(request).await }),
+            )
+            .await?;
+        commit_outcome_from_wire(response)
+    }
+
+    async fn commit_before(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: u64,
+    ) -> Result<CommitOutcome, StreamError> {
+        let response = self
+            .unary(
+                wire::CommitRequest {
+                    conditions: request.conditions.into_iter().map(condition_wire).collect(),
+                    mutations: request.mutations.into_iter().map(mutation_wire).collect(),
+                    idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
+                    deadline_unix_millis: Some(deadline_unix_millis),
                 },
                 |mut service, request| Box::pin(async move { service.commit(request).await }),
             )
@@ -740,12 +815,15 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         request: Request<wire::TailRequest>,
     ) -> Result<Response<wire::TailResponse>, Status> {
         let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
-        let tail = self
+        let bounds = self
             .provider
-            .tail(path)
+            .bounds(path)
             .await
             .map_err(|error| error_status(&error))?;
-        Ok(Response::new(wire::TailResponse { tail }))
+        Ok(Response::new(wire::TailResponse {
+            tail: bounds.tail,
+            trim_point: Some(bounds.trim_point),
+        }))
     }
 
     async fn fork(
@@ -887,31 +965,75 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         ))
     }
 
+    async fn children_page(
+        &self,
+        request: Request<wire::ChildrenPageRequest>,
+    ) -> Result<Response<wire::ChildrenPageResponse>, Status> {
+        let request = request.into_inner();
+        let page = self
+            .provider
+            .children_page(ChildrenPageRequest {
+                parent: request
+                    .parent
+                    .map(path)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
+                after: request
+                    .after
+                    .map(path)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
+                hierarchy_version: request
+                    .hierarchy_version
+                    .as_deref()
+                    .map(commit_id)
+                    .transpose()
+                    .map_err(|error| error_status(&error))?,
+                limit: request.limit,
+            })
+            .await
+            .map_err(|error| error_status(&error))?;
+        Ok(Response::new(wire::ChildrenPageResponse {
+            hierarchy_version: Bytes::copy_from_slice(page.hierarchy_version.as_bytes()),
+            children: page
+                .children
+                .into_iter()
+                .map(|child| wire::Child {
+                    path: child.path.to_string(),
+                })
+                .collect(),
+            next_after: page.next_after.map(|path| path.to_string()),
+        }))
+    }
+
     async fn commit(
         &self,
         request: Request<wire::CommitRequest>,
     ) -> Result<Response<wire::CommitResponse>, Status> {
         let request = request.into_inner();
-        let outcome = self
-            .provider
-            .commit(CommitRequest {
-                conditions: request
-                    .conditions
-                    .into_iter()
-                    .map(condition_from_wire)
-                    .collect::<Result<_, _>>()
-                    .map_err(|error| error_status(&error))?,
-                mutations: request
-                    .mutations
-                    .into_iter()
-                    .map(mutation_from_wire)
-                    .collect::<Result<_, _>>()
-                    .map_err(|error| error_status(&error))?,
-                idempotency_key: IdempotencyKey::new(request.idempotency_key)
-                    .map_err(|error| error_status(&error))?,
-            })
-            .await
-            .map_err(|error| error_status(&error))?;
+        let deadline_unix_millis = request.deadline_unix_millis;
+        let request = CommitRequest {
+            conditions: request
+                .conditions
+                .into_iter()
+                .map(condition_from_wire)
+                .collect::<Result<_, _>>()
+                .map_err(|error| error_status(&error))?,
+            mutations: request
+                .mutations
+                .into_iter()
+                .map(mutation_from_wire)
+                .collect::<Result<_, _>>()
+                .map_err(|error| error_status(&error))?,
+            idempotency_key: IdempotencyKey::new(request.idempotency_key)
+                .map_err(|error| error_status(&error))?,
+        };
+        let outcome = if let Some(deadline) = deadline_unix_millis {
+            self.provider.commit_before(request, deadline).await
+        } else {
+            self.provider.commit(request).await
+        }
+        .map_err(|error| error_status(&error))?;
         Ok(Response::new(commit_outcome_wire(outcome)))
     }
 
@@ -930,48 +1052,6 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     }
 }
 
-fn observation_from_wire(
-    value: wire::IdempotencyObservation,
-) -> Result<IdempotencyObservation, StreamError> {
-    let request_digest = <[u8; 32]>::try_from(value.request_digest.as_ref())
-        .map_err(|_| StreamError::Unavailable)?;
-    let outcome = match value.outcome.ok_or(StreamError::Unavailable)? {
-        wire::idempotency_observation::Outcome::Append(value) => {
-            IdempotencyOutcome::Append(append_outcome_from_wire(value)?)
-        }
-        wire::idempotency_observation::Outcome::Fork(value) => {
-            IdempotencyOutcome::Fork(ForkReceipt {
-                source: path(value.source)?,
-                destination: path(value.destination)?,
-                forked_at: value.forked_at,
-                tail: value.tail,
-                commit_id: commit_id(&value.commit_id)?,
-            })
-        }
-        wire::idempotency_observation::Outcome::Trim(value) => {
-            IdempotencyOutcome::Trim(TrimReceipt {
-                path: path(value.path)?,
-                trim_point: value.trim_point,
-                commit_id: commit_id(&value.commit_id)?,
-            })
-        }
-        wire::idempotency_observation::Outcome::Delete(value) => {
-            IdempotencyOutcome::Delete(DeleteReceipt {
-                path: path(value.path)?,
-                commit_id: commit_id(&value.commit_id)?,
-            })
-        }
-        wire::idempotency_observation::Outcome::Commit(value) => {
-            IdempotencyOutcome::Commit(commit_outcome_from_wire(value)?)
-        }
-    };
-    Ok(IdempotencyObservation {
-        idempotency_key: IdempotencyKey::new(value.idempotency_key)?,
-        request_digest,
-        outcome,
-    })
-}
-
 fn bind_observation(
     requested: &IdempotencyKey,
     observation: Option<wire::IdempotencyObservation>,
@@ -986,87 +1066,6 @@ fn bind_observation(
     Ok(observation)
 }
 
-fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservation {
-    let outcome = match value.outcome {
-        IdempotencyOutcome::Append(value) => {
-            wire::idempotency_observation::Outcome::Append(append_outcome_wire(value))
-        }
-        IdempotencyOutcome::Fork(value) => {
-            wire::idempotency_observation::Outcome::Fork(fork_receipt_wire(&value))
-        }
-        IdempotencyOutcome::Trim(value) => {
-            wire::idempotency_observation::Outcome::Trim(trim_receipt_wire(&value))
-        }
-        IdempotencyOutcome::Delete(value) => {
-            wire::idempotency_observation::Outcome::Delete(delete_receipt_wire(&value))
-        }
-        IdempotencyOutcome::Commit(value) => {
-            wire::idempotency_observation::Outcome::Commit(commit_outcome_wire(value))
-        }
-    };
-    wire::IdempotencyObservation {
-        idempotency_key: Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
-        request_digest: Bytes::copy_from_slice(&value.request_digest),
-        outcome: Some(outcome),
-    }
-}
-
-fn append_outcome_from_wire(value: wire::AppendResponse) -> Result<AppendOutcome, StreamError> {
-    match value.outcome.ok_or(StreamError::Unavailable)? {
-        wire::append_response::Outcome::Committed(receipt) => {
-            Ok(AppendOutcome::Committed(append_receipt(&receipt)?))
-        }
-        wire::append_response::Outcome::Conflict(conflict) => Ok(AppendOutcome::TailConflict {
-            actual_tail: conflict.actual_tail,
-        }),
-    }
-}
-
-fn append_outcome_wire(value: AppendOutcome) -> wire::AppendResponse {
-    let outcome = match value {
-        AppendOutcome::Committed(receipt) => {
-            wire::append_response::Outcome::Committed(append_receipt_wire(&receipt))
-        }
-        AppendOutcome::TailConflict { actual_tail } => {
-            wire::append_response::Outcome::Conflict(wire::TailConflict { actual_tail })
-        }
-    };
-    wire::AppendResponse {
-        outcome: Some(outcome),
-    }
-}
-
-fn commit_outcome_from_wire(value: wire::CommitResponse) -> Result<CommitOutcome, StreamError> {
-    match value.outcome.ok_or(StreamError::Unavailable)? {
-        wire::commit_response::Outcome::Committed(envelope) => {
-            Ok(CommitOutcome::Committed(envelope_from_wire(envelope)?))
-        }
-        wire::commit_response::Outcome::Conflict(conflicts) => Ok(CommitOutcome::Conflict(
-            conflicts
-                .conflicts
-                .into_iter()
-                .map(conflict_from_wire)
-                .collect::<Result<_, _>>()?,
-        )),
-    }
-}
-
-fn commit_outcome_wire(value: CommitOutcome) -> wire::CommitResponse {
-    let outcome = match value {
-        CommitOutcome::Committed(envelope) => {
-            wire::commit_response::Outcome::Committed(envelope_wire(envelope))
-        }
-        CommitOutcome::Conflict(conflicts) => {
-            wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
-                conflicts: conflicts.into_iter().map(conflict_wire).collect(),
-            })
-        }
-    };
-    wire::CommitResponse {
-        outcome: Some(outcome),
-    }
-}
-
 fn error_status(error: &StreamError) -> Status {
     match error {
         StreamError::InvalidPath => Status::invalid_argument("invalid_path"),
@@ -1075,12 +1074,15 @@ fn error_status(error: &StreamError) -> Status {
         StreamError::NotFound => Status::not_found(error.to_string()),
         StreamError::AlreadyExists => Status::already_exists(error.to_string()),
         StreamError::OutOfRange => Status::out_of_range(error.to_string()),
+        StreamError::HierarchyChanged => Status::failed_precondition("hierarchy_changed"),
         StreamError::AccessDenied => Status::permission_denied(error.to_string()),
         StreamError::Capacity => Status::resource_exhausted(error.to_string()),
         StreamError::IdempotencyMismatch => Status::failed_precondition("idempotency_mismatch"),
         StreamError::Retired => Status::failed_precondition("retired"),
         StreamError::PrefixNotRetained => Status::failed_precondition("prefix_not_retained"),
         StreamError::Unavailable => Status::unavailable(error.to_string()),
+        StreamError::DeadlineElapsed => Status::failed_precondition("deadline_elapsed"),
+        StreamError::Unsupported => Status::unimplemented("unsupported_capability"),
     }
 }
 
@@ -1092,6 +1094,9 @@ fn status(error: &tonic::Status) -> StreamError {
         Code::NotFound => StreamError::NotFound,
         Code::AlreadyExists => StreamError::AlreadyExists,
         Code::OutOfRange => StreamError::OutOfRange,
+        Code::FailedPrecondition if error.message() == "hierarchy_changed" => {
+            StreamError::HierarchyChanged
+        }
         Code::PermissionDenied | Code::Unauthenticated => StreamError::AccessDenied,
         Code::ResourceExhausted => StreamError::Capacity,
         Code::FailedPrecondition if error.message() == "idempotency_mismatch" => {
@@ -1101,214 +1106,18 @@ fn status(error: &tonic::Status) -> StreamError {
         Code::FailedPrecondition if error.message() == "prefix_not_retained" => {
             StreamError::PrefixNotRetained
         }
+        Code::FailedPrecondition if error.message() == "deadline_elapsed" => {
+            StreamError::DeadlineElapsed
+        }
+        Code::Unimplemented if error.message() == "unsupported_capability" => {
+            StreamError::Unsupported
+        }
         _ => StreamError::Unavailable,
     }
 }
 
-fn commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
-    let bytes = <[u8; 32]>::try_from(value).map_err(|_| StreamError::Unavailable)?;
-    Ok(CommitId::from_bytes(bytes))
-}
-
-fn record(value: wire::Record) -> Result<Record, StreamError> {
-    Ok(Record {
-        sequence: value.sequence,
-        value: value.value,
-        commit_id: commit_id(&value.commit_id)?,
-    })
-}
-
 fn read_response(value: wire::ReadResponse) -> Result<Record, StreamError> {
     record(value.record.ok_or(StreamError::Unavailable)?)
-}
-
-fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceipt, StreamError> {
-    Ok(AppendReceipt {
-        start: value.start,
-        end: value.end,
-        tail: value.tail,
-        commit_id: commit_id(&value.commit_id)?,
-    })
-}
-
-fn record_wire(value: Record) -> wire::Record {
-    wire::Record {
-        sequence: value.sequence,
-        value: value.value,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn append_receipt_wire(value: &AppendReceipt) -> wire::AppendReceipt {
-    wire::AppendReceipt {
-        start: value.start,
-        end: value.end,
-        tail: value.tail,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
-    wire::ForkReceipt {
-        source: value.source.to_string(),
-        destination: value.destination.to_string(),
-        forked_at: value.forked_at,
-        tail: value.tail,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn trim_receipt_wire(value: &TrimReceipt) -> wire::TrimReceipt {
-    wire::TrimReceipt {
-        path: value.path.to_string(),
-        trim_point: value.trim_point,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn delete_receipt_wire(value: &DeleteReceipt) -> wire::DeleteReceipt {
-    wire::DeleteReceipt {
-        path: value.path.to_string(),
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn envelope_from_wire(value: wire::CommittedEnvelope) -> Result<CommittedEnvelope, StreamError> {
-    Ok(CommittedEnvelope {
-        commit_id: commit_id(&value.commit_id)?,
-        mutations: value
-            .mutations
-            .into_iter()
-            .map(committed_mutation)
-            .collect::<Result<_, _>>()?,
-    })
-}
-
-fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope {
-    wire::CommittedEnvelope {
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-        mutations: value
-            .mutations
-            .into_iter()
-            .map(committed_mutation_wire)
-            .collect(),
-    }
-}
-
-fn committed_mutation(value: wire::CommittedMutation) -> Result<CommittedMutation, StreamError> {
-    match value.mutation.ok_or(StreamError::Unavailable)? {
-        wire::committed_mutation::Mutation::Append(value) => {
-            Ok(CommittedMutation::Append(CommittedAppend {
-                path: path(value.path)?,
-                start: value.start,
-                end: value.end,
-                tail: value.tail,
-                records: value
-                    .records
-                    .into_iter()
-                    .map(record)
-                    .collect::<Result<_, _>>()?,
-            }))
-        }
-        wire::committed_mutation::Mutation::Fork(value) => {
-            Ok(CommittedMutation::Fork(CommittedFork {
-                source: path(value.source)?,
-                destination: path(value.destination)?,
-                forked_at: value.forked_at,
-                tail: value.tail,
-            }))
-        }
-        wire::committed_mutation::Mutation::Trim(value) => {
-            Ok(CommittedMutation::Trim(CommittedTrim {
-                path: path(value.path)?,
-                trim_point: value.trim_point,
-            }))
-        }
-        wire::committed_mutation::Mutation::Delete(value) => {
-            Ok(CommittedMutation::Delete(CommittedDelete {
-                path: path(value.path)?,
-            }))
-        }
-    }
-}
-
-fn committed_mutation_wire(value: CommittedMutation) -> wire::CommittedMutation {
-    let mutation = match value {
-        CommittedMutation::Append(value) => {
-            wire::committed_mutation::Mutation::Append(wire::CommittedAppend {
-                path: value.path.to_string(),
-                start: value.start,
-                end: value.end,
-                tail: value.tail,
-                records: value.records.into_iter().map(record_wire).collect(),
-            })
-        }
-        CommittedMutation::Fork(value) => {
-            wire::committed_mutation::Mutation::Fork(wire::CommittedFork {
-                source: value.source.to_string(),
-                destination: value.destination.to_string(),
-                forked_at: value.forked_at,
-                tail: value.tail,
-            })
-        }
-        CommittedMutation::Trim(value) => {
-            wire::committed_mutation::Mutation::Trim(wire::CommittedTrim {
-                path: value.path.to_string(),
-                trim_point: value.trim_point,
-            })
-        }
-        CommittedMutation::Delete(value) => {
-            wire::committed_mutation::Mutation::Delete(wire::CommittedDelete {
-                path: value.path.to_string(),
-            })
-        }
-    };
-    wire::CommittedMutation {
-        mutation: Some(mutation),
-    }
-}
-
-fn conflict_from_wire(value: wire::CommitConflict) -> Result<CommitConflict, StreamError> {
-    match value.conflict.ok_or(StreamError::Unavailable)? {
-        wire::commit_conflict::Conflict::Tail(value) => Ok(CommitConflict::Tail {
-            path: path(value.path)?,
-            expected: value.expected,
-            actual: value.actual,
-        }),
-        wire::commit_conflict::Conflict::Exists(value) => Ok(CommitConflict::Exists {
-            path: path(value.path)?,
-        }),
-        wire::commit_conflict::Conflict::Retired(value) => Ok(CommitConflict::Retired {
-            path: path(value.path)?,
-        }),
-    }
-}
-
-fn conflict_wire(value: CommitConflict) -> wire::CommitConflict {
-    let conflict = match value {
-        CommitConflict::Tail {
-            path,
-            expected,
-            actual,
-        } => wire::commit_conflict::Conflict::Tail(wire::TailCommitConflict {
-            path: path.to_string(),
-            expected,
-            actual,
-        }),
-        CommitConflict::Exists { path } => {
-            wire::commit_conflict::Conflict::Exists(wire::ExistsCommitConflict {
-                path: path.to_string(),
-            })
-        }
-        CommitConflict::Retired { path } => {
-            wire::commit_conflict::Conflict::Retired(wire::RetiredCommitConflict {
-                path: path.to_string(),
-            })
-        }
-    };
-    wire::CommitConflict {
-        conflict: Some(conflict),
-    }
 }
 
 #[cfg(test)]
@@ -1339,6 +1148,10 @@ mod tests {
         async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
             tokio::time::sleep(self.tail_delay).await;
             self.inner.tail(path).await
+        }
+
+        async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+            self.inner.bounds(path).await
         }
 
         async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -1409,6 +1222,17 @@ mod tests {
                 }
             }),
         )
+    }
+
+    #[tokio::test]
+    async fn grpc_transport_passes_the_public_suite()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let transport = Client::from_channels(
+            Arc::from([in_memory_channel(Arc::new(MemoryStream::default()))]),
+            "fixture",
+        )?;
+        crate::conformance::verify(&transport).await?;
+        Ok(())
     }
 
     #[test]

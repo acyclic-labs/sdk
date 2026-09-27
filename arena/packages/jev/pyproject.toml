@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jev"
+version = "0.1.0"
+description = "Multi-agent swarms over System One typed decisions, with an append-only decision log"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+space = ["gradio_client>=1.0"]
+local = ["torch>=2.4", "transformers==5.17.0", "peft==0.21.0", "accelerate>=1.15"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+jev = "jev.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

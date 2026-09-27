@@ -34,7 +34,6 @@ extern "C" {
 
 struct fuse;
 struct fuse_chan;
-struct fuse_session;
 struct fuse_pollhandle;
 struct fuse_bufvec;
 
@@ -96,6 +95,21 @@ struct fuse_context {
 #define FUSE_CAP_SPLICE_READ     (1 << 9)   /* Linux-only, no-op on macOS */
 #define FUSE_CAP_FLOCK_LOCKS     (1 << 10)
 #define FUSE_CAP_IOCTL_DIR       (1 << 11)
+
+/* DarwinFUSE: a write is as durable once the write callback returns as
+ * fsync would make it (fsync publishes nothing more), so WRITE replies are
+ * stable and the NFS client never needs to COMMIT. */
+#define FUSE_CAP_DURABLE_WRITES  (1 << 20)
+
+/* DarwinFUSE: st_ino names the node, whichever path reaches it: every name
+ * of a hard link reports the same st_ino, and no two nodes share one. The
+ * NFS server then reports it as each object's fileid, so the client sees
+ * hard links as one file; otherwise a fileid names a path. */
+#define FUSE_CAP_NODE_IDENTITY   (1 << 21)
+
+/* DarwinFUSE: whole seconds the NFS client caches attributes and names
+ * (actimeo); a change made around the mount reaches it once they expire. */
+#define DARWINFUSE_ATTRIBUTE_TIMEOUT 1
 
 #ifdef __APPLE__
 /* macFUSE-specific capability flags */
@@ -240,31 +254,31 @@ struct fuse_operations {
 #endif /* __APPLE__ */
 };
 
-/* ---- High-level API (fuse_main) ---- */
-
 /*
- * Main entry point. Parses arguments, starts NFSv4 server, mounts,
- * and runs event loop. Blocks until the filesystem is unmounted.
- *
- * Returns 0 on success, non-zero on failure.
+ * DarwinFUSE extension: the NFSv4 change attribute (RFC 7530 s5.4) travels
+ * in the struct stat it labels, from getattr, fgetattr, and readdir alike.
+ * A filesystem stores a nonzero label below FUSE_CHANGE_UNLABELED that
+ * differs from every label it gave the object before whenever the object's
+ * attributes, listing, or data may differ.  The NFS client trusts cached
+ * state while the label is unchanged and revalidates at most a second later.
+ * Zero means unlabeled: every report is then new, so nothing is trusted
+ * past a revalidation.
  */
-int fuse_main(int argc, char *argv[],
-              const struct fuse_operations *op, void *user_data);
-
-/*
- * Same as fuse_main but accepts ops_size for ABI compatibility.
- * This is what the libfuse macro typically expands to.
- */
-int fuse_main_real(int argc, char *argv[],
-                   const struct fuse_operations *op, size_t op_size,
-                   void *user_data);
+#ifdef __APPLE__
+#define FUSE_STAT_CHANGE(st)   ((uint64_t)(st)->st_qspare[0])
+#else
+#define FUSE_STAT_CHANGE(st)   ((void)(st), UINT64_C(0))
+#endif
+#define FUSE_CHANGE_UNLABELED  (UINT64_C(1) << 63)
 
 /* ---- Component API ---- */
 
 /*
- * Mount a FUSE filesystem. Creates the NFSv4 server and mounts it.
- * Returns a channel on success, NULL on failure.
- * The args may be modified (consumed options are removed).
+ * Prepare a FUSE filesystem mount. Creates the NFSv4 server for mountpoint
+ * and validates the options; the kernel mount itself happens when the
+ * event loop starts, so the NFS client never caches answers produced before
+ * fuse_new() attached the filesystem callbacks.
+ * Returns a channel on success, NULL on failure (including unknown options).
  */
 struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args);
 
@@ -275,7 +289,7 @@ void fuse_unmount(const char *mountpoint, struct fuse_chan *ch);
 
 /*
  * Create a new FUSE filesystem instance.
- * Attaches the filesystem callbacks to a mounted channel.
+ * Attaches the filesystem callbacks to a channel from fuse_mount().
  * Returns the FUSE handle on success, NULL on failure.
  */
 struct fuse *fuse_new(struct fuse_chan *ch, struct fuse_args *args,
@@ -289,9 +303,9 @@ void fuse_destroy(struct fuse *f);
 
 /*
  * Run the FUSE event loop (single-threaded).
- * Calls init() at start and destroy() at end.
+ * Calls init() at start, mounts the channel, and calls destroy() at end.
  * Blocks until the filesystem is unmounted or fuse_exit() is called.
- * Returns 0 on clean exit, -1 on error.
+ * Returns 0 on clean exit, -1 on error (including a failed mount).
  */
 int fuse_loop(struct fuse *f);
 
@@ -301,25 +315,21 @@ int fuse_loop(struct fuse *f);
 int fuse_loop_mt(struct fuse *f);
 
 /*
- * Get the session from a FUSE handle (for signal handler setup).
- */
-struct fuse_session *fuse_get_session(struct fuse *f);
-
-/*
- * Install signal handlers for clean shutdown.
- * SIGINT and SIGTERM will trigger fuse_exit().
- */
-int fuse_set_signal_handlers(struct fuse_session *se);
-
-/*
- * Remove previously installed signal handlers.
- */
-void fuse_remove_signal_handlers(struct fuse_session *se);
-
-/*
  * Signal the event loop to exit.
  */
 void fuse_exit(struct fuse *f);
+
+/* Reject stale NFS READDIR continuations after provider-side changes. */
+void fuse_mark_namespace_changed(struct fuse *f);
+
+/*
+ * Report, from inside fuse_loop(), the moment the mount became visible:
+ * the loop calls mounted(arg) once, after the kernel accepted the mount and
+ * before it serves the mount's requests. A caller that must not expose the
+ * mount point earlier waits for this instead of polling the mount table.
+ */
+void fuse_set_mounted_callback(struct fuse *f, void (*mounted)(void *arg),
+                               void *arg);
 
 /* ---- Utility functions ---- */
 
@@ -329,35 +339,10 @@ void fuse_exit(struct fuse *f);
 struct fuse_context *fuse_get_context(void);
 
 /*
- * Parse standard FUSE command-line options.
- * Extracts mountpoint, foreground flag, and multi-thread flag.
- * Returns 0 on success, -1 on error.
- */
-int fuse_parse_cmdline(struct fuse_args *args, char **mountpoint,
-                       int *multithreaded, int *foreground);
-
-/*
- * Daemonize the process (unless foreground is true).
- * Returns 0 on success, -1 on error.
- */
-int fuse_daemonize(int foreground);
-
-/*
- * Return the FUSE library version number (26).
- */
-int fuse_version(void);
-
-/*
  * Get supplementary group IDs for the current request.
  * Returns number of groups on success, -1 on error.
  */
 int fuse_getgroups(int size, gid_t list[]);
-
-/*
- * Check if the current request has been interrupted.
- * Returns 1 if interrupted, 0 otherwise.
- */
-int fuse_interrupted(void);
 
 #ifdef __cplusplus
 }

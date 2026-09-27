@@ -8,10 +8,11 @@ use super::{
     decode_extent_page, encode_extent_page,
 };
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRetention, ObjectStoreError,
-    object_digest,
+    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRetention,
+    ObjectStoreError,
 };
 use bytes::Bytes;
 use std::mem::size_of;
@@ -180,58 +181,61 @@ pub async fn apply_extent_mutations_async<S: crate::AsyncObjectStore>(
     options: ExtentMutationOptions,
     cancellation: &CancellationToken,
 ) -> Result<ExtentMutationReceipt, ExtentMutationFailure> {
-    cancellation.check().map_err(|_| {
-        OperationFailure::before_work(ExtentMutationError::Storage(ObjectStoreError::Cancelled))
-    })?;
-    let ExtentMutationOptions {
-        maximum_mutations,
-        limits,
-        budget,
-    } = options;
-    validate_request(root, mutations, maximum_mutations, limits)?;
-    let plan = compile_patch_plan(old_logical_bytes, mutations, budget)?;
-    let final_size = plan.final_size;
-    let mut allocations = AllocationLedger::default();
-    let mut work = plan.work;
-    allocations
-        .claim_bytes(plan.live_allocation_bytes, 0, &mut work, budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let maximum_visited = usize::try_from(limits.maximum_visited_pages)
-        .map_err(|_| OperationFailure::new(ExtentMutationError::InvalidLimits, work))?;
-    let visited = VisitedObjectSet::new(maximum_visited, &mut allocations, &mut work, budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let mut context = Context {
-        store,
-        limits,
-        budget,
-        work,
-        allocations,
-        visited,
-        patches: plan.patches,
-        maximum_seen_height: 0,
-        cancellation,
-    };
-    let summaries = context
-        .rewrite(root, 0, old_logical_bytes, final_size)
-        .await
-        .map_err(|error| OperationFailure::new(error, context.work))?;
-    let new_root = context
-        .finish_root(summaries)
-        .await
-        .map_err(|error| OperationFailure::new(error, context.work))?;
-    context
-        .visited
-        .release(&mut context.allocations)
-        .map_err(|error| OperationFailure::new(error.into(), context.work))?;
-    context
-        .allocations
-        .release(plan.live_allocation_bytes)
-        .map_err(|error| OperationFailure::new(error.into(), context.work))?;
-    Ok(ExtentMutationReceipt {
-        root: new_root,
-        logical_bytes: final_size,
-        work: context.work,
+    in_heap(move || async move {
+        cancellation.check().map_err(|_| {
+            OperationFailure::before_work(ExtentMutationError::Storage(ObjectStoreError::Cancelled))
+        })?;
+        let ExtentMutationOptions {
+            maximum_mutations,
+            limits,
+            budget,
+        } = options;
+        validate_request(root, mutations, maximum_mutations, limits)?;
+        let plan = compile_patch_plan(old_logical_bytes, mutations, budget)?;
+        let final_size = plan.final_size;
+        let mut allocations = AllocationLedger::default();
+        let mut work = plan.work;
+        allocations
+            .claim_bytes(plan.live_allocation_bytes, 0, &mut work, budget)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let maximum_visited = usize::try_from(limits.maximum_visited_pages)
+            .map_err(|_| OperationFailure::new(ExtentMutationError::InvalidLimits, work))?;
+        let visited = VisitedObjectSet::new(maximum_visited, &mut allocations, &mut work, budget)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let mut context = Context {
+            store,
+            limits,
+            budget,
+            work,
+            allocations,
+            visited,
+            patches: plan.patches,
+            maximum_seen_height: 0,
+            cancellation,
+        };
+        let summaries = context
+            .rewrite(root, 0, old_logical_bytes, final_size)
+            .await
+            .map_err(|error| OperationFailure::new(error, context.work))?;
+        let new_root = context
+            .finish_root(summaries)
+            .await
+            .map_err(|error| OperationFailure::new(error, context.work))?;
+        context
+            .visited
+            .release(&mut context.allocations)
+            .map_err(|error| OperationFailure::new(error.into(), context.work))?;
+        context
+            .allocations
+            .release(plan.live_allocation_bytes)
+            .map_err(|error| OperationFailure::new(error.into(), context.work))?;
+        Ok(ExtentMutationReceipt {
+            root: new_root,
+            logical_bytes: final_size,
+            work: context.work,
+        })
     })
+    .await
 }
 
 fn validate_request(
@@ -459,17 +463,8 @@ fn charge_items(
     budget: WorkBudget,
     count: u64,
 ) -> Result<(), ExtentMutationFailure> {
-    let prospective = work
-        .checked_add(WorkCounters {
-            items_examined: count,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    prospective
-        .verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), *work))?;
-    *work = prospective;
-    Ok(())
+    work.charge_items(count, &budget)
+        .map_err(|error| OperationFailure::new(error.into(), *work))
 }
 
 fn charge_copied_bytes(
@@ -887,7 +882,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             request.page,
             &mut self.allocations,
             &mut self.work,
-            self.budget,
+            &self.budget,
         )?;
         if !visited.inserted {
             return Err(ExtentMutationError::CycleOrAlias);
@@ -1222,13 +1217,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
     }
 
     fn charge_items(&mut self, count: u64) -> Result<(), ExtentMutationError> {
-        let prospective = self.work.checked_add(WorkCounters {
-            items_examined: count,
-            ..WorkCounters::default()
-        })?;
-        prospective.verify(self.budget)?;
-        self.work = prospective;
-        Ok(())
+        Ok(self.work.charge_items(count, &self.budget)?)
     }
 
     async fn write_page(&mut self, page: &ExtentPage) -> Result<ObjectId, ExtentMutationError> {
@@ -1271,20 +1260,17 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             ..WorkCounters::default()
         })?;
         hashed_work.verify(self.budget)?;
-        let object = ObjectId {
-            kind: ObjectKind::ExtentPage,
-            digest: object_digest(ObjectKind::ExtentPage, &encoded),
-        };
+        let hashed = HashedObject::new(ObjectKind::ExtentPage, Bytes::from(encoded));
+        let object = hashed.object_id();
         self.work = hashed_work;
         let prospective = self.work.checked_add(WorkCounters {
             page_writes: 1,
             ..WorkCounters::default()
         })?;
         let remaining = prospective.remaining(self.budget)?;
-        let receipt = match crate::AsyncObjectStore::put(
+        let receipt = match crate::AsyncObjectStore::put_hashed(
             self.store,
-            object,
-            Bytes::from(encoded),
+            hashed,
             remaining,
             self.cancellation,
         )

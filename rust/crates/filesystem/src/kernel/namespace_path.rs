@@ -1,7 +1,7 @@
 //! Bounded profile-independent namespace paths.
 
 use super::{LogicalName, NameEncoding, TreePageError};
-use crate::model::VolumeLimits;
+use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::path::PortablePath;
 use thiserror::Error;
 
@@ -65,15 +65,43 @@ impl NamespacePath {
         path: &PortablePath,
         limits: VolumeLimits,
     ) -> Result<Self, NamespacePathError> {
+        Self::from_portable_in_profile(path, FilesystemProfile::Portable, limits)
+    }
+
+    /// Converts a portable path to the canonical names of one volume profile.
+    ///
+    /// The string API can address names representable as Unicode; native
+    /// capture APIs retain raw POSIX bytes or UTF-16 units outside that subset.
+    ///
+    /// # Errors
+    ///
+    /// Returns bounded-name or path errors when the encoded host names exceed
+    /// the volume limits.
+    pub fn from_portable_in_profile(
+        path: &PortablePath,
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+    ) -> Result<Self, NamespacePathError> {
         let components = path
             .components()
             .map(|component| {
-                LogicalName::new(
-                    NameEncoding::Utf8,
-                    component.as_bytes().to_vec(),
-                    limits.maximum_component_bytes,
-                )
-                .map_err(NamespacePathError::Name)
+                let (encoding, bytes) = match profile {
+                    FilesystemProfile::Portable | FilesystemProfile::Browser => {
+                        (NameEncoding::Utf8, component.as_bytes().to_vec())
+                    }
+                    FilesystemProfile::Posix => {
+                        (NameEncoding::PosixBytes, component.as_bytes().to_vec())
+                    }
+                    FilesystemProfile::Windows => (
+                        NameEncoding::WindowsUtf16Le,
+                        component
+                            .encode_utf16()
+                            .flat_map(u16::to_le_bytes)
+                            .collect(),
+                    ),
+                };
+                LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
+                    .map_err(NamespacePathError::Name)
             })
             .collect::<Result<Vec<_>, _>>()?;
         Self::new(components, limits)
@@ -109,6 +137,28 @@ impl NamespacePath {
         self.components
             .split_last()
             .map(|(name, parent)| (parent, name))
+    }
+
+    /// Returns the exact parent path, or `None` for the namespace root.
+    ///
+    /// This preserves the already-validated component representation and does
+    /// not consult a filesystem or allocate beyond cloning the parent prefix.
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
+        let (_, name) = self.split_last()?;
+        let encoded_bytes = if self.components.len() == 1 {
+            1
+        } else {
+            self.encoded_bytes
+                .saturating_sub(u32::try_from(name.as_bytes().len()).unwrap_or(u32::MAX))
+                .saturating_sub(1)
+        };
+        let mut components = self.components.clone();
+        components.pop();
+        Some(Self {
+            components,
+            encoded_bytes,
+        })
     }
 
     /// Returns whether this path is equal to or below `ancestor`.

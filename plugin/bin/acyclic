@@ -1,0 +1,6 @@
+# The package installer replaces this file with the verified native Acyclic
+# executable (on Windows it installs acyclic.exe and removes this file). It has
+# no interpreter line, so package managers link the `acyclic` command straight
+# to that executable instead of wrapping it in an interpreter.
+echo "acyclic: the native executable is not installed; reinstall @acyclic-labs/plugin with install scripts enabled" >&2
+exit 1

@@ -5,6 +5,7 @@
 //! remain implementation details.
 
 use crate::foundation::{FileId, GenerationId, OperationId, VolumeId};
+use crate::heap_future::in_heap;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, MetadataField, NamespacePath,
 };
@@ -124,7 +125,8 @@ impl WorkspaceId {
         self.0
     }
 
-    pub(crate) const fn volume_id(self) -> VolumeId {
+    /// Returns the volume identity represented by this workspace identity.
+    pub const fn volume_id(self) -> VolumeId {
         VolumeId::from_bytes(self.0)
     }
 }
@@ -192,10 +194,29 @@ impl<A, O> Workspace<A, O> {
         self.id
     }
 
+    pub(crate) fn authority(&self) -> &A {
+        self.volume.fs.authority()
+    }
+
+    pub(crate) const fn authority_id(&self) -> crate::AuthorityId {
+        crate::kernel::volume_authority_id(self.id.volume_id())
+    }
+
     /// Immutable canonical workspace name.
     #[must_use]
     pub fn name(&self) -> &WorkspaceName {
         &self.name
+    }
+
+    /// Derives the stable identity of a sibling workspace before creating it.
+    ///
+    /// Durable orchestration stores use this to record a recoverable fork
+    /// intent before the child authority is created.
+    pub fn fork_workspace_id(
+        &self,
+        destination: impl AsRef<str>,
+    ) -> Result<WorkspaceId, WorkspaceNameError> {
+        self.volume.fs.workspace_id(destination)
     }
 
     /// Exact immutable filesystem profile selected when this workspace was created.
@@ -203,9 +224,72 @@ impl<A, O> Workspace<A, O> {
     pub const fn profile(&self) -> crate::model::FilesystemProfile {
         self.volume.config.profile
     }
+
+    /// Exact immutable bounds selected for this workspace volume.
+    #[must_use]
+    pub const fn limits(&self) -> crate::model::VolumeLimits {
+        self.volume.config.limits
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
+    /// Exclusively fences this workspace's mutable head while a cross-provider
+    /// publication decides whether to expose a pinned generation. Exact
+    /// retries with the same operation return the same durable reservation.
+    pub async fn reserve_publication(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<crate::PublicationReservation, WorkspaceError> {
+        let cancellation = crate::CancellationToken::new();
+        let head = self
+            .authority()
+            .head(
+                self.authority_id(),
+                crate::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))?
+            .value;
+        match self
+            .authority()
+            .reserve_publication(
+                self.authority_id(),
+                head,
+                operation_id,
+                crate::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))?
+            .value
+        {
+            crate::ReservationOutcome::Reserved(reservation)
+            | crate::ReservationOutcome::AlreadyReserved(reservation) => Ok(reservation),
+            crate::ReservationOutcome::Conflict { .. } => Err(WorkspaceError::StaleGeneration),
+        }
+    }
+
+    /// Releases only this workspace's exact durable publication reservation.
+    /// An ambiguous release response can be retried with the same proof.
+    pub async fn release_publication(
+        &self,
+        reservation: crate::PublicationReservation,
+    ) -> Result<(), WorkspaceError> {
+        if reservation.authority_id != self.authority_id() {
+            return Err(WorkspaceError::IncompatibleWorkspace);
+        }
+        self.authority()
+            .release_publication(
+                reservation,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| WorkspaceError::engine(failure.error))?;
+        Ok(())
+    }
+
     /// Resolves the exact generation published by one prior workspace operation.
     ///
     /// This is the recovery boundary for adapters that persisted an
@@ -224,6 +308,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     id,
                 })
             })
+    }
+
+    /// Proves an immutable result was committed by this workspace's exact
+    /// join operation, not by an unrelated mutation with a plausible parent.
+    pub async fn verify_join_commit(
+        &self,
+        witness: &crate::JoinCommitWitness,
+    ) -> Result<bool, WorkspaceError> {
+        self.volume
+            .fs
+            .verify_workspace_join_commit(&self.volume, witness)
+            .await
     }
 
     /// Opens an authenticated checkout using the requested generation and mode.
@@ -270,20 +366,102 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ///
     /// Returns a typed workspace failure when the head cannot be authenticated.
     pub async fn head(&self) -> Result<Generation<A, O>, WorkspaceError> {
-        let checkout = self
-            .volume
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode::read_only_pinned(),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
+        self.head_measured(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
+    pub(crate) async fn head_measured(
+        &self,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Generation<A, O>>, WorkspaceError> {
+        in_heap(move || async move {
+            let receipt = self
+                .volume
+                .checkout(
+                    GenerationSelector::Head,
+                    CheckoutMode::read_only_pinned(),
+                    budget,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| WorkspaceError::from(failure.error))?;
+            Ok(crate::OperationReceipt {
+                value: Generation {
+                    workspace: self.clone(),
+                    id: receipt.value.generation_id(),
+                },
+                work: receipt.work,
+            })
+        })
+        .await
+    }
+
+    /// Selects the head generation and reports whether its file table holds
+    /// a record for `file_id`: one keyed read, where finding the names bound
+    /// to that identity is a namespace traversal. No name binds an identity
+    /// without a record.
+    pub(crate) async fn head_with_file_record_measured(
+        &self,
+        file_id: FileId,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<(Generation<A, O>, bool)>, WorkspaceError> {
+        let reader = self.head_reader_measured(budget, cancellation).await?;
+        let records = reader
+            .value
+            .file_records_by_id(
+                &[file_id],
+                reader
+                    .work
+                    .remaining(budget)
+                    .map_err(WorkspaceError::engine)?,
+                cancellation,
             )
             .await
-            .map_err(WorkspaceError::engine)?
-            .value;
-        Ok(Generation {
-            workspace: self.clone(),
-            id: checkout.generation_id(),
+            .map_err(|failure| WorkspaceError::from(failure.error))?;
+        let work = reader
+            .work
+            .checked_add(records.work)
+            .map_err(WorkspaceError::engine)?;
+        Ok(crate::OperationReceipt {
+            value: (
+                Generation {
+                    workspace: self.clone(),
+                    id: reader.value.generation_id(),
+                },
+                records.value.first().is_some_and(Option::is_some),
+            ),
+            work,
+        })
+    }
+
+    /// Opens one immutable reader pinned to the head generation, which can
+    /// answer many identity questions, such as every hard-link alias check
+    /// of a directory page, against one head.
+    pub(crate) async fn head_reader_measured(
+        &self,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::PinnedReader<A, O>>, WorkspaceError> {
+        let checkout = self
+            .engine_checkout_measured(
+                GenerationSelector::Head,
+                CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
+            )
+            .await?;
+        Ok(crate::OperationReceipt {
+            value: checkout
+                .value
+                .pinned_reader()
+                .map_err(WorkspaceError::engine)?,
+            work: checkout.work,
         })
     }
 
@@ -298,15 +476,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         &self,
         generation_id: GenerationId,
     ) -> Result<Generation<A, O>, WorkspaceError> {
+        self.generation_measured(
+            generation_id,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
+    pub(crate) async fn generation_measured(
+        &self,
+        generation_id: GenerationId,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Generation<A, O>>, WorkspaceError> {
         let checkout = self
-            .engine_checkout(
+            .engine_checkout_measured(
                 GenerationSelector::Exact(generation_id),
                 CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
             )
             .await?;
-        Ok(Generation {
-            workspace: self.clone(),
-            id: checkout.generation_id(),
+        Ok(crate::OperationReceipt {
+            value: Generation {
+                workspace: self.clone(),
+                id: checkout.value.generation_id(),
+            },
+            work: checkout.work,
         })
     }
 
@@ -323,6 +521,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         if_current: GenerationId,
         idempotency_key: IdempotencyKey,
     ) -> Result<WorkspaceRestore<A, O>, WorkspaceError> {
+        self.restore_generation_with_permit(
+            generation,
+            if_current,
+            idempotency_key,
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await
+    }
+
+    /// Restores one exact generation only while the supplied writer permit remains valid.
+    pub async fn restore_generation_with_permit(
+        &self,
+        generation: &Generation<A, O>,
+        if_current: GenerationId,
+        idempotency_key: IdempotencyKey,
+        permit: crate::PublicationPermit,
+    ) -> Result<WorkspaceRestore<A, O>, WorkspaceError> {
         if generation.workspace.id != self.id {
             return Err(WorkspaceError::ForeignGeneration);
         }
@@ -334,6 +549,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 generation.id,
                 if_current,
                 idempotency_key.operation_id(),
+                permit,
             )
             .await?;
         let restored = |id| Generation {
@@ -366,6 +582,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         if_current: GenerationId,
         idempotency_key: IdempotencyKey,
     ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
+        self.restore_paths_from_with_permit(
+            source,
+            paths,
+            if_current,
+            idempotency_key,
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await
+    }
+
+    /// Restores selected paths only while the supplied writer permit remains valid.
+    pub async fn restore_paths_from_with_permit(
+        &self,
+        source: &Generation<A, O>,
+        paths: &[String],
+        if_current: GenerationId,
+        idempotency_key: IdempotencyKey,
+        permit: crate::PublicationPermit,
+    ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
         if !self.volume.fs.same_deployment(&source.workspace.volume.fs) {
             return Err(WorkspaceError::ForeignGeneration);
         }
@@ -381,14 +616,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             )
             .await?;
         let mut transaction = self.begin_transaction(idempotency_key).await?;
-        let limits = self.volume.config.limits;
+        let config = self.volume.config;
         let cancellation = crate::CancellationToken::new();
         let parsed = paths
             .iter()
             .map(|path| {
                 let relative = path.trim_start_matches('/');
                 let absolute = format!("/{relative}");
-                customer_path(&absolute, limits).map(|path| (relative, path))
+                customer_path(&absolute, config).map(|path| (relative, path))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let lookup_paths = parsed
@@ -453,7 +688,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 .await
                 .map_err(WorkspaceError::engine)?;
         }
-        transaction.commit().await
+        transaction.commit_with_permit(permit).await
     }
 
     /// Applies only the paths changed between `base` and `source`, rejecting
@@ -471,6 +706,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         paths: &[String],
         if_current: GenerationId,
         idempotency_key: IdempotencyKey,
+    ) -> Result<WorkspacePathApply<A, O>, WorkspaceError> {
+        self.apply_paths_from_with_permit(
+            base,
+            source,
+            paths,
+            if_current,
+            idempotency_key,
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await
+    }
+
+    /// Applies an exact three-way path delta under one writer permit.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one transaction keeps path planning, typed conflicts, and fenced publication atomic"
+    )]
+    pub async fn apply_paths_from_with_permit(
+        &self,
+        base: Option<&Generation<A, O>>,
+        source: Option<&Generation<A, O>>,
+        paths: &[String],
+        if_current: GenerationId,
+        idempotency_key: IdempotencyKey,
+        permit: crate::PublicationPermit,
     ) -> Result<WorkspacePathApply<A, O>, WorkspaceError> {
         if base.is_some_and(|base| !self.volume.fs.same_deployment(&base.workspace.volume.fs))
             || source
@@ -506,14 +766,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             None => None,
         };
         let mut transaction = self.begin_transaction(idempotency_key).await?;
-        let limits = self.volume.config.limits;
+        let config = self.volume.config;
         let cancellation = crate::CancellationToken::new();
         let parsed = paths
             .iter()
             .map(|path| {
                 let relative = path.trim_start_matches('/');
                 let absolute = format!("/{relative}");
-                customer_path(&absolute, limits).map(|path| (relative, path))
+                customer_path(&absolute, config).map(|path| (relative, path))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let lookup_paths = parsed
@@ -616,7 +876,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .mutate(operations, crate::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(WorkspaceError::engine)?;
-        Ok(match transaction.commit().await? {
+        Ok(match transaction.commit_with_permit(permit).await? {
             TransactionCommit::Committed(generation) => WorkspacePathApply::Applied(generation),
             TransactionCommit::AlreadyCommitted(generation) => {
                 WorkspacePathApply::AlreadyApplied(generation)
@@ -655,12 +915,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         if options.generation.workspace.id != self.id {
             return Err(WorkspaceError::ForeignGeneration);
         }
-        let destination = WorkspaceName::new(destination)?;
-        Box::pin(self.volume.fs.fork_workspace(
+        self.fork_measured(
             destination,
-            &options.generation,
-            options.idempotency_key,
-        ))
+            options,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
+    pub(crate) async fn fork_measured(
+        &self,
+        destination: impl AsRef<str>,
+        options: ForkOptions<A, O>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Self>, WorkspaceError> {
+        if options.generation.workspace.id != self.id {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let destination = WorkspaceName::new(destination)?;
+        in_heap(|| {
+            self.volume.fs.fork_workspace_measured(
+                destination,
+                &options.generation,
+                options.idempotency_key,
+                budget,
+                cancellation,
+            )
+        })
         .await
     }
 
@@ -674,9 +958,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Transaction<A, O>, WorkspaceError> {
-        let generation = self.head().await?;
-        self.open_transaction_at(&generation, idempotency_key, false)
-            .await
+        self.begin_transaction_measured(
+            idempotency_key,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
+    pub(crate) async fn begin_transaction_measured(
+        &self,
+        idempotency_key: IdempotencyKey,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Transaction<A, O>>, WorkspaceError> {
+        let head = self.head_measured(budget, cancellation).await?;
+        let transaction = self
+            .open_transaction_at_measured(
+                &head.value,
+                idempotency_key,
+                false,
+                head.work
+                    .remaining(budget)
+                    .map_err(WorkspaceError::engine)?,
+                cancellation,
+            )
+            .await?;
+        Ok(crate::OperationReceipt {
+            value: transaction.value,
+            work: head
+                .work
+                .checked_add(transaction.work)
+                .map_err(WorkspaceError::engine)?,
+        })
     }
 
     /// Opens one sparse atomic transaction against an exact immutable generation.
@@ -703,24 +1018,63 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
     }
 
+    pub(crate) async fn begin_pinned_transaction_measured(
+        &self,
+        generation: &Generation<A, O>,
+        idempotency_key: IdempotencyKey,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Transaction<A, O>>, WorkspaceError> {
+        if generation.workspace.id != self.id {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        self.open_transaction_at_measured(generation, idempotency_key, false, budget, cancellation)
+            .await
+    }
+
     async fn open_transaction_at(
         &self,
         generation: &Generation<A, O>,
         idempotency_key: IdempotencyKey,
         requires_rebase: bool,
     ) -> Result<Transaction<A, O>, WorkspaceError> {
-        let mut checkout = self
-            .engine_checkout(
-                GenerationSelector::Exact(generation.id),
-                CheckoutMode::tracking_transaction(),
-            )
-            .await?;
-        checkout.bind_authored_operation(idempotency_key.operation_id());
-        Ok(Transaction {
-            checkout,
-            workspace: self.clone(),
+        self.open_transaction_at_measured(
+            generation,
             idempotency_key,
             requires_rebase,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
+    async fn open_transaction_at_measured(
+        &self,
+        generation: &Generation<A, O>,
+        idempotency_key: IdempotencyKey,
+        requires_rebase: bool,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Transaction<A, O>>, WorkspaceError> {
+        let receipt = self
+            .engine_checkout_measured(
+                GenerationSelector::Exact(generation.id),
+                CheckoutMode::tracking_transaction(),
+                budget,
+                cancellation,
+            )
+            .await?;
+        let mut checkout = receipt.value;
+        checkout.bind_authored_operation(idempotency_key.operation_id());
+        Ok(crate::OperationReceipt {
+            value: Transaction {
+                checkout,
+                workspace: self.clone(),
+                idempotency_key,
+                requires_rebase,
+            },
+            work: receipt.work,
         })
     }
 
@@ -875,6 +1229,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             crate::facade::WorkspaceJoinOutcome::AlreadyApplied(id) => {
                 WorkspaceRebase::AlreadyRebased(generation(id))
             }
+            crate::facade::WorkspaceJoinOutcome::Joined(_, _)
+            | crate::facade::WorkspaceJoinOutcome::AlreadyJoined(_, _) => {
+                return Err(WorkspaceError::IncompatibleWorkspace);
+            }
             crate::facade::WorkspaceJoinOutcome::NoChanges(id) => {
                 WorkspaceRebase::Current(generation(id))
             }
@@ -892,6 +1250,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 WorkspaceRebase::IdempotencyConflict
             }
         })
+    }
+
+    /// The parent head that [`Self::live_rebase`] would rebase this fork onto,
+    /// or `None` when the fork is already based on it.
+    pub(crate) async fn parent_advance(
+        &self,
+        maximum_generations: u32,
+    ) -> Result<Option<GenerationId>, WorkspaceError> {
+        self.volume
+            .fs
+            .parent_advance(&self.volume, maximum_generations)
+            .await
     }
 
     /// Reads at most `maximum_bytes` from one complete file at the current
@@ -929,6 +1299,64 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         stat_generation(self, GenerationSelector::Head, path).await
     }
 
+    pub(crate) async fn stat_optional_measured(
+        &self,
+        path: &str,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Option<WorkspaceStat>>, WorkspaceError> {
+        stat_generation_optional_measured(
+            self,
+            GenerationSelector::Head,
+            path,
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn record_by_id(
+        &self,
+        file_id: FileId,
+    ) -> Result<crate::kernel::FileRecord, WorkspaceError> {
+        let mut checkout = self
+            .engine_checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
+            .await?;
+        checkout
+            .read_file_record_by_id(
+                file_id,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(WorkspaceError::engine)
+    }
+
+    /// Makes every object `records` reach durable before another durable
+    /// store records them.
+    pub(crate) async fn make_records_durable(
+        &self,
+        records: &[crate::kernel::FileRecord],
+    ) -> Result<crate::PublicationHold, WorkspaceError> {
+        self.volume
+            .fs
+            .make_records_durable(
+                self.volume.config,
+                records,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map_err(WorkspaceError::engine)
+    }
+
+    pub(crate) fn detached_record(
+        &self,
+        record: crate::kernel::FileRecord,
+    ) -> crate::DetachedFile<A, O> {
+        crate::DetachedFile::from_record(self.volume.clone(), record)
+    }
+
     /// Returns one authenticated bounded directory page.
     ///
     /// # Errors
@@ -943,6 +1371,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ) -> Result<WorkspaceDirectoryPage, WorkspaceError> {
         list_generation_directory(self, GenerationSelector::Head, path, after, maximum_entries)
             .await
+    }
+
+    // Lazy workspace composition still needs a bounded authenticated page
+    // internally, even though the public eager-directory API is removed.
+    pub(crate) async fn list_directory_measured(
+        &self,
+        path: &str,
+        after: Option<&LogicalName>,
+        maximum_entries: u32,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
+        in_heap(move || async move {
+            list_generation_directory_measured(
+                self,
+                GenerationSelector::Head,
+                path,
+                after,
+                maximum_entries,
+                budget,
+                cancellation,
+            )
+            .await
+        })
+        .await
     }
 
     /// Reads exact opaque symbolic-link target bytes without following it.
@@ -1048,7 +1501,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let mut checkout = self
             .engine_checkout(selector, CheckoutMode::read_only_pinned())
             .await?;
-        let path = customer_path(path, checkout.volume_config().limits)?;
+        let path = customer_path(path, checkout.volume_config())?;
         let lookup = checkout
             .lookup_no_follow(
                 &path,
@@ -1087,16 +1540,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         selector: GenerationSelector,
         mode: CheckoutMode,
     ) -> Result<Checkout<A, O>, WorkspaceError> {
+        self.engine_checkout_measured(
+            selector,
+            mode,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
+    pub(crate) async fn engine_checkout_measured(
+        &self,
+        selector: GenerationSelector,
+        mode: CheckoutMode,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Checkout<A, O>>, WorkspaceError> {
         self.volume
-            .checkout(
-                selector,
-                mode,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .checkout(selector, mode, budget, cancellation)
             .await
-            .map(|receipt| receipt.value)
-            .map_err(WorkspaceError::engine)
+            .map_err(|failure| WorkspaceError::from(failure.error))
     }
 }
 
@@ -1119,7 +1583,7 @@ async fn read_generation_range<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let mut checkout = workspace
         .engine_checkout(selector, CheckoutMode::read_only_pinned())
         .await?;
-    let path = customer_path(path, checkout.volume_config().limits)?;
+    let path = customer_path(path, checkout.volume_config())?;
     checkout
         .read_file_range(
             &path,
@@ -1129,7 +1593,7 @@ async fn read_generation_range<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         )
         .await
         .map(|receipt| receipt.value.bytes)
-        .map_err(WorkspaceError::engine)
+        .map_err(|failure| WorkspaceError::from(failure.error))
 }
 
 async fn stat_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1137,20 +1601,64 @@ async fn stat_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     selector: GenerationSelector,
     path: &str,
 ) -> Result<WorkspaceStat, WorkspaceError> {
-    let mut checkout = workspace
-        .engine_checkout(selector, CheckoutMode::read_only_pinned())
+    stat_generation_measured(
+        workspace,
+        selector,
+        path,
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .await
+    .map(|receipt| receipt.value)
+}
+
+async fn stat_generation_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    selector: GenerationSelector,
+    path: &str,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<crate::OperationReceipt<WorkspaceStat>, WorkspaceError> {
+    let receipt =
+        stat_generation_optional_measured(workspace, selector, path, budget, cancellation).await?;
+    Ok(crate::OperationReceipt {
+        value: receipt.value.ok_or(WorkspaceError::NotFound)?,
+        work: receipt.work,
+    })
+}
+
+async fn stat_generation_optional_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    selector: GenerationSelector,
+    path: &str,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<crate::OperationReceipt<Option<WorkspaceStat>>, WorkspaceError> {
+    let checkout = workspace
+        .engine_checkout_measured(
+            selector,
+            CheckoutMode::read_only_pinned(),
+            budget,
+            cancellation,
+        )
         .await?;
-    let path = customer_path(path, checkout.volume_config().limits)?;
+    let mut work = checkout.work;
+    let mut checkout = checkout.value;
+    let path = customer_path(path, checkout.volume_config())?;
     let lookup = checkout
         .lookup_no_follow_with_metadata(
             &path,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            work.remaining(budget).map_err(WorkspaceError::from)?,
+            cancellation,
         )
         .await
-        .map_err(WorkspaceError::engine)?
-        .value
-        .ok_or(WorkspaceError::NotFound)?;
+        .map_err(|failure| WorkspaceError::from(failure.error))?;
+    work = work
+        .checked_add(lookup.work)
+        .map_err(WorkspaceError::from)?;
+    let Some(lookup) = lookup.value else {
+        return Ok(crate::OperationReceipt { value: None, work });
+    };
     let logical_bytes = match &lookup.record.payload {
         FilePayload::InlineRegular(bytes) => {
             Some(u64::try_from(bytes.as_bytes().len()).map_err(WorkspaceError::engine)?)
@@ -1166,12 +1674,15 @@ async fn stat_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         } => Some(*logical_bytes),
         FilePayload::Directory { .. } | FilePayload::Device { .. } | FilePayload::Empty => None,
     };
-    Ok(WorkspaceStat {
-        file_id: lookup.record.file_id,
-        kind: lookup.record.kind,
-        link_count: lookup.record.link_count,
-        logical_bytes,
-        metadata: WorkspaceMetadata::from_engine(lookup.metadata),
+    Ok(crate::OperationReceipt {
+        value: Some(WorkspaceStat {
+            file_id: lookup.record.file_id,
+            kind: lookup.record.kind,
+            link_count: lookup.record.link_count,
+            logical_bytes,
+            metadata: WorkspaceMetadata::from_engine(lookup.metadata),
+        }),
+        work,
     })
 }
 
@@ -1182,21 +1693,54 @@ async fn list_generation_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     after: Option<&LogicalName>,
     maximum_entries: u32,
 ) -> Result<WorkspaceDirectoryPage, WorkspaceError> {
-    let mut checkout = workspace
-        .engine_checkout(selector, CheckoutMode::read_only_pinned())
+    list_generation_directory_measured(
+        workspace,
+        selector,
+        path,
+        after,
+        maximum_entries,
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .await
+    .map(|receipt| receipt.value)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn list_generation_directory_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    selector: GenerationSelector,
+    path: &str,
+    after: Option<&LogicalName>,
+    maximum_entries: u32,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
+    let checkout = workspace
+        .engine_checkout_measured(
+            selector,
+            CheckoutMode::read_only_pinned(),
+            budget,
+            cancellation,
+        )
         .await?;
-    let path = customer_path(path, checkout.volume_config().limits)?;
-    checkout
+    let prior = checkout.work;
+    let mut checkout = checkout.value;
+    let path = customer_path(path, checkout.volume_config())?;
+    let page = checkout
         .list_directory(
             &path,
             after,
             maximum_entries,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            prior.remaining(budget).map_err(WorkspaceError::from)?,
+            cancellation,
         )
         .await
-        .map(|receipt| WorkspaceDirectoryPage {
-            entries: receipt
+        .map_err(|failure| WorkspaceError::from(failure.error))?;
+    let work = prior.checked_add(page.work).map_err(WorkspaceError::from)?;
+    Ok(crate::OperationReceipt {
+        value: WorkspaceDirectoryPage {
+            entries: page
                 .value
                 .entries
                 .into_iter()
@@ -1206,9 +1750,10 @@ async fn list_generation_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     kind: entry.kind,
                 })
                 .collect(),
-            has_more: receipt.value.has_more,
-        })
-        .map_err(WorkspaceError::engine)
+            has_more: page.value.has_more,
+        },
+        work,
+    })
 }
 
 async fn read_generation_symbolic_link<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1219,7 +1764,7 @@ async fn read_generation_symbolic_link<A: AsyncAuthorityStore, O: AsyncObjectSto
     let mut checkout = workspace
         .engine_checkout(selector, CheckoutMode::read_only_pinned())
         .await?;
-    let path = customer_path(path, checkout.volume_config().limits)?;
+    let path = customer_path(path, checkout.volume_config())?;
     checkout
         .read_symbolic_link(
             &path,
@@ -1242,7 +1787,7 @@ async fn plan_generation_extents<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let mut checkout = workspace
         .engine_checkout(selector, CheckoutMode::read_only_pinned())
         .await?;
-    let path = customer_path(path, checkout.volume_config().limits)?;
+    let path = customer_path(path, checkout.volume_config())?;
     let plan = checkout
         .plan_file_extents(
             &path,
@@ -1291,8 +1836,303 @@ pub struct Transaction<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+    /// Reuses the workspace transaction compiler against a private checkout
+    /// candidate without publishing a second workspace head.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn for_checkout_candidate(
+        workspace: &Workspace<A, O>,
+        checkout: Checkout<A, O>,
+    ) -> Self {
+        Self {
+            workspace: workspace.clone(),
+            checkout,
+            idempotency_key: IdempotencyKey::new(),
+            requires_rebase: false,
+        }
+    }
+
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn into_checkout_candidate(self) -> Checkout<A, O> {
+        self.checkout
+    }
+
     pub(crate) fn workspace_id(&self) -> WorkspaceId {
         self.workspace.id()
+    }
+
+    pub(crate) async fn restore_record_measured(
+        &mut self,
+        path: &str,
+        record: crate::kernel::FileRecord,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config())?;
+        self.apply_engine_measured(
+            vec![crate::kernel::Mutation::Restore { path, record }],
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn create_dir_all_measured(
+        &mut self,
+        path: &str,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        let portable = PortablePath::parse(path, self.checkout.volume_config().limits)
+            .map_err(WorkspaceError::path)?;
+        let mut current = String::new();
+        let mut work = crate::WorkCounters::default();
+        for component in portable.components() {
+            cancellation.check().map_err(WorkspaceError::from)?;
+            current.push('/');
+            current.push_str(component);
+            let path = customer_path(&current, self.checkout.volume_config())?;
+            let lookup = self
+                .checkout
+                .lookup_no_follow(
+                    &path,
+                    work.remaining(budget).map_err(WorkspaceError::from)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| WorkspaceError::from(failure.error))?;
+            work = work
+                .checked_add(lookup.work)
+                .map_err(WorkspaceError::from)?;
+            match lookup.value.record {
+                Some(value) if value.kind == FileKind::Directory => {}
+                Some(_) => return Err(WorkspaceError::NotDirectory),
+                None => {
+                    let applied = self
+                        .apply_measured(
+                            vec![AuthoredMutation::CreateDirectory {
+                                path,
+                                metadata: FileMetadata::default(),
+                            }],
+                            work.remaining(budget).map_err(WorkspaceError::from)?,
+                            cancellation,
+                        )
+                        .await?;
+                    work = work.checked_add(applied).map_err(WorkspaceError::from)?;
+                }
+            }
+        }
+        Ok(work)
+    }
+
+    pub(crate) async fn apply_authored_measured(
+        &mut self,
+        operation: AuthoredMutation,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        self.apply_measured(vec![operation], budget, cancellation)
+            .await
+    }
+
+    /// Admits a bounded ordered capture as one unpublished candidate update.
+    pub(crate) async fn apply_authored_bulk_measured(
+        &mut self,
+        operations: Vec<AuthoredMutation>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        self.checkout
+            .apply_authored_bulk_transaction(operations, budget, cancellation)
+            .await
+            .map(|receipt| receipt.work)
+            .map_err(|failure| WorkspaceError::from(failure.error))
+    }
+
+    pub(crate) async fn create_directory_measured(
+        &mut self,
+        path: &str,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config())?;
+        self.apply_authored_measured(
+            AuthoredMutation::CreateDirectory {
+                path,
+                metadata: FileMetadata::default(),
+            },
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn create_file_measured(
+        &mut self,
+        path: &str,
+        bytes: Bytes,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config())?;
+        self.apply_authored_measured(
+            AuthoredMutation::CreateFile {
+                path,
+                bytes,
+                metadata: FileMetadata::default(),
+            },
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn write_range_measured(
+        &mut self,
+        path: &str,
+        offset: u64,
+        bytes: Bytes,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config())?;
+        self.apply_authored_measured(
+            AuthoredMutation::Write {
+                path,
+                offset,
+                bytes,
+            },
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn create_symbolic_link_measured(
+        &mut self,
+        path: &str,
+        target: Bytes,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config())?;
+        self.apply_authored_measured(
+            AuthoredMutation::CreateSymbolicLink {
+                path,
+                target,
+                metadata: FileMetadata::default(),
+            },
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn create_special_measured(
+        &mut self,
+        path: &str,
+        kind: FileKind,
+        device: Option<(u32, u32)>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config())?;
+        let operation = match (kind, device) {
+            (FileKind::Fifo | FileKind::Socket, None) => AuthoredMutation::CreateEmptySpecial {
+                path,
+                kind,
+                metadata: FileMetadata::default(),
+            },
+            (FileKind::CharacterDevice | FileKind::BlockDevice, Some((major, minor))) => {
+                AuthoredMutation::CreateDevice {
+                    path,
+                    kind,
+                    major,
+                    minor,
+                    metadata: FileMetadata::default(),
+                }
+            }
+            _ => return Err(WorkspaceError::IncompatibleWorkspace),
+        };
+        self.apply_authored_measured(operation, budget, cancellation)
+            .await
+    }
+
+    pub(crate) async fn set_metadata_measured(
+        &mut self,
+        path: &str,
+        metadata: FileMetadata,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config())?;
+        self.apply_authored_measured(
+            AuthoredMutation::SetMetadata { path, metadata },
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn preserve_file_identity_measured(
+        &mut self,
+        path: &str,
+        file_id: FileId,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config())?;
+        self.apply_authored_measured(
+            AuthoredMutation::Reidentify { path, file_id },
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn hard_link_measured(
+        &mut self,
+        source: &str,
+        destination: &str,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        let config = self.checkout.volume_config();
+        self.apply_authored_measured(
+            AuthoredMutation::HardLink {
+                source: customer_path(source, config)?,
+                destination: customer_path(destination, config)?,
+            },
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn apply_engine_measured(
+        &mut self,
+        operations: Vec<crate::kernel::Mutation>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
+        self.checkout
+            .mutate(operations, budget, cancellation)
+            .await
+            .map(|receipt| receipt.work)
+            .map_err(|failure| WorkspaceError::from(failure.error))
+    }
+
+    /// Preserves a stable source identity for an existing non-directory object.
+    ///
+    /// Reusing an identity creates a hard-link alias only when kind, metadata,
+    /// and payload match exactly; collisions fail closed.
+    pub async fn preserve_file_identity(
+        &mut self,
+        path: &str,
+        file_id: FileId,
+    ) -> Result<(), WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config())?;
+        self.apply(vec![AuthoredMutation::Reidentify { path, file_id }])
+            .await
     }
 
     /// Creates one new regular file and rejects an existing destination.
@@ -1307,7 +2147,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         bytes: Bytes,
         metadata: FileMetadata,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::CreateFile {
             path,
             bytes,
@@ -1327,15 +2167,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         source: &mut R,
         maximum_source_bytes: u64,
     ) -> Result<crate::StagedContent, WorkspaceError> {
+        self.stage_content_measured(
+            source,
+            maximum_source_bytes,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
+    pub(crate) async fn stage_content_measured<R: crate::kernel::AsyncBlobSource>(
+        &self,
+        source: &mut R,
+        maximum_source_bytes: u64,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::StagedContent>, WorkspaceError> {
         self.checkout
-            .stage_content(
-                source,
-                maximum_source_bytes,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .stage_content(source, maximum_source_bytes, budget, cancellation)
             .await
-            .map(|receipt| receipt.value)
+            .map(|receipt| crate::OperationReceipt {
+                value: receipt.value,
+                work: receipt.work,
+            })
             .map_err(WorkspaceError::engine)
     }
 
@@ -1351,7 +2206,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         for component in portable.components() {
             current.push('/');
             current.push_str(component);
-            let path = customer_path(&current, self.checkout.volume_config().limits)?;
+            let path = customer_path(&current, self.checkout.volume_config())?;
             let existing = self
                 .checkout
                 .lookup_no_follow(
@@ -1384,7 +2239,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ///
     /// Rejects invalid/existing paths or authenticated engine failures.
     pub async fn create_directory(&mut self, path: &str) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::CreateDirectory {
             path,
             metadata: FileMetadata::default(),
@@ -1402,13 +2257,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         path: &str,
         target: Bytes,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::CreateSymbolicLink {
             path,
             target,
             metadata: FileMetadata::default(),
         }])
         .await
+    }
+
+    /// Creates one payload-free POSIX special node or exact device node.
+    pub async fn create_special(
+        &mut self,
+        path: &str,
+        kind: FileKind,
+        device: Option<(u32, u32)>,
+    ) -> Result<(), WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config())?;
+        let mutation = match (kind, device) {
+            (FileKind::Fifo | FileKind::Socket, None) => AuthoredMutation::CreateEmptySpecial {
+                path,
+                kind,
+                metadata: FileMetadata::default(),
+            },
+            (FileKind::CharacterDevice | FileKind::BlockDevice, Some((major, minor))) => {
+                AuthoredMutation::CreateDevice {
+                    path,
+                    kind,
+                    major,
+                    minor,
+                    metadata: FileMetadata::default(),
+                }
+            }
+            _ => return Err(WorkspaceError::IncompatibleWorkspace),
+        };
+        self.apply(vec![mutation]).await
     }
 
     /// Creates or atomically replaces one complete UTF-8 file.
@@ -1429,7 +2312,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     /// Rejects invalid paths, non-regular destinations, size limits, and
     /// authenticated engine failures.
     pub async fn write(&mut self, path: &str, bytes: Bytes) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         let existing = self
             .checkout
             .lookup_no_follow(
@@ -1477,7 +2360,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         if parts.is_empty() {
             return Err(WorkspaceError::EmptyContentSet);
         }
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         let existing = self
             .checkout
             .lookup_no_follow(
@@ -1523,7 +2406,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ///
     /// Rejects invalid or absent paths and authenticated engine failures.
     pub async fn remove(&mut self, path: &str) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         let existing = self
             .checkout
             .lookup_no_follow(
@@ -1543,15 +2426,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         .await
     }
 
+    /// Removes one binding only when its authenticated identity still matches.
+    ///
+    /// The precondition is compiled into the same atomic checkout mutation as
+    /// the removal; callers never perform a check-then-delete sequence.
+    pub async fn remove_if(
+        &mut self,
+        path: &str,
+        expected_file_id: crate::FileId,
+    ) -> Result<(), WorkspaceError> {
+        let path = customer_path(path, self.checkout.volume_config())?;
+        self.apply(vec![AuthoredMutation::Remove {
+            path,
+            expected_file_id: Some(expected_file_id),
+        }])
+        .await
+    }
+
     /// Replaces one destination with a complete copy-on-write clone.
     ///
     /// # Errors
     ///
     /// Rejects invalid paths, non-regular endpoints, and bounded engine errors.
     pub async fn copy(&mut self, source: &str, destination: &str) -> Result<(), WorkspaceError> {
-        let limits = self.checkout.volume_config().limits;
-        let source = customer_path(source, limits)?;
-        let destination = customer_path(destination, limits)?;
+        let config = self.checkout.volume_config();
+        let source = customer_path(source, config)?;
+        let destination = customer_path(destination, config)?;
         let source_record = self
             .checkout
             .lookup_no_follow(
@@ -1621,10 +2521,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         destination: &str,
         replace: bool,
     ) -> Result<(), WorkspaceError> {
-        let limits = self.checkout.volume_config().limits;
+        let config = self.checkout.volume_config();
         self.apply(vec![AuthoredMutation::Rename {
-            source: customer_path(source, limits)?,
-            destination: customer_path(destination, limits)?,
+            source: customer_path(source, config)?,
+            destination: customer_path(destination, config)?,
             replace,
         }])
         .await
@@ -1640,10 +2540,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         source: &str,
         destination: &str,
     ) -> Result<(), WorkspaceError> {
-        let limits = self.checkout.volume_config().limits;
+        let config = self.checkout.volume_config();
         self.apply(vec![AuthoredMutation::HardLink {
-            source: customer_path(source, limits)?,
-            destination: customer_path(destination, limits)?,
+            source: customer_path(source, config)?,
+            destination: customer_path(destination, config)?,
         }])
         .await
     }
@@ -1659,7 +2559,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         offset: u64,
         bytes: Bytes,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::Write {
             path,
             offset,
@@ -1674,7 +2574,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ///
     /// Rejects invalid paths, incompatible kinds, limits, or engine failures.
     pub async fn resize(&mut self, path: &str, logical_bytes: u64) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::Resize {
             path,
             logical_bytes,
@@ -1694,7 +2594,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         allocated: bool,
         extend: bool,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::ZeroRange {
             path,
             range,
@@ -1715,7 +2615,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         range: crate::ByteRange,
         keep_size: bool,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::Preallocate {
             path,
             range,
@@ -1737,12 +2637,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         destination_offset: u64,
         length: u64,
     ) -> Result<(), WorkspaceError> {
-        let limits = self.checkout.volume_config().limits;
+        let config = self.checkout.volume_config();
         self.apply(vec![AuthoredMutation::CloneRange(
             crate::FileCloneRequest {
-                source: customer_path(source, limits)?,
+                source: customer_path(source, config)?,
                 source_offset,
-                destination: customer_path(destination, limits)?,
+                destination: customer_path(destination, config)?,
                 destination_offset,
                 length,
             },
@@ -1760,7 +2660,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         path: &str,
         metadata: FileMetadata,
     ) -> Result<(), WorkspaceError> {
-        let path = customer_path(path, self.checkout.volume_config().limits)?;
+        let path = customer_path(path, self.checkout.volume_config())?;
         self.apply(vec![AuthoredMutation::SetMetadata { path, metadata }])
             .await
     }
@@ -1773,58 +2673,129 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     /// Returns authentication, closure, storage, cancellation, or indeterminate
     /// authority failures. Semantic publication rejections are typed outcomes.
     pub async fn commit(&mut self) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-        if self.requires_rebase {
-            let retried = Box::pin(self.checkout.retry_stale_commit(
-                self.idempotency_key.operation_id(),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            ))
+        self.commit_with_permit(crate::PublicationPermit::Unrestricted)
             .await
-            .map_err(WorkspaceError::engine)?
-            .value;
-            let Some(outcome) = retried else {
-                return Ok(TransactionCommit::Conflict {
-                    actual: Box::pin(self.workspace.head()).await?,
-                });
-            };
-            return Box::pin(self.commit_outcome(outcome)).await;
-        }
-        let outcome = Box::pin(self.checkout.commit(
-            self.idempotency_key.operation_id(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        ))
-        .await
-        .map_err(WorkspaceError::engine)?
-        .value;
-        Box::pin(self.commit_outcome(outcome)).await
     }
 
-    async fn commit_outcome(
+    /// Publishes this transaction only while an SDK operation-window permit
+    /// is still active at the authority linearization point.
+    pub async fn commit_with_permit(
+        &mut self,
+        permit: crate::PublicationPermit,
+    ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
+        in_heap(move || async move {
+            self.commit_with_permit_measured(
+                permit,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+        })
+        .await
+    }
+
+    /// Publishes this transaction under an exact work budget and cancellation token.
+    pub(crate) async fn commit_with_permit_measured(
+        &mut self,
+        permit: crate::PublicationPermit,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError> {
+        cancellation.check().map_err(WorkspaceError::from)?;
+        if self.requires_rebase {
+            let receipt = self
+                .checkout
+                .retry_stale_commit(
+                    self.idempotency_key.operation_id(),
+                    permit,
+                    budget,
+                    cancellation,
+                )
+                .await
+                .map_err(|failure| WorkspaceError::from(failure.error))?;
+            let work = receipt.work;
+            let Some(outcome) = receipt.value else {
+                let actual = self
+                    .workspace
+                    .head_measured(
+                        work.remaining(budget).map_err(WorkspaceError::from)?,
+                        cancellation,
+                    )
+                    .await?;
+                return Ok(crate::OperationReceipt {
+                    value: TransactionCommit::Conflict {
+                        actual: actual.value,
+                    },
+                    work: work
+                        .checked_add(actual.work)
+                        .map_err(WorkspaceError::from)?,
+                });
+            };
+            return self
+                .commit_outcome_measured(outcome, work, budget, cancellation)
+                .await;
+        }
+        let receipt = self
+            .checkout
+            .commit_with_permit(
+                self.idempotency_key.operation_id(),
+                permit,
+                budget,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| WorkspaceError::from(failure.error))?;
+        self.commit_outcome_measured(receipt.value, receipt.work, budget, cancellation)
+            .await
+    }
+
+    async fn commit_outcome_measured(
         &self,
         outcome: CheckoutCommitOutcome,
-    ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
-        match outcome {
-            CheckoutCommitOutcome::Committed { generation_id, .. } => {
-                Ok(TransactionCommit::Committed(Generation {
-                    workspace: self.workspace.clone(),
-                    id: generation_id,
-                }))
-            }
-            CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
-                Ok(TransactionCommit::AlreadyCommitted(Generation {
-                    workspace: self.workspace.clone(),
-                    id: generation_id,
-                }))
-            }
-            CheckoutCommitOutcome::Conflict { .. } => Ok(TransactionCommit::Conflict {
-                actual: Box::pin(self.workspace.head()).await?,
-            }),
-            CheckoutCommitOutcome::Fenced { .. } => Ok(TransactionCommit::Fenced),
-            CheckoutCommitOutcome::IdempotencyConflict { .. } => {
-                Ok(TransactionCommit::IdempotencyConflict)
-            }
-        }
+        work: crate::WorkCounters,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError> {
+        in_heap(move || async move {
+            let value = match outcome {
+                CheckoutCommitOutcome::Committed { generation_id, .. } => {
+                    TransactionCommit::Committed(Generation {
+                        workspace: self.workspace.clone(),
+                        id: generation_id,
+                    })
+                }
+                CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
+                    TransactionCommit::AlreadyCommitted(Generation {
+                        workspace: self.workspace.clone(),
+                        id: generation_id,
+                    })
+                }
+                CheckoutCommitOutcome::Conflict { .. } => {
+                    let actual = self
+                        .workspace
+                        .head_measured(
+                            work.remaining(budget).map_err(WorkspaceError::from)?,
+                            cancellation,
+                        )
+                        .await?;
+                    return Ok(crate::OperationReceipt {
+                        value: TransactionCommit::Conflict {
+                            actual: actual.value,
+                        },
+                        work: work
+                            .checked_add(actual.work)
+                            .map_err(WorkspaceError::from)?,
+                    });
+                }
+                CheckoutCommitOutcome::Fenced { .. } => TransactionCommit::Fenced,
+                CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+                    TransactionCommit::IdempotencyConflict
+                }
+            };
+            Ok(crate::OperationReceipt { value, work })
+        })
+        .await
     }
 
     /// Safely advances this retained sparse candidate to the current workspace
@@ -1871,15 +2842,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     }
 
     async fn apply(&mut self, operations: Vec<AuthoredMutation>) -> Result<(), WorkspaceError> {
+        self.apply_measured(
+            operations,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn apply_measured(
+        &mut self,
+        operations: Vec<AuthoredMutation>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::WorkCounters, WorkspaceError> {
         self.checkout
-            .apply_authored_transaction(
-                operations,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .apply_authored_transaction(operations, budget, cancellation)
             .await
-            .map(|_| ())
-            .map_err(WorkspaceError::engine)
+            .map(|receipt| receipt.work)
+            .map_err(|failure| WorkspaceError::from(failure.error))
     }
 }
 
@@ -2144,7 +3126,7 @@ pub struct WorkspaceStat {
 /// `None` means the source profile did not represent or observe the fact; zero
 /// remains an exact represented value. Opaque ACL, security-descriptor, and
 /// named-attribute contents are accessed through their dedicated bounded APIs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct WorkspaceMetadata {
     /// POSIX permission/type bits.
     pub posix_mode: Option<u32>,
@@ -2173,7 +3155,7 @@ pub struct WorkspaceMetadata {
 }
 
 impl WorkspaceMetadata {
-    fn from_engine(metadata: FileMetadata) -> Self {
+    pub(crate) fn from_engine(metadata: FileMetadata) -> Self {
         Self {
             posix_mode: metadata_value(metadata.posix_mode),
             posix_uid: metadata_value(metadata.posix_uid),
@@ -2349,6 +3331,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
         &self,
         maximum_entries: u32,
     ) -> Result<Vec<ChangedPath>, WorkspaceError> {
+        self.changed_paths_bounded(
+            maximum_entries,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
+    /// Resolves changed paths with one cumulative work budget and explicit
+    /// cancellation token. Partial traversal is never reported as exact.
+    #[allow(clippy::too_many_lines)]
+    pub async fn changed_paths_bounded(
+        &self,
+        maximum_entries: u32,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Vec<ChangedPath>>, WorkspaceError> {
         if self.changes.truncated {
             return Err(WorkspaceError::ChangedPathLimit);
         }
@@ -2371,13 +3371,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
                     .map(|entry| entry.file_id)
             }))
             .collect();
-        let before = self
+        self.work.verify(budget).map_err(WorkspaceError::engine)?;
+        let before_receipt = self
             .from
-            .namespace_records_for_file_ids(file_ids.iter().copied(), maximum_entries);
-        let after = self
+            .namespace_records_for_file_ids_bounded(
+                file_ids.iter().copied(),
+                maximum_entries,
+                self.work
+                    .remaining(budget)
+                    .map_err(WorkspaceError::engine)?,
+                cancellation,
+            )
+            .await?;
+        let mut work = self
+            .work
+            .checked_add(before_receipt.work)
+            .map_err(WorkspaceError::engine)?;
+        let after_receipt = self
             .to
-            .namespace_records_for_file_ids(file_ids.iter().copied(), maximum_entries);
-        let (before, after) = futures::try_join!(before, after)?;
+            .namespace_records_for_file_ids_bounded(
+                file_ids.iter().copied(),
+                maximum_entries,
+                work.remaining(budget).map_err(WorkspaceError::engine)?,
+                cancellation,
+            )
+            .await?;
+        work = work
+            .checked_add(after_receipt.work)
+            .map_err(WorkspaceError::engine)?;
+        let before = before_receipt.value;
+        let after = after_receipt.value;
         if !before.complete || !after.complete {
             return Err(WorkspaceError::ChangedPathLimit);
         }
@@ -2420,7 +3443,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
                 false,
             )?;
         }
-        Ok(paths
+        let paths = paths
             .into_iter()
             .filter(|(_, (before, after))| match (before, after) {
                 (Some(before), Some(after)) => {
@@ -2436,7 +3459,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
                 before,
                 after,
             })
-            .collect())
+            .collect();
+        Ok(crate::OperationReceipt { value: paths, work })
     }
 
     /// Composes contiguous immutable deltas into their exact net semantic
@@ -2473,7 +3497,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
 }
 
 /// How a successful join records immutable ancestry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum JoinHistory {
     /// Preserve source and target as two parents.
     Merge,
@@ -2578,6 +3603,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
             .await
     }
 
+    /// Plans against caller-pinned immutable source and target generations.
+    ///
+    /// The target must still be current when planning begins. The source may
+    /// have advanced: publication deliberately retains the generation pinned
+    /// when the parent began inspecting the child.
+    pub async fn plan_pinned(
+        self,
+        source_head: Generation<A, O>,
+        target_head: Generation<A, O>,
+    ) -> Result<JoinPlan<A, O>, WorkspaceError> {
+        self.validate_bounds()?;
+        if source_head.workspace.id != self.source.id || target_head.workspace.id != self.target.id
+        {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let (current_target, target_authority_head) = self
+            .target
+            .volume
+            .fs
+            .workspace_head_state(&self.target.volume)
+            .await?;
+        if current_target != target_head.id {
+            return Err(WorkspaceError::StaleGeneration);
+        }
+        self.plan_generations(source_head, target_head, target_authority_head)
+            .await
+    }
+
     pub(crate) async fn plan_generations(
         self,
         source_head: Generation<A, O>,
@@ -2655,6 +3708,36 @@ impl<A, O> JoinPlan<A, O> {
     pub const fn source(&self) -> &Workspace<A, O> {
         &self.source
     }
+
+    /// Captures exact provider-owned inputs for later verification of this
+    /// durable application, even after the mutable target head advances.
+    pub fn commit_witness(
+        &self,
+        application: &JoinApplication<A, O>,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<crate::JoinCommitWitness, WorkspaceError> {
+        if application.generation.workspace.id() != self.target.id()
+            || application.generation.id() == self.target_head.id()
+        {
+            return Err(WorkspaceError::IncompatibleWorkspace);
+        }
+        Ok(crate::JoinCommitWitness {
+            source_workspace: self.source.id().volume_id(),
+            source_generation: self.source_head.id,
+            target_workspace: self.target.id().volume_id(),
+            expected_target: self.target_head.id,
+            base_workspace: self.base.volume_id,
+            base_generation: self.base.id,
+            history: self.history,
+            maximum_generations: self.maximum_generations,
+            maximum_changes: self.maximum_changes,
+            maximum_conflicts: self.maximum_conflicts,
+            resolutions_digest: application.resolutions_digest,
+            expected_head: self.target_authority_head,
+            operation_id: idempotency_key.operation_id(),
+            result_generation: application.generation.id,
+        })
+    }
 }
 
 /// Atomic join application preconditions.
@@ -2669,9 +3752,9 @@ pub struct ApplyOptions {
 /// Terminal semantic join outcome.
 pub enum JoinOutcome<A, O> {
     /// A new target generation became durable.
-    Applied(Generation<A, O>),
+    Applied(JoinApplication<A, O>),
     /// The same exact application was already durable.
-    AlreadyApplied(Generation<A, O>),
+    AlreadyApplied(JoinApplication<A, O>),
     /// Source changes were already represented by the target.
     NoChanges(Generation<A, O>),
     /// Target changed after planning; no join was published.
@@ -2687,6 +3770,42 @@ pub enum JoinOutcome<A, O> {
     Fenced,
     /// Retry identity was previously bound to another join input.
     IdempotencyConflict,
+}
+
+/// One durable join result together with its exact conflict-resolution input.
+/// The digest is generated inside Filesystem's publication path, so receipt
+/// producers cannot accidentally attest a different set of resolutions.
+pub struct JoinApplication<A, O> {
+    generation: Generation<A, O>,
+    resolutions_digest: crate::Digest,
+}
+
+impl<A, O> JoinApplication<A, O> {
+    /// Immutable generation made durable by this join.
+    #[must_use]
+    pub const fn generation(&self) -> &Generation<A, O> {
+        &self.generation
+    }
+
+    /// Consumes the proof wrapper when only the resulting generation is needed.
+    #[must_use]
+    pub fn into_generation(self) -> Generation<A, O> {
+        self.generation
+    }
+
+    /// Domain-separated digest of the exact applied conflict resolutions.
+    #[must_use]
+    pub const fn resolutions_digest(&self) -> crate::Digest {
+        self.resolutions_digest
+    }
+}
+
+impl<A, O> std::ops::Deref for JoinApplication<A, O> {
+    type Target = Generation<A, O>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.generation
+    }
 }
 
 pub(crate) enum WorkspaceRestoreOutcome {
@@ -2777,7 +3896,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     /// Returns authenticated storage, compatibility, bound, or publication
     /// failures. Semantic conflicts and races are typed outcomes.
     pub async fn apply(&self, options: ApplyOptions) -> Result<JoinOutcome<A, O>, WorkspaceError> {
-        self.apply_resolutions(options, BTreeMap::new()).await
+        self.apply_with_permit(options, crate::PublicationPermit::Unrestricted)
+            .await
+    }
+
+    /// Applies this immutable plan only while the supplied writer permit remains valid.
+    pub async fn apply_with_permit(
+        &self,
+        options: ApplyOptions,
+        permit: crate::PublicationPermit,
+    ) -> Result<JoinOutcome<A, O>, WorkspaceError> {
+        self.apply_resolutions(options, BTreeMap::new(), permit)
+            .await
     }
 
     /// Expands exact kernel conflicts into immutable, driver-ready values.
@@ -2801,7 +3931,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         cache: &mut C,
         replanning: bool,
     ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
-        let initial = self.apply(options).await?;
+        self.apply_with_drivers_and_permit(
+            options,
+            registry,
+            cache,
+            replanning,
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await
+    }
+
+    /// Runs merge drivers and publishes only while the supplied writer permit remains valid.
+    pub async fn apply_with_drivers_and_permit<C: MergeResolutionCache>(
+        &self,
+        options: ApplyOptions,
+        registry: &MergeDriverRegistry,
+        cache: &mut C,
+        replanning: bool,
+        permit: crate::PublicationPermit,
+    ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
+        let initial = self.apply_with_permit(options, permit).await?;
         let JoinOutcome::Conflicted {
             conflicts,
             truncated,
@@ -2811,7 +3960,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         };
         let plan = self.typed_merge_plan(conflicts, truncated).await?;
         let candidate = resolve_merge_plan(plan, registry, cache, replanning)?;
-        self.apply_candidate(options, &candidate).await
+        self.apply_candidate_with_permit(options, &candidate, permit)
+            .await
     }
 
     /// Applies caller-selected immutable sides after validating that they
@@ -2851,7 +4001,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 )
             })
             .collect();
-        self.apply_resolutions(options, resolutions)
+        self.apply_resolutions(options, resolutions, crate::PublicationPermit::Unrestricted)
             .await
             .map_err(Into::into)
     }
@@ -2863,11 +4013,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         options: ApplyOptions,
         candidate: &UnpublishedMergeCandidate,
     ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
+        self.apply_candidate_with_permit(options, candidate, crate::PublicationPermit::Unrestricted)
+            .await
+    }
+
+    /// Validates and publishes a declarative candidate under one writer permit.
+    pub async fn apply_candidate_with_permit(
+        &self,
+        options: ApplyOptions,
+        candidate: &UnpublishedMergeCandidate,
+        permit: crate::PublicationPermit,
+    ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
+        let conflict_keys = candidate
+            .plan
+            .conflicts
+            .iter()
+            .map(|conflict| &conflict.key)
+            .collect::<BTreeSet<_>>();
         if candidate.plan.base != self.base.id
             || candidate.plan.ours != self.target_head.id
             || candidate.plan.theirs != self.source_head.id
             || candidate.plan.truncated
             || candidate.plan.conflicts.len() != candidate.resolutions.len()
+            || conflict_keys.len() != candidate.plan.conflicts.len()
+            || !candidate.resolutions.keys().eq(conflict_keys.into_iter())
         {
             return Err(DrivenJoinError::StaleCandidate);
         }
@@ -2947,7 +4116,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 resolution,
             );
         }
-        self.apply_resolutions(options, resolutions)
+        self.apply_resolutions(options, resolutions, permit)
             .await
             .map_err(Into::into)
     }
@@ -3163,6 +4332,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         &self,
         options: ApplyOptions,
         resolutions: BTreeMap<MergeConflict, crate::kernel::MergeConflictResolution>,
+        permit: crate::PublicationPermit,
     ) -> Result<JoinOutcome<A, O>, WorkspaceError> {
         if options.if_target != self.target_head.id {
             return Ok(JoinOutcome::StaleTarget(self.target.head().await?));
@@ -3179,6 +4349,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 expected_head: self.target_authority_head,
                 history: self.history,
                 operation_id: options.idempotency_key.operation_id(),
+                permit,
                 maximum_generations: self.maximum_generations,
                 maximum_changes: self.maximum_changes,
                 maximum_conflicts: self.maximum_conflicts,
@@ -3190,11 +4361,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             id,
         };
         Ok(match outcome {
-            crate::facade::WorkspaceJoinOutcome::Applied(id) => {
-                JoinOutcome::Applied(generation(id))
+            crate::facade::WorkspaceJoinOutcome::Joined(id, resolutions_digest) => {
+                JoinOutcome::Applied(JoinApplication {
+                    generation: generation(id),
+                    resolutions_digest,
+                })
             }
-            crate::facade::WorkspaceJoinOutcome::AlreadyApplied(id) => {
-                JoinOutcome::AlreadyApplied(generation(id))
+            crate::facade::WorkspaceJoinOutcome::AlreadyJoined(id, resolutions_digest) => {
+                JoinOutcome::AlreadyApplied(JoinApplication {
+                    generation: generation(id),
+                    resolutions_digest,
+                })
+            }
+            crate::facade::WorkspaceJoinOutcome::Applied(_)
+            | crate::facade::WorkspaceJoinOutcome::AlreadyApplied(_) => {
+                return Err(WorkspaceError::IncompatibleWorkspace);
             }
             crate::facade::WorkspaceJoinOutcome::NoChanges(id) => {
                 JoinOutcome::NoChanges(generation(id))
@@ -3291,17 +4472,10 @@ fn canonical_name_key(name: &LogicalName) -> Vec<u8> {
     key
 }
 
-fn logical_name_text(name: &LogicalName) -> Result<&str, WorkspaceError> {
-    match name.encoding() {
-        crate::kernel::NameEncoding::Utf8 => {
-            std::str::from_utf8(name.as_bytes()).map_err(WorkspaceError::path)
-        }
-        crate::kernel::NameEncoding::PosixBytes | crate::kernel::NameEncoding::WindowsUtf16Le => {
-            Err(WorkspaceError::path(
-                "non-UTF-8 path cannot be projected as a portable string",
-            ))
-        }
-    }
+fn logical_name_text(name: &LogicalName) -> Result<std::borrow::Cow<'_, str>, WorkspaceError> {
+    name.unicode_text().ok_or_else(|| {
+        WorkspaceError::path("non-Unicode path cannot be projected as a portable string")
+    })
 }
 
 fn namespace_path_text(path: &NamespacePath) -> Result<String, WorkspaceError> {
@@ -3464,9 +4638,32 @@ impl<A, O> Generation<A, O> {
     pub const fn workspace_id(&self) -> WorkspaceId {
         self.workspace.id
     }
+
+    /// Returns the workspace capability that owns this immutable generation.
+    ///
+    /// The returned handle is cheap and retains the same authenticated storage
+    /// deployment. It is useful for composing generation-oriented algorithms
+    /// without an adapter-owned workspace registry.
+    #[must_use]
+    pub fn workspace(&self) -> Workspace<A, O> {
+        self.workspace.clone()
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
+    /// Computes the exact normalized second-parent identity that a merge of
+    /// this source generation into `target` must retain. This is read-only.
+    pub async fn normalized_join_parent_for(
+        &self,
+        target: &Generation<A, O>,
+    ) -> Result<GenerationId, WorkspaceError> {
+        self.workspace
+            .volume
+            .fs
+            .workspace_normalized_join_parent(self, target)
+            .await
+    }
+
     /// Opens one cheap immutable reader pinned to this exact generation.
     ///
     /// The generation root is authenticated once while the reader is opened;
@@ -3496,11 +4693,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         to: &Generation<A, O>,
         maximum_changes: u32,
     ) -> Result<ChangeSet<A, O>, WorkspaceError> {
+        self.diff_to_bounded(
+            to,
+            maximum_changes,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+    }
+
+    /// Computes one semantic delta with explicit cumulative work and
+    /// cancellation bounds.
+    pub async fn diff_to_bounded(
+        &self,
+        to: &Generation<A, O>,
+        maximum_changes: u32,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<ChangeSet<A, O>, WorkspaceError> {
         let receipt = self
             .workspace
             .volume
             .fs
-            .workspace_join_changes(self.id, to, maximum_changes)
+            .workspace_join_changes_bounded(self.id, to, maximum_changes, budget, cancellation)
             .await?;
         Ok(ChangeSet {
             from: self.clone(),
@@ -3511,7 +4726,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Materializes this immutable generation into an existing empty host
-    /// directory using the SDK's native capability-rooted adapter.
+    /// directory using the SDK's native capability-rooted adapter. Unix ctime
+    /// and Linux birth time are host-generated view-local facts; their exact
+    /// canonical values remain in this generation, not in the host inode.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub async fn materialize(
         &self,
@@ -3519,16 +4736,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
-        let mut checkout = self
+        self.materialize_with_mode(
+            options,
+            budget,
+            cancellation,
+            crate::native_mount::MaterializeMode::DurableOutput,
+        )
+        .await
+    }
+
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub(crate) async fn materialize_with_mode(
+        &self,
+        options: &crate::MaterializeOptions,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+        mode: crate::native_mount::MaterializeMode,
+    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+        let checkout = self
             .workspace
-            .engine_checkout(
+            .engine_checkout_measured(
                 GenerationSelector::Exact(self.id),
                 CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
             )
             .await?;
-        crate::materialize_checkout(&mut checkout, options, budget, cancellation)
-            .await
-            .map_err(|failure| WorkspaceError::engine(failure.error))
+        let mut value = checkout.value;
+        let receipt = crate::native_mount::materialize_checkout_with_mode(
+            &mut value,
+            options,
+            checkout
+                .work
+                .remaining(budget)
+                .map_err(WorkspaceError::from)?,
+            cancellation,
+            mode,
+        )
+        .await
+        .map_err(|failure| WorkspaceError::engine(failure.error))?;
+        merge_workspace_work(checkout.work, receipt, budget)
     }
 
     /// Materializes one path from this generation below an existing empty
@@ -3542,17 +4789,89 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
-        let mut checkout = self
+        self.materialize_path_with_mode(
+            path,
+            options,
+            budget,
+            cancellation,
+            crate::native_mount::MaterializeMode::DurableOutput,
+        )
+        .await
+    }
+
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub(crate) async fn materialize_path_with_mode(
+        &self,
+        path: &str,
+        options: &crate::MaterializeOptions,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+        mode: crate::native_mount::MaterializeMode,
+    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+        let checkout = self
             .workspace
-            .engine_checkout(
+            .engine_checkout_measured(
                 GenerationSelector::Exact(self.id),
                 CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
             )
             .await?;
-        let path = customer_path(path, checkout.volume_config().limits)?;
-        crate::materialize_checkout_path(&mut checkout, &path, options, budget, cancellation)
-            .await
-            .map_err(|failure| WorkspaceError::engine(failure.error))
+        let mut value = checkout.value;
+        let path = customer_path(path, value.volume_config())?;
+        let receipt = crate::native_mount::materialize_checkout_paths_with_mode(
+            &mut value,
+            &[path],
+            options,
+            checkout
+                .work
+                .remaining(budget)
+                .map_err(WorkspaceError::from)?,
+            cancellation,
+            mode,
+        )
+        .await
+        .map_err(|failure| WorkspaceError::engine(failure.error))?;
+        merge_workspace_work(checkout.work, receipt, budget)
+    }
+
+    /// Materializes multiple paths with one pinned checkout and shared
+    /// file-identity table, preserving hard links across selected paths.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn materialize_paths(
+        &self,
+        paths: &[String],
+        options: &crate::MaterializeOptions,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, WorkspaceError> {
+        let checkout = self
+            .workspace
+            .engine_checkout_measured(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
+            )
+            .await?;
+        let mut value = checkout.value;
+        let paths = paths
+            .iter()
+            .map(|path| customer_path(path, value.volume_config()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let receipt = crate::materialize_checkout_paths(
+            &mut value,
+            &paths,
+            options,
+            checkout
+                .work
+                .remaining(budget)
+                .map_err(WorkspaceError::from)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| WorkspaceError::engine(failure.error))?;
+        merge_workspace_work(checkout.work, receipt, budget)
     }
 
     /// Restores one path from this immutable generation into a host tree.
@@ -3568,23 +4887,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::HostPathRestore>, WorkspaceError> {
-        let mut checkout = self
+        let checkout = self
             .workspace
-            .engine_checkout(
+            .engine_checkout_measured(
                 GenerationSelector::Exact(self.id),
                 CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
             )
             .await?;
-        crate::restore_checkout_host_path(
-            &mut checkout,
+        let mut value = checkout.value;
+        let receipt = crate::restore_checkout_host_path(
+            &mut value,
             relative,
             replacement,
             options,
-            budget,
+            checkout
+                .work
+                .remaining(budget)
+                .map_err(WorkspaceError::from)?,
             cancellation,
         )
         .await
-        .map_err(|failure| WorkspaceError::engine(failure.error))
+        .map_err(|failure| WorkspaceError::engine(failure.error))?;
+        merge_workspace_work(checkout.work, receipt, budget)
     }
 
     /// Restores a bounded sequence of paths through one pinned checkout.
@@ -3598,11 +4924,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     ) -> Result<Vec<crate::HostPathRestore>, WorkspaceError> {
         let mut checkout = self
             .workspace
-            .engine_checkout(
+            .engine_checkout_measured(
                 GenerationSelector::Exact(self.id),
                 CheckoutMode::read_only_pinned(),
+                crate::WorkBudget::UNBOUNDED,
+                cancellation,
             )
-            .await?;
+            .await?
+            .value;
         let mut restored = Vec::new();
         restored
             .try_reserve_exact(paths.len())
@@ -3699,37 +5028,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> crate::FsResult<Vec<Option<crate::kernel::FileRecord>>> {
-        let checkout = self
-            .workspace
-            .volume
-            .checkout(
-                GenerationSelector::Exact(self.id),
-                CheckoutMode::read_only_pinned(),
-                budget,
-                cancellation,
-            )
-            .await?;
-        let checkout_work = checkout.work;
-        let remaining = checkout_work
-            .remaining(budget)
-            .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
-        let mut checkout = checkout.value;
-        let lookup = checkout
-            .lookup_batch_no_follow(paths, remaining, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(checkout_work, |error| error))?;
-        let work = checkout_work
-            .checked_add(lookup.work)
-            .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
-        Ok(crate::FsReceipt {
-            value: lookup
-                .value
-                .entries
-                .into_iter()
-                .map(|entry| entry.record)
-                .collect(),
-            work,
+        in_heap(move || async move {
+            let checkout = self
+                .workspace
+                .volume
+                .checkout(
+                    GenerationSelector::Exact(self.id),
+                    CheckoutMode::read_only_pinned(),
+                    budget,
+                    cancellation,
+                )
+                .await?;
+            let checkout_work = checkout.work;
+            let remaining = checkout_work
+                .remaining(budget)
+                .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
+            let mut checkout = checkout.value;
+            let lookup = checkout
+                .lookup_batch_no_follow(paths, remaining, cancellation)
+                .await
+                .map_err(|failure| failure.map_with_prior_work(checkout_work, |error| error))?;
+            let work = checkout_work
+                .checked_add(lookup.work)
+                .map_err(|error| crate::OperationFailure::new(error.into(), checkout_work))?;
+            Ok(crate::FsReceipt {
+                value: lookup
+                    .value
+                    .entries
+                    .into_iter()
+                    .map(|entry| entry.record)
+                    .collect(),
+                work,
+            })
         })
+        .await
     }
 
     /// Returns one authenticated bounded directory page from this generation.
@@ -3768,6 +5100,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             .await?
             .remove(&file_id)
             .unwrap_or_default())
+    }
+
+    pub(crate) async fn paths_for_file_id_measured(
+        &self,
+        file_id: FileId,
+        maximum_entries: u32,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<Vec<String>>, WorkspaceError> {
+        let receipt = self
+            .namespace_records_for_file_ids_bounded(
+                [file_id],
+                maximum_entries,
+                budget,
+                cancellation,
+            )
+            .await?;
+        let paths = receipt
+            .value
+            .records
+            .get(&file_id)
+            .into_iter()
+            .flatten()
+            .map(|(path, _)| namespace_path_text(path))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(crate::OperationReceipt {
+            value: paths,
+            work: receipt.work,
+        })
     }
 
     /// Finds portable paths for multiple stable file identities in one namespace traversal.
@@ -3816,38 +5177,132 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         file_ids: impl IntoIterator<Item = FileId>,
         maximum_entries: u32,
     ) -> Result<NamespaceRecordSearch, WorkspaceError> {
+        self.namespace_records_for_file_ids_bounded(
+            file_ids,
+            maximum_entries,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn namespace_records_for_file_ids_bounded(
+        &self,
+        file_ids: impl IntoIterator<Item = FileId>,
+        maximum_entries: u32,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<NamespaceRecordSearch>, WorkspaceError> {
         let file_ids: BTreeSet<_> = file_ids.into_iter().collect();
         if file_ids.is_empty() {
-            return Ok(NamespaceRecordSearch {
-                records: BTreeMap::new(),
-                complete: true,
+            return Ok(crate::OperationReceipt {
+                value: NamespaceRecordSearch {
+                    records: BTreeMap::new(),
+                    complete: true,
+                },
+                work: crate::WorkCounters::default(),
             });
         }
         if maximum_entries == 0 {
-            return Ok(NamespaceRecordSearch {
-                records: BTreeMap::new(),
-                complete: false,
+            return Ok(crate::OperationReceipt {
+                value: NamespaceRecordSearch {
+                    records: BTreeMap::new(),
+                    complete: false,
+                },
+                work: crate::WorkCounters::default(),
             });
         }
         let maximum = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
         let limits = self.workspace.volume.config.limits;
+        let cache_key = crate::path_index::cache_key(self.id, file_ids.iter().copied());
+        if let Some(bytes) = self.workspace.volume.fs.path_index().load(cache_key)
+            && let Some(cached) = crate::path_index::GenerationPathQuery::decode(
+                &bytes,
+                self.id,
+                file_ids.iter().copied(),
+            )
+        {
+            let cached_paths = cached
+                .into_iter()
+                .flat_map(|(file_id, paths)| paths.into_iter().map(move |path| (file_id, path)))
+                .map(|(file_id, path)| path.into_namespace(limits).map(|path| (file_id, path)))
+                .collect::<Option<Vec<_>>>();
+            if let Some(cached_paths) = cached_paths {
+                if cached_paths.is_empty() {
+                    return Ok(crate::OperationReceipt {
+                        value: NamespaceRecordSearch {
+                            records: BTreeMap::new(),
+                            complete: true,
+                        },
+                        work: crate::WorkCounters::default(),
+                    });
+                }
+                // A complete cached answer larger than the caller's bound
+                // cannot be truncated without changing which namespace paths
+                // a cold bounded traversal would have encountered. Fall back
+                // to that traversal instead of returning a false empty result.
+                if cached_paths.len() <= maximum {
+                    let paths = cached_paths
+                        .iter()
+                        .map(|(_, path)| path.clone())
+                        .collect::<Vec<_>>();
+                    let lookup = self
+                        .lookup_paths(&paths, budget, cancellation)
+                        .await
+                        .map_err(WorkspaceError::engine)?;
+                    let mut records = BTreeMap::<_, Vec<_>>::new();
+                    let mut valid = true;
+                    for ((expected, path), record) in cached_paths.into_iter().zip(lookup.value) {
+                        let Some(record) = record else {
+                            valid = false;
+                            break;
+                        };
+                        if record.file_id != expected {
+                            valid = false;
+                            break;
+                        }
+                        records.entry(expected).or_default().push((path, record));
+                    }
+                    if valid {
+                        return Ok(crate::OperationReceipt {
+                            value: NamespaceRecordSearch {
+                                records,
+                                complete: true,
+                            },
+                            work: lookup.work,
+                        });
+                    }
+                }
+            }
+        }
         let mut matches: BTreeMap<_, Vec<(NamespacePath, crate::kernel::FileRecord)>> =
             BTreeMap::new();
-        let mut checkout = self
+        let checkout = self
             .workspace
-            .engine_checkout(
+            .engine_checkout_measured(
                 GenerationSelector::Exact(self.id),
                 CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
             )
             .await?;
-        let cancellation = crate::CancellationToken::new();
+        let mut work = checkout.work;
+        let mut checkout = checkout.value;
         let root = NamespacePath::new(Vec::new(), limits).map_err(WorkspaceError::path)?;
-        if let Some(record) = checkout
-            .lookup_no_follow(&root, crate::WorkBudget::UNBOUNDED, &cancellation)
+        let root_lookup = checkout
+            .lookup_no_follow(
+                &root,
+                work.remaining(budget).map_err(WorkspaceError::engine)?,
+                cancellation,
+            )
             .await
-            .map_err(WorkspaceError::engine)?
-            .value
-            .record
+            .map_err(WorkspaceError::engine)?;
+        work = work
+            .checked_add(root_lookup.work)
+            .map_err(WorkspaceError::engine)?;
+        if let Some(record) = root_lookup.value.record
             && file_ids.contains(&record.file_id)
         {
             matches
@@ -3860,26 +5315,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         while let Some(directory) = pending.pop() {
             let mut after = None;
             loop {
-                let page = checkout
+                let page_receipt = checkout
                     .list_directory_records(
                         &directory,
                         after.as_ref(),
                         1_024,
-                        crate::WorkBudget::UNBOUNDED,
-                        &cancellation,
+                        work.remaining(budget).map_err(WorkspaceError::engine)?,
+                        cancellation,
                     )
                     .await
-                    .map_err(WorkspaceError::engine)?
-                    .value;
+                    .map_err(WorkspaceError::engine)?;
+                work = work
+                    .checked_add(page_receipt.work)
+                    .map_err(WorkspaceError::engine)?;
+                let page = page_receipt.value;
                 for entry in &page.entries {
                     examined = examined.saturating_add(1);
                     if examined > maximum {
                         for records in matches.values_mut() {
                             records.sort_by(|left, right| left.0.cmp(&right.0));
                         }
-                        return Ok(NamespaceRecordSearch {
-                            records: matches,
-                            complete: false,
+                        return Ok(crate::OperationReceipt {
+                            value: NamespaceRecordSearch {
+                                records: matches,
+                                complete: false,
+                            },
+                            work,
                         });
                     }
                     let mut components = directory.components().to_vec();
@@ -3905,9 +5366,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         for records in matches.values_mut() {
             records.sort_by(|left, right| left.0.cmp(&right.0));
         }
-        Ok(NamespaceRecordSearch {
-            records: matches,
-            complete: true,
+        let cached_paths = matches
+            .iter()
+            .map(|(&file_id, records)| {
+                (
+                    file_id,
+                    records
+                        .iter()
+                        .map(|(path, _)| crate::path_index::CachedPath::from_namespace(path))
+                        .collect(),
+                )
+            })
+            .collect();
+        let cached = crate::path_index::GenerationPathQuery::new(
+            self.id,
+            file_ids.iter().copied(),
+            &cached_paths,
+        );
+        if let Some(bytes) = cached.encode() {
+            self.workspace
+                .volume
+                .fs
+                .path_index()
+                .store(cache_key, &bytes);
+        }
+        Ok(crate::OperationReceipt {
+            value: NamespaceRecordSearch {
+                records: matches,
+                complete: true,
+            },
+            work,
         })
     }
 
@@ -4018,9 +5506,21 @@ pub enum WorkspaceError {
     /// The canonical engine rejected or could not complete the operation.
     #[error("workspace engine failure: {0}")]
     Engine(String),
+    /// Caller cancellation stopped a measured workspace operation.
+    #[error(transparent)]
+    Cancelled(#[from] crate::CancellationError),
+    /// A measured workspace operation exhausted its admitted work budget.
+    #[error(transparent)]
+    Work(#[from] crate::WorkError),
     /// A fork generation belongs to another filesystem deployment.
     #[error("fork generation belongs to another filesystem deployment")]
     ForeignGeneration,
+    /// A caller-pinned target generation is no longer current.
+    #[error("workspace generation is stale")]
+    StaleGeneration,
+    /// A conditional mutation targeted a different filesystem identity.
+    #[error("workspace file identity is stale")]
+    StaleIdentity,
     /// Canonical customer path was invalid.
     #[error("invalid workspace path: {0}")]
     Path(String),
@@ -4086,16 +5586,45 @@ impl WorkspaceError {
 
 impl From<FsError> for WorkspaceError {
     fn from(error: FsError) -> Self {
-        Self::Engine(error.to_string())
+        match error {
+            FsError::Cancelled(error) => Self::Cancelled(error),
+            FsError::Work(error) => Self::Work(error),
+            FsError::NotFound => Self::NotFound,
+            FsError::NotDirectory => Self::NotDirectory,
+            FsError::FileRead(crate::kernel::FileRangeReadError::NotRegular) => {
+                Self::NotRegularFile
+            }
+            FsError::Mutation(crate::kernel::GenerationMutationError::FileIdentityConflict) => {
+                Self::StaleIdentity
+            }
+            error => Self::Engine(error.to_string()),
+        }
     }
 }
 
 pub(crate) fn customer_path(
     path: &str,
-    limits: crate::model::VolumeLimits,
+    config: crate::model::VolumeConfig,
 ) -> Result<NamespacePath, WorkspaceError> {
-    let portable = PortablePath::parse(path, limits).map_err(WorkspaceError::path)?;
-    NamespacePath::from_portable(&portable, limits).map_err(WorkspaceError::path)
+    let portable = PortablePath::parse(path, config.limits).map_err(WorkspaceError::path)?;
+    NamespacePath::from_portable_in_profile(&portable, config.profile, config.limits)
+        .map_err(WorkspaceError::path)
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+fn merge_workspace_work<T>(
+    prior: crate::WorkCounters,
+    receipt: crate::OperationReceipt<T>,
+    budget: crate::WorkBudget,
+) -> Result<crate::OperationReceipt<T>, WorkspaceError> {
+    let work = prior
+        .checked_add(receipt.work)
+        .map_err(WorkspaceError::from)?;
+    work.verify(budget).map_err(WorkspaceError::from)?;
+    Ok(crate::OperationReceipt {
+        value: receipt.value,
+        work,
+    })
 }
 
 fn path_conflict_kind(

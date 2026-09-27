@@ -1,11 +1,3 @@
 # @acyclic-labs/pi
 
-Independently versioned Pi-compatible model bridge for `@acyclic-labs/harness`.
-
-```sh
-npm install @acyclic-labs/pi @acyclic-labs/harness
-```
-
-`piProvider({ request, run, reconcile, event? })` converts Pi-style text, thinking, tool, completion, and error events into Harness `ModelEvent`s. `request` maps the Harness request, `run` yields upstream events, and `reconcile` resolves an interrupted attempt. Supply `event` when the upstream event shape differs from `PiEvent`.
-
-This is a contract adapter, not a Pi installation or credential manager. [Bridge API](https://github.com/acyclic-labs/sdk/blob/main/typescript/packages/pi/src/index.ts) · [Harness guide](https://github.com/acyclic-labs/sdk/blob/main/typescript/packages/harness/README.md)
+Pi bridge for Harness v2. `piProvider` receives the same typed `ModelRequest` as every Harness model adapter and accepts a custom, synchronous or asynchronous projector. `piDefaultProvider` uses the shared bounded `projectModelFile` boundary: text files become text, PNG/JPEG/GIF/WebP become native image parts, and other files remain opaque references unless a custom projector handles them. The injected `resolveFile` must enforce the owner's read grant; projected bytes are checked against length and SHA-256 before dispatch. Unsupported policies or types fail explicitly. Canonical conversation storage remains ref-only and unchanged by either projection.

@@ -7,8 +7,11 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 #[cfg(feature = "local")]
 use std::collections::BTreeSet;
@@ -28,6 +31,34 @@ const SYSTEM_METADATA_BYTES: usize = 2 * 1_024;
 const MAX_LISTING_VIEWS: usize = 1_024;
 const MAX_CONCURRENT_BATCH_READS: usize = 16;
 static PROVIDER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(not(target_arch = "wasm32"))]
+type ListingDeadline = Instant;
+#[cfg(target_arch = "wasm32")]
+type ListingDeadline = f64;
+
+fn listing_deadline() -> ListingDeadline {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Instant::now() + Duration::from_secs(limits::LISTING_VIEW_SECONDS)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let millis = Duration::from_secs(limits::LISTING_VIEW_SECONDS).as_millis();
+        js_sys::Date::now() + f64::from(u32::try_from(millis).unwrap_or(u32::MAX))
+    }
+}
+
+fn listing_expired(deadline: ListingDeadline) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Instant::now() >= deadline
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() >= deadline
+    }
+}
 
 async fn indexed<F: Future>(index: usize, future: F) -> (usize, F::Output) {
     (index, future.await)
@@ -127,6 +158,54 @@ pub struct GetRequest {
     pub maximum_bytes: u64,
 }
 
+/// One metadata-only selection. Ranges and body-capacity limits cannot be
+/// supplied because a head operation never transfers object bytes.
+#[derive(Clone, Debug)]
+pub struct HeadRequest {
+    /// Current bucket or immutable snapshot.
+    pub target: ReadTarget,
+    /// UTF-8 object key.
+    pub object_key: String,
+    /// Exact retained version, or the visible current version when absent.
+    pub version_id: Option<String>,
+    /// Optional representation validator that must match.
+    pub if_match: Option<String>,
+    /// Optional representation validator that must not match.
+    pub if_none_match: Option<String>,
+}
+
+struct ReadSelection<'a> {
+    target: &'a ReadTarget,
+    object_key: &'a str,
+    version_id: Option<&'a str>,
+    if_match: Option<&'a str>,
+    if_none_match: Option<&'a str>,
+}
+
+impl<'a> From<&'a GetRequest> for ReadSelection<'a> {
+    fn from(request: &'a GetRequest) -> Self {
+        Self {
+            target: &request.target,
+            object_key: &request.object_key,
+            version_id: request.version_id.as_deref(),
+            if_match: request.if_match.as_deref(),
+            if_none_match: request.if_none_match.as_deref(),
+        }
+    }
+}
+
+impl<'a> From<&'a HeadRequest> for ReadSelection<'a> {
+    fn from(request: &'a HeadRequest) -> Self {
+        Self {
+            target: &request.target,
+            object_key: &request.object_key,
+            version_id: request.version_id.as_deref(),
+            if_match: request.if_match.as_deref(),
+            if_none_match: request.if_none_match.as_deref(),
+        }
+    }
+}
+
 /// One immutable descriptor and its selected body bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BufferedObject {
@@ -224,6 +303,8 @@ pub trait ObjectsProvider: Send + Sync {
     }
     /// Read one immutable version or its visible current selection.
     async fn get(&self, request: GetRequest) -> Result<BufferedObject, ObjectsError>;
+    /// Resolve one exact version descriptor without reading its body.
+    async fn head(&self, request: HeadRequest) -> Result<wire::ObjectVersion, ObjectsError>;
     /// Reads an ordered bounded group of immutable versions.
     ///
     /// Providers without a native multi-get use the exact sequential semantics
@@ -429,6 +510,41 @@ impl StoredBody {
         }
     }
 
+    /// This body with every local leaf found in `relocations` moved, if any leaf moves.
+    #[cfg(feature = "local")]
+    fn relocated(&self, relocations: &LocalBodyRelocations) -> Option<Self> {
+        match self {
+            Self::Memory(_) => None,
+            Self::Composite { parts, length } => {
+                let moved = parts
+                    .iter()
+                    .map(|part| part.relocated(relocations))
+                    .collect::<Vec<_>>();
+                moved.iter().any(Option::is_some).then(|| Self::Composite {
+                    parts: moved
+                        .into_iter()
+                        .zip(parts.iter())
+                        .map(|(moved, part)| moved.unwrap_or_else(|| part.clone()))
+                        .collect(),
+                    length: *length,
+                })
+            }
+            Self::Local {
+                root,
+                digest,
+                length,
+                location,
+            } => relocations
+                .get(&(location.clone(), *digest))
+                .map(|destination| Self::Local {
+                    root: Arc::clone(root),
+                    digest: *digest,
+                    length: *length,
+                    location: destination.clone(),
+                }),
+        }
+    }
+
     fn read_async(
         &self,
         start: usize,
@@ -541,6 +657,26 @@ struct MultipartState {
     parts: BTreeMap<u32, (wire::UploadedPart, StoredBody)>,
 }
 
+impl MultipartState {
+    /// Whether `parts` are exactly the staged receipts, with every part but the last at
+    /// least the minimum part size.
+    fn completes_with(&self, parts: &[wire::UploadedPart]) -> bool {
+        self.parts.values().map(|(part, _)| part).eq(parts.iter())
+            && parts.iter().enumerate().all(|(index, part)| {
+                index + 1 == parts.len() || part.size >= limits::MIN_MULTIPART_PART_BYTES
+            })
+    }
+}
+
+/// The digest of the concatenation of `bodies`.
+fn composite_digest(bodies: &[StoredBody]) -> Result<[u8; 32], ObjectsError> {
+    let mut hasher = blake3::Hasher::new();
+    for body in bodies {
+        body.update_hash(&mut hasher)?;
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
 struct StoredPartRequest {
     bucket: wire::BucketRef,
     object_key: String,
@@ -562,8 +698,18 @@ pub(crate) struct ExternalBody {
 #[cfg(feature = "local")]
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum LocalBodyLocation {
+    /// A body record inside one immutable, content-addressed segment file.
     Segment { id: [u8; 32], offset: u64 },
+    /// Bytes carried by the journal frame that committed the body.
+    Journal { offset: u64 },
+    /// Unreachable when journal compaction dropped its bytes; never readable.
+    Reclaimed,
 }
+
+/// Physical moves of local bodies, keyed by current location and digest: an empty body
+/// shares its journal offset with the inline body that follows it.
+#[cfg(feature = "local")]
+pub(crate) type LocalBodyRelocations = BTreeMap<(LocalBodyLocation, [u8; 32]), LocalBodyLocation>;
 
 #[cfg(feature = "local")]
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -581,7 +727,7 @@ enum ListingItem {
 struct ListingView {
     binding: ListingBinding,
     objects: OrdMap<String, Vec<wire::ObjectVersion>>,
-    expires_at: Instant,
+    expires_at: ListingDeadline,
     prefetched: Option<PrefetchedListingItem>,
 }
 
@@ -755,6 +901,14 @@ pub struct MemoryObjects {
 }
 
 impl MemoryObjects {
+    /// Resolve an object descriptor without reading or buffering its body.
+    pub async fn head(&self, request: HeadRequest) -> Result<wire::ObjectVersion, ObjectsError> {
+        let state = self.state.lock().await;
+        Ok(Self::resolve_version(&state, &(&request).into())?
+            .descriptor
+            .clone())
+    }
+
     #[cfg(feature = "local")]
     pub(crate) async fn local_body_references(&self) -> BTreeSet<LocalBodyReference> {
         let state = self.state.lock().await;
@@ -781,6 +935,203 @@ impl MemoryObjects {
             body.local_references(&mut references);
         }
         references
+    }
+
+    /// Rewrites every retained local body at a relocated physical location: bucket and
+    /// snapshot versions and staged multipart parts alike.
+    ///
+    /// Blocks on the state lock, so it runs only on a blocking worker.
+    #[cfg(feature = "local")]
+    pub(crate) fn relocate_local_bodies(&self, relocations: &LocalBodyRelocations) {
+        fn relocate_bucket(bucket: &mut BucketState, relocations: &LocalBodyRelocations) {
+            // Touch only moved histories so snapshots keep sharing every other node.
+            let moved = bucket
+                .objects
+                .iter()
+                .filter(|(_, history)| {
+                    history.iter().any(|version| {
+                        version
+                            .body
+                            .as_ref()
+                            .is_some_and(|body| body.relocated(relocations).is_some())
+                    })
+                })
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            for key in moved {
+                for version in bucket.objects.get_mut(&key).into_iter().flatten() {
+                    if let Some(body) = version
+                        .body
+                        .as_ref()
+                        .and_then(|body| body.relocated(relocations))
+                    {
+                        version.body = Some(body);
+                    }
+                }
+            }
+        }
+
+        if relocations.is_empty() {
+            return;
+        }
+        let mut state = self.state.blocking_lock();
+        let state = &mut *state;
+        for bucket in state.buckets.values_mut() {
+            relocate_bucket(bucket, relocations);
+        }
+        for snapshot in state.snapshots.values_mut() {
+            relocate_bucket(&mut snapshot.bucket, relocations);
+        }
+        for (_, body) in state
+            .multiparts
+            .values_mut()
+            .flat_map(|upload| upload.parts.values_mut())
+        {
+            if let Some(moved) = body.relocated(relocations) {
+                *body = moved;
+            }
+        }
+    }
+
+    /// Completes an upload. A `known_digest` must be the digest of the exact parts, as
+    /// [`Self::multipart_completion_digest`] computed it; without one, the parts are hashed.
+    pub(crate) async fn complete_multipart_with_digest(
+        &self,
+        bucket: wire::BucketRef,
+        object_key: String,
+        upload_id: String,
+        parts: Vec<wire::UploadedPart>,
+        idempotency_key: Option<String>,
+        known_digest: Option<[u8; 32]>,
+    ) -> Result<wire::ObjectVersion, ObjectsError> {
+        if parts.is_empty() || parts.len() > limits::MULTIPART_PARTS as usize {
+            return Err(ObjectsError::Invalid("invalid multipart completion"));
+        }
+        let bucket_fields = Self::reference_fields(&bucket);
+        let mut part_bytes = Vec::new();
+        for part in &parts {
+            part_bytes.extend_from_slice(&part.part_number.to_le_bytes());
+            part_bytes.extend_from_slice(&(part.etag.len() as u64).to_le_bytes());
+            part_bytes.extend_from_slice(part.etag.as_bytes());
+            part_bytes.extend_from_slice(&part.size.to_le_bytes());
+        }
+        let fingerprint = Self::fingerprint(
+            "complete-multipart",
+            &[
+                bucket_fields[0],
+                bucket_fields[1],
+                object_key.as_bytes(),
+                upload_id.as_bytes(),
+                &part_bytes,
+            ],
+        );
+        let mut state = self.state.lock().await;
+        Self::execute(
+            &mut state,
+            idempotency_key.as_deref(),
+            fingerprint,
+            |outcome| match outcome {
+                MutationOutcome::Version(value) => Some(value.clone()),
+                _ => None,
+            },
+            MutationOutcome::Version,
+            |state| {
+                // Validate the complete upload identity before removing it.  Removing by
+                // upload ID first would let a request with the right ID but the wrong bucket
+                // or object key consume the retained upload even though the operation returns
+                // `NotFound`.
+                let matches = state.multiparts.get(&upload_id).is_some_and(|upload| {
+                    upload.bucket == bucket && upload.object_key == object_key
+                });
+                if !matches {
+                    return Err(ObjectsError::NotFound);
+                }
+                let upload = state
+                    .multiparts
+                    .remove(&upload_id)
+                    .ok_or(ObjectsError::Unavailable)?;
+                if !upload.completes_with(&parts) {
+                    state.multiparts.insert(upload_id, upload);
+                    return Err(ObjectsError::Invalid("multipart receipts do not match"));
+                }
+                let current = Self::bucket(state, &bucket)?
+                    .objects
+                    .get(&object_key)
+                    .and_then(|history| history.last())
+                    .cloned();
+                if !Self::condition(current.as_ref(), &upload.condition) {
+                    state.multiparts.insert(upload_id, upload);
+                    return Err(ObjectsError::PreconditionFailed);
+                }
+                let body_length =
+                    match upload.parts.values().try_fold(0usize, |total, (_, body)| {
+                        total.checked_add(body.len()).ok_or(ObjectsError::Capacity)
+                    }) {
+                        Ok(body_length) => body_length,
+                        Err(error) => {
+                            state.multiparts.insert(upload_id, upload);
+                            return Err(error);
+                        }
+                    };
+                if body_length > state.maximum_object_bytes {
+                    state.multiparts.insert(upload_id, upload);
+                    return Err(ObjectsError::Capacity);
+                }
+                let bodies = upload
+                    .parts
+                    .into_values()
+                    .map(|(_, body)| body)
+                    .collect::<Vec<_>>();
+                let body_digest = match known_digest {
+                    Some(digest) => digest,
+                    None => composite_digest(&bodies)?,
+                };
+                let descriptor =
+                    Self::descriptor(state, &body_digest, body_length, upload.metadata, false)?;
+                Self::bucket_mut(state, &bucket)?.append(
+                    object_key,
+                    Version {
+                        descriptor: descriptor.clone(),
+                        body: Some(StoredBody::Composite {
+                            parts: bodies.into(),
+                            length: body_length,
+                        }),
+                    },
+                );
+                Ok(descriptor)
+            },
+        )
+    }
+
+    /// The digest a completion of `upload_id` from exactly `parts` would publish, or `None`
+    /// when the completion fails before hashing. A journal records it so that replaying the
+    /// completion never reads part bodies that reclamation may since have removed.
+    #[cfg(feature = "local")]
+    pub(crate) async fn multipart_completion_digest(
+        &self,
+        bucket: &wire::BucketRef,
+        object_key: &str,
+        upload_id: &str,
+        parts: &[wire::UploadedPart],
+    ) -> Result<Option<[u8; 32]>, ObjectsError> {
+        let bodies = {
+            let state = self.state.lock().await;
+            match state.multiparts.get(upload_id) {
+                Some(upload)
+                    if upload.bucket == *bucket
+                        && upload.object_key == object_key
+                        && upload.completes_with(parts) =>
+                {
+                    upload
+                        .parts
+                        .values()
+                        .map(|(_, body)| body.clone())
+                        .collect::<Vec<_>>()
+                }
+                _ => return Ok(None),
+            }
+        };
+        composite_digest(&bodies).map(Some)
     }
 
     /// Resolves a bucket by its canonical name without mutating provider state.
@@ -1191,21 +1542,27 @@ impl MemoryObjects {
         }
     }
 
-    fn resolve_get(state: &State, request: &GetRequest) -> Result<ResolvedGet, ObjectsError> {
-        Self::validate_key(&request.object_key)?;
-        let bucket = Self::target_ref(state, &request.target)?;
-        let version = Self::visible(bucket, &request.object_key, request.version_id.as_deref())?;
+    fn resolve_version<'a>(
+        state: &'a State,
+        request: &ReadSelection<'_>,
+    ) -> Result<&'a Version, ObjectsError> {
+        Self::validate_key(request.object_key)?;
+        let bucket = Self::target_ref(state, request.target)?;
+        let version = Self::visible(bucket, request.object_key, request.version_id)?;
         if request
             .if_match
-            .as_ref()
-            .is_some_and(|etag| *etag != version.descriptor.etag)
+            .is_some_and(|etag| etag != version.descriptor.etag.as_str())
             || request
                 .if_none_match
-                .as_ref()
-                .is_some_and(|etag| *etag == version.descriptor.etag)
+                .is_some_and(|etag| etag == version.descriptor.etag.as_str())
         {
             return Err(ObjectsError::PreconditionFailed);
         }
+        Ok(version)
+    }
+
+    fn resolve_get(state: &State, request: &GetRequest) -> Result<ResolvedGet, ObjectsError> {
+        let version = Self::resolve_version(state, &request.into())?;
         let descriptor = version.descriptor.clone();
         let body = version.body.clone().ok_or(ObjectsError::NotFound)?;
         let (start, end) = match request.range {
@@ -1809,6 +2166,10 @@ impl ObjectsProvider for MemoryObjects {
         Self::read_resolved_get(resolved).await
     }
 
+    async fn head(&self, request: HeadRequest) -> Result<wire::ObjectVersion, ObjectsError> {
+        MemoryObjects::head(self, request).await
+    }
+
     async fn get_batch(
         &self,
         requests: Vec<GetRequest>,
@@ -1928,8 +2289,9 @@ impl ObjectsProvider for MemoryObjects {
         }
         let mut state = self.state.lock().await;
         if continuation.is_none() {
-            let now = Instant::now();
-            state.listings.retain(|_, view| now < view.expires_at);
+            state
+                .listings
+                .retain(|_, view| !listing_expired(view.expires_at));
         }
         let binding = ListingBinding {
             target: target.clone(),
@@ -1949,7 +2311,7 @@ impl ObjectsProvider for MemoryObjects {
                 ListingView {
                     binding: binding.clone(),
                     objects,
-                    expires_at: Instant::now() + Duration::from_secs(limits::LISTING_VIEW_SECONDS),
+                    expires_at: listing_deadline(),
                     prefetched: None,
                 },
             );
@@ -1965,7 +2327,7 @@ impl ObjectsProvider for MemoryObjects {
         if state
             .listings
             .get(&view_id)
-            .is_some_and(|view| Instant::now() >= view.expires_at)
+            .is_some_and(|view| listing_expired(view.expires_at))
         {
             state.listings.remove(&view_id);
             return Err(ObjectsError::Invalid("invalid continuation"));
@@ -2224,99 +2586,15 @@ impl ObjectsProvider for MemoryObjects {
         parts: Vec<wire::UploadedPart>,
         idempotency_key: Option<String>,
     ) -> Result<wire::ObjectVersion, ObjectsError> {
-        if parts.is_empty() || parts.len() > limits::MULTIPART_PARTS as usize {
-            return Err(ObjectsError::Invalid("invalid multipart completion"));
-        }
-        let bucket_fields = Self::reference_fields(&bucket);
-        let mut part_bytes = Vec::new();
-        for part in &parts {
-            part_bytes.extend_from_slice(&part.part_number.to_le_bytes());
-            part_bytes.extend_from_slice(&(part.etag.len() as u64).to_le_bytes());
-            part_bytes.extend_from_slice(part.etag.as_bytes());
-            part_bytes.extend_from_slice(&part.size.to_le_bytes());
-        }
-        let fingerprint = Self::fingerprint(
-            "complete-multipart",
-            &[
-                bucket_fields[0],
-                bucket_fields[1],
-                object_key.as_bytes(),
-                upload_id.as_bytes(),
-                &part_bytes,
-            ],
-        );
-        let mut state = self.state.lock().await;
-        Self::execute(
-            &mut state,
-            idempotency_key.as_deref(),
-            fingerprint,
-            |outcome| match outcome {
-                MutationOutcome::Version(value) => Some(value.clone()),
-                _ => None,
-            },
-            MutationOutcome::Version,
-            |state| {
-                let upload = state
-                    .multiparts
-                    .remove(&upload_id)
-                    .filter(|upload| upload.bucket == bucket && upload.object_key == object_key)
-                    .ok_or(ObjectsError::NotFound)?;
-                let exact = upload.parts.values().map(|(part, _)| part).eq(parts.iter());
-                let sizes_valid = parts.iter().enumerate().all(|(index, part)| {
-                    index + 1 == parts.len() || part.size >= limits::MIN_MULTIPART_PART_BYTES
-                });
-                if !exact || !sizes_valid {
-                    state.multiparts.insert(upload_id, upload);
-                    return Err(ObjectsError::Invalid("multipart receipts do not match"));
-                }
-                let current = Self::bucket(state, &bucket)?
-                    .objects
-                    .get(&object_key)
-                    .and_then(|history| history.last())
-                    .cloned();
-                if !Self::condition(current.as_ref(), &upload.condition) {
-                    state.multiparts.insert(upload_id, upload);
-                    return Err(ObjectsError::PreconditionFailed);
-                }
-                let body_length =
-                    match upload.parts.values().try_fold(0usize, |total, (_, body)| {
-                        total.checked_add(body.len()).ok_or(ObjectsError::Capacity)
-                    }) {
-                        Ok(body_length) => body_length,
-                        Err(error) => {
-                            state.multiparts.insert(upload_id, upload);
-                            return Err(error);
-                        }
-                    };
-                if body_length > state.maximum_object_bytes {
-                    state.multiparts.insert(upload_id, upload);
-                    return Err(ObjectsError::Capacity);
-                }
-                let bodies = upload
-                    .parts
-                    .into_values()
-                    .map(|(_, body)| body)
-                    .collect::<Vec<_>>();
-                let mut hasher = blake3::Hasher::new();
-                for body in &bodies {
-                    body.update_hash(&mut hasher)?;
-                }
-                let body_digest = *hasher.finalize().as_bytes();
-                let descriptor =
-                    Self::descriptor(state, &body_digest, body_length, upload.metadata, false)?;
-                Self::bucket_mut(state, &bucket)?.append(
-                    object_key,
-                    Version {
-                        descriptor: descriptor.clone(),
-                        body: Some(StoredBody::Composite {
-                            parts: bodies.into(),
-                            length: body_length,
-                        }),
-                    },
-                );
-                Ok(descriptor)
-            },
+        self.complete_multipart_with_digest(
+            bucket,
+            object_key,
+            upload_id,
+            parts,
+            idempotency_key,
+            None,
         )
+        .await
     }
 
     async fn abort_multipart(
@@ -2432,6 +2710,36 @@ mod tests {
                 .and_then(|value| value.as_ref().ok())
                 .map(|value| &value.body[..]),
             Some(b"abc".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn head_resolves_metadata_without_body_capacity() {
+        let (store, bucket) = MemoryObjects::with_default_bucket();
+        let version = put(&store, &bucket, "large", b"body", None).await;
+        let request = HeadRequest {
+            target: ReadTarget::Bucket(bucket.clone()),
+            object_key: "large".into(),
+            version_id: None,
+            if_match: None,
+            if_none_match: None,
+        };
+        assert_eq!(store.head(request.clone()).await, Ok(version.clone()));
+        let replaceable: Arc<dyn ObjectsProvider> = Arc::new(store.clone());
+        assert_eq!(replaceable.head(request.clone()).await, Ok(version.clone()));
+        assert_eq!(
+            store
+                .get(GetRequest {
+                    target: request.target,
+                    object_key: request.object_key,
+                    version_id: request.version_id,
+                    range: None,
+                    if_match: request.if_match,
+                    if_none_match: request.if_none_match,
+                    maximum_bytes: 0,
+                })
+                .await,
+            Err(ObjectsError::Capacity)
         );
     }
 

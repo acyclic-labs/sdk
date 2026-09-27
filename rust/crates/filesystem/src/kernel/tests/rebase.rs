@@ -241,6 +241,57 @@ fn clearing_reverted_mutations_preserves_observations() -> Result<(), Dependency
 }
 
 #[test]
+fn merged_proofs_hold_both_histories_or_refuse_a_contradiction() -> Result<(), DependencyError> {
+    let dependency = |byte: u8, expected: DependencyState| Dependency {
+        region: DependencyRegion::FileRecord(FileId::from_bytes([byte; 16])),
+        expected,
+    };
+    let shared = dependency(20, DependencyState::Absent);
+    let observed = dependency(21, DependencyState::Absent);
+    let mutated = dependency(22, DependencyState::Absent);
+    let base = CheckoutDependencies::new([shared.clone()], [], 8)?;
+    let mut readers = base.clone();
+    readers.extend_observations(vec![observed.clone()], 8)?;
+    let mut writer = base.clone();
+    writer.commit(writer.prepare_mutations(vec![mutated.clone(), shared.clone()], 8)?);
+
+    let merged = writer
+        .merged(&readers)
+        .ok_or(DependencyError::ContradictoryState)?;
+    assert_eq!(merged.len(), 3);
+    assert_eq!(
+        merged.captured.get(&shared.region).map(|state| state.usage),
+        Some(DependencyUse::ObservationAndMutation)
+    );
+    assert_eq!(
+        merged
+            .captured
+            .get(&observed.region)
+            .map(|state| state.usage),
+        Some(DependencyUse::Observation)
+    );
+    assert_eq!(
+        merged
+            .captured
+            .get(&mutated.region)
+            .map(|state| state.usage),
+        Some(DependencyUse::Mutation)
+    );
+    assert_eq!(base.merged(&base), Some(base.clone()));
+
+    let contradicting = CheckoutDependencies::new(
+        [dependency(
+            21,
+            DependencyState::Present(Digest::from_bytes([1; 32])),
+        )],
+        [],
+        8,
+    )?;
+    assert_eq!(readers.merged(&contradicting), None);
+    Ok(())
+}
+
+#[test]
 fn dependency_bounds_and_extensions_are_atomic() -> Result<(), Box<dyn std::error::Error>> {
     let first = Dependency {
         region: DependencyRegion::FileRecord(FileId::from_bytes([21; 16])),
@@ -270,7 +321,7 @@ fn dependency_bounds_and_extensions_are_atomic() -> Result<(), Box<dyn std::erro
         expected: DependencyState::Present(Digest::from_bytes([23; 32])),
     };
     assert!(matches!(
-        dependencies.extend_mutations(vec![contradictory], 2),
+        dependencies.prepare_mutations(vec![contradictory], 2),
         Err(DependencyError::ContradictoryState)
     ));
     assert_eq!(dependencies, original);
@@ -290,7 +341,9 @@ fn dependency_bounds_and_extensions_are_atomic() -> Result<(), Box<dyn std::erro
     ));
     assert_eq!(dependencies, original);
 
-    dependencies.extend_mutations(vec![first.clone()], 2)?;
+    let extension = dependencies.prepare_mutations(vec![first.clone()], 2)?;
+    assert_eq!(dependencies, original, "preparing never changes the proof");
+    dependencies.commit(extension);
     assert!(matches!(
         dependencies
             .captured

@@ -355,6 +355,40 @@ impl MachinesProvider for GrpcProvider {
         Ok(MutationOutcome::Forked(children))
     }
 
+    async fn fork_machine(
+        &self,
+        machine: MachineId,
+        count: NonZeroU32,
+        key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError> {
+        if count.get() > MAX_FORK_CHILDREN {
+            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
+        }
+        let value = self
+            .client()
+            .fork_machine(wire::ForkMachineRequest {
+                protocol: Some(protocol()),
+                idempotency_key: Some(encode_key(key)),
+                machine: Some(encode_machine(machine)),
+                count: count.get(),
+            })
+            .await
+            .map_err(|error| mutation_error(key, &error))?
+            .into_inner();
+        let admitted = decode_fork_machine_admission(&value)?;
+        if admitted.source != machine
+            || admitted.children.len()
+                != usize::try_from(count.get())
+                    .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
+        {
+            return Err(ProviderError::Rejected(
+                "fork result was substituted".into(),
+            ));
+        }
+        self.wait(key, admitted.operation).await?;
+        admitted.observe(self).await
+    }
+
     async fn suspend(
         &self,
         machine: MachineId,
@@ -687,6 +721,11 @@ async fn decode_recovered(
             }
             Ok(MutationOutcome::Forked(result))
         }
+        ResultKind::ForkMachine(value) => {
+            decode_fork_machine_admission(&value)?
+                .observe(provider)
+                .await
+        }
         ResultKind::Suspend(value) => {
             decode_machine(value.machine.as_ref()).map(MutationOutcome::Suspended)
         }
@@ -706,6 +745,78 @@ async fn decode_recovered(
     }
 }
 
+/// Checked [`wire::ForkMachineAdmission`] before its operation is awaited.
+struct ForkMachineAdmitted {
+    source: MachineId,
+    fidelity: ForkFidelity,
+    children: Vec<MachineId>,
+    operation: OperationId,
+}
+
+impl ForkMachineAdmitted {
+    async fn observe(self, provider: &GrpcProvider) -> Result<MutationOutcome, ProviderError> {
+        let mut children = Vec::with_capacity(self.children.len());
+        for child in self.children {
+            children.push(provider.inspect_machine(child).await?);
+        }
+        Ok(MutationOutcome::MachineForked {
+            source: self.source,
+            fidelity: self.fidelity,
+            children,
+        })
+    }
+}
+
+fn decode_fork_machine_admission(
+    value: &wire::ForkMachineAdmission,
+) -> Result<ForkMachineAdmitted, ProviderError> {
+    let source = decode_machine(value.source.as_ref())?;
+    let operation = decode_operation(value.operation.as_ref())?;
+    let contract = decode_contract(value.contract.as_ref())?;
+    let fidelity = match wire::ForkFidelity::try_from(value.fidelity)
+        .map_err(|_| ProviderError::Rejected("fork fidelity is invalid".into()))?
+    {
+        wire::ForkFidelity::MemoryAndDisk => ForkFidelity::MemoryAndDisk,
+        wire::ForkFidelity::DiskOnly => ForkFidelity::DiskOnly,
+        wire::ForkFidelity::Unspecified => {
+            return Err(ProviderError::Rejected(
+                "fork fidelity is unspecified".into(),
+            ));
+        }
+    };
+    if contract.fork_fidelity() != Some(fidelity) {
+        return Err(ProviderError::Rejected(
+            "fork fidelity contradicts the source contract".into(),
+        ));
+    }
+    if value.children.is_empty()
+        || value.children.len()
+            > usize::try_from(MAX_FORK_CHILDREN)
+                .map_err(|_| ProviderError::Invalid("invalid fork bound".into()))?
+    {
+        return Err(ProviderError::Rejected(
+            "fork child set is outside the public bound".into(),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let mut children = Vec::with_capacity(value.children.len());
+    for item in &value.children {
+        let child = decode_machine(Some(item))?;
+        if child == source || !seen.insert(child) {
+            return Err(ProviderError::Rejected(
+                "fork returned duplicate children".into(),
+            ));
+        }
+        children.push(child);
+    }
+    Ok(ForkMachineAdmitted {
+        source,
+        fidelity,
+        children,
+        operation,
+    })
+}
+
 fn validate_recovered_admission(
     value: &wire::RecoveredAdmission,
 ) -> Result<OperationId, ProviderError> {
@@ -719,6 +830,7 @@ fn validate_recovered_admission(
         ResultKind::Create(value) => value.operation.as_ref(),
         ResultKind::Checkpoint(value) => value.operation.as_ref(),
         ResultKind::Fork(value) => value.operation.as_ref(),
+        ResultKind::ForkMachine(value) => value.operation.as_ref(),
         ResultKind::Suspend(value)
         | ResultKind::Wake(value)
         | ResultKind::DestroyMachine(value)
@@ -861,6 +973,7 @@ fn encode_capability(value: Capability) -> i32 {
         Capability::LiveFork => wire::Capability::LiveFork,
         Capability::SuspendResume => wire::Capability::SuspendResume,
         Capability::LiveMovement => wire::Capability::LiveMovement,
+        Capability::DiskFork => wire::Capability::DiskFork,
     }) as i32
 }
 fn decode_capability(value: i32) -> Result<Capability, ProviderError> {
@@ -873,6 +986,7 @@ fn decode_capability(value: i32) -> Result<Capability, ProviderError> {
         wire::Capability::LiveFork => Ok(Capability::LiveFork),
         wire::Capability::SuspendResume => Ok(Capability::SuspendResume),
         wire::Capability::LiveMovement => Ok(Capability::LiveMovement),
+        wire::Capability::DiskFork => Ok(Capability::DiskFork),
         wire::Capability::Unspecified => {
             Err(ProviderError::Rejected("capability is unspecified".into()))
         }
@@ -1385,6 +1499,12 @@ mod tests {
         ) -> Result<Response<wire::ForkAdmission>, Status> {
             Err(Status::unimplemented("fork"))
         }
+        async fn fork_machine(
+            &self,
+            _request: Request<wire::ForkMachineRequest>,
+        ) -> Result<Response<wire::ForkMachineAdmission>, Status> {
+            Err(Status::unimplemented("fork_machine"))
+        }
         async fn suspend(
             &self,
             _request: Request<wire::MachineMutationRequest>,
@@ -1809,6 +1929,7 @@ mod tests {
             Capability::LiveFork,
             Capability::SuspendResume,
             Capability::LiveMovement,
+            Capability::DiskFork,
         ];
         for capability in capabilities {
             assert_eq!(
@@ -1833,7 +1954,6 @@ mod tests {
             lineage_receipt_sha256,
             egress_bytes: 0,
             receipt: vec![1],
-            ..Default::default()
         };
         assert!(decode_usage_receipt(receipt(vec![7; 32]), machine, 1, 2).is_ok());
         assert!(decode_usage_receipt(receipt(Vec::new()), machine, 1, 2).is_err());
@@ -1903,6 +2023,113 @@ mod tests {
             .await
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn servers_without_live_fork_report_unsupported()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000041")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000043")?;
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: operation_state(operation, wire::OperationStatus::Pending),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Items(Vec::new()),
+        };
+        let (machines, shutdown, server) = serve_operation_service(service).await?;
+        assert!(matches!(
+            machines
+                .provider
+                .fork_machine(machine, NonZeroU32::MIN, key)
+                .await,
+            Err(ProviderError::Unsupported(_))
+        ));
+        let _ = shutdown.send(());
+        server.await??;
+        Ok(())
+    }
+
+    fn wire_contract(capabilities: &[wire::Capability]) -> wire::MachineContract {
+        wire::MachineContract {
+            image: Some(wire::Image {
+                kind: wire::ImageKind::Custom as i32,
+                immutable_reference: Some(wire::image::ImmutableReference::CustomDigest(vec![
+                    7;
+                    32
+                ])),
+            }),
+            capabilities: capabilities.iter().map(|value| *value as i32).collect(),
+            compatibility: Some(wire::CompatibilityPolicy {
+                mode: wire::CompatibilityMode::BestEffort as i32,
+                required: Vec::new(),
+            }),
+            compatibility_revision: vec![1; 32],
+            performance: wire::Performance::Elastic as i32,
+            suspension: Some(wire::SuspensionPolicy {
+                policy: Some(wire::suspension_policy::Policy::Manual(true)),
+            }),
+            expiration: Some(wire::ExpirationPolicy {
+                kind: wire::ExpirationKind::Never as i32,
+                value_ms: 0,
+            }),
+            network_policy_digest: vec![8; 32],
+            budgets: Some(wire::Budgets::default()),
+        }
+    }
+
+    #[test]
+    fn fork_machine_admissions_are_checked_against_the_source_contract()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let source = MachineId::parse("00000000-0000-0000-0000-000000000051")?;
+        let child = MachineId::parse("00000000-0000-0000-0000-000000000052")?;
+        let other = MachineId::parse("00000000-0000-0000-0000-000000000053")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000054")?;
+        let admission =
+            |capabilities: &[wire::Capability],
+             fidelity: wire::ForkFidelity,
+             children: Vec<MachineId>| wire::ForkMachineAdmission {
+                source: Some(encode_machine(source)),
+                children: children.into_iter().map(encode_machine).collect(),
+                operation: Some(wire::OperationId {
+                    value: operation.as_bytes().to_vec(),
+                }),
+                contract: Some(wire_contract(capabilities)),
+                fidelity: fidelity as i32,
+            };
+        let live = [wire::Capability::LiveFork, wire::Capability::DiskFork];
+        let disk = [wire::Capability::DiskFork];
+
+        let checked = decode_fork_machine_admission(&admission(
+            &live,
+            wire::ForkFidelity::MemoryAndDisk,
+            vec![child, other],
+        ))?;
+        assert_eq!(checked.fidelity, ForkFidelity::MemoryAndDisk);
+        assert_eq!(checked.children, vec![child, other]);
+        assert_eq!(
+            decode_fork_machine_admission(&admission(
+                &disk,
+                wire::ForkFidelity::DiskOnly,
+                vec![child]
+            ))?
+            .fidelity,
+            ForkFidelity::DiskOnly
+        );
+        for rejected in [
+            admission(&disk, wire::ForkFidelity::MemoryAndDisk, vec![child]),
+            admission(&live, wire::ForkFidelity::DiskOnly, vec![child]),
+            admission(&[], wire::ForkFidelity::DiskOnly, vec![child]),
+            admission(&live, wire::ForkFidelity::Unspecified, vec![child]),
+            admission(&live, wire::ForkFidelity::MemoryAndDisk, Vec::new()),
+            admission(&live, wire::ForkFidelity::MemoryAndDisk, vec![child, child]),
+            admission(&live, wire::ForkFidelity::MemoryAndDisk, vec![source]),
+        ] {
+            assert!(decode_fork_machine_admission(&rejected).is_err());
+        }
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]

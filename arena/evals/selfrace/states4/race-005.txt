@@ -1,0 +1,78 @@
+Task:
+Rename the function subtotal_cents to cart_subtotal_cents in shop.py and update every use inside shop.py and tests/test_base.py. Do not keep an alias.
+
+=== fork A (deepseek/deepseek-v4-flash)
+Changed paths: 2
+  M shop.py
+  M tests/test_base.py
+--- a/shop.py
++++ b/shop.py
+@@ -30,7 +30,7 @@
+ }
+ 
+ 
+-def subtotal_cents(cart: Cart) -> int:
++def cart_subtotal_cents(cart: Cart) -> int:
+     total = 0
+     for sku, qty in cart.lines.items():
+         total += CATALOG[sku].price_cents * qty
+--- a/tests/test_base.py
++++ b/tests/test_base.py
+@@ -1,5 +1,5 @@
+ import unittest
+-from shop import Cart, CATALOG, subtotal_cents
++from shop import Cart, CATALOG, cart_subtotal_cents
+ 
+ 
+ class BaseTests(unittest.TestCase):
+@@ -9,4 +9,4 @@
+ 
+     def test_subtotal(self):
+         c = Cart(); c.add(CATALOG["apple"], 2); c.add(CATALOG["bread"])
+-        self.assertEqual(subtotal_cents(c), 350)
++        self.assertEqual(cart_subtotal_cents(c), 350)
+Test output:
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK
+
+=== fork B (deepseek/deepseek-v4-flash)
+Changed paths: 2
+  M shop.py
+  M tests/test_base.py
+--- a/shop.py
++++ b/shop.py
+@@ -30,7 +30,7 @@
+ }
+ 
+ 
+-def subtotal_cents(cart: Cart) -> int:
++def cart_subtotal_cents(cart: Cart) -> int:
+     total = 0
+     for sku, qty in cart.lines.items():
+         total += CATALOG[sku].price_cents * qty
+--- a/tests/test_base.py
++++ b/tests/test_base.py
+@@ -1,5 +1,5 @@
+ import unittest
+-from shop import Cart, CATALOG, subtotal_cents
++from shop import Cart, CATALOG, cart_subtotal_cents
+ 
+ 
+ class BaseTests(unittest.TestCase):
+@@ -9,4 +9,4 @@
+ 
+     def test_subtotal(self):
+         c = Cart(); c.add(CATALOG["apple"], 2); c.add(CATALOG["bread"])
+-        self.assertEqual(subtotal_cents(c), 350)
++        self.assertEqual(cart_subtotal_cents(c), 350)
+Test output:
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK
+
+=== verdict
+fork A (deepseek/deepseek-v4-flash): pWin 0.00 safe 0.85 complete 0.99 tests true
+fork B (deepseek/deepseek-v4-flash): pWin 0.00 safe 0.86 complete 0.99 tests true

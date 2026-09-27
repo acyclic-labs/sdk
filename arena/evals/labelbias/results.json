@@ -1,0 +1,122 @@
+[
+ {
+  "variant": "fork A / fork B  (original)",
+  "first": "fork A",
+  "second": "fork B",
+  "p_first": [
+   0.94,
+   0.93,
+   0.93
+  ]
+ },
+ {
+  "variant": "fork B / fork A  (names swapped)",
+  "first": "fork B",
+  "second": "fork A",
+  "p_first": [
+   0.13,
+   0.11,
+   0.13
+  ]
+ },
+ {
+  "variant": "fork X / fork Y",
+  "first": "fork X",
+  "second": "fork Y",
+  "p_first": [
+   0.94,
+   0.95,
+   0.94
+  ]
+ },
+ {
+  "variant": "fork Y / fork X",
+  "first": "fork Y",
+  "second": "fork X",
+  "p_first": [
+   0.21,
+   0.19,
+   0.23
+  ]
+ },
+ {
+  "variant": "fork 1 / fork 2",
+  "first": "fork 1",
+  "second": "fork 2",
+  "p_first": [
+   0.94,
+   0.94,
+   0.95
+  ]
+ },
+ {
+  "variant": "fork 2 / fork 1",
+  "first": "fork 2",
+  "second": "fork 1",
+  "p_first": [
+   0.14,
+   0.12,
+   0.15
+  ]
+ },
+ {
+  "variant": "left / right",
+  "first": "left",
+  "second": "right",
+  "p_first": [
+   0.89,
+   0.88,
+   0.84
+  ]
+ },
+ {
+  "variant": "right / left",
+  "first": "right",
+  "second": "left",
+  "p_first": [
+   0.43,
+   0.47,
+   0.52
+  ]
+ },
+ {
+  "variant": "alpha / bravo",
+  "first": "alpha",
+  "second": "bravo",
+  "p_first": [
+   0.9,
+   0.89,
+   0.9
+  ]
+ },
+ {
+  "variant": "bravo / alpha",
+  "first": "bravo",
+  "second": "alpha",
+  "p_first": [
+   0.26,
+   0.28,
+   0.29
+  ]
+ },
+ {
+  "variant": "fork B / fork C  (no A present)",
+  "first": "fork B",
+  "second": "fork C",
+  "p_first": [
+   0.92,
+   0.92,
+   0.92
+  ]
+ },
+ {
+  "variant": "fork C / fork B",
+  "first": "fork C",
+  "second": "fork B",
+  "p_first": [
+   0.51,
+   0.5,
+   0.52
+  ]
+ }
+]

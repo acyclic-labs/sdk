@@ -69,6 +69,65 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
 }
 
 #[tokio::test]
+async fn string_workspace_paths_match_native_namespace_names() -> Result<(), Box<dyn Error>> {
+    for profile in [
+        crate::model::FilesystemProfile::Posix,
+        crate::model::FilesystemProfile::Windows,
+    ] {
+        let fs = Fs::memory();
+        let config = VolumeConfig {
+            profile,
+            ..VolumeConfig::portable(Lifecycle::Ephemeral)
+        };
+        let workspace = fs
+            .create_workspace_with_config("native-path", config)
+            .await?;
+        workspace.write_text("/é.txt", "native").await?;
+        let mut checkout = workspace
+            .engine_checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
+            .await?;
+        let path = NamespacePath::from_portable_in_profile(
+            &PortablePath::parse("/é.txt", config.limits)?,
+            profile,
+            config.limits,
+        )?;
+        assert!(
+            checkout
+                .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await?
+                .value
+                .record
+                .is_some()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn conditional_remove_preserves_typed_stale_identity() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("conditional-remove").await?;
+    let mut create = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    create.write_text("/file.txt", "current").await?;
+    assert!(matches!(
+        create.commit().await?,
+        TransactionCommit::Committed(_)
+    ));
+    let actual = workspace.stat("/file.txt").await?.file_id;
+    let mut stale = FileId::new();
+    while stale == actual {
+        stale = FileId::new();
+    }
+    let mut remove = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    assert!(matches!(
+        remove.remove_if("/file.txt", stale).await,
+        Err(WorkspaceError::StaleIdentity)
+    ));
+    assert_eq!(workspace.read("/file.txt", 64).await?.as_ref(), b"current");
+    Ok(())
+}
+
+#[tokio::test]
 async fn exact_generation_restore_is_fenced_and_idempotent() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("restore-exact").await?;
@@ -234,34 +293,43 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
 }
 
 #[tokio::test]
-async fn existing_volume_adopts_workspace_api_without_changing_identity()
--> Result<(), Box<dyn Error>> {
+async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let volume_id = VolumeId::new();
-    let volume = fs
-        .create_volume_with_id(
-            volume_id,
-            VolumeConfig::portable(Lifecycle::Ephemeral),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+    let parent = fs.create_workspace("incremental-parent").await?;
+    let parent_base = parent.head().await?;
+    let child = parent
+        .fork(
+            "incremental-child",
+            ForkOptions::from_generation(
+                parent_base.clone(),
+                IdempotencyKey::from_bytes([0x67; 16]),
+            ),
         )
-        .await?
-        .value;
-    let expected = volume
-        .checkout(
-            GenerationSelector::Head,
-            CheckoutMode::read_only_pinned(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?
-        .value
-        .generation_id();
-
-    let workspace = fs.open_volume_workspace("legacy", volume_id).await?;
-
-    assert_eq!(workspace.id().into_bytes(), volume_id.into_bytes());
-    assert_eq!(workspace.head().await?.id(), expected);
+        .await?;
+    child.write_text("/first.txt", "first").await?;
+    let first = child.join_into(&parent).plan().await?;
+    assert!(matches!(
+        first
+            .apply(ApplyOptions {
+                if_target: first.target_head(),
+                idempotency_key: IdempotencyKey::from_bytes([0x68; 16]),
+            })
+            .await?,
+        JoinOutcome::Applied(_)
+    ));
+    child.write_text("/second.txt", "second").await?;
+    let second = child.join_into(&parent).plan().await?;
+    assert!(matches!(
+        second
+            .apply(ApplyOptions {
+                if_target: second.target_head(),
+                idempotency_key: IdempotencyKey::from_bytes([0x69; 16]),
+            })
+            .await?,
+        JoinOutcome::Applied(_)
+    ));
+    assert_eq!(parent.read("/first.txt", 64).await?.as_ref(), b"first");
+    assert_eq!(parent.read("/second.txt", 64).await?.as_ref(), b"second");
     Ok(())
 }
 
@@ -358,6 +426,46 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
             .mode();
         assert_eq!(mode & 0o777, 0o700);
     }
+    Ok(())
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn public_generation_materialize_paths_shares_parents_and_hard_link_identity()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("materialize-paths-consumer").await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    transaction.create_dir_all("/nested").await?;
+    transaction.write_text("/nested/a", "linked").await?;
+    transaction.hard_link("/nested/a", "/nested/b").await?;
+    transaction.write_text("/nested/c", "sibling").await?;
+    let TransactionCommit::Committed(generation) = transaction.commit().await? else {
+        return Err("materialize fixture did not commit".into());
+    };
+    let destination = tempfile::tempdir()?;
+    let receipt = generation
+        .materialize_paths(
+            &[
+                "/nested/a".to_owned(),
+                "/nested/b".to_owned(),
+                "/nested/c".to_owned(),
+            ],
+            &crate::MaterializeOptions::native(destination.path()),
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(receipt.value.files, 3);
+    assert_eq!(
+        std::fs::read(destination.path().join("nested/c"))?,
+        b"sibling"
+    );
+    std::fs::write(destination.path().join("nested/a"), b"changed")?;
+    assert_eq!(
+        std::fs::read(destination.path().join("nested/b"))?,
+        b"changed"
+    );
     Ok(())
 }
 
@@ -831,10 +939,12 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
         Bytes::from_static(b"a")
     );
 
-    let first = workspace.list_directory("/tree", None, 1).await?;
+    let listing = workspace.sync().await?.into_generation();
+    let first = listing.list_directory("/tree", None, 1).await?;
     assert_eq!(first.entries.len(), 1);
     assert!(first.has_more);
-    let second = workspace
+    workspace.write_text("/tree/late", "new").await?;
+    let second = listing
         .list_directory("/tree", Some(&first.entries[0].name), 16)
         .await?;
     assert_eq!(second.entries.len(), 3);
@@ -956,6 +1066,13 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     let JoinOutcome::Applied(joined) = outcome else {
         return Err("join did not publish".into());
     };
+    let witness = plan.commit_witness(&joined, idempotency_key)?;
+    assert!(main.verify_join_commit(&witness).await?);
+    let mut forged = serde_json::to_value(witness)?;
+    forged["source_generation"] =
+        serde_json::to_value(crate::GenerationId::new(crate::Digest::ZERO))?;
+    let forged: crate::JoinCommitWitness = serde_json::from_value(forged)?;
+    assert!(!main.verify_join_commit(&forged).await?);
     assert_eq!(
         main.operation_generation(idempotency_key)
             .await?
@@ -983,6 +1100,24 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
         .await?,
         JoinOutcome::AlreadyApplied(_)
     ));
+    main.write_text("/after-join", "later").await?;
+    assert!(main.verify_join_commit(&witness).await?);
+    let ordinary_key = IdempotencyKey::new();
+    let mut ordinary = main.begin_transaction(ordinary_key).await?;
+    ordinary.write_text("/ordinary", "not a join").await?;
+    assert!(matches!(
+        ordinary.commit().await?,
+        TransactionCommit::Committed(_)
+    ));
+    let ordinary_generation = main
+        .operation_generation(ordinary_key)
+        .await?
+        .ok_or("ordinary operation was not recoverable")?;
+    let mut impostor = serde_json::to_value(witness)?;
+    impostor["operation_id"] = serde_json::to_value(ordinary_key.operation_id())?;
+    impostor["result_generation"] = serde_json::to_value(ordinary_generation.id())?;
+    let impostor: crate::JoinCommitWitness = serde_json::from_value(impostor)?;
+    assert!(!main.verify_join_commit(&impostor).await?);
     Ok(())
 }
 
@@ -1325,18 +1460,25 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
     registry.register("theirs", Arc::new(SelectTheirsDriver))?;
     registry.set_default("theirs")?;
     let mut cache = crate::MemoryMergeResolutionCache::default();
+    let join_key = IdempotencyKey::new();
     let outcome = plan
         .apply_with_drivers(
             ApplyOptions {
                 if_target: plan.target_head(),
-                idempotency_key: IdempotencyKey::new(),
+                idempotency_key: join_key,
             },
             &registry,
             &mut cache,
             false,
         )
         .await?;
-    assert!(matches!(outcome, JoinOutcome::Applied(_)));
+    let JoinOutcome::Applied(application) = outcome else {
+        return Err("resolved join did not publish".into());
+    };
+    assert!(
+        main.verify_join_commit(&plan.commit_witness(&application, join_key)?)
+            .await?
+    );
     assert_eq!(
         main.read("/shared", 16).await?,
         Bytes::from_static(b"agent")
@@ -1532,15 +1674,60 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
 }
 
 #[tokio::test]
+async fn changed_path_queries_reuse_the_sdk_generation_index() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("changed-path-index").await?;
+    for batch in 0..8 {
+        let mut initial = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        for offset in 0..16 {
+            let index = batch * 16 + offset;
+            initial
+                .write(
+                    &format!("/unrelated-{index:04}"),
+                    Bytes::from_static(b"unchanged"),
+                )
+                .await?;
+        }
+        assert!(matches!(
+            initial.commit().await?,
+            TransactionCommit::Committed(_)
+        ));
+    }
+    let mut initial = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    initial
+        .write("/selected", Bytes::from_static(b"before"))
+        .await?;
+    assert!(matches!(
+        initial.commit().await?,
+        TransactionCommit::Committed(_)
+    ));
+    let before = workspace.head().await?;
+    workspace.write_text("/selected", "after").await?;
+    let after = workspace.head().await?;
+    let changes = workspace.diff(&before, &after, 1_024).await?;
+    let cancellation = crate::CancellationToken::new();
+    let cold = changes
+        .changed_paths_bounded(1_024, crate::WorkBudget::UNBOUNDED, &cancellation)
+        .await?;
+    let warm = changes
+        .changed_paths_bounded(1_024, crate::WorkBudget::UNBOUNDED, &cancellation)
+        .await?;
+    assert_eq!(warm.value, cold.value);
+    assert!(warm.work.page_reads < cold.work.page_reads);
+    assert!(warm.work.items_examined < cold.work.items_examined);
+    Ok(())
+}
+
+#[tokio::test]
 async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("lookup-paths").await?;
     workspace.write_text("/present", "body").await?;
     let generation = workspace.head().await?;
-    let limits = crate::model::VolumeLimits::default();
-    let present = customer_path("/present", limits)?;
-    let absent = customer_path("/absent", limits)?;
+    let config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
+    let present = customer_path("/present", config)?;
+    let absent = customer_path("/absent", config)?;
     let records = generation
         .lookup_paths(
             &[present.clone(), absent, present.clone()],
@@ -1576,15 +1763,44 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
 }
 
 #[tokio::test]
+async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("bounded-path-index").await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    transaction.write_text("/a", "body").await?;
+    transaction.hard_link("/a", "/b").await?;
+    assert!(matches!(
+        transaction.commit().await?,
+        TransactionCommit::Committed(_)
+    ));
+    let generation = workspace.head().await?;
+    let file_id = generation.stat("/a").await?.file_id;
+
+    let complete = generation
+        .namespace_records_for_file_ids([file_id], 16)
+        .await?;
+    assert!(complete.complete);
+    assert_eq!(complete.records.get(&file_id).map(Vec::len), Some(2));
+
+    let bounded = generation
+        .namespace_records_for_file_ids([file_id], 1)
+        .await?;
+    assert!(!bounded.complete);
+    assert_eq!(bounded.records.get(&file_id).map(Vec::len), Some(1));
+    Ok(())
+}
+
+#[tokio::test]
 async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<(), Box<dyn Error>>
 {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("generation-reader").await?;
     workspace.write_text("/present", "body").await?;
     let generation = workspace.head().await?;
-    let limits = crate::model::VolumeLimits::default();
-    let present = customer_path("/present", limits)?;
-    let absent = customer_path("/absent", limits)?;
+    let config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
+    let present = customer_path("/present", config)?;
+    let absent = customer_path("/absent", config)?;
 
     let reader = generation.reader().await?;
     let descriptions = reader
@@ -1602,5 +1818,797 @@ async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<
         Some(4)
     );
     assert!(descriptions[1].is_none());
+    Ok(())
+}
+
+/// Where a fork's provider fault lands: before a call reaches the provider,
+/// or after a commit applied but before its caller learned so.
+#[derive(Clone, Copy, Debug)]
+enum ForkCut {
+    Before,
+    AfterCommit,
+}
+
+/// A Stream provider that fails its `fail_at`-th call, and counts commits.
+struct CutStream {
+    inner: Arc<acyclic_stream::MemoryStream>,
+    calls: std::sync::atomic::AtomicUsize,
+    commits: std::sync::atomic::AtomicUsize,
+    fail_at: std::sync::atomic::AtomicUsize,
+    cut: std::sync::Mutex<ForkCut>,
+}
+
+impl CutStream {
+    fn new(inner: Arc<acyclic_stream::MemoryStream>) -> Self {
+        Self {
+            inner,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            commits: std::sync::atomic::AtomicUsize::new(0),
+            fail_at: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            cut: std::sync::Mutex::new(ForkCut::Before),
+        }
+    }
+
+    fn arm(&self, fail_at: usize, cut: ForkCut) {
+        use std::sync::atomic::Ordering;
+        self.calls.store(0, Ordering::SeqCst);
+        self.commits.store(0, Ordering::SeqCst);
+        if let Ok(mut current) = self.cut.lock() {
+            *current = cut;
+        }
+        self.fail_at.store(fail_at, Ordering::SeqCst);
+    }
+
+    fn disarm(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let fired = self.calls.load(Ordering::SeqCst) >= self.fail_at.load(Ordering::SeqCst);
+        self.fail_at.store(usize::MAX, Ordering::SeqCst);
+        fired
+    }
+
+    fn commits(&self) -> usize {
+        self.commits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn fails_now(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.fail_at.load(Ordering::SeqCst)
+    }
+
+    fn cut(&self) -> ForkCut {
+        self.cut.lock().map_or(ForkCut::Before, |cut| *cut)
+    }
+}
+
+#[async_trait::async_trait]
+impl acyclic_stream::StreamProvider for CutStream {
+    async fn inspect_idempotency(
+        &self,
+        key: acyclic_stream::IdempotencyKey,
+    ) -> Result<Option<acyclic_stream::IdempotencyObservation>, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.inspect_idempotency(key).await
+    }
+
+    async fn tail(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> Result<u64, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.tail(path).await
+    }
+
+    async fn bounds(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.bounds(path).await
+    }
+
+    async fn append(
+        &self,
+        request: acyclic_stream::AppendRequest,
+    ) -> Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.append(request).await
+    }
+
+    async fn fork(
+        &self,
+        request: acyclic_stream::ForkRequest,
+    ) -> Result<acyclic_stream::ForkReceipt, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.fork(request).await
+    }
+
+    async fn trim(
+        &self,
+        path: acyclic_stream::StreamPath,
+        before: u64,
+        key: acyclic_stream::IdempotencyKey,
+    ) -> Result<acyclic_stream::TrimReceipt, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.trim(path, before, key).await
+    }
+
+    async fn delete(
+        &self,
+        path: acyclic_stream::StreamPath,
+        key: acyclic_stream::IdempotencyKey,
+    ) -> Result<acyclic_stream::DeleteReceipt, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.delete(path, key).await
+    }
+
+    async fn read(
+        &self,
+        request: acyclic_stream::ReadRequest,
+    ) -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.read(request).await
+    }
+
+    async fn follow(
+        &self,
+        path: acyclic_stream::StreamPath,
+        from: u64,
+    ) -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.follow(path, from).await
+    }
+
+    async fn children(
+        &self,
+        request: acyclic_stream::ChildrenRequest,
+    ) -> Result<acyclic_stream::ChildStream, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.children(request).await
+    }
+
+    async fn commit(
+        &self,
+        request: acyclic_stream::CommitRequest,
+    ) -> Result<acyclic_stream::CommitOutcome, acyclic_stream::StreamError> {
+        let fails = self.fails_now();
+        if fails && matches!(self.cut(), ForkCut::Before) {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        let outcome = self.inner.commit(request).await?;
+        if matches!(outcome, acyclic_stream::CommitOutcome::Committed(_)) {
+            self.commits
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        if fails {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        Ok(outcome)
+    }
+
+    async fn read_commit(
+        &self,
+        commit_id: acyclic_stream::CommitId,
+    ) -> Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.read_commit(commit_id).await
+    }
+}
+
+type CutFs = Fs<
+    crate::distributed::StreamAuthorityStore<CutStream>,
+    crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+>;
+
+/// The first record of one authority, if it has one.
+async fn first_fork_record(
+    stream: &Arc<acyclic_stream::MemoryStream>,
+    authority: crate::AuthorityId,
+) -> Result<Option<crate::foundation::DurableCommit>, Box<dyn Error>> {
+    use crate::AsyncAuthorityStore as _;
+    let store = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream));
+    match store
+        .replay(
+            authority,
+            crate::foundation::Sequence::GENESIS,
+            crate::storage::ReplayLimit {
+                records: 1,
+                payload_bytes: 4 * 1024,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+    {
+        Ok(records) => Ok(records.value.into_iter().next()),
+        Err(failure) if matches!(failure.error, crate::storage::AuthorityStoreError::Missing) => {
+            Ok(None)
+        }
+        Err(failure) => Err(failure.error.into()),
+    }
+}
+
+/// Checks a fork's durable authority state after any interruption: the
+/// workspace exists only with its source retained, and a record that
+/// exists is exactly the fork's.
+async fn assert_fork_state_exact(
+    stream: &Arc<acyclic_stream::MemoryStream>,
+    source: &crate::Generation<
+        crate::distributed::StreamAuthorityStore<CutStream>,
+        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+    >,
+    source_volume: crate::foundation::VolumeId,
+    destination: WorkspaceId,
+) -> Result<bool, Box<dyn Error>> {
+    let retention = crate::kernel::retention_authority_id(
+        source_volume,
+        crate::kernel::RetentionKind::ForkBase,
+        &hex::encode(destination.into_bytes()),
+    );
+    let retained = first_fork_record(stream, retention).await?;
+    if let Some(retained) = &retained {
+        let record = crate::kernel::decode_retention_created(&retained.payload, 4 * 1024)?;
+        assert_eq!(record.generation_root.digest, source.id().digest());
+    }
+    let created = first_fork_record(
+        stream,
+        crate::kernel::volume_authority_id(destination.volume_id()),
+    )
+    .await?;
+    if let Some(created) = &created {
+        let record = crate::kernel::decode_volume_created(&created.payload, 4 * 1024)?;
+        assert_eq!(record.volume_id, destination.volume_id());
+        assert!(
+            retained.is_some(),
+            "a workspace became durable before its source generation was retained"
+        );
+    }
+    Ok(created.is_some())
+}
+
+/// Whether the destination's creation record is found by the operation
+/// that made it, as operation observation looks it up.
+async fn creation_operation(
+    stream: &Arc<acyclic_stream::MemoryStream>,
+    destination: WorkspaceId,
+    key: IdempotencyKey,
+) -> Result<bool, Box<dyn Error>> {
+    use crate::AsyncAuthorityStore as _;
+    let found = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream))
+        .find_operation(
+            crate::kernel::volume_authority_id(destination.volume_id()),
+            key.operation_id(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+    Ok(found
+        .value
+        .is_some_and(|commit| commit.sequence == crate::foundation::Sequence::new(1)))
+}
+
+#[tokio::test]
+async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
+-> Result<(), Box<dyn Error>> {
+    let mut uninterrupted_commits = None;
+    for cut in [ForkCut::Before, ForkCut::AfterCommit] {
+        for fail_at in 1.. {
+            let stream = Arc::new(acyclic_stream::MemoryStream::default());
+            let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
+            let (objects, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+            let fs: CutFs = Fs::new(
+                crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
+                crate::distributed::ProviderObjectStore::new(Arc::new(objects), bucket),
+                crate::EmbeddedCapabilities::MEMORY,
+            );
+            cutting.arm(fail_at, cut);
+            let attempt = fs.create_workspace("repo").await;
+            let fired = cutting.disarm();
+            let committed = cutting.commits();
+            let volume = fs.workspace_id("repo")?.volume_id();
+            let created =
+                first_fork_record(&stream, crate::kernel::volume_authority_id(volume)).await?;
+            if let Some(created) = &created {
+                assert_eq!(
+                    crate::kernel::decode_volume_created(&created.payload, 4 * 1024)?.volume_id,
+                    volume
+                );
+            }
+            if !fired {
+                attempt?;
+                assert!(created.is_some());
+                uninterrupted_commits.get_or_insert(committed);
+                break;
+            }
+            assert!(
+                attempt.is_err(),
+                "a fault at call {fail_at} was not reported"
+            );
+            // An interruption leaves no volume or the complete one.
+            let opened = fs.open_workspace("repo").await;
+            assert_eq!(opened.is_ok(), created.is_some());
+            let retried = fs.create_workspace("repo").await?;
+            retried.write_text("/after.txt", "after").await?;
+            assert_eq!(
+                fs.open_workspace("repo")
+                    .await?
+                    .read("/after.txt", 16)
+                    .await?,
+                Bytes::from_static(b"after")
+            );
+        }
+    }
+    assert_eq!(uninterrupted_commits, Some(1));
+    Ok(())
+}
+
+/// Checks that a fork's authority lineage is exactly the one separate fork
+/// and append commits would leave: the source's lineage through the source
+/// generation, for a fork of the published head, then the fork's first
+/// generation, located at its position. A fork of the fork's head then
+/// shares that lineage in turn.
+async fn assert_fork_lineage_exact(
+    stream: &Arc<acyclic_stream::MemoryStream>,
+    main: &crate::Workspace<
+        crate::distributed::StreamAuthorityStore<CutStream>,
+        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+    >,
+    source: &crate::Generation<
+        crate::distributed::StreamAuthorityStore<CutStream>,
+        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+    >,
+    fork: &crate::Workspace<
+        crate::distributed::StreamAuthorityStore<CutStream>,
+        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+    >,
+    independent: bool,
+) -> Result<(), Box<dyn Error>> {
+    let store = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream));
+    let authority =
+        |workspace: WorkspaceId| crate::kernel::volume_authority_id(workspace.volume_id());
+    let head = fork.head().await?.id();
+    let mut expected = if independent {
+        Vec::new()
+    } else {
+        let source_lineage = store.generation_lineage(authority(main.id())).await?;
+        let at = store
+            .generation_locator(authority(main.id()), source.id())
+            .await?;
+        assert_eq!(
+            store
+                .generation_locator(authority(fork.id()), source.id())
+                .await?,
+            at
+        );
+        source_lineage[..usize::try_from(at)?].to_vec()
+    };
+    expected.push(head);
+    assert_eq!(
+        store.generation_lineage(authority(fork.id())).await?,
+        expected
+    );
+    assert_eq!(
+        store.generation_locator(authority(fork.id()), head).await?,
+        u64::try_from(expected.len())?
+    );
+    // A fork of the fork's published head reuses that lineage.
+    let grandchild = fork
+        .fork(
+            "grandchild",
+            ForkOptions::from_generation(
+                fork.head().await?,
+                IdempotencyKey::from_bytes([0x71; 16]),
+            ),
+        )
+        .await?;
+    assert_eq!(
+        grandchild.read("/base.txt", 16).await?,
+        Bytes::from_static(b"base")
+    );
+    let grandchild_lineage = store.generation_lineage(authority(grandchild.id())).await?;
+    assert_eq!(
+        grandchild_lineage.get(..expected.len()),
+        Some(&expected[..])
+    );
+    Ok(())
+}
+
+/// Forks one generation through every provider cut, before calls and after
+/// commits, checking the durable state after each interruption and that a
+/// retry with the same key completes the same workspace. Returns the commits
+/// an uninterrupted fork made.
+async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn Error>> {
+    let mut uninterrupted_commits = None;
+    for cut in [ForkCut::Before, ForkCut::AfterCommit] {
+        for fail_at in 1.. {
+            let stream = Arc::new(acyclic_stream::MemoryStream::default());
+            let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
+            let (objects, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+            let fs: CutFs = Fs::new(
+                crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
+                crate::distributed::ProviderObjectStore::new(Arc::new(objects), bucket),
+                crate::EmbeddedCapabilities::MEMORY,
+            );
+            let main = fs.create_workspace("repo").await?;
+            main.write_text("/base.txt", "base").await?;
+            let source = main.head().await?;
+            if advance_source {
+                main.write_text("/later.txt", "later").await?;
+            }
+            let key = IdempotencyKey::from_bytes([0x51; 16]);
+            cutting.arm(fail_at, cut);
+            let attempt = main
+                .fork("agent", ForkOptions::from_generation(source.clone(), key))
+                .await;
+            let fired = cutting.disarm();
+            let committed = cutting.commits();
+            let destination = fs.workspace_id("agent")?;
+            let complete =
+                assert_fork_state_exact(&stream, &source, main.id().volume_id(), destination)
+                    .await?;
+            if !fired {
+                let fork = attempt?;
+                assert!(complete);
+                assert_fork_lineage_exact(&stream, &main, &source, &fork, advance_source).await?;
+                assert!(creation_operation(&stream, destination, key).await?);
+                uninterrupted_commits.get_or_insert(committed);
+                break;
+            }
+            assert!(
+                attempt.is_err(),
+                "a fault at call {fail_at} was not reported"
+            );
+            let retried = main
+                .fork("agent", ForkOptions::from_generation(source.clone(), key))
+                .await?;
+            assert_eq!(retried.id(), destination);
+            assert_eq!(
+                retried.read("/base.txt", 16).await?,
+                Bytes::from_static(b"base")
+            );
+            assert!(
+                assert_fork_state_exact(&stream, &source, main.id().volume_id(), destination)
+                    .await?
+            );
+            let again = main
+                .fork("agent", ForkOptions::from_generation(source.clone(), key))
+                .await?;
+            assert_eq!(again.head().await?.id(), retried.head().await?.id());
+            assert_fork_lineage_exact(&stream, &main, &source, &retried, advance_source).await?;
+            assert!(
+                creation_operation(&stream, destination, key).await?,
+                "the fork's creation is not found by its operation"
+            );
+        }
+    }
+    uninterrupted_commits.ok_or_else(|| "the fork never completed".into())
+}
+
+#[tokio::test]
+async fn a_fork_of_the_head_is_one_commit_and_exact_at_every_provider_cut()
+-> Result<(), Box<dyn Error>> {
+    // The fork of a published head shares its lineage, which the same
+    // commit extends with the new workspace's first generation.
+    assert_eq!(fork_through_every_cut(false).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_independent_fork_is_one_commit_and_exact_at_every_provider_cut()
+-> Result<(), Box<dyn Error>> {
+    assert_eq!(fork_through_every_cut(true).await?, 1);
+    Ok(())
+}
+
+/// Truncates a local root's Stream journal to `length` bytes, as a power
+/// loss before the rest was synchronized would leave it.
+#[cfg(all(feature = "local", any(unix, windows)))]
+fn cut_journal(root: &std::path::Path, journal: &[u8], length: usize) -> std::io::Result<()> {
+    std::fs::write(
+        root.join("stream").join("stream.journal"),
+        journal.get(..length).unwrap_or(journal),
+    )
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+async fn close_local(
+    fs: crate::Fs<crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
+) -> Result<(), Box<dyn Error>> {
+    let released = fs
+        .local_root_release_barrier()
+        .ok_or("local root has no release barrier")?;
+    drop(fs);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !released.is_released() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let journal_path = root.join("stream").join("stream.journal");
+    let key = IdempotencyKey::from_bytes([0x61; 16]);
+    let source_id;
+    {
+        let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+        let main = fs.create_workspace("repo").await?;
+        main.write_text("/base.txt", "base").await?;
+        source_id = main.head().await?.id();
+        drop(main);
+        close_local(fs).await?;
+    }
+    let before = std::fs::metadata(&journal_path)?.len();
+    let forked_head;
+    {
+        let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+        let main = fs.open_workspace("repo").await?;
+        let source = main.head().await?;
+        assert_eq!(source.id(), source_id);
+        let fork = main
+            .fork("agent", ForkOptions::from_generation(source, key))
+            .await?;
+        forked_head = fork.head().await?.id();
+        drop((main, fork));
+        close_local(fs).await?;
+    }
+    let journal = std::fs::read(&journal_path)?;
+    let before = usize::try_from(before)?;
+    // Each frame the fork appended ends at a power-loss point, and a frame
+    // torn anywhere, in its length, command, or checksum, is another. A
+    // frame is a 4-byte length, the command, and a 32-byte checksum.
+    let mut cuts = vec![before];
+    let mut frame = before;
+    while frame < journal.len() {
+        let length = journal
+            .get(frame..frame + 4)
+            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+            .map(u32::from_le_bytes)
+            .ok_or("fork journal frame is truncated")?;
+        let end = frame + 4 + usize::try_from(length)? + 32;
+        cuts.extend([
+            frame + 2,
+            frame + 4 + usize::try_from(length)? / 2,
+            end - 1,
+            end,
+        ]);
+        frame = end;
+    }
+    assert_eq!(frame, journal.len(), "fork frames do not end the journal");
+    // The fork of the published head is one commit.
+    assert_eq!(cuts.len(), 1 + 4, "the fork did not append one frame");
+    for length in cuts {
+        cut_journal(root, &journal, length)?;
+        let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+        let main = fs.open_workspace("repo").await?;
+        let source = main.head().await?;
+        assert_eq!(source.id(), source_id);
+        if let Ok(agent) = fs.open_workspace("agent").await {
+            assert_eq!(agent.head().await?.id(), forked_head);
+            assert_eq!(
+                agent.read("/base.txt", 16).await?,
+                Bytes::from_static(b"base")
+            );
+        }
+        let retried = main
+            .fork("agent", ForkOptions::from_generation(source, key))
+            .await?;
+        assert_eq!(retried.head().await?.id(), forked_head);
+        assert_eq!(
+            retried.read("/base.txt", 16).await?,
+            Bytes::from_static(b"base")
+        );
+        drop((main, retried));
+        close_local(fs).await?;
+    }
+    Ok(())
+}
+
+/// Deleting a local workspace releases its authority for good; a collection
+/// then releases the fork base its creation retained and reclaims what only
+/// the deleted workspace held, while its source reads as before.
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let cancellation = CancellationToken::new();
+    {
+        let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+        let main = fs.create_workspace("repo").await?;
+        main.write_text("/base.txt", "base").await?;
+        let base = main.head().await?;
+        let agent = main
+            .fork(
+                "agent",
+                ForkOptions::from_generation(base, IdempotencyKey::new()),
+            )
+            .await?;
+        agent
+            .write_text("/agent.txt", &"only the agent ".repeat(8_192))
+            .await?;
+        assert_eq!(fs.authority().authorities(64).await?.len(), 3);
+        let key = IdempotencyKey::new();
+        assert_eq!(agent.delete(key).await?, WorkspaceDelete::Deleted);
+        assert_eq!(agent.delete(key).await?, WorkspaceDelete::AlreadyDeleted);
+        assert_eq!(
+            fs.delete_workspace("agent", key).await?,
+            WorkspaceDelete::AlreadyDeleted
+        );
+        assert!(fs.open_workspace("agent").await.is_err());
+        assert!(fs.create_workspace("agent").await.is_err());
+        assert_eq!(
+            fs.authority().authorities(64).await?.len(),
+            2,
+            "the fork's authority is gone; its base is still retained"
+        );
+        // The collection runs while the source workspace is open.
+        let collected = fs.collect_local_garbage(None, &cancellation).await?;
+        assert!(collected.removed >= 1, "{collected:?}");
+        let again = fs.collect_local_garbage(None, &cancellation).await?;
+        assert_eq!(again.removed, 0);
+        assert_eq!(main.read("/base.txt", 64).await?, "base");
+        drop((main, agent));
+        close_local(fs).await?;
+    }
+
+    let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+    assert_eq!(
+        fs.authority().authorities(64).await?.len(),
+        1,
+        "the fork base went with its fork"
+    );
+    let main = fs.open_workspace("repo").await?;
+    assert_eq!(main.read("/base.txt", 64).await?, "base");
+    // Content the collection removed is stored again when written again.
+    let content = "only the agent ".repeat(8_192);
+    main.write_text("/again.txt", &content).await?;
+    drop(main);
+    close_local(fs).await?;
+    let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+    let main = fs.open_workspace("repo").await?;
+    assert_eq!(main.read("/again.txt", 1 << 20).await?, content.as_str());
+    Ok(())
+}
+
+/// Collections run back to back while a workspace keeps publishing and its
+/// forks come and go: every publication succeeds, what the deleted forks
+/// held is reclaimed, and everything live reads back after a reopen.
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let cancellation = CancellationToken::new();
+    let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+    fs.create_workspace("repo").await?;
+    let writer = tokio::spawn({
+        let fs = fs.clone();
+        async move {
+            let main = fs.open_workspace("repo").await?;
+            for round in 0..24_u32 {
+                main.write_text("/churn.txt", &round.to_string().repeat(20_000))
+                    .await?;
+                let agent = main
+                    .fork(
+                        &format!("agent-{round}"),
+                        ForkOptions::from_generation(main.head().await?, IdempotencyKey::new()),
+                    )
+                    .await?;
+                agent
+                    .write_text("/agent.txt", &format!("agent {round} ").repeat(8_192))
+                    .await?;
+                agent.delete(IdempotencyKey::new()).await?;
+            }
+            Ok::<_, WorkspaceError>(())
+        }
+    });
+    let mut removed = 0_u64;
+    while !writer.is_finished() {
+        removed += fs.collect_local_garbage(None, &cancellation).await?.removed;
+    }
+    writer.await??;
+    removed += fs.collect_local_garbage(None, &cancellation).await?.removed;
+    assert!(removed > 0);
+    close_local(fs).await?;
+
+    let fs = Fs::local(crate::LocalOptions::new(root)).await?;
+    let main = fs.open_workspace("repo").await?;
+    assert_eq!(
+        main.read("/churn.txt", 1 << 20).await?,
+        "23".repeat(20_000).as_str()
+    );
+    assert_eq!(
+        fs.collect_local_garbage(None, &cancellation).await?.removed,
+        0
+    );
+    Ok(())
+}
+
+/// A collection forgets a deleted workspace's core-state records unless a
+/// live workspace descends from it.
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let fs = Fs::local(crate::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await?;
+    let store = crate::LocalCoreStateStore::open_owned(directory.path().join("core-state"))?;
+    let distributed = crate::DistributedFs::new(fs.clone(), store.clone());
+    let main = fs.create_workspace("repo").await?;
+    main.write_text("/base.txt", "base").await?;
+    let mut children = Vec::new();
+    for name in ["kept", "deleted"] {
+        let base = main.head().await?;
+        let child = main
+            .fork(
+                name,
+                ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+            )
+            .await?;
+        distributed
+            .lineage()
+            .register_existing_child(&main, &child, base.id())
+            .await?;
+        children.push(child);
+    }
+    let deleted = children.pop().ok_or("deleted child")?;
+    let kept = children.pop().ok_or("kept child")?;
+    // A deleted parent of a live child keeps its records.
+    let grandchild_base = kept.head().await?;
+    let grandchild = kept
+        .fork(
+            "grandchild",
+            ForkOptions::from_generation(grandchild_base.clone(), IdempotencyKey::new()),
+        )
+        .await?;
+    distributed
+        .lineage()
+        .register_existing_child(&kept, &grandchild, grandchild_base.id())
+        .await?;
+    kept.delete(IdempotencyKey::new()).await?;
+    deleted.delete(IdempotencyKey::new()).await?;
+    let records = store.workspace_records().await?;
+    assert!(records.contains_key(&deleted.id()) && records.contains_key(&kept.id()));
+
+    distributed
+        .collect_garbage(&CancellationToken::new())
+        .await?;
+    let records = store.workspace_records().await?;
+    assert!(!records.contains_key(&deleted.id()));
+    assert!(
+        records.contains_key(&kept.id()),
+        "a live child descends from it"
+    );
+    assert!(records.contains_key(&grandchild.id()));
     Ok(())
 }

@@ -1,7 +1,8 @@
 use super::*;
 use crate::foundation::{Digest, FileId};
-use crate::kernel::{FileKind, NameEncoding, TreeChild, encode_tree_page, tree_page_id};
+use crate::kernel::{FileKind, NameEncoding, TreeChild, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
+use crate::storage::{ObjectKind, ObjectStore};
 use bytes::Bytes;
 use std::task::{Context, Poll, Waker};
 
@@ -415,56 +416,4 @@ fn batch_error_translation_is_total() {
         map_batch_error(BatchError::Work(WorkError::Overflow)),
         TreeReadError::Work(WorkError::Overflow)
     ));
-}
-
-#[test]
-fn authenticated_leaf_and_internal_bounds_are_total() -> Result<(), Box<dyn std::error::Error>> {
-    let entries = vec![
-        TreeEntry {
-            name: name("b")?,
-            file_id: FileId::from_bytes([1; 16]),
-            kind: FileKind::Regular,
-        },
-        TreeEntry {
-            name: name("c")?,
-            file_id: FileId::from_bytes([2; 16]),
-            kind: FileKind::Regular,
-        },
-    ];
-    assert!(validate_leaf_bounds(&entries, Some(&name("b")?), Some(&name("d")?)).is_ok());
-    assert!(matches!(
-        validate_leaf_bounds(&entries, Some(&name("a")?), None),
-        Err(TreeReadError::ChildBoundsMismatch)
-    ));
-    assert!(matches!(
-        validate_leaf_bounds(&entries, None, Some(&name("c")?)),
-        Err(TreeReadError::ChildBoundsMismatch)
-    ));
-
-    let children = vec![
-        TreeChild {
-            first_name: name("b")?,
-            page: ObjectId {
-                kind: ObjectKind::TreePage,
-                digest: Digest::from_bytes([1; 32]),
-            },
-        },
-        TreeChild {
-            first_name: name("c")?,
-            page: ObjectId {
-                kind: ObjectKind::TreePage,
-                digest: Digest::from_bytes([2; 32]),
-            },
-        },
-    ];
-    assert!(validate_internal_bounds(&children, Some(&name("b")?), Some(&name("d")?)).is_ok());
-    assert!(matches!(
-        validate_internal_bounds(&children, Some(&name("a")?), None),
-        Err(TreeReadError::ChildBoundsMismatch)
-    ));
-    assert!(matches!(
-        validate_internal_bounds(&children, None, Some(&name("c")?)),
-        Err(TreeReadError::ChildBoundsMismatch)
-    ));
-    Ok(())
 }

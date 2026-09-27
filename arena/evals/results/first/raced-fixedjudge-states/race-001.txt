@@ -1,0 +1,47 @@
+Task:
+apply_discount() in shop.py has a bug: it adds the discount instead of subtracting it. Fix it. Minimal change.
+
+=== fork A (deepseek/deepseek-v4-flash)
+Changed paths: 1
+  M shop.py
+--- a/shop.py
++++ b/shop.py
+@@ -39,7 +39,7 @@
+ 
+ def apply_discount(cents: int, percent: int) -> int:
+     # BUG: discount is added instead of subtracted
+-    return cents + cents * percent // 100
++    return cents - cents * percent // 100
+ 
+ 
+ def format_price(cents: int) -> str:
+Test output:
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK
+
+=== fork B (anthropic/claude-sonnet-5)
+Changed paths: 1
+  M shop.py
+--- a/shop.py
++++ b/shop.py
+@@ -38,8 +38,7 @@
+ 
+ 
+ def apply_discount(cents: int, percent: int) -> int:
+-    # BUG: discount is added instead of subtracted
+-    return cents + cents * percent // 100
++    return cents - cents * percent // 100
+ 
+ 
+ def format_price(cents: int) -> str:
+Test output:
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK
+
+=== verdict
+fork A (deepseek/deepseek-v4-flash): pWin 0.11 safe 0.82 complete 0.98 tests true
+fork B (anthropic/claude-sonnet-5): pWin 0.28 safe 0.82 complete 0.98 tests true

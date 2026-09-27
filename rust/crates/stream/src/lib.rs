@@ -24,13 +24,17 @@ pub mod wire {
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v2/stream_descriptor.bin");
 #[cfg(feature = "local")]
-pub use local::{LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits};
+pub use local::{
+    LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
+};
 pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
 /// Maximum records, participants, mutations, or path segments in one request.
 pub const MAX_ITEMS: usize = 1_024;
+const REPLAY_PAGE: u32 = 1_024;
+const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = 1024 * 1024 + 8 * 1024;
 /// Minimum durable replay window required from a provider.
@@ -103,7 +107,7 @@ impl fmt::Display for StreamPath {
 }
 
 /// Opaque content-bound identity of one committed envelope.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CommitId([u8; 32]);
 
 impl CommitId {
@@ -249,6 +253,16 @@ pub struct ReadRequest {
     pub limit: u32,
 }
 
+/// One atomic replay window. A cursor below `trim_point` is irrecoverable;
+/// `tail` is the next sequence and may advance immediately after observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamBounds {
+    /// Earliest sequence still readable through this path.
+    pub trim_point: u64,
+    /// Exclusive end of the currently committed history.
+    pub tail: u64,
+}
+
 /// One immutable direct child.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Child {
@@ -263,6 +277,31 @@ pub struct ChildrenRequest {
     pub parent: Option<StreamPath>,
     /// Nonzero result bound.
     pub limit: u32,
+}
+
+/// Bounded hierarchy traversal. A continuation is valid only while the
+/// provider's hierarchy version remains unchanged; callers restart on drift.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChildrenPageRequest {
+    /// Parent, or `None` for top-level paths.
+    pub parent: Option<StreamPath>,
+    /// Last path from the preceding page; exclusive.
+    pub after: Option<StreamPath>,
+    /// Last hierarchy-changing commit returned by the preceding page.
+    pub hierarchy_version: Option<CommitId>,
+    /// Nonzero result bound.
+    pub limit: u32,
+}
+
+/// One coherent hierarchy page and its continuation boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChildrenPage {
+    /// Changes only when a path is created or permanently deleted.
+    pub hierarchy_version: CommitId,
+    /// Ordered direct children, at most the requested limit.
+    pub children: Vec<Child>,
+    /// Last returned path if another page exists.
+    pub next_after: Option<StreamPath>,
 }
 
 /// Append fact retained in a committed envelope.
@@ -289,8 +328,10 @@ pub struct CommittedFork {
     pub destination: StreamPath,
     /// Exclusive inherited prefix end.
     pub forked_at: u64,
-    /// Initial destination tail.
+    /// Destination tail after the fork and its records.
     pub tail: u64,
+    /// Records appended after the inherited prefix, carrying the envelope ID.
+    pub records: Vec<Record>,
 }
 
 /// Logical trim fact retained in a committed envelope.
@@ -358,7 +399,10 @@ pub enum CommitMutation {
         /// Opaque records.
         records: Vec<Bytes>,
     },
-    /// Fork one pre-commit prefix.
+    /// Fork one pre-commit prefix into a new destination, then append
+    /// `records` to that destination, all at the commit's one
+    /// linearization point. A commit changes each path once, so this is
+    /// the only way to create a path from a prefix and extend it together.
     Fork {
         /// Source.
         source: StreamPath,
@@ -366,6 +410,8 @@ pub enum CommitMutation {
         destination: StreamPath,
         /// Exact source prefix end.
         at_tail: u64,
+        /// Opaque records appended after the prefix; may be empty.
+        records: Vec<Bytes>,
     },
     /// Advance one path's logical trim point.
     Trim {
@@ -390,6 +436,27 @@ pub struct CommitRequest {
     pub mutations: Vec<CommitMutation>,
     /// Required stable recovery identity.
     pub idempotency_key: IdempotencyKey,
+}
+
+/// Trusted clock used by providers to evaluate publication deadlines at the
+/// same linearization point as a coordinated commit.
+pub trait UnixMillisClock: Send + Sync + 'static {
+    /// Current Unix time in milliseconds.
+    fn now_unix_millis(&self) -> u64;
+}
+
+/// Production wall clock for deadline-aware providers.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemUnixMillisClock;
+
+impl UnixMillisClock for SystemUnixMillisClock {
+    fn now_unix_millis(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| {
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+            })
+    }
 }
 
 /// Failed exact condition.
@@ -466,6 +533,8 @@ pub trait StreamProvider: Send + Sync + 'static {
     ) -> Result<Option<IdempotencyObservation>, StreamError>;
     /// Current next sequence.
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError>;
+    /// Atomically observes both ends of the retained replay window.
+    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError>;
     /// Atomic append or tail conflict.
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError>;
     /// Atomic immutable-prefix fork.
@@ -489,8 +558,30 @@ pub trait StreamProvider: Send + Sync + 'static {
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError>;
     /// Lists one fixed-snapshot direct-child page.
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError>;
+    /// Traverses arbitrarily large direct-child sets without silently
+    /// duplicating or omitting entries across concurrent hierarchy changes.
+    async fn children_page(
+        &self,
+        request: ChildrenPageRequest,
+    ) -> Result<ChildrenPage, StreamError> {
+        let _ = request;
+        Err(StreamError::Unsupported)
+    }
     /// Executes one all-or-nothing optimistic commit.
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError>;
+    /// Executes one coordinated commit only if the provider's trusted clock is
+    /// strictly before `deadline_unix_millis` at the linearization point.
+    ///
+    /// Exact idempotent replay is resolved before the deadline. Providers that
+    /// cannot enforce this atomically fail closed with [`StreamError::Unsupported`].
+    async fn commit_before(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: u64,
+    ) -> Result<CommitOutcome, StreamError> {
+        let _ = (request, deadline_unix_millis);
+        Err(StreamError::Unsupported)
+    }
     /// Reads one complete immutable successful envelope.
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError>;
 }
@@ -513,6 +604,11 @@ impl<P: StreamProvider> StreamClient<P> {
     #[must_use]
     pub fn new(provider: Arc<P>) -> Self {
         Self { provider }
+    }
+
+    /// Observes the exact replay window without guessing from a failed read.
+    pub async fn bounds(&self, path: &str) -> Result<StreamBounds, StreamError> {
+        self.provider.bounds(StreamPath::new(path)?).await
     }
 
     /// Opens one path handle after local validation.
@@ -545,9 +641,38 @@ impl<P: StreamProvider> StreamClient<P> {
             .await
     }
 
+    /// Reads one page of direct children with an exact hierarchy version.
+    pub async fn children_page(
+        &self,
+        parent: Option<&str>,
+        after: Option<&str>,
+        hierarchy_version: Option<CommitId>,
+        limit: u32,
+    ) -> Result<ChildrenPage, StreamError> {
+        self.provider
+            .children_page(ChildrenPageRequest {
+                parent: parent.map(StreamPath::new).transpose()?,
+                after: after.map(StreamPath::new).transpose()?,
+                hierarchy_version,
+                limit,
+            })
+            .await
+    }
+
     /// Executes a coordinated commit.
     pub async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.provider.commit(request).await
+    }
+
+    /// Executes one coordinated commit under the provider's trusted deadline.
+    pub async fn commit_before(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: u64,
+    ) -> Result<CommitOutcome, StreamError> {
+        self.provider
+            .commit_before(request, deadline_unix_millis)
+            .await
     }
 
     /// Reads a committed envelope.
@@ -606,6 +731,11 @@ impl<P: StreamProvider> Stream<P> {
     /// Current tail.
     pub async fn tail(&self) -> Result<u64, StreamError> {
         self.client.provider.tail(self.path.clone()).await
+    }
+
+    /// Exact retained replay window observed atomically by the provider.
+    pub async fn bounds(&self) -> Result<StreamBounds, StreamError> {
+        self.client.provider.bounds(self.path.clone()).await
     }
 
     /// Unconditionally appends one record.
@@ -701,9 +831,60 @@ impl<P: StreamProvider> Stream<P> {
             .await
     }
 
+    /// Pages every record from `from` to the tail. See [`Replay`].
+    #[must_use]
+    pub fn replay(&self, from: u64) -> Replay<P> {
+        Replay {
+            stream: self.clone(),
+            next: from,
+            done: false,
+        }
+    }
+
     /// Replays from `from`, then remains live.
     pub async fn follow(&self, from: u64) -> Result<RecordStream, StreamError> {
         self.client.provider.follow(self.path.clone(), from).await
+    }
+}
+
+/// Gapless, paged replay of one stream up to its tail.
+///
+/// A path that does not exist reads as empty from zero. Every record's
+/// sequence is checked here, so callers never re-verify it; a provider that
+/// returns one out of order fails as [`StreamError::Unavailable`], like any
+/// other malformed reply.
+pub struct Replay<P> {
+    stream: Stream<P>,
+    next: u64,
+    done: bool,
+}
+
+impl<P: StreamProvider> Replay<P> {
+    /// The next page in order, or `None` once the tail is reached.
+    pub async fn next_page(&mut self) -> Result<Option<Vec<Record>>, StreamError> {
+        use futures::TryStreamExt as _;
+        if self.done {
+            return Ok(None);
+        }
+        let page = match self.stream.read(self.next, REPLAY_PAGE).await {
+            Ok(records) => records.try_collect::<Vec<_>>().await?,
+            Err(StreamError::NotFound) if self.next == 0 => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        for record in &page {
+            if record.sequence != self.next {
+                return Err(StreamError::Unavailable);
+            }
+            self.next = self.next.checked_add(1).ok_or(StreamError::LimitExceeded)?;
+        }
+        self.done = page.is_empty();
+        Ok((!self.done).then_some(page))
+    }
+
+    /// The sequence after the last record returned.
+    #[must_use]
+    pub fn cursor(&self) -> u64 {
+        self.next
     }
 }
 
@@ -738,6 +919,9 @@ pub enum StreamError {
     /// Requested sequence is beyond the current tail.
     #[error("stream sequence out of range")]
     OutOfRange,
+    /// A hierarchy changed between paginated reads; restart from the first page.
+    #[error("stream hierarchy changed during pagination")]
+    HierarchyChanged,
     /// Retry identity was reused with different arguments.
     #[error("idempotency mismatch")]
     IdempotencyMismatch,
@@ -750,4 +934,142 @@ pub enum StreamError {
     /// Required authority is unavailable.
     #[error("stream unavailable")]
     Unavailable,
+    /// A provider-evaluated commit deadline elapsed before linearization.
+    #[error("stream commit deadline elapsed")]
+    DeadlineElapsed,
+    /// The provider cannot supply a required semantic capability.
+    #[error("stream capability unsupported")]
+    Unsupported,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod replay_tests {
+    use super::*;
+    use futures::StreamExt as _;
+
+    /// Delegates to memory but drops one sequence from every read, as a
+    /// faulty provider would.
+    struct Gapped {
+        inner: MemoryStream,
+        missing: u64,
+    }
+
+    #[async_trait]
+    impl StreamProvider for Gapped {
+        async fn inspect_idempotency(
+            &self,
+            key: IdempotencyKey,
+        ) -> Result<Option<IdempotencyObservation>, StreamError> {
+            self.inner.inspect_idempotency(key).await
+        }
+        async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+            self.inner.tail(path).await
+        }
+        async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+            self.inner.bounds(path).await
+        }
+        async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+            self.inner.append(request).await
+        }
+        async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+            self.inner.fork(request).await
+        }
+        async fn trim(
+            &self,
+            path: StreamPath,
+            before: u64,
+            key: IdempotencyKey,
+        ) -> Result<TrimReceipt, StreamError> {
+            self.inner.trim(path, before, key).await
+        }
+        async fn delete(
+            &self,
+            path: StreamPath,
+            key: IdempotencyKey,
+        ) -> Result<DeleteReceipt, StreamError> {
+            self.inner.delete(path, key).await
+        }
+        async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+            let missing = self.missing;
+            let records = self.inner.read(request).await?;
+            Ok(records
+                .filter(move |record| {
+                    std::future::ready(!matches!(record, Ok(record) if record.sequence == missing))
+                })
+                .boxed())
+        }
+        async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+            self.inner.follow(path, from).await
+        }
+        async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+            self.inner.children(request).await
+        }
+        async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+            self.inner.commit(request).await
+        }
+        async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
+            self.inner.read_commit(commit_id).await
+        }
+    }
+
+    async fn filled<P: StreamProvider>(provider: P, records: u64) -> Stream<P> {
+        let stream = StreamClient::new(Arc::new(provider))
+            .stream("replay")
+            .unwrap();
+        let mut next = 0;
+        while next < records {
+            let batch = (next..records.min(next + 500))
+                .map(|sequence| Bytes::from(sequence.to_be_bytes().to_vec()))
+                .collect::<Vec<_>>();
+            next += batch.len() as u64;
+            stream.append_batch(batch, None, None).await.unwrap();
+        }
+        stream
+    }
+
+    async fn drain<P: StreamProvider>(replay: &mut Replay<P>) -> Result<Vec<u64>, StreamError> {
+        let mut sequences = Vec::new();
+        while let Some(page) = replay.next_page().await? {
+            sequences.extend(page.into_iter().map(|record| record.sequence));
+        }
+        Ok(sequences)
+    }
+
+    #[tokio::test]
+    async fn missing_stream_replays_as_empty() {
+        let stream = StreamClient::new(Arc::new(MemoryStream::new(MemoryLimits::default())))
+            .stream("absent")
+            .unwrap();
+        let mut replay = stream.replay(0);
+        assert!(drain(&mut replay).await.unwrap().is_empty());
+        assert_eq!(replay.cursor(), 0);
+        assert!(replay.next_page().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn replay_crosses_pages_in_order_from_any_cursor() {
+        let stream = filled(MemoryStream::new(MemoryLimits::default()), 2_500).await;
+        let mut replay = stream.replay(0);
+        assert_eq!(
+            drain(&mut replay).await.unwrap(),
+            (0..2_500).collect::<Vec<_>>()
+        );
+        assert_eq!(replay.cursor(), 2_500);
+        let mut replay = stream.replay(1_500);
+        assert_eq!(
+            drain(&mut replay).await.unwrap(),
+            (1_500..2_500).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn gaps_within_and_between_pages_fail_closed() {
+        for missing in [7, u64::from(REPLAY_PAGE)] {
+            let inner = MemoryStream::new(MemoryLimits::default());
+            let stream = filled(Gapped { inner, missing }, 2_100).await;
+            let mut replay = stream.replay(0);
+            assert_eq!(drain(&mut replay).await, Err(StreamError::Unavailable));
+        }
+    }
 }

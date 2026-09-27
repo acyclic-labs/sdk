@@ -6,6 +6,7 @@ use crate::foundation::{Digest, FileId, GenerationId};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// One exact semantic region whose state can affect a checkout.
@@ -112,6 +113,17 @@ pub enum DependencyUse {
     ObservationAndMutation,
 }
 
+impl DependencyUse {
+    /// The use of a region used both ways.
+    fn with(self, other: Self) -> Self {
+        if self == other {
+            self
+        } else {
+            Self::ObservationAndMutation
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CapturedState {
     expected: DependencyState,
@@ -121,10 +133,12 @@ struct CapturedState {
 /// Validated, sorted, and deduplicated checkout dependency proof.
 ///
 /// Construction pays normalization cost once. Equal-generation refresh can
-/// therefore return in constant work regardless of dependency count.
+/// therefore return in constant work regardless of dependency count. Copies
+/// share one proof until either side changes it, so snapshotting a proof for
+/// classification is constant work too.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckoutDependencies {
-    captured: BTreeMap<DependencyRegion, CapturedState>,
+    captured: Arc<BTreeMap<DependencyRegion, CapturedState>>,
 }
 
 impl CheckoutDependencies {
@@ -174,7 +188,9 @@ impl CheckoutDependencies {
                 },
             );
         }
-        Ok(Self { captured })
+        Ok(Self {
+            captured: Arc::new(captured),
+        })
     }
 
     /// Number of distinct exact regions in the proof.
@@ -190,11 +206,23 @@ impl CheckoutDependencies {
     }
 
     pub(crate) fn clear(&mut self) {
-        self.captured.clear();
+        self.captured = Arc::default();
+    }
+
+    /// Whether an observation of `region` is already part of the proof.
+    /// Observing it again against the same or a safely rebased base adds
+    /// exactly the dependency the proof already holds.
+    pub(crate) fn observes(&self, region: &DependencyRegion) -> bool {
+        self.captured.get(region).is_some_and(|state| {
+            matches!(
+                state.usage,
+                DependencyUse::Observation | DependencyUse::ObservationAndMutation
+            )
+        })
     }
 
     pub(crate) fn clear_mutations(&mut self) {
-        self.captured.retain(|_, state| match state.usage {
+        Arc::make_mut(&mut self.captured).retain(|_, state| match state.usage {
             DependencyUse::Observation => true,
             DependencyUse::Mutation => false,
             DependencyUse::ObservationAndMutation => {
@@ -216,12 +244,50 @@ impl CheckoutDependencies {
         )
     }
 
-    pub(crate) fn extend_mutations(
-        &mut self,
+    /// Validates mutation preconditions without applying them, so a caller
+    /// commits them only once its mutation has succeeded.
+    pub(crate) fn prepare_mutations(
+        &self,
         dependencies: Vec<Dependency>,
         maximum_dependencies: u32,
-    ) -> Result<(), DependencyError> {
-        self.extend(dependencies, maximum_dependencies, DependencyUse::Mutation)
+    ) -> Result<DependencyExtension, DependencyError> {
+        self.prepare(dependencies, maximum_dependencies, DependencyUse::Mutation)
+    }
+
+    /// Applies an extension prepared against this unchanged proof.
+    pub(crate) fn commit(&mut self, extension: DependencyExtension) {
+        let DependencyExtension { staged, usage } = extension;
+        let captured = Arc::make_mut(&mut self.captured);
+        for (region, expected) in staged {
+            match captured.get_mut(&region) {
+                Some(existing) => existing.usage = existing.usage.with(usage),
+                None => {
+                    captured.insert(region, CapturedState { expected, usage });
+                }
+            }
+        }
+    }
+
+    /// The proof of both this proof's and `other`'s operations over the same
+    /// base generation, or `None` when they captured one region in
+    /// different states.
+    #[cfg(any(feature = "native-mount", test))]
+    pub(crate) fn merged(&self, other: &Self) -> Option<Self> {
+        if Arc::ptr_eq(&self.captured, &other.captured) {
+            return Some(self.clone());
+        }
+        let mut merged = self.clone();
+        let captured = Arc::make_mut(&mut merged.captured);
+        for (region, state) in other.captured.iter() {
+            match captured.get_mut(region) {
+                Some(existing) if existing.expected != state.expected => return None,
+                Some(existing) => existing.usage = existing.usage.with(state.usage),
+                None => {
+                    captured.insert(region.clone(), *state);
+                }
+            }
+        }
+        Some(merged)
     }
 
     fn extend(
@@ -230,6 +296,17 @@ impl CheckoutDependencies {
         maximum_dependencies: u32,
         usage: DependencyUse,
     ) -> Result<(), DependencyError> {
+        let extension = self.prepare(dependencies, maximum_dependencies, usage)?;
+        self.commit(extension);
+        Ok(())
+    }
+
+    fn prepare(
+        &self,
+        dependencies: Vec<Dependency>,
+        maximum_dependencies: u32,
+        usage: DependencyUse,
+    ) -> Result<DependencyExtension, DependencyError> {
         if maximum_dependencies == 0 {
             return Err(DependencyError::ZeroLimit);
         }
@@ -262,23 +339,15 @@ impl CheckoutDependencies {
                 maximum: maximum_dependencies,
             });
         }
-        for (region, expected) in staged {
-            match self.captured.get_mut(&region) {
-                Some(existing) => {
-                    if existing.usage != usage
-                        && existing.usage != DependencyUse::ObservationAndMutation
-                    {
-                        existing.usage = DependencyUse::ObservationAndMutation;
-                    }
-                }
-                None => {
-                    self.captured
-                        .insert(region, CapturedState { expected, usage });
-                }
-            }
-        }
-        Ok(())
+        Ok(DependencyExtension { staged, usage })
     }
+}
+
+/// Dependencies validated against a proof but not yet applied to it.
+#[must_use]
+pub(crate) struct DependencyExtension {
+    staged: BTreeMap<DependencyRegion, DependencyState>,
+    usage: DependencyUse,
 }
 
 /// Backend-independent exact-region resolver.
@@ -416,7 +485,7 @@ pub fn classify_rebase<P: RebaseProbe>(
     let mut work = WorkCounters::default();
     let mut conflicts = Vec::new();
     let mut truncated = false;
-    for (region, captured) in &dependencies.captured {
+    for (region, captured) in dependencies.captured.iter() {
         let semantic = WorkCounters {
             items_examined: 1,
             ..WorkCounters::default()
@@ -493,7 +562,7 @@ pub async fn classify_rebase_async<P: AsyncRebaseProbe>(
     let mut work = WorkCounters::default();
     let mut conflicts = Vec::new();
     let mut truncated = false;
-    for (region, captured) in &dependencies.captured {
+    for (region, captured) in dependencies.captured.iter() {
         cancellation
             .check()
             .map_err(|_| OperationFailure::new(RebaseError::Cancelled, work))?;

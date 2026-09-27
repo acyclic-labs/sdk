@@ -1,42 +1,42 @@
 {
   "$schema": "schemas/compatibility.schema.json",
   "status": "candidate",
-  "umbrellaVersion": "0.1.0-rc.6",
+  "umbrellaVersion": "0.1.5",
   "families": {
     "harness": {
-      "version": "0.1.0-rc.1",
-      "schemaDigest": "sha256:fbdb2ccaf9a7fdf64d5959f4b01d471bf23524ddf6cb5355aac6741d6be9a8b3",
-      "conformanceDigest": "sha256:aa8c338e694ba2e9d31beec258a64fe12358d78981eaf08143c7909e2ce2220d"
+      "version": "0.1.5",
+      "schemaDigest": "sha256:45f93fd4baa7d3f3fafd61bfa6d4666b8ba294199e4f41208d16bbb7592a64a7",
+      "conformanceDigest": "sha256:055b99a04ac5046eaa0e547c8c9f8af27c663dded72b5dcce49212c3bb2ea3fb"
     },
     "filesystem": {
-      "version": "0.2.0-rc.5",
-      "crateVersion": "0.2.0-rc.5",
-      "schemaDigest": "sha256:a71f48d93e5eb2f1e980bb2979ec929a442e7e17dc9b0a5f252ee3f6ea7515f9",
-      "descriptorDigest": "sha256:f20920641933f045e6b848c862d391a5655feb03f1e9bf004c5b061aab515130",
+      "version": "0.1.5",
+      "crateVersion": "0.1.5",
+      "schemaDigest": "sha256:ce4a762798a6a7363598a88271806f58712aeff6647c538214d32297c2f395d6",
+      "descriptorDigest": "sha256:7df77e5fe353e809b9e02b35b331a7052414e691cb88007690f289065191631c",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
-      "version": "1.0.0-rc.7",
-      "crateVersion": "1.0.0-rc.7",
-      "schemaDigest": "sha256:975f0a4ba0e24fe42316c86456e3870f61f07624eec0b430617fa8a3fdd0c305",
-      "descriptorDigest": "sha256:d69361b6290d521113a65a35dfe1ff8988a8f670c6ddf6535242aee3df871d0b",
-      "conformanceDigest": "sha256:a5f3b11cedd1df8b01ca9fdd9b1351475f2f2cd2bcf7ff46c332978f65336aae"
+      "version": "0.1.5",
+      "crateVersion": "0.1.5",
+      "schemaDigest": "sha256:a565f4cc3aefcd6314af161a94f3aec78ef4c0f02a8adc9dae2e0cfca2b8c961",
+      "descriptorDigest": "sha256:51fffc15a1baa405d91feccfbaf4e5a5bea75d651209c1bb7b013cf15b0187bf",
+      "conformanceDigest": "sha256:2b66f3df94ff080c6c9935ee23f8259e05c433c9a4b24c2d4529e2bac4784c37"
     },
     "objects": {
-      "version": "1.0.0-rc.4",
-      "crateVersion": "1.0.0-rc.4",
+      "version": "0.1.5",
+      "crateVersion": "0.1.5",
       "schemaDigest": "sha256:06627627b50fac3f780c2e36e1bb79f6f22eedc4112c805a3ac8009279067b95",
       "descriptorDigest": "sha256:a8f752994e10dda894fd3f41ce2aa720d92d86acf05e83bfc5c763491253ff7c",
       "conformanceDigest": "sha256:a473cb36590f3d05d7c749f2e35c13e9783c2cbc8ef0bb569b91b2e88dbaad7b"
     },
     "machines": {
-      "version": "1.0.0-rc.7",
-      "schemaDigest": "sha256:0a512bd7c81d2fdaf2d4790869da6ed9b30795575c146f9ec9ba9a5f05d5fa2a",
-      "descriptorDigest": "sha256:feecab59d30a2033fdbae96f63f6db42e7f6c77bfef6fc66c0955c153d1c3916",
-      "conformanceDigest": "sha256:b32915837f981a26c4b6573f00feac9409f9392015c209d12ecbdce24e328dd0"
+      "version": "0.1.5",
+      "schemaDigest": "sha256:1620d70c638584b29e76bcdf7e50aa3585b456d2f31a9a38f58c0eea4e1ab287",
+      "descriptorDigest": "sha256:59492735a5aaec6598c21fe91a0873772d7f3f1c36e9fedfb384d4d8abff154c",
+      "conformanceDigest": "sha256:78ce0d6b9c5226aad67d96de4a4a4f9c9723a144ce58c5dcad63590b88d5d682"
     },
     "inference": {
-      "version": "1.0.0-rc.8",
+      "version": "0.1.5",
       "schemaDigest": "sha256:4d1f859232ffa9c70a78bc212f427a16c53970f14537f74b542df5cfd5354b52",
       "descriptorDigest": "sha256:bd862944229790a069913347540c7ca994aef60d5551912c785ccb928ac77d85",
       "conformanceDigest": "sha256:9eb850dd6cbd5fa53745a00fe19800fc3a2773ed4fa5f70c5d7be84a33b9948c"

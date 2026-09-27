@@ -1,5 +1,14 @@
 import type { BrowserFsOptions, FsVolumeEngine, WasmBindings } from "./contracts.js";
-import { adaptWasmFs } from "./wasm-adapter.js";
+import type {
+  CompatibilityWire,
+  OperationWindowCoordinator,
+  WorkspaceContextRegistry,
+} from "./compat.js";
+import { adaptCompatibilityWire } from "./compat.js";
+import {
+  adaptWasmFs,
+  adaptWasmWorkspaceContextRegistry,
+} from "./wasm-adapter.js";
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
@@ -14,6 +23,9 @@ async function bindings(): Promise<WasmBindings> {
     const typed = module as WasmBindings;
     await typed.default();
     return typed;
+  }).catch((error: unknown) => {
+    bindingsPromise = undefined;
+    throw error;
   });
   return bindingsPromise;
 }
@@ -23,4 +35,24 @@ export async function openBrowserFs(options: BrowserFsOptions): Promise<FsVolume
     throw new RangeError("browser filesystem options must be bounded and non-empty");
   }
   return adaptWasmFs(await (await bindings()).openBrowserFs(options));
+}
+
+/** Opens the canonical Rust merge/publication wire codec. */
+export async function openBrowserCompatibilityWire(): Promise<CompatibilityWire> {
+  return adaptCompatibilityWire(await bindings());
+}
+
+/** Creates a process-local recursive workspace-context registry. */
+export async function openBrowserWorkspaceContextRegistry(): Promise<WorkspaceContextRegistry> {
+  const binding = await bindings();
+  return adaptWasmWorkspaceContextRegistry(new binding.BrowserWorkspaceContextRegistry());
+}
+
+/**
+ * Browser persistence cannot yet fence publication with operation leases.
+ * Fail explicitly instead of returning a coordinator whose permits the
+ * IndexedDB/OPFS authority would always reject.
+ */
+export async function openBrowserOperationWindowCoordinator(): Promise<OperationWindowCoordinator> {
+  throw new Error("browser operation windows are unsupported by the persistent authority");
 }

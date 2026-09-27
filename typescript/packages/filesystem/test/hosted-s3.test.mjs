@@ -24,11 +24,11 @@ import {
 import {
   CapabilitySchema,
   CapabilitySetSchema,
-  HandshakeResponseSchema as HarnessHandshakeResponseSchema,
+  HandshakeResponseSchema as ProtocolHandshakeResponseSchema,
   ProtocolIdentitySchema,
-} from "../generated/proto/harness/v1/harness_pb.js";
+} from "../generated/proto/protocol/v1/protocol_pb.js";
 
-const descriptorDigest = "371d83258cb3ff55f97e01011ded1b0222e586df09c229c4f42dfb9a37952d4e";
+const descriptorDigest = "83c50f0de80d2e1b73094283b8b54f8b37684327660c6f77b02311e9721f32c8";
 
 const workspaceRef = create(WorkspaceRefSchema, {
   workspaceId: new Uint8Array(16).fill(1),
@@ -61,7 +61,7 @@ function frame(flag, payload) {
 
 function validHandshake(sourceReconciliation = false) {
   return create(HandshakeResponseSchema, {
-    harness: create(HarnessHandshakeResponseSchema, {
+    protocol: create(ProtocolHandshakeResponseSchema, {
       protocol: create(ProtocolIdentitySchema, { version: "1", descriptorDigest }),
       supported: create(CapabilitySetSchema, {
         capabilities: [create(CapabilitySchema, { name: "filesystem", version: "1" })],
@@ -312,17 +312,17 @@ test("hosted transaction commits respect the negotiated conflict limit", async (
 });
 
 test("hosted discovery rejects an incomplete or incompatible handshake", async () => {
-  const missingHarness = create(HandshakeResponseSchema, {
+  const missingProtocol = create(HandshakeResponseSchema, {
     capabilities: validHandshake().capabilities,
   });
   await expect(openHostedFs({
     endpoint: "https://filesystem.example.test",
     bearerToken: "token",
-    fetch: fixtureFetch([], "s3", undefined, missingHarness),
+    fetch: fixtureFetch([], "s3", undefined, missingProtocol),
   })).rejects.toEqual(new HostedFsError("invalid_response", "handshake response is absent"));
 
   const wrongDigest = validHandshake();
-  wrongDigest.harness.protocol.descriptorDigest = "substituted";
+  wrongDigest.protocol.protocol.descriptorDigest = "substituted";
   await expect(openHostedFs({
     endpoint: "https://filesystem.example.test",
     bearerToken: "token",

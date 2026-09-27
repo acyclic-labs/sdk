@@ -227,16 +227,13 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
     };
     let (sender, receiver) = sync_channel(1);
     let queued = Arc::new(AtomicU32::new(0));
-    let shared = Arc::new(Mutex::new(SharedState {
-        invalidation: None,
-        pending_rename: None,
-    }));
+    let shared = Arc::new(Mutex::new(SharedState::new(None)));
     for event in [
         tracked_rename(RenameMode::From, vec![from.clone()], 7),
         tracked_rename(RenameMode::To, vec![to.clone()], 7),
         tracked_rename(RenameMode::Both, vec![from, to], 7),
     ] {
-        accept_native_event(Ok(event), &context, &sender, &shared, &queued);
+        accept_native_event(&Ok(event), &context, &sender, &shared, &queued);
     }
     assert_eq!(
         shared.lock().map_err(|_| "poisoned")?.seal_invalidation(),
@@ -307,12 +304,9 @@ fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std:
     for events in scenarios {
         let (sender, receiver) = sync_channel(1);
         let queued = Arc::new(AtomicU32::new(0));
-        let shared = Arc::new(Mutex::new(SharedState {
-            invalidation: None,
-            pending_rename: None,
-        }));
+        let shared = Arc::new(Mutex::new(SharedState::new(None)));
         for event in events {
-            accept_native_event(Ok(event), &context, &sender, &shared, &queued);
+            accept_native_event(&Ok(event), &context, &sender, &shared, &queued);
         }
         assert_eq!(
             shared.lock().map_err(|_| "poisoned")?.seal_invalidation(),
@@ -429,11 +423,7 @@ fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
     let root = PathBuf::from(if cfg!(windows) { r"C:\root" } else { "/root" });
     let (sender, _receiver) = sync_channel(1);
     let queued = Arc::new(AtomicU32::new(0));
-    let shared = Arc::new(Mutex::new(SharedState {
-        invalidation: None,
-        #[cfg(target_os = "linux")]
-        pending_rename: None,
-    }));
+    let shared = Arc::new(Mutex::new(SharedState::new(None)));
     let context = NativeEventContext {
         root: root.clone(),
         root_identity: NativeRootIdentity {
@@ -447,7 +437,7 @@ fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
     };
     for name in ["a", "b"] {
         accept_native_event(
-            Ok(event(
+            &Ok(event(
                 EventKind::Create(CreateKind::File),
                 vec![root.join(name)],
             )),
@@ -597,8 +587,9 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
     let empty = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
     assert_eq!(empty.work.backend_read_operations, 1);
 
-    std::fs::write(directory.path().join("observed"), b"content")?;
+    std::fs::write(directory.path().join("observed-0"), b"content")?;
     let deadline = Instant::now() + Duration::from_secs(5);
+    let mut retries = 0_u8;
     let observed = loop {
         let receipt = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
         match receipt.value {
@@ -607,6 +598,21 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
                 std::thread::sleep(Duration::from_millis(10));
             }
             WatchBatch::Changes { .. } => return Err("native watcher timed out".into()),
+            WatchBatch::RescanRequired {
+                reason: WatchInvalidationReason::NativeRescanRequired,
+                ..
+            } if cfg!(target_os = "macos") && retries < 3 => {
+                // FSEvents may deliver the watched root's creation hint after
+                // the first baseline. Rebaseline, then demand a precise event
+                // for a fresh write rather than accepting permanent rescans.
+                retries += 1;
+                let _ = watch.begin_rescan()?;
+                let _ = watch.finish_rescan()?;
+                std::fs::write(
+                    directory.path().join(format!("observed-{retries}")),
+                    b"content",
+                )?;
+            }
             WatchBatch::RescanRequired { reason, .. } => {
                 return Err(format!("native watcher invalidated: {reason}").into());
             }
@@ -619,6 +625,109 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
         | WatchChange::Removed(path) => path.depth() <= 1,
         WatchChange::Renamed { from, to } => from.depth() <= 1 && to.depth() <= 1,
     }));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directories()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("observed"))?;
+    let file = root.path().join("observed/file");
+    std::fs::write(&file, b"before")?;
+    let mut options = NativeWatchOptions::new(VolumeLimits::default());
+    options.recursive = false;
+    let mut watch = NativeWatch::open(root.path(), options)?;
+    watch.accept_lazy_baseline()?;
+
+    std::fs::write(&file, b"unobserved")?;
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(matches!(
+        watch
+            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value,
+        WatchBatch::Changes { changes, .. } if changes.is_empty()
+    ));
+
+    let portable = crate::path::PortablePath::parse("/observed", VolumeLimits::default())?;
+    let observed = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
+    watch.watch_directory(&observed)?;
+    std::fs::write(&file, b"after")?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match watch
+            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value
+        {
+            WatchBatch::Changes { changes, .. }
+                if changes.iter().any(|change| match change {
+                    WatchChange::Created(path)
+                    | WatchChange::Modified(path)
+                    | WatchChange::MetadataChanged(path)
+                    | WatchChange::Removed(path) => path.depth() == 2,
+                    WatchChange::Renamed { from, to } => from.depth() == 2 || to.depth() == 2,
+                }) =>
+            {
+                break;
+            }
+            WatchBatch::Changes { .. } if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            WatchBatch::Changes { .. } => return Err("demand watcher timed out".into()),
+            WatchBatch::RescanRequired { reason, .. } => {
+                return Err(format!("demand watcher invalidated: {reason}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+
+    let root = tempfile::tempdir()?;
+    let mut options = NativeWatchOptions::new(VolumeLimits::default());
+    options.recursive = false;
+    let mut watch = NativeWatch::open(root.path(), options)?;
+    watch.accept_lazy_baseline()?;
+
+    let portable = crate::path::PortablePath::parse("/future/child", VolumeLimits::default())?;
+    let absent = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
+    watch.watch_directory(&absent)?;
+    std::fs::create_dir(root.path().join("future"))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match watch
+            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value
+        {
+            WatchBatch::Changes { changes, .. }
+                if changes.iter().any(|change| match change {
+                    WatchChange::Created(path)
+                    | WatchChange::Modified(path)
+                    | WatchChange::MetadataChanged(path)
+                    | WatchChange::Removed(path) => path.depth() == 1,
+                    WatchChange::Renamed { from, to } => from.depth() == 1 || to.depth() == 1,
+                }) =>
+            {
+                break;
+            }
+            WatchBatch::Changes { .. } if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            WatchBatch::Changes { .. } => return Err("demand watcher timed out".into()),
+            WatchBatch::RescanRequired { reason, .. } => {
+                return Err(format!("demand watcher invalidated: {reason}").into());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -707,5 +816,98 @@ fn live_native_backend_saturation_fails_closed_and_recovers()
     let epoch = watch.begin_rescan()?;
     assert!(epoch.get() > 1);
     assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
+    Ok(())
+}
+
+#[test]
+fn fence_queues_every_completed_write_and_hides_its_cookie()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::time::{Duration, Instant};
+
+    let directory = tempfile::tempdir()?;
+    std::fs::create_dir(directory.path().join(".git"))?;
+    let limits = VolumeLimits::default();
+    let excluded = [".acyclic-sdk", ".git"]
+        .into_iter()
+        .map(|name| {
+            relative_namespace_path(
+                directory.path(),
+                &directory.path().join(name),
+                native_filesystem_profile(),
+                limits,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut watch = NativeWatch::open(directory.path(), NativeWatchOptions::new(limits))?;
+    watch.exclude_subtrees(&excluded)?;
+    let mut observed = Vec::new();
+    for attempt in 0..4 {
+        let _ = watch.begin_rescan()?;
+        let _ = watch.finish_rescan()?;
+        std::fs::write(directory.path().join(format!("written-{attempt}")), b"x")?;
+        watch.fence(Duration::from_secs(5))?;
+        match watch
+            .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value
+        {
+            WatchBatch::Changes { changes, .. } => {
+                observed = changes;
+                break;
+            }
+            // FSEvents may replay the temporary root's creation after the
+            // first baseline; rebaseline and fence a fresh write.
+            WatchBatch::RescanRequired { .. } if cfg!(target_os = "macos") => {}
+            WatchBatch::RescanRequired { reason, .. } => {
+                return Err(format!("fence invalidated the watcher: {reason}").into());
+            }
+        }
+    }
+    assert!(
+        !observed.is_empty(),
+        "the fenced write must already be queued"
+    );
+    assert!(observed.iter().all(|change| match change {
+        WatchChange::Created(path)
+        | WatchChange::Modified(path)
+        | WatchChange::MetadataChanged(path)
+        | WatchChange::Removed(path) => !excluded.iter().any(|excluded| path.is_within(excluded)),
+        WatchChange::Renamed { .. } => false,
+    }));
+    assert!(!directory.path().join(".acyclic-sdk").exists());
+
+    let started = Instant::now();
+    for _ in 0..20 {
+        watch.fence(Duration::from_secs(5))?;
+    }
+    eprintln!("fence latency: {:?} per fence", started.elapsed() / 20);
+    assert!(matches!(
+        watch
+            .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value,
+        WatchBatch::Changes { changes, .. } if changes.is_empty()
+    ));
+    Ok(())
+}
+
+#[test]
+fn an_unplaceable_fence_demands_a_rescan_instead_of_failing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut watch = NativeWatch::open(
+        directory.path(),
+        NativeWatchOptions::new(VolumeLimits::default()),
+    )?;
+    let _ = watch.begin_rescan()?;
+    let _ = watch.finish_rescan()?;
+    watch.fence(std::time::Duration::from_secs(5))?;
+    assert!(matches!(
+        watch
+            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value,
+        WatchBatch::RescanRequired {
+            reason: WatchInvalidationReason::NativeRescanRequired,
+            ..
+        }
+    ));
     Ok(())
 }

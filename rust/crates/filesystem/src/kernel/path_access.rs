@@ -10,6 +10,7 @@ use super::{
 };
 use crate::async_storage::{self, AsyncObjectStore};
 use crate::cancellation::CancellationToken;
+use crate::heap_future::in_heap;
 use crate::model::{FilesystemProfile, VolumeConfig, VolumeConfigError};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
@@ -28,6 +29,10 @@ struct CachedObject {
 }
 
 struct CacheState {
+    /// Open-addressed table, a power of two long, grown by doubling up to
+    /// [`OperationReadCache::slot_limit`] as entries arrive: most operations
+    /// read a few objects, so reserving the whole bound up front would clear
+    /// memory they never touch.
     slots: Vec<Option<CachedObject>>,
     entry_count: usize,
     retained_owned_bytes: u64,
@@ -38,8 +43,14 @@ struct OperationReadCache<'a, S> {
     store: &'a S,
     state: Mutex<CacheState>,
     maximum_entries: usize,
+    slot_limit: usize,
+    /// The table's full bound, which the operation's work accounts for
+    /// whether or not it grows that far.
     metadata_bytes: u64,
 }
+
+/// Slots a new cache starts with.
+const INITIAL_CACHE_SLOTS: usize = 16;
 
 impl<'a, S> OperationReadCache<'a, S> {
     fn new(
@@ -53,32 +64,35 @@ impl<'a, S> OperationReadCache<'a, S> {
             .ok_or_else(|| {
                 OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
             })?;
-        let requested = u64::try_from(slot_count)
+        let table = u64::try_from(slot_count)
             .unwrap_or(u64::MAX)
             .checked_mul(u64::try_from(size_of::<Option<CachedObject>>()).unwrap_or(u64::MAX))
             .ok_or_else(|| {
                 OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
             })?;
+        // Charged for the table's whole life up front: growing to its
+        // limit holds the last half-size table beside the full one, and
+        // allocates once per doubling.
+        let requested = table.saturating_add(table / 2);
+        let allocations = 1 + u64::from(
+            (slot_count / INITIAL_CACHE_SLOTS.min(slot_count).max(1)).trailing_zeros(),
+        );
         WorkCounters {
-            allocation_operations: 1,
+            allocation_operations: allocations,
             peak_allocation_bytes: requested,
             ..WorkCounters::default()
         }
         .verify(budget)
         .map_err(|error| OperationFailure::before_work(error.into()))?;
         let mut slots = Vec::new();
+        let initial = slot_count.min(INITIAL_CACHE_SLOTS);
         slots
-            .try_reserve_exact(slot_count)
+            .try_reserve_exact(initial)
             .map_err(|_| OperationFailure::before_work(PathLookupError::AllocationFailed))?;
-        slots.resize_with(slot_count, || None);
-        let metadata_bytes = u64::try_from(slots.capacity())
-            .unwrap_or(u64::MAX)
-            .checked_mul(u64::try_from(size_of::<Option<CachedObject>>()).unwrap_or(u64::MAX))
-            .ok_or_else(|| {
-                OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
-            })?;
+        slots.resize_with(initial, || None);
+        let metadata_bytes = requested;
         let work = WorkCounters {
-            allocation_operations: 1,
+            allocation_operations: allocations,
             peak_allocation_bytes: metadata_bytes,
             ..WorkCounters::default()
         };
@@ -94,48 +108,64 @@ impl<'a, S> OperationReadCache<'a, S> {
                     external_resident_bytes: 0,
                 }),
                 maximum_entries,
+                slot_limit: slot_count,
                 metadata_bytes,
             },
             work,
         ))
     }
 
-    fn probe(
-        &self,
-        object_id: ObjectId,
-    ) -> Result<(Option<ObjectRead>, usize, u64), ObjectFailure> {
-        let state = self.lock_state();
-        let mask = state.slots.len() - 1;
-        let mut index = object_hash(object_id) & mask;
-        let mut examined = 0_u64;
-        for _ in 0..state.slots.len() {
-            examined = examined.saturating_add(1);
-            #[allow(
-                clippy::indexing_slicing,
-                reason = "OperationReadCache::new computes slot_count via checked_next_power_of_two, so state.slots.len() is always a power of two; index is initialized as `object_hash(object_id) & mask` and updated only as `(index + 1) & mask` where `mask = state.slots.len() - 1`, so index is always < state.slots.len()"
-            )]
-            match &state.slots[index] {
-                Some(entry) if entry.object_id == object_id => {
-                    return Ok((
-                        Some(ObjectRead {
-                            bytes: entry.bytes.clone(),
-                            retention: ObjectReadRetention::Shared,
-                        }),
-                        index,
-                        examined,
-                    ));
-                }
-                Some(_) => index = (index + 1) & mask,
-                None => return Ok((None, index, examined)),
-            }
+    fn probe(&self, object_id: ObjectId) -> Result<(Option<ObjectRead>, u64), ObjectFailure> {
+        let (hit, _, examined) = probe_slots(&self.lock_state().slots, object_id)?;
+        Ok((hit, examined))
+    }
+
+    /// Keeps `bytes` as `object_id`'s content, growing the table while it is
+    /// at least half full; true when it was kept.
+    fn admit(&self, object_id: ObjectId, bytes: &Bytes) -> Result<bool, ObjectStoreError> {
+        let mut state = self.lock_state();
+        if state.entry_count >= self.maximum_entries {
+            return Ok(false);
         }
-        Err(ObjectFailure::new(
-            ObjectStoreError::Corrupt,
-            WorkCounters {
-                items_examined: examined,
-                ..WorkCounters::default()
-            },
-        ))
+        if state.entry_count.saturating_mul(2) >= state.slots.len()
+            && state.slots.len() < self.slot_limit
+        {
+            let length = state.slots.len().saturating_mul(2).min(self.slot_limit);
+            let mut grown = Vec::new();
+            grown
+                .try_reserve_exact(length)
+                .map_err(|_| ObjectStoreError::Work(WorkError::Overflow))?;
+            grown.resize_with(length, || None);
+            for entry in std::mem::take(&mut state.slots).into_iter().flatten() {
+                let (_, vacant, _) =
+                    probe_slots(&grown, entry.object_id).map_err(|failure| failure.error)?;
+                #[allow(
+                    clippy::indexing_slicing,
+                    reason = "probe_slots returns an index masked by the table's power-of-two length"
+                )]
+                {
+                    grown[vacant] = Some(entry);
+                }
+            }
+            state.slots = grown;
+        }
+        let (hit, vacant, _) =
+            probe_slots(&state.slots, object_id).map_err(|failure| failure.error)?;
+        if hit.is_some() {
+            return Ok(false);
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "probe_slots returns an index masked by the table's power-of-two length"
+        )]
+        {
+            state.slots[vacant] = Some(CachedObject {
+                object_id,
+                bytes: bytes.clone(),
+            });
+        }
+        state.entry_count += 1;
+        Ok(true)
     }
 
     fn resident_bytes(&self) -> Result<u64, ObjectFailure> {
@@ -162,6 +192,46 @@ impl<'a, S> OperationReadCache<'a, S> {
             Err(poisoned) => poisoned.into_inner(),
         }
     }
+}
+
+/// Finds `object_id` in an open-addressed `slots` table whose length is a
+/// power of two: its content if present, the slot where it belongs, and the
+/// slots examined.
+fn probe_slots(
+    slots: &[Option<CachedObject>],
+    object_id: ObjectId,
+) -> Result<(Option<ObjectRead>, usize, u64), ObjectFailure> {
+    let mask = slots.len() - 1;
+    let mut index = object_hash(object_id) & mask;
+    let mut examined = 0_u64;
+    for _ in 0..slots.len() {
+        examined = examined.saturating_add(1);
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "every table OperationReadCache builds is a power of two long (a power-of-two limit, a start below it, and doublings); index is initialized as `object_hash(object_id) & mask` and updated only as `(index + 1) & mask` where `mask = slots.len() - 1`, so index is always < slots.len()"
+        )]
+        match &slots[index] {
+            Some(entry) if entry.object_id == object_id => {
+                return Ok((
+                    Some(ObjectRead {
+                        bytes: entry.bytes.clone(),
+                        retention: ObjectReadRetention::Shared,
+                    }),
+                    index,
+                    examined,
+                ));
+            }
+            Some(_) => index = (index + 1) & mask,
+            None => return Ok((None, index, examined)),
+        }
+    }
+    Err(ObjectFailure::new(
+        ObjectStoreError::Corrupt,
+        WorkCounters {
+            items_examined: examined,
+            ..WorkCounters::default()
+        },
+    ))
 }
 
 fn object_hash(object_id: ObjectId) -> usize {
@@ -280,7 +350,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<ObjectRead> {
-        let (hit, vacant_slot, examined) = self.probe(object_id)?;
+        let (hit, examined) = self.probe(object_id)?;
         let hit_work = WorkCounters {
             items_examined: examined,
             ..WorkCounters::default()
@@ -323,17 +393,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
         };
         let work = merge_backend_peak(hit_work, receipt.work, resident, budget)?;
-        let mut state = self.lock_state();
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "vacant_slot is the index returned by probe(), which only ever returns an index bounded by its own `& mask` invariant (see probe's match on state.slots[index]); state.slots is created once in OperationReadCache::new and never resized afterward, so that bound still holds against this (possibly different) MutexGuard borrow of the same Vec"
-        )]
-        if state.entry_count < self.maximum_entries && state.slots[vacant_slot].is_none() {
-            state.slots[vacant_slot] = Some(CachedObject {
-                object_id,
-                bytes: receipt.value.bytes.clone(),
-            });
-            state.entry_count += 1;
+        let admitted = self
+            .admit(object_id, &receipt.value.bytes)
+            .map_err(|error| ObjectFailure::new(error, work))?;
+        if admitted {
+            let mut state = self.lock_state();
             state.retained_owned_bytes = state
                 .retained_owned_bytes
                 .checked_add(owned_bytes)
@@ -362,7 +426,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<bool> {
-        let (hit, _, examined) = self.probe(object_id)?;
+        let (hit, examined) = self.probe(object_id)?;
         if hit.is_some() {
             let work = WorkCounters {
                 items_examined: examined,
@@ -414,6 +478,17 @@ pub struct ObservedPathLookup {
     /// Ordinary no-follow result.
     pub lookup: PathLookup,
     /// Positive namespace edges, terminal record, or exact negative edge.
+    pub dependencies: Vec<Dependency>,
+}
+
+/// A shared path batch plus the canonical regions observed while resolving
+/// every path in it: exactly the union of what [`observe_path_async`]
+/// captures for each path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservedPathBatch {
+    /// Ordinary batch result.
+    pub lookup: PathBatchLookup,
+    /// Positive namespace edges and terminal records, or exact negative edges.
     pub dependencies: Vec<Dependency>,
 }
 
@@ -576,88 +651,91 @@ pub async fn lookup_path_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<PathLookup, PathLookupFailure> {
-    cancellation.check().map_err(|_| {
-        OperationFailure::before_work(PathLookupError::Tree(TreeReadError::Cancelled))
-    })?;
-    validate_path(path, config)?;
-    let limits = decode_limits(config);
-    let maximum_cache_entries = maximum_cache_entries(path, config)?;
-    let (cache, mut work) = OperationReadCache::new(store, maximum_cache_entries, budget)?;
-    let root = lookup_file_record_async(
-        &cache,
-        generation.file_table,
-        generation.root_file_id,
-        limits,
-        remaining(work, budget)?,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::FileTable))?;
-    work = add(work, root.work)?;
-    let mut current = root
-        .record
-        .ok_or_else(|| OperationFailure::new(PathLookupError::MissingRootRecord, work))?;
-    if path.is_root() {
-        return Ok(PathLookup {
-            record: Some(current),
-            parent: None,
-            resolved_components: 0,
-            work,
-        });
-    }
-
-    let mut parent = None;
-    for (index, component) in path.components().iter().enumerate() {
-        parent = Some(current);
-        let FilePayload::Directory { entries } = current.payload else {
-            return Err(OperationFailure::new(PathLookupError::NotDirectory, work));
-        };
-        if current.kind != FileKind::Directory {
-            return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
-        }
-        let binding = lookup_tree_entry_async(
-            &cache,
-            entries,
-            component,
-            limits,
-            remaining(work, budget)?,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Tree))?;
-        work = add(work, binding.work)?;
-        let Some(binding) = binding.entry else {
-            return Ok(PathLookup {
-                record: None,
-                parent,
-                resolved_components: u16::try_from(index).unwrap_or(u16::MAX),
-                work,
-            });
-        };
-        let record = lookup_file_record_async(
+    in_heap(move || async move {
+        cancellation.check().map_err(|_| {
+            OperationFailure::before_work(PathLookupError::Tree(TreeReadError::Cancelled))
+        })?;
+        validate_path(path, config)?;
+        let limits = decode_limits(config);
+        let maximum_cache_entries = maximum_cache_entries(path, config)?;
+        let (cache, mut work) = OperationReadCache::new(store, maximum_cache_entries, budget)?;
+        let root = lookup_file_record_async(
             &cache,
             generation.file_table,
-            binding.file_id,
+            generation.root_file_id,
             limits,
             remaining(work, budget)?,
             cancellation,
         )
         .await
         .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::FileTable))?;
-        work = add(work, record.work)?;
-        current = record
+        work = add(work, root.work)?;
+        let mut current = root
             .record
-            .ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?;
-        if current.kind != binding.kind {
-            return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
+            .ok_or_else(|| OperationFailure::new(PathLookupError::MissingRootRecord, work))?;
+        if path.is_root() {
+            return Ok(PathLookup {
+                record: Some(current),
+                parent: None,
+                resolved_components: 0,
+                work,
+            });
         }
-    }
-    Ok(PathLookup {
-        record: Some(current),
-        parent,
-        resolved_components: u16::try_from(path.depth()).unwrap_or(u16::MAX),
-        work,
+
+        let mut parent = None;
+        for (index, component) in path.components().iter().enumerate() {
+            parent = Some(current);
+            let FilePayload::Directory { entries } = current.payload else {
+                return Err(OperationFailure::new(PathLookupError::NotDirectory, work));
+            };
+            if current.kind != FileKind::Directory {
+                return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
+            }
+            let binding = lookup_tree_entry_async(
+                &cache,
+                entries,
+                component,
+                limits,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Tree))?;
+            work = add(work, binding.work)?;
+            let Some(binding) = binding.entry else {
+                return Ok(PathLookup {
+                    record: None,
+                    parent,
+                    resolved_components: u16::try_from(index).unwrap_or(u16::MAX),
+                    work,
+                });
+            };
+            let record = lookup_file_record_async(
+                &cache,
+                generation.file_table,
+                binding.file_id,
+                limits,
+                remaining(work, budget)?,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::FileTable))?;
+            work = add(work, record.work)?;
+            current = record
+                .record
+                .ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?;
+            if current.kind != binding.kind {
+                return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
+            }
+        }
+        Ok(PathLookup {
+            record: Some(current),
+            parent,
+            resolved_components: u16::try_from(path.depth()).unwrap_or(u16::MAX),
+            work,
+        })
     })
+    .await
 }
 
 /// Resolves one path and captures the exact semantic regions needed for a safe rebase.
@@ -712,48 +790,70 @@ async fn observe_path_with_terminal_async<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
     capture_terminal: bool,
 ) -> Result<ObservedPathLookup, PathLookupFailure> {
-    cancellation.check().map_err(|_| {
-        OperationFailure::before_work(PathLookupError::Tree(TreeReadError::Cancelled))
-    })?;
-    validate_path(path, config)?;
+    in_heap(move || async move {
+        cancellation.check().map_err(|_| {
+            OperationFailure::before_work(PathLookupError::Tree(TreeReadError::Cancelled))
+        })?;
+        validate_path(path, config)?;
 
-    let limits = decode_limits(config);
-    let maximum_cache_entries = maximum_cache_entries(path, config)?;
-    let (cache, mut work) = OperationReadCache::new(store, maximum_cache_entries, budget)?;
-    let mut allocations = AllocationLedger::default();
-    let mut dependencies = reserve_fixed::<Dependency>(
-        path.depth().saturating_add(1),
-        &mut allocations,
-        &mut work,
-        budget,
-    )?;
-    let dependency_vector_bytes = allocations.live_bytes();
-    cache
-        .add_external_resident_bytes(dependency_vector_bytes)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let combined_resident = cache
-        .resident_bytes()
-        .map_err(|failure| OperationFailure::new(map_cache_error(failure.error), work))?;
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(combined_resident);
-    work.verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let limits = decode_limits(config);
+        let maximum_cache_entries = maximum_cache_entries(path, config)?;
+        let (cache, mut work) = OperationReadCache::new(store, maximum_cache_entries, budget)?;
+        let mut allocations = AllocationLedger::default();
+        let mut dependencies = reserve_fixed::<Dependency>(
+            path.depth().saturating_add(1),
+            &mut allocations,
+            &mut work,
+            budget,
+        )?;
+        let dependency_vector_bytes = allocations.live_bytes();
+        cache
+            .add_external_resident_bytes(dependency_vector_bytes)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let combined_resident = cache
+            .resident_bytes()
+            .map_err(|failure| OperationFailure::new(map_cache_error(failure.error), work))?;
+        work.peak_allocation_bytes = work.peak_allocation_bytes.max(combined_resident);
+        work.verify(budget)
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
 
-    let root = lookup_file_record_async(
-        &cache,
-        generation.file_table,
-        generation.root_file_id,
-        limits,
-        remaining(work, budget)?,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::FileTable))?;
-    work = add(work, root.work)?;
-    let current = root
-        .record
-        .ok_or_else(|| OperationFailure::new(PathLookupError::MissingRootRecord, work))?;
-    if path.is_root() {
-        if !capture_terminal {
+        let root = lookup_file_record_async(
+            &cache,
+            generation.file_table,
+            generation.root_file_id,
+            limits,
+            remaining(work, budget)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::FileTable))?;
+        work = add(work, root.work)?;
+        let current = root
+            .record
+            .ok_or_else(|| OperationFailure::new(PathLookupError::MissingRootRecord, work))?;
+        if path.is_root() {
+            if !capture_terminal {
+                return Ok(ObservedPathLookup {
+                    lookup: PathLookup {
+                        record: Some(current),
+                        parent: None,
+                        resolved_components: 0,
+                        work,
+                    },
+                    dependencies,
+                });
+            }
+            let state = capture_file_record_state(
+                current,
+                remaining(work, budget)?,
+                WorkCounters::default(),
+            )
+            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Dependency))?;
+            work = add(work, state.work)?;
+            dependencies.push(Dependency {
+                region: DependencyRegion::FileRecord(current.file_id),
+                expected: state.value,
+            });
             return Ok(ObservedPathLookup {
                 lookup: PathLookup {
                     record: Some(current),
@@ -764,40 +864,24 @@ async fn observe_path_with_terminal_async<S: AsyncObjectStore>(
                 dependencies,
             });
         }
-        let state =
-            capture_file_record_state(current, remaining(work, budget)?, WorkCounters::default())
-                .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Dependency))?;
-        work = add(work, state.work)?;
-        dependencies.push(Dependency {
-            region: DependencyRegion::FileRecord(current.file_id),
-            expected: state.value,
-        });
-        return Ok(ObservedPathLookup {
-            lookup: PathLookup {
-                record: Some(current),
-                parent: None,
-                resolved_components: 0,
-                work,
-            },
-            dependencies,
-        });
-    }
 
-    observe_descendants(
-        ObserveContext {
-            cache: &cache,
-            generation,
-            path,
-            limits,
-            budget,
-            cancellation,
-            capture_terminal,
-        },
-        current,
-        dependencies,
-        dependency_vector_bytes,
-        work,
-    )
+        observe_descendants(
+            ObserveContext {
+                cache: &cache,
+                generation,
+                path,
+                limits,
+                budget,
+                cancellation,
+                capture_terminal,
+            },
+            current,
+            dependencies,
+            dependency_vector_bytes,
+            work,
+        )
+        .await
+    })
     .await
 }
 
@@ -819,111 +903,129 @@ async fn observe_descendants<S: AsyncObjectStore>(
     mut external_resident_bytes: u64,
     mut work: WorkCounters,
 ) -> Result<ObservedPathLookup, PathLookupFailure> {
-    let mut parent = None;
-    for (index, component) in context.path.components().iter().enumerate() {
-        let copied = copy_observation_name(
-            context.cache,
-            component,
-            context.limits.maximum_name_bytes,
-            external_resident_bytes,
-            work,
-            context.budget,
-        )?;
-        let dependency_name = copied.name;
-        external_resident_bytes = copied.external_resident_bytes;
-        work = copied.work;
-        parent = Some(current);
-        let FilePayload::Directory { entries } = current.payload else {
-            return Err(OperationFailure::new(PathLookupError::NotDirectory, work));
-        };
-        if current.kind != FileKind::Directory {
-            return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
-        }
-        let binding = lookup_tree_entry_async(
-            context.cache,
-            entries,
-            component,
-            context.limits,
-            remaining(work, context.budget)?,
-            context.cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Tree))?;
-        work = add(work, binding.work)?;
-        let Some(binding) = binding.entry else {
+    in_heap(move || async move {
+        let mut parent = None;
+        for (index, component) in context.path.components().iter().enumerate() {
+            let copied = copy_observation_name(
+                context.cache,
+                component,
+                context.limits.maximum_name_bytes,
+                external_resident_bytes,
+                work,
+                context.budget,
+            )?;
+            let dependency_name = copied.name;
+            external_resident_bytes = copied.external_resident_bytes;
+            work = copied.work;
+            parent = Some(current);
+            let FilePayload::Directory { entries } = current.payload else {
+                if !context.capture_terminal {
+                    // Mutation dependency observation may traverse a path that
+                    // exists only after earlier private mutations replaced this
+                    // base file with a directory. The positive edge to the old
+                    // file is the exact base dependency; no descendant existed.
+                    return Ok(ObservedPathLookup {
+                        lookup: PathLookup {
+                            record: None,
+                            parent,
+                            resolved_components: u16::try_from(index).unwrap_or(u16::MAX),
+                            work,
+                        },
+                        dependencies,
+                    });
+                }
+                return Err(OperationFailure::new(PathLookupError::NotDirectory, work));
+            };
+            if current.kind != FileKind::Directory {
+                return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
+            }
+            let binding = lookup_tree_entry_async(
+                context.cache,
+                entries,
+                component,
+                context.limits,
+                remaining(work, context.budget)?,
+                context.cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Tree))?;
+            work = add(work, binding.work)?;
+            let Some(binding) = binding.entry else {
+                dependencies.push(Dependency {
+                    region: DependencyRegion::DirectoryName {
+                        directory_id: current.file_id,
+                        name: dependency_name,
+                    },
+                    expected: DependencyState::Absent,
+                });
+                return Ok(ObservedPathLookup {
+                    lookup: PathLookup {
+                        record: None,
+                        parent,
+                        resolved_components: u16::try_from(index).unwrap_or(u16::MAX),
+                        work,
+                    },
+                    dependencies,
+                });
+            };
+            let state = capture_directory_name_state(
+                &binding,
+                remaining(work, context.budget)?,
+                WorkCounters::default(),
+            )
+            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Dependency))?;
+            work = add(work, state.work)?;
+            let binding_file_id = binding.file_id;
+            let binding_kind = binding.kind;
             dependencies.push(Dependency {
                 region: DependencyRegion::DirectoryName {
                     directory_id: current.file_id,
                     name: dependency_name,
                 },
-                expected: DependencyState::Absent,
+                expected: state.value,
             });
-            return Ok(ObservedPathLookup {
-                lookup: PathLookup {
-                    record: None,
-                    parent,
-                    resolved_components: u16::try_from(index).unwrap_or(u16::MAX),
-                    work,
-                },
-                dependencies,
-            });
-        };
-        let state = capture_directory_name_state(
-            &binding,
-            remaining(work, context.budget)?,
-            WorkCounters::default(),
-        )
-        .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Dependency))?;
-        work = add(work, state.work)?;
-        let binding_file_id = binding.file_id;
-        let binding_kind = binding.kind;
-        dependencies.push(Dependency {
-            region: DependencyRegion::DirectoryName {
-                directory_id: current.file_id,
-                name: dependency_name,
-            },
-            expected: state.value,
-        });
-        let record = lookup_file_record_async(
-            context.cache,
-            context.generation.file_table,
-            binding_file_id,
-            context.limits,
-            remaining(work, context.budget)?,
-            context.cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::FileTable))?;
-        work = add(work, record.work)?;
-        current = record
-            .record
-            .ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?;
-        if current.kind != binding_kind {
-            return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
+            let record = lookup_file_record_async(
+                context.cache,
+                context.generation.file_table,
+                binding_file_id,
+                context.limits,
+                remaining(work, context.budget)?,
+                context.cancellation,
+            )
+            .await
+            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::FileTable))?;
+            work = add(work, record.work)?;
+            current = record
+                .record
+                .ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?;
+            if current.kind != binding_kind {
+                return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
+            }
         }
-    }
-    if context.capture_terminal {
-        let state = capture_file_record_state(
-            current,
-            remaining(work, context.budget)?,
-            WorkCounters::default(),
-        )
-        .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Dependency))?;
-        work = add(work, state.work)?;
-        dependencies.push(Dependency {
-            region: DependencyRegion::FileRecord(current.file_id),
-            expected: state.value,
-        });
-    }
-    Ok(ObservedPathLookup {
-        lookup: PathLookup {
-            record: Some(current),
-            parent,
-            resolved_components: u16::try_from(context.path.depth()).unwrap_or(u16::MAX),
-            work,
-        },
-        dependencies,
+        if context.capture_terminal {
+            let state = capture_file_record_state(
+                current,
+                remaining(work, context.budget)?,
+                WorkCounters::default(),
+            )
+            .map_err(|failure| failure.map_with_prior_work(work, PathLookupError::Dependency))?;
+            work = add(work, state.work)?;
+            dependencies.push(Dependency {
+                region: DependencyRegion::FileRecord(current.file_id),
+                expected: state.value,
+            });
+        }
+        Ok(ObservedPathLookup {
+            lookup: PathLookup {
+                record: Some(current),
+                parent,
+                resolved_components: u16::try_from(context.path.depth()).unwrap_or(u16::MAX),
+                work,
+            },
+            dependencies,
+        })
     })
+    .await
 }
 
 /// Resolves a non-empty exact path batch through shared authenticated prefixes.
@@ -972,6 +1074,36 @@ pub async fn lookup_paths_async<S: AsyncObjectStore>(
         store,
         generation,
         PathQueries::Owned(paths),
+        false,
+        config,
+        budget,
+        cancellation,
+    )
+    .await
+    .map(|observed| observed.lookup)
+}
+
+/// Resolves a non-empty no-follow path batch with shared work while
+/// capturing, in the same walk, every region [`observe_path_async`] would
+/// capture for each path.
+///
+/// # Errors
+///
+/// Returns the same bounded, fail-closed outcomes as [`lookup_paths_async`],
+/// plus canonical dependency-state construction failures.
+pub async fn observe_paths_async<S: AsyncObjectStore>(
+    store: &S,
+    generation: &super::GenerationRoot,
+    paths: &[NamespacePath],
+    config: VolumeConfig,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<ObservedPathBatch, PathLookupFailure> {
+    lookup_path_queries_async(
+        store,
+        generation,
+        PathQueries::Owned(paths),
+        true,
         config,
         budget,
         cancellation,
@@ -999,11 +1131,13 @@ pub async fn lookup_path_refs_async<S: AsyncObjectStore>(
         store,
         generation,
         PathQueries::Borrowed(paths),
+        false,
         config,
         budget,
         cancellation,
     )
     .await
+    .map(|observed| observed.lookup)
 }
 
 /// Synchronously resolves borrowed paths without constructing owned path copies.
@@ -1033,10 +1167,12 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
     paths: PathQueries<'_>,
+    observe: bool,
     config: VolumeConfig,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<PathBatchLookup, PathLookupFailure> {
+) -> Result<ObservedPathBatch, PathLookupFailure> {
+    in_heap(move || async move {
     cancellation.check().map_err(|_| {
         OperationFailure::before_work(PathLookupError::Tree(TreeReadError::Cancelled))
     })?;
@@ -1060,7 +1196,13 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
                 .ok_or(PathLookupError::Work(WorkError::Overflow))
         })
         .map_err(OperationFailure::before_work)?;
-    let cache_entries = maximum_cache_entries_for_components(total_components, config)?;
+    // This cache is only an optimization. A worst-case page-height estimate
+    // multiplied by every requested component can reserve hundreds of MiB for
+    // a batch whose actual shared working set is tiny (for example Cargo's
+    // files under one target directory). Bound the cache, not the lookup.
+    const MAXIMUM_BATCH_CACHE_ENTRIES: usize = 4_096;
+    let cache_entries = maximum_cache_entries_for_components(total_components, config)?
+        .min(MAXIMUM_BATCH_CACHE_ENTRIES);
     let (cache, mut work) = OperationReadCache::new(store, cache_entries, budget)?;
     let mut allocations = AllocationLedger::default();
     allocations
@@ -1078,6 +1220,17 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
     let mut pending = reserve_fixed::<PendingBinding>(count, &mut allocations, &mut work, budget)?;
     let mut file_ids =
         reserve_fixed::<crate::foundation::FileId>(count, &mut allocations, &mut work, budget)?;
+    // Each path observes at most one edge per component and its terminal.
+    let mut dependencies = reserve_fixed::<Dependency>(
+        if observe {
+            total_components.saturating_add(count)
+        } else {
+            0
+        },
+        &mut allocations,
+        &mut work,
+        budget,
+    )?;
     entries.resize(
         count,
         PathBatchEntry {
@@ -1124,6 +1277,9 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
         if path.is_root() {
             entries[index].record = Some(root_record);
             done[index] = 1;
+            if observe {
+                observe_record(&mut dependencies, root_record, &mut work, budget)?;
+            }
         } else {
             current[index] = Some(root_record);
         }
@@ -1241,7 +1397,36 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
                 clippy::indexing_slicing,
                 reason = "index is drawn from query_indices, whose entries are path_index values sourced from the earlier `0..paths.len()` loop; entries, current, and done are each resized to exactly `count == paths.len()` once and never resized again, so *index is always in bounds for all three"
             )]
-            for (index, binding) in query_indices.iter().zip(looked_up.entries) {
+            for ((index, binding), name) in query_indices
+                .iter()
+                .zip(looked_up.entries)
+                .zip(names.drain(..))
+            {
+                if observe {
+                    // The observed edge keeps the name copied for the query.
+                    let directory_id = current[*index]
+                        .ok_or_else(|| OperationFailure::new(PathLookupError::KindMismatch, work))?
+                        .file_id;
+                    let expected = match &binding {
+                        Some(binding) => {
+                            let state = capture_directory_name_state(
+                                binding,
+                                remaining(work, budget)?,
+                                WorkCounters::default(),
+                            )
+                            .map_err(|failure| {
+                                failure.map_with_prior_work(work, PathLookupError::Dependency)
+                            })?;
+                            work = add(work, state.work)?;
+                            state.value
+                        }
+                        None => DependencyState::Absent,
+                    };
+                    dependencies.push(Dependency {
+                        region: DependencyRegion::DirectoryName { directory_id, name },
+                        expected,
+                    });
+                }
                 if let Some(binding) = binding {
                     pending.push(PendingBinding {
                         path_index: *index,
@@ -1257,10 +1442,11 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
                     done[*index] = 1;
                 }
             }
-            names.clear();
-            allocations
-                .release(nested_bytes)
-                .map_err(|error| allocation_failure(error, work))?;
+            if !observe {
+                allocations
+                    .release(nested_bytes)
+                    .map_err(|error| allocation_failure(error, work))?;
+            }
         }
         if pending.is_empty() {
             continue;
@@ -1303,6 +1489,9 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
             }
             let next_depth = depth + 1;
             if next_depth == paths.get(binding.path_index).depth() {
+                if observe {
+                    observe_record(&mut dependencies, record, &mut work, budget)?;
+                }
                 entries[binding.path_index] = PathBatchEntry {
                     record: Some(record),
                     parent: current[binding.path_index],
@@ -1322,11 +1511,34 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
         .unwrap_or(u64::MAX)
         .checked_mul(u64::try_from(size_of::<PathBatchEntry>()).unwrap_or(u64::MAX))
         .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work))?;
-    Ok(PathBatchLookup {
-        entries,
-        retained_allocation_bytes,
-        work,
+    Ok(ObservedPathBatch {
+        lookup: PathBatchLookup {
+            entries,
+            retained_allocation_bytes,
+            work,
+        },
+        dependencies,
     })
+})
+        .await
+}
+
+/// Captures one resolved terminal record as an observation.
+fn observe_record(
+    dependencies: &mut Vec<Dependency>,
+    record: FileRecord,
+    work: &mut WorkCounters,
+    budget: WorkBudget,
+) -> Result<(), PathLookupFailure> {
+    let state =
+        capture_file_record_state(record, remaining(*work, budget)?, WorkCounters::default())
+            .map_err(|failure| failure.map_with_prior_work(*work, PathLookupError::Dependency))?;
+    *work = add(*work, state.work)?;
+    dependencies.push(Dependency {
+        region: DependencyRegion::FileRecord(record.file_id),
+        expected: state.value,
+    });
+    Ok(())
 }
 
 fn validate_path(path: &NamespacePath, config: VolumeConfig) -> Result<(), PathLookupFailure> {
@@ -1624,11 +1836,13 @@ fn maximum_cache_entries_for_components(
         .min(usize::try_from(config.limits.maximum_objects_per_generation).unwrap_or(usize::MAX)))
 }
 
+#[inline]
 fn add(left: WorkCounters, right: WorkCounters) -> Result<WorkCounters, PathLookupFailure> {
     left.checked_add(right)
         .map_err(|error| OperationFailure::new(error.into(), left))
 }
 
+#[inline]
 fn remaining(work: WorkCounters, budget: WorkBudget) -> Result<WorkBudget, PathLookupFailure> {
     work.remaining(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))

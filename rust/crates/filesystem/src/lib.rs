@@ -11,14 +11,13 @@
 #![doc = include_str!("../README.md")]
 
 /// Generated public gRPC schema and client/server bindings.
-#[cfg(not(target_arch = "wasm32"))]
 #[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
 pub mod wire {
-    /// Shared operation and capability messages used by Filesystem.
-    pub mod harness {
-        /// Version 1 of the shared harness contract.
+    /// Protocol negotiation shared by every Acyclic service family.
+    pub mod protocol {
+        /// Version 1 of the shared handshake.
         pub mod v1 {
-            include!("generated/acyclic/harness/v1/acyclic.harness.v1.rs");
+            include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
         }
     }
 
@@ -27,14 +26,6 @@ pub mod wire {
         /// Version 2 of the public Filesystem contract.
         pub mod v2 {
             include!(concat!(env!("OUT_DIR"), "/acyclic.filesystem.v2.rs"));
-        }
-
-        /// Process-local daemon lifecycle and native-host operations.
-        pub mod daemon {
-            /// Version 2 of the daemon-only transport.
-            pub mod v2 {
-                include!(concat!(env!("OUT_DIR"), "/acyclic.filesystem.daemon.v2.rs"));
-            }
         }
     }
 }
@@ -73,19 +64,28 @@ mod public_contract_tests {
 }
 
 pub mod async_storage;
+mod collection;
+pub use collection::{Collection, PublicationHold};
 pub mod cache;
 pub mod cancellation;
+pub mod compat_wire;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub mod core_state;
 pub mod demand;
 #[cfg(feature = "distributed")]
 pub mod distributed;
+#[cfg(feature = "distributed")]
+mod distributed_fs;
 pub mod facade;
 pub mod foundation;
+#[cfg(all(feature = "native-watch", target_os = "macos"))]
+mod fsevents;
 pub mod git_compat;
+mod heap_future;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted;
 pub mod kernel;
+pub mod lazy_workspace;
 pub mod lineage;
 pub mod materializer;
 #[cfg(test)]
@@ -93,6 +93,7 @@ pub mod memory;
 pub mod merge_driver;
 pub mod model;
 pub mod mount;
+pub mod multi_root;
 #[cfg(feature = "native-watch")]
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;
@@ -110,6 +111,7 @@ mod native_name;
 pub mod notification;
 pub mod operation_window;
 pub mod path;
+mod path_index;
 pub mod performance;
 pub mod s3;
 #[cfg(all(feature = "s3-http", not(target_arch = "wasm32")))]
@@ -118,7 +120,12 @@ pub mod s3_http;
 pub mod simulation;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod source;
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+mod source_watch;
 pub mod speculation;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub mod staged_objects;
 pub mod storage;
 pub mod streams_record;
 #[cfg(all(test, feature = "memory"))]
@@ -130,36 +137,46 @@ pub mod watch;
 #[cfg(all(feature = "native-watch", target_os = "windows"))]
 mod windows_usn;
 pub mod workspace;
+pub mod workspace_context;
+pub mod workspace_context_wire;
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObjectsLimits};
+/// Scopes authority writes that survive a crash of this process but wait
+/// for [`LocalFs::flush_deferred_authority`] to survive a power loss.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use acyclic_stream::deferring_durability as deferring_authority_durability;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 pub use async_storage::{
     AsyncAuthorityStore, AsyncObjectStore, GenerationFork, GenerationForkSource,
-    ImmediateAuthorityStore, ImmediateObjectStore,
+    ImmediateAuthorityStore, ImmediateObjectStore, PublicationScope, WorkspaceForkCommit,
+    WorkspaceForkOutcome, append_first_record, commit_workspace_fork_in_steps,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub use core_state::{LocalCoreStateStore, LocalCoreStateStoreError};
+pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 #[cfg(feature = "distributed")]
 pub use distributed::{ProviderObjectStore, StreamAuthorityStore};
+#[cfg(feature = "distributed")]
+pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, ContentStager, DetachedFile, DirectoryBindingChange,
-    DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities,
-    FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError, FsReceipt, FsResult,
-    GenerationDiff, LiveMutationOutcome, MergeConflict, MergePreparation, NamedAttributeWriteMode,
+    CheckoutCommitOutcome, ContentChange, ContentStager, ContentTimes, DetachedFile,
+    DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
+    EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
+    FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
+    LiveMutationOutcome, MergeConflict, MergePreparation, NamedAttributeWriteMode,
     PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile,
     ResolvedFileRangeReadRequest, StagedContent, Volume,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{
-    LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend, LocalOptions,
-    LocalVolume,
+    LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
+    LocalOperationWindowStore, LocalOptions, LocalVolume,
 };
 #[cfg(all(feature = "memory", feature = "distributed"))]
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
@@ -169,13 +186,17 @@ pub use foundation::{
     authority_commit_digest,
 };
 pub use git_compat::{
-    GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureError,
-    GitCapturedGeneration, GitCommand, GitCommandOutput, GitCommit, GitCommitId, GitCompatError,
-    GitCompatRepository, GitCompatRunError, GitCompatState, GitCompatStore, GitFilesystemAction,
-    GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult,
-    GitIgnorePolicy, GitObjectName, GitPatchError, GitPendingMutation, GitPendingTransition,
-    GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, MemoryGitCompatStore, apply_git_patch,
-    blame_git_generations, capture_git_compatible_generation, grep_git_generation, walk_git_tree,
+    GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureAuthenticationError,
+    GitCaptureError, GitCaptureProof, GitCapturedGeneration, GitCommand, GitCommandOutput,
+    GitCommit, GitCommitId, GitCompatError, GitCompatRepository, GitCompatRunError, GitCompatState,
+    GitCompatStore, GitDiffCounts, GitDirtyState, GitFilesystemAction, GitFilesystemExecutor,
+    GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult, GitIgnorePolicy,
+    GitObjectName, GitPatchError, GitPendingMutation, GitPendingTransition, GitPublicationRecord,
+    GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, IntoGitTreeRef,
+    MemoryGitCompatStore, apply_git_patch, apply_git_patch_with_permit, blame_git_generations,
+    capture_git_compatible_generation, capture_git_compatible_generation_at,
+    capture_git_compatible_generation_incremental, git_compatible_diff_counts, grep_git_generation,
+    walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{
@@ -185,6 +206,12 @@ pub use hosted::{
 pub use kernel::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest,
+};
+pub use lazy_workspace::{
+    LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage, LazyLookup, LazyOverlay,
+    LazyOverlayId, LazySeekTarget, LazyShadow, LazyShadowId, LazySnapshotId, LazySnapshotRef,
+    LazyStat, LazyWorkspace, LazyWorkspaceError, LazyWorkspaceState, LazyWorkspaceStore,
+    MemoryLazyWorkspaceStore,
 };
 pub use lineage::{
     MemoryWorkspaceLineageStore, MemoryWorkspaceLineageStoreError, WorkspaceGraph,
@@ -198,8 +225,15 @@ pub use materializer::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{NativeTreeMaterializationBackend, NativeTreeMaterializationError};
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub use materializer::{NativeTreePublicationError, publish_native_tree};
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+pub use materializer::{
+    NativeWorkspacePublication, NativeWorkspacePublicationError,
+    publish_native_generation_transition, publish_native_workspace_generation,
+};
 #[cfg(test)]
 pub use memory::{MemoryAuthorityStore, MemoryObjectStore};
 pub use merge_driver::{
@@ -212,6 +246,16 @@ pub use merge_driver::{
 pub use mount::{
     MountError, MountedCheckout, MountedGeneration, MountedView, MountedViewBuilder,
     MountedViewSnapshot, RoutedCheckout,
+};
+pub use multi_root::{
+    LineageMultiRootPublicationAuthorizationError, LineageMultiRootPublicationAuthorizer,
+    MaterializingWorkspaceMultiRootPublisher, MaterializingWorkspaceMultiRootPublisherError,
+    MemoryMultiRootPublicationStore, MemoryMultiRootPublicationStoreError, MultiRootConflictFinish,
+    MultiRootFence, MultiRootMaterializer, MultiRootMergeCandidate, MultiRootMergePlan,
+    MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationAuthorizer,
+    MultiRootPublicationCoordinator, MultiRootPublicationError, MultiRootPublicationPhase,
+    MultiRootPublicationStore, MultiRootPublishRoot, MultiRootPublisher, Publication,
+    WorkspaceMultiRootPublisher, WorkspaceMultiRootPublisherError, WorkspaceResolver,
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use native_capture::{
@@ -229,23 +273,27 @@ pub use native_exchange::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_identity::NativeRootIdentity;
+#[cfg(all(feature = "native-mount", windows))]
+pub use native_mount::recover_native_mount_destination_preserving_residue;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
-    CheckoutMountSource, HostPathReplacement, HostPathRestore, MaterializationReceipt,
-    MaterializeError, MaterializeOptions, Mount, MountAttributePage, MountDirectoryEntry,
-    MountDirectoryPage, MountFilesystem, MountLifecycleError, MountLookup, MountNode,
-    MountNodeKind, MountOpenFile, MountOptions, MountPath, MountPublication, MountRangeAllocation,
-    MountSeekTarget, MountSourceError, MountSparseRange, MountSparseSpan,
-    NativeBlockCloneAccelerationEvidence, NativeMountCapabilities, NativeMountError,
-    NativeMountKind, NativeMountRequest, NativeMountSession, NativeMountSessionIsolation,
-    NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
-    NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
-    RoutedMountSource, SharedCheckout, SharedCheckoutState, materialize_checkout,
-    materialize_checkout_host_path, materialize_checkout_path, mount_native,
-    mount_native_over_existing, probe_native_mount, probe_native_storage_accelerations,
-    probe_native_storage_capabilities, reclaim_native_mount_destination_fence,
-    reclaim_stale_native_mount_destination_fences, recover_native_mount_destination,
-    restore_checkout_host_path, seal_checkout,
+    CheckoutMountSource, ContentSink, HostPathReplacement, HostPathRestore, LazyMount,
+    LazyWorkingSet, MaterializationReceipt, MaterializeError, MaterializeOptions, Mount,
+    MountAttributePage, MountContentPin, MountDirectoryEntry, MountDirectoryPage, MountFilesystem,
+    MountLifecycleError, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions,
+    MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
+    MountSparseRange, MountSparseSpan, MountViewLease, NativeBlockCloneAccelerationEvidence,
+    NativeMountCapabilities, NativeMountError, NativeMountKind, NativeMountRequest,
+    NativeMountSession, NativeMountSessionIsolation, NativeSparseAccelerationEvidence,
+    NativeStorageAccelerationError, NativeStorageAccelerationEvidence, NativeStorageCapabilities,
+    NativeStorageCapabilityError, SharedCheckout, SharedCheckoutState,
+    detach_native_mount_destination_after_crash, materialize_checkout,
+    materialize_checkout_host_path, materialize_checkout_path, materialize_checkout_paths,
+    mount_native, mount_native_over_existing, probe_native_mount,
+    probe_native_storage_accelerations, probe_native_storage_capabilities,
+    reclaim_native_mount_destination_fence, reclaim_stale_native_mount_destination_fences,
+    recover_native_mount_destination, restore_checkout_host_path, seal_checkout,
+    seal_checkout_with_permit,
 };
 pub use notification::{
     AsyncNotificationStore, ImmediateNotificationStore, MemoryNotificationStore, NotificationError,
@@ -257,6 +305,8 @@ pub use operation_window::{
     OperationWindowPhase, OperationWindowReconcile, OperationWindowSnapshot, OperationWindowStore,
     WorkspaceOperationFinish,
 };
+#[cfg(feature = "distributed")]
+pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
 pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
@@ -288,10 +338,11 @@ pub use speculation::{
 };
 pub use storage::{
     AppendOutcome, AuthorityFailure, AuthorityReceipt, AuthorityResult, AuthorityStore,
-    AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome,
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
+    AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome, GuardedAppend,
+    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
     ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStore,
-    ObjectStoreError, ReplayLimit, object_digest,
+    ObjectStoreError, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
+    object_digest,
 };
 pub use streams_record::{
     STREAMS_AUTHORITY_RECORD_HEADER_BYTES, StreamsAuthorityRecord, StreamsAuthorityRecordError,
@@ -310,11 +361,17 @@ pub use windows_usn::{
 };
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, Checkpoint, DrivenJoinError, ForkOptions, Generation,
-    GenerationPin, IdempotencyKey, JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, Transaction,
-    TransactionCommit, TransactionConflict, TransactionConflictRegion, TransactionDependencyUse,
-    TransactionRebase, TransactionSparseSeek, Workspace, WorkspaceDelete, WorkspaceDirectoryEntry,
-    WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind, WorkspaceExtentPlan,
-    WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName, WorkspaceNameError,
-    WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase, WorkspaceRestore, WorkspaceStat,
-    WorkspaceSync,
+    GenerationPin, IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
+    JoinPlan, Transaction, TransactionCommit, TransactionConflict, TransactionConflictRegion,
+    TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, Workspace, WorkspaceDelete,
+    WorkspaceDirectoryEntry, WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind,
+    WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName,
+    WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
+    WorkspaceRestore, WorkspaceStat, WorkspaceSync,
+};
+pub use workspace_context::{
+    MemoryWorkspaceContextStore, MemoryWorkspaceContextStoreError, WorkspaceContext,
+    WorkspaceContextDiscardOutcome, WorkspaceContextError, WorkspaceContextId,
+    WorkspaceContextRegistry, WorkspaceContextRoot, WorkspaceContextState, WorkspaceContextStore,
+    WorkspaceRootId, WorkspaceRoute, WorkspaceRouteKind,
 };

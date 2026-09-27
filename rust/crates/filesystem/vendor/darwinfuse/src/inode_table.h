@@ -98,6 +98,11 @@ void dfuse_itable_remove(dfuse_inode_table_t *tbl, const char *path);
 void dfuse_itable_rename(dfuse_inode_table_t *tbl,
                           const char *old_path, const char *new_path);
 
+/*
+ * True when ino names a live entry. Allocation-free.
+ */
+int dfuse_itable_contains(dfuse_inode_table_t *tbl, dfuse_ino_t ino);
+
 /* ---- Named attribute (xattr) inode support ---- */
 
 /*

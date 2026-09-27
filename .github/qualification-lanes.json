@@ -1,0 +1,92 @@
+[
+  {
+    "lane": "gate",
+    "runner": "blacksmith-4vcpu-ubuntu-2404",
+    "workers": 4,
+    "artifact": "coverage",
+    "artifact_path": "coverage",
+    "inputs": "rust",
+    "source_bound": false,
+    "early_start": false
+  },
+  {
+    "lane": "linux",
+    "runner": "blacksmith-16vcpu-ubuntu-2404",
+    "workers": 16,
+    "artifact": "packages-linux",
+    "artifact_path": "packages",
+    "inputs": "repository",
+    "source_bound": true,
+    "early_start": false
+  },
+  {
+    "lane": "web",
+    "runner": "blacksmith-4vcpu-ubuntu-2404",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "rust",
+    "source_bound": false,
+    "early_start": false
+  },
+  {
+    "lane": "linux-arm64",
+    "runner": "blacksmith-16vcpu-ubuntu-2404-arm",
+    "workers": 16,
+    "artifact": "packages-linux-arm64",
+    "artifact_path": "packages",
+    "inputs": "rust",
+    "source_bound": false,
+    "early_start": false
+  },
+  {
+    "lane": "linux-musl",
+    "runner": "blacksmith-4vcpu-ubuntu-2404",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "rust",
+    "source_bound": false,
+    "early_start": false
+  },
+  {
+    "lane": "linux-arm64-musl",
+    "runner": "blacksmith-4vcpu-ubuntu-2404-arm",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "rust",
+    "source_bound": false,
+    "early_start": false
+  },
+  {
+    "lane": "windows",
+    "runner": "blacksmith-16vcpu-windows-2025",
+    "workers": 16,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "product",
+    "source_bound": false,
+    "early_start": true
+  },
+  {
+    "lane": "macos",
+    "runner": "blacksmith-12vcpu-macos-15",
+    "workers": 12,
+    "artifact": "packages-macos",
+    "artifact_path": "packages",
+    "inputs": "rust",
+    "source_bound": false,
+    "early_start": false
+  },
+  {
+    "lane": "policy",
+    "runner": "blacksmith-4vcpu-ubuntu-2404",
+    "workers": 4,
+    "artifact": "",
+    "artifact_path": "",
+    "inputs": "policy",
+    "source_bound": false,
+    "early_start": false
+  }
+]
