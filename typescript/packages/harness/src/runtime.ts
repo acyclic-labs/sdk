@@ -2,6 +2,7 @@ import { validateComponentLabel, validateToolName, type AgentInput, type AgentLo
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
+import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "./child-page-contract.js";
 import { validateModelContent as validateModelContentWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import type { SelectedModelContext } from "./projection.js";
@@ -2389,10 +2390,10 @@ export class AgentHarness {
   }
   /** Read one revision-checked page of direct, owner-retained task children. */
   async children(parent: RuntimeTaskId, expectedRevision: bigint | null = null,
-    afterSlot: string | null = null, maximum = 256): Promise<TaskChildrenPage> {
+    afterSlot: string | null = null, maximum = HARNESS_CHILD_PAGE_DEFAULT): Promise<TaskChildrenPage> {
     this.contracts.validateIdentity("task", parent);
-    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 1_024
-      || afterSlot !== null && (new TextEncoder().encode(afterSlot).byteLength > 255
+    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > HARNESS_CHILD_PAGE_MAXIMUM
+      || afterSlot !== null && (new TextEncoder().encode(afterSlot).byteLength > HARNESS_CHILD_SLOT_MAX_BYTES
         || [...afterSlot].some(character => /[\x00-\x1f\x7f]/u.test(character)))) {
       throw new RangeError("task child page request is invalid");
     }
@@ -2404,25 +2405,12 @@ export class AgentHarness {
     this.#assertPolicyIdentity();
     const page = await state.children(parent, expectedRevision, afterSlot, maximum, this);
     this.#assertPolicyIdentity();
-    if (typeof page.revision !== "bigint" || page.revision < 0n
-      || expectedRevision !== null && page.revision !== expectedRevision
-      || page.entries.length > maximum || page.nextAfter !== null
-        && page.nextAfter !== page.entries.at(-1)?.slot) {
-      throw new TypeError("task child page does not match its request");
+    try {
+      return this.contracts.validateTaskChildrenPage(parent, expectedRevision, afterSlot, maximum, page);
+    } catch (error) {
+      if (error instanceof TypeError) throw error;
+      throw new TypeError("task child page is invalid", { cause: error });
     }
-    let previous = afterSlot;
-    const ids = new Set<RuntimeTaskId>();
-    for (const entry of page.entries) {
-      this.contracts.validateIdentity("task", entry.taskId);
-      if (entry.slot.trim().length === 0 || new TextEncoder().encode(entry.slot).byteLength > 255
-        || [...entry.slot].some(character => /[\x00-\x1f\x7f]/u.test(character))
-        || previous !== null && compareUtf8(entry.slot, previous) <= 0 || ids.has(entry.taskId)) {
-        throw new TypeError("task children are not in stable slot order");
-      }
-      ids.add(entry.taskId);
-      previous = entry.slot;
-    }
-    return page;
   }
 
   #validatedHostAttachment(attachment: HostTaskAttachment, requested?: ErasedTaskDefinition): Task<unknown> {

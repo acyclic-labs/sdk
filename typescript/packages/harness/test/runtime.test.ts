@@ -43,8 +43,64 @@ import {
   type VolumeRef,
   type ConversationMessageId,
 } from "../src/index.js";
+import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "../src/child-page-contract.js";
 
 const contracts = await NativeContracts.create();
+
+test("Rust owns child page bounds, slot ordering, and the generated facade default", async () => {
+  const parent = "12345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
+  const child = "22345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
+  const page = { revision: 7n, entries: [{ slot: "a", taskId: child }], nextAfter: null } as const;
+  expect(contracts.validateTaskChildrenPage(parent, 7n, null, HARNESS_CHILD_PAGE_MAXIMUM, page)).toEqual(page);
+  let revisionReads = 0;
+  const changingRevisionPage = {
+    get revision() {
+      revisionReads += 1;
+      return revisionReads === 1 ? 7n : 7;
+    },
+    entries: page.entries,
+    nextAfter: null,
+  } as unknown as typeof page;
+  expect(contracts.validateTaskChildrenPage(parent, 7n, null, 1, changingRevisionPage)).toEqual(page);
+  expect(revisionReads).toBe(1);
+  expect(() => contracts.validateTaskChildrenPage(parent, 6n, null, 1, page)).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, "a", 1, page)).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, HARNESS_CHILD_PAGE_MAXIMUM + 1, page)).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 0, page)).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
+    ...page, entries: [{ slot: "a", taskId: child }, { slot: "b", taskId: child }],
+  })).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
+    ...page, nextAfter: "b",
+  })).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
+    ...page, entries: [{ slot: "x".repeat(HARNESS_CHILD_SLOT_MAX_BYTES + 1), taskId: child }],
+  })).toThrow();
+
+  let observedMaximum = 0;
+  const state: HarnessRuntimeState = {
+    policyIdentity: () => null,
+    async attach() { throw new Error("not used"); },
+    async children(_parent, _revision, _after, maximum) {
+      observedMaximum = maximum;
+      return page;
+    },
+    async reconcileEffect() { return { state: "indeterminate" }; },
+    async send(message) { return { accepted: true, messageId: message.id }; },
+    async *inbox() { yield* []; },
+  };
+  const runtime = Harness.builder(contracts).state(state).build();
+  expect(await runtime.children(parent)).toEqual(page);
+  expect(observedMaximum).toBe(HARNESS_CHILD_PAGE_DEFAULT);
+
+  const malformedRuntime = Harness.builder(contracts).state({
+    ...state,
+    async children() {
+      return { ...page, revision: 7 as unknown as bigint };
+    },
+  }).build();
+  await expect(malformedRuntime.children(parent)).rejects.toBeInstanceOf(TypeError);
+});
 
 test("Rust and TypeScript share strict v2 task admission and execution placement fixtures", async () => {
   const admissionText = (await Bun.file(new URL("../../../../fixtures/harness/v2/task-admission.json", import.meta.url)).text()).trim();

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Harness, NativeContracts, parseIdentity, type AgentId, type OperationId } from "../src/index.js";
 import { WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
+import { HARNESS_CONVERSATION_PAGE_MAXIMUM } from "../src/conversation-page-contract.js";
 
 const wasm = readFileSync(
   fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)),
@@ -182,6 +183,9 @@ test("large ref-only conversation history hydrates through bounded Rust pages", 
     issuerId: "paged-history", issuerKey: new Uint8Array(32).fill(5), wasm,
   });
   try {
+    expect(() => harness.conversationPage(0n, HARNESS_CONVERSATION_PAGE_MAXIMUM + 1)).toThrow(
+      "conversation page cursor or limit is invalid",
+    );
     const scope = harness.issueScope("owner", ["conversation:bind", "conversation:append"]);
     const authority = { kind: "conversation" as const, id: "paged-history" };
     const bound = harness.apply({ authority, operation_id: crypto.randomUUID() as OperationId,
