@@ -685,8 +685,10 @@ mod tests {
         };
         assert!(selected.validate_for_dispatch(Limits::default()).is_ok());
 
-        let mut limits = Limits::default();
-        limits.render_bytes = 4;
+        let limits = Limits {
+            render_bytes: 4,
+            ..Limits::default()
+        };
         assert!(selected.validate_for_dispatch(limits).is_err());
 
         selected.messages[0].role = ModelRole::Assistant;
