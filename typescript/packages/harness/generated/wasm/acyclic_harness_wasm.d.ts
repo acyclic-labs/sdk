@@ -431,7 +431,6 @@ export interface InitOutput {
     readonly wasmreducer_verifyScope: (a: number, b: any) => [number, number];
     readonly wasmreducer_volumeCapability: (a: number, b: any, c: number, d: number) => [number, number, number, number];
     readonly wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__hc30e87c21bf13099_69: (a: number, b: number, c: any, d: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
