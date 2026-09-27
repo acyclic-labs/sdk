@@ -49,6 +49,8 @@ export const generatedDescriptors = [
   ["proto/objects", compatibilityArtifacts.objects.descriptorDigest],
   ["proto/machines", compatibilityArtifacts.machines.descriptorDigest],
   ["proto/inference", compatibilityArtifacts.inference.descriptorDigest],
+  ["proto/inference", "rust/crates/inference-contract/inference_descriptor.bin"],
+  ["proto/inference", "rust/crates/inference-wasm/inference_reflection_descriptor.bin"],
   ["rust/crates/stream/proto/stream", compatibilityArtifacts.stream.descriptorDigest],
 ];
 

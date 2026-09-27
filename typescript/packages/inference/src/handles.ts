@@ -9,6 +9,7 @@ import {
   type MutateContextRequest, type MutationReceipt, type RunEvent, type RunResult, type RunView, type WarmView,
 } from "../generated/proto/inference/v1/inference_pb.js";
 import { InferenceProtocolError } from "./index.js";
+import { runTerminalMetadata } from "./contract.js";
 
 declare const inferenceBrand: unique symbol;
 export type ContextRevision = Uint8Array & { readonly [inferenceBrand]: "ContextRevision" };
@@ -107,7 +108,10 @@ export class Warm {
   async release(options: MutationOptions = {}): Promise<WarmView> { return this.inference.client.releaseWarm(create(ReleaseWarmRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), commitment: this.commitment })); }
 }
 
-export type RunTerminalKind = "completed" | "output-limited" | "tool-call" | "refusal" | "cancelled" | "failed" | "indeterminate";
+type KebabCase<Value extends string> = Value extends `${infer Head}_${infer Tail}`
+  ? `${Lowercase<Head>}-${KebabCase<Tail>}`
+  : Lowercase<Value>;
+export type RunTerminalKind = Exclude<KebabCase<Exclude<keyof typeof RunTerminal, "UNSPECIFIED"> & string>, "unspecified">;
 export interface RunOutcome {
   readonly terminal: RunTerminalKind;
   readonly output: Uint8Array;
@@ -117,22 +121,18 @@ export interface RunOutcome {
   readonly partial: boolean;
   readonly receipt: RunResult["receipt"];
 }
-function outcome(inference: Inference, result: RunResult): RunOutcome {
-  const terminal = terminalKind(result.terminal);
+async function outcome(inference: Inference, result: RunResult): Promise<RunOutcome> {
+  const metadata = await runTerminalMetadata();
+  const descriptor = metadata.find(item => item.number === result.terminal);
+  if (descriptor === undefined) throw new InferenceProtocolError("run result has an unspecified terminal outcome");
+  if (!isRunTerminalKind(descriptor.kind)) throw new InferenceProtocolError("run terminal metadata has an invalid kind");
+  const terminal = descriptor.kind;
   const context = result.context === undefined ? null : new Context(inference, contextRevision(result.context.revision));
-  return { terminal, output: result.output, context, continuationValid: context !== null, partial: terminal === "output-limited" || terminal === "cancelled" || terminal === "failed" || terminal === "indeterminate", receipt: result.receipt };
+  return { terminal, output: result.output, context, continuationValid: context !== null, partial: descriptor.partial, receipt: result.receipt };
 }
-function terminalKind(value: RunTerminal): RunTerminalKind {
-  switch (value) {
-    case RunTerminal.COMPLETED: return "completed";
-    case RunTerminal.OUTPUT_LIMITED: return "output-limited";
-    case RunTerminal.TOOL_CALL: return "tool-call";
-    case RunTerminal.REFUSAL: return "refusal";
-    case RunTerminal.CANCELLED: return "cancelled";
-    case RunTerminal.FAILED: return "failed";
-    case RunTerminal.INDETERMINATE: return "indeterminate";
-    default: throw new InferenceProtocolError("run result has an unspecified terminal outcome");
-  }
+function isRunTerminalKind(value: string): value is RunTerminalKind {
+  return Object.entries(RunTerminal).some(([name, number]) =>
+    typeof number === "number" && number > 0 && name.toLowerCase().replaceAll("_", "-") === value);
 }
 function brandedBytes<Brand extends Uint8Array>(value: Uint8Array, name: string, length: number): Brand { if (!(value instanceof Uint8Array) || value.byteLength !== length) throw new TypeError(`${name} must be exactly ${length} bytes`); return Uint8Array.from(value) as Brand; }
 const randomIdentity = (): Uint8Array => crypto.getRandomValues(new Uint8Array(16));

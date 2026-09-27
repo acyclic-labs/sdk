@@ -1,5 +1,5 @@
-import { create, fromJson, toBinary, toJsonString, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
-import { InferenceProtocolError, validateContract, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
+import { create, fromJson, getOption, hasOption, toBinary, toJsonString, type DescMethod, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
+import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
 import {
   ContextViewSchema,
   CreateEvaluationRequestSchema,
@@ -44,9 +44,77 @@ import {
   type WarmView,
   type WatchRunRequest,
 } from "../generated/proto/inference/v1/inference_pb.js";
+import {
+  EvaluationsService,
+  file_inference_v1_inference,
+  ModelsService,
+  ContextsService,
+  RunsService,
+  WarmContextsService,
+} from "../generated/proto/inference/v1/inference_pb.js";
+import { http_path } from "../generated/proto/validation/v1/options_pb.js";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";
 export { InferenceProtocolError } from "./contract.js";
+
+/** One authenticated HTTP endpoint derived from a protobuf RPC descriptor. */
+export interface InferenceHttpRoute<Method extends DescMethod = DescMethod> {
+  readonly method: Method;
+  readonly path: string;
+  readonly input: Method["input"];
+  readonly output: Method["output"];
+  readonly methodKind: Method["methodKind"];
+}
+
+const inferenceServices = file_inference_v1_inference.services;
+
+/** Reject paths that could change the /v1/inference URL root or request target. */
+export function validateInferenceHttpPath(path: string): void {
+  const segments = path.split("/");
+  if (path.length === 0 || path !== path.trim() || path.startsWith("/") || path.endsWith("/") ||
+      segments.some(segment => segment.length === 0 || segment === "." || segment === ".." || !/^[A-Za-z0-9._~-]+$/.test(segment))) {
+    throw new Error("inference HTTP route path is invalid");
+  }
+}
+
+/**
+ * Derive every public inference endpoint from the canonical service descriptors.
+ * Missing, malformed, or duplicate options stop module initialization so a
+ * handwritten route cannot silently diverge from the protobuf contract.
+ */
+export function deriveInferenceHttpRoutes(): readonly InferenceHttpRoute[] {
+  const routes: InferenceHttpRoute[] = [];
+  const paths = new Map<string, string>();
+  for (const service of inferenceServices) {
+    for (const method of service.methods) {
+      if (!hasOption(method, http_path)) {
+        throw new Error(`inference RPC ${method.parent.typeName}.${method.name} has no http_path option`);
+      }
+      const path = getOption(method, http_path);
+      try {
+        validateInferenceHttpPath(path);
+      } catch {
+        throw new Error(`inference RPC ${method.parent.typeName}.${method.name} has an invalid http_path`);
+      }
+      const prior = paths.get(path);
+      if (prior !== undefined) {
+        throw new Error(`inference RPC route ${path} is declared by both ${prior} and ${method.parent.typeName}.${method.name}`);
+      }
+      paths.set(path, `${method.parent.typeName}.${method.name}`);
+      routes.push({ method, path, input: method.input, output: method.output, methodKind: method.methodKind });
+    }
+  }
+  if (routes.length === 0) throw new Error("inference protobuf declares no HTTP routes");
+  return Object.freeze(routes);
+}
+
+const inferenceHttpRoutes = deriveInferenceHttpRoutes();
+const routeFor = <Method extends DescMethod>(method: Method): InferenceHttpRoute<Method> => {
+  const route = inferenceHttpRoutes.find(candidate =>
+    candidate.method.parent.typeName === method.parent.typeName && candidate.method.name === method.name);
+  if (route === undefined) throw new Error(`inference RPC descriptor ${method.parent.typeName}.${method.name} has no derived route`);
+  return route as InferenceHttpRoute<Method>;
+};
 
 /** Complete transport-neutral customer lifecycle contract. */
 export interface InferenceTransport {
@@ -231,47 +299,50 @@ export class HttpInferenceTransport implements InferenceTransport {
   get maximumMessageBytes(): number { return this.maximumEventBytes; }
 
   listModels(): Promise<ListModelsResponse> {
-    return this.#unary("models/list", ListModelsRequestSchema, create(ListModelsRequestSchema), ListModelsResponseSchema);
+    return this.#unary(routeFor(ModelsService.method.list), create(ModelsService.method.list.input));
   }
   createContext(request: CreateContextRequest): Promise<MutationReceipt> {
-    return this.#unary("contexts/create", CreateContextRequestSchema, request, MutationReceiptSchema);
+    return this.#unary(routeFor(ContextsService.method.create), request);
   }
   inspectContext(request: InspectContextRequest): Promise<ContextView> {
-    return this.#unary("contexts/inspect", InspectContextRequestSchema, request, ContextViewSchema);
+    return this.#unary(routeFor(ContextsService.method.inspect), request);
   }
   mutateContext(request: MutateContextRequest): Promise<MutationReceipt> {
-    return this.#unary("contexts/mutate", MutateContextRequestSchema, request, MutationReceiptSchema);
+    return this.#unary(routeFor(ContextsService.method.mutate), request);
   }
   retainWarm(request: RetainWarmRequest): Promise<WarmView> {
-    return this.#unary("warm/retain", RetainWarmRequestSchema, request, WarmViewSchema);
+    return this.#unary(routeFor(WarmContextsService.method.retain), request);
   }
   inspectWarm(request: InspectWarmRequest): Promise<WarmView> {
-    return this.#unary("warm/inspect", InspectWarmRequestSchema, request, WarmViewSchema);
+    return this.#unary(routeFor(WarmContextsService.method.inspect), request);
   }
   renewWarm(request: RenewWarmRequest): Promise<WarmView> {
-    return this.#unary("warm/renew", RenewWarmRequestSchema, request, WarmViewSchema);
+    return this.#unary(routeFor(WarmContextsService.method.renew), request);
   }
   releaseWarm(request: ReleaseWarmRequest): Promise<WarmView> {
-    return this.#unary("warm/release", ReleaseWarmRequestSchema, request, WarmViewSchema);
+    return this.#unary(routeFor(WarmContextsService.method.release), request);
   }
   generateRun(request: GenerateRunRequest): Promise<GenerateRunResponse> {
-    return this.#unary("runs/generate", GenerateRunRequestSchema, request, GenerateRunResponseSchema);
+    return this.#unary(routeFor(RunsService.method.generate), request);
   }
   inspectRun(request: InspectRunRequest, signal?: AbortSignal): Promise<RunView> {
-    return this.#unary("runs/inspect", InspectRunRequestSchema, request, RunViewSchema, signal);
+    return this.#unary(routeFor(RunsService.method.inspect), request, signal);
   }
   cancelRun(request: InspectRunRequest): Promise<RunView> {
-    return this.#unary("runs/cancel", InspectRunRequestSchema, request, RunViewSchema);
+    return this.#unary(routeFor(RunsService.method.cancel), request);
   }
   createEvaluation(request: CreateEvaluationRequest): Promise<EvaluationView> {
-    return this.#unary("evaluations/create", CreateEvaluationRequestSchema, request, EvaluationViewSchema);
+    return this.#unary(routeFor(EvaluationsService.method.create), request);
   }
   inspectEvaluation(request: InspectEvaluationRequest): Promise<EvaluationView> {
-    return this.#unary("evaluations/inspect", InspectEvaluationRequestSchema, request, EvaluationViewSchema);
+    return this.#unary(routeFor(EvaluationsService.method.inspect), request);
   }
 
   async *watchRun(request: WatchRunRequest, signal?: AbortSignal): AsyncIterable<RunEvent> {
-    const response = await this.#request("runs/watch", toJsonString(WatchRunRequestSchema, request), signal);
+    const route = routeFor(RunsService.method.watch);
+    if (route.methodKind !== "server_streaming") throw new Error("inference watch route is not server streaming");
+    await validateRuntimeShape(route.input, request);
+    const response = await this.#request(route.path, toJsonString(route.input, request), signal);
     if (response.body === null) throw new InferenceTransportError(response.status, "run watch has no body");
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -291,7 +362,7 @@ export class HttpInferenceTransport implements InferenceTransport {
             throw new InferenceTransportError(response.status, "run event exceeds configured bound");
           }
           const line = rawLine.trim();
-          if (line.length > 0) yield fromJson(RunEventSchema, JSON.parse(line));
+          if (line.length > 0) yield fromJson(route.output, JSON.parse(line));
         }
         if (utf8Length(buffer) > this.maximumMessageBytes) {
           throw new InferenceTransportError(response.status, "run event exceeds configured bound");
@@ -302,7 +373,7 @@ export class HttpInferenceTransport implements InferenceTransport {
         throw new InferenceTransportError(response.status, "run event exceeds configured bound");
       }
       const final = rawFinal.trim();
-      if (final.length > 0) yield fromJson(RunEventSchema, JSON.parse(final));
+      if (final.length > 0) yield fromJson(route.output, JSON.parse(final));
       completed = true;
     } finally {
       if (!completed) await reader.cancel().catch(() => undefined);
@@ -310,15 +381,15 @@ export class HttpInferenceTransport implements InferenceTransport {
     }
   }
 
-  async #unary<RequestSchema extends DescMessage, ResponseSchema extends DescMessage>(
-    path: string,
-    requestSchema: RequestSchema,
-    request: MessageShape<RequestSchema>,
-    responseSchema: ResponseSchema,
+  async #unary<Method extends DescMethod>(
+    route: InferenceHttpRoute<Method>,
+    request: MessageShape<Method["input"]>,
     signal?: AbortSignal,
-  ): Promise<MessageShape<ResponseSchema>> {
-    const response = await this.#request(path, toJsonString(requestSchema, request), signal);
-    return fromJson(responseSchema, JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "unary response")));
+  ): Promise<MessageShape<Method["output"]>> {
+    if (route.methodKind !== "unary") throw new Error(`inference route ${route.path} is not unary`);
+    await validateRuntimeShape(route.input, request);
+    const response = await this.#request(route.path, toJsonString(route.input, request), signal);
+    return fromJson(route.output, JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "unary response")));
   }
 
   async #request(path: string, body: string, signal?: AbortSignal): Promise<Response> {

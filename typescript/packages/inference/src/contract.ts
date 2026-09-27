@@ -1,10 +1,16 @@
 import { toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
-import { RunEventSchema, type RunEvent } from "../generated/proto/inference/v1/inference_pb.js";
+import { RunEventSchema, RunTerminal, type RunEvent } from "../generated/proto/inference/v1/inference_pb.js";
 
 type InferenceWasm = typeof import("../generated/wasm/acyclic_inference_wasm.js");
 type WatchRunState = ReturnType<InferenceWasm["watch_run_start_state_wire"]>;
 
 export class InferenceProtocolError extends Error {}
+
+export interface RunTerminalMetadata {
+  readonly number: number;
+  readonly kind: string;
+  readonly partial: boolean;
+}
 
 let binding: Promise<InferenceWasm> | undefined;
 const empty = new Uint8Array();
@@ -38,6 +44,65 @@ export async function validateContract<Schema extends DescMessage>(
   try {
     module.validate_customer_wire(kind, toBinary(schema, value), expected, related);
   } catch (error) {
+    throw new InferenceProtocolError(String(error));
+  }
+}
+
+/** Validate a protobuf-shaped JavaScript request before JSON conversion. */
+export async function validateRuntimeShape<Schema extends DescMessage>(
+  schema: Schema,
+  value: MessageShape<Schema>,
+): Promise<void> {
+  const module = await loadBinding();
+  try {
+    const error = module.runtime_shape_error(schema.typeName, value);
+    if (error !== undefined) throw new InferenceProtocolError(error);
+  } catch (error) {
+    if (error instanceof InferenceProtocolError) throw error;
+    throw new InferenceProtocolError(String(error));
+  }
+}
+
+let terminalMetadataBinding: Promise<readonly RunTerminalMetadata[]> | undefined;
+
+/** Read terminal names and partial outcome policy from the Rust descriptor. */
+export function runTerminalMetadata(): Promise<readonly RunTerminalMetadata[]> {
+  terminalMetadataBinding ??= loadTerminalMetadata();
+  return terminalMetadataBinding;
+}
+
+async function loadTerminalMetadata(): Promise<readonly RunTerminalMetadata[]> {
+  const module = await loadBinding();
+  try {
+    const raw = module.run_terminal_metadata();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new InferenceProtocolError("run terminal metadata is not a list");
+    const metadata: RunTerminalMetadata[] = [];
+    for (const item of parsed) {
+      if (item === null || typeof item !== "object" ||
+          typeof item.number !== "number" || !Number.isSafeInteger(item.number) || item.number <= 0 ||
+          typeof item.kind !== "string" || item.kind.length === 0 ||
+          typeof item.partial !== "boolean") {
+        throw new InferenceProtocolError("run terminal metadata has an invalid entry");
+      }
+      metadata.push({ number: item.number, kind: item.kind, partial: item.partial });
+    }
+    if (metadata.length === 0) throw new InferenceProtocolError("run terminal metadata is empty");
+    const expected = Object.entries(RunTerminal)
+      .filter((entry): entry is [string, number] => typeof entry[1] === "number" && entry[1] > 0)
+      .map(([name, number]) => ({ number, kind: name.toLowerCase().replaceAll("_", "-") }));
+    if (metadata.length !== expected.length || new Set(metadata.map(item => item.number)).size !== metadata.length) {
+      throw new InferenceProtocolError("run terminal metadata does not cover the generated enum");
+    }
+    for (const item of expected) {
+      const actual = metadata.find(candidate => candidate.number === item.number);
+      if (actual === undefined || actual.kind !== item.kind) {
+        throw new InferenceProtocolError("run terminal metadata does not cover the generated enum");
+      }
+    }
+    return metadata;
+  } catch (error) {
+    if (error instanceof InferenceProtocolError) throw error;
     throw new InferenceProtocolError(String(error));
   }
 }

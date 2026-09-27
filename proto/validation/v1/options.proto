@@ -26,3 +26,10 @@ extend google.protobuf.EnumValueOptions {
 extend google.protobuf.OneofOptions {
   optional bool required_oneof = 51004;
 }
+
+// Relative authenticated HTTP path for a public inference RPC. The path is
+// rooted below /v1/inference and is the sole source for the SDK transport
+// route; every public RPC must declare exactly one nonempty path.
+extend google.protobuf.MethodOptions {
+  optional string http_path = 51012;
+}

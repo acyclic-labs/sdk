@@ -3,7 +3,7 @@
 /* eslint-disable */
 
 import type { GenExtension, GenFile } from "@bufbuild/protobuf/codegenv2";
-import type { EnumValueOptions, FieldOptions, OneofOptions } from "@bufbuild/protobuf/wkt";
+import type { EnumValueOptions, FieldOptions, MethodOptions, OneofOptions } from "@bufbuild/protobuf/wkt";
 
 /**
  * Describes the file validation/v1/options.proto.
@@ -68,3 +68,8 @@ export declare const partial_terminal: GenExtension<EnumValueOptions, boolean>;
  * @generated from extension: optional bool required_oneof = 51004;
  */
 export declare const required_oneof: GenExtension<OneofOptions, boolean>;
+
+/**
+ * @generated from extension: optional string http_path = 51012;
+ */
+export declare const http_path: GenExtension<MethodOptions, string>;
