@@ -848,21 +848,12 @@ impl Run {
     /// Returns transport or authenticated service rejection before the stream is established.
     pub async fn watch(&self, from_sequence: u64) -> Result<RunEvents, Error> {
         let view = self.inspect().await?;
-        if view.result.is_some() {
-            let end = view
-                .last_sequence
-                .checked_add(1)
-                .ok_or(Error::Invalid("Run sequence exhausted"))?;
-            if from_sequence > end {
-                return Err(Error::Invalid("Run cursor exceeds retained events"));
-            }
-            if from_sequence == end {
-                return Ok(RunEvents {
-                    stream: None,
-                    expected: from_sequence,
-                    terminal: true,
-                });
-            }
+        if contract::watch_run_start(&view, from_sequence).map_err(contract_error)? {
+            return Ok(RunEvents {
+                stream: None,
+                expected: from_sequence,
+                terminal: true,
+            });
         }
         let stream = self
             .client

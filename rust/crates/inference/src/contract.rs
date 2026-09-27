@@ -324,6 +324,46 @@ pub(crate) fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Res
     Ok(())
 }
 
+pub(crate) fn watch_run_start(view: &wire::RunView, from_sequence: u64) -> Result<bool, Error> {
+    if view.result.is_none() {
+        return Ok(false);
+    }
+    let end = view
+        .last_sequence
+        .checked_add(1)
+        .ok_or(Error::Invalid("Run sequence exhausted"))?;
+    if from_sequence > end {
+        return Err(Error::Invalid("Run cursor exceeds retained events"));
+    }
+    Ok(from_sequence == end)
+}
+
+/// Decide whether a completed Run has any events left at the requested cursor.
+/// The view and cursor are validated by the same contract used by the Rust host.
+///
+/// # Errors
+/// Rejects a malformed view, mismatched identity, or invalid cursor.
+pub fn watch_run_start_wire(
+    message: &[u8],
+    expected: &[u8],
+    from_sequence: &str,
+) -> Result<bool, &'static str> {
+    use prost::Message;
+    let inner = || -> Result<bool, Error> {
+        if message.len() > MAXIMUM_MESSAGE_BYTES {
+            return Err(Error::Invalid("message exceeds transport ceiling"));
+        }
+        let view = wire::RunView::decode(message)
+            .map_err(|_| Error::Invalid("malformed protobuf message"))?;
+        validate_run_view(&view, fixed::<16>(expected)?)?;
+        let cursor = from_sequence
+            .parse::<u64>()
+            .map_err(|_| Error::Invalid("Run cursor is invalid"))?;
+        watch_run_start(&view, cursor)
+    };
+    inner().map_err(|Error::Invalid(message)| message)
+}
+
 pub(crate) fn validate_generated_run_view(
     view: &wire::RunView,
     expected: [u8; 16],
@@ -519,5 +559,44 @@ mod tests {
         assert!(validate_customer_wire("generated_run_view", &bytes, &[2; 16], &[]).is_err());
         assert!(validate_customer_wire("generated_run_view", &bytes, &[2; 16], &[4; 32]).is_err());
         assert!(validate_customer_wire("generated_run_view", &bytes, &[2; 16], &[3; 32]).is_ok());
+    }
+
+    #[test]
+    fn completed_run_watch_start_is_shared_with_the_host() {
+        let mut result = wire::RunResult::default();
+        result.terminal = wire::RunTerminal::Completed.into();
+        let view = wire::RunView {
+            run_id: vec![2; 16],
+            input: vec![3; 32],
+            model: "model".to_owned(),
+            last_sequence: 7,
+            result: Some(result),
+            ..Default::default()
+        };
+        let bytes = view.encode_to_vec();
+        assert_eq!(watch_run_start_wire(&bytes, &[2; 16], "7"), Ok(false));
+        assert_eq!(watch_run_start_wire(&bytes, &[2; 16], "8"), Ok(true));
+        assert_eq!(
+            watch_run_start_wire(&bytes, &[2; 16], "9"),
+            Err("Run cursor exceeds retained events")
+        );
+        assert_eq!(
+            watch_run_start_wire(&bytes, &[3; 16], "8"),
+            Err("Run identity differs")
+        );
+        assert_eq!(
+            watch_run_start_wire(&bytes, &[2; 16], "-1"),
+            Err("Run cursor is invalid")
+        );
+        assert_eq!(
+            watch_run_start_wire(&bytes, &[2; 16], "18446744073709551616"),
+            Err("Run cursor is invalid")
+        );
+        let mut exhausted = view;
+        exhausted.last_sequence = u64::MAX;
+        assert_eq!(
+            watch_run_start_wire(&exhausted.encode_to_vec(), &[2; 16], "0"),
+            Err("Run sequence exhausted")
+        );
     }
 }

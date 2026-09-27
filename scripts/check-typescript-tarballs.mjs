@@ -27,6 +27,14 @@ for (const entry of publishedPackageEntries) {
 }
 const packageEntries = workspacePackageEntries;
 const packageDirectories = packageEntries.map(item => item.directory);
+const rootTsconfig = JSON.parse(await readFile(join(root, "tsconfig.json"), "utf8"));
+const checkedProjects = new Set(rootTsconfig.references.map(reference =>
+  relative(packagesRoot, resolve(root, reference.path)).split(sep).join("/")));
+for (const entry of packageEntries) {
+  if (!checkedProjects.has(entry.directory)) {
+    throw new Error(`TypeScript workspace package is absent from the root type check: ${entry.name}`);
+  }
+}
 
 const expectedExports = {
   "@acyclic-labs/fs": "openBrowserFs",

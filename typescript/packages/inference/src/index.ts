@@ -1,5 +1,5 @@
 import { create, fromJson, toBinary, toJsonString, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
-import { InferenceProtocolError, validateContract } from "./contract.js";
+import { InferenceProtocolError, validateContract, watchRunAlreadyComplete } from "./contract.js";
 import {
   ContextViewSchema,
   CreateEvaluationRequestSchema,
@@ -126,6 +126,8 @@ export class InferenceClient {
   async *watchRun(runId: Uint8Array, fromSequence = 0n, signal?: AbortSignal): AsyncIterable<RunEvent> {
     requireFixed(runId, 16, "run ID");
     if (fromSequence < 0n) throw new InferenceProtocolError("run cursor must be non-negative");
+    const view = await this.inspectRun(runId);
+    if (await watchRunAlreadyComplete(toBinary(RunViewSchema, view), runId, fromSequence)) return;
     let expected = fromSequence;
     let terminal = false;
     for await (const event of this.transport.watchRun(create(WatchRunRequestSchema, { runId, fromSequence }), signal)) {

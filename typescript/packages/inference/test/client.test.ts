@@ -115,7 +115,7 @@ test("generated lifecycle client covers contexts, warm commitments, runs, watch,
     spec: evaluationSpec(specDigest),
   }));
   await client.inspectEvaluation(evaluationId);
-  expect(called).toEqual(["models", "create", "inspect:1", "mutate", "retain", "inspect-warm", "renew", "release", "generate", "inspect-run", "watch:7", "cancel", "create-evaluation", "inspect-evaluation"]);
+  expect(called).toEqual(["models", "create", "inspect:1", "mutate", "retain", "inspect-warm", "renew", "release", "generate", "inspect-run", "inspect-run", "watch:7", "cancel", "create-evaluation", "inspect-evaluation"]);
 });
 
 test("high-level handles preserve typed context, run, and warm identities", async () => {
@@ -130,7 +130,7 @@ test("high-level handles preserve typed context, run, and warm identities", asyn
     async renewWarm(request) { return warmView(request.commitment, revision(3), request.expiresAtMs); },
     async releaseWarm(request) { return warmView(request.commitment, revision(3)); },
     async generateRun(request) { return create(GenerateRunResponseSchema, { run: { runId: request.identity!.requestId, input: request.context, model: "model" } }); },
-    async inspectRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", result: create(RunResultSchema, { output: bytes(9), terminal: RunTerminal.COMPLETED, context: create(ContextViewSchema, { revision: revision(10) }) }) }); },
+    async inspectRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", lastSequence: 4n, result: create(RunResultSchema, { output: bytes(9), terminal: RunTerminal.COMPLETED, context: create(ContextViewSchema, { revision: revision(10) }) }) }); },
     async *watchRun(request) { yield create(RunEventSchema, { sequence: request.fromSequence, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
     async cancelRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", cancellationRequested: true }); },
     async createEvaluation(request) { return evaluationView(request.identity!.requestId, request.spec!.specDigest); },
@@ -177,6 +177,24 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   };
   const result = await new Inference(new InferenceClient(transport)).run(runId(id)).result();
   expect(result.terminal).toBe("completed");
+
+  let reopened = false;
+  const completed = new InferenceClient({
+    ...transport,
+    async inspectRun(request) { return create(RunViewSchema, {
+      runId: request.runId, input: revision(1), model: "model", lastSequence: 7n,
+      result: { terminal: RunTerminal.COMPLETED },
+    }); },
+    async *watchRun() { reopened = true; throw new Error("completed run was reopened"); },
+  });
+  let observed = 0;
+  for await (const _event of completed.watchRun(id, 8n)) observed += 1;
+  expect(observed).toBe(0);
+  expect(reopened).toBeFalse();
+  await expect(async () => {
+    for await (const _event of completed.watchRun(id, 9n)) { /* exhaust */ }
+  }).toThrow("Run cursor exceeds retained events");
+  expect(reopened).toBeFalse();
 
   const substituted = new InferenceClient({ ...transport, async inspectRun() { return create(RunViewSchema, { runId: runIdentity(9), input: revision(1), model: "model" }); } });
   await expect(substituted.inspectRun(id)).rejects.toThrow("identity differs");

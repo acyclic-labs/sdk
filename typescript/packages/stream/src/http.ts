@@ -1,4 +1,5 @@
-import { pathValue, positiveInteger, validateAppend } from "./client.js";
+import { pathValue, validateAppend } from "./client.js";
+import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, DeleteReceipt, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamBounds, StreamProvider, TrimReceipt } from "./types.js";
 import { StreamError, commitId } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
@@ -55,6 +56,7 @@ export class HttpStreamProvider implements StreamProvider {
   }
   async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> { await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); const input = wireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); for (const item of await this.#request("children", await encodeHttpRequest("children", input))) yield item; }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
+    if (request === null || typeof request !== "object") throw new StreamError("invalid_argument", "children page request must be an object");
     if (request.parent !== undefined) pathValue(request.parent);
     if (request.after !== undefined) {
       pathValue(request.after);
@@ -65,7 +67,9 @@ export class HttpStreamProvider implements StreamProvider {
     if (request.hierarchyVersion !== undefined && request.hierarchyVersion.byteLength !== 32) {
       throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
     }
-    positiveInteger(request.limit, "limit");
+    if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > StreamLimit.MAX_ITEMS) {
+      throw new StreamError("limit_exceeded", `child page limit must be between 1 and ${StreamLimit.MAX_ITEMS}`);
+    }
     return this.#requestRaw("children/page", {
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),

@@ -182,6 +182,10 @@ describe("website Stream contract", () => {
         { append: { path: "duplicate-mutation", values: [new Uint8Array([2])] } },
       ],
     }, { idempotencyKey: key("duplicate-mutation") })).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(client.provider.commit({ conditions: null as never, mutations: [] }, { idempotencyKey: key("null-conditions") }))
+      .rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(client.provider.commit({ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never] }, { idempotencyKey: key("null-mutation") }))
+      .rejects.toMatchObject({ code: "invalid_argument" });
   });
 
   test("distinguishes a missing tail from zero and retires paths hierarchically", async () => {
@@ -551,6 +555,8 @@ describe("website Stream contract", () => {
       () => provider.append("bad path", [new Uint8Array([1])]),
       () => provider.commit({ conditions: [{ path: "valid", ifAbsent: true }], mutations: [{ append: { path: "unconditioned", values: [new Uint8Array([1])] } }] }, { idempotencyKey: key("invalid-commit") }),
       () => provider.commit({ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [{ append: { path: "forged", values: [new Uint8Array([1])] } }] }, { idempotencyKey: key("forged") }),
+      () => provider.commit({ conditions: null as never, mutations: [] }, { idempotencyKey: key("null-conditions") }),
+      () => provider.commit({ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never] }, { idempotencyKey: key("null-mutation") }),
     ]) await expect(Promise.resolve().then(operation)).rejects.toThrow();
     await expect(provider.read("bad path", { from: 0n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toThrow();
     await expect(provider.read("valid", { from: 0n, limit: 0 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "limit_exceeded" });
@@ -559,6 +565,8 @@ describe("website Stream contract", () => {
     await expect(provider.follow("valid", { from: -1n })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(provider.children("bad path", 1)[Symbol.asyncIterator]().next()).rejects.toThrow();
     await expect(provider.childrenPage({ parent: "bad path", limit: 1 })).rejects.toThrow();
+    await expect(provider.childrenPage({ limit: 0 })).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(provider.childrenPage(null as never)).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(provider.children(undefined, 0)[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "limit_exceeded" });
     expect(calls).toBe(0);
   });
@@ -570,6 +578,8 @@ describe("website Stream contract", () => {
     await expect(Promise.resolve().then(() => provider.createToken!({ expiresIn: "1h", allow: [{ path: "runs//child", operations: ["read"] }] }))).rejects.toMatchObject({ code: "invalid_path" });
     await expect(Promise.resolve().then(() => provider.createToken!({ expiresIn: "1h", allow: [{ path: "runs", operations: ["unknown" as never] }] }))).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(Promise.resolve().then(() => provider.createToken!({ expiresIn: "1h", allow: [] }))).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(Promise.resolve().then(() => provider.createToken!({ expiresIn: "1h", allow: null as never }))).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(Promise.resolve().then(() => provider.createToken!({ expiresIn: "1h", allow: [null as never] }))).rejects.toMatchObject({ code: "invalid_argument" });
     expect(calls).toBe(0);
   });
 

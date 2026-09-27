@@ -39,3 +39,17 @@ export async function validateContract<Schema extends DescMessage>(
     throw new InferenceProtocolError(String(error));
   }
 }
+
+/** Use the Rust watch-cursor decision for a validated protobuf Run view. */
+export async function watchRunAlreadyComplete(
+  viewBytes: Uint8Array,
+  runId: Uint8Array,
+  fromSequence: bigint,
+): Promise<boolean> {
+  const module = await loadBinding();
+  try {
+    return module.watch_run_start_wire(viewBytes, runId, fromSequence.toString());
+  } catch (error) {
+    throw new InferenceProtocolError(String(error));
+  }
+}

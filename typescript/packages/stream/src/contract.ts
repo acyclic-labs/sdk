@@ -93,14 +93,27 @@ export type HttpRequestRoute = HttpRoute;
 
 /** Encode the hosted token request through the canonical protobuf/Rust route. */
 export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array {
-  return toBinary(CreateTokenRequestSchema, create(CreateTokenRequestSchema, {
-    expiresIn: request.expiresIn,
-    allow: request.allow.map(grant => ({
-      path: grant.path,
-      ...(grant.subtree === undefined ? {} : { subtree: grant.subtree }),
-      operations: [...grant.operations],
-    })),
-  }));
+  try {
+    if (request === null || typeof request !== "object" || !Array.isArray(request.allow)) {
+      throw new StreamError("invalid_argument", "token request must contain an allow array");
+    }
+    return toBinary(CreateTokenRequestSchema, create(CreateTokenRequestSchema, {
+      expiresIn: request.expiresIn,
+      allow: request.allow.map(grant => {
+        if (grant === null || typeof grant !== "object") {
+          throw new StreamError("invalid_argument", "token grant must be an object");
+        }
+        return {
+          path: grant.path,
+          ...(grant.subtree === undefined ? {} : { subtree: grant.subtree }),
+          operations: [...grant.operations],
+        };
+      }),
+    }));
+  } catch (error) {
+    if (error instanceof StreamError) throw error;
+    throw new StreamError("invalid_argument", `token request fields are malformed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 export function wireRequest(request: WireRequest): Uint8Array {
@@ -207,36 +220,42 @@ export async function encodeHttpRequest(route: HttpRequestRoute, input: Uint8Arr
 }
 
 export async function normalizeWireCommitBytes(request: ProviderCommitRequest, options: CommitOptions): Promise<Uint8Array> {
-  const conditions = request.conditions.map(condition => {
-    if ("ifTail" in condition) return create(CommitConditionSchema, {
-      condition: { case: "tail", value: create(TailConditionSchema, { path: condition.path, expected: condition.ifTail }) },
+  let input: Uint8Array;
+  try {
+    const conditions = request.conditions.map(condition => {
+      if ("ifTail" in condition) return create(CommitConditionSchema, {
+        condition: { case: "tail", value: create(TailConditionSchema, { path: condition.path, expected: condition.ifTail }) },
+      });
+      if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
+      return create(CommitConditionSchema, {
+        condition: { case: "absent", value: create(AbsentConditionSchema, { path: condition.path }) },
+      });
     });
-    if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
-    return create(CommitConditionSchema, {
-      condition: { case: "absent", value: create(AbsentConditionSchema, { path: condition.path }) },
+    const mutations = request.mutations.map(mutation => {
+      if ("append" in mutation) return create(CommitMutationSchema, {
+        mutation: { case: "append", value: create(AppendMutationSchema, { path: mutation.append.path, records: [...mutation.append.values] }) },
+      });
+      if ("fork" in mutation) return create(CommitMutationSchema, {
+        mutation: { case: "fork", value: create(ForkMutationSchema, {
+          source: mutation.fork.source,
+          destination: mutation.fork.destination,
+          atTail: mutation.fork.atTail,
+          records: mutation.fork.values.map((value: Uint8Array) => value.slice()),
+        }) },
+      });
+      if ("trim" in mutation) return create(CommitMutationSchema, {
+        mutation: { case: "trim", value: create(TrimMutationSchema, mutation.trim) },
+      });
+      return create(CommitMutationSchema, {
+        mutation: { case: "delete", value: create(DeleteMutationSchema, mutation.delete) },
+      });
     });
-  });
-  const mutations = request.mutations.map(mutation => {
-    if ("append" in mutation) return create(CommitMutationSchema, {
-      mutation: { case: "append", value: create(AppendMutationSchema, { path: mutation.append.path, records: [...mutation.append.values] }) },
-    });
-    if ("fork" in mutation) return create(CommitMutationSchema, {
-      mutation: { case: "fork", value: create(ForkMutationSchema, {
-        source: mutation.fork.source,
-        destination: mutation.fork.destination,
-        atTail: mutation.fork.atTail,
-        records: mutation.fork.values.map(value => value.slice()),
-      }) },
-    });
-    if ("trim" in mutation) return create(CommitMutationSchema, {
-      mutation: { case: "trim", value: create(TrimMutationSchema, mutation.trim) },
-    });
-    return create(CommitMutationSchema, {
-      mutation: { case: "delete", value: create(DeleteMutationSchema, mutation.delete) },
-    });
-  });
-  const wire = create(CommitRequestSchema, { conditions, mutations, idempotencyKey: options.idempotencyKey, ...(options.deadlineUnixMillis === undefined ? {} : { deadlineUnixMillis: options.deadlineUnixMillis }) });
-  const input = toBinary(CommitRequestSchema, wire);
+    const wire = create(CommitRequestSchema, { conditions, mutations, idempotencyKey: options.idempotencyKey, ...(options.deadlineUnixMillis === undefined ? {} : { deadlineUnixMillis: options.deadlineUnixMillis }) });
+    input = toBinary(CommitRequestSchema, wire);
+  } catch (error) {
+    if (error instanceof StreamError) throw error;
+    throw new StreamError("invalid_argument", `commit request fields are malformed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   await ensureStreamWasm();
   let canonical: Uint8Array;
   try { canonical = normalizeCommitRequest(input); }
