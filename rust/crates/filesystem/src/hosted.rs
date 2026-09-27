@@ -79,7 +79,7 @@ impl HostedFsOptions {
             bearer_token: bearer_token.into(),
             ca_certificate_pem: None,
             maximum_response_bytes: usize::try_from(DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES)
-                .expect("hosted response default fits usize"),
+                .unwrap_or(usize::MAX),
             maximum_request_bytes: 16 * 1024 * 1024,
             connect_timeout: Duration::from_secs(10),
             request_timeout: Duration::from_secs(30),

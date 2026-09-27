@@ -283,14 +283,17 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
 pub async fn select_model_context_at_revision<R: AttachmentListResolver + ?Sized>(
     conversation: &ConversationState,
     selection: ModelContextSelection,
-    conversation_revision: u64,
     resolver: &R,
     maximum_messages: usize,
     maximum_attachments: usize,
     maximum_render_bytes: u64,
     maximum_projected_attachments: usize,
 ) -> Result<SelectedModelContext> {
-    validate_model_context_selection_at_revision(conversation, &selection, conversation_revision)?;
+    validate_model_context_selection_at_revision(
+        conversation,
+        &selection,
+        selection.conversation_revision,
+    )?;
     let loaded_revision = u64::try_from(conversation.messages.len())
         .map_err(|_| Error::Invalid("conversation message count exceeds u64".into()))?;
     let loaded_selection = ModelContextSelection {
@@ -307,7 +310,7 @@ pub async fn select_model_context_at_revision<R: AttachmentListResolver + ?Sized
         maximum_projected_attachments,
     )
     .await?;
-    selected.selection.conversation_revision = conversation_revision;
+    selected.selection.conversation_revision = selection.conversation_revision;
     Ok(selected)
 }
 
@@ -381,8 +384,7 @@ pub fn validate_model_context_selection_at_revision(
             MessageKind::System | MessageKind::User | MessageKind::Assistant => {}
             kind => {
                 return Err(Error::Unsupported(format!(
-                    "message kind {:?} requires a specialized model projection",
-                    kind
+                    "message kind {kind:?} requires a specialized model projection"
                 )));
             }
         }
@@ -450,7 +452,7 @@ fn validate_model_json_numbers(value: &serde_json::Value) -> Result<()> {
             } else if let Some(value) = number.as_f64()
                 && (!value.is_finite()
                     || (value == 0.0 && value.is_sign_negative())
-                    || (value.fract() == 0.0 && value.abs() > MAX_SAFE_INTEGER as f64))
+                    || (value.fract() == 0.0 && value.abs() > 9_007_199_254_740_991.0))
             {
                 return Err(Error::Invalid(
                     "tool artifact contains an inexact number".into(),

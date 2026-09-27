@@ -807,14 +807,17 @@ pub async fn select_model_context_wasm(
             "maximum render bytes must be a safe non-negative integer",
         ));
     }
+    let maximum_render_bytes = maximum_render_bytes
+        .to_string()
+        .parse::<u64>()
+        .map_err(|_| JsValue::from_str("maximum render bytes are out of range"))?;
     let selected = select_model_context_at_revision(
         &conversation,
         selection.clone(),
-        selection.conversation_revision,
         &resolver,
         maximum_messages as usize,
         maximum_attachments as usize,
-        maximum_render_bytes as u64,
+        maximum_render_bytes,
         maximum_projected_attachments as usize,
     )
     .await
