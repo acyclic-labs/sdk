@@ -1756,7 +1756,7 @@ export interface InitOutput {
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h645af92b15c71abd: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h5e75f98040ac9e7b: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h084ada5e0839d1da: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h65736f6e5215ff09: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__hd45b3cccad240fdb: (a: number, b: number) => void;
