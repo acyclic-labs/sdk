@@ -196,6 +196,21 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   }).toThrow("Run cursor exceeds retained events");
   expect(reopened).toBeFalse();
 
+  const controller = new AbortController();
+  const cancellable = new InferenceClient({
+    ...transport,
+    inspectRun(_request, signal) {
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+    },
+    async *watchRun() { reopened = true; throw new Error("watch opened after cancellation"); },
+  });
+  const pending = cancellable.watchRun(id, 0n, controller.signal)[Symbol.asyncIterator]().next();
+  controller.abort();
+  await expect(pending).rejects.toThrow("aborted");
+  expect(reopened).toBeFalse();
+
   const substituted = new InferenceClient({ ...transport, async inspectRun() { return create(RunViewSchema, { runId: runIdentity(9), input: revision(1), model: "model" }); } });
   await expect(substituted.inspectRun(id)).rejects.toThrow("identity differs");
 

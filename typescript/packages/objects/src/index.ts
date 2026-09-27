@@ -71,6 +71,13 @@ export type ReadTarget =
   | { readonly kind: Extract<ReadTargetKind, "bucket">; readonly bucket: BucketRef }
   | { readonly kind: Extract<ReadTargetKind, "snapshot">; readonly snapshot: SnapshotRef };
 
+/** Metadata-only read conditions; body ranges and limits do not apply. */
+export interface HeadOptions {
+  readonly versionId?: VersionId;
+  readonly ifMatch?: ETag;
+  readonly ifNoneMatch?: ETag;
+}
+
 /**
  * Buffered object returned by a transport adapter.
  *
@@ -107,7 +114,7 @@ export interface ObjectsProvider {
   deleteBucket(bucket: BucketRef, idempotencyKey?: IdempotencyKey): Promise<boolean>;
   put(bucket: BucketRef, objectKey: string, body: Uint8Array, metadata: ObjectMetadata,
     condition?: Condition, idempotencyKey?: IdempotencyKey): Promise<ObjectVersion>;
-  head(target: ReadTarget, objectKey: string, versionId?: VersionId): Promise<ObjectVersion>;
+  head(target: ReadTarget, objectKey: string, options?: HeadOptions): Promise<ObjectVersion>;
   get(target: ReadTarget, objectKey: string, versionId?: VersionId, range?: Omit<ByteRange, "total">): Promise<StoredObject>;
   delete(bucket: BucketRef, objectKey: string, versionId?: VersionId, condition?: Condition,
     idempotencyKey?: IdempotencyKey): Promise<{ readonly existed: boolean; readonly marker?: ObjectVersion }>;

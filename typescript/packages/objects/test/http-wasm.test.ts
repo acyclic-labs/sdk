@@ -4,6 +4,34 @@ import { HttpObjectsProvider, ObjectsTransportError } from "../src/index.js";
 const bucket = { bucketId: "bucket" as never, name: "objects" };
 
 describe("hosted Objects WASM response projection", () => {
+  test("forwards Rust head validators and version selection", async () => {
+    let requestBody = "";
+    const provider = new HttpObjectsProvider({
+      endpoint: "https://example.test",
+      token: "token",
+      fetcher: async (_input, init) => {
+        requestBody = String(init?.body);
+        return new Response(JSON.stringify({
+          versionId: "version",
+          etag: "etag",
+          size: { $bigint: "0" },
+          deleteMarker: false,
+          metadata: { user: { $map: [] } },
+        }));
+      },
+    });
+
+    await provider.head(bucket, "key", { versionId: "version" as never, ifMatch: "etag" as never, ifNoneMatch: "other" as never });
+
+    expect(JSON.parse(requestBody)).toEqual({
+      target: bucket,
+      objectKey: "key",
+      versionId: "version",
+      ifMatch: "etag",
+      ifNoneMatch: "other",
+    });
+  });
+
   test("encodes request bigint, bytes, map, and metadata wrappers in Rust", async () => {
     let requestBody = "";
     const provider = new HttpObjectsProvider({

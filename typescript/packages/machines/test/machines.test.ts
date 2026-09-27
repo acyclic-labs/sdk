@@ -324,6 +324,32 @@ describe("Machines simulation", () => {
     await expect(serve({ ...usage, lineageReceiptSha256: { $bytes: "AR==" } }).usage(created.machine.id, 1, 2)).rejects.toThrow("bytes");
   });
 
+  test("binds hosted mutation outcomes to their request identities and policies", async () => {
+    const simulated = new SimulatedMachines();
+    const created = await simulated.create(request("hosted-mutation-bindings"));
+    if (created.kind !== "created") throw new Error("wrong create outcome");
+    const encode = (value: unknown) => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? { $bigint: item.toString() } : item instanceof Uint8Array ? { $bytes: btoa(String.fromCharCode(...item)) } : item);
+    const serve = (value: unknown) => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(encode(value)) });
+    await expect(serve({ ...created, machine: { ...created.machine, contract: { ...created.machine.contract, suspension: { kind: "manual" } } } }).create(request("hosted-mutation-bindings"))).rejects.toThrow("suspension policy");
+
+    const checkpointed = await simulated.checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"));
+    if (checkpointed.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
+    expect(await serve(checkpointed).checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"))).toEqual(checkpointed);
+    await expect(serve({ ...checkpointed, checkpoint: { ...checkpointed.checkpoint, source: machineId("other-source") } }).checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"))).rejects.toThrow("substituted");
+
+    const forked = await simulated.forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"));
+    if (forked.kind !== "machine-forked") throw new Error("wrong machine fork outcome");
+    expect(await serve(forked).forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"))).toEqual(forked);
+    await expect(serve({ ...forked, source: machineId("other-source") }).forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"))).rejects.toThrow("substituted");
+
+    const policy = { kind: "suspension-policy-set" as const, machineId: created.machine.id, policy: { kind: "manual" as const } };
+    expect(await serve(policy).setSuspensionPolicy(created.machine.id, policy.policy, idempotencyKey("hosted-mutation-policy"))).toEqual(policy);
+    await expect(serve({ ...policy, machineId: machineId("other-machine") }).setSuspensionPolicy(created.machine.id, policy.policy, idempotencyKey("hosted-mutation-policy"))).rejects.toThrow("substituted");
+    await expect(serve({ ...policy, policy: { kind: "after-idle", milliseconds: 30_000 } }).setSuspensionPolicy(created.machine.id, policy.policy, idempotencyKey("hosted-mutation-policy"))).rejects.toThrow("policy");
+
+    await expect(serve({ kind: "suspended", machineId: machineId("other-machine") }).suspend(created.machine.id, idempotencyKey("hosted-mutation-suspend"))).rejects.toThrow("substituted");
+  });
+
   test("cancels oversized streaming transport responses at the configured bound", async () => {
     let cancelled = false;
     const body = new ReadableStream<Uint8Array>({

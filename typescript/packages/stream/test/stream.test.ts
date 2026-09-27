@@ -524,6 +524,23 @@ describe("website Stream contract", () => {
     expect(added).toBe(removed);
   });
 
+  test("hosted non-success responses preserve canonical Stream error codes", async () => {
+    for (const failure of [
+      { wireCode: "not_found", code: "stream_not_found", status: 404 },
+      { wireCode: "out_of_range", code: "cursor_trimmed", status: 409 },
+      { wireCode: "access_denied", code: "access_denied", status: 403 },
+      { wireCode: "stream_not_found", code: "stream_not_found", status: 404 },
+    ]) {
+      const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () =>
+        new Response(JSON.stringify({ code: failure.wireCode, message: "service detail" }), { status: failure.status }) });
+      await expect(provider.tail("events")).rejects.toMatchObject({ code: failure.code, message: "service detail", status: failure.status });
+    }
+
+    const unknown = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () =>
+      new Response(JSON.stringify({ code: "internal_failure", message: "service detail" }), { status: 500 }) });
+    await expect(unknown.tail("events")).rejects.toMatchObject({ code: "transport", message: JSON.stringify({ code: "internal_failure", message: "service detail" }), status: 500 });
+  });
+
   test("hosted reads keep the canonical cursor contiguous", async () => {
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify([{
       sequence: "1", value: "AQ==", commitId: encodedCommitId,
@@ -645,10 +662,13 @@ describe("website Stream contract", () => {
     const maximum = 0xffff_ffff_ffff_ffffn;
     const record = decodeHttpResponse("read", JSON.stringify([{
       sequence: maximum.toString(), value: "AQI=", commitId: encodedCommitId,
+    }, {
+      sequence: (maximum - 1n).toString(), value: "", commitId: encodedCommitId,
     }])) as { readonly sequence: bigint; readonly value: Uint8Array; readonly commitId: Uint8Array }[];
     expect(record[0]?.sequence).toBe(maximum);
     expect(record[0]?.value).toEqual(new Uint8Array([1, 2]));
     expect(record[0]?.commitId).toEqual(new Uint8Array(32).fill(7));
+    expect(record[1]?.value).toEqual(new Uint8Array());
 
     const token = decodeHttpResponse("tokens/create", JSON.stringify({ token: "secret", expiresAt: "2030-01-02T03:04:05.000Z" })) as { readonly token: string; readonly expiresAt: Date };
     expect(token.token).toBe("secret");

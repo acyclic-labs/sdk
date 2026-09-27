@@ -1,4 +1,4 @@
-import type { BucketRef, ByteRange, Condition, IdempotencyKey, ListPage, MultipartProvider, MultipartUpload, ObjectMetadata, ObjectsProvider, ObjectVersion, ReadTarget, SnapshotRef, StoredObject, UploadedPart, VersionId } from "./index.js";
+import type { BucketRef, ByteRange, Condition, HeadOptions, IdempotencyKey, ListPage, MultipartProvider, MultipartUpload, ObjectMetadata, ObjectsProvider, ObjectVersion, ReadTarget, SnapshotRef, StoredObject, UploadedPart, VersionId } from "./index.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { decode_http_response, encode_http_request } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
@@ -13,7 +13,7 @@ export class HttpObjectsProvider implements ObjectsProvider, MultipartProvider {
   headBucket(value: BucketRef) { return this.#call("buckets/head", { bucket: value }); }
   deleteBucket(value: BucketRef, idempotencyKey?: IdempotencyKey) { return this.#call("buckets/delete", { bucket: value, idempotencyKey }); }
   put(value: BucketRef, objectKey: string, body: Uint8Array, metadata: ObjectMetadata, condition?: Condition, idempotencyKey?: IdempotencyKey) { return this.#call("objects/put", { bucket: value, objectKey, body, metadata, condition, idempotencyKey }); }
-  head(target: ReadTarget, objectKey: string, versionId?: VersionId) { return this.#call("objects/head", { target, objectKey, versionId }); }
+  head(target: ReadTarget, objectKey: string, options: HeadOptions = {}) { return this.#call("objects/head", { target, objectKey, ...options }); }
   get(target: ReadTarget, objectKey: string, versionId?: VersionId, range?: Omit<ByteRange, "total">) { return this.#call("objects/get", { target, objectKey, versionId, range }); }
   delete(value: BucketRef, objectKey: string, versionId?: VersionId, condition?: Condition, idempotencyKey?: IdempotencyKey) { return this.#call("objects/delete", { bucket: value, objectKey, versionId, condition, idempotencyKey }); }
   list(target: ReadTarget, prefix: string, delimiter: string | undefined, versions: boolean, pageSize: number, continuation?: string) { return this.#call("objects/list", { target, prefix, delimiter, versions, pageSize, continuation }); }

@@ -1,7 +1,7 @@
 import { HttpObjectsProvider } from "./http.js";
 import { MemoryObjectsProvider } from "./memory.js";
 import type {
-  BucketRef, ByteRange, Condition, IdempotencyKey, ListPage, ObjectMetadata, ObjectsProvider,
+  BucketRef, ByteRange, Condition, HeadOptions, IdempotencyKey, ListPage, ObjectMetadata, ObjectsProvider,
   ObjectVersion, ReadTarget, SnapshotRef, StoredObject, UploadedPart, VersionId, MultipartProvider, MultipartUpload,
 } from "./index.js";
 import { objectsLimits } from "./wasm-runtime.js";
@@ -62,7 +62,7 @@ export class Bucket {
   constructor(readonly provider: ObjectsProvider, readonly reference: BucketRef) { this.target = { kind: "bucket", bucket: reference }; }
   async put<Value>(key: string, value: Value, codec: Codec<Value>, options: PutOptions = {}): Promise<ObjectVersion> { return this.provider.put(this.reference, key, codec.encode(value), metadata(options.metadata, codec.mediaType), options.condition, options.idempotencyKey); }
   async get<Value>(key: string, codec: Codec<Value>, options: GetOptions = {}): Promise<StoredValue<Value>> { const stored = await this.provider.get(this.target, key, options.versionId, options.range); return project(stored, codec); }
-  head(key: string, options: Pick<GetOptions, "versionId"> = {}): Promise<ObjectVersion> { return this.provider.head(this.target, key, options.versionId); }
+  head(key: string, options: HeadOptions = {}): Promise<ObjectVersion> { return this.provider.head(this.target, key, options); }
   delete(key: string, options: DeleteOptions = {}) { return this.provider.delete(this.reference, key, options.versionId, options.condition, options.idempotencyKey); }
   async listPage(options: ListOptions = {}): Promise<ListPage> { const { listPageEntries } = await objectsLimits(); return this.provider.list(this.target, options.prefix ?? "", options.delimiter, options.versions ?? false, options.pageSize ?? listPageEntries, options.continuation); }
   async *pages(options: Omit<ListOptions, "continuation"> = {}): AsyncIterable<ListPage> { let continuation: string | undefined; do { const page = await this.listPage({ ...options, ...(continuation ? { continuation } : {}) }); yield page; continuation = page.continuation; } while (continuation); }
@@ -77,7 +77,7 @@ export class Snapshot {
   readonly target: ReadTarget;
   constructor(readonly provider: ObjectsProvider, readonly reference: SnapshotRef) { this.target = { kind: "snapshot", snapshot: reference }; }
   async get<Value>(key: string, codec: Codec<Value>, options: GetOptions = {}): Promise<StoredValue<Value>> { return project(await this.provider.get(this.target, key, options.versionId, options.range), codec); }
-  head(key: string, options: Pick<GetOptions, "versionId"> = {}): Promise<ObjectVersion> { return this.provider.head(this.target, key, options.versionId); }
+  head(key: string, options: HeadOptions = {}): Promise<ObjectVersion> { return this.provider.head(this.target, key, options); }
   async listPage(options: ListOptions = {}): Promise<ListPage> { const { listPageEntries } = await objectsLimits(); return this.provider.list(this.target, options.prefix ?? "", options.delimiter, options.versions ?? false, options.pageSize ?? listPageEntries, options.continuation); }
   async fork(destination: string, options: { readonly idempotencyKey?: IdempotencyKey } = {}): Promise<Bucket> { return new Bucket(this.provider, await this.provider.fork(this.target, destination, options.idempotencyKey)); }
   destroy(options: { readonly idempotencyKey?: IdempotencyKey } = {}): Promise<boolean> { return this.provider.destroySnapshot(this.reference, options.idempotencyKey); }

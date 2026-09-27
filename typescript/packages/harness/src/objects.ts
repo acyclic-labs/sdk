@@ -154,7 +154,7 @@ export class ObjectContentStore {
     this.options.authority.verifyContentRead(this.options.scope, file);
     const objectKey = this.#key(file.path);
     const target = { kind: "bucket" as const, bucket: this.options.bucket };
-    const version = await this.#objects.head(target, objectKey, file.version as VersionId);
+    const version = await this.#objects.head(target, objectKey, { versionId: file.version as VersionId });
     if (version.deleteMarker || version.versionId !== file.version
       || version.size !== BigInt(file.descriptor.byte_length)
       || version.metadata.contentType !== file.descriptor.media_type

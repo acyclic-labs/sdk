@@ -18,7 +18,7 @@ import type {
 import type { ObjectsErrorCode as WasmObjectsErrorCode } from "../generated/wasm/acyclic_objects_wasm.js";
 import { is_objects_error_code, WasmMemoryObjects } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm, objectsLimits } from "./wasm-runtime.js";
-import type { BucketRef, ByteRange, Condition, ETag, IdempotencyKey, ListPage, MultipartProvider, MultipartUpload, ObjectMetadata, ObjectsProvider, ObjectVersion, ReadTarget, SnapshotRef, StoredObject, UploadedPart, VersionId, UploadId } from "./index.js";
+import type { BucketRef, ByteRange, Condition, ETag, HeadOptions, IdempotencyKey, ListPage, MultipartProvider, MultipartUpload, ObjectMetadata, ObjectsProvider, ObjectVersion, ReadTarget, SnapshotRef, StoredObject, UploadedPart, VersionId, UploadId } from "./index.js";
 
 /** Objects provider backed by the canonical Rust reference implementation. */
 export class MemoryObjectsProvider implements ObjectsProvider, MultipartProvider {
@@ -28,7 +28,7 @@ export class MemoryObjectsProvider implements ObjectsProvider, MultipartProvider
   async headBucket(bucket: BucketRef): Promise<BucketRef> { const b = await this.#call("head_bucket", HeadBucketRequestSchema, { bucket: wireBucket(bucket) }); return publicBucket(requireField(fromBinary(BucketSchema, b).bucket, "bucket")); }
   async deleteBucket(bucket: BucketRef, key?: IdempotencyKey): Promise<boolean> { const b = await this.#call("delete_bucket", DeleteBucketRequestSchema, { bucket: wireBucket(bucket), mutation: mutation(key) }); return fromBinary(DeleteBucketResponseSchema, b).existed; }
   async put(bucket: BucketRef, objectKey: string, body: Uint8Array, metadata: ObjectMetadata, condition?: Condition, key?: IdempotencyKey): Promise<ObjectVersion> { const b = await this.#call("put", PutObjectHeaderSchema, { bucket: wireBucket(bucket), objectKey, metadata: wireMetadata(metadata), preconditions: preconditions(condition), mutation: mutation(key) }, body); return publicVersion(fromBinary(ObjectVersionSchema, b)); }
-  async head(target: ReadTarget, objectKey: string, versionId?: VersionId): Promise<ObjectVersion> { const b = await this.#call("head", HeadObjectRequestSchema, { target: wireTarget(target), objectKey, versionId: versionId ?? "", ifMatch: "", ifNoneMatch: "" }); return publicVersion(requireField(fromBinary(HeadObjectResponseSchema, b).version, "version")); }
+  async head(target: ReadTarget, objectKey: string, options: HeadOptions = {}): Promise<ObjectVersion> { const b = await this.#call("head", HeadObjectRequestSchema, { target: wireTarget(target), objectKey, versionId: options.versionId ?? "", ifMatch: options.ifMatch ?? "", ifNoneMatch: options.ifNoneMatch ?? "" }); return publicVersion(requireField(fromBinary(HeadObjectResponseSchema, b).version, "version")); }
   async get(target: ReadTarget, objectKey: string, versionId?: VersionId, range?: Omit<ByteRange, "total">): Promise<StoredObject> {
     if (range && (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.endExclusive) || range.start < 0 || range.endExclusive <= range.start)) throw new ObjectError("invalid_range", "range is outside the object");
     const request = create(GetObjectRequestSchema, { target: wireTarget(target), objectKey, versionId: versionId ?? "", rangeStart: BigInt(range?.start ?? 0), rangeEndInclusive: range ? BigInt(range.endExclusive - 1) : undefined, ifMatch: "", ifNoneMatch: "", rangeRequested: range !== undefined });

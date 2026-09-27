@@ -322,6 +322,18 @@ fn mutation(value: &Value) -> Result<(), JsValue> {
             }
             Ok(())
         }
+        "machine-forked" => {
+            text(field(value, "source")?, "source")?;
+            one_of(
+                field(value, "fidelity")?,
+                &["memory-and-disk", "disk-only"],
+                "fidelity",
+            )?;
+            for value in array(field(value, "children")?, "children")? {
+                machine(value)?;
+            }
+            Ok(())
+        }
         "suspension-policy-set" => {
             text(field(value, "machineId")?, "machineId")?;
             suspension(field(value, "policy")?)
@@ -336,6 +348,19 @@ fn mutation(value: &Value) -> Result<(), JsValue> {
         }
         _ => Err(error("mutation kind is invalid")),
     }
+}
+
+fn mutation_kind(value: &Value) -> Result<String, JsValue> {
+    text(field(value, "kind")?, "mutation.kind")
+}
+
+fn require_mutation_kind(value: &Value, expected: &str) -> Result<(), JsValue> {
+    if mutation_kind(value)? != expected {
+        return Err(error(format!(
+            "mutation kind is invalid for this route; expected {expected}"
+        )));
+    }
+    Ok(())
 }
 fn operation(value: &Value) -> Result<(), JsValue> {
     text(field(value, "id")?, "operation.id")?;
@@ -383,10 +408,141 @@ fn expected_text(expected: &Value, name: &str) -> Result<String, JsValue> {
     text(field(expected, name)?, name)
 }
 fn same(value: &Value, expected: &Value, field_name: &str, label: &str) -> Result<(), JsValue> {
-    if text(field(value, field_name)?, field_name)? != expected_text(expected, label)? {
+    same_text(value, field_name, expected, label, label)
+}
+fn same_text(
+    value: &Value,
+    value_field: &str,
+    expected: &Value,
+    expected_field: &str,
+    label: &str,
+) -> Result<(), JsValue> {
+    if text(field(value, value_field)?, value_field)?
+        != text(field(expected, expected_field)?, expected_field)?
+    {
         return Err(error(format!("{label} identity was substituted")));
     }
     Ok(())
+}
+
+fn same_value(
+    value: &Value,
+    value_field: &str,
+    expected: &Value,
+    expected_field: &str,
+    label: &str,
+) -> Result<(), JsValue> {
+    if field(value, value_field)? != field(expected, expected_field)? {
+        return Err(error(format!("{label} was substituted")));
+    }
+    Ok(())
+}
+
+fn same_count(values: &Value, values_field: &str, expected: &Value) -> Result<(), JsValue> {
+    let values = array(field(values, values_field)?, values_field)?;
+    let expected = positive(field(expected, "count")?, "count")?;
+    if u64::try_from(values.len()).ok() != Some(expected) {
+        return Err(error("mutation child count was substituted"));
+    }
+    Ok(())
+}
+
+fn bind_created_machine(value: &Value, expected: &Value) -> Result<(), JsValue> {
+    let machine = field(value, "machine")?;
+    let contract = field(machine, "contract")?;
+    for (name, label) in [
+        ("image", "image"),
+        ("compatibility", "compatibility policy"),
+        ("performance", "performance policy"),
+        ("suspension", "suspension policy"),
+        ("expiration", "expiration policy"),
+        ("networkPolicyDigestHex", "network policy"),
+        ("budgets", "budgets"),
+    ] {
+        same_value(contract, name, expected, name, label)?;
+    }
+    Ok(())
+}
+
+fn bind_mutation(route: &str, value: &Value, expected: &Value) -> Result<(), JsValue> {
+    match route {
+        http_route::MACHINES_CREATE => {
+            require_mutation_kind(value, "created")?;
+            bind_created_machine(value, expected)
+        }
+        http_route::MACHINES_CHECKPOINT => {
+            require_mutation_kind(value, "checkpointed")?;
+            same_text(
+                field(value, "checkpoint")?,
+                "source",
+                expected,
+                "machineId",
+                "checkpoint source",
+            )
+        }
+        http_route::MACHINES_FORK => {
+            require_mutation_kind(value, "machine-forked")?;
+            same_text(
+                value,
+                "source",
+                expected,
+                "machineId",
+                "machine fork source",
+            )?;
+            same_count(value, "children", expected)
+        }
+        http_route::CHECKPOINTS_FORK => {
+            require_mutation_kind(value, "forked")?;
+            same_count(value, "machines", expected)
+        }
+        http_route::MACHINES_SUSPEND => {
+            require_mutation_kind(value, "suspended")?;
+            same_text(
+                value,
+                "machineId",
+                expected,
+                "machineId",
+                "suspended machine",
+            )
+        }
+        http_route::MACHINES_WAKE => {
+            require_mutation_kind(value, "woken")?;
+            same_text(value, "machineId", expected, "machineId", "woken machine")
+        }
+        http_route::MACHINES_SUSPENSION_POLICY => {
+            require_mutation_kind(value, "suspension-policy-set")?;
+            same_text(
+                value,
+                "machineId",
+                expected,
+                "machineId",
+                "suspension-policy machine",
+            )?;
+            same_value(value, "policy", expected, "policy", "suspension policy")
+        }
+        http_route::MACHINES_DESTROY => {
+            require_mutation_kind(value, "machine-destroyed")?;
+            same_text(
+                value,
+                "machineId",
+                expected,
+                "machineId",
+                "destroyed machine",
+            )
+        }
+        http_route::CHECKPOINTS_DESTROY => {
+            require_mutation_kind(value, "checkpoint-destroyed")?;
+            same_text(
+                value,
+                "checkpointId",
+                expected,
+                "checkpointId",
+                "destroyed checkpoint",
+            )
+        }
+        http_route::OPERATIONS_RECOVER => Ok(()),
+        _ => unreachable!("mutation binding called for a non-mutation route"),
+    }
 }
 
 /// Validate a decoded hosted HTTP response. `expected` is the request object
@@ -511,7 +667,10 @@ fn validate_values(
         | http_route::MACHINES_SUSPENSION_POLICY
         | http_route::MACHINES_DESTROY
         | http_route::CHECKPOINTS_DESTROY
-        | http_route::OPERATIONS_RECOVER => mutation(&response_value)?,
+        | http_route::OPERATIONS_RECOVER => {
+            mutation(&response_value)?;
+            bind_mutation(route, &response_value, &expected_value)?;
+        }
         _ => unreachable!("canonical route table and response validator are out of sync"),
     }
     Ok(())

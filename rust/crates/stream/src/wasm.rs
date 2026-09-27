@@ -144,6 +144,49 @@ pub fn is_stream_error_code(value: &str) -> bool {
     StreamErrorCode::from_str(value).is_some()
 }
 
+/// Project a hosted HTTP error code onto the public Stream error vocabulary.
+///
+/// The hosted API may report either the Rust-owned wire code or a public alias.
+/// Unknown values and a commit-only alias on another route return no value.
+#[wasm_bindgen(js_name = publicHttpErrorCode)]
+pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
+    let code = match raw {
+        "stream_not_found" => "stream_not_found",
+        "destination_exists" => "destination_exists",
+        "stream_retired" => "stream_retired",
+        "cursor_trimmed" => "cursor_trimmed",
+        "capacity_exhausted" => "capacity_exhausted",
+        "commit_not_found" => "commit_not_found",
+        _ => match StreamErrorCode::from_str(raw)? {
+            StreamErrorCode::InvalidPath => "invalid_path",
+            StreamErrorCode::InvalidArgument => "invalid_argument",
+            StreamErrorCode::LimitExceeded => "limit_exceeded",
+            StreamErrorCode::NotFound => {
+                if route == "commits/read" {
+                    "commit_not_found"
+                } else {
+                    "stream_not_found"
+                }
+            }
+            StreamErrorCode::AlreadyExists => "destination_exists",
+            StreamErrorCode::Retired => "stream_retired",
+            StreamErrorCode::PrefixNotRetained => "prefix_not_retained",
+            StreamErrorCode::OutOfRange => "cursor_trimmed",
+            StreamErrorCode::IdempotencyMismatch => "idempotency_mismatch",
+            StreamErrorCode::Capacity => "capacity_exhausted",
+            StreamErrorCode::AccessDenied => "access_denied",
+            StreamErrorCode::Unavailable => "unavailable",
+            StreamErrorCode::HierarchyChanged => "hierarchy_changed",
+            StreamErrorCode::DeadlineElapsed => "deadline_elapsed",
+            StreamErrorCode::Unsupported => "unsupported",
+        },
+    };
+    if code == "commit_not_found" && route != "commits/read" {
+        return None;
+    }
+    Some(code.to_owned())
+}
+
 /// Type-only bridge for the complete Rust-owned Stream error-code contract.
 #[wasm_bindgen(js_name = __streamErrorCodeContract)]
 pub fn stream_error_code_contract(value: StreamErrorCode) -> StreamErrorCode {
@@ -933,6 +976,9 @@ mod http {
             .filter(|value| !value.is_empty())
             .ok_or("expected non-empty string")
     }
+    fn encoded_bytes(value: &Value) -> Result<&str> {
+        value.as_str().ok_or("expected base64 string")
+    }
     fn u64_string(value: &Value) -> Result<u64> {
         let value = string(value)?;
         if !value.as_bytes().iter().all(|byte| byte.is_ascii_digit())
@@ -955,7 +1001,7 @@ mod http {
             .map_err(|_| "invalid path")
     }
     fn bytes(value: &Value) -> Result<Vec<u8>> {
-        let value = string(value)?;
+        let value = encoded_bytes(value)?;
         decode_base64(value).ok_or("expected base64")
     }
     fn id(value: &Value) -> Result<()> {
@@ -1364,7 +1410,7 @@ mod http {
         output
     }
     fn decode_base64(value: &str) -> Option<Vec<u8>> {
-        if value.is_empty() || !value.len().is_multiple_of(4) {
+        if !value.len().is_multiple_of(4) {
             return None;
         }
         let mut output = Vec::with_capacity(value.len() / 4 * 3);
@@ -1421,6 +1467,32 @@ mod tests {
         assert!(!is_stream_error_code("stream_not_found"));
         assert!(!is_stream_error_code("unknown"));
         assert_eq!(error_code(&StreamError::Retired).as_str(), "retired");
+    }
+
+    #[test]
+    fn hosted_http_errors_use_the_public_route_aware_vocabulary() {
+        assert_eq!(
+            public_http_error_code("not_found", "tail").as_deref(),
+            Some("stream_not_found")
+        );
+        assert_eq!(
+            public_http_error_code("not_found", "commits/read").as_deref(),
+            Some("commit_not_found")
+        );
+        assert_eq!(
+            public_http_error_code("out_of_range", "read").as_deref(),
+            Some("cursor_trimmed")
+        );
+        assert_eq!(
+            public_http_error_code("capacity", "append").as_deref(),
+            Some("capacity_exhausted")
+        );
+        assert_eq!(
+            public_http_error_code("stream_not_found", "read").as_deref(),
+            Some("stream_not_found")
+        );
+        assert_eq!(public_http_error_code("commit_not_found", "read"), None);
+        assert_eq!(public_http_error_code("unknown", "read"), None);
     }
 
     #[test]

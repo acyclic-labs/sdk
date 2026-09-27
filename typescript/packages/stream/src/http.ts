@@ -1,5 +1,6 @@
 import { pathValue, validateAppend } from "./client.js";
 import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
+import { publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, DeleteReceipt, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamBounds, StreamProvider, TrimReceipt } from "./types.js";
 import { StreamError, commitId } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
@@ -121,7 +122,7 @@ export class HttpStreamProvider implements StreamProvider {
     let text: string;
     try { text = await boundedText(response, this.#maximum); }
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding: ${error instanceof Error ? error.message : String(error)}`, response.status); }
-    if (!response.ok) throw new StreamError("transport", text || `HTTP ${response.status}`, response.status);
+    if (!response.ok) throw await hostedError(route, text, response.status);
     try { await ensureStreamWasm(); return decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
   }
   async #requestRaw<Result>(route: string, body: unknown, project: (value: unknown) => Result, signal?: AbortSignal): Promise<Result> {
@@ -129,8 +130,47 @@ export class HttpStreamProvider implements StreamProvider {
     let text: string;
     try { text = await boundedText(response, this.#maximum); }
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding`, response.status); }
-    if (!response.ok) throw new StreamError("transport", text || `HTTP ${response.status}`, response.status);
+    if (!response.ok) throw await hostedError(route, text, response.status);
     try { return project(JSON.parse(text)); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+  }
+}
+
+/**
+ * Decode the small error envelope shared by hosted Stream endpoints. Rust
+ * owns the error-code set and its public projection. Unknown or malformed
+ * bodies stay transport failures so arbitrary server strings cannot become
+ * typed domain errors.
+ */
+async function hostedError(route: string, text: string, status: number): Promise<StreamError> {
+  const fallback = text || `HTTP ${status}`;
+  const details = parseHostedError(text);
+  if (details.code === undefined) return new StreamError("transport", fallback, status);
+  try {
+    await ensureStreamWasm();
+    const code = publicHttpErrorCode(details.code, route);
+    if (code !== undefined) return new StreamError(code, details.message ?? fallback, status);
+  } catch { /* Unknown or unavailable contract remains a transport error. */ }
+  return new StreamError("transport", fallback, status);
+}
+
+function parseHostedError(text: string): { readonly code?: string; readonly message?: string } {
+  try {
+    const value: unknown = JSON.parse(text);
+    if (typeof value === "string") return { code: value };
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
+    const item = value as Record<string, unknown>;
+    const nested = item.error;
+    const error = nested !== null && typeof nested === "object" && !Array.isArray(nested)
+      ? nested as Record<string, unknown>
+      : undefined;
+    const code = item.code ?? error?.code;
+    const message = item.message ?? error?.message;
+    return {
+      ...(typeof code === "string" && code.length > 0 ? { code } : {}),
+      ...(typeof message === "string" && message.length > 0 ? { message } : {}),
+    };
+  } catch {
+    return {};
   }
 }
 

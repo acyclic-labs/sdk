@@ -94,6 +94,14 @@ export function is_stream_error_code(value: string): boolean;
 export function normalizeCommitRequest(input: Uint8Array): Uint8Array;
 
 /**
+ * Project a hosted HTTP error code onto the public Stream error vocabulary.
+ *
+ * The hosted API may report either the Rust-owned wire code or a public alias.
+ * Unknown values and a commit-only alias on another route return no value.
+ */
+export function publicHttpErrorCode(raw: string, route: string): string | undefined;
+
+/**
  * Validate canonical protobuf bytes for one append request.
  *
  * The empty string means that the request passed the same domain validators as
@@ -150,6 +158,7 @@ export interface InitOutput {
     readonly encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly is_stream_error_code: (a: number, b: number) => number;
     readonly normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];
+    readonly publicHttpErrorCode: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateAppendRequest: (a: number, b: number) => [number, number];
     readonly validateHttpResponse: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validatePath: (a: number, b: number) => [number, number];

@@ -59,7 +59,7 @@ export interface InferenceTransport {
   renewWarm(request: RenewWarmRequest): Promise<WarmView>;
   releaseWarm(request: ReleaseWarmRequest): Promise<WarmView>;
   generateRun(request: GenerateRunRequest): Promise<GenerateRunResponse>;
-  inspectRun(request: InspectRunRequest): Promise<RunView>;
+  inspectRun(request: InspectRunRequest, signal?: AbortSignal): Promise<RunView>;
   watchRun(request: WatchRunRequest, signal?: AbortSignal): AsyncIterable<RunEvent>;
   cancelRun(request: InspectRunRequest): Promise<RunView>;
   createEvaluation(request: CreateEvaluationRequest): Promise<EvaluationView>;
@@ -117,16 +117,16 @@ export class InferenceClient {
     await validateContract("generated_run_view", RunViewSchema, response.run, request.identity.requestId, request.context);
     return response;
   }
-  async inspectRun(runId: Uint8Array): Promise<RunView> {
+  async inspectRun(runId: Uint8Array, signal?: AbortSignal): Promise<RunView> {
     requireFixed(runId, 16, "run ID");
-    const view = await this.transport.inspectRun(create(InspectRunRequestSchema, { runId }));
+    const view = await this.transport.inspectRun(create(InspectRunRequestSchema, { runId }), signal);
     await validateContract("run_view", RunViewSchema, view, runId);
     return view;
   }
   async *watchRun(runId: Uint8Array, fromSequence = 0n, signal?: AbortSignal): AsyncIterable<RunEvent> {
     requireFixed(runId, 16, "run ID");
     if (fromSequence < 0n) throw new InferenceProtocolError("run cursor must be non-negative");
-    const view = await this.inspectRun(runId);
+    const view = await this.inspectRun(runId, signal);
     if (await watchRunAlreadyComplete(toBinary(RunViewSchema, view), runId, fromSequence)) return;
     let expected = fromSequence;
     let terminal = false;
@@ -261,8 +261,8 @@ export class HttpInferenceTransport implements InferenceTransport {
   generateRun(request: GenerateRunRequest): Promise<GenerateRunResponse> {
     return this.#unary("runs/generate", GenerateRunRequestSchema, request, GenerateRunResponseSchema);
   }
-  inspectRun(request: InspectRunRequest): Promise<RunView> {
-    return this.#unary("runs/inspect", InspectRunRequestSchema, request, RunViewSchema);
+  inspectRun(request: InspectRunRequest, signal?: AbortSignal): Promise<RunView> {
+    return this.#unary("runs/inspect", InspectRunRequestSchema, request, RunViewSchema, signal);
   }
   cancelRun(request: InspectRunRequest): Promise<RunView> {
     return this.#unary("runs/cancel", InspectRunRequestSchema, request, RunViewSchema);
@@ -319,8 +319,9 @@ export class HttpInferenceTransport implements InferenceTransport {
     requestSchema: RequestSchema,
     request: MessageShape<RequestSchema>,
     responseSchema: ResponseSchema,
+    signal?: AbortSignal,
   ): Promise<MessageShape<ResponseSchema>> {
-    const response = await this.#request(path, toJsonString(requestSchema, request));
+    const response = await this.#request(path, toJsonString(requestSchema, request), signal);
     return fromJson(responseSchema, JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "unary response")));
   }
 

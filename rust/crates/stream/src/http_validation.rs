@@ -19,6 +19,10 @@ fn string(value: &Value) -> Result<&str> {
         .ok_or("expected non-empty string")
 }
 
+fn encoded_bytes(value: &Value) -> Result<&str> {
+    value.as_str().ok_or("expected base64 string")
+}
+
 fn u64_string(value: &Value) -> Result<u64> {
     let value = string(value)?;
     if !value.as_bytes().iter().all(|byte| byte.is_ascii_digit())
@@ -45,7 +49,7 @@ fn path(value: &Value) -> Result {
 }
 
 fn decode_base64(value: &str) -> Option<Vec<u8>> {
-    if value.is_empty() || !value.len().is_multiple_of(4) {
+    if !value.len().is_multiple_of(4) {
         return None;
     }
     let mut output = Vec::with_capacity(value.len() / 4 * 3);
@@ -88,7 +92,7 @@ fn sextet(value: u8) -> Option<u8> {
 }
 
 fn bytes(value: &Value) -> Result<Vec<u8>> {
-    decode_base64(string(value)?).ok_or("expected base64")
+    decode_base64(encoded_bytes(value)?).ok_or("expected base64")
 }
 
 fn id(value: &Value) -> Result {
@@ -333,6 +337,15 @@ mod tests {
         let bad_path = r#"[{"path":"events//child"}]"#;
         assert!(super::validate("children", &json_fixture(bad_path)?).is_err());
         assert!(super::validate("tail", &json_fixture("1")?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn hosted_http_validation_accepts_empty_record_values() -> serde_json::Result<()> {
+        let commit_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let response = format!(r#"[{{"sequence":"0","value":"","commitId":"{commit_id}"}}]"#);
+
+        assert!(super::validate("read", &json_fixture(&response)?).is_ok());
         Ok(())
     }
 }
