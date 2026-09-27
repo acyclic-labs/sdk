@@ -264,7 +264,7 @@ export class NativeContracts {
     // Model arguments and completion metadata are provider JSON and may carry
     // full-width integers. Preserve those BigInts while normalizing the
     // bounded admission counters below to the public Number state shape.
-    const admitted = normalizeNativeValue(this.native.admitModelEvent(event, limits, state ?? null)) as ModelEventAdmission;
+    const admitted = normalizeNativeValue(this.native.admitModelEvent(event, limits, state ?? null), true, true) as ModelEventAdmission;
     const admittedState = normalizeNativeValue(admitted.state, true) as ModelEventAdmissionState;
     if (admitted.event === null || typeof admitted.event !== "object"
       || !Number.isSafeInteger(admittedState.count) || admittedState.count < 0
@@ -389,9 +389,11 @@ function nativeToolDefinition(
 }
 
 /** Rust owns typed integer projection; JS only unwraps bytes and maps. */
-function normalizeNativeValue(value: unknown, safeJsonNumbers = false): unknown {
+function normalizeNativeValue(value: unknown, safeJsonNumbers = false, preserveLargeBigInts = false): unknown {
   if (typeof value === "bigint") {
-    return safeJsonNumbers ? boundedJsonNumber(value) : value;
+    if (!safeJsonNumbers) return value;
+    const exact = Number(value);
+    return preserveLargeBigInts && !Number.isSafeInteger(exact) ? value : boundedJsonNumber(value);
   }
   if (typeof value === "number" && safeJsonNumbers
     && (!Number.isFinite(value) || Object.is(value, -0)
@@ -399,18 +401,18 @@ function normalizeNativeValue(value: unknown, safeJsonNumbers = false): unknown 
     throw new TypeError("provider JSON contains an inexact number");
   }
   if (value instanceof Uint8Array) return [...value];
-  if (Array.isArray(value)) return value.map(child => normalizeNativeValue(child, safeJsonNumbers));
+  if (Array.isArray(value)) return value.map(child => normalizeNativeValue(child, safeJsonNumbers, preserveLargeBigInts));
   if (value instanceof Map) {
     const entries: [string, unknown][] = [];
     for (const [key, child] of value) {
       if (typeof key !== "string") throw new TypeError("native JSON map has an invalid key");
-      entries.push([key, normalizeNativeValue(child, safeJsonNumbers)]);
+      entries.push([key, normalizeNativeValue(child, safeJsonNumbers, preserveLargeBigInts)]);
     }
     return Object.fromEntries(entries);
   }
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, child]) => [key,
-      normalizeNativeValue(child, safeJsonNumbers)] as const));
+      normalizeNativeValue(child, safeJsonNumbers, preserveLargeBigInts)] as const));
   }
   return value;
 }

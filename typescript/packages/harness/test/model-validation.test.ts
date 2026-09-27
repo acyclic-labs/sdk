@@ -97,12 +97,12 @@ test("model event admission rejects unknown event fields", () => {
 test("model event admission preserves full-width BigInts in provider JSON", () => {
   const value = 9_007_199_254_740_993n;
   const toolCall = contracts.admitModelEvent({
-    kind: "tool_call", callId: "bigint-call", name: "lookup", arguments: { cursor: value },
+    kind: "tool_call", callId: "bigint-call", name: "lookup", arguments: { tokens: 1n, cursor: value },
   }, DEFAULT_LIMITS);
   expect(toolCall.event).toEqual({
-    kind: "tool_call", callId: "bigint-call", name: "lookup", arguments: { cursor: value },
+    kind: "tool_call", callId: "bigint-call", name: "lookup", arguments: { tokens: 1, cursor: value },
   });
 
-  const completed = contracts.admitModelEvent({ kind: "completed", metadata: { cursor: value } }, DEFAULT_LIMITS);
-  expect(completed.event).toEqual({ kind: "completed", metadata: { cursor: value } });
+  const completed = contracts.admitModelEvent({ kind: "completed", metadata: { tokens: 1n, cursor: value } }, DEFAULT_LIMITS);
+  expect(completed.event).toEqual({ kind: "completed", metadata: { tokens: 1, cursor: value } });
 });
