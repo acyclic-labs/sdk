@@ -41,10 +41,18 @@ export function copyNamedAttributeResult(value: { readonly exists: boolean; read
   return { exists: value.exists, bytes: value.bytes === undefined ? undefined : Uint8Array.from(value.bytes), work };
 }
 
-export function copyNamedAttributePage(value: Pick<NamedAttributePage, "entries" | "hasMore">,
+export function copyNamedAttributePage(value: {
+  readonly entries: readonly { readonly attributeClass: string; readonly name: Uint8Array }[];
+  readonly hasMore: boolean;
+},
   work: WorkCounters): NamedAttributePage {
-  return { entries: value.entries.map(entry => ({ attributeClass: entry.attributeClass,
-    name: Uint8Array.from(entry.name) })), hasMore: value.hasMore, work };
+  return { entries: value.entries.map(entry => {
+    if (entry.attributeClass !== "posix-xattr" && entry.attributeClass !== "windows-stream" &&
+        entry.attributeClass !== "mac-resource-fork") {
+      throw new TypeError("named attribute result has an invalid class");
+    }
+    return { attributeClass: entry.attributeClass, name: Uint8Array.from(entry.name) };
+  }), hasMore: value.hasMore, work };
 }
 
 export function copyDirectoryPage(value: Pick<DirectoryPage, "entries" | "hasMore">,

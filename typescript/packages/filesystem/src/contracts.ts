@@ -494,6 +494,8 @@ export interface WorkCounters {
   readonly bytesCopied: number;
   readonly bytesEncoded: number;
   readonly sourceBytesRead: number;
+  readonly sourcePathComponents: number;
+  readonly sourceEntriesVisited: number;
   readonly outputBytes: number;
   readonly itemsExamined: number;
   readonly itemsReturned: number;
@@ -1315,78 +1317,14 @@ export interface WasmImportManifest {
   readonly objects: readonly Uint8Array[];
 }
 
-export interface WasmRawExportManifest {
-  readonly manifestBytes: Uint8Array;
-  readonly objects: readonly Uint8Array[];
-  readonly work: WorkCounters;
-}
-
-export interface WasmRawFileRecordSnapshot {
-  readonly fileId: Uint8Array;
-  readonly fileKind: string;
-  readonly linkCount: string;
-  readonly metadataObject: Uint8Array;
-  readonly payloadKind: string;
-  readonly logicalBytes: string | undefined;
-  readonly payloadObject: Uint8Array | undefined;
-  readonly inlineBytes: Uint8Array | undefined;
-  readonly deviceMajor: number | undefined;
-  readonly deviceMinor: number | undefined;
-}
-
-export interface WasmRawGenerationDiff {
-  readonly files: readonly {
-    readonly fileId: Uint8Array;
-    readonly before: WasmRawFileRecordSnapshot | undefined;
-    readonly after: WasmRawFileRecordSnapshot | undefined;
-  }[];
-  readonly bindings: readonly DirectoryBindingChange[];
-  readonly truncated: boolean;
-  readonly work: WorkCounters;
-}
-
-export interface WasmRawCommitResult {
-  readonly status: CommitResult["status"];
-  readonly generationId: Uint8Array | undefined;
-  readonly epoch: string | undefined;
-  readonly sequence: string | undefined;
-  readonly committedFingerprint: Uint8Array | undefined;
-  readonly work: WorkCounters;
-}
-
-export interface WasmRawLiveMutationResult {
-  readonly status: LiveMutationResult["status"];
-  readonly generationId: Uint8Array | undefined;
-  readonly epoch: string | undefined;
-  readonly sequence: string | undefined;
-  readonly conflictCount: number;
-  readonly truncated: boolean;
-  readonly committedFingerprint: Uint8Array | undefined;
-  readonly work: WorkCounters;
-}
-
-export interface WasmRawLiveTransactionResult extends WasmRawLiveMutationResult {
-  readonly createdFileIds: readonly (Uint8Array | undefined)[];
-}
-
-export interface WasmRawFileExtentPlan {
-  readonly kind: "inline" | "sparse";
-  readonly spans?: readonly {
-    readonly kind: "hole" | "allocated-zero" | "content";
-    readonly offset: string;
-    readonly length: string;
-    readonly sourceEnd: string;
-    readonly objectId?: Uint8Array;
-    readonly objectOffset?: string;
-  }[];
-  readonly retainedAllocationBytes?: string;
-  readonly work: WorkCounters;
-}
-
-export interface WasmRawExtentSeekResult {
-  readonly offset: string | undefined;
-  readonly work: WorkCounters;
-}
+export type WasmRawExportManifest = WasmBinding.BrowserExportManifestResult;
+export type WasmRawFileRecordSnapshot = WasmBinding.BrowserFileRecordResult;
+export type WasmRawGenerationDiff = WasmBinding.BrowserGenerationDiffResult;
+export type WasmRawCommitResult = WasmBinding.BrowserCommitResult;
+export type WasmRawLiveMutationResult = WasmBinding.BrowserLiveMutationResult;
+export type WasmRawLiveTransactionResult = WasmBinding.BrowserLiveTransactionResult;
+export type WasmRawFileExtentPlan = WasmBinding.BrowserExtentPlanResult;
+export type WasmRawExtentSeekResult = WasmBinding.BrowserExtentSeekResult;
 
 export type WasmRawGeneration = WasmTypedClass<WasmBinding.BrowserGeneration, {
   listDirectory: [path: string, after: WorkspaceName | undefined, maximumEntries: number];
@@ -1407,7 +1345,7 @@ export interface RawGenerationChangeSet<Diff> {
 export type WasmRawChangeSet = WasmTypedClass<WasmBinding.BrowserChangeSet, {}, {
   compose: WasmRawChangeSet;
 }, {
-  changes: WasmRawGenerationDiff;
+  changes: WasmBinding.BrowserGenerationDiffResult;
 }, {
   readonly from: WasmRawGeneration;
   readonly to: WasmRawGeneration;
@@ -1462,7 +1400,7 @@ export type WasmRawSpeculation = WasmTypedClass<WasmBinding.BrowserSpeculation, 
   observe: [observation: ResidencyObservation];
   planPromotion: [request: PromotionRequest];
 }, {
-  executeResidency: { readonly objectBytes: string; readonly work: WorkCounters };
+  executeResidency: { readonly objectBytes: string; readonly work: WasmBinding.BrowserWorkCounters };
 }, {
   observe: { readonly status: string; readonly rejection?: string };
   metrics: Record<string, Record<string, string>>;
@@ -1485,7 +1423,7 @@ export type WasmRawVolume = WasmTypedClass<WasmBinding.BrowserVolume, {
   checkout: WasmRawCheckout;
   diffGenerations: WasmRawGenerationDiff;
 }, {}, {
-  readonly acquisitionWork: WorkCounters;
+  readonly acquisitionWork: WasmBinding.BrowserWorkCounters;
 }>;
 
 export type WasmRawCheckout = WasmTypedClass<
@@ -1508,64 +1446,64 @@ export type WasmRawCheckout = WasmTypedClass<
     writeNamedAttribute: [path: string, attributeClass: NamedAttributeClass, name: Uint8Array, bytes: Uint8Array, mode: NamedAttributeWriteMode];
   },
   {
-    applyTransaction: TransactionResult;
-    checkpoint: CheckpointResult;
-    cloneFileRange: MutationResult;
-    cloneFileRangeById: MutationResult;
+    applyTransaction: WasmBinding.BrowserTransactionResult;
+    checkpoint: WasmBinding.BrowserCheckpointResult;
+    cloneFileRange: WasmBinding.BrowserMutationResult;
+    cloneFileRangeById: WasmBinding.BrowserMutationResult;
     commit: WasmRawCommitResult;
-    createDevice: MutationResult;
-    createDirectory: MutationResult;
-    createFile: MutationResult;
-    createReparsePoint: MutationResult;
-    createSpecial: MutationResult;
-    createSymbolicLink: MutationResult;
-    discard: MutationResult;
+    createDevice: WasmBinding.BrowserMutationResult;
+    createDirectory: WasmBinding.BrowserMutationResult;
+    createFile: WasmBinding.BrowserMutationResult;
+    createReparsePoint: WasmBinding.BrowserMutationResult;
+    createSpecial: WasmBinding.BrowserMutationResult;
+    createSymbolicLink: WasmBinding.BrowserMutationResult;
+    discard: WasmBinding.BrowserMutationResult;
     exportManifest: WasmRawExportManifest;
-    hardLink: MutationResult;
-    listDirectory: DirectoryPage;
-    listDirectoryRecords: DirectoryRecordPage;
-    listNamedAttributes: NamedAttributePage;
-    lookupBatchNoFollow: BatchLookupResult;
-    lookupNoFollow: LookupResult;
+    hardLink: WasmBinding.BrowserMutationResult;
+    listDirectory: WasmBinding.BrowserDirectoryPageResult;
+    listDirectoryRecords: WasmBinding.BrowserDirectoryRecordPageResult;
+    listNamedAttributes: WasmBinding.BrowserNamedAttributePageResult;
+    lookupBatchNoFollow: WasmBinding.BrowserBatchLookupResult;
+    lookupNoFollow: WasmBinding.BrowserLookupResult;
     mutateLive: WasmRawLiveTransactionResult;
-    planFileExtents: WasmRawFileExtentPlan;
-    planFileExtentsById: WasmRawFileExtentPlan;
-    preallocateFile: MutationResult;
-    preallocateFileById: MutationResult;
-    prepareMerge: MergePreparationResult;
-    readFileRange: FileReadResult;
-    readFileRangeById: FileReadResult;
-    readFileRecordById: FileRecordReadResult;
-    readMetadata: MetadataResult;
-    readMetadataById: MetadataResult;
-    readNamedAttribute: NamedAttributeResult;
-    readReparsePoint: FileReadResult;
-    readSymbolicLink: FileReadResult;
-    rebaseHead: RebaseResult;
-    refreshHead: CheckpointResult;
-    refreshLive: CheckpointResult;
-    remove: MutationResult;
-    removeNamedAttribute: MutationResult;
-    rename: MutationResult;
-    resizeFile: MutationResult;
-    resizeFileById: MutationResult;
+    planFileExtents: WasmBinding.BrowserExtentPlanResult;
+    planFileExtentsById: WasmBinding.BrowserExtentPlanResult;
+    preallocateFile: WasmBinding.BrowserMutationResult;
+    preallocateFileById: WasmBinding.BrowserMutationResult;
+    prepareMerge: WasmBinding.BrowserMergePreparationResult;
+    readFileRange: WasmBinding.BrowserFileReadResult;
+    readFileRangeById: WasmBinding.BrowserFileReadResult;
+    readFileRecordById: WasmBinding.BrowserFileRecordReadResult;
+    readMetadata: WasmBinding.BrowserMetadataResult;
+    readMetadataById: WasmBinding.BrowserMetadataResult;
+    readNamedAttribute: WasmBinding.BrowserNamedAttributeResult;
+    readReparsePoint: WasmBinding.BrowserFileReadResult;
+    readSymbolicLink: WasmBinding.BrowserFileReadResult;
+    rebaseHead: WasmBinding.BrowserRebaseResult;
+    refreshHead: WasmBinding.BrowserCheckpointResult;
+    refreshLive: WasmBinding.BrowserCheckpointResult;
+    remove: WasmBinding.BrowserMutationResult;
+    removeNamedAttribute: WasmBinding.BrowserMutationResult;
+    rename: WasmBinding.BrowserMutationResult;
+    resizeFile: WasmBinding.BrowserMutationResult;
+    resizeFileById: WasmBinding.BrowserMutationResult;
     resolveFiles: WasmRawResolvedFiles;
-    resumeLive: WasmRawLiveMutationResult;
-    seekFileExtent: WasmRawExtentSeekResult;
-    seekFileExtentById: WasmRawExtentSeekResult;
-    setAttributes: MutationResult;
-    setAttributesById: MutationResult;
-    setMetadata: MutationResult;
-    setMetadataById: MutationResult;
-    statNoFollow: StatResult;
-    writeFile: MutationResult;
-    writeFileById: MutationResult;
-    writeNamedAttribute: MutationResult;
-    zeroFileRange: MutationResult;
-    zeroFileRangeById: MutationResult;
+    resumeLive: WasmBinding.BrowserLiveMutationResult;
+    seekFileExtent: WasmBinding.BrowserExtentSeekResult;
+    seekFileExtentById: WasmBinding.BrowserExtentSeekResult;
+    setAttributes: WasmBinding.BrowserMutationResult;
+    setAttributesById: WasmBinding.BrowserMutationResult;
+    setMetadata: WasmBinding.BrowserMutationResult;
+    setMetadataById: WasmBinding.BrowserMutationResult;
+    statNoFollow: WasmBinding.BrowserStatResult;
+    writeFile: WasmBinding.BrowserMutationResult;
+    writeFileById: WasmBinding.BrowserMutationResult;
+    writeNamedAttribute: WasmBinding.BrowserMutationResult;
+    zeroFileRange: WasmBinding.BrowserMutationResult;
+    zeroFileRangeById: WasmBinding.BrowserMutationResult;
   },
   {},
-  { readonly acquisitionWork: WorkCounters }
+  { readonly acquisitionWork: WasmBinding.BrowserWorkCounters }
 >;
 
 export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
@@ -1581,15 +1519,15 @@ export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
   createVolume: WasmRawVolume;
   createVolumeWithId: WasmRawVolume;
   openVolume: WasmRawVolume;
-  exportObject: FileReadResult;
-  importObject: MutationResult;
+  exportObject: WasmBinding.BrowserFileReadResult;
+  importObject: WasmBinding.BrowserMutationResult;
   exportGenerationBatch: {
     readonly firstObject: string;
     readonly nextObject: string | undefined;
     readonly objects: readonly Uint8Array[];
-    readonly work: WorkCounters;
+    readonly work: WasmBinding.BrowserWorkCounters;
   };
-  importGenerationBatch: { readonly nextObject: string; readonly work: WorkCounters };
+  importGenerationBatch: { readonly nextObject: string; readonly work: WasmBinding.BrowserWorkCounters };
   restoreVolume: WasmRawVolume;
 }, {
   createSpeculation: WasmRawSpeculation;
@@ -1598,12 +1536,12 @@ export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
   readonly capabilities: EngineCapabilities;
 }>;
 export type WasmRawResolvedFile = WasmTypedClass<WasmBinding.BrowserResolvedFile, {}, {
-  readRange: FileReadResult;
-  readSymbolicLink: FileReadResult;
+  readRange: WasmBinding.BrowserFileReadResult;
+  readSymbolicLink: WasmBinding.BrowserFileReadResult;
 }>;
 
 export type WasmRawResolvedFiles = WasmWithProperties<WasmBinding.BrowserResolvedFiles, {
-  readonly work: WorkCounters;
+  readonly work: WasmBinding.BrowserWorkCounters;
 }> & { take(index: number): WasmRawResolvedFile | undefined };
 
 // Native companion declarations are generated by NAPI-RS from the canonical

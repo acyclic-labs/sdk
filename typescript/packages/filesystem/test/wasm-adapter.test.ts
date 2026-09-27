@@ -14,10 +14,12 @@ import type {
 } from "../src/contracts.js";
 import * as GeneratedWasm from "../generated/wasm/acyclic_fs_wasm.js";
 import {
+  adaptWasmFs,
   adaptWasmWorkspaceContextRegistry,
 } from "../src/wasm-adapter.js";
 import { openBrowserOperationWindowCoordinator } from "../src/browser.js";
 import { DEFAULT_MEMORY_FS_OPTIONS, openMemoryFs } from "../src/memory-node.js";
+import { portableVolumeOptions } from "../src/contracts.js";
 import { adaptWorkspaceContextRegistry } from "../src/workspace-context.js";
 import { copyMergeConflict, decodeMergeConflict, parseJoinResult, parseMergePreparation, parseWorkspaceCommit, parseWorkspaceRebaseResult } from "../src/workspace-results.js";
 
@@ -253,6 +255,58 @@ describe("WASM adapter canonical boundaries", () => {
       expect(plan.spans.some(span => typeof span.offset === "bigint" && span.offset > 2n ** 53n)).toBe(true);
     } finally {
       rawFs.free();
+    }
+  });
+
+  test("returns generated checkout DTOs with native byte and bigint values", async () => {
+    const rawFs = GeneratedWasm.openMemoryFs(DEFAULT_MEMORY_FS_OPTIONS);
+    const rawVolume = await rawFs.createVolume(portableVolumeOptions("ephemeral"));
+    const checkout = await rawVolume.checkout({
+      access: "read-write", consistency: "pinned", mutationMode: "private-cow",
+    });
+    try {
+      const mutation = await checkout.createFile("/dto", Uint8Array.of(1, 2, 3));
+      expect(mutation.fileId).toBeInstanceOf(Uint8Array);
+      expect(typeof mutation.work.sourcePathComponents).toBe("bigint");
+      expect(mutation.work.sourcePathComponents).toBeGreaterThanOrEqual(0n);
+
+      const metadata = await checkout.readMetadata("/dto");
+      expect(metadata.canonicalBytes).toBeInstanceOf(Uint8Array);
+      const read = await checkout.readFileRange("/dto", 0n, 3n);
+      expect(read.bytes).toEqual(Uint8Array.of(1, 2, 3));
+
+      const manifest = await checkout.exportManifest();
+      expect(manifest.manifestBytes).toBeInstanceOf(Uint8Array);
+      expect(manifest.objects.every(object => object instanceof Uint8Array)).toBe(true);
+
+      const resolved = await checkout.resolveFiles(["/dto"]);
+      try {
+        expect(typeof resolved.work.bytesCopied).toBe("bigint");
+      } finally {
+        resolved.free();
+      }
+    } finally {
+      checkout.free();
+      rawVolume.free();
+      rawFs.free();
+    }
+  });
+
+  test("normalizes generated work counters at the public adapter boundary", async () => {
+    const rawFs = GeneratedWasm.openMemoryFs(DEFAULT_MEMORY_FS_OPTIONS);
+    const fs = adaptWasmFs(rawFs);
+    try {
+      const volume = await fs.createVolume(portableVolumeOptions("ephemeral"));
+      const checkout = await volume.checkout({
+        access: "read-write", consistency: "pinned", mutationMode: "private-cow",
+      });
+      expect(typeof checkout.acquisitionWork.bytesCopied).toBe("number");
+      expect(typeof checkout.acquisitionWork.sourcePathComponents).toBe("number");
+      const mutation = await checkout.createFile("/adapter-dto", Uint8Array.of(4));
+      expect(typeof mutation.work.bytesCopied).toBe("number");
+      expect(typeof mutation.work.sourcePathComponents).toBe("number");
+    } finally {
+      fs.close();
     }
   });
 

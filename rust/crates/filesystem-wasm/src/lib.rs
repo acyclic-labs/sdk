@@ -66,6 +66,35 @@ mod bindings {
         browser_error("AcyclicCompatibilityWireError", &error.to_string())
     }
 
+    fn browser_work(value: acyclic_fs::WorkCounters) -> BrowserWorkCounters {
+        BrowserWorkCounters {
+            authority_records_read: value.authority_records_read,
+            authority_records_appended: value.authority_records_appended,
+            authority_bytes_read: value.authority_bytes_read,
+            authority_bytes_written: value.authority_bytes_written,
+            object_probes: value.object_probes,
+            backend_read_operations: value.backend_read_operations,
+            backend_write_operations: value.backend_write_operations,
+            durability_operations: value.durability_operations,
+            page_reads: value.page_reads,
+            page_writes: value.page_writes,
+            object_bytes_read: value.object_bytes_read,
+            object_bytes_written: value.object_bytes_written,
+            bytes_hashed: value.bytes_hashed,
+            bytes_copied: value.bytes_copied,
+            bytes_encoded: value.bytes_encoded,
+            source_bytes_read: value.source_bytes_read,
+            source_path_components: value.source_path_components,
+            source_entries_visited: value.source_entries_visited,
+            output_bytes: value.output_bytes,
+            items_examined: value.items_examined,
+            items_returned: value.items_returned,
+            allocation_operations: value.allocation_operations,
+            peak_allocation_bytes: value.peak_allocation_bytes,
+            materializations: value.materializations,
+        }
+    }
+
     /// Encodes a merge-plan payload in the versioned compatibility envelope.
     #[wasm_bindgen(js_name = encodeMergePlanJson)]
     pub fn encode_merge_plan_json(value_json: &str) -> Result<String, JsValue> {
@@ -417,6 +446,65 @@ mod bindings {
         .into_js()
         .map(Into::into)
         .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    #[cfg(all(test, target_arch = "wasm32"))]
+    fn test_browser_work() -> BrowserWorkCounters {
+        browser_work(acyclic_fs::WorkCounters {
+            bytes_copied: 17,
+            source_path_components: 3,
+            source_entries_visited: 2,
+            ..acyclic_fs::WorkCounters::default()
+        })
+    }
+
+    #[cfg(all(test, target_arch = "wasm32"))]
+    pub(crate) fn test_checkout_mutation_result_js() -> JsValue {
+        BrowserMutationResult {
+            file_id: Some(vec![7; 16].into()),
+            work: test_browser_work(),
+        }
+        .into_js()
+        .expect("mutation result DTO must serialize")
+        .into()
+    }
+
+    #[cfg(all(test, target_arch = "wasm32"))]
+    pub(crate) fn test_checkout_metadata_result_js() -> JsValue {
+        BrowserMetadataResult {
+            canonical_bytes: vec![0, 255, 1].into(),
+            work: test_browser_work(),
+        }
+        .into_js()
+        .expect("metadata result DTO must serialize")
+        .into()
+    }
+
+    #[cfg(all(test, target_arch = "wasm32"))]
+    pub(crate) fn test_checkout_export_manifest_result_js() -> JsValue {
+        BrowserExportManifestResult {
+            manifest_bytes: vec![9, 8, 7].into(),
+            objects: vec![vec![1, 2].into(), vec![3, 4].into()],
+            work: test_browser_work(),
+        }
+        .into_js()
+        .expect("export manifest DTO must serialize")
+        .into()
+    }
+
+    #[cfg(all(test, target_arch = "wasm32"))]
+    pub(crate) fn test_checkout_commit_result_js() -> JsValue {
+        BrowserCommitResult {
+            status: "committed",
+            generation_id: Some(vec![5; 32].into()),
+            epoch: Some(9_007_199_254_740_993),
+            sequence: None,
+            committed_fingerprint: Some(vec![6; 32].into()),
+            work: test_browser_work(),
+        }
+        .into_js()
+        .expect("commit result DTO must serialize")
+        .into()
     }
 
     #[derive(Deserialize, Serialize, Tsify)]
@@ -1077,7 +1165,7 @@ mod bindings {
         }
 
         /// Stable path-independent records and namespace binding changes.
-        pub fn changes(&self) -> Result<JsValue, JsValue> {
+        pub fn changes(&self) -> Result<BrowserGenerationDiffResult, JsValue> {
             let (changes, work) = match &self.engine {
                 BrowserChangeSetEngine::IndexedDb(value) => (value.changes().clone(), value.work()),
                 BrowserChangeSetEngine::IndexedDbOpfs(value) => {
@@ -2312,237 +2400,393 @@ mod bindings {
         },
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct LookupResult {
+    #[tsify(into_wasm_abi)]
+    // Work receipts are exact Rust u64 counters. The TypeScript adapter
+    // narrows them to the established public number surface after checking
+    // that each counter is representable as a safe integer.
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserWorkCounters {
+        authority_records_read: u64,
+        authority_records_appended: u64,
+        authority_bytes_read: u64,
+        authority_bytes_written: u64,
+        object_probes: u64,
+        backend_read_operations: u64,
+        backend_write_operations: u64,
+        durability_operations: u64,
+        page_reads: u64,
+        page_writes: u64,
+        object_bytes_read: u64,
+        object_bytes_written: u64,
+        bytes_hashed: u64,
+        bytes_copied: u64,
+        bytes_encoded: u64,
+        source_bytes_read: u64,
+        source_path_components: u64,
+        source_entries_visited: u64,
+        output_bytes: u64,
+        items_examined: u64,
+        items_returned: u64,
+        allocation_operations: u64,
+        peak_allocation_bytes: u64,
+        materializations: u64,
+    }
+
+    #[derive(Serialize, Tsify)]
+    #[serde(rename_all = "camelCase")]
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserLookupResult {
         exists: bool,
-        file_id: Option<Vec<u8>>,
+        #[tsify(type = "Uint8Array | undefined")]
+        file_id: Option<serde_bytes::ByteBuf>,
+        #[tsify(type = "string | undefined")]
         file_kind: Option<&'static str>,
         resolved_components: u16,
-        work: acyclic_fs::WorkCounters,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BatchLookupEntryResult {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserBatchLookupEntryResult {
         exists: bool,
-        file_id: Option<Vec<u8>>,
+        #[tsify(type = "Uint8Array | undefined")]
+        file_id: Option<serde_bytes::ByteBuf>,
+        #[tsify(type = "string | undefined")]
         file_kind: Option<&'static str>,
         resolved_components: u16,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BatchLookupResult {
-        entries: Vec<BatchLookupEntryResult>,
-        retained_allocation_bytes: String,
-        work: acyclic_fs::WorkCounters,
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserBatchLookupResult {
+        entries: Vec<BrowserBatchLookupEntryResult>,
+        retained_allocation_bytes: u64,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct StatResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserStatResult {
         exists: bool,
-        record: Option<FileRecordResult>,
-        metadata_canonical_bytes: Option<Vec<u8>>,
-        work: acyclic_fs::WorkCounters,
+        record: Option<BrowserFileRecordResult>,
+        #[tsify(type = "Uint8Array | undefined")]
+        metadata_canonical_bytes: Option<serde_bytes::ByteBuf>,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct FileReadResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserFileReadResult {
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         bytes: Vec<u8>,
-        work: acyclic_fs::WorkCounters,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct ExtentSeekResult {
-        offset: Option<String>,
-        work: acyclic_fs::WorkCounters,
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserExtentSeekResult {
+        offset: Option<u64>,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct ExtentSpanResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserExtentSpanResult {
+        #[tsify(type = "\"hole\" | \"allocated-zero\" | \"content\"")]
         kind: &'static str,
-        offset: String,
-        length: String,
-        source_end: String,
-        object_id: Option<Vec<u8>>,
-        object_offset: Option<String>,
+        offset: u64,
+        length: u64,
+        source_end: u64,
+        #[tsify(type = "Uint8Array | undefined")]
+        object_id: Option<serde_bytes::ByteBuf>,
+        object_offset: Option<u64>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(
         tag = "kind",
         rename_all = "kebab-case",
         rename_all_fields = "camelCase"
     )]
-    enum ExtentPlanResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub enum BrowserExtentPlanResult {
         Inline {
-            work: acyclic_fs::WorkCounters,
+            work: BrowserWorkCounters,
         },
         Sparse {
-            spans: Vec<ExtentSpanResult>,
-            retained_allocation_bytes: String,
-            work: acyclic_fs::WorkCounters,
+            spans: Vec<BrowserExtentSpanResult>,
+            retained_allocation_bytes: u64,
+            work: BrowserWorkCounters,
         },
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct DirectoryEntryResult {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserDirectoryEntryResult {
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         name: Vec<u8>,
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
+        #[tsify(type = "string")]
         file_kind: &'static str,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct DirectoryPageResult {
-        entries: Vec<DirectoryEntryResult>,
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserDirectoryPageResult {
+        entries: Vec<BrowserDirectoryEntryResult>,
         has_more: bool,
-        work: acyclic_fs::WorkCounters,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct DirectoryRecordEntryResult {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserDirectoryRecordEntryResult {
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         name: Vec<u8>,
-        record: FileRecordResult,
+        record: BrowserFileRecordResult,
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         metadata_canonical_bytes: Vec<u8>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct DirectoryRecordPageResult {
-        entries: Vec<DirectoryRecordEntryResult>,
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserDirectoryRecordPageResult {
+        entries: Vec<BrowserDirectoryRecordEntryResult>,
         has_more: bool,
-        work: acyclic_fs::WorkCounters,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct FileRecordReadResult {
-        record: FileRecordResult,
-        work: acyclic_fs::WorkCounters,
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserFileRecordReadResult {
+        record: BrowserFileRecordResult,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct MutationResult {
-        file_id: Option<Vec<u8>>,
-        work: acyclic_fs::WorkCounters,
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserMutationResult {
+        #[tsify(type = "Uint8Array | undefined")]
+        file_id: Option<serde_bytes::ByteBuf>,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct TransactionResult {
-        created_file_ids: Vec<Option<Vec<u8>>>,
-        work: acyclic_fs::WorkCounters,
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserTransactionResult {
+        #[tsify(type = "(Uint8Array | undefined)[]")]
+        created_file_ids: Vec<Option<serde_bytes::ByteBuf>>,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct CheckpointResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserCheckpointResult {
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         generation_id: Vec<u8>,
-        work: acyclic_fs::WorkCounters,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct CommitResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserCommitResult {
+        #[tsify(
+            type = "\"committed\" | \"already-committed\" | \"conflict\" | \"fenced\" | \"idempotency-conflict\""
+        )]
         status: &'static str,
-        generation_id: Option<Vec<u8>>,
-        epoch: Option<String>,
-        sequence: Option<String>,
-        committed_fingerprint: Option<Vec<u8>>,
-        work: acyclic_fs::WorkCounters,
+        #[tsify(type = "Uint8Array | undefined")]
+        generation_id: Option<serde_bytes::ByteBuf>,
+        epoch: Option<u64>,
+        sequence: Option<u64>,
+        #[tsify(type = "Uint8Array | undefined")]
+        committed_fingerprint: Option<serde_bytes::ByteBuf>,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct RebaseResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserRebaseResult {
+        #[tsify(type = "\"safe\" | \"conflicted\"")]
         status: &'static str,
-        generation_id: Option<Vec<u8>>,
+        #[tsify(type = "Uint8Array | undefined")]
+        generation_id: Option<serde_bytes::ByteBuf>,
         conflict_count: u32,
         truncated: bool,
-        work: acyclic_fs::WorkCounters,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct LiveMutationResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserLiveMutationResult {
+        #[tsify(
+            type = "\"committed\" | \"already-committed\" | \"conflicted\" | \"retry-limit\" | \"fenced\" | \"idempotency-conflict\""
+        )]
         status: &'static str,
-        generation_id: Option<Vec<u8>>,
-        epoch: Option<String>,
-        sequence: Option<String>,
+        #[tsify(type = "Uint8Array | undefined")]
+        generation_id: Option<serde_bytes::ByteBuf>,
+        epoch: Option<u64>,
+        sequence: Option<u64>,
         conflict_count: u32,
         truncated: bool,
-        committed_fingerprint: Option<Vec<u8>>,
-        work: acyclic_fs::WorkCounters,
+        #[tsify(type = "Uint8Array | undefined")]
+        committed_fingerprint: Option<serde_bytes::ByteBuf>,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct ExportManifestResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserLiveTransactionResult {
+        #[tsify(
+            type = "\"committed\" | \"already-committed\" | \"conflicted\" | \"retry-limit\" | \"fenced\" | \"idempotency-conflict\""
+        )]
+        status: &'static str,
+        #[tsify(type = "Uint8Array | undefined")]
+        generation_id: Option<serde_bytes::ByteBuf>,
+        epoch: Option<u64>,
+        sequence: Option<u64>,
+        conflict_count: u32,
+        truncated: bool,
+        #[tsify(type = "Uint8Array | undefined")]
+        committed_fingerprint: Option<serde_bytes::ByteBuf>,
+        work: BrowserWorkCounters,
+        #[tsify(type = "(Uint8Array | undefined)[]")]
+        created_file_ids: Vec<Option<serde_bytes::ByteBuf>>,
+    }
+
+    #[derive(Serialize, Tsify)]
+    #[serde(rename_all = "camelCase")]
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserExportManifestResult {
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         manifest_bytes: Vec<u8>,
-        objects: Vec<Vec<u8>>,
-        work: acyclic_fs::WorkCounters,
+        #[tsify(type = "Uint8Array[]")]
+        objects: Vec<serde_bytes::ByteBuf>,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct FileRecordResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserFileRecordResult {
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
+        #[tsify(type = "string")]
         file_kind: &'static str,
-        link_count: String,
+        link_count: u64,
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         metadata_object: Vec<u8>,
+        #[tsify(type = "string")]
         payload_kind: &'static str,
-        logical_bytes: Option<String>,
-        payload_object: Option<Vec<u8>>,
-        inline_bytes: Option<Vec<u8>>,
+        logical_bytes: Option<u64>,
+        #[tsify(type = "Uint8Array | undefined")]
+        payload_object: Option<serde_bytes::ByteBuf>,
+        #[tsify(type = "Uint8Array | undefined")]
+        inline_bytes: Option<serde_bytes::ByteBuf>,
         device_major: Option<u32>,
         device_minor: Option<u32>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct MetadataResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserMetadataResult {
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         canonical_bytes: Vec<u8>,
-        work: acyclic_fs::WorkCounters,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct NamedAttributeResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserNamedAttributeResult {
         exists: bool,
-        bytes: Option<Vec<u8>>,
-        work: acyclic_fs::WorkCounters,
+        #[tsify(type = "Uint8Array | undefined")]
+        bytes: Option<serde_bytes::ByteBuf>,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct NamedAttributePageResult {
-        entries: Vec<NamedAttributeNameResult>,
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserNamedAttributePageResult {
+        entries: Vec<BrowserNamedAttributeNameResult>,
         has_more: bool,
-        work: acyclic_fs::WorkCounters,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct NamedAttributeNameResult {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserNamedAttributeNameResult {
+        #[tsify(type = "\"posix-xattr\" | \"windows-stream\" | \"mac-resource-fork\"")]
         attribute_class: &'static str,
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         name: Vec<u8>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct FileRecordChangeResult {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserFileRecordChangeResult {
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
-        before: Option<FileRecordResult>,
-        after: Option<FileRecordResult>,
+        before: Option<BrowserFileRecordResult>,
+        after: Option<BrowserFileRecordResult>,
     }
 
     #[derive(Serialize, Tsify)]
@@ -2556,30 +2800,39 @@ mod bindings {
         bytes: Vec<u8>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct TreeEntryResult {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserTreeEntryResult {
         name: NameComponentResult,
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
+        #[tsify(type = "string")]
         file_kind: &'static str,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BindingChangeResult {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserBindingChangeResult {
+        #[serde(with = "serde_bytes")]
+        #[tsify(type = "Uint8Array")]
         directory_id: Vec<u8>,
         name: NameComponentResult,
-        before: Option<TreeEntryResult>,
-        after: Option<TreeEntryResult>,
+        before: Option<BrowserTreeEntryResult>,
+        after: Option<BrowserTreeEntryResult>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct GenerationDiffResult {
-        files: Vec<FileRecordChangeResult>,
-        bindings: Vec<BindingChangeResult>,
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserGenerationDiffResult {
+        files: Vec<BrowserFileRecordChangeResult>,
+        bindings: Vec<BrowserBindingChangeResult>,
         truncated: bool,
-        work: acyclic_fs::WorkCounters,
+        work: BrowserWorkCounters,
     }
 
     #[derive(Serialize, Tsify)]
@@ -2595,15 +2848,33 @@ mod bindings {
         name: Option<NameComponentResult>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct MergePreparationResult {
+    #[tsify(into_wasm_abi)]
+    #[tsify(large_number_types_as_bigints)]
+    pub struct BrowserMergePreparationResult {
+        #[tsify(type = "\"prepared\" | \"conflicted\"")]
         status: &'static str,
-        generation_id: Option<Vec<u8>>,
+        #[tsify(type = "Uint8Array | undefined")]
+        generation_id: Option<serde_bytes::ByteBuf>,
         conflicts: Vec<MergeConflictResult>,
         truncated: bool,
-        work: acyclic_fs::WorkCounters,
+        work: BrowserWorkCounters,
     }
+
+    // Keep the internal encoder names compact while the generated declaration
+    // surface uses stable, exported Browser* DTO names.
+    type BatchLookupEntryResult = BrowserBatchLookupEntryResult;
+    type ExtentSpanResult = BrowserExtentSpanResult;
+    type ExtentPlanResult = BrowserExtentPlanResult;
+    type DirectoryEntryResult = BrowserDirectoryEntryResult;
+    type DirectoryRecordEntryResult = BrowserDirectoryRecordEntryResult;
+    type FileRecordResult = BrowserFileRecordResult;
+    type NamedAttributeNameResult = BrowserNamedAttributeNameResult;
+    type FileRecordChangeResult = BrowserFileRecordChangeResult;
+    type TreeEntryResult = BrowserTreeEntryResult;
+    type BindingChangeResult = BrowserBindingChangeResult;
+    type MergePreparationResult = BrowserMergePreparationResult;
 
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -3204,7 +3475,7 @@ mod bindings {
             &self,
             object_id: Vec<u8>,
             maximum_bytes: u64,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserFileReadResult, JsValue> {
             let object_id = decode_object_id(&object_id)?;
             let cancellation = CancellationToken::default();
             let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
@@ -3221,11 +3492,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?,
             };
-            serde_wasm_bindgen::to_value(&FileReadResult {
+            Ok(BrowserFileReadResult {
                 bytes: receipt.value.bytes.to_vec(),
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Idempotently imports one immutable object under its authenticated identity.
@@ -3239,7 +3509,7 @@ mod bindings {
             &self,
             object_id: Vec<u8>,
             bytes: Vec<u8>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let object_id = decode_object_id(&object_id)?;
             let bytes = bytes::Bytes::from(bytes);
             let cancellation = CancellationToken::default();
@@ -3692,14 +3962,9 @@ mod bindings {
         }
 
         /// Returns exact bounded work used to acquire this volume handle.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error when the bounded work receipt cannot be
-        /// serialized for JavaScript.
         #[wasm_bindgen(getter, js_name = acquisitionWork)]
-        pub fn acquisition_work(&self) -> Result<JsValue, JsValue> {
-            serde_wasm_bindgen::to_value(&self.acquisition_work).map_err(js_error)
+        pub fn acquisition_work(&self) -> BrowserWorkCounters {
+            browser_work(self.acquisition_work)
         }
 
         /// Computes one bounded Merkle-aware semantic generation diff.
@@ -3714,7 +3979,7 @@ mod bindings {
             before: Vec<u8>,
             after: Vec<u8>,
             maximum_changes: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserGenerationDiffResult, JsValue> {
             let before = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
                 &before,
                 "before generation identity",
@@ -3834,8 +4099,8 @@ mod bindings {
 
         /// Exact work receipt for the shared namespace traversal.
         #[wasm_bindgen(getter)]
-        pub fn work(&self) -> Result<JsValue, JsValue> {
-            serde_wasm_bindgen::to_value(&self.work).map_err(js_error)
+        pub fn work(&self) -> BrowserWorkCounters {
+            browser_work(self.work)
         }
 
         /// Transfers one generation-bound handle to JavaScript. Each index may be taken once.
@@ -3885,7 +4150,11 @@ mod bindings {
 
         /// Reads one exact logical range without another namespace lookup.
         #[wasm_bindgen(js_name = readRange)]
-        pub async fn read_range(&self, offset: u64, length: u64) -> Result<JsValue, JsValue> {
+        pub async fn read_range(
+            &self,
+            offset: u64,
+            length: u64,
+        ) -> Result<BrowserFileReadResult, JsValue> {
             let cancellation = CancellationToken::default();
             let range = ByteRange { offset, length };
             let receipt = match &self.engine {
@@ -3902,16 +4171,15 @@ mod bindings {
                     .await
                     .map_err(js_error)?,
             };
-            serde_wasm_bindgen::to_value(&FileReadResult {
+            Ok(BrowserFileReadResult {
                 bytes: receipt.value.bytes.to_vec(),
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Reads opaque symbolic-link target bytes without another namespace lookup.
         #[wasm_bindgen(js_name = readSymbolicLink)]
-        pub async fn read_symbolic_link(&self) -> Result<JsValue, JsValue> {
+        pub async fn read_symbolic_link(&self) -> Result<BrowserFileReadResult, JsValue> {
             let cancellation = CancellationToken::default();
             let receipt = match &self.engine {
                 BrowserResolvedFileEngine::IndexedDb(file) => file
@@ -3927,25 +4195,19 @@ mod bindings {
                     .await
                     .map_err(js_error)?,
             };
-            serde_wasm_bindgen::to_value(&FileReadResult {
+            Ok(BrowserFileReadResult {
                 bytes: receipt.value.to_vec(),
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
     }
 
     #[wasm_bindgen]
     impl BrowserCheckout {
         /// Returns exact bounded work used to acquire this checkout handle.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error when the bounded work receipt cannot be
-        /// serialized for JavaScript.
         #[wasm_bindgen(getter, js_name = acquisitionWork)]
-        pub fn acquisition_work(&self) -> Result<JsValue, JsValue> {
-            serde_wasm_bindgen::to_value(&self.acquisition_work).map_err(js_error)
+        pub fn acquisition_work(&self) -> BrowserWorkCounters {
+            browser_work(self.acquisition_work)
         }
 
         /// Applies one ordered sparse mutation batch atomically within this volume.
@@ -3955,7 +4217,10 @@ mod bindings {
         /// Returns a JavaScript error for malformed operations, rejected semantics,
         /// cancellation, storage, or bounded-work failure.
         #[wasm_bindgen(js_name = applyTransaction)]
-        pub async fn apply_transaction(&mut self, operations: JsValue) -> Result<JsValue, JsValue> {
+        pub async fn apply_transaction(
+            &mut self,
+            operations: JsValue,
+        ) -> Result<BrowserTransactionResult, JsValue> {
             let authored = decode_authored_transactions(operations, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -3964,16 +4229,15 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&TransactionResult {
+            Ok(BrowserTransactionResult {
                 created_file_ids: receipt
                     .value
                     .created_file_ids
                     .into_iter()
-                    .map(|identity| identity.map(|value| value.into_bytes().to_vec()))
+                    .map(|identity| identity.map(|value| value.into_bytes().to_vec().into()))
                     .collect(),
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Builds an immutable candidate generation without publishing authority.
@@ -3983,7 +4247,7 @@ mod bindings {
         /// Returns a JavaScript error for invalid checkout state, corruption,
         /// cancellation, storage failure, or bounded-work exhaustion.
         #[wasm_bindgen(js_name = checkpoint)]
-        pub async fn checkpoint(&self) -> Result<JsValue, JsValue> {
+        pub async fn checkpoint(&self) -> Result<BrowserCheckpointResult, JsValue> {
             let cancellation = CancellationToken::default();
             let receipt = match &self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -4009,7 +4273,7 @@ mod bindings {
         /// Returns a JavaScript error for dirty state, storage, cancellation,
         /// authentication, or bounded-work failure.
         #[wasm_bindgen(js_name = refreshHead)]
-        pub async fn refresh_head(&mut self) -> Result<JsValue, JsValue> {
+        pub async fn refresh_head(&mut self) -> Result<BrowserCheckpointResult, JsValue> {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -4035,7 +4299,7 @@ mod bindings {
         /// Returns a JavaScript error for unsupported mode, conflicts, storage,
         /// cancellation, authentication, or bounded-work failure.
         #[wasm_bindgen(js_name = refreshLive)]
-        pub async fn refresh_live(&mut self) -> Result<JsValue, JsValue> {
+        pub async fn refresh_live(&mut self) -> Result<BrowserCheckpointResult, JsValue> {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -4061,7 +4325,7 @@ mod bindings {
         /// Returns a JavaScript error for checkpoint, closure, authentication,
         /// cancellation, storage, serialization, or bounded work.
         #[wasm_bindgen(js_name = exportManifest)]
-        pub async fn export_manifest(&self) -> Result<JsValue, JsValue> {
+        pub async fn export_manifest(&self) -> Result<BrowserExportManifestResult, JsValue> {
             let cancellation = CancellationToken::default();
             let receipt = match &self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -4092,7 +4356,7 @@ mod bindings {
             theirs: Vec<u8>,
             maximum_changes: u32,
             maximum_conflicts: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMergePreparationResult, JsValue> {
             let theirs = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
                 &theirs,
                 "merge generation identity",
@@ -4139,7 +4403,10 @@ mod bindings {
         /// Returns a JavaScript error for malformed paths or authenticated
         /// storage, cancellation, and bounded-work failures.
         #[wasm_bindgen(js_name = lookupNoFollow)]
-        pub async fn lookup_no_follow(&mut self, path: String) -> Result<JsValue, JsValue> {
+        pub async fn lookup_no_follow(
+            &mut self,
+            path: String,
+        ) -> Result<BrowserLookupResult, JsValue> {
             let portable = PortablePath::parse(&path, self.limits).map_err(js_error)?;
             let path =
                 NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
@@ -4160,14 +4427,13 @@ mod bindings {
                     .map_err(js_error)?,
             };
             let record = receipt.value.record;
-            serde_wasm_bindgen::to_value(&LookupResult {
+            Ok(BrowserLookupResult {
                 exists: record.is_some(),
-                file_id: record.map(|value| value.file_id.into_bytes().to_vec()),
+                file_id: record.map(|value| value.file_id.into_bytes().to_vec().into()),
                 file_kind: record.map(|value| file_kind(value.kind)),
                 resolved_components: receipt.value.resolved_components,
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Resolves a bounded path batch with shared authenticated frontiers.
@@ -4177,7 +4443,10 @@ mod bindings {
         /// Returns a JavaScript error for non-array/excessive/malformed paths,
         /// storage, cancellation, authentication, or bounded-work failure.
         #[wasm_bindgen(js_name = lookupBatchNoFollow)]
-        pub async fn lookup_batch_no_follow(&mut self, paths: JsValue) -> Result<JsValue, JsValue> {
+        pub async fn lookup_batch_no_follow(
+            &mut self,
+            paths: JsValue,
+        ) -> Result<BrowserBatchLookupResult, JsValue> {
             if !js_sys::Array::is_array(&paths) {
                 return Err(js_error("lookup paths must be an array"));
             }
@@ -4202,7 +4471,7 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&BatchLookupResult {
+            Ok(BrowserBatchLookupResult {
                 entries: receipt
                     .value
                     .entries
@@ -4211,15 +4480,14 @@ mod bindings {
                         exists: entry.record.is_some(),
                         file_id: entry
                             .record
-                            .map(|record| record.file_id.into_bytes().to_vec()),
+                            .map(|record| record.file_id.into_bytes().to_vec().into()),
                         file_kind: entry.record.map(|record| file_kind(record.kind)),
                         resolved_components: entry.resolved_components,
                     })
                     .collect(),
-                retained_allocation_bytes: receipt.value.retained_allocation_bytes.to_string(),
-                work: receipt.work,
+                retained_allocation_bytes: receipt.value.retained_allocation_bytes,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Returns one complete no-follow file record and canonical metadata.
@@ -4229,7 +4497,7 @@ mod bindings {
         /// Returns a JavaScript error for malformed paths, storage,
         /// authentication, cancellation, encoding, or bounded-work failure.
         #[wasm_bindgen(js_name = statNoFollow)]
-        pub async fn stat_no_follow(&mut self, path: String) -> Result<JsValue, JsValue> {
+        pub async fn stat_no_follow(&mut self, path: String) -> Result<BrowserStatResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4245,13 +4513,12 @@ mod bindings {
                 ),
                 None => (None, None),
             };
-            serde_wasm_bindgen::to_value(&StatResult {
+            Ok(BrowserStatResult {
                 exists: record.is_some(),
                 record,
-                metadata_canonical_bytes,
-                work: receipt.work,
+                metadata_canonical_bytes: metadata_canonical_bytes.map(Into::into),
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Reads one complete candidate file record by stable identity.
@@ -4264,7 +4531,7 @@ mod bindings {
         pub async fn read_file_record_by_id(
             &mut self,
             file_id: Vec<u8>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserFileRecordReadResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4273,11 +4540,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&FileRecordReadResult {
+            Ok(BrowserFileRecordReadResult {
                 record: encode_file_record(receipt.value),
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Reads complete canonical metadata bytes for one path.
@@ -4286,7 +4552,10 @@ mod bindings {
         ///
         /// Returns a JavaScript error for path, storage, codec, cancellation, or work failure.
         #[wasm_bindgen(js_name = readMetadata)]
-        pub async fn read_metadata(&mut self, path: String) -> Result<JsValue, JsValue> {
+        pub async fn read_metadata(
+            &mut self,
+            path: String,
+        ) -> Result<BrowserMetadataResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4295,11 +4564,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&MetadataResult {
+            Ok(BrowserMetadataResult {
                 canonical_bytes: encode_file_metadata(receipt.value).map_err(js_error)?,
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Reads complete canonical metadata by stable file identity.
@@ -4309,7 +4577,10 @@ mod bindings {
         /// Returns a JavaScript error for malformed identity, absence, storage,
         /// authentication, cancellation, encoding, or bounded work.
         #[wasm_bindgen(js_name = readMetadataById)]
-        pub async fn read_metadata_by_id(&mut self, file_id: Vec<u8>) -> Result<JsValue, JsValue> {
+        pub async fn read_metadata_by_id(
+            &mut self,
+            file_id: Vec<u8>,
+        ) -> Result<BrowserMetadataResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4318,11 +4589,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&MetadataResult {
+            Ok(BrowserMetadataResult {
                 canonical_bytes: encode_file_metadata(receipt.value).map_err(js_error)?,
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Atomically replaces complete canonical metadata for one path.
@@ -4335,7 +4605,7 @@ mod bindings {
             &mut self,
             path: String,
             canonical_bytes: Vec<u8>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let metadata =
                 decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
@@ -4347,11 +4617,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&MutationResult {
+            Ok(BrowserMutationResult {
                 file_id: None,
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Replaces complete canonical metadata by stable file identity.
@@ -4365,7 +4634,7 @@ mod bindings {
             &mut self,
             file_id: Vec<u8>,
             canonical_bytes: Vec<u8>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let metadata =
                 decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
@@ -4392,7 +4661,7 @@ mod bindings {
             path: String,
             canonical_bytes: Vec<u8>,
             logical_bytes: Option<u64>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let metadata =
                 decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
@@ -4425,7 +4694,7 @@ mod bindings {
             file_id: Vec<u8>,
             canonical_bytes: Vec<u8>,
             logical_bytes: Option<u64>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let metadata =
                 decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
@@ -4457,7 +4726,7 @@ mod bindings {
             path: String,
             attribute_class: String,
             name: Vec<u8>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserNamedAttributeResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let name = browser_attribute_name(&attribute_class, name, self.limits)?;
             let cancellation = CancellationToken::default();
@@ -4467,12 +4736,11 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&NamedAttributeResult {
+            Ok(BrowserNamedAttributeResult {
                 exists: receipt.value.is_some(),
-                bytes: receipt.value.map(|value| value.to_vec()),
-                work: receipt.work,
+                bytes: receipt.value.map(|value| value.to_vec().into()),
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Returns one bounded ordered named-attribute page.
@@ -4487,7 +4755,7 @@ mod bindings {
             after_class: Option<String>,
             after_name: Option<Vec<u8>>,
             maximum_entries: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserNamedAttributePageResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let after = match (after_class, after_name) {
                 (None, None) => None,
@@ -4509,7 +4777,7 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&NamedAttributePageResult {
+            Ok(BrowserNamedAttributePageResult {
                 entries: receipt
                     .value
                     .entries
@@ -4520,9 +4788,8 @@ mod bindings {
                     })
                     .collect(),
                 has_more: receipt.value.has_more,
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Inserts or replaces one exact named attribute.
@@ -4538,7 +4805,7 @@ mod bindings {
             name: Vec<u8>,
             bytes: Vec<u8>,
             mode: String,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let name = browser_attribute_name(&attribute_class, name, self.limits)?;
             let mode = browser_attribute_write_mode(&mode)?;
@@ -4556,11 +4823,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&MutationResult {
+            Ok(BrowserMutationResult {
                 file_id: None,
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Removes one exact named attribute.
@@ -4574,7 +4840,7 @@ mod bindings {
             path: String,
             attribute_class: String,
             name: Vec<u8>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let name = browser_attribute_name(&attribute_class, name, self.limits)?;
             let cancellation = CancellationToken::default();
@@ -4584,11 +4850,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&MutationResult {
+            Ok(BrowserMutationResult {
                 file_id: None,
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Resolves an ordered path batch once into immutable generation-bound handles.
@@ -4695,7 +4960,7 @@ mod bindings {
             path: String,
             offset: u64,
             length: u64,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserFileReadResult, JsValue> {
             let portable = PortablePath::parse(&path, self.limits).map_err(js_error)?;
             let path =
                 NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
@@ -4730,11 +4995,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?,
             };
-            serde_wasm_bindgen::to_value(&FileReadResult {
+            Ok(BrowserFileReadResult {
                 bytes: receipt.value.bytes.to_vec(),
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Reads one exact logical range by stable file identity.
@@ -4749,7 +5013,7 @@ mod bindings {
             file_id: Vec<u8>,
             offset: u64,
             length: u64,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserFileReadResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4763,11 +5027,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&FileReadResult {
+            Ok(BrowserFileReadResult {
                 bytes: receipt.value.bytes.to_vec(),
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Plans one bounded sparse range without reading file content blobs.
@@ -4783,7 +5046,7 @@ mod bindings {
             offset: u64,
             length: u64,
             maximum_spans: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserExtentPlanResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4799,14 +5062,20 @@ mod bindings {
                     .map_err(js_error)?
             });
             let result = match receipt.value {
-                None => ExtentPlanResult::Inline { work: receipt.work },
+                None => ExtentPlanResult::Inline {
+                    work: browser_work(receipt.work),
+                },
                 Some(plan) => ExtentPlanResult::Sparse {
-                    spans: plan.spans.iter().map(encode_extent_span).collect(),
-                    retained_allocation_bytes: plan.retained_allocation_bytes.to_string(),
-                    work: receipt.work,
+                    spans: plan
+                        .spans
+                        .iter()
+                        .map(encode_extent_span)
+                        .collect::<Result<_, _>>()?,
+                    retained_allocation_bytes: plan.retained_allocation_bytes,
+                    work: browser_work(receipt.work),
                 },
             };
-            serde_wasm_bindgen::to_value(&result).map_err(js_error)
+            Ok(result)
         }
 
         /// Plans one bounded sparse range by stable file identity.
@@ -4822,7 +5091,7 @@ mod bindings {
             offset: u64,
             length: u64,
             maximum_spans: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserExtentPlanResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4838,14 +5107,20 @@ mod bindings {
                     .map_err(js_error)?
             });
             let result = match receipt.value {
-                None => ExtentPlanResult::Inline { work: receipt.work },
+                None => ExtentPlanResult::Inline {
+                    work: browser_work(receipt.work),
+                },
                 Some(plan) => ExtentPlanResult::Sparse {
-                    spans: plan.spans.iter().map(encode_extent_span).collect(),
-                    retained_allocation_bytes: plan.retained_allocation_bytes.to_string(),
-                    work: receipt.work,
+                    spans: plan
+                        .spans
+                        .iter()
+                        .map(encode_extent_span)
+                        .collect::<Result<_, _>>()?,
+                    retained_allocation_bytes: plan.retained_allocation_bytes,
+                    work: browser_work(receipt.work),
                 },
             };
-            serde_wasm_bindgen::to_value(&result).map_err(js_error)
+            Ok(result)
         }
 
         /// Finds the next sparse data or hole boundary without reading file bodies.
@@ -4860,7 +5135,7 @@ mod bindings {
             path: String,
             offset: u64,
             target: String,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserExtentSeekResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let target = extent_seek_target(&target)?;
             let cancellation = CancellationToken::default();
@@ -4870,11 +5145,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&ExtentSeekResult {
-                offset: receipt.value.map(|value| value.to_string()),
-                work: receipt.work,
+            Ok(BrowserExtentSeekResult {
+                offset: receipt.value,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Finds the next sparse boundary by stable file identity.
@@ -4889,7 +5163,7 @@ mod bindings {
             file_id: Vec<u8>,
             offset: u64,
             target: String,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserExtentSeekResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let target = extent_seek_target(&target)?;
             let cancellation = CancellationToken::default();
@@ -4905,11 +5179,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&ExtentSeekResult {
-                offset: receipt.value.map(|value| value.to_string()),
-                work: receipt.work,
+            Ok(BrowserExtentSeekResult {
+                offset: receipt.value,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Reads one symbolic link's exact opaque target bytes without following it.
@@ -4919,7 +5192,10 @@ mod bindings {
         /// Returns a JavaScript error for malformed paths, non-links,
         /// corruption, cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = readSymbolicLink)]
-        pub async fn read_symbolic_link(&mut self, path: String) -> Result<JsValue, JsValue> {
+        pub async fn read_symbolic_link(
+            &mut self,
+            path: String,
+        ) -> Result<BrowserFileReadResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -4936,11 +5212,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?,
             };
-            serde_wasm_bindgen::to_value(&FileReadResult {
+            Ok(BrowserFileReadResult {
                 bytes: receipt.value.to_vec(),
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Reads one opaque Windows reparse-point payload without interpreting it.
@@ -4950,7 +5225,10 @@ mod bindings {
         /// Returns a JavaScript error for malformed paths, wrong file kind,
         /// storage, cancellation, authentication, or bounded work.
         #[wasm_bindgen(js_name = readReparsePoint)]
-        pub async fn read_reparse_point(&mut self, path: String) -> Result<JsValue, JsValue> {
+        pub async fn read_reparse_point(
+            &mut self,
+            path: String,
+        ) -> Result<BrowserFileReadResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -4959,11 +5237,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?
             });
-            serde_wasm_bindgen::to_value(&FileReadResult {
+            Ok(BrowserFileReadResult {
                 bytes: receipt.value.to_vec(),
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Returns one bounded ordered directory page.
@@ -4978,7 +5255,7 @@ mod bindings {
             path: String,
             after: Option<String>,
             maximum_entries: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserDirectoryPageResult, JsValue> {
             let portable = PortablePath::parse(&path, self.limits).map_err(js_error)?;
             let path =
                 NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
@@ -5030,12 +5307,11 @@ mod bindings {
                     file_kind: file_kind(entry.kind),
                 })
                 .collect();
-            serde_wasm_bindgen::to_value(&DirectoryPageResult {
+            Ok(BrowserDirectoryPageResult {
                 entries,
                 has_more: receipt.value.has_more,
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Returns one bounded directory page with records and metadata fetched in batches.
@@ -5050,7 +5326,7 @@ mod bindings {
             path: String,
             after: Option<String>,
             maximum_entries: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserDirectoryRecordPageResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let after = after
                 .as_deref()
@@ -5082,12 +5358,11 @@ mod bindings {
                     })
                 })
                 .collect::<Result<Vec<_>, JsValue>>()?;
-            serde_wasm_bindgen::to_value(&DirectoryRecordPageResult {
+            Ok(BrowserDirectoryRecordPageResult {
                 entries,
                 has_more: receipt.value.has_more,
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Creates one regular file in the private COW overlay.
@@ -5101,7 +5376,7 @@ mod bindings {
             &mut self,
             path: String,
             bytes: Vec<u8>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let bytes = bytes::Bytes::from(bytes);
@@ -5119,11 +5394,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?,
             };
-            serde_wasm_bindgen::to_value(&MutationResult {
-                file_id: Some(receipt.value.into_bytes().to_vec()),
-                work: receipt.work,
+            Ok(BrowserMutationResult {
+                file_id: Some(receipt.value.into_bytes().to_vec().into()),
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Creates one empty directory in the private COW overlay.
@@ -5133,7 +5407,10 @@ mod bindings {
         /// Returns a JavaScript error for malformed paths, conflicts,
         /// cancellation, storage, allocation, or bounded work.
         #[wasm_bindgen(js_name = createDirectory)]
-        pub async fn create_directory(&mut self, path: String) -> Result<JsValue, JsValue> {
+        pub async fn create_directory(
+            &mut self,
+            path: String,
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -5150,11 +5427,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?,
             };
-            serde_wasm_bindgen::to_value(&MutationResult {
-                file_id: Some(receipt.value.into_bytes().to_vec()),
-                work: receipt.work,
+            Ok(BrowserMutationResult {
+                file_id: Some(receipt.value.into_bytes().to_vec().into()),
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Creates one symbolic link with exact opaque target bytes.
@@ -5168,7 +5444,7 @@ mod bindings {
             &mut self,
             path: String,
             target: Vec<u8>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let target = bytes::Bytes::from(target);
@@ -5186,11 +5462,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?,
             };
-            serde_wasm_bindgen::to_value(&MutationResult {
-                file_id: Some(receipt.value.into_bytes().to_vec()),
-                work: receipt.work,
+            Ok(BrowserMutationResult {
+                file_id: Some(receipt.value.into_bytes().to_vec().into()),
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Creates an exact empty special namespace entry.
@@ -5204,7 +5479,7 @@ mod bindings {
             &mut self,
             path: String,
             kind: String,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let kind = empty_special_kind(&kind)?;
             let cancellation = CancellationToken::default();
@@ -5238,7 +5513,7 @@ mod bindings {
             kind: String,
             major: u32,
             minor: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let kind = device_kind(&kind)?;
             let cancellation = CancellationToken::default();
@@ -5270,7 +5545,7 @@ mod bindings {
             &mut self,
             path: String,
             payload: Vec<u8>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -5317,7 +5592,7 @@ mod bindings {
             path: String,
             offset: u64,
             bytes: Vec<u8>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let bytes = bytes::Bytes::from(bytes);
@@ -5335,11 +5610,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?,
             };
-            serde_wasm_bindgen::to_value(&MutationResult {
+            Ok(BrowserMutationResult {
                 file_id: None,
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Replaces one logical range by stable file identity.
@@ -5354,7 +5628,7 @@ mod bindings {
             file_id: Vec<u8>,
             offset: u64,
             bytes: Vec<u8>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
             let bytes = bytes::Bytes::from(bytes);
@@ -5377,7 +5651,7 @@ mod bindings {
             &mut self,
             path: String,
             expected_file_id: Option<Vec<u8>>,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let expected = expected_file_id
                 .as_deref()
@@ -5413,7 +5687,7 @@ mod bindings {
             source: String,
             destination: String,
             replace: bool,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let source = browser_path(&source, self.profile, self.limits)?;
             let destination = browser_path(&destination, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
@@ -5463,7 +5737,7 @@ mod bindings {
             &mut self,
             source: String,
             destination: String,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let source = browser_path(&source, self.profile, self.limits)?;
             let destination = browser_path(&destination, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
@@ -5495,7 +5769,7 @@ mod bindings {
             &mut self,
             path: String,
             logical_bytes: u64,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -5526,7 +5800,7 @@ mod bindings {
             &mut self,
             file_id: Vec<u8>,
             logical_bytes: u64,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -5552,7 +5826,7 @@ mod bindings {
             length: u64,
             allocated: bool,
             extend: bool,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -5607,7 +5881,7 @@ mod bindings {
             length: u64,
             allocated: bool,
             extend: bool,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -5639,7 +5913,7 @@ mod bindings {
             offset: u64,
             length: u64,
             keep_size: bool,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -5690,7 +5964,7 @@ mod bindings {
             offset: u64,
             length: u64,
             keep_size: bool,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -5722,7 +5996,7 @@ mod bindings {
             destination: String,
             destination_offset: u64,
             length: u64,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let request = FileCloneRequest {
                 source: browser_path(&source, self.profile, self.limits)?,
                 source_offset,
@@ -5762,7 +6036,7 @@ mod bindings {
             destination_file_id: Vec<u8>,
             destination_offset: u64,
             length: u64,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserMutationResult, JsValue> {
             let source_file_id = FileId::from_bytes(fixed_16(&source_file_id)?);
             let destination_file_id = FileId::from_bytes(fixed_16(&destination_file_id)?);
             let cancellation = CancellationToken::default();
@@ -5789,7 +6063,10 @@ mod bindings {
         ///
         /// Returns a JavaScript error for malformed operation identity, clean
         /// or read-only checkout, closure failure, cancellation, or bounded work.
-        pub async fn commit(&mut self, operation_id: Vec<u8>) -> Result<JsValue, JsValue> {
+        pub async fn commit(
+            &mut self,
+            operation_id: Vec<u8>,
+        ) -> Result<BrowserCommitResult, JsValue> {
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -5823,7 +6100,7 @@ mod bindings {
             operation_id: Vec<u8>,
             maximum_attempts: u32,
             maximum_conflicts: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserLiveTransactionResult, JsValue> {
             let authored = decode_authored_transactions(operations, self.profile, self.limits)?;
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let cancellation = CancellationToken::default();
@@ -5855,7 +6132,7 @@ mod bindings {
             operation_id: Vec<u8>,
             maximum_attempts: u32,
             maximum_conflicts: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<BrowserLiveMutationResult, JsValue> {
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -5900,7 +6177,10 @@ mod bindings {
         /// Returns a JavaScript error for unsupported consistency, invalid
         /// bounds, corruption, cancellation, storage, replay, or bounded work.
         #[wasm_bindgen(js_name = rebaseHead)]
-        pub async fn rebase_head(&mut self, maximum_conflicts: u32) -> Result<JsValue, JsValue> {
+        pub async fn rebase_head(
+            &mut self,
+            maximum_conflicts: u32,
+        ) -> Result<BrowserRebaseResult, JsValue> {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -5933,14 +6213,13 @@ mod bindings {
                     truncated,
                 ),
             };
-            serde_wasm_bindgen::to_value(&RebaseResult {
+            Ok(BrowserRebaseResult {
                 status,
-                generation_id,
+                generation_id: generation_id.map(Into::into),
                 conflict_count,
                 truncated,
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Discards the private overlay and returns to its immutable base.
@@ -5948,7 +6227,7 @@ mod bindings {
         /// # Errors
         ///
         /// Returns a JavaScript error for cancellation, corruption, storage, or work bounds.
-        pub async fn discard(&mut self) -> Result<JsValue, JsValue> {
+        pub async fn discard(&mut self) -> Result<BrowserMutationResult, JsValue> {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -6583,7 +6862,9 @@ mod bindings {
         bytes
     }
 
-    fn encode_extent_span(span: &acyclic_fs::kernel::ExtentSlice) -> ExtentSpanResult {
+    fn encode_extent_span(
+        span: &acyclic_fs::kernel::ExtentSlice,
+    ) -> Result<ExtentSpanResult, JsValue> {
         let (kind, object_id, object_offset) = match &span.kind {
             ExtentKind::Hole => ("hole", None, None),
             ExtentKind::AllocatedZero => ("allocated-zero", None, None),
@@ -6593,17 +6874,17 @@ mod bindings {
             } => (
                 "content",
                 Some(encode_object_id(*object)),
-                Some(object_offset.to_string()),
+                Some(*object_offset),
             ),
         };
-        ExtentSpanResult {
+        Ok(ExtentSpanResult {
             kind,
-            offset: span.offset.to_string(),
-            length: span.length.to_string(),
-            source_end: span.source_end.to_string(),
-            object_id,
+            offset: span.offset,
+            length: span.length,
+            source_end: span.source_end,
+            object_id: object_id.map(Into::into),
             object_offset,
-        }
+        })
     }
 
     fn decode_object_id(bytes: &[u8]) -> Result<ObjectId, JsValue> {
@@ -6625,31 +6906,33 @@ mod bindings {
     fn encode_export_manifest(
         manifest: GenerationExportManifest,
         work: acyclic_fs::WorkCounters,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<BrowserExportManifestResult, JsValue> {
         let manifest_bytes = encode_generation_export_manifest(&manifest).map_err(js_error)?;
-        serde_wasm_bindgen::to_value(&ExportManifestResult {
+        Ok(BrowserExportManifestResult {
             manifest_bytes,
-            objects: manifest.objects.into_iter().map(encode_object_id).collect(),
-            work,
+            objects: manifest
+                .objects
+                .into_iter()
+                .map(|object| encode_object_id(object).into())
+                .collect(),
+            work: browser_work(work),
         })
-        .map_err(js_error)
     }
 
     fn encode_checkpoint_result(
         receipt: &acyclic_fs::FsReceipt<acyclic_fs::GenerationId>,
-    ) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(&CheckpointResult {
+    ) -> Result<BrowserCheckpointResult, JsValue> {
+        Ok(BrowserCheckpointResult {
             generation_id: receipt.value.digest().into_bytes().to_vec(),
-            work: receipt.work,
+            work: browser_work(receipt.work),
         })
-        .map_err(js_error)
     }
 
     fn encode_generation_diff(
         diff: acyclic_fs::GenerationDiff,
         work: acyclic_fs::WorkCounters,
-    ) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(&GenerationDiffResult {
+    ) -> Result<BrowserGenerationDiffResult, JsValue> {
+        Ok(BrowserGenerationDiffResult {
             files: diff
                 .files
                 .into_iter()
@@ -6670,9 +6953,8 @@ mod bindings {
                 })
                 .collect(),
             truncated: diff.truncated,
-            work,
+            work: browser_work(work),
         })
-        .map_err(js_error)
     }
 
     fn browser_join_history(value: &str) -> Result<JoinHistory, JsValue> {
@@ -6771,7 +7053,7 @@ mod bindings {
         let mut result = FileRecordResult {
             file_id: record.file_id.into_bytes().to_vec(),
             file_kind: file_kind(record.kind),
-            link_count: record.link_count.to_string(),
+            link_count: record.link_count,
             metadata_object: encode_object_id(record.metadata),
             payload_kind: "empty",
             logical_bytes: None,
@@ -6783,32 +7065,29 @@ mod bindings {
         match record.payload {
             FilePayload::InlineRegular(bytes) => {
                 result.payload_kind = "inline-regular";
-                result.logical_bytes = Some(
-                    u64::try_from(bytes.as_bytes().len())
-                        .unwrap_or(u64::MAX)
-                        .to_string(),
-                );
-                result.inline_bytes = Some(bytes.as_bytes().to_vec());
+                result.logical_bytes =
+                    Some(u64::try_from(bytes.as_bytes().len()).unwrap_or(u64::MAX));
+                result.inline_bytes = Some(bytes.as_bytes().to_vec().into());
             }
             FilePayload::Regular {
                 logical_bytes,
                 extents,
             } => {
                 result.payload_kind = "regular";
-                result.logical_bytes = Some(logical_bytes.to_string());
-                result.payload_object = Some(encode_object_id(extents));
+                result.logical_bytes = Some(logical_bytes);
+                result.payload_object = Some(encode_object_id(extents).into());
             }
             FilePayload::Directory { entries } => {
                 result.payload_kind = "directory";
-                result.payload_object = Some(encode_object_id(entries));
+                result.payload_object = Some(encode_object_id(entries).into());
             }
             FilePayload::SymbolicLink {
                 target_bytes,
                 target,
             } => {
                 result.payload_kind = "symbolic-link";
-                result.logical_bytes = Some(target_bytes.to_string());
-                result.payload_object = Some(encode_object_id(target));
+                result.logical_bytes = Some(target_bytes);
+                result.payload_object = Some(encode_object_id(target).into());
             }
             FilePayload::Empty => {}
             FilePayload::Device { major, minor } => {
@@ -6821,8 +7100,8 @@ mod bindings {
                 payload,
             } => {
                 result.payload_kind = "reparse-point";
-                result.logical_bytes = Some(payload_bytes.to_string());
-                result.payload_object = Some(encode_object_id(payload));
+                result.logical_bytes = Some(payload_bytes);
+                result.payload_object = Some(encode_object_id(payload).into());
             }
         }
         result
@@ -6850,14 +7129,14 @@ mod bindings {
     fn encode_merge_preparation(
         preparation: MergePreparation,
         work: acyclic_fs::WorkCounters,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<BrowserMergePreparationResult, JsValue> {
         let result = match preparation {
             MergePreparation::Prepared { generation_id } => MergePreparationResult {
                 status: "prepared",
-                generation_id: Some(generation_id.digest().into_bytes().to_vec()),
+                generation_id: Some(generation_id.digest().into_bytes().to_vec().into()),
                 conflicts: Vec::new(),
                 truncated: false,
-                work,
+                work: browser_work(work),
             },
             MergePreparation::Conflicted {
                 conflicts,
@@ -6867,10 +7146,10 @@ mod bindings {
                 generation_id: None,
                 conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
                 truncated,
-                work,
+                work: browser_work(work),
             },
         };
-        serde_wasm_bindgen::to_value(&result).map_err(js_error)
+        Ok(result)
     }
 
     fn encode_merge_conflict(conflict: MergeConflict) -> MergeConflictResult {
@@ -6918,26 +7197,26 @@ mod bindings {
         Ok(decoded)
     }
 
-    fn mutation_value(work: acyclic_fs::WorkCounters) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(&MutationResult {
+    fn mutation_value(work: acyclic_fs::WorkCounters) -> Result<BrowserMutationResult, JsValue> {
+        Ok(BrowserMutationResult {
             file_id: None,
-            work,
+            work: browser_work(work),
         })
-        .map_err(js_error)
     }
 
-    fn mutation_created(receipt: &acyclic_fs::FsReceipt<FileId>) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(&MutationResult {
-            file_id: Some(receipt.value.into_bytes().to_vec()),
-            work: receipt.work,
+    fn mutation_created(
+        receipt: &acyclic_fs::FsReceipt<FileId>,
+    ) -> Result<BrowserMutationResult, JsValue> {
+        Ok(BrowserMutationResult {
+            file_id: Some(receipt.value.into_bytes().to_vec().into()),
+            work: browser_work(receipt.work),
         })
-        .map_err(js_error)
     }
 
     fn commit_value(
         outcome: CheckoutCommitOutcome,
         work: acyclic_fs::WorkCounters,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<BrowserCommitResult, JsValue> {
         let (status, generation_id, epoch, sequence, fingerprint) = match outcome {
             CheckoutCommitOutcome::Committed {
                 generation_id,
@@ -6945,8 +7224,8 @@ mod bindings {
             } => (
                 "committed",
                 Some(generation_id.digest().into_bytes().to_vec()),
-                Some(head.epoch.get().to_string()),
-                Some(head.sequence.get().to_string()),
+                Some(head.epoch.get()),
+                Some(head.sequence.get()),
                 None,
             ),
             CheckoutCommitOutcome::AlreadyCommitted {
@@ -6955,24 +7234,20 @@ mod bindings {
             } => (
                 "already-committed",
                 Some(generation_id.digest().into_bytes().to_vec()),
-                Some(head.epoch.get().to_string()),
-                Some(head.sequence.get().to_string()),
+                Some(head.epoch.get()),
+                Some(head.sequence.get()),
                 None,
             ),
             CheckoutCommitOutcome::Conflict { actual } => (
                 "conflict",
                 None,
-                Some(actual.epoch.get().to_string()),
-                Some(actual.sequence.get().to_string()),
+                Some(actual.epoch.get()),
+                Some(actual.sequence.get()),
                 None,
             ),
-            CheckoutCommitOutcome::Fenced { actual_epoch } => (
-                "fenced",
-                None,
-                Some(actual_epoch.get().to_string()),
-                None,
-                None,
-            ),
+            CheckoutCommitOutcome::Fenced { actual_epoch } => {
+                ("fenced", None, Some(actual_epoch.get()), None, None)
+            }
             CheckoutCommitOutcome::IdempotencyConflict {
                 committed_fingerprint,
             } => (
@@ -6983,21 +7258,20 @@ mod bindings {
                 Some(committed_fingerprint.into_bytes().to_vec()),
             ),
         };
-        serde_wasm_bindgen::to_value(&CommitResult {
+        Ok(BrowserCommitResult {
             status,
-            generation_id,
+            generation_id: generation_id.map(Into::into),
             epoch,
             sequence,
-            committed_fingerprint: fingerprint,
-            work,
+            committed_fingerprint: fingerprint.map(Into::into),
+            work: browser_work(work),
         })
-        .map_err(js_error)
     }
 
     fn live_mutation_value(
         outcome: LiveMutationOutcome,
         work: acyclic_fs::WorkCounters,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<BrowserLiveMutationResult, JsValue> {
         let (status, generation_id, epoch, sequence, conflict_count, truncated, fingerprint) =
             match outcome {
                 LiveMutationOutcome::Committed {
@@ -7006,8 +7280,8 @@ mod bindings {
                 } => (
                     "committed",
                     Some(generation_id.digest().into_bytes().to_vec()),
-                    Some(head.epoch.get().to_string()),
-                    Some(head.sequence.get().to_string()),
+                    Some(head.epoch.get()),
+                    Some(head.sequence.get()),
                     0,
                     false,
                     None,
@@ -7018,8 +7292,8 @@ mod bindings {
                 } => (
                     "already-committed",
                     Some(generation_id.digest().into_bytes().to_vec()),
-                    Some(head.epoch.get().to_string()),
-                    Some(head.sequence.get().to_string()),
+                    Some(head.epoch.get()),
+                    Some(head.sequence.get()),
                     0,
                     false,
                     None,
@@ -7039,8 +7313,8 @@ mod bindings {
                 LiveMutationOutcome::RetryLimit { actual } => (
                     "retry-limit",
                     None,
-                    Some(actual.epoch.get().to_string()),
-                    Some(actual.sequence.get().to_string()),
+                    Some(actual.epoch.get()),
+                    Some(actual.sequence.get()),
                     0,
                     false,
                     None,
@@ -7048,7 +7322,7 @@ mod bindings {
                 LiveMutationOutcome::Fenced { actual_epoch } => (
                     "fenced",
                     None,
-                    Some(actual_epoch.get().to_string()),
+                    Some(actual_epoch.get()),
                     None,
                     0,
                     false,
@@ -7066,37 +7340,38 @@ mod bindings {
                     Some(committed_fingerprint.into_bytes().to_vec()),
                 ),
             };
-        serde_wasm_bindgen::to_value(&LiveMutationResult {
+        Ok(BrowserLiveMutationResult {
             status,
-            generation_id,
+            generation_id: generation_id.map(Into::into),
             epoch,
             sequence,
             conflict_count,
             truncated,
-            committed_fingerprint: fingerprint,
-            work,
+            committed_fingerprint: fingerprint.map(Into::into),
+            work: browser_work(work),
         })
-        .map_err(js_error)
     }
 
     fn authored_live_mutation_value(
         result: acyclic_fs::AuthoredLiveMutationResult,
         work: acyclic_fs::WorkCounters,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<BrowserLiveTransactionResult, JsValue> {
         let value = live_mutation_value(result.outcome, work)?;
-        js_sys::Reflect::set(
-            &value,
-            &JsValue::from_str("createdFileIds"),
-            &serde_wasm_bindgen::to_value(
-                &result
-                    .created_file_ids
-                    .into_iter()
-                    .map(|identity| identity.map(|value| value.into_bytes().to_vec()))
-                    .collect::<Vec<_>>(),
-            )
-            .map_err(js_error)?,
-        )?;
-        Ok(value)
+        Ok(BrowserLiveTransactionResult {
+            status: value.status,
+            generation_id: value.generation_id,
+            epoch: value.epoch,
+            sequence: value.sequence,
+            conflict_count: value.conflict_count,
+            truncated: value.truncated,
+            committed_fingerprint: value.committed_fingerprint,
+            work: value.work,
+            created_file_ids: result
+                .created_file_ids
+                .into_iter()
+                .map(|identity| identity.map(|value| value.into_bytes().to_vec().into()))
+                .collect(),
+        })
     }
 
     fn browser_volume_config(options: VolumeOptions) -> Result<VolumeConfig, VolumeConfigError> {
@@ -7543,7 +7818,11 @@ pub use bindings::{
 
 #[cfg(all(test, target_arch = "wasm32"))]
 mod wasm_abi_tests {
-    use super::bindings::test_workspace_extent_plan_js;
+    use super::bindings::{
+        test_checkout_commit_result_js, test_checkout_export_manifest_result_js,
+        test_checkout_metadata_result_js, test_checkout_mutation_result_js,
+        test_workspace_extent_plan_js,
+    };
     use js_sys::{Array, BigInt, Reflect};
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_test::wasm_bindgen_test;
@@ -7559,5 +7838,51 @@ mod wasm_abi_tests {
             Some("9007199254740993")
         );
         Ok(())
+    }
+
+    #[wasm_bindgen_test]
+    fn checkout_dtos_preserve_bytes_options_bigints_and_work_counters() {
+        let mutation = test_checkout_mutation_result_js();
+        let file_id = Reflect::get(&mutation, &JsValue::from_str("fileId"))
+            .expect("mutation file id must be present")
+            .dyn_into::<js_sys::Uint8Array>()
+            .expect("mutation file id must be Uint8Array");
+        assert_eq!(file_id.length(), 16);
+
+        let metadata = test_checkout_metadata_result_js();
+        let canonical = Reflect::get(&metadata, &JsValue::from_str("canonicalBytes"))
+            .expect("metadata bytes must be present")
+            .dyn_into::<js_sys::Uint8Array>()
+            .expect("metadata bytes must be Uint8Array");
+        assert_eq!(canonical.to_vec(), vec![0, 255, 1]);
+
+        let manifest = test_checkout_export_manifest_result_js();
+        let objects = Reflect::get(&manifest, &JsValue::from_str("objects"))
+            .expect("manifest objects must be present")
+            .dyn_into::<Array>()
+            .expect("manifest objects must be an array");
+        assert_eq!(objects.length(), 2);
+
+        let commit = test_checkout_commit_result_js();
+        let epoch = Reflect::get(&commit, &JsValue::from_str("epoch"))
+            .expect("commit epoch must be present")
+            .dyn_into::<BigInt>()
+            .expect("commit epoch must be a bigint");
+        assert_eq!(
+            epoch.to_string(10).unwrap().as_string().unwrap(),
+            "9007199254740993"
+        );
+        let work =
+            Reflect::get(&commit, &JsValue::from_str("work")).expect("commit work must be present");
+        let copied = Reflect::get(&work, &JsValue::from_str("bytesCopied"))
+            .expect("work bytesCopied must be present")
+            .dyn_into::<BigInt>()
+            .expect("work counters must preserve u64 values as bigint");
+        assert_eq!(copied.to_string(10).unwrap().as_string().unwrap(), "17");
+        assert!(
+            Reflect::get(&commit, &JsValue::from_str("sequence"))
+                .expect("optional sequence must be present")
+                .is_undefined()
+        );
     }
 }
