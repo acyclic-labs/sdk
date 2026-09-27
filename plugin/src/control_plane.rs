@@ -630,6 +630,13 @@ impl ControlPlane {
         self.record_publication_history(parent_agent, child_agent, publication)
             .await
             .map_err(|error| format!("recording published compatibility history: {error}"))?;
+        // Before the child rebases onto the new head: every path that
+        // finishes a merge (a first attempt, `--continue`, recovery) carries
+        // the child's deletions of source files, which no generation holds.
+        let deletions = self
+            .source_deletions(parent_agent, child_agent, &publication.candidate.plan)
+            .await?;
+        self.apply_source_deletions(parent_agent, deletions).await?;
         let limits = OperationReconcileLimits::default();
         let mut published_heads = BTreeMap::new();
         for (root_id, root) in &publication.candidate.plan.roots {
@@ -2940,7 +2947,6 @@ impl ControlPlane {
         let mut roots = BTreeMap::new();
         let mut resolutions = BTreeMap::new();
         let mut target_heads = BTreeMap::new();
-        let mut source_deletions = BTreeMap::<WorkspaceRootId, Vec<String>>::new();
         for (root_id, child_root) in &child_context.roots {
             let parent_root = parent_context
                 .roots
@@ -2960,13 +2966,6 @@ impl ControlPlane {
                 .await
                 .map_err(display)?;
             let lazy_source = self.lazy_workspace_root(&route, *root_id).await?;
-            // Source paths the child deleted or renamed away. No generation
-            // ever held them, so the merge cannot carry their deletion; it is
-            // applied to the parent once the merge lands.
-            let own_tombstones = lazy_source
-                .source_tombstones(MAXIMUM_SOURCE_DELETIONS)
-                .await
-                .map_err(display)?;
             // What any ancestor gained since this child forked (a sibling's
             // merge, a refresh of the physical root) is on the physical root
             // the child's unresolved view reads, and is not the child's work:
@@ -2974,15 +2973,7 @@ impl ControlPlane {
             // with the ancestor's copy. Every ancestor counts, since a sibling
             // of the parent may have merged into the root meanwhile.
             let mut inherited = BTreeSet::new();
-            let mut ancestor_changed = BTreeSet::new();
-            ancestor_changes(
-                &source,
-                &target,
-                &lazy_source,
-                &mut inherited,
-                &mut ancestor_changed,
-            )
-            .await?;
+            inherited_additions(&source, &target, &lazy_source, &mut inherited).await?;
             let mut upper = parent_context.clone();
             while let Some(grandparent_id) = upper.parent_context_id {
                 let grandparent = registry.resolve(grandparent_id).await.map_err(display)?;
@@ -3001,35 +2992,14 @@ impl ControlPlane {
                     .workspace(upper_parent.workspace_id)
                     .await
                     .map_err(display)?;
-                ancestor_changes(
-                    &upper_source,
-                    &upper_target,
-                    &lazy_source,
-                    &mut inherited,
-                    &mut ancestor_changed,
-                )
-                .await?;
+                inherited_additions(&upper_source, &upper_target, &lazy_source, &mut inherited)
+                    .await?;
                 upper = grandparent;
             }
-            let child_head = source.head().await.map_err(display)?;
-            let mut deletions = Vec::new();
-            for path in own_tombstones {
-                // Not the child's deletion (an inherited path it never held),
-                // re-created by the child, or changed in an ancestor since the
-                // fork, whose newer version is kept.
-                if inherited.contains(&path)
-                    || ancestor_changed.contains(&path)
-                    || child_head.stat(&path).await.is_ok()
-                {
-                    continue;
-                }
-                deletions.push(path);
-            }
-            source_deletions.insert(*root_id, deletions);
             for path in &inherited {
-                // The child only reads these through the source: removing one
-                // records a source tombstone, never an authored deletion.
-                match lazy_source.remove(path).await {
+                // The child only reads these through the source: hiding one is
+                // no deletion of the child's, so no merge carries it.
+                match lazy_source.hide_source_path(path).await {
                     Ok(()) | Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
                     Err(error) => return Err(display(error)),
                 }
@@ -3171,8 +3141,6 @@ impl ControlPlane {
         }
         let route_root_id = route.root_id;
         self.finalize_applied_publication(&coordinator, caller, &agent, &applied_publication)
-            .await?;
-        self.apply_source_deletions(caller, source_deletions)
             .await?;
         let mut generations = BTreeMap::new();
         let mut changed = false;
@@ -4189,16 +4157,14 @@ impl ControlPlane {
     }
 }
 
-/// Records what `parent` changed since `child` forked from it: every changed
-/// path into `changed`, and into `inherited` each added path that
-/// `child_view` still reads only from the source, whose parent copy is
-/// authoritative whatever identity each side derived for it.
-async fn ancestor_changes(
+/// Adds to `inherited` every path `parent` added since `child` forked from it
+/// that `child_view` still reads only from the source: the parent's copy of it
+/// is authoritative whatever identity each side derived for it.
+async fn inherited_additions(
     child: &LocalWorkspace,
     parent: &LocalWorkspace,
     child_view: &LocalLazyWorkspace,
     inherited: &mut BTreeSet<String>,
-    changed: &mut BTreeSet<String>,
 ) -> Result<(), String> {
     let fork_point = child
         .join_into(parent)
@@ -4219,11 +4185,10 @@ async fn ancestor_changes(
         .await
         .map_err(display)?;
     for change in changes {
-        let path = namespace_path_text(&change.path)?;
-        changed.insert(path.clone());
         if change.before.is_some() || change.after.is_none() {
             continue;
         }
+        let path = namespace_path_text(&change.path)?;
         if matches!(
             child_view.lookup(&path).await,
             Ok(acyclic_fs::LazyLookup::Source(_))
@@ -4238,16 +4203,82 @@ async fn ancestor_changes(
 const MAXIMUM_SOURCE_DELETIONS: usize = 100_000;
 
 impl ControlPlane {
+    /// The source paths a merged child deleted or renamed away, per root:
+    /// each while the shared source still holds exactly the version the child
+    /// deleted (an ancestor's newer edit is kept), and the child did not
+    /// re-create it. Under a non-root parent the parent must still read the
+    /// path from the source; a parent that wrote it keeps its own version.
+    /// Computed from the published plan, so finishing the same publication
+    /// again yields the same deletions.
+    async fn source_deletions(
+        &self,
+        parent_agent: &str,
+        child_agent: &str,
+        plan: &MultiRootMergePlan,
+    ) -> Result<BTreeMap<WorkspaceRootId, Vec<String>>, String> {
+        let route = self
+            .state
+            .routes
+            .get(child_agent)
+            .cloned()
+            .ok_or_else(|| "merged agent route is unavailable".to_owned())?;
+        let parent_route = (parent_agent != self.state.root_agent_id)
+            .then(|| self.state.routes.get(parent_agent).cloned())
+            .flatten();
+        let mut deletions = BTreeMap::new();
+        for (root_id, root) in &plan.roots {
+            let view = self.lazy_workspace_root(&route, *root_id).await?;
+            let tombstones = view
+                .source_tombstones(MAXIMUM_SOURCE_DELETIONS)
+                .await
+                .map_err(display)?;
+            if tombstones.is_empty() {
+                continue;
+            }
+            let child_head = self
+                .distributed
+                .workspace(root.source_workspace_id)
+                .await
+                .map_err(display)?
+                .generation(root.source_generation)
+                .await
+                .map_err(display)?;
+            let parent_view = match &parent_route {
+                Some(parent_route) => Some(self.lazy_workspace_root(parent_route, *root_id).await?),
+                None => None,
+            };
+            let mut paths = Vec::new();
+            for (path, deleted) in tombstones {
+                if child_head.stat(&path).await.is_ok()
+                    || view.current_source_version(&path).await.map_err(display)? != Some(deleted)
+                {
+                    continue;
+                }
+                if let Some(parent_view) = &parent_view
+                    && !matches!(
+                        parent_view.lookup(&path).await,
+                        Ok(acyclic_fs::LazyLookup::Source(ref node)) if node.version == deleted
+                    )
+                {
+                    continue;
+                }
+                paths.push(path);
+            }
+            deletions.insert(*root_id, paths);
+        }
+        Ok(deletions)
+    }
+
     /// Deletes in `parent` the source paths a merged child deleted. For the
-    /// root that is the physical path itself, then recorded by a refresh; for
-    /// any other parent, a removal in its own view.
+    /// root that is the physical path itself, which the root's next refresh
+    /// records like any other change on disk (the publication still fences
+    /// the root workspace here); for any other parent, a removal in its view.
     async fn apply_source_deletions(
         &mut self,
         parent: &str,
         deletions: BTreeMap<WorkspaceRootId, Vec<String>>,
     ) -> Result<(), String> {
         let root_parent = parent == self.state.root_agent_id;
-        let mut deleted_physical = false;
         for (root_id, paths) in deletions {
             if paths.is_empty() {
                 continue;
@@ -4269,7 +4300,6 @@ impl ControlPlane {
                     };
                     removed
                         .map_err(|error| format!("cannot delete {}: {error}", host.display()))?;
-                    deleted_physical = true;
                 }
             } else {
                 let parent_route = self
@@ -4286,9 +4316,6 @@ impl ControlPlane {
                     }
                 }
             }
-        }
-        if deleted_physical {
-            self.sync_agent(parent).await?;
         }
         Ok(())
     }

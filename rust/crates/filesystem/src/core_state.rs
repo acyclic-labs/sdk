@@ -2508,7 +2508,7 @@ mod tests {
             "Node": {
                 "path": path,
                 "priority": 0,
-                "change": "Tombstone",
+                "change": {"Tombstone": {"removed": null}},
                 "left": vec![0_u8; 32],
                 "right": vec![0_u8; 32]
             }
@@ -3688,7 +3688,7 @@ mod tests {
             "Node": {
                 "path": path,
                 "priority": 0,
-                "change": "Tombstone",
+                "change": {"Tombstone": {"removed": null}},
                 "left": left,
                 "right": right
             }

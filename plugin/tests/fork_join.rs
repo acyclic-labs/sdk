@@ -427,6 +427,55 @@ fn a_conflict_is_reported_aborted_and_does_not_block_later_merges() {
 
 #[test]
 #[ignore = "requires live native mounts"]
+fn a_deletion_survives_a_conflict_resolved_with_continue() {
+    let session = Session::open("continue");
+    let editor = session.spawn(&session.root(), "editor");
+    let other = session.spawn(&session.root(), "other");
+    fs::write(
+        editor.path.join("pkg/shared.py"),
+        "VALUE = 2
+",
+    )
+    .expect("edit");
+    fs::write(
+        other.path.join("pkg/shared.py"),
+        "VALUE = 3
+",
+    )
+    .expect("conflicting edit");
+    fs::remove_file(other.path.join("README.md")).expect("unlink");
+    session.merge(&editor).expect("merge editor");
+    session.stop(&other);
+    let conflicted = session.cli_json(&["git", "merge", &other.reference()], &session.repo);
+    assert_eq!(
+        conflicted.get("status").and_then(Value::as_str),
+        Some("conflicted"),
+        "{conflicted}"
+    );
+    fs::write(
+        session.repo.join("pkg/shared.py"),
+        "VALUE = 3
+",
+    )
+    .expect("resolve");
+    let (added, text) = session.run(&["git", "add", "pkg/shared.py"], &session.repo, b"");
+    assert!(added, "acyclic git add failed: {text}");
+    let continued = session.cli_json(&["git", "merge", "--continue"], &session.repo);
+    assert_eq!(
+        continued.get("status").and_then(Value::as_str),
+        Some("applied"),
+        "{continued}"
+    );
+    assert_eq!(
+        read(&session.repo.join("pkg/shared.py")),
+        "VALUE = 3
+"
+    );
+    assert_eq!(session.files(), ["pkg/shared.py"]);
+}
+
+#[test]
+#[ignore = "requires live native mounts"]
 fn a_fork_keeps_creating_files_after_the_root_changes() {
     let session = Session::open("late");
     let waiting = session.spawn(&session.root(), "waiting");

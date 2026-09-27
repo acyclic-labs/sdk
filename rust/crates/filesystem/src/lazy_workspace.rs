@@ -243,6 +243,14 @@ pub enum LazyOverlay {
     },
 }
 
+/// What removing a path records: a deletion of the source version it held,
+/// or only hiding a path the view never owned.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Removal {
+    Deleted,
+    Hidden,
+}
+
 /// One fact introduced by a lazy overlay delta.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -254,8 +262,13 @@ pub enum LazyOverlayChange {
         /// Immutable source fact.
         node: SourceNode,
     },
-    /// Authored removal of a source path or subtree.
-    Tombstone,
+    /// Authored removal of a source path or subtree. `removed` is the source
+    /// version the removal deleted; `None` only hides a path the view never
+    /// owned (one an ancestor gained after the fork), which is no deletion.
+    Tombstone {
+        /// Source version deleted, or `None` for a hidden path.
+        removed: Option<SourceVersion>,
+    },
 }
 
 impl LazyOverlay {
@@ -1717,7 +1730,7 @@ where
         };
         let mut work = fact.work;
         let observed = match fact.value {
-            Some(LazyOverlayChange::Tombstone) => return Err(LazyWorkspaceError::NotFound),
+            Some(LazyOverlayChange::Tombstone { .. }) => return Err(LazyWorkspaceError::NotFound),
             Some(LazyOverlayChange::Observe { source, node })
                 if basis.retain_pinned_observation || source == state.source =>
             {
@@ -1896,7 +1909,7 @@ where
                         Ok(self.source_file_id(&node))
                     }
                     Some(LazyOverlayChange::Observe { .. })
-                    | Some(LazyOverlayChange::Tombstone)
+                    | Some(LazyOverlayChange::Tombstone { .. })
                     | None => Ok(stat.file_id),
                 }
             }
@@ -3254,7 +3267,7 @@ where
                                     work = account_nested_with_live_memory(
                                         work, fact.work, live_bytes, budget,
                                     )?;
-                                    matches!(fact.value, Some(LazyOverlayChange::Tombstone))
+                                    matches!(fact.value, Some(LazyOverlayChange::Tombstone { .. }))
                                 } else {
                                     false
                                 };
@@ -4097,8 +4110,9 @@ where
             let mut shadows = state.shadows;
             for path in paths {
                 let path = self.canonical_path(path)?;
+                let removed = self.removed_source_version(&state, &path).await?;
                 overlay = self
-                    .insert_overlay(overlay, path, LazyOverlayChange::Tombstone)
+                    .insert_overlay(overlay, path, LazyOverlayChange::Tombstone { removed })
                     .await?;
             }
             for (record, metadata) in identity_records {
@@ -4174,9 +4188,10 @@ where
         Ok(committed)
     }
 
-    /// Source paths this view removed, sorted: each a tombstone over the
-    /// source, which no authored generation holds. A merge cannot carry these
-    /// deletions, so its caller applies them to the parent separately.
+    /// Source paths this view deleted, sorted, each with the source version
+    /// it deleted. No authored generation holds these, so a merge cannot
+    /// carry them; its caller applies each to the parent while the source
+    /// still holds that version. Hidden paths are not listed.
     ///
     /// # Errors
     ///
@@ -4184,7 +4199,7 @@ where
     pub async fn source_tombstones(
         &self,
         maximum: usize,
-    ) -> Result<Vec<String>, LazyWorkspaceError> {
+    ) -> Result<Vec<(String, SourceVersion)>, LazyWorkspaceError> {
         let state = self.state().await?;
         let mut pending = vec![state.overlay];
         let mut tombstones = Vec::new();
@@ -4203,18 +4218,21 @@ where
             else {
                 continue;
             };
-            if matches!(change, LazyOverlayChange::Tombstone) {
+            if let LazyOverlayChange::Tombstone {
+                removed: Some(version),
+            } = change
+            {
                 if tombstones.len() == maximum {
                     return Err(LazyWorkspaceError::Work(format!(
                         "more than {maximum} source tombstones"
                     )));
                 }
-                tombstones.push(path);
+                tombstones.push((path, version));
             }
             pending.push(left);
             pending.push(right);
         }
-        tombstones.sort();
+        tombstones.sort_by(|left, right| left.0.cmp(&right.0));
         Ok(tombstones)
     }
 
@@ -4223,12 +4241,85 @@ where
         self.remove_if(path, None).await
     }
 
+    /// Hides a path this view only reads from the source and never owned
+    /// (one an ancestor gained after the fork): it reads as absent, but is
+    /// no deletion of this view's, so no merge carries it anywhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::remove`].
+    pub async fn hide_source_path(&self, path: &str) -> Result<(), LazyWorkspaceError> {
+        self.remove_recording(path, None, Removal::Hidden).await
+    }
+
+    /// The source version the current source holds at `path`, bypassing
+    /// this view's own observations; `None` when the source has no node there.
+    ///
+    /// # Errors
+    ///
+    /// Returns path, state, or source failures.
+    pub async fn current_source_version(
+        &self,
+        path: &str,
+    ) -> Result<Option<SourceVersion>, LazyWorkspaceError> {
+        let path = self.canonical_path(path)?;
+        let state = self.state().await?;
+        self.source
+            .lookup(
+                state.source,
+                &self.namespace_path(&path)?,
+                &CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value.map(|node| node.version))
+            .or_else(|failure| match failure.error {
+                DemandError::Absent | DemandError::NotDirectory => Ok(None),
+                error => Err(LazyWorkspaceError::from(error)),
+            })
+    }
+
+    /// The source version removing `path` deletes: this view's observation
+    /// of it, or else the source's current node.
+    async fn removed_source_version(
+        &self,
+        state: &LazyWorkspaceState,
+        path: &str,
+    ) -> Result<Option<SourceVersion>, LazyWorkspaceError> {
+        match self.overlay_fact(state.overlay, path).await? {
+            Some(LazyOverlayChange::Observe { node, .. }) => return Ok(Some(node.version)),
+            Some(LazyOverlayChange::Tombstone { removed }) => return Ok(removed),
+            None => {}
+        }
+        self.source
+            .lookup(
+                state.source,
+                &self.namespace_path(path)?,
+                &CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value.map(|node| node.version))
+            .or_else(|failure| match failure.error {
+                DemandError::Absent | DemandError::NotDirectory => Ok(None),
+                error => Err(LazyWorkspaceError::from(error)),
+            })
+    }
+
     /// Removes one path only if it still has the caller's resolved identity.
-    #[allow(clippy::too_many_lines)]
     pub async fn remove_if(
         &self,
         path: &str,
         expected: Option<FileId>,
+    ) -> Result<(), LazyWorkspaceError> {
+        self.remove_recording(path, expected, Removal::Deleted)
+            .await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn remove_recording(
+        &self,
+        path: &str,
+        expected: Option<FileId>,
+        removal: Removal,
     ) -> Result<(), LazyWorkspaceError> {
         let path = self.canonical_path(path)?;
         let mut resolved = self.lookup(&path).await?;
@@ -4269,8 +4360,17 @@ where
             } else {
                 state.shadows
             };
+            let removed = match (removal, &resolved) {
+                (Removal::Hidden, _) => None,
+                (Removal::Deleted, LazyLookup::Source(node)) => Some(node.version),
+                (Removal::Deleted, _) => self.removed_source_version(&state, &path).await?,
+            };
             let tombstone_overlay = self
-                .insert_overlay(state.overlay, path.clone(), LazyOverlayChange::Tombstone)
+                .insert_overlay(
+                    state.overlay,
+                    path.clone(),
+                    LazyOverlayChange::Tombstone { removed },
+                )
                 .await?;
             let pending_remove = PendingLazyRemove {
                 prior_overlay: state.overlay,
@@ -4484,7 +4584,7 @@ where
                 LazyOverlayChange::Observe { .. } => {
                     self.observe_live_measured(path, state, cancellation).await
                 }
-                LazyOverlayChange::Tombstone => Err(LazyWorkspaceError::NotFound),
+                LazyOverlayChange::Tombstone { .. } => Err(LazyWorkspaceError::NotFound),
             };
         }
         self.observe_live_measured(path, state, cancellation).await
@@ -4777,7 +4877,7 @@ where
             .overlay_fact_measured(overlay_id, "/", remaining_work(work, budget)?, cancellation)
             .await?;
         work = account_work(work, root.work, budget)?;
-        if matches!(root.value, Some(LazyOverlayChange::Tombstone)) {
+        if matches!(root.value, Some(LazyOverlayChange::Tombstone { .. })) {
             return Ok(OperationReceipt { value: true, work });
         }
         let mut ancestor = String::new();
@@ -4799,7 +4899,7 @@ where
                 )
                 .await?;
             work = account_work(work, fact.work, budget)?;
-            if matches!(fact.value, Some(LazyOverlayChange::Tombstone)) {
+            if matches!(fact.value, Some(LazyOverlayChange::Tombstone { .. })) {
                 return Ok(OperationReceipt { value: true, work });
             }
         }
@@ -5600,10 +5700,24 @@ mod tests {
         root.remove("/also-removed.txt")
             .await
             .expect("remove unobserved source path");
+        root.stat("/hidden.txt").await.expect("observe hidden");
+        root.hide_source_path("/hidden.txt")
+            .await
+            .expect("hide source path");
+        assert!(root.stat("/hidden.txt").await.is_err());
+        let tombstones = root.source_tombstones(16).await.expect("tombstones");
         assert_eq!(
-            root.source_tombstones(16).await.expect("tombstones"),
+            tombstones
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
             ["/also-removed.txt", "/removed.txt"]
         );
+        let current = root
+            .current_source_version("/removed.txt")
+            .await
+            .expect("current version");
+        assert_eq!(current, tombstones.get(1).map(|(_, version)| *version));
         assert!(matches!(
             root.source_tombstones(1).await,
             Err(LazyWorkspaceError::Work(_))
@@ -7337,7 +7451,7 @@ mod tests {
             .insert_overlay(
                 prior.overlay,
                 "/file.txt".to_owned(),
-                LazyOverlayChange::Tombstone,
+                LazyOverlayChange::Tombstone { removed: None },
             )
             .await
             .expect("tombstone");
@@ -7441,7 +7555,7 @@ mod tests {
             .insert_overlay(
                 prior.overlay,
                 "/file.txt".to_owned(),
-                LazyOverlayChange::Tombstone,
+                LazyOverlayChange::Tombstone { removed: None },
             )
             .await
             .expect("tombstone");
