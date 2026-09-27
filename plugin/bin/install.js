@@ -166,7 +166,8 @@ function acquireInstallLock(directory) {
   const path = join(directory, "install.lock");
   const ownerPath = join(path, "owner.json");
   const deadline = Date.now() + 120_000;
-  // Asking the OS spawns a process: ask once per owner record, not per poll.
+  // Asking the OS spawns a process: ask about once a second, not per poll.
+  // The owner may crash and lose its PID to another process at any time.
   let reused = null;
   while (true) {
     let acquired = false;
@@ -195,8 +196,8 @@ function acquireInstallLock(directory) {
         try { initialized = Date.now() - statSync(path).mtimeMs >= 5_000; } catch { initialized = false; }
       }
       const alive = named && processExists(owner.pid);
-      if (alive && reused?.owner !== JSON.stringify(owner)) {
-        reused = { owner: JSON.stringify(owner), value: ownerPidReused(owner) };
+      if (alive && (reused?.owner !== JSON.stringify(owner) || Date.now() - reused.at >= 1_000)) {
+        reused = { owner: JSON.stringify(owner), at: Date.now(), value: ownerPidReused(owner) };
       }
       if (initialized && (!alive || reused.value)) {
         const stale = `${path}.stale-${process.pid}-${Date.now()}`;

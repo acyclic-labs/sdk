@@ -315,6 +315,19 @@ fn renaming_a_source_file_moves_it_in_the_parent() {
 
 #[test]
 #[ignore = "requires live native mounts"]
+fn a_deleted_directory_keeps_what_the_parent_changed_in_it() {
+    let session = Session::open("directory-deletion");
+    let fork = session.spawn(&session.root(), "deleter");
+    fs::remove_dir_all(fork.path.join("pkg")).expect("delete directory");
+    // An edit in place leaves the directory itself as the child saw it.
+    fs::write(session.repo.join("pkg/shared.rs"), "VALUE = 9\n").expect("parent edit");
+    session.merge(&fork).expect("merge");
+    assert_eq!(session.files(), ["README.md", "pkg/shared.rs"]);
+    assert_eq!(read(&session.repo.join("pkg/shared.rs")), "VALUE = 9\n");
+}
+
+#[test]
+#[ignore = "requires live native mounts"]
 fn a_deletion_travels_up_one_parent_at_a_time() {
     let session = Session::open("deletion");
     let child = session.spawn(&session.root(), "child");
@@ -430,18 +443,8 @@ fn a_deletion_survives_a_conflict_resolved_with_continue() {
     let session = Session::open("continue");
     let editor = session.spawn(&session.root(), "editor");
     let other = session.spawn(&session.root(), "other");
-    fs::write(
-        editor.path.join("pkg/shared.rs"),
-        "VALUE = 2
-",
-    )
-    .expect("edit");
-    fs::write(
-        other.path.join("pkg/shared.rs"),
-        "VALUE = 3
-",
-    )
-    .expect("conflicting edit");
+    fs::write(editor.path.join("pkg/shared.rs"), "VALUE = 2\n").expect("edit");
+    fs::write(other.path.join("pkg/shared.rs"), "VALUE = 3\n").expect("conflicting edit");
     fs::remove_file(other.path.join("README.md")).expect("unlink");
     session.merge(&editor).expect("merge editor");
     session.stop(&other);
@@ -451,12 +454,7 @@ fn a_deletion_survives_a_conflict_resolved_with_continue() {
         Some("conflicted"),
         "{conflicted}"
     );
-    fs::write(
-        session.repo.join("pkg/shared.rs"),
-        "VALUE = 3
-",
-    )
-    .expect("resolve");
+    fs::write(session.repo.join("pkg/shared.rs"), "VALUE = 3\n").expect("resolve");
     let (added, text) = session.run(&["git", "add", "pkg/shared.rs"], &session.repo, b"");
     assert!(added, "acyclic git add failed: {text}");
     let continued = session.cli_json(&["git", "merge", "--continue"], &session.repo);
@@ -465,11 +463,7 @@ fn a_deletion_survives_a_conflict_resolved_with_continue() {
         Some("applied"),
         "{continued}"
     );
-    assert_eq!(
-        read(&session.repo.join("pkg/shared.rs")),
-        "VALUE = 3
-"
-    );
+    assert_eq!(read(&session.repo.join("pkg/shared.rs")), "VALUE = 3\n");
     assert_eq!(session.files(), ["pkg/shared.rs"]);
 }
 

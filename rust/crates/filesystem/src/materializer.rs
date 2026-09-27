@@ -1649,16 +1649,14 @@ where
             .is_some_and(|record| record.kind == crate::kernel::FileKind::Directory);
         // A directory with no earlier record that already exists on the host
         // is a lazily promoted source directory. Replacing it wholesale would
-        // give it and every file under it new host identities; it is kept and
-        // each descendant is reconciled on its own.
-        if change.before.is_none()
+        // give it and every file under it new host identities; it is kept,
+        // takes the generation's metadata, and each descendant is reconciled
+        // on its own.
+        let promoted_directory = change.before.is_none()
             && after_directory
             && std::fs::symlink_metadata(root.join(&path))
-                .is_ok_and(|metadata| metadata.file_type().is_dir())
-        {
-            continue;
-        }
-        if before_directory && after_directory {
+                .is_ok_and(|metadata| metadata.file_type().is_dir());
+        if (before_directory || promoted_directory) && after_directory {
             let stat = to_generation.stat(&format!("/{path}")).await?;
             metadata_edits.push(MaterializationEdit::SetMetadata {
                 path,
@@ -1783,12 +1781,38 @@ where
     if stat.kind != crate::kernel::FileKind::Regular || stat.logical_bytes != Some(metadata.len()) {
         return Ok(false);
     }
+    // Every authored field must match too, or publication would drop an
+    // edit of metadata alone. What cannot be compared cheaply here (named
+    // attributes, ACLs, flags) is published.
+    let authored = &stat.metadata;
+    if authored.has_named_attributes
+        || authored.has_acl
+        || authored.has_security_descriptor
+        || authored.posix_flags.is_some_and(|flags| flags != 0)
+    {
+        return Ok(false);
+    }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        if let Some(mode) = stat.metadata.posix_mode
-            && mode & 0o7777 != metadata.permissions().mode() & 0o7777
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        if authored
+            .posix_mode
+            .is_some_and(|mode| mode & 0o7777 != metadata.permissions().mode() & 0o7777)
+            || authored.posix_uid.is_some_and(|uid| uid != metadata.uid())
+            || authored.posix_gid.is_some_and(|gid| gid != metadata.gid())
         {
+            return Ok(false);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        // The attributes publication sets: read-only, hidden, system,
+        // archive, temporary and not-content-indexed.
+        const AUTHORED_ATTRIBUTES: u32 = 0x1 | 0x2 | 0x4 | 0x20 | 0x100 | 0x2000;
+        if authored.windows_attributes.is_some_and(|attributes| {
+            attributes & AUTHORED_ATTRIBUTES != metadata.file_attributes() & AUTHORED_ATTRIBUTES
+        }) {
             return Ok(false);
         }
     }

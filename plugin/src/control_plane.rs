@@ -4199,6 +4199,28 @@ async fn inherited_additions(
     Ok(())
 }
 
+/// Adds every path that differs from `base` to `head` to `changed`.
+async fn changed_paths_into(
+    base: &LocalGeneration,
+    head: &LocalGeneration,
+    changed: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if base.id() == head.id() {
+        return Ok(());
+    }
+    for change in base
+        .diff_to(head, u32::MAX)
+        .await
+        .map_err(display)?
+        .changed_paths(u32::MAX)
+        .await
+        .map_err(display)?
+    {
+        changed.insert(namespace_path_text(&change.path)?);
+    }
+    Ok(())
+}
+
 /// Most source deletions one merge carries into its parent.
 const MAXIMUM_SOURCE_DELETIONS: usize = 100_000;
 
@@ -4206,10 +4228,12 @@ impl ControlPlane {
     /// The source paths a merged child deleted or renamed away, per root:
     /// each while the shared source still holds exactly the version the child
     /// deleted (an ancestor's newer edit is kept), and the child did not
-    /// re-create it. Under a non-root parent the parent must still read the
-    /// path from the source; a parent that wrote it keeps its own version.
-    /// Computed from the published plan, so finishing the same publication
-    /// again yields the same deletions.
+    /// re-create it. A directory's version does not cover its contents, so a
+    /// deleted directory is kept whole when the parent or any ancestor changed
+    /// anything under it since the fork. Under a non-root parent the parent
+    /// must still read the path from the source; a parent that wrote it keeps
+    /// its own version. Computed from the published plan, so finishing the
+    /// same publication again yields the same deletions.
     async fn source_deletions(
         &self,
         parent_agent: &str,
@@ -4247,10 +4271,16 @@ impl ControlPlane {
                 Some(parent_route) => Some(self.lazy_workspace_root(parent_route, *root_id).await?),
                 None => None,
             };
+            let changed = self.changed_since_fork(plan, *root_id, root).await?;
             let mut paths = Vec::new();
             for (path, deleted) in tombstones {
+                let beneath = format!("{path}/");
                 if child_head.stat(&path).await.is_ok()
                     || view.current_source_version(&path).await.map_err(display)? != Some(deleted)
+                    || changed
+                        .range(beneath.clone()..)
+                        .next()
+                        .is_some_and(|changed| changed.starts_with(&beneath))
                 {
                     continue;
                 }
@@ -4267,6 +4297,72 @@ impl ControlPlane {
             deletions.insert(*root_id, paths);
         }
         Ok(deletions)
+    }
+
+    /// Every path the merge's parent changed since the child forked, and
+    /// every path each ancestor above it changed since that level forked
+    /// (what the shared source shows the child, from further up).
+    async fn changed_since_fork(
+        &self,
+        plan: &MultiRootMergePlan,
+        root_id: WorkspaceRootId,
+        root: &MultiRootMergeRoot,
+    ) -> Result<BTreeSet<String>, String> {
+        let mut changed = BTreeSet::new();
+        let target = self
+            .distributed
+            .workspace(root.target_workspace_id)
+            .await
+            .map_err(display)?;
+        changed_paths_into(
+            &target
+                .generation(root.base_generation)
+                .await
+                .map_err(display)?,
+            &target
+                .generation(root.target_generation)
+                .await
+                .map_err(display)?,
+            &mut changed,
+        )
+        .await?;
+        let registry = self.distributed.contexts();
+        let mut upper = registry
+            .resolve(plan.parent_context_id)
+            .await
+            .map_err(display)?;
+        while let Some(grandparent_id) = upper.parent_context_id {
+            let grandparent = registry.resolve(grandparent_id).await.map_err(display)?;
+            let (Some(upper_child), Some(upper_parent)) =
+                (upper.roots.get(&root_id), grandparent.roots.get(&root_id))
+            else {
+                break;
+            };
+            let upper_source = self
+                .distributed
+                .workspace(upper_child.workspace_id)
+                .await
+                .map_err(display)?;
+            let upper_target = self
+                .distributed
+                .workspace(upper_parent.workspace_id)
+                .await
+                .map_err(display)?;
+            let fork_point = upper_source
+                .join_into(&upper_target)
+                .plan()
+                .await
+                .map_err(display)?
+                .common_ancestor();
+            changed_paths_into(
+                &upper_target.generation(fork_point).await.map_err(display)?,
+                &upper_target.head().await.map_err(display)?,
+                &mut changed,
+            )
+            .await?;
+            upper = grandparent;
+        }
+        Ok(changed)
     }
 
     /// Deletes in `parent` the source paths a merged child deleted. For the
