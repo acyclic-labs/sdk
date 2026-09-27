@@ -37,15 +37,16 @@ fn bool_option(message: &DynamicMessage, name: &str) -> bool {
 /// protobuf contract before it can reach TypeScript.
 #[wasm_bindgen]
 pub fn run_terminal_metadata() -> Result<String, JsValue> {
+    terminal_metadata().map_err(JsValue::from_str)
+}
+
+/// Return terminal metadata for native generators and the WASM boundary.
+pub fn terminal_metadata() -> Result<String, &'static str> {
     let Some(pool) = pool() else {
-        return Err(JsValue::from_str(
-            "inference reflection descriptor is unavailable",
-        ));
+        return Err("inference reflection descriptor is unavailable");
     };
     let Some(enumeration) = pool.get_enum_by_name("inference.customer.v1.RunTerminal") else {
-        return Err(JsValue::from_str(
-            "inference RunTerminal descriptor is unavailable",
-        ));
+        return Err("inference RunTerminal descriptor is unavailable");
     };
     let values = enumeration
         .values()
