@@ -667,16 +667,22 @@ mod tests {
             FileDescriptor::from_bytes(b"{}", "application/json")?,
             "tool.json",
         )?;
+        let oversized_len = usize::try_from(MAX_PROJECTION_JSON_BYTES + 1)
+            .map_err(|_| Error::Invalid("test artifact size exceeds platform capacity".into()))?;
         let resolver = ArtifactResolver {
-            bytes: vec![0; (MAX_PROJECTION_JSON_BYTES + 1) as usize],
+            bytes: vec![0; oversized_len],
         };
-        let error = read_json_artifact::<serde_json::Value, _>(
+        let result = read_json_artifact::<serde_json::Value, _>(
             &resolver,
             &reference,
             MAX_PROJECTION_JSON_BYTES,
         )
-        .await
-        .expect_err("oversized resolved bytes must be rejected");
+        .await;
+        let Err(error) = result else {
+            return Err(Error::Invalid(
+                "oversized resolved bytes were accepted".into(),
+            ));
+        };
         assert!(error.to_string().contains("JSON byte limit"));
         Ok(())
     }
