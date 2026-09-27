@@ -51,15 +51,34 @@ pub use wire_codec::encode_error;
 pub mod wire_values;
 pub mod workflow;
 
-/// Generated Protobuf envelopes shared by every transport.
+/// Generated Protobuf packages, nested as their package names are, so the
+/// harness messages resolve the shared protocol handshake they import.
 #[allow(
     missing_docs,
     clippy::pedantic,
     clippy::too_many_lines,
     clippy::large_enum_variant
 )]
+mod generated {
+    pub mod acyclic {
+        pub mod harness {
+            pub mod v2 {
+                include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v2.rs"));
+            }
+        }
+        pub mod protocol {
+            pub mod v1 {
+                include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
+            }
+        }
+    }
+}
+
+/// Generated Protobuf envelopes shared by every transport: the harness
+/// contract and the protocol handshake it negotiates with.
 pub mod wire {
-    include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v2.rs"));
+    pub use super::generated::acyclic::harness::v2::*;
+    pub use super::generated::acyclic::protocol::v1::*;
 }
 
 /// Canonical harness descriptor set used for transport compatibility.

@@ -243,12 +243,12 @@ pub struct Workspace {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HandshakeRequest {
     #[prost(message, optional, tag = "1")]
-    pub harness: ::core::option::Option<super::super::harness::v2::HandshakeRequest>,
+    pub protocol: ::core::option::Option<super::super::protocol::v1::HandshakeRequest>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HandshakeResponse {
     #[prost(message, optional, tag = "1")]
-    pub harness: ::core::option::Option<super::super::harness::v2::HandshakeResponse>,
+    pub protocol: ::core::option::Option<super::super::protocol::v1::HandshakeResponse>,
     #[prost(message, optional, tag = "2")]
     pub capabilities: ::core::option::Option<Capabilities>,
 }

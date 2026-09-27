@@ -4,7 +4,7 @@
 
 import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
-import type { HandshakeRequest as HandshakeRequest$1, HandshakeResponse as HandshakeResponse$1 } from "../../harness/v2/harness_pb.js";
+import type { HandshakeRequest as HandshakeRequest$1, HandshakeResponse as HandshakeResponse$1 } from "../../protocol/v1/protocol_pb.js";
 
 /**
  * Describes the file filesystem/v2/filesystem.proto.
@@ -643,9 +643,9 @@ export declare const WorkspaceSchema: GenMessage<Workspace>;
  */
 export declare type HandshakeRequest = Message<"acyclic.filesystem.v2.HandshakeRequest"> & {
   /**
-   * @generated from field: acyclic.harness.v2.HandshakeRequest harness = 1;
+   * @generated from field: acyclic.protocol.v1.HandshakeRequest protocol = 1;
    */
-  harness?: HandshakeRequest$1 | undefined;
+  protocol?: HandshakeRequest$1 | undefined;
 };
 
 /**
@@ -659,9 +659,9 @@ export declare const HandshakeRequestSchema: GenMessage<HandshakeRequest>;
  */
 export declare type HandshakeResponse = Message<"acyclic.filesystem.v2.HandshakeResponse"> & {
   /**
-   * @generated from field: acyclic.harness.v2.HandshakeResponse harness = 1;
+   * @generated from field: acyclic.protocol.v1.HandshakeResponse protocol = 1;
    */
-  harness?: HandshakeResponse$1 | undefined;
+  protocol?: HandshakeResponse$1 | undefined;
 
   /**
    * @generated from field: acyclic.filesystem.v2.Capabilities capabilities = 2;

@@ -11,8 +11,6 @@ import {
   CompletionState,
   ErrorCode,
   ErrorSchema,
-  HandshakeRequestSchema,
-  HandshakeResponseSchema,
   ObserveRequestSchema,
   OperationStatusSchema,
   ResumeRequestSchema,
@@ -24,14 +22,18 @@ import {
   type CancelResponse,
   type ClientFrame,
   type Delivery,
-  type HandshakeRequest,
-  type HandshakeResponse,
   type ObserveRequest,
   type OperationStatus,
   type ResumeRequest,
   type Scope,
   type ServerFrame,
 } from "../generated/proto/harness/v2/harness_pb.js";
+import {
+  HandshakeRequestSchema,
+  HandshakeResponseSchema,
+  type HandshakeRequest,
+  type HandshakeResponse,
+} from "../generated/proto/protocol/v1/protocol_pb.js";
 import { TerminalAdmissionError } from "./client.js";
 
 export interface WireConnection extends AsyncIterable<Delivery> {

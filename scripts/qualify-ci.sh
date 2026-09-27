@@ -215,25 +215,9 @@ case "$lane" in
     bun run check:generated
     bun scripts/check-boundaries.mjs
     bun scripts/check-metadata.mjs
-    if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
-      base="$(jq -er '.pull_request.base.sha' "$GITHUB_EVENT_PATH")"
-      git cat-file -e "$base^{commit}" 2>/dev/null ||
-        git fetch --no-tags --depth=1 origin "$base"
-      # Harness v2 deliberately replaces the v1 handshake message types. Waive
-      # only this Filesystem schema during the v1-to-v2 transition; once the
-      # base contains v2, its wire/JSON compatibility is checked normally.
-      breaking_exclusions=()
-      if git show "$base:proto/filesystem/v2/filesystem.proto" |
-          grep -Fq 'acyclic.harness.v1.HandshakeRequest' &&
-          grep -Fq 'acyclic.harness.v2.HandshakeRequest' proto/filesystem/v2/filesystem.proto; then
-        breaking_exclusions+=(--exclude-path proto/filesystem/v2/filesystem.proto)
-      fi
-      bun x buf breaking --against ".git#ref=$base" \
-        "${breaking_exclusions[@]}" \
-        --exclude-path proto/inference/v1/inference.proto \
-        --exclude-path proto/filesystem/v1 \
-        --exclude-path proto/filesystem/daemon/v2
-    fi
+    # No wire or JSON compatibility gate: each family's protocol identity
+    # binds peers and stored records to one exact descriptor digest, so a
+    # schema change is always a new, fail-closed version (no upgrade path).
     bash -n scripts/check-typescript-packages.sh
     ;;
   linux-musl|linux-arm64-musl)

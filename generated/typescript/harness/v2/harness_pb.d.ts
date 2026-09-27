@@ -4,6 +4,7 @@
 
 import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
+import type { HandshakeRequest, HandshakeRequestSchema, HandshakeResponse, HandshakeResponseSchema, ProtocolIdentity } from "../../protocol/v1/protocol_pb.js";
 
 /**
  * Describes the file harness/v2/harness.proto.
@@ -32,106 +33,6 @@ export declare type OperationIdentity = Message<"acyclic.harness.v2.OperationIde
  * Use `create(OperationIdentitySchema)` to create a new message.
  */
 export declare const OperationIdentitySchema: GenMessage<OperationIdentity>;
-
-/**
- * @generated from message acyclic.harness.v2.ProtocolIdentity
- */
-export declare type ProtocolIdentity = Message<"acyclic.harness.v2.ProtocolIdentity"> & {
-  /**
-   * @generated from field: string version = 1;
-   */
-  version: string;
-
-  /**
-   * @generated from field: string descriptor_digest = 2;
-   */
-  descriptorDigest: string;
-};
-
-/**
- * Describes the message acyclic.harness.v2.ProtocolIdentity.
- * Use `create(ProtocolIdentitySchema)` to create a new message.
- */
-export declare const ProtocolIdentitySchema: GenMessage<ProtocolIdentity>;
-
-/**
- * @generated from message acyclic.harness.v2.Capability
- */
-export declare type Capability = Message<"acyclic.harness.v2.Capability"> & {
-  /**
-   * @generated from field: string name = 1;
-   */
-  name: string;
-
-  /**
-   * @generated from field: string version = 2;
-   */
-  version: string;
-};
-
-/**
- * Describes the message acyclic.harness.v2.Capability.
- * Use `create(CapabilitySchema)` to create a new message.
- */
-export declare const CapabilitySchema: GenMessage<Capability>;
-
-/**
- * @generated from message acyclic.harness.v2.CapabilitySet
- */
-export declare type CapabilitySet = Message<"acyclic.harness.v2.CapabilitySet"> & {
-  /**
-   * @generated from field: repeated acyclic.harness.v2.Capability capabilities = 1;
-   */
-  capabilities: Capability[];
-};
-
-/**
- * Describes the message acyclic.harness.v2.CapabilitySet.
- * Use `create(CapabilitySetSchema)` to create a new message.
- */
-export declare const CapabilitySetSchema: GenMessage<CapabilitySet>;
-
-/**
- * @generated from message acyclic.harness.v2.HandshakeRequest
- */
-export declare type HandshakeRequest = Message<"acyclic.harness.v2.HandshakeRequest"> & {
-  /**
-   * @generated from field: acyclic.harness.v2.ProtocolIdentity protocol = 1;
-   */
-  protocol?: ProtocolIdentity | undefined;
-
-  /**
-   * @generated from field: acyclic.harness.v2.CapabilitySet required = 2;
-   */
-  required?: CapabilitySet | undefined;
-};
-
-/**
- * Describes the message acyclic.harness.v2.HandshakeRequest.
- * Use `create(HandshakeRequestSchema)` to create a new message.
- */
-export declare const HandshakeRequestSchema: GenMessage<HandshakeRequest>;
-
-/**
- * @generated from message acyclic.harness.v2.HandshakeResponse
- */
-export declare type HandshakeResponse = Message<"acyclic.harness.v2.HandshakeResponse"> & {
-  /**
-   * @generated from field: acyclic.harness.v2.ProtocolIdentity protocol = 1;
-   */
-  protocol?: ProtocolIdentity | undefined;
-
-  /**
-   * @generated from field: acyclic.harness.v2.CapabilitySet supported = 2;
-   */
-  supported?: CapabilitySet | undefined;
-};
-
-/**
- * Describes the message acyclic.harness.v2.HandshakeResponse.
- * Use `create(HandshakeResponseSchema)` to create a new message.
- */
-export declare const HandshakeResponseSchema: GenMessage<HandshakeResponse>;
 
 /**
  * @generated from message acyclic.harness.v2.Error
@@ -205,7 +106,7 @@ export declare type OperationStatus = Message<"acyclic.harness.v2.OperationStatu
   error?: Error | undefined;
 
   /**
-   * @generated from field: acyclic.harness.v2.ProtocolIdentity protocol = 4;
+   * @generated from field: acyclic.protocol.v1.ProtocolIdentity protocol = 4;
    */
   protocol?: ProtocolIdentity | undefined;
 
@@ -241,7 +142,7 @@ export declare type ObserveRequest = Message<"acyclic.harness.v2.ObserveRequest"
   operationId: string;
 
   /**
-   * @generated from field: acyclic.harness.v2.ProtocolIdentity protocol = 2;
+   * @generated from field: acyclic.protocol.v1.ProtocolIdentity protocol = 2;
    */
   protocol?: ProtocolIdentity | undefined;
 
@@ -272,7 +173,7 @@ export declare type CancelRequest = Message<"acyclic.harness.v2.CancelRequest"> 
   operationId: string;
 
   /**
-   * @generated from field: acyclic.harness.v2.ProtocolIdentity protocol = 2;
+   * @generated from field: acyclic.protocol.v1.ProtocolIdentity protocol = 2;
    */
   protocol?: ProtocolIdentity | undefined;
 
@@ -472,7 +373,7 @@ export declare const RecordedScopeSchema: GenMessage<RecordedScope>;
  */
 export declare type CommandEnvelope = Message<"acyclic.harness.v2.CommandEnvelope"> & {
   /**
-   * @generated from field: acyclic.harness.v2.ProtocolIdentity protocol = 1;
+   * @generated from field: acyclic.protocol.v1.ProtocolIdentity protocol = 1;
    */
   protocol?: ProtocolIdentity | undefined;
 
@@ -530,7 +431,7 @@ export declare const CommandEnvelopeSchema: GenMessage<CommandEnvelope>;
  */
 export declare type EventEnvelope = Message<"acyclic.harness.v2.EventEnvelope"> & {
   /**
-   * @generated from field: acyclic.harness.v2.ProtocolIdentity protocol = 1;
+   * @generated from field: acyclic.protocol.v1.ProtocolIdentity protocol = 1;
    */
   protocol?: ProtocolIdentity | undefined;
 
@@ -614,7 +515,7 @@ export declare const ApplyResponseSchema: GenMessage<ApplyResponse>;
  */
 export declare type SnapshotEnvelope = Message<"acyclic.harness.v2.SnapshotEnvelope"> & {
   /**
-   * @generated from field: acyclic.harness.v2.ProtocolIdentity protocol = 1;
+   * @generated from field: acyclic.protocol.v1.ProtocolIdentity protocol = 1;
    */
   protocol?: ProtocolIdentity | undefined;
 
@@ -683,7 +584,7 @@ export declare const ReplayCursorSchema: GenMessage<ReplayCursor>;
  */
 export declare type ResumeRequest = Message<"acyclic.harness.v2.ResumeRequest"> & {
   /**
-   * @generated from field: acyclic.harness.v2.ProtocolIdentity protocol = 1;
+   * @generated from field: acyclic.protocol.v1.ProtocolIdentity protocol = 1;
    */
   protocol?: ProtocolIdentity | undefined;
 
@@ -797,7 +698,7 @@ export declare type ClientFrame = Message<"acyclic.harness.v2.ClientFrame"> & {
     case: "acknowledge";
   } | {
     /**
-     * @generated from field: acyclic.harness.v2.HandshakeRequest handshake = 4;
+     * @generated from field: acyclic.protocol.v1.HandshakeRequest handshake = 4;
      */
     value: HandshakeRequest;
     case: "handshake";
@@ -849,7 +750,7 @@ export declare type ServerFrame = Message<"acyclic.harness.v2.ServerFrame"> & {
     case: "error";
   } | {
     /**
-     * @generated from field: acyclic.harness.v2.HandshakeResponse handshake = 4;
+     * @generated from field: acyclic.protocol.v1.HandshakeResponse handshake = 4;
      */
     value: HandshakeResponse;
     case: "handshake";
@@ -881,7 +782,7 @@ export declare const ServerFrameSchema: GenMessage<ServerFrame>;
  */
 export declare type SchedulerEventEnvelope = Message<"acyclic.harness.v2.SchedulerEventEnvelope"> & {
   /**
-   * @generated from field: acyclic.harness.v2.ProtocolIdentity protocol = 1;
+   * @generated from field: acyclic.protocol.v1.ProtocolIdentity protocol = 1;
    */
   protocol?: ProtocolIdentity | undefined;
 

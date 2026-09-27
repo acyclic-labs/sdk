@@ -1,31 +1,14 @@
 syntax = "proto3";
 package acyclic.harness.v2;
 
+import "protocol/v1/protocol.proto";
+
 option go_package = "github.com/acyclic-labs/sdk/go/gen/harness/v2;harnessv2";
 
 // Release-candidate v2 contract types. Compatibility is bound to ProtocolIdentity.
 message OperationIdentity {
   string operation_id = 1;
   string idempotency_key = 2;
-}
-message ProtocolIdentity {
-  string version = 1;
-  string descriptor_digest = 2;
-}
-message Capability {
-  string name = 1;
-  string version = 2;
-}
-message CapabilitySet {
-  repeated Capability capabilities = 1;
-}
-message HandshakeRequest {
-  ProtocolIdentity protocol = 1;
-  CapabilitySet required = 2;
-}
-message HandshakeResponse {
-  ProtocolIdentity protocol = 1;
-  CapabilitySet supported = 2;
 }
 
 enum ErrorCode {
@@ -72,20 +55,20 @@ message OperationStatus {
   OperationIdentity operation = 1;
   CompletionState state = 2;
   Error error = 3;
-  ProtocolIdentity protocol = 4;
+  acyclic.protocol.v1.ProtocolIdentity protocol = 4;
   Authority owner = 5;
   bool cancellation_requested = 6;
   uint64 revision = 7;
 }
 message ObserveRequest {
   string operation_id = 1;
-  ProtocolIdentity protocol = 2;
+  acyclic.protocol.v1.ProtocolIdentity protocol = 2;
   Authority owner = 3;
   Scope scope = 4;
 }
 message CancelRequest {
   string operation_id = 1;
-  ProtocolIdentity protocol = 2;
+  acyclic.protocol.v1.ProtocolIdentity protocol = 2;
   Authority owner = 3;
   Scope scope = 4;
   bool recursive = 5;
@@ -143,7 +126,7 @@ message RecordedScope {
 
 // Transport-neutral command whose canonical payload is interpreted by Rust.
 message CommandEnvelope {
-  ProtocolIdentity protocol = 1;
+  acyclic.protocol.v1.ProtocolIdentity protocol = 1;
   Authority authority = 2;
   OperationIdentity operation = 3;
   uint64 expected_revision = 4;
@@ -156,7 +139,7 @@ message CommandEnvelope {
 
 // Canonical durable event carried identically by every transport.
 message EventEnvelope {
-  ProtocolIdentity protocol = 1;
+  acyclic.protocol.v1.ProtocolIdentity protocol = 1;
   Authority authority = 2;
   uint64 revision = 3;
   string operation_id = 4;
@@ -181,7 +164,7 @@ message ApplyResponse {
 
 // Versioned restoration accelerator. Events remain authoritative.
 message SnapshotEnvelope {
-  ProtocolIdentity protocol = 1;
+  acyclic.protocol.v1.ProtocolIdentity protocol = 1;
   Authority authority = 2;
   uint64 revision = 3;
   uint32 format_version = 4;
@@ -197,7 +180,7 @@ message ReplayCursor {
 }
 
 message ResumeRequest {
-  ProtocolIdentity protocol = 1;
+  acyclic.protocol.v1.ProtocolIdentity protocol = 1;
   repeated ReplayCursor cursors = 2;
 }
 
@@ -223,7 +206,7 @@ message ClientFrame {
     ResumeRequest resume = 1;
     CommandEnvelope command = 2;
     Acknowledge acknowledge = 3;
-    HandshakeRequest handshake = 4;
+    acyclic.protocol.v1.HandshakeRequest handshake = 4;
     ObserveRequest observe = 5;
     CancelRequest cancel = 6;
   }
@@ -234,7 +217,7 @@ message ServerFrame {
     Delivery delivery = 1;
     Admission admission = 2;
     Error error = 3;
-    HandshakeResponse handshake = 4;
+    acyclic.protocol.v1.HandshakeResponse handshake = 4;
     OperationStatus status = 5;
     CancelResponse cancellation = 6;
   }
@@ -242,7 +225,7 @@ message ServerFrame {
 
 // Canonical record stored in the single logical distributed coordinator Stream.
 message SchedulerEventEnvelope {
-  ProtocolIdentity protocol = 1;
+  acyclic.protocol.v1.ProtocolIdentity protocol = 1;
   uint64 revision = 2;
   string operation_id = 3;
   string idempotency_key = 4;
@@ -251,7 +234,7 @@ message SchedulerEventEnvelope {
 }
 
 service HarnessService {
-  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  rpc Handshake(acyclic.protocol.v1.HandshakeRequest) returns (acyclic.protocol.v1.HandshakeResponse);
   rpc Submit(CommandEnvelope) returns (Admission);
   rpc Replay(ResumeRequest) returns (stream Delivery);
   rpc Observe(ObserveRequest) returns (OperationStatus);

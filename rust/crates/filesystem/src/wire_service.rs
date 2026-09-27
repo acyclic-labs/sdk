@@ -5,7 +5,7 @@ use crate::kernel::{
     NameEncoding, TreeEntry,
 };
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
-use crate::wire::{filesystem::v2 as wire, harness::v2 as harness};
+use crate::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest,
     DurableCommit, ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory,
@@ -425,7 +425,7 @@ where
         self.admit(&request)?;
         if let Some(requested) = request
             .into_inner()
-            .harness
+            .protocol
             .and_then(|value| value.protocol)
         {
             if !requested.version.is_empty() && requested.version != "1" {
@@ -440,15 +440,15 @@ where
                 ));
             }
         }
-        let protocol = harness::ProtocolIdentity {
+        let protocol = protocol::ProtocolIdentity {
             version: "1".to_owned(),
             descriptor_digest: crate::descriptor_digest(),
         };
         Ok(Response::new(wire::HandshakeResponse {
-            harness: Some(harness::HandshakeResponse {
+            protocol: Some(protocol::HandshakeResponse {
                 protocol: Some(protocol),
-                supported: Some(harness::CapabilitySet {
-                    capabilities: vec![harness::Capability {
+                supported: Some(protocol::CapabilitySet {
+                    capabilities: vec![protocol::Capability {
                         name: "filesystem".to_owned(),
                         version: "1".to_owned(),
                     }],
@@ -2654,7 +2654,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
         let advertised = service
-            .handshake(Request::new(wire::HandshakeRequest { harness: None }))
+            .handshake(Request::new(wire::HandshakeRequest { protocol: None }))
             .await?
             .into_inner()
             .capabilities
@@ -2699,7 +2699,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let absent = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?;
         let capabilities = absent
-            .handshake(Request::new(wire::HandshakeRequest { harness: None }))
+            .handshake(Request::new(wire::HandshakeRequest { protocol: None }))
             .await?
             .into_inner()
             .capabilities
@@ -2712,7 +2712,7 @@ mod tests {
         let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?
             .with_source_provider(provider.clone());
         let capabilities = service
-            .handshake(Request::new(wire::HandshakeRequest { harness: None }))
+            .handshake(Request::new(wire::HandshakeRequest { protocol: None }))
             .await?
             .into_inner()
             .capabilities

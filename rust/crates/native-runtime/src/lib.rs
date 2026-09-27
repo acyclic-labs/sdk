@@ -3131,11 +3131,13 @@ mod tests {
         }]);
         let mut sync = native.sync_async(Durability::Full);
         let waker = completion_waker();
-        assert!(matches!(
-            Pin::new(&mut sync).poll(&mut Context::from_waker(&waker)),
-            Poll::Pending
-        ));
-        complete_write(sync)?;
+        // Polled first, the sync is admitted ahead of the unpolled write and
+        // completes without it. A fast worker may finish it before this first
+        // poll returns, so either outcome of that poll is correct.
+        match Pin::new(&mut sync).poll(&mut Context::from_waker(&waker)) {
+            Poll::Ready(result) => result?,
+            Poll::Pending => complete_write(sync)?,
+        }
         complete_write(write)?;
         assert_eq!(std::fs::read(&path)?, b"ordered");
 

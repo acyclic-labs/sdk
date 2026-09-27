@@ -10,13 +10,15 @@ import {
   CommandEnvelopeSchema,
   ErrorCode,
   ErrorSchema,
-  HandshakeRequestSchema,
-  HandshakeResponseSchema,
   ObserveRequestSchema,
   OperationStatusSchema,
   ResumeRequestSchema,
   ServerFrameSchema,
 } from "../generated/proto/harness/v2/harness_pb.js";
+import {
+  HandshakeRequestSchema,
+  HandshakeResponseSchema,
+} from "../generated/proto/protocol/v1/protocol_pb.js";
 import {
   EmbeddedWireTransport,
   GrpcWireTransport,

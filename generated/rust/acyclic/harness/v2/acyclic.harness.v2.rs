@@ -9,39 +9,6 @@ pub struct OperationIdentity {
     pub idempotency_key: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ProtocolIdentity {
-    #[prost(string, tag = "1")]
-    pub version: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub descriptor_digest: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Capability {
-    #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub version: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CapabilitySet {
-    #[prost(message, repeated, tag = "1")]
-    pub capabilities: ::prost::alloc::vec::Vec<Capability>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct HandshakeRequest {
-    #[prost(message, optional, tag = "1")]
-    pub protocol: ::core::option::Option<ProtocolIdentity>,
-    #[prost(message, optional, tag = "2")]
-    pub required: ::core::option::Option<CapabilitySet>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct HandshakeResponse {
-    #[prost(message, optional, tag = "1")]
-    pub protocol: ::core::option::Option<ProtocolIdentity>,
-    #[prost(message, optional, tag = "2")]
-    pub supported: ::core::option::Option<CapabilitySet>,
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Error {
     #[prost(enumeration = "ErrorCode", tag = "1")]
     pub code: i32,
@@ -68,7 +35,7 @@ pub struct OperationStatus {
     #[prost(message, optional, tag = "3")]
     pub error: ::core::option::Option<Error>,
     #[prost(message, optional, tag = "4")]
-    pub protocol: ::core::option::Option<ProtocolIdentity>,
+    pub protocol: ::core::option::Option<super::super::protocol::v1::ProtocolIdentity>,
     #[prost(message, optional, tag = "5")]
     pub owner: ::core::option::Option<Authority>,
     #[prost(bool, tag = "6")]
@@ -81,7 +48,7 @@ pub struct ObserveRequest {
     #[prost(string, tag = "1")]
     pub operation_id: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "2")]
-    pub protocol: ::core::option::Option<ProtocolIdentity>,
+    pub protocol: ::core::option::Option<super::super::protocol::v1::ProtocolIdentity>,
     #[prost(message, optional, tag = "3")]
     pub owner: ::core::option::Option<Authority>,
     #[prost(message, optional, tag = "4")]
@@ -92,7 +59,7 @@ pub struct CancelRequest {
     #[prost(string, tag = "1")]
     pub operation_id: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "2")]
-    pub protocol: ::core::option::Option<ProtocolIdentity>,
+    pub protocol: ::core::option::Option<super::super::protocol::v1::ProtocolIdentity>,
     #[prost(message, optional, tag = "3")]
     pub owner: ::core::option::Option<Authority>,
     #[prost(message, optional, tag = "4")]
@@ -164,7 +131,7 @@ pub struct RecordedScope {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CommandEnvelope {
     #[prost(message, optional, tag = "1")]
-    pub protocol: ::core::option::Option<ProtocolIdentity>,
+    pub protocol: ::core::option::Option<super::super::protocol::v1::ProtocolIdentity>,
     #[prost(message, optional, tag = "2")]
     pub authority: ::core::option::Option<Authority>,
     #[prost(message, optional, tag = "3")]
@@ -186,7 +153,7 @@ pub struct CommandEnvelope {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EventEnvelope {
     #[prost(message, optional, tag = "1")]
-    pub protocol: ::core::option::Option<ProtocolIdentity>,
+    pub protocol: ::core::option::Option<super::super::protocol::v1::ProtocolIdentity>,
     #[prost(message, optional, tag = "2")]
     pub authority: ::core::option::Option<Authority>,
     #[prost(uint64, tag = "3")]
@@ -217,7 +184,7 @@ pub struct ApplyResponse {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SnapshotEnvelope {
     #[prost(message, optional, tag = "1")]
-    pub protocol: ::core::option::Option<ProtocolIdentity>,
+    pub protocol: ::core::option::Option<super::super::protocol::v1::ProtocolIdentity>,
     #[prost(message, optional, tag = "2")]
     pub authority: ::core::option::Option<Authority>,
     #[prost(uint64, tag = "3")]
@@ -242,7 +209,7 @@ pub struct ReplayCursor {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResumeRequest {
     #[prost(message, optional, tag = "1")]
-    pub protocol: ::core::option::Option<ProtocolIdentity>,
+    pub protocol: ::core::option::Option<super::super::protocol::v1::ProtocolIdentity>,
     #[prost(message, repeated, tag = "2")]
     pub cursors: ::prost::alloc::vec::Vec<ReplayCursor>,
 }
@@ -288,7 +255,7 @@ pub mod client_frame {
         #[prost(message, tag = "3")]
         Acknowledge(super::Acknowledge),
         #[prost(message, tag = "4")]
-        Handshake(super::HandshakeRequest),
+        Handshake(super::super::super::protocol::v1::HandshakeRequest),
         #[prost(message, tag = "5")]
         Observe(super::ObserveRequest),
         #[prost(message, tag = "6")]
@@ -311,7 +278,7 @@ pub mod server_frame {
         #[prost(message, tag = "3")]
         Error(super::Error),
         #[prost(message, tag = "4")]
-        Handshake(super::HandshakeResponse),
+        Handshake(super::super::super::protocol::v1::HandshakeResponse),
         #[prost(message, tag = "5")]
         Status(super::OperationStatus),
         #[prost(message, tag = "6")]
@@ -322,7 +289,7 @@ pub mod server_frame {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SchedulerEventEnvelope {
     #[prost(message, optional, tag = "1")]
-    pub protocol: ::core::option::Option<ProtocolIdentity>,
+    pub protocol: ::core::option::Option<super::super::protocol::v1::ProtocolIdentity>,
     #[prost(uint64, tag = "2")]
     pub revision: u64,
     #[prost(string, tag = "3")]
