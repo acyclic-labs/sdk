@@ -94,7 +94,7 @@ function adaptVolume(raw: WasmRawVolume): FsVolume {
 function adaptCheckout(raw: WasmRawCheckout): FsCheckout {
   return {
     get acquisitionWork() { return copyWork(raw.acquisitionWork); },
-    async applyTransaction(operations) { const value = await raw.applyTransaction(operations); return copyTransactionResult(value, copyWork(value.work)); },
+    async applyTransaction(operations) { const value = await raw.applyTransaction(Array.from(operations)); return copyTransactionResult(value, copyWork(value.work)); },
     async checkpoint() { return copyCheckpoint(await raw.checkpoint()); },
     async refreshHead() { return copyCheckpoint(await raw.refreshHead()); },
     async refreshLive() { return copyCheckpoint(await raw.refreshLive()); },
@@ -105,7 +105,7 @@ function adaptCheckout(raw: WasmRawCheckout): FsCheckout {
         value => decodeSharedMergeConflict(value, "WASM merge preparation"));
     },
     async lookupNoFollow(path) { const value = await raw.lookupNoFollow(path); return { ...value, fileId: copyOptionalBytes(value.fileId), work: copyWork(value.work) }; },
-    async lookupBatchNoFollow(paths) { const value = await raw.lookupBatchNoFollow(paths); return { entries: copyBatchLookupEntries(value.entries), retainedAllocationBytes: BigInt(value.retainedAllocationBytes), work: copyWork(value.work) }; },
+    async lookupBatchNoFollow(paths) { const value = await raw.lookupBatchNoFollow(Array.from(paths)); return { entries: copyBatchLookupEntries(value.entries), retainedAllocationBytes: BigInt(value.retainedAllocationBytes), work: copyWork(value.work) }; },
     async statNoFollow(path) { const value = await raw.statNoFollow(path); return copyStatResult(value, copyWork(value.work)); },
     async readFileRecordById(fileId) { const value = await raw.readFileRecordById(fileId); return { record: copyFileRecord(value.record), work: copyWork(value.work) }; },
     async readMetadata(path) { return copyMetadata(await raw.readMetadata(path)); },
@@ -119,7 +119,7 @@ function adaptCheckout(raw: WasmRawCheckout): FsCheckout {
     async writeNamedAttribute(path, attributeClass, name, bytes, mode) { return copyMutation(await raw.writeNamedAttribute(path, attributeClass, name, bytes, mode)); },
     async removeNamedAttribute(path, attributeClass, name) { return copyMutation(await raw.removeNamedAttribute(path, attributeClass, name)); },
     async resolveFiles(paths) {
-      const value = await raw.resolveFiles(paths);
+      const value = await raw.resolveFiles(Array.from(paths));
       const files = Array.from({ length: value.length }, (_, index) => {
         const file = value.take(index);
         return file === undefined ? undefined : adaptResolvedFile(file);
@@ -156,7 +156,7 @@ function adaptCheckout(raw: WasmRawCheckout): FsCheckout {
     async cloneFileRange(source, sourceOffset, destination, destinationOffset, length) { return copyMutation(await raw.cloneFileRange(source, sourceOffset, destination, destinationOffset, length)); },
     async cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length) { return copyMutation(await raw.cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length)); },
     async commit(operationId) { return commitResult(await raw.commit(operationId)); },
-    async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { return liveTransactionResult(await raw.mutateLive(operations, operationId, maximumAttempts, maximumConflicts)); },
+    async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { return liveTransactionResult(await raw.mutateLive(Array.from(operations), operationId, maximumAttempts, maximumConflicts)); },
     async resumeLive(operationId, maximumAttempts, maximumConflicts) { return liveMutationResult(await raw.resumeLive(operationId, maximumAttempts, maximumConflicts)); },
     async rebaseHead(maximumConflicts) { const value = await raw.rebaseHead(maximumConflicts); return copyRebaseResult(value, copyWork(value.work)); },
     async discard() { return copyMutation(await raw.discard()); },
@@ -175,7 +175,12 @@ function adaptResolvedFile(raw: import("./contracts.js").WasmRawResolvedFile): R
 
 function adaptSpeculation(raw: WasmRawSpeculation): Speculation {
   return {
-    async observe(value) { return raw.observe(value); },
+    async observe(value) {
+      const result = raw.observe(value);
+      return result.rejection === undefined
+        ? { status: result.status }
+        : { status: result.status, rejection: result.rejection };
+    },
     async executeResidency(operationId) { const value = await raw.executeResidency(operationId); return { objectBytes: BigInt(value.objectBytes), work: copyWork(value.work) }; },
     async finishResidency(operationId, useful) { raw.finishResidency(operationId, useful); },
     async planPromotion(request) {

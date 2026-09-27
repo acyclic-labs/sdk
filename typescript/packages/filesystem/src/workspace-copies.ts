@@ -29,8 +29,8 @@ function copyBytes(value: Uint8Array | undefined): Uint8Array | undefined {
   return value === undefined ? undefined : Uint8Array.from(value);
 }
 
-export function bigintRecord(value: Readonly<Record<string, string | number>>): Readonly<Record<string, bigint>> {
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, BigInt(item)]));
+export function bigintRecord(value: object): Readonly<Record<string, bigint>> {
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, BigInt(item as string | number | bigint)]));
 }
 
 function copyName(value: WorkspaceName): WorkspaceName {
