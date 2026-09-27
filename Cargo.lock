@@ -180,6 +180,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-inference-contract"
+version = "0.1.5"
+dependencies = [
+ "prost",
+ "prost-build",
+ "prost-types",
+ "sha2 0.10.9",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "acyclic-inference-wasm"
 version = "0.1.5"
 dependencies = [

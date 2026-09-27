@@ -504,7 +504,7 @@ describe("typed agent runtime", () => {
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
     if (wait.implementation.kind !== "resumable") throw new TypeError("expected resumable definition");
     expect(await wait.implementation.component.transition(context, 1)).toEqual({
-      kind: "wait", state: 2, operationId: "11111111-1111-1111-1111-111111111111",
+      kind: "wait", state: 2, operationId: "11111111-1111-1111-1111-111111111111" as OperationId,
       deadline: new Date("2030-01-01T00:00:00.000Z"),
     });
   });
@@ -702,9 +702,10 @@ describe("typed agent runtime", () => {
       policyIdentity: () => null,
       async attach(taskId) {
         if (taskId !== id) throw new Error("unknown task");
+        const admission = corruptAdmission && retained ? { ...retained, input: 4 } : retained;
         return { task: ownerTask, operationId: admissionId, taskName: "split",
           revision: "1", implementationDigest: durableDigest,
-          admission: corruptAdmission && retained ? { ...retained, input: 4 } : retained };
+          ...(admission === undefined ? {} : { admission }) };
       },
       async reconcileEffect() { return { state: "indeterminate" }; },
       async executeTool(taskId, effectId, _tool, input) {
@@ -721,8 +722,11 @@ describe("typed agent runtime", () => {
         retained = admission;
         return { kind: "accepted", task: untrustedTask };
       },
-      async reconcileAdmission() { return { task: untrustedTask, operationId: admissionId,
-        taskName: "split", revision: "1", implementationDigest: durableDigest, admission: retained }; },
+      async reconcileAdmission() {
+        return { task: untrustedTask, operationId: admissionId,
+          taskName: "split", revision: "1", implementationDigest: durableDigest,
+          ...(retained === undefined ? {} : { admission: retained }) };
+      },
     };
     const runtime = Harness.builder(contracts).state(state).spawner(spawner).task(definition)
       .tool(tool).grant("tool:call:split-tool").build();
@@ -759,8 +763,10 @@ describe("typed agent runtime", () => {
     let retained: TaskAdmissionRecord | undefined;
     let qualifications = 0;
     let corruptOwner = false;
-    const attachment = () => ({ task: ownerTask, operationId, taskName: "placed", revision: "1",
-      implementationDigest: durableDigest, admission: retained });
+    const attachment = () => retained === undefined
+      ? { task: ownerTask, operationId, taskName: "placed", revision: "1", implementationDigest: durableDigest }
+      : { task: ownerTask, operationId, taskName: "placed", revision: "1",
+        implementationDigest: durableDigest, admission: retained };
     const state: HarnessRuntimeState = {
       policyIdentity: () => null, executionIdentity: () => routeIdentity,
       async attach() { return corruptOwner && retained
@@ -1008,7 +1014,8 @@ describe("typed agent runtime", () => {
       async admitBatch(request) { retained = request; throw new AdmissionUncertainError(request.batchId); },
       async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
       async reconcileBatch(request) {
-        expect(request.inputDigest).toEqual(retained?.inputDigest);
+        if (retained === undefined) throw new Error("batch admission was not retained");
+        expect(request.inputDigest).toEqual(retained.inputDigest);
         return { taskName: request.taskName, revision: request.revision,
           implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
           entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },

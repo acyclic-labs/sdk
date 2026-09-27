@@ -104,7 +104,7 @@ async function qualify(bindingPath, engineRoot) {
   if (changes.changes().files.length === 0) {
     throw new Error("N-API change set omitted the authored file");
   }
-  fs.close();
+  fs.cancel();
   console.log(`acyclic-fs N-API ABI passed on ${process.platform}-${process.arch}`);
 }
 

@@ -66,8 +66,10 @@ test("Objects content is exact-version, owner-written, and delegably read", asyn
   const foreignScope = foreign.issueScopeForAgent(reader, "foreign", [foreign.volumeCapability(volume, "read")]);
   await expect(ObjectContentStore.create({ objects, bucket, volume, expectedProvider: volume.provider,
     authority: foreign, ownerScope, scope: foreignScope, maximumBytes: 4_096 })).rejects.toThrow();
-  (ownerScope.proof as number[])[0] ^= 1;
-  (delegated.proof as number[])[0] ^= 1;
+  const ownerProof = ownerScope.proof as number[];
+  const delegatedProof = delegated.proof as number[];
+  ownerProof[0] = (ownerProof[0] ?? 0) ^ 1;
+  delegatedProof[0] = (delegatedProof[0] ?? 0) ^ 1;
   objects.get = async () => { throw new Error("provider callback swapped"); };
   expect(Object.isFrozen(store.options.scope.proof)).toBe(true);
   expect(Object.isFrozen(attached.options.scope.proof)).toBe(true);

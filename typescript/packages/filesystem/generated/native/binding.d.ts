@@ -8,6 +8,14 @@ export declare class NativeChangeSet {
   /** Exact immutable resulting endpoint. */
   get to(): NativeGeneration
   /**
+   * Stable path-independent records and namespace binding changes.
+   *
+   * # Errors
+   *
+   * Returns a JavaScript conversion error if the canonical result cannot be represented.
+   */
+  changes(): NativeGenerationDiff
+  /**
    * Composes contiguous immutable deltas by diffing their outer endpoints.
    *
    * # Errors

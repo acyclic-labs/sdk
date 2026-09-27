@@ -1288,7 +1288,7 @@ pub fn decode_aggregate_kind_wasm(value: i32) -> Result<JsValue, JsValue> {
 }
 
 /// JavaScript-facing tool definition shape. The public TypeScript facade uses
-/// camelCase names while the native definition remains snake_case.
+/// camelCase names while the native definition remains `snake_case`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WasmToolDefinitionInput {

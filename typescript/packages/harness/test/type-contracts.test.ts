@@ -60,8 +60,8 @@ const unlinkedToolResult: ConversationMessage<"tool_result">["reply_to"] = null;
 const toolIdOnUser: ConversationMessage<"user">["tool_call_id"] = "call";
 // @ts-expect-error a project merge receipt can only append a merge notice
 const wrongMergeNoticeKind: ProjectMergeNotice["kind"] = "assistant";
-// @ts-expect-error a Filesystem merge proof cannot claim an Objects provider
-const wrongMergeProofProvider: ProviderJoinProof["provider"] = { ...provider, family: "objects" };
+// @ts-expect-error provider identities require a string namespace
+const wrongMergeProofProvider: ProviderJoinProof["provider"] = { ...provider, namespace: 7 };
 // @ts-expect-error a merge proof cannot encode the absence of a provider statement
 const missingMergeProofStatement: ProviderJoinProof["statement"] = null;
 // @ts-expect-error full Rust u64 conversation positions cannot be rounded JavaScript numbers

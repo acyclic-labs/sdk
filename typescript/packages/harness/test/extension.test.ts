@@ -63,7 +63,7 @@ test("the TypeScript lifecycle facade keeps executable identity separate from du
   await expect(extensionIdentity({ ...identity, version: 0 })).rejects.toThrow();
 });
 
-test("lifecycle contracts expose host-owned leases and no TypeScript registry implementation", () => {
+test("lifecycle contracts expose host-owned leases and no TypeScript registry implementation", async () => {
   const implementation: NativeExtension = {
     identity: () => ({ name: "example.state", version: 1, digest: Array(32).fill(1) }),
     dependencies: () => [],
@@ -81,5 +81,5 @@ test("lifecycle contracts expose host-owned leases and no TypeScript registry im
     exact: () => implementation.identity(),
   };
   expect(registry.accepting("example.state")).toBe(true);
-  expect(registry.pin("example.state").identity()).toEqual(implementation.identity());
+  expect((await registry.pin("example.state")).identity()).toEqual(implementation.identity());
 });

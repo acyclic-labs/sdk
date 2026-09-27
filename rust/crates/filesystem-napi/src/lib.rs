@@ -2194,6 +2194,7 @@ impl NativeChangeSet {
     /// # Errors
     ///
     /// Returns a JavaScript conversion error if the canonical result cannot be represented.
+    #[napi]
     pub fn changes(&self) -> Result<NativeGenerationDiff> {
         encode_generation_diff(self.inner.changes().clone(), self.inner.work())
     }

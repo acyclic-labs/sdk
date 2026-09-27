@@ -119,7 +119,21 @@ if (Test-Path -LiteralPath $lldLink) {
 # The workflow enables the Client-ProjFS optional feature before this lane, so
 # the complete all-feature workspace, including ProjFS-backed acyclic-fs, runs
 # from one build instead of separate portable, no-default, and link-only builds.
-cargo test --workspace --all-features --locked
+# This test also resolves the WASM crates and their web-sys dependency. Its
+# generated feature cfg list is too large for sccache's Windows rustc spawn
+# path (ERROR_FILENAME_EXCED_RANGE / OS error 206), so run this invocation
+# directly through rustc while leaving the independent native builds cached.
+$rustcWrapper = $env:RUSTC_WRAPPER
+Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+try {
+    cargo test --workspace --all-features --locked
+} finally {
+    if ($null -eq $rustcWrapper) {
+        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+    } else {
+        $env:RUSTC_WRAPPER = $rustcWrapper
+    }
+}
 bun test --parallel=4 typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition
 
