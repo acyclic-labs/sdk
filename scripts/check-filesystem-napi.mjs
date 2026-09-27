@@ -26,12 +26,17 @@ if (typeof version !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?
 const childBinding = process.env.ACYCLIC_FS_NAPI_CHILD_BINDING;
 if (childBinding !== undefined) {
   await qualify(childBinding, process.env.ACYCLIC_FS_NAPI_CHILD_ROOT);
+  if (process.env.ACYCLIC_FS_NAPI_CHILD_ADAPTER === "1") {
+    await qualifyAdapter(childBinding, process.env.ACYCLIC_FS_NAPI_CHILD_ROOT);
+  }
   process.exit(0);
 }
 
-const output = process.argv[2];
-if (process.argv.length > 3 || (output !== undefined && !isAbsolute(output))) {
-  throw new Error("usage: check-filesystem-napi.mjs [ABSOLUTE_OUTPUT]");
+const adapter = process.argv.includes("--adapter");
+const positional = process.argv.slice(2).filter((value) => value !== "--adapter");
+const output = positional[0];
+if (positional.length > 1 || (output !== undefined && !isAbsolute(output))) {
+  throw new Error("usage: check-filesystem-napi.mjs [--adapter] [ABSOLUTE_OUTPUT]");
 }
 
 const targetRoot = resolve(process.env.CARGO_TARGET_DIR ?? "target");
@@ -47,6 +52,7 @@ try {
         ...process.env,
         ACYCLIC_FS_NAPI_CHILD_BINDING: bindingPath,
         ACYCLIC_FS_NAPI_CHILD_ROOT: join(temporary, "engine"),
+        ACYCLIC_FS_NAPI_CHILD_ADAPTER: adapter ? "1" : "0",
       },
       stdio: "inherit",
     });
@@ -84,6 +90,7 @@ async function qualify(bindingPath, engineRoot) {
     maximumWaitersPerObject: 8,
   });
   const workspace = await fs.createWorkspace("qualification");
+  const before = await workspace.sync();
   const committed = await workspace.write("/abi.txt", Buffer.from("napi"));
   if (committed.status !== "committed") {
     throw new Error(`N-API write returned ${committed.status}`);
@@ -92,5 +99,124 @@ async function qualify(bindingPath, engineRoot) {
   if (!Buffer.from(bytes).equals(Buffer.from("napi"))) {
     throw new Error("N-API read did not preserve bytes");
   }
+  const after = await workspace.sync();
+  const changes = await workspace.diff(before, after, 32);
+  if (changes.changes().files.length === 0) {
+    throw new Error("N-API change set omitted the authored file");
+  }
+  fs.close();
   console.log(`acyclic-fs N-API ABI passed on ${process.platform}-${process.arch}`);
+}
+
+async function qualifyAdapter(bindingPath, engineRoot) {
+  const { mock } = await import("bun:test");
+  const binding = createRequire(import.meta.url)(bindingPath);
+  mock.module(`@acyclic-labs/fs-${process.platform}-${process.arch}`, () => binding);
+  const { openNativeFs, DEFAULT_OBJECT_CACHE_OPTIONS, portableVolumeOptions } = await import("../typescript/packages/filesystem/dist/native.js");
+  const engine = await openNativeFs({
+    root: join(engineRoot, "public-adapter"),
+    objectCache: {
+      ...DEFAULT_OBJECT_CACHE_OPTIONS,
+      maximumBytes: Number(DEFAULT_OBJECT_CACHE_OPTIONS.maximumBytes),
+    },
+  });
+  try {
+    const workspace = await engine.createWorkspace("qualification");
+    const originalId = workspace.id;
+    if (originalId.constructor !== Uint8Array) throw new Error("native adapter exposed a Buffer workspace identity");
+    originalId.fill(0);
+    if (workspace.id.every((byte) => byte === 0)) throw new Error("native adapter exposed a mutable workspace identity view");
+    const before = await workspace.sync();
+    await workspace.write("/adapter.txt", new Uint8Array([1, 2, 3]));
+    const after = await workspace.sync();
+    const changes = await workspace.diff(before, after, 32);
+    if (changes.changes().files.length === 0) throw new Error("native adapter lost the workspace change set");
+    const pinned = await after.pin("qualification-generation");
+    if (!pinned.id.every((byte, index) => byte === after.id[index])) {
+      throw new Error("native adapter changed the pinned generation identity");
+    }
+    await workspace.write("/second.txt", new Uint8Array([4]));
+    const latest = await workspace.sync();
+    const secondChange = await workspace.diff(after, latest, 32);
+    const composed = await changes.compose(secondChange, 32);
+    if (
+      !composed.from.id.every((byte, index) => byte === before.id[index])
+      || !composed.to.id.every((byte, index) => byte === latest.id[index])
+      || composed.changes().files.length === 0
+    ) {
+      throw new Error("native adapter lost composed change-set endpoints");
+    }
+    const foreignEngine = await openNativeFs({
+      root: join(engineRoot, "foreign-adapter"),
+      objectCache: {
+        ...DEFAULT_OBJECT_CACHE_OPTIONS,
+        maximumBytes: Number(DEFAULT_OBJECT_CACHE_OPTIONS.maximumBytes),
+      },
+    });
+    try {
+      const foreignWorkspace = await foreignEngine.createWorkspace("foreign");
+      const foreignGeneration = await foreignWorkspace.sync();
+      const foreignChange = await foreignWorkspace.diff(foreignGeneration, foreignGeneration, 32);
+      const rejectsForeign = async (operation, kind) => {
+        try { await operation(); }
+        catch (error) {
+          if (error instanceof TypeError && error.message === `${kind} belongs to another filesystem engine`) return;
+          throw error;
+        }
+        throw new Error(`native adapter accepted a foreign ${kind}`);
+      };
+      await rejectsForeign(() => workspace.forkAt("foreign-fork", foreignGeneration), "generation");
+      await rejectsForeign(() => workspace.diff(before, foreignGeneration, 32), "generation");
+      await rejectsForeign(() => workspace.joinInto(foreignWorkspace, {
+        history: "merge", maximumGenerations: 32, maximumChanges: 32, maximumConflicts: 32,
+      }), "workspace");
+      await rejectsForeign(() => changes.compose(foreignChange, 32), "change set");
+    } finally {
+      foreignEngine.close();
+    }
+
+    const fork = await workspace.fork("conflict-fork");
+    await workspace.write("/adapter.txt", new Uint8Array([4]));
+    await fork.write("/adapter.txt", new Uint8Array([5]));
+    const joinPlan = await fork.joinInto(workspace, {
+      history: "merge", maximumGenerations: 64, maximumChanges: 64, maximumConflicts: 16,
+    });
+    const joinResult = await joinPlan.apply(joinPlan.targetHead);
+    const fileConflict = joinResult.conflicts.find((conflict) => conflict.kind === "file");
+    if (joinResult.status !== "conflicted" || fileConflict?.fileId.constructor !== Uint8Array) {
+      throw new Error("native adapter lost typed file merge conflicts");
+    }
+
+    const volume = await engine.createVolume(portableVolumeOptions("ephemeral"));
+    const checkout = await volume.checkout({ access: "read-write", consistency: "pinned", mutationMode: "private-cow" });
+    await checkout.createFile("/adapter.bin", new Uint8Array([4, 5]));
+    const batch = await checkout.lookupBatchNoFollow(["/adapter.bin", "/missing"]);
+    if (batch.entries[0]?.fileId?.constructor !== Uint8Array || batch.entries[1]?.fileId !== undefined) {
+      throw new Error("native adapter lost typed lookup positions");
+    }
+    const read = await checkout.readFileRange("/adapter.bin", 0n, 2n);
+    if (read.bytes.constructor !== Uint8Array || read.bytes[0] !== 4 || read.bytes[1] !== 5) {
+      throw new Error("native adapter lost typed file bytes");
+    }
+    if (
+      Object.keys(read.work).length !== 24
+      || Object.values(read.work).some((value) => typeof value !== "number")
+      || Object.keys(checkout.acquisitionWork).length !== 24
+    ) {
+      throw new Error("native adapter lost the generated work-counter object");
+    }
+    const transactionBytes = new Uint8Array([9]);
+    const transactionPromise = checkout.applyTransaction([{
+      kind: "create-file", path: "/adapter-transaction.bin", bytes: transactionBytes,
+    }]);
+    transactionBytes[0] = 7;
+    await transactionPromise;
+    const transactionRead = await checkout.readFileRange("/adapter-transaction.bin", 0n, 1n);
+    if (transactionRead.bytes[0] !== 9) {
+      throw new Error("native adapter transaction observed a mutated caller buffer");
+    }
+  } finally {
+    engine.close();
+  }
+  console.log(`acyclic-fs native TypeScript adapter passed on ${process.platform}-${process.arch}`);
 }

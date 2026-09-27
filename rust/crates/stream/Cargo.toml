@@ -13,10 +13,14 @@ keywords = ["streams", "events", "grpc"]
 categories = ["api-bindings", "data-structures"]
 build = "build.rs"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [features]
 default = ["grpc"]
 grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost"]
 local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
+wasm = ["dep:serde", "dep:serde-wasm-bindgen", "dep:tsify-next", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 
 [dependencies]
 async-trait.workspace = true
@@ -26,6 +30,7 @@ h2 = { version = "0.4.19", optional = true }
 hyper = { version = "1.11.0", default-features = false, optional = true }
 fs2 = { workspace = true, optional = true }
 prost.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync", "time"] }
@@ -35,6 +40,14 @@ uuid.workspace = true
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 libc = { version = "0.2.175", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+serde = { workspace = true, optional = true }
+serde-wasm-bindgen = { workspace = true, optional = true }
+tsify-next = { version = "0.5.6", features = ["js"], optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-native-runtime = { version = "=0.1.5", path = "../native-runtime" }

@@ -7,14 +7,18 @@
     "build:wasm": "bun scripts/build-wasm.mjs",
     "build": "bun run build:wasm && tsc -b --force",
     "check": "bun run build:wasm && tsc -b --force --pretty false",
-    "generate": "bun scripts/generate.mjs",
-    "check:generated": "bun scripts/check-generated.mjs",
+    "generate": "bun scripts/generate.mjs && bun run generate:napi && bun scripts/generate-filesystem-defaults.mjs write && bun scripts/generate-filesystem-git-compat-contract.mjs write && bun scripts/generate-objects-http-contract.mjs write && bun scripts/generate-stream-http-contract.mjs write && bun scripts/generate-harness-http-contract.mjs write && bun scripts/generate-harness-authority-contract.mjs write && bun scripts/generate-machines-managed-oci-contract.mjs write",
+    "generate:napi": "bun scripts/filesystem-napi-types.mjs write",
+    "check:generated": "bun scripts/check-generated.mjs && bun scripts/filesystem-napi-types.mjs check",
+    "check:native-adapter": "bun run check && cargo build -p acyclic-fs-napi --locked && bun scripts/check-filesystem-napi.mjs --adapter",
     "test": "bun run check && bun test --parallel=4 typescript/packages && bun run --filter '@acyclic-labs/fs' test",
     "licenses": "bun scripts/check-js-licenses.mjs"
   },
   "devDependencies": {
     "@bufbuild/buf": "1.72.0",
     "@bufbuild/protoc-gen-es": "2.14.1",
+    "@napi-rs/cli": "3.10.5",
+    "@noble/hashes": "2.4.0",
     "@types/bun": "1.4.0",
     "ajv": "8.20.0",
     "typescript": "7.0.2"

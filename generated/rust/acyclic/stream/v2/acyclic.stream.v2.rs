@@ -426,4 +426,62 @@ pub struct InspectIdempotencyResponse {
     #[prost(message, optional, tag = "1")]
     pub observation: ::core::option::Option<IdempotencyObservation>,
 }
+/// Hosted account token creation request.  This uses the same canonical path
+/// and operation vocabulary as the Stream client, while the hosted adapter
+/// owns its JSON spelling at the Rust/WASM boundary.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TokenGrant {
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    #[prost(bool, optional, tag = "2")]
+    pub subtree: ::core::option::Option<bool>,
+    #[prost(string, repeated, tag = "3")]
+    pub operations: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreateTokenRequest {
+    #[prost(string, tag = "1")]
+    pub expires_in: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub allow: ::prost::alloc::vec::Vec<TokenGrant>,
+}
+/// Canonical bounds shared by Rust and generated TypeScript clients.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum StreamLimit {
+    Unspecified = 0,
+    MaxRecordBytes = 65536,
+    MaxItems = 1024,
+    MaxCommandBytes = 1056768,
+    MaxIdempotencyKeyBytes = 256,
+    MaxPathBytes = 65535,
+}
+impl StreamLimit {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "STREAM_LIMIT_UNSPECIFIED",
+            Self::MaxRecordBytes => "STREAM_LIMIT_MAX_RECORD_BYTES",
+            Self::MaxItems => "STREAM_LIMIT_MAX_ITEMS",
+            Self::MaxCommandBytes => "STREAM_LIMIT_MAX_COMMAND_BYTES",
+            Self::MaxIdempotencyKeyBytes => "STREAM_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES",
+            Self::MaxPathBytes => "STREAM_LIMIT_MAX_PATH_BYTES",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "STREAM_LIMIT_UNSPECIFIED" => Some(Self::Unspecified),
+            "STREAM_LIMIT_MAX_RECORD_BYTES" => Some(Self::MaxRecordBytes),
+            "STREAM_LIMIT_MAX_ITEMS" => Some(Self::MaxItems),
+            "STREAM_LIMIT_MAX_COMMAND_BYTES" => Some(Self::MaxCommandBytes),
+            "STREAM_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES" => Some(Self::MaxIdempotencyKeyBytes),
+            "STREAM_LIMIT_MAX_PATH_BYTES" => Some(Self::MaxPathBytes),
+            _ => None,
+        }
+    }
+}
 // @@protoc_insertion_point(module)

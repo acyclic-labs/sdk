@@ -1766,7 +1766,9 @@ fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
 fn native_workers() -> io::Result<&'static NativeWorkers> {
     static WORKERS: OnceLock<io::Result<NativeWorkers>> = OnceLock::new();
     workers(&WORKERS, "acyclic-native-io", |parallelism| {
-        parallelism.min(4)
+        // Native jobs can block in filesystem calls. Keep a second worker even
+        // on a single-core host so another queued completion can make progress.
+        parallelism.clamp(2, 4)
     })
 }
 

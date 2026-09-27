@@ -2172,6 +2172,8 @@ fn work_counters(work: crate::WorkCounters) -> wire::WorkCounters {
         bytes_copied: work.bytes_copied,
         bytes_encoded: work.bytes_encoded,
         source_bytes_read: work.source_bytes_read,
+        source_path_components: work.source_path_components,
+        source_entries_visited: work.source_entries_visited,
         output_bytes: work.output_bytes,
         items_examined: work.items_examined,
         items_returned: work.items_returned,

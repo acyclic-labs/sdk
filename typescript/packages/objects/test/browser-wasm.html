@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Objects WASM smoke</title>
+<script type="importmap">
+{
+  "imports": {
+    "@bufbuild/protobuf": "/node_modules/@bufbuild/protobuf/dist/esm/index.js",
+    "@bufbuild/protobuf/codegenv2": "/node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js",
+    "@bufbuild/protobuf/wkt": "/node_modules/@bufbuild/protobuf/dist/esm/wkt/index.js"
+  }
+}
+</script>
+<body data-result="pending">
+<script type="module">
+  import { Objects, bytesCodec } from "../dist/index.js";
+
+  try {
+    const objects = Objects.memory();
+    const bucket = await objects.createBucket("browser-objects");
+    const body = new Uint8Array([1, 2, 3]);
+    const version = await bucket.put("artifact", body, bytesCodec);
+    const fetched = await bucket.get("artifact", bytesCodec, { range: { start: 1, endExclusive: 3 } });
+    if (version.size !== 3n || fetched.value.join(",") !== "2,3" || fetched.contentRange?.total !== 3) {
+      throw new Error("Rust-backed browser object read differs from its write");
+    }
+    const snapshot = await bucket.snapshot();
+    await bucket.put("artifact", new Uint8Array([4]), bytesCodec);
+    const captured = await snapshot.get("artifact", bytesCodec);
+    if (captured.value.join(",") !== "1,2,3") throw new Error("snapshot changed after bucket mutation");
+    document.body.dataset.result = "passed";
+  } catch (error) {
+    document.body.dataset.result = "failed";
+    document.body.textContent = String(error);
+  }
+</script>
+</html>

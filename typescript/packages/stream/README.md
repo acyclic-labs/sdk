@@ -11,6 +11,12 @@ npm install @acyclic-labs/stream
 ```ts
 import { MemoryStreamProvider, StreamClient } from "@acyclic-labs/stream";
 
+const event = (value: import("@acyclic-labs/stream").JsonValue): { readonly type: string } => {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || typeof value.type !== "string") {
+    throw new TypeError("expected an event");
+  }
+  return { type: value.type };
+};
 const client = new StreamClient(new MemoryStreamProvider());
 const events = client.json("runs/example", value => {
   if (value === null || typeof value !== "object" || Array.isArray(value) ||
@@ -23,7 +29,7 @@ for await (const record of events.read({ from: 0n, limit: 100 })) {
 }
 ```
 
-Pass a parser to `json(path, parser)` for typed reads. Without one, reads return the general `JsonValue` type; the stream cannot infer an application's record shape from stored bytes.
+Calling `client.json(path)` gives a stream of `JsonValue`. Pass a parser when the stream has a narrower type; the parser validates each decoded record before it reaches the application.
 
 For a service, use `new StreamClient(new HttpStreamProvider({ endpoint, token }))` or `Stream.fromEnv()` with `ACYCLIC_STREAM_ENDPOINT` and `ACYCLIC_API_KEY`. Service endpoints must be HTTPS. Sequence numbers are `bigint`; persist the last consumed cursor and resume reads or `follow` from the appropriate position. Use `ifTail` for optimistic append concurrency and an idempotency key when retrying mutations.
 

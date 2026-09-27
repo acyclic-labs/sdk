@@ -157,6 +157,17 @@ const rustInferenceManifest = await readFile(new URL("rust/crates/inference/Carg
 if (rustInferenceManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1] !== inferenceVersion) {
   throw new Error("Rust inference package version mismatch");
 }
+const inferenceContractManifest = await readFile(new URL("rust/crates/inference-contract/Cargo.toml", root), "utf8");
+if (inferenceContractManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1] !== inferenceVersion) {
+  throw new Error("Rust inference contract version mismatch");
+}
+const inferenceWasmManifest = await readFile(new URL("rust/crates/inference-wasm/Cargo.toml", root), "utf8");
+if (inferenceWasmManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1] !== inferenceVersion) {
+  throw new Error("Rust inference WASM version mismatch");
+}
+if (inferenceWasmManifest.match(/acyclic-inference = \{ version = "([^"]+)"/)?.[1] !== `=${inferenceVersion}`) {
+  throw new Error("Rust inference WASM dependency version mismatch");
+}
 if ((await load("typescript/packages/sdk/package.json")).dependencies["@acyclic-labs/inference"] !== inferenceVersion) {
   throw new Error("TypeScript SDK inference dependency version mismatch");
 }

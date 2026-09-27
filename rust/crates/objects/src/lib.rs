@@ -13,6 +13,9 @@ pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-objects
 
 /// Fixed public compatibility limits.
 pub mod limits {
+    /// Maximum UTF-8 byte length of a caller idempotency key.
+    pub const MAX_IDEMPOTENCY_KEY_BYTES: usize =
+        super::wire::ObjectsLimit::MaxIdempotencyKeyBytes as usize;
     /// Maximum UTF-8 object-key length.
     pub const KEY_BYTES: usize = 1_024;
     /// Maximum encoded user metadata per version.

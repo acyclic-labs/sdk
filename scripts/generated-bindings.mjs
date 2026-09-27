@@ -4,6 +4,8 @@ export const packagedTypeScriptBindings = [
   ["filesystem/v2/filesystem_pb", ["filesystem"]],
   ["harness/v2/harness_pb", ["harness"]],
   ["protocol/v1/protocol_pb", ["filesystem", "harness"]],
+  // inference_pb imports the proto2 custom options descriptor transitively.
+  ["validation/v1/options_pb", ["inference"]],
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
   ["objects/v1/objects_pb", ["objects"]],

@@ -9,6 +9,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{StreamExt as _, stream};
+use prost::Message;
 use sha2::{Digest, Sha256};
 use tokio::sync::{RwLock, watch};
 
@@ -742,7 +743,7 @@ impl StreamProvider for MemoryStream {
     }
 }
 
-fn validate_limit(limit: u32) -> Result<(), StreamError> {
+pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
     if limit == 0 || usize::try_from(limit).map_or(true, |limit| limit > MAX_ITEMS) {
         Err(StreamError::LimitExceeded)
     } else {
@@ -750,68 +751,46 @@ fn validate_limit(limit: u32) -> Result<(), StreamError> {
     }
 }
 
-fn validate_records(records: &[Bytes]) -> Result<(), StreamError> {
+pub(crate) fn validate_records(records: &[Bytes]) -> Result<(), StreamError> {
     if records.is_empty() || records.len() > MAX_ITEMS {
         return Err(StreamError::LimitExceeded);
     }
-    let mut total = 0_usize;
     for record in records {
         if record.len() > MAX_RECORD_BYTES {
             return Err(StreamError::LimitExceeded);
         }
-        total = total
-            .checked_add(record.len())
-            .and_then(|value| value.checked_add(8))
-            .ok_or(StreamError::LimitExceeded)?;
-    }
-    if total > MAX_COMMAND_BYTES {
-        return Err(StreamError::LimitExceeded);
     }
     Ok(())
 }
 
-fn add_size(total: &mut usize, amount: usize) -> Result<(), StreamError> {
-    *total = total
-        .checked_add(amount)
-        .ok_or(StreamError::LimitExceeded)?;
-    if *total > MAX_COMMAND_BYTES {
-        return Err(StreamError::LimitExceeded);
-    }
-    Ok(())
+pub(crate) fn validate_append_size(request: &AppendRequest) -> Result<(), StreamError> {
+    let wire = crate::wire::AppendRequest {
+        path: request.path.to_string(),
+        records: request.records.clone(),
+        if_tail: request.if_tail,
+        idempotency_key: request
+            .idempotency_key
+            .as_ref()
+            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
+    };
+    (wire.encoded_len() <= MAX_COMMAND_BYTES)
+        .then_some(())
+        .ok_or(StreamError::LimitExceeded)
 }
 
-fn add_path_size(total: &mut usize, path: &StreamPath) -> Result<(), StreamError> {
-    add_size(total, 8)?;
-    add_size(total, path.as_str().len())
-}
-
-fn add_records_size(total: &mut usize, records: &[Bytes]) -> Result<(), StreamError> {
-    add_size(total, 8)?;
-    for record in records {
-        add_size(total, 8)?;
-        add_size(total, record.len())?;
-    }
-    Ok(())
-}
-
-fn validate_append_size(request: &AppendRequest) -> Result<(), StreamError> {
-    let mut total = 1 + 8 + 1;
-    add_path_size(&mut total, &request.path)?;
-    add_records_size(&mut total, &request.records)?;
-    if let Some(key) = &request.idempotency_key {
-        add_size(&mut total, 8 + key.as_bytes().len())?;
-    }
-    Ok(())
-}
-
-fn validate_fork_size(request: &ForkRequest) -> Result<(), StreamError> {
-    let mut total = 1 + 8 + 1;
-    add_path_size(&mut total, &request.source)?;
-    add_path_size(&mut total, &request.destination)?;
-    if let Some(key) = &request.idempotency_key {
-        add_size(&mut total, 8 + key.as_bytes().len())?;
-    }
-    Ok(())
+pub(crate) fn validate_fork_size(request: &ForkRequest) -> Result<(), StreamError> {
+    let wire = crate::wire::ForkRequest {
+        source: request.source.to_string(),
+        destination: request.destination.to_string(),
+        at_tail: request.at_tail,
+        idempotency_key: request
+            .idempotency_key
+            .as_ref()
+            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
+    };
+    (wire.encoded_len() <= MAX_COMMAND_BYTES)
+        .then_some(())
+        .ok_or(StreamError::LimitExceeded)
 }
 
 fn reject_retired(state: &State, path: &StreamPath) -> Result<(), StreamError> {
@@ -1496,7 +1475,7 @@ fn mutation_path(mutation: &CommitMutation) -> &StreamPath {
     }
 }
 
-fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
+pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
     if request.conditions.is_empty()
         || request.conditions.len() > MAX_ITEMS
         || request.mutations.is_empty()
@@ -1541,40 +1520,13 @@ fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
 }
 
 fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
-    let mut total = 1 + 8 + 8 + 8 + request.idempotency_key.as_bytes().len();
-    for condition in &request.conditions {
-        add_size(&mut total, 1 + 8)?;
-        add_path_size(&mut total, condition_path(condition))?;
-    }
-    for mutation in &request.mutations {
-        add_size(&mut total, 1)?;
-        match mutation {
-            CommitMutation::Append { path, records } => {
-                add_path_size(&mut total, path)?;
-                add_records_size(&mut total, records)?;
-            }
-            CommitMutation::Fork {
-                source,
-                destination,
-                records,
-                ..
-            } => {
-                add_path_size(&mut total, source)?;
-                add_path_size(&mut total, destination)?;
-                add_size(&mut total, 8)?;
-                add_records_size(&mut total, records)?;
-            }
-            CommitMutation::Trim { path, .. } => {
-                add_path_size(&mut total, path)?;
-                add_size(&mut total, 8)?;
-            }
-            CommitMutation::Delete { path } => add_path_size(&mut total, path)?,
-        }
-    }
-    Ok(())
+    let wire = crate::wire_codec::commit_to_wire(request);
+    (wire.encoded_len() <= MAX_COMMAND_BYTES)
+        .then_some(())
+        .ok_or(StreamError::LimitExceeded)
 }
 
-fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
+pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
     let conditions = request
         .conditions
         .iter()
@@ -1839,6 +1791,44 @@ mod tests {
 
     fn key(value: &'static [u8]) -> Result<crate::IdempotencyKey, StreamError> {
         crate::IdempotencyKey::new(Bytes::from_static(value))
+    }
+
+    #[test]
+    fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
+        let records = vec![Bytes::from(vec![0_u8; MAX_RECORD_BYTES]); 16];
+        let mut low = 1_usize;
+        let mut high = crate::MAX_PATH_BYTES;
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            let path = StreamPath::new("x".repeat(middle))?;
+            let wire = crate::wire::AppendRequest {
+                path: path.to_string(),
+                records: records.clone(),
+                if_tail: None,
+                idempotency_key: None,
+            };
+            if wire.encoded_len() <= MAX_COMMAND_BYTES {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        let request = AppendRequest {
+            path: StreamPath::new("x".repeat(low))?,
+            records,
+            if_tail: None,
+            idempotency_key: None,
+        };
+        assert!(validate_append_size(&request).is_ok());
+        let next = StreamPath::new("x".repeat(low + 1))?;
+        let next_wire = crate::wire::AppendRequest {
+            path: next.to_string(),
+            records: request.records,
+            if_tail: None,
+            idempotency_key: None,
+        };
+        assert!(next_wire.encoded_len() > MAX_COMMAND_BYTES);
+        Ok(())
     }
 
     #[tokio::test]

@@ -231,6 +231,10 @@ pub enum Outcome<T> {
 
 /// Stable wire identity used during compatibility handshakes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(
+    all(feature = "wasm", target_arch = "wasm32"),
+    derive(tsify_next::Tsify)
+)]
 pub struct ProtocolIdentity {
     /// Semantic protocol version.
     pub version: String,
@@ -289,6 +293,10 @@ pub struct AuthorityPolicy {
 
 /// Ordered authority-resolution level from the runtime root to one invocation.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(
+    all(feature = "wasm", target_arch = "wasm32"),
+    derive(tsify_next::Tsify)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityLevel {
     /// Runtime-wide policy.

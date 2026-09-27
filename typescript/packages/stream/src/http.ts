@@ -1,6 +1,9 @@
-import { pathValue, sequence } from "./client.js";
-import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitConflict, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, DeleteReceipt, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamBounds, StreamProvider, TrimReceipt } from "./types.js";
-import { StreamError, commitId, idempotencyKey } from "./types.js";
+import { pathValue, positiveInteger, validateAppend } from "./client.js";
+import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, DeleteReceipt, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamBounds, StreamProvider, TrimReceipt } from "./types.js";
+import { StreamError, commitId } from "./types.js";
+import { decodeHttpResponseFor } from "./http-contract.js";
+import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
+import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
 export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
 
@@ -20,67 +23,113 @@ export class HttpStreamProvider implements StreamProvider {
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
     if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
-  inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> { return this.#request("idempotency/inspect", { idempotencyKey: wireKey(key) }, value => value === null ? undefined : idempotency(value)); }
-  tail(path: string): Promise<Sequence> { return this.#request("tail", { path }, value => u64(value, "tail")); }
-  bounds(path: string): Promise<StreamBounds> { return this.#request("bounds", { path }, value => {
-    const item = object(value);
-    const trimPoint = u64(item.trimPoint, "trimPoint");
-    const tail = u64(item.tail, "tail");
-    if (trimPoint > tail) throw new TypeError("stream replay bounds are invalid");
-    return { trimPoint, tail };
-  }); }
-  append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { return this.#request("append", { path, values: values.map(base64), options: appendOptions(options) }, appendResult); }
-  fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { return this.#request("fork", { source, destination, options: forkOptions(options) }, forkReceipt); }
-  trim(path: string, before: Sequence, key?: IdempotencyKey): Promise<TrimReceipt> { return this.#request("trim", { path, before: decimal(before), ...(key === undefined ? {} : { idempotencyKey: wireKey(key) }) }, trimReceipt); }
-  delete(path: string, key?: IdempotencyKey): Promise<DeleteReceipt> { return this.#request("delete", { path, ...(key === undefined ? {} : { idempotencyKey: wireKey(key) }) }, deleteReceipt); }
+  async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> { const input = wireInspectIdempotencyRequest(key); return this.#request("idempotency/inspect", await encodeHttpRequest("idempotency/inspect", input)); }
+  async tail(path: string): Promise<Sequence> { return this.#tail(path); }
+  async bounds(path: string): Promise<StreamBounds> {
+    pathValue(path);
+    return this.#requestRaw("bounds", { path }, value => {
+      const item = rawObject(value);
+      const trimPoint = rawU64(item.trimPoint, "trimPoint");
+      const tail = rawU64(item.tail, "tail");
+      if (trimPoint > tail) throw new TypeError("stream replay bounds are invalid");
+      return { trimPoint, tail };
+    });
+  }
+  async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); await validateAppend(path, records, authored); const input = wireAppendRequest(path, records, authored); return this.#request("append", await encodeHttpRequest("append", input)); }
+  async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const input = wireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); return this.#request("fork", await encodeHttpRequest("fork", input)); }
+  async trim(path: string, before: Sequence, key?: IdempotencyKey): Promise<TrimReceipt> { const authored = key?.slice() as IdempotencyKey | undefined; await validateWireRequest({ kind: "trim", path, before, ...(authored === undefined ? {} : { key: authored }) }); const input = wireRequest({ kind: "trim", path, before, ...(authored === undefined ? {} : { key: authored }) }); return this.#request("trim", await encodeHttpRequest("trim", input)); }
+  async delete(path: string, key?: IdempotencyKey): Promise<DeleteReceipt> { const authored = key?.slice() as IdempotencyKey | undefined; await validateWireRequest({ kind: "delete", path, ...(authored === undefined ? {} : { key: authored }) }); const input = wireRequest({ kind: "delete", path, ...(authored === undefined ? {} : { key: authored }) }); return this.#request("delete", await encodeHttpRequest("delete", input)); }
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> { for (const item of await this.#read(path, options)) yield item; }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
-    let next = options.from;
-    while (!options.signal?.aborted) {
+    const { from, signal } = options;
+    await validateWireRequest({ kind: "follow", path, from });
+    const tail = await this.#tail(path, signal);
+    if (from > tail) throw new StreamError("out_of_range", "follow cursor is beyond the stream tail");
+    let next = from;
+    while (!signal?.aborted) {
       const records: EncodedRecord[] = [];
-      for (const item of await this.#read(path, { from: next, limit: 256 }, options.signal)) records.push(item);
+      for (const item of await this.#read(path, { from: next, limit: 256 }, signal, false)) records.push(item);
       for (const item of records) { yield item; next = item.sequence + 1n; }
-      if (!records.length) await delay(250, options.signal);
+      if (!records.length) await delay(250, signal);
     }
   }
-  childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    return this.#request("children/page", {
+  async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> { await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); const input = wireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); for (const item of await this.#request("children", await encodeHttpRequest("children", input))) yield item; }
+  async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
+    if (request.parent !== undefined) pathValue(request.parent);
+    if (request.after !== undefined) {
+      pathValue(request.after);
+      if (request.hierarchyVersion === undefined || directParent(request.after) !== (request.parent ?? "")) {
+        throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
+      }
+    }
+    if (request.hierarchyVersion !== undefined && request.hierarchyVersion.byteLength !== 32) {
+      throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
+    }
+    positiveInteger(request.limit, "limit");
+    return this.#requestRaw("children/page", {
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),
-      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: wireCommitId(request.hierarchyVersion) }),
+      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: rawBase64(request.hierarchyVersion) }),
       limit: request.limit,
-    }, childrenPage);
+    }, decodeChildrenPage);
   }
-  commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> { return this.#request("commit", { request: providerJson(request), options: { idempotencyKey: wireKey(options.idempotencyKey) } }, commitResult); }
-  readCommit(value: CommitId): Promise<CommittedEnvelope> { return this.#request("commits/read", { commitId: wireCommitId(value) }, envelope); }
-  createToken(request: CreateTokenRequest): Promise<AccessToken> { return this.#request("tokens/create", request, token); }
-  #read(path: string, options: ReadOptions, signal?: AbortSignal): Promise<readonly EncodedRecord[]> { return this.#request("read", { path, from: decimal(options.from), limit: options.limit }, value => array(value, encodedRecord), signal); }
-  async #request<Result>(route: string, body: unknown, project: Decoder<Result>, signal?: AbortSignal): Promise<Result> {
+  async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> { const authored = structuredClone(request); const retained = structuredClone(options); const input = await normalizeWireCommitBytes(authored, retained); return this.#request("commit", await encodeHttpRequest("commit", input)); }
+  async readCommit(value: CommitId): Promise<CommittedEnvelope> { const input = wireReadCommitRequest(value); return this.#request("commits/read", await encodeHttpRequest("commits/read", input)); }
+  async createToken(request: CreateTokenRequest): Promise<AccessToken> {
+    const input = wireCreateTokenRequest(request);
+    return this.#request("tokens/create", await encodeHttpRequest("tokens/create", input));
+  }
+  async #read(path: string, options: ReadOptions, signal?: AbortSignal, checkEmptyCursor = true): Promise<readonly EncodedRecord[]> {
+    const { from, limit } = options;
+    await validateWireRequest({ kind: "read", path, from, limit });
+    const input = wireRequest({ kind: "read", path, from, limit });
+    const records = await this.#request("read", await encodeHttpRequest("read", input), signal);
+    // A canonical read is a contiguous page beginning at the requested
+    // cursor.  Checking this at the transport boundary prevents a malformed
+    // hosted response from making follow skip records or move its cursor
+    // backwards.
+    let expected = from;
+    for (const record of records) {
+      if (record.sequence !== expected) {
+        throw new StreamError("invalid_response", "read response contains a non-contiguous cursor");
+      }
+      expected += 1n;
+    }
+    // The Rust provider distinguishes an empty page at the current tail from
+    // a cursor beyond the tail.  A hosted response with no records carries no
+    // tail, so ask the canonical tail route before accepting an empty page.
+    // This keeps direct reads and the polling follow adapter aligned with the
+    // in-memory provider even when a hosted implementation returns [] for
+    // both cases.
+    if (checkEmptyCursor && records.length === 0) {
+      const tail = await this.#tail(path, signal);
+      if (from > tail) throw new StreamError("out_of_range", "read cursor is beyond the stream tail");
+    }
+    return records;
+  }
+  async #tail(path: string, signal?: AbortSignal): Promise<Sequence> {
+    await validateWireRequest({ kind: "tail", path });
+    const input = wireRequest({ kind: "tail", path });
+    return this.#request("tail", await encodeHttpRequest("tail", input), signal);
+  }
+  async #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal): Promise<HttpResponseFor<Route>> {
+    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body), ...(signal === undefined ? {} : { signal }) });
+    let text: string;
+    try { text = await boundedText(response, this.#maximum); }
+    catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+    if (!response.ok) throw new StreamError("transport", text || `HTTP ${response.status}`, response.status);
+    try { await ensureStreamWasm(); return decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+  }
+  async #requestRaw<Result>(route: string, body: unknown, project: (value: unknown) => Result, signal?: AbortSignal): Promise<Result> {
     const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: JSON.stringify(body), ...(signal === undefined ? {} : { signal }) });
     let text: string;
     try { text = await boundedText(response, this.#maximum); }
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding`, response.status); }
-    if (!response.ok) {
-      let code = "transport";
-      try { const failure = object(JSON.parse(text)); if (typeof failure.code === "string" && serverErrorCodes.has(failure.code)) code = failure.code; }
-      catch { /* The status remains the transport evidence. */ }
-      throw new StreamError(code, `HTTP ${response.status}`, response.status);
-    }
-    try { return project(JSON.parse(text)); } catch { throw new StreamError("invalid_response", `invalid ${route} response`, response.status); }
+    if (!response.ok) throw new StreamError("transport", text || `HTTP ${response.status}`, response.status);
+    try { return project(JSON.parse(text)); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
   }
 }
 
-const serverErrorCodes = new Set([
-  "invalid_path", "invalid_argument", "limit_exceeded", "stream_not_found", "destination_exists",
-  "stream_retired", "prefix_not_retained", "cursor_trimmed", "hierarchy_changed",
-  "idempotency_mismatch", "capacity_exhausted", "access_denied", "unavailable",
-  "deadline_elapsed", "unsupported", "commit_not_found", "tail_conflict",
-]);
-
-function base64(value: Uint8Array): string { let binary = ""; for (const byte of value) binary += String.fromCharCode(byte); return btoa(binary); }
-function wireCommitId(value: CommitId): string { return base64(commitId(value)); }
-function wireKey(value: IdempotencyKey): string { return base64(idempotencyKey(value)); }
-function unbase64(value: string): Uint8Array { return Uint8Array.from(atob(value), character => character.charCodeAt(0)); }
 const decoder = new TextDecoder("utf-8", { fatal: true });
 async function boundedText(response: Response, maximum: number): Promise<string> {
   const reader = response.body?.getReader();
@@ -100,44 +149,10 @@ async function boundedText(response: Response, maximum: number): Promise<string>
   return decoder.decode(bytes);
 }
 async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> { if (signal?.aborted) return; await new Promise<void>(resolve => { const finish = () => { clearTimeout(timeout); signal?.removeEventListener("abort", finish); resolve(); }; const timeout = setTimeout(finish, milliseconds); signal?.addEventListener("abort", finish, { once: true }); }); }
-function appendOptions(value: AppendOptions | undefined): unknown { return value === undefined ? undefined : { ...(value.ifTail === undefined ? {} : { ifTail: decimal(value.ifTail) }), ...(value.idempotencyKey === undefined ? {} : { idempotencyKey: wireKey(value.idempotencyKey) }) }; }
-function forkOptions(value: ForkOptions | undefined): unknown { return value === undefined ? undefined : { ...(value.atTail === undefined ? {} : { atTail: decimal(value.atTail) }), ...(value.idempotencyKey === undefined ? {} : { idempotencyKey: wireKey(value.idempotencyKey) }) }; }
-function providerJson(request: ProviderCommitRequest): unknown { return {
-  conditions: request.conditions.map(condition => "ifTail" in condition ? { ...condition, ifTail: decimal(condition.ifTail) } : condition),
-  mutations: request.mutations.map(mutation => "append" in mutation ? { append: { ...mutation.append, values: mutation.append.values.map(base64) } } : "fork" in mutation ? { fork: { ...mutation.fork, atTail: decimal(mutation.fork.atTail), values: mutation.fork.values.map(base64) } } : "trim" in mutation ? { trim: { ...mutation.trim, before: decimal(mutation.trim.before) } } : mutation),
-}; }
-type Decoder<Value> = (value: unknown) => Value;
-function object(value: unknown): Record<string, unknown> { if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("expected object"); return value as Record<string, unknown>; }
-function text(value: unknown, name: string): string { if (typeof value !== "string" || !value) throw new TypeError(`${name} must be a non-empty string`); return value; }
-function u64(value: unknown, name: string): Sequence { if (typeof value !== "string" || !/^(0|[1-9]\d*)$/.test(value)) throw new TypeError(`${name} must be a decimal uint64 string`); return sequence(BigInt(value)); }
-function decimal(value: Sequence): string { return sequence(value).toString(); }
-function bool(value: unknown, name: string): boolean { if (typeof value !== "boolean") throw new TypeError(`${name} must be boolean`); return value; }
-function array<Value>(value: unknown, item: Decoder<Value>): readonly Value[] { if (!Array.isArray(value)) throw new TypeError("expected array"); return value.map(item); }
-function streamPath(value: unknown, name: string): string { const path = text(value, name); pathValue(path); return path; }
-function child(value: unknown) { const item = object(value); return { path: streamPath(item.path, "path") }; }
-function childrenPage(value: unknown): ChildrenPage {
-  const item = object(value);
-  const hierarchyVersion = decodedCommitId(item.hierarchyVersion, "hierarchyVersion");
-  const children = array(item.children, child);
-  const nextAfter = item.nextAfter === null || item.nextAfter === undefined
-    ? undefined : streamPath(item.nextAfter, "nextAfter");
-  if (nextAfter !== undefined && nextAfter !== children.at(-1)?.path) {
-    throw new TypeError("child continuation does not match the final item");
-  }
-  return { hierarchyVersion, children, ...(nextAfter === undefined ? {} : { nextAfter }) };
-}
-function opaque(value: unknown, name: string): Uint8Array { const encoded = text(value, name); try { return unbase64(encoded); } catch { throw new TypeError(`${name} must be base64`); } }
-function decodedCommitId(value: unknown, name: string): CommitId { return commitId(opaque(value, name)); }
-function decodedKey(value: unknown, name: string): IdempotencyKey { return idempotencyKey(opaque(value, name)); }
-function digest(value: unknown, name: string): Uint8Array { const result = opaque(value, name); if (result.byteLength !== 32) throw new TypeError(`${name} must contain 32 bytes`); return result; }
-function encodedRecord(value: unknown): EncodedRecord { const item = object(value); return { sequence: u64(item.sequence, "record.sequence"), value: opaque(item.value, "record.value"), commitId: decodedCommitId(item.commitId, "record.commitId") }; }
-function appendResult(value: unknown): AppendResult { const item = object(value); const ok = bool(item.ok, "ok"); if (!ok) { if (item.code !== "tail_conflict") throw new TypeError("append conflict code is invalid"); return { ok, code: item.code, actualTail: u64(item.actualTail, "actualTail") }; } const start = u64(item.start, "start"); const end = u64(item.end, "end"); const tail = u64(item.tail, "tail"); if (start > end || end > tail) throw new TypeError("append positions must satisfy start <= end <= tail"); return { ok, start, end, tail, commitId: decodedCommitId(item.commitId, "commitId") }; }
-function forkReceipt(value: unknown): ForkReceipt { const item = object(value); const forkedAt = u64(item.forkedAt, "forkedAt"); const tail = u64(item.tail, "tail"); if (forkedAt > tail) throw new TypeError("forkedAt must not exceed tail"); return { source: streamPath(item.source, "source"), destination: streamPath(item.destination, "destination"), forkedAt, tail, commitId: decodedCommitId(item.commitId, "commitId") }; }
-function trimReceipt(value: unknown): TrimReceipt { const item = object(value); return { path: streamPath(item.path, "path"), trimPoint: u64(item.trimPoint, "trimPoint"), commitId: decodedCommitId(item.commitId, "commitId") }; }
-function deleteReceipt(value: unknown): DeleteReceipt { const item = object(value); return { path: streamPath(item.path, "path"), commitId: decodedCommitId(item.commitId, "commitId") }; }
-function conflict(value: unknown): CommitConflict { const item = object(value); const path = streamPath(item.path, "conflict.path"); if (item.expectedAbsent === true) { if (item.actual !== "exists" && item.actual !== "retired") throw new TypeError("conflict actual state is invalid"); return { path, expectedAbsent: true, actual: item.actual }; } return { path, expectedTail: u64(item.expectedTail, "expectedTail"), actualTail: u64(item.actualTail, "actualTail") }; }
-function commitResult(value: unknown): CommitResult { const item = object(value); const ok = bool(item.ok, "ok"); if (!ok) { if (item.code !== "conflict") throw new TypeError("commit conflict code is invalid"); return { ok, code: item.code, conflicts: array(item.conflicts, conflict) }; } const tailsValue = object(item.tails); const tails: Record<string, Sequence> = {}; for (const [path, tail] of Object.entries(tailsValue)) { pathValue(path); tails[path] = u64(tail, `tail ${path}`); } return { ok, commitId: decodedCommitId(item.commitId, "commitId"), tails, forks: array(item.forks, value => { const fork = object(value); return { path: streamPath(fork.path, "fork.path"), tail: u64(fork.tail, "fork.tail") }; }) }; }
-function mutation(value: unknown): CommittedEnvelope["mutations"][number] { const item = object(value); switch (item.type) { case "append": { const path = streamPath(item.path, "path"); const start = u64(item.start, "start"); const end = u64(item.end, "end"); const tail = u64(item.tail, "tail"); if (start > end || end > tail) throw new TypeError("append positions must satisfy start <= end <= tail"); return { type: item.type, path, start, end, tail, records: array(item.records, encodedRecord) }; } case "fork": { const forkedAt = u64(item.forkedAt, "forkedAt"); const tail = u64(item.tail, "tail"); if (forkedAt > tail) throw new TypeError("forkedAt must not exceed tail"); const records = array(item.records, encodedRecord); if (forkedAt + BigInt(records.length) !== tail) throw new TypeError("fork tail must follow its appended records"); return { type: item.type, source: streamPath(item.source, "source"), destination: streamPath(item.destination, "destination"), forkedAt, tail, records }; } case "trim": return { type: item.type, path: streamPath(item.path, "path"), trimPoint: u64(item.trimPoint, "trimPoint") }; case "delete": return { type: item.type, path: streamPath(item.path, "path") }; default: throw new TypeError("commit mutation type is invalid"); } }
-function envelope(value: unknown): CommittedEnvelope { const item = object(value); return { commitId: decodedCommitId(item.commitId, "commitId"), mutations: array(item.mutations, mutation) }; }
-function idempotency(value: unknown): IdempotencyObservation { const item = object(value); const outcome = object(item.outcome); let parsed: IdempotencyObservation["outcome"]; switch (outcome.type) { case "append": parsed = { type: outcome.type, outcome: appendResult(outcome.outcome) }; break; case "fork": parsed = { type: outcome.type, receipt: forkReceipt(outcome.receipt) }; break; case "trim": parsed = { type: outcome.type, receipt: trimReceipt(outcome.receipt) }; break; case "delete": parsed = { type: outcome.type, receipt: deleteReceipt(outcome.receipt) }; break; case "commit": parsed = { type: outcome.type, outcome: commitResult(outcome.outcome) }; break; default: throw new TypeError("idempotency outcome type is invalid"); } return { idempotencyKey: decodedKey(item.idempotencyKey, "idempotencyKey"), requestDigest: digest(item.requestDigest, "requestDigest"), outcome: parsed }; }
-function token(value: unknown): AccessToken { const item = object(value); const expiresAt = new Date(text(item.expiresAt, "expiresAt")); if (Number.isNaN(expiresAt.getTime())) throw new TypeError("expiresAt must be an ISO timestamp"); return { token: text(item.token, "token"), expiresAt }; }
+function rawObject(value: unknown): Record<string, unknown> { if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("expected object"); return value as Record<string, unknown>; }
+function rawString(value: unknown, name: string): string { if (typeof value !== "string" || value.length === 0) throw new TypeError(`${name} must be text`); return value; }
+function rawU64(value: unknown, name: string): bigint { const text = rawString(value, name); if (!/^(0|[1-9]\d*)$/.test(text)) throw new TypeError(`${name} must be a decimal uint64 string`); const result = BigInt(text); if (result > 0xffff_ffff_ffff_ffffn) throw new TypeError(`${name} exceeds uint64`); return result; }
+function rawBase64(value: Uint8Array): string { let binary = ""; for (const byte of value) binary += String.fromCharCode(byte); return btoa(binary); }
+function rawBytes(value: unknown, name: string): Uint8Array { const encoded = rawString(value, name); try { return Uint8Array.from(atob(encoded), char => char.charCodeAt(0)); } catch { throw new TypeError(`${name} must be base64`); } }
+function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
+function decodeChildrenPage(value: unknown): ChildrenPage { const item = rawObject(value); const hierarchyVersion = commitId(rawBytes(item.hierarchyVersion, "hierarchyVersion")); const rawChildren = item.children; if (!Array.isArray(rawChildren)) throw new TypeError("children must be an array"); const children = rawChildren.map(child => { const path = rawObject(child).path; return { path: rawString(path, "child.path") }; }); const nextAfter = item.nextAfter === undefined || item.nextAfter === null ? undefined : rawString(item.nextAfter, "nextAfter"); if (nextAfter !== undefined && nextAfter !== children.at(-1)?.path) throw new TypeError("child continuation does not match final child"); return { hierarchyVersion, children, ...(nextAfter === undefined ? {} : { nextAfter }) }; }

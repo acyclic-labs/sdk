@@ -1106,10 +1106,30 @@ mod tests {
     )]
     fn descriptor_contains_only_customer_contract() -> Result<(), Box<dyn std::error::Error>> {
         let descriptor = prost_types::FileDescriptorSet::decode(DESCRIPTOR)?;
-        assert_eq!(descriptor.file.len(), 1);
-        let file = &descriptor.file[0];
+        assert_eq!(descriptor.file.len(), 3);
+        let descriptor_names: Vec<_> = descriptor
+            .file
+            .iter()
+            .map(|file| file.name.as_deref())
+            .collect();
+        assert_eq!(
+            descriptor_names,
+            [
+                Some("google/protobuf/descriptor.proto"),
+                Some("validation/v1/options.proto"),
+                Some("inference/v1/inference.proto"),
+            ]
+        );
+        let file = descriptor
+            .file
+            .iter()
+            .find(|file| file.name.as_deref() == Some("inference/v1/inference.proto"))
+            .ok_or("inference descriptor is missing")?;
         assert_eq!(file.package.as_deref(), Some("inference.customer.v1"));
-        assert!(file.dependency.is_empty());
+        assert_eq!(
+            file.dependency,
+            vec!["validation/v1/options.proto".to_owned()]
+        );
         assert_eq!(file.service.len(), 5);
         assert_eq!(file.service[0].name.as_deref(), Some("ModelsService"));
         assert_eq!(file.service[0].method.len(), 1);

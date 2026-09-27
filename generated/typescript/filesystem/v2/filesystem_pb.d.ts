@@ -1946,6 +1946,16 @@ export declare type WorkCounters = Message<"acyclic.filesystem.v2.WorkCounters">
    * @generated from field: uint64 materializations = 22;
    */
   materializations: bigint;
+
+  /**
+   * @generated from field: uint64 source_path_components = 23;
+   */
+  sourcePathComponents: bigint;
+
+  /**
+   * @generated from field: uint64 source_entries_visited = 24;
+   */
+  sourceEntriesVisited: bigint;
 };
 
 /**

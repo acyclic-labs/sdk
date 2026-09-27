@@ -4,6 +4,7 @@ import type {
   Performance, SuspensionPolicy, UsageReceipt,
 } from "./index.js";
 import { HttpMachinesProvider } from "./http.js";
+import { MANAGED_OCI_CONTRACT } from "./managed-oci-contract.js";
 
 export interface MachinesEnvironment {
   readonly endpoint: string;
@@ -34,10 +35,10 @@ export class Machines {
   recoverMutation(key: IdempotencyKey): Promise<MutationOutcome> { return this.provider.recover(key); }
   async recoverOperation(key: IdempotencyKey): Promise<Operation> { return this.operation(await this.provider.recoverOperation(key)); }
   async *list(options: MachineListOptions = {}): AsyncIterable<Machine> {
-    const pageSize = options.pageSize ?? 256;
+    const pageSize = options.pageSize ?? MANAGED_OCI_CONTRACT.maxPageSize;
     const maximum = options.maximum ?? 1024;
-    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 256) throw new RangeError("pageSize must be 1..=256");
-    if (!Number.isSafeInteger(maximum) || maximum < 0 || maximum > 65_536) throw new RangeError("maximum must be 0..=65536");
+    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > MANAGED_OCI_CONTRACT.maxPageSize) throw new RangeError(`pageSize must be 1..=${MANAGED_OCI_CONTRACT.maxPageSize}`);
+    if (!Number.isSafeInteger(maximum) || maximum < 0) throw new RangeError("maximum must be a nonnegative safe integer");
     let cursor = options.after ?? null;
     let yielded = 0;
     while (yielded < maximum) {
@@ -64,7 +65,7 @@ export class Machine {
   wake(key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "woken" }>> { return this.#outcome("woken", this.provider.wake(this.id, key)); }
   setSuspensionPolicy(policy: SuspensionPolicy, key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "suspension-policy-set" }>> { return this.#outcome("suspension-policy-set", this.provider.setSuspensionPolicy(this.id, policy, key)); }
   destroy(key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "machine-destroyed" }>> { return this.#outcome("machine-destroyed", this.provider.destroyMachine(this.id, key)); }
-  events(afterSequence: number | null = null, limit = 256): Promise<{ readonly events: readonly MachineEvent[]; readonly nextSequence: number | null }> { return this.provider.events(this.id, afterSequence, limit); }
+  events(afterSequence: number | null = null, limit = MANAGED_OCI_CONTRACT.maxEventPageSize): Promise<{ readonly events: readonly MachineEvent[]; readonly nextSequence: number | null }> { return this.provider.events(this.id, afterSequence, limit); }
   usage(startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.provider.usage(this.id, startUnixMs, endUnixMs); }
   async #outcome<Kind extends MutationOutcome["kind"]>(kind: Kind, value: Promise<MutationOutcome>): Promise<Extract<MutationOutcome, { kind: Kind }>> { return expectOutcome(await value, kind); }
 }

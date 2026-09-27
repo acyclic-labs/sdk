@@ -3207,7 +3207,7 @@ impl NativeGitCompatRepository {
         branch: String,
         workspace_id: Buffer,
         head: Option<Buffer>,
-        switch: bool,
+        switch_to_branch: bool,
     ) -> Result<String> {
         let head = head.as_ref().map(|value| commit_id(value)).transpose()?;
         let output = self
@@ -3216,7 +3216,7 @@ impl NativeGitCompatRepository {
                 branch,
                 WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
                 head,
-                switch,
+                switch_to_branch,
             )
             .await
             .map_err(napi_error)?;

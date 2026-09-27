@@ -1656,6 +1656,7 @@ export class HarnessBuilder {
     }
     this.contracts.encodeCanonicalJson(definition.inputSchema);
     this.contracts.encodeCanonicalJson(definition.outputSchema);
+    this.contracts.validateToolDefinition(definition);
     const key = toolKey(definition.name, definition.revision);
     if (this.#tools.has(key)) throw new Error(`conflicting registration for ${key}`);
     const previouslyRegistered = [...this.#tools.values()].some(tool => tool.definition.name === definition.name);
@@ -2135,12 +2136,20 @@ export class AgentHarness {
     const contracts = this.contracts;
     const admittedInput = contracts.validateToolValue(registered.definition.inputSchema, input);
     const parsedInput = registered.definition.parseInput(admittedInput);
-    const publishOutput = (value: unknown): Output => registered.definition.parseOutput(
-      contracts.validateToolValue(registered.definition.outputSchema, value));
+    const publishOutput = (value: unknown): Output => {
+      contracts.validateToolResult(registered.definition, { value });
+      return registered.definition.parseOutput(
+        contracts.validateToolValue(registered.definition.outputSchema, value));
+    };
     const toolOperationId = operationId === undefined ? crypto.randomUUID()
       : contracts.validateIdentity("operation", operationId);
     const callId = providerCallId ?? toolOperationId;
     const invocation = { operationId: toolOperationId, callId, name: tool.definition.name, arguments: parsedInput };
+    contracts.validateToolInvocation(registered.definition, {
+      callId,
+      name: invocation.name,
+      arguments: admittedInput,
+    });
     this.#assertPolicyIdentity();
     const policy = this.scope.policyProvider ?? this.components.policy;
     const decision = await policy?.evaluate(

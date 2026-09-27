@@ -203,6 +203,7 @@ case "$lane" in
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi release
     bun run test
+    bun scripts/check-typescript-tarballs.mjs
     bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
     bash scripts/check-filesystem-package.sh "$SDK_ARTIFACT_DIR/packages/filesystem"
     bun scripts/run-harness-conformance.mjs \

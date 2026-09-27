@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Machines WASM browser smoke</title>
+<script type="importmap">
+{
+  "imports": {
+    "@bufbuild/protobuf": "/node_modules/@bufbuild/protobuf/dist/esm/index.js",
+    "@bufbuild/protobuf/codegenv2": "/node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js",
+    "@bufbuild/protobuf/wkt": "/node_modules/@bufbuild/protobuf/dist/esm/wkt/index.js"
+  }
+}
+</script>
+<body data-result="pending">
+<script type="module">
+  import { SimulatedMachines, idempotencyKey } from "../dist/index.js";
+  try {
+    const provider = new SimulatedMachines();
+    const request = {
+      idempotencyKey: idempotencyKey("browser-smoke"),
+      image: { kind: "custom", digestHex: "07".repeat(32) },
+      compatibility: { kind: "best-effort" },
+      performance: "elastic",
+      suspension: { kind: "after-idle", milliseconds: 15000 },
+      expiration: { kind: "never" },
+      networkPolicyDigestHex: "08".repeat(32),
+      budgets: { spendMicros: 0n, concurrency: 0 },
+    };
+    const created = await provider.create(request);
+    if (created.kind !== "created") throw new Error("create outcome");
+    if ((await provider.inspectMachine(created.machine.id)).state !== "running") throw new Error("inspect state");
+    const checkpoint = await provider.checkpoint(created.machine.id, idempotencyKey("browser-checkpoint"));
+    if (checkpoint.kind !== "checkpointed") throw new Error("checkpoint outcome");
+    const fork = await provider.fork(checkpoint.checkpoint.id, 2, "elastic", idempotencyKey("browser-fork"));
+    if (fork.kind !== "forked" || fork.machines.length !== 2) throw new Error("fork outcome");
+    document.body.dataset.result = "passed";
+  } catch (error) {
+    document.body.dataset.result = "failed";
+    document.body.textContent = String(error);
+  }
+</script>
+</html>

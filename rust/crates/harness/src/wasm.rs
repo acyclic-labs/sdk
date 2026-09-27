@@ -4,7 +4,10 @@
     reason = "wasm-bindgen's exported ABI owns JavaScript values and byte buffers"
 )]
 
-use crate::wire_codec::{decode_command, encode_apply_result, protocol_identity};
+use crate::wire_codec::{
+    decode_command, decode_event_payload as decode_payload_wire, encode_apply_result,
+    protocol_identity,
+};
 use crate::{
     AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
     SessionId, TaskId, TurnId,
@@ -14,7 +17,7 @@ use crate::{
         decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
-        ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
+        AggregateKind, ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
         ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
         ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
     },
@@ -23,8 +26,10 @@ use crate::{
     merge::ProjectMergeReceipt,
     resources::{ProviderRef, ResourceRef},
     runtime::{DurableBatchRequest, batch_member_operation_id, task_definition_digest},
+    tool::{ToolDefinition, validate_value},
 };
-use serde::Serialize;
+use prost::Message as _;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use wasm_bindgen::prelude::*;
 
@@ -1229,4 +1234,204 @@ fn normalize_descriptor_lengths(js: &JsValue, value: &serde_json::Value) -> Resu
 
 fn js_error(error: crate::Error) -> JsValue {
     JsValue::from_str(&error.to_string())
+}
+
+/// Decodes one canonical event payload using the native event union.
+#[wasm_bindgen(js_name = decodeEventPayload)]
+pub fn decode_event_payload(
+    event_type: String,
+    canonical_payload_json: Vec<u8>,
+) -> Result<JsValue, JsValue> {
+    let payload = decode_payload_wire(&event_type, &canonical_payload_json).map_err(js_error)?;
+    to_js(&payload)
+}
+
+/// Decodes and validates a canonical Protobuf apply response using Rust-owned
+/// event, authority, scope, digest, and payload rules.
+#[wasm_bindgen(js_name = decodeApplyResponse)]
+pub fn decode_apply_response(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
+    let response = crate::wire::ApplyResponse::decode(bytes.as_slice())
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    let envelope = response
+        .event
+        .ok_or_else(|| JsValue::from_str("apply response event is missing"))?;
+    let (_, event) =
+        crate::wire_codec::decode_event(&envelope.encode_to_vec()).map_err(js_error)?;
+    let result = match crate::wire::ApplyState::try_from(response.state)
+        .map_err(|_| JsValue::from_str("apply response state is invalid"))?
+    {
+        crate::wire::ApplyState::Applied => ApplyResult::Applied { event },
+        crate::wire::ApplyState::Replayed => ApplyResult::Replayed { event },
+        crate::wire::ApplyState::Unspecified => {
+            return Err(JsValue::from_str("apply response state is unspecified"));
+        }
+    };
+    to_js(&result)
+}
+
+/// Decodes a generated aggregate kind using the native enum mapping.
+#[wasm_bindgen(js_name = decodeAggregateKind)]
+pub fn decode_aggregate_kind_wasm(value: i32) -> Result<JsValue, JsValue> {
+    let kind = match crate::wire::AggregateKind::try_from(value)
+        .map_err(|_| JsValue::from_str("aggregate kind is invalid"))?
+    {
+        crate::wire::AggregateKind::Agent => AggregateKind::Agent,
+        crate::wire::AggregateKind::Conversation => AggregateKind::Conversation,
+        crate::wire::AggregateKind::Session => AggregateKind::Session,
+        crate::wire::AggregateKind::Turn => AggregateKind::Turn,
+        crate::wire::AggregateKind::Task => AggregateKind::Task,
+        crate::wire::AggregateKind::Unspecified => {
+            return Err(JsValue::from_str("aggregate kind is unspecified"));
+        }
+    };
+    to_js(&kind)
+}
+
+/// JavaScript-facing tool definition shape. The public TypeScript facade uses
+/// camelCase names while the native definition remains snake_case.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WasmToolDefinitionInput {
+    name: String,
+    revision: String,
+    description: String,
+    input_schema: serde_json::Value,
+    output_schema: serde_json::Value,
+}
+
+impl From<WasmToolDefinitionInput> for ToolDefinition {
+    fn from(value: WasmToolDefinitionInput) -> Self {
+        Self {
+            name: value.name,
+            revision: value.revision,
+            description: value.description,
+            input_schema: value.input_schema,
+            output_schema: value.output_schema,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WasmToolInvocationInput {
+    call_id: String,
+    name: String,
+    arguments: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct WasmToolResultInput {
+    value: serde_json::Value,
+}
+
+/// Validates a model-visible tool definition using the native contract.
+#[wasm_bindgen(js_name = validateToolDefinition)]
+pub fn validate_tool_definition(definition: JsValue) -> Result<(), JsValue> {
+    let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
+    definition.validate().map_err(js_error)
+}
+
+/// Validates one tool invocation against its registered definition.
+#[wasm_bindgen(js_name = validateToolInvocation)]
+pub fn validate_tool_invocation(definition: JsValue, invocation: JsValue) -> Result<(), JsValue> {
+    let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
+    definition.validate().map_err(js_error)?;
+    let invocation: WasmToolInvocationInput = from_js(invocation)?;
+    if invocation.call_id.is_empty() || invocation.name != definition.name {
+        return Err(JsValue::from_str(
+            "tool invocation identity does not match definition",
+        ));
+    }
+    validate_value(
+        &definition.input_schema,
+        &invocation.arguments,
+        "tool input",
+    )
+    .map_err(js_error)
+}
+
+/// Validates one successful tool result against its registered definition.
+#[wasm_bindgen(js_name = validateToolResult)]
+pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), JsValue> {
+    let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
+    definition.validate().map_err(js_error)?;
+    let result: WasmToolResultInput = from_js(result)?;
+    validate_value(&definition.output_schema, &result.value, "tool output").map_err(js_error)
+}
+
+/// Validates a protobuf handshake; returns encoded `Error` bytes, or empty on success.
+#[wasm_bindgen(js_name = validateWireHandshake)]
+pub fn validate_wire_handshake(request: Vec<u8>, response: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| crate::wire_validation::validate_wire_handshake(&request, &response))
+}
+
+/// Validates one complete protobuf command before it crosses a wire adapter.
+#[wasm_bindgen(js_name = validateWireCommand)]
+pub fn validate_wire_command(command: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| crate::wire_codec::decode_command(&command).map(|_| ()))
+}
+
+/// Validates only the protocol identity of a command envelope.
+#[wasm_bindgen(js_name = validateWireCommandProtocol)]
+pub fn validate_wire_command_protocol(command: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| {
+        let command = crate::wire::CommandEnvelope::decode(command.as_slice())
+            .map_err(|error| crate::Error::Invalid(format!("invalid command envelope: {error}")))?;
+        crate::wire_api::validate_command_protocol(&command)
+    })
+}
+
+/// Validates a protobuf replay request against the compiled protocol identity.
+#[wasm_bindgen(js_name = validateWireResume)]
+pub fn validate_wire_resume(request: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| {
+        let request = crate::wire::ResumeRequest::decode(request.as_slice())
+            .map_err(|error| crate::Error::Invalid(format!("invalid resume request: {error}")))?;
+        crate::wire_api::validate_resume_protocol(&request)
+    })
+}
+
+/// Validates a protobuf observe request using the canonical Rust scope rules.
+#[wasm_bindgen(js_name = validateWireObserve)]
+pub fn validate_wire_observe(request: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| {
+        let request = crate::wire::ObserveRequest::decode(request.as_slice())
+            .map_err(|error| crate::Error::Invalid(format!("invalid observe request: {error}")))?;
+        crate::wire_api::validate_observe_request(&request).map(|_| ())
+    })
+}
+
+/// Validates a protobuf cancel request using the canonical Rust scope rules.
+#[wasm_bindgen(js_name = validateWireCancel)]
+pub fn validate_wire_cancel(request: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| {
+        let request = crate::wire::CancelRequest::decode(request.as_slice())
+            .map_err(|error| crate::Error::Invalid(format!("invalid cancel request: {error}")))?;
+        crate::wire_api::validate_cancel_request(&request).map(|_| ())
+    })
+}
+
+/// Validates a protobuf admission identity; returns encoded `Error` bytes, or empty on success.
+#[wasm_bindgen(js_name = validateWireAdmission)]
+pub fn validate_wire_admission(command: Vec<u8>, admission: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| crate::wire_validation::validate_wire_admission(&command, &admission))
+}
+
+/// Validates a protobuf operation status identity; returns encoded `Error` bytes, or empty on success.
+#[wasm_bindgen(js_name = validateWireStatus)]
+pub fn validate_wire_status(request: Vec<u8>, status: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| crate::wire_validation::validate_wire_status(&request, &status))
+}
+
+/// Validates a protobuf cancellation identity; returns encoded `Error` bytes, or empty on success.
+#[wasm_bindgen(js_name = validateWireCancellation)]
+pub fn validate_wire_cancellation(request: Vec<u8>, response: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| crate::wire_validation::validate_wire_cancellation(&request, &response))
+}
+
+fn validate_wire(validate: impl FnOnce() -> crate::Result<()>) -> Vec<u8> {
+    validate().map_or_else(
+        |error| crate::encode_error(&error).encode_to_vec(),
+        |_| Vec::new(),
+    )
 }

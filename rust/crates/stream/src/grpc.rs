@@ -12,6 +12,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{StreamExt, stream};
+use prost::Message;
 use thiserror::Error;
 use tonic::{
     Code, Request, Response, Status,
@@ -93,6 +94,14 @@ impl<P> Clone for Service<P> {
         Self {
             provider: Arc::clone(&self.provider),
         }
+    }
+}
+
+fn check_command_size<T: Message>(request: &T) -> Result<(), Status> {
+    if request.encoded_len() > crate::MAX_COMMAND_BYTES {
+        Err(error_status(&StreamError::LimitExceeded))
+    } else {
+        Ok(())
     }
 }
 
@@ -778,6 +787,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::InspectIdempotencyRequest>,
     ) -> Result<Response<wire::InspectIdempotencyResponse>, Status> {
+        check_command_size(request.get_ref())?;
         let key = IdempotencyKey::new(request.into_inner().idempotency_key)
             .map_err(|error| error_status(&error))?;
         let observation = self
@@ -795,6 +805,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::AppendRequest>,
     ) -> Result<Response<wire::AppendResponse>, Status> {
+        check_command_size(request.get_ref())?;
         let request = request.into_inner();
         let outcome = self
             .provider
@@ -814,6 +825,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::TailRequest>,
     ) -> Result<Response<wire::TailResponse>, Status> {
+        check_command_size(request.get_ref())?;
         let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
         let bounds = self
             .provider
@@ -830,6 +842,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::ForkRequest>,
     ) -> Result<Response<wire::ForkReceipt>, Status> {
+        check_command_size(request.get_ref())?;
         let request = request.into_inner();
         let receipt = self
             .provider
@@ -849,6 +862,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::TrimRequest>,
     ) -> Result<Response<wire::TrimReceipt>, Status> {
+        check_command_size(request.get_ref())?;
         let request = request.into_inner();
         let receipt = self
             .provider
@@ -866,6 +880,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::DeleteRequest>,
     ) -> Result<Response<wire::DeleteReceipt>, Status> {
+        check_command_size(request.get_ref())?;
         let request = request.into_inner();
         let receipt = self
             .provider
@@ -882,6 +897,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
+        check_command_size(request.get_ref())?;
         let request = request.into_inner();
         let records = self
             .provider
@@ -910,6 +926,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::FollowRequest>,
     ) -> Result<Response<Self::FollowStream>, Status> {
+        check_command_size(request.get_ref())?;
         let request = request.into_inner();
         let records = self
             .provider
@@ -937,6 +954,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::ChildrenRequest>,
     ) -> Result<Response<Self::ChildrenStream>, Status> {
+        check_command_size(request.get_ref())?;
         let request = request.into_inner();
         let children = self
             .provider
@@ -1010,6 +1028,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::CommitRequest>,
     ) -> Result<Response<wire::CommitResponse>, Status> {
+        check_command_size(request.get_ref())?;
         let request = request.into_inner();
         let deadline_unix_millis = request.deadline_unix_millis;
         let request = CommitRequest {
@@ -1041,6 +1060,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::ReadCommitRequest>,
     ) -> Result<Response<wire::CommittedEnvelope>, Status> {
+        check_command_size(request.get_ref())?;
         let commit_id =
             commit_id(&request.into_inner().commit_id).map_err(|error| error_status(&error))?;
         let envelope = self
@@ -1233,6 +1253,24 @@ mod tests {
         )?;
         crate::conformance::verify(&transport).await?;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn service_rejects_oversized_wire_commands_before_provider_dispatch() {
+        let service = Service::new(Arc::new(MemoryStream::default()));
+        let request = wire::AppendRequest {
+            path: "x".repeat(crate::MAX_PATH_BYTES),
+            records: vec![Bytes::from(vec![0_u8; crate::MAX_RECORD_BYTES]); 16],
+            if_tail: None,
+            idempotency_key: None,
+        };
+        assert!(request.encoded_len() > crate::MAX_COMMAND_BYTES);
+        let error = service.append(Request::new(request)).await.err();
+        assert_eq!(
+            error.as_ref().map(Status::code),
+            Some(Code::InvalidArgument)
+        );
+        assert_eq!(error.as_ref().map(Status::message), Some("limit_exceeded"));
     }
 
     #[test]

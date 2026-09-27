@@ -1077,6 +1077,28 @@ export declare type ErrorDetail = Message<"acyclic.objects.v1.ErrorDetail"> & {
 export declare const ErrorDetailSchema: GenMessage<ErrorDetail>;
 
 /**
+ * Fixed limits shared by every Objects transport.
+ *
+ * @generated from enum acyclic.objects.v1.ObjectsLimit
+ */
+export enum ObjectsLimit {
+  /**
+   * @generated from enum value: OBJECTS_LIMIT_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: OBJECTS_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES = 256;
+   */
+  MAX_IDEMPOTENCY_KEY_BYTES = 256,
+}
+
+/**
+ * Describes the enum acyclic.objects.v1.ObjectsLimit.
+ */
+export declare const ObjectsLimitSchema: GenEnum<ObjectsLimit>;
+
+/**
  * @generated from enum acyclic.objects.v1.ListingMode
  */
 export enum ListingMode {

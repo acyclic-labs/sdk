@@ -1,4 +1,4 @@
-import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
+import { create, fromBinary, fromJsonString, toBinary, toJsonString } from "@bufbuild/protobuf";
 /** Injectable HTTP function; host-specific fetch extras are not required of test or custom transports. */
 export type HttpFetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 import {
@@ -8,7 +8,6 @@ import {
   CancelResponseSchema,
   ClientFrameSchema,
   CommandEnvelopeSchema,
-  CompletionState,
   ErrorCode,
   ErrorSchema,
   ObserveRequestSchema,
@@ -35,6 +34,7 @@ import {
   type HandshakeResponse,
 } from "../generated/proto/protocol/v1/protocol_pb.js";
 import { TerminalAdmissionError } from "./client.js";
+import { NativeContracts } from "./native-contracts.js";
 
 export interface WireConnection extends AsyncIterable<Delivery> {
   send(command: CommandEnvelope): Promise<void>;
@@ -88,18 +88,25 @@ export class EmbeddedWireTransport implements WireTransport {
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
     resume = withResumeProtocol(resume, this.negotiation);
-    validateHandshake(this.negotiation, await this.api.handshake(this.negotiation));
+    await validateResume(resume);
+    await validateHandshake(this.negotiation, await this.api.handshake(this.negotiation));
     const deliveries = this.api.replay(resume, signal);
     return {
-      send: command => this.api.submit(withProtocol(command, this.negotiation)),
+      send: async command => {
+        command = withProtocol(command, this.negotiation);
+        await validateCommand(command);
+        return this.api.submit(command);
+      },
       observe: async request => {
         request = withObserveProtocol(request, this.negotiation);
+        await validateObserve(request);
         return validateStatus(request, this.negotiation, await this.api.observe(request));
       },
       cancel: async request => {
         request = withCancelProtocol(request, this.negotiation);
+        await validateCancel(request);
         const response = await this.api.cancel(request);
-        validateCancelIdentity(request, this.negotiation, response);
+        await validateCancelIdentity(request, this.negotiation, response);
         return response;
       },
       close() {},
@@ -121,12 +128,13 @@ export class JsonlWireTransport implements WireTransport {
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
     resume = withResumeProtocol(resume, this.negotiation);
+    await validateResume(resume);
     const channel = await this.open(signal);
     const source = channel[Symbol.asyncIterator]();
     await channel.write(clientFrameJson({ case: "handshake", value: this.negotiation }));
     const first = await source.next();
     if (first.done) throw new WireError(ErrorCode.UNSUPPORTED, "missing handshake response");
-    validateHandshake(this.negotiation, handshakeFromFrame(parseServerFrame(first.value)));
+    await validateHandshake(this.negotiation, handshakeFromFrame(parseServerFrame(first.value)));
     const connection = new FramedConnection(source, line => channel.write(line), () => channel.close(), this.negotiation);
     await channel.write(clientFrameJson({ case: "resume", value: resume }));
     return connection;
@@ -144,6 +152,7 @@ export class WebSocketWireTransport implements WireTransport {
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
     resume = withResumeProtocol(resume, this.negotiation);
+    await validateResume(resume);
     const socket = this.factory(this.url, ["acyclic.harness.v2"]);
     const incoming = new AsyncQueue<string>();
     const onMessage = (event: MessageEvent) => {
@@ -159,7 +168,7 @@ export class WebSocketWireTransport implements WireTransport {
     socket.send(clientFrameJson({ case: "handshake", value: this.negotiation }));
     const first = await source.next();
     if (first.done) throw new WireError(ErrorCode.UNSUPPORTED, "missing handshake response");
-    validateHandshake(this.negotiation, handshakeFromFrame(parseServerFrame(first.value)));
+    await validateHandshake(this.negotiation, handshakeFromFrame(parseServerFrame(first.value)));
     const close = () => {
       socket.removeEventListener("message", onMessage);
       socket.removeEventListener("close", onClose);
@@ -182,6 +191,7 @@ export class HttpSseWireTransport implements WireTransport {
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
     resume = withResumeProtocol(resume, this.negotiation);
+    await validateResume(resume);
     const handshakeResponse = await this.fetcher(new URL("v2/harness/handshake", withSlash(this.baseUrl)), {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -189,7 +199,7 @@ export class HttpSseWireTransport implements WireTransport {
       ...(signal === undefined ? {} : { signal }),
     });
     if (!handshakeResponse.ok) throw new WireError(ErrorCode.UNSUPPORTED, "handshake failed");
-    validateHandshake(this.negotiation, fromJsonString(HandshakeResponseSchema, await handshakeResponse.text()));
+    await validateHandshake(this.negotiation, fromJsonString(HandshakeResponseSchema, await handshakeResponse.text()));
     const response = await this.fetcher(new URL("v2/harness/replay", withSlash(this.baseUrl)), {
       method: "POST",
       headers: { accept: "text/event-stream", "content-type": "application/json" },
@@ -203,6 +213,7 @@ export class HttpSseWireTransport implements WireTransport {
     return {
       async send(command) {
         command = withProtocol(command, negotiation);
+        await validateCommand(command);
         const submitted = await fetcher(new URL("v2/harness/commands", withSlash(baseUrl)), {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -212,7 +223,7 @@ export class HttpSseWireTransport implements WireTransport {
         if (!submitted.ok) {
           try {
             const admission = fromJsonString(AdmissionSchema, await submitted.text());
-            validateAdmissionIdentity(command, admission);
+            await validateAdmissionIdentity(command, admission);
             if (admission.state === AdmissionState.REJECTED) {
               throw new TerminalAdmissionError(admission.error?.message ?? "command was rejected");
             }
@@ -222,7 +233,7 @@ export class HttpSseWireTransport implements WireTransport {
           throw new WireError(ErrorCode.INDETERMINATE, `command failed: ${submitted.status}`);
         }
         const admission = fromJsonString(AdmissionSchema, await submitted.text());
-        validateAdmissionIdentity(command, admission);
+        await validateAdmissionIdentity(command, admission);
         if (admission.state === AdmissionState.REJECTED) {
           throw new TerminalAdmissionError(admission.error?.message ?? "command was rejected");
         }
@@ -235,6 +246,7 @@ export class HttpSseWireTransport implements WireTransport {
       },
       async observe(request) {
         request = withObserveProtocol(request, negotiation);
+        await validateObserve(request);
         const observed = await fetcher(new URL("v2/harness/operations/observe", withSlash(baseUrl)), {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -246,6 +258,7 @@ export class HttpSseWireTransport implements WireTransport {
       },
       async cancel(request) {
         request = withCancelProtocol(request, negotiation);
+        await validateCancel(request);
         const cancelled = await fetcher(new URL("v2/harness/operations/cancel", withSlash(baseUrl)), {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -254,7 +267,7 @@ export class HttpSseWireTransport implements WireTransport {
         });
         if (!cancelled.ok) throw await httpWireError(cancelled, "cancel");
         const response = fromJsonString(CancelResponseSchema, await cancelled.text());
-        validateCancelIdentity(request, negotiation, response);
+        await validateCancelIdentity(request, negotiation, response);
         return response;
       },
       async close() {},
@@ -279,18 +292,25 @@ export class GrpcWireTransport implements WireTransport {
   ) {}
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
     resume = withResumeProtocol(resume, this.negotiation);
-    validateHandshake(this.negotiation, await this.handshakeGrpc(this.negotiation));
+    await validateResume(resume);
+    await validateHandshake(this.negotiation, await this.handshakeGrpc(this.negotiation));
     const connection = await this.connectGrpc(resume, signal);
     return {
-      send: command => connection.send(withProtocol(command, this.negotiation)),
+      send: async command => {
+        command = withProtocol(command, this.negotiation);
+        await validateCommand(command);
+        return connection.send(command);
+      },
       observe: async request => {
         request = withObserveProtocol(request, this.negotiation);
+        await validateObserve(request);
         return validateStatus(request, this.negotiation, await connection.observe(request));
       },
       cancel: async request => {
         request = withCancelProtocol(request, this.negotiation);
+        await validateCancel(request);
         const response = await connection.cancel(request);
-        validateCancelIdentity(request, this.negotiation, response);
+        await validateCancelIdentity(request, this.negotiation, response);
         return response;
       },
       close: () => connection.close(),
@@ -307,7 +327,7 @@ export class WireError extends Error {
 
 class FramedConnection implements WireConnection {
   readonly #deliveries = new AsyncQueue<Delivery>();
-  readonly #pending = new Map<string, { idempotencyKey: string; resolve(): void; reject(error: unknown): void }>();
+  readonly #pending = new Map<string, { command: CommandEnvelope; resolve(): void; reject(error: unknown): void }>();
   readonly #observations = new Map<string, {
     request: ObserveRequest;
     resolve(status: OperationStatus): void;
@@ -318,6 +338,8 @@ class FramedConnection implements WireConnection {
     resolve(response: CancelResponse): void;
     reject(error: unknown): void;
   }>();
+  /** Reservations cover the async Rust validation window before a request is framed. */
+  readonly #controls = new Set<string>();
 
   constructor(
     source: AsyncIterator<string>,
@@ -330,13 +352,13 @@ class FramedConnection implements WireConnection {
 
   async send(command: CommandEnvelope): Promise<void> {
     command = withProtocol(command, this.negotiation);
+    await validateCommand(command);
     const operationId = command.operation?.operationId;
     if (!operationId) throw new TypeError("command operation identity is missing");
     if (this.#pending.has(operationId)) throw new Error("command admission is already pending");
-    const idempotencyKey = command.operation?.idempotencyKey;
-    if (!idempotencyKey) throw new TypeError("command idempotency key is missing");
+    if (!command.operation?.idempotencyKey) throw new TypeError("command idempotency key is missing");
     const admission = new Promise<void>((resolve, reject) =>
-      this.#pending.set(operationId, { idempotencyKey, resolve, reject }),
+      this.#pending.set(operationId, { command, resolve, reject }),
     );
     try {
       await this.write(clientFrameJson({ case: "command", value: command }));
@@ -351,19 +373,28 @@ class FramedConnection implements WireConnection {
     request = withObserveProtocol(request, this.negotiation);
     const operationId = request.operationId;
     if (!operationId) throw new TypeError("observe operation identity is missing");
-    if (this.#observations.has(operationId) || this.#cancellations.has(operationId)) {
+    if (this.#controls.has(operationId)) {
       throw new Error("operation control request is already pending");
     }
-    const observed = new Promise<OperationStatus>((resolve, reject) =>
-      this.#observations.set(operationId, { request, resolve, reject }),
-    );
+    this.#controls.add(operationId);
     try {
+      await validateObserve(request);
+      if (!this.#controls.has(operationId)) {
+        throw new WireError(ErrorCode.INDETERMINATE, "connection closed during operation control validation");
+      }
+      if (this.#observations.has(operationId) || this.#cancellations.has(operationId)) {
+        throw new Error("operation control request is already pending");
+      }
+      const observed = new Promise<OperationStatus>((resolve, reject) =>
+        this.#observations.set(operationId, { request, resolve, reject }),
+      );
       await this.write(clientFrameJson({ case: "observe", value: request }));
+      return observed;
     } catch (error) {
       this.#observations.delete(operationId);
+      this.#controls.delete(operationId);
       throw error;
     }
-    return observed;
   }
 
   async cancel(request: CancelRequest): Promise<CancelResponse> {
@@ -371,19 +402,28 @@ class FramedConnection implements WireConnection {
     const operationId = request.operationId;
     const idempotencyKey = request.idempotencyKey;
     if (!operationId || !idempotencyKey) throw new TypeError("cancel operation identity is missing");
-    if (this.#cancellations.has(operationId) || this.#observations.has(operationId)) {
+    if (this.#controls.has(operationId)) {
       throw new Error("operation control request is already pending");
     }
-    const cancelled = new Promise<CancelResponse>((resolve, reject) =>
-      this.#cancellations.set(operationId, { request, resolve, reject }),
-    );
+    this.#controls.add(operationId);
     try {
+      await validateCancel(request);
+      if (!this.#controls.has(operationId)) {
+        throw new WireError(ErrorCode.INDETERMINATE, "connection closed during operation control validation");
+      }
+      if (this.#cancellations.has(operationId) || this.#observations.has(operationId)) {
+        throw new Error("operation control request is already pending");
+      }
+      const cancelled = new Promise<CancelResponse>((resolve, reject) =>
+        this.#cancellations.set(operationId, { request, resolve, reject }),
+      );
       await this.write(clientFrameJson({ case: "cancel", value: request }));
+      return cancelled;
     } catch (error) {
       this.#cancellations.delete(operationId);
+      this.#controls.delete(operationId);
       throw error;
     }
-    return cancelled;
   }
 
   async close(): Promise<void> {
@@ -407,15 +447,16 @@ class FramedConnection implements WireConnection {
           const pending = id ? this.#pending.get(id) : undefined;
           if (!pending) throw new Error("admission has no matching command");
           this.#pending.delete(id!);
-          if (frame.frame.value.operation?.idempotencyKey !== pending.idempotencyKey) {
-            pending.reject(new WireError(ErrorCode.CONFLICT, "admission identity mismatch"));
-            continue;
-          }
-          if (frame.frame.value.state === AdmissionState.ACCEPTED) pending.resolve();
-          else if (frame.frame.value.state === AdmissionState.REJECTED) {
-            pending.reject(new TerminalAdmissionError(frame.frame.value.error?.message ?? "rejected"));
-          } else {
-            pending.reject(new WireError(ErrorCode.INDETERMINATE, "command outcome is indeterminate"));
+          try {
+            await validateAdmissionIdentity(pending.command, frame.frame.value);
+            if (frame.frame.value.state === AdmissionState.ACCEPTED) pending.resolve();
+            else if (frame.frame.value.state === AdmissionState.REJECTED) {
+              pending.reject(new TerminalAdmissionError(frame.frame.value.error?.message ?? "rejected"));
+            } else {
+              pending.reject(new WireError(ErrorCode.INDETERMINATE, "command outcome is indeterminate"));
+            }
+          } catch (error) {
+            pending.reject(error);
           }
         } else if (frame.frame.case === "error") {
           const error = new WireError(frame.frame.value.code, frame.frame.value.message);
@@ -424,12 +465,14 @@ class FramedConnection implements WireConnection {
           const observation = this.#observations.get(operationId);
           if (observation) {
             this.#observations.delete(operationId);
+            this.#controls.delete(operationId);
             observation.reject(error);
             correlated = true;
           }
           const cancellation = this.#cancellations.get(operationId);
           if (cancellation) {
             this.#cancellations.delete(operationId);
+            this.#controls.delete(operationId);
             cancellation.reject(error);
             correlated = true;
           }
@@ -438,23 +481,25 @@ class FramedConnection implements WireConnection {
           const operationId = frame.frame.value.operation?.operationId ?? "";
           const pending = this.#observations.get(operationId);
           if (!pending) throw new Error("operation status has no matching observation");
-          const status = validateStatus(pending.request, this.negotiation, frame.frame.value);
+          const status = await validateStatus(pending.request, this.negotiation, frame.frame.value);
           this.#observations.delete(operationId);
+          this.#controls.delete(operationId);
           pending.resolve(status);
         } else if (frame.frame.case === "cancellation") {
           const operationId = frame.frame.value.operation?.operationId;
           const pending = operationId ? this.#cancellations.get(operationId) : undefined;
           if (!pending) throw new Error("cancellation has no matching request");
           this.#cancellations.delete(operationId!);
+          this.#controls.delete(operationId!);
           try {
-            validateCancelIdentity(pending.request, this.negotiation, frame.frame.value);
+            await validateCancelIdentity(pending.request, this.negotiation, frame.frame.value);
             pending.resolve(frame.frame.value);
           } catch (error) {
             pending.reject(error);
           }
         }
       }
-      if (this.#pending.size > 0 || this.#observations.size > 0 || this.#cancellations.size > 0) {
+      if (this.#pending.size > 0 || this.#observations.size > 0 || this.#cancellations.size > 0 || this.#controls.size > 0) {
         const error = new WireError(ErrorCode.INDETERMINATE, "connection ended before admission");
         this.#fail(error);
         return;
@@ -472,6 +517,7 @@ class FramedConnection implements WireConnection {
     this.#observations.clear();
     for (const pending of this.#cancellations.values()) pending.reject(error);
     this.#cancellations.clear();
+    this.#controls.clear();
     this.#deliveries.fail(error);
   }
 }
@@ -529,50 +575,31 @@ function clientFrameJson(frameValue: Exclude<ClientFrame["frame"], { case: undef
   return `${toJsonString(ClientFrameSchema, frame)}\n`;
 }
 
-function validateStatus(
+async function validateStatus(
   request: ObserveRequest,
-  negotiation: HandshakeRequest,
+  _negotiation: HandshakeRequest,
   status: OperationStatus,
-): OperationStatus {
-  if (
-    request.operationId.length === 0 || status.operation?.operationId !== request.operationId ||
-    request.owner === undefined || status.owner === undefined ||
-    request.owner.kind !== status.owner.kind || request.owner.id !== status.owner.id ||
-    (status.error?.operationId !== undefined && status.error.operationId.length > 0 &&
-      status.error.operationId !== request.operationId) ||
-    status.protocol === undefined || negotiation.protocol === undefined ||
-    status.protocol.version !== negotiation.protocol.version ||
-    status.protocol.descriptorDigest !== negotiation.protocol.descriptorDigest ||
-    status.state < CompletionState.RUNNING || status.state > CompletionState.INDETERMINATE
-  ) {
-    throw new WireError(ErrorCode.CONFLICT, "operation status identity mismatch");
-  }
+): Promise<OperationStatus> {
+  const contracts = await NativeContracts.create();
+  assertNativeWireResult(
+    contracts.validateWireStatus(toBinary(ObserveRequestSchema, request), toBinary(OperationStatusSchema, status)),
+    ErrorCode.CONFLICT,
+    "operation status identity mismatch",
+  );
   return status;
 }
 
-function validateCancelIdentity(
+async function validateCancelIdentity(
   request: CancelRequest,
-  negotiation: HandshakeRequest,
+  _negotiation: HandshakeRequest,
   response: CancelResponse,
-): void {
-  const expected = {
-    operationId: request.operationId,
-    idempotencyKey: request.idempotencyKey,
-  };
-  const actual = response.operation;
-  if (
-    actual === undefined || response.status === undefined ||
-    expected.operationId.length === 0 || expected.idempotencyKey.length === 0 ||
-    expected.operationId !== actual.operationId || expected.idempotencyKey !== actual.idempotencyKey
-  ) {
-    throw new WireError(ErrorCode.CONFLICT, "cancellation identity mismatch");
-  }
-  validateStatus(create(ObserveRequestSchema, {
-    protocol: request.protocol,
-    owner: request.owner,
-    operationId: request.operationId,
-    scope: request.scope,
-  }), negotiation, response.status);
+): Promise<void> {
+  const contracts = await NativeContracts.create();
+  assertNativeWireResult(
+    contracts.validateWireCancellation(toBinary(CancelRequestSchema, request), toBinary(CancelResponseSchema, response)),
+    ErrorCode.CONFLICT,
+    "cancellation identity mismatch",
+  );
 }
 
 function parseServerFrame(value: string): ServerFrame {
@@ -586,33 +613,76 @@ function handshakeFromFrame(frame: ServerFrame): HandshakeResponse {
   return frame.frame.value;
 }
 
-function validateAdmissionIdentity(command: CommandEnvelope, admission: Admission): void {
-  const expected = command.operation;
-  const actual = admission.operation;
-  if (
-    expected === undefined || actual === undefined ||
-    expected.operationId.length === 0 || expected.idempotencyKey.length === 0 ||
-    actual.operationId.length === 0 || actual.idempotencyKey.length === 0 ||
-    actual.operationId !== expected.operationId ||
-    actual.idempotencyKey !== expected.idempotencyKey
-  ) {
-    throw new WireError(ErrorCode.CONFLICT, "admission identity mismatch");
-  }
+async function validateAdmissionIdentity(command: CommandEnvelope, admission: Admission): Promise<void> {
+  const contracts = await NativeContracts.create();
+  assertNativeWireResult(
+    contracts.validateWireAdmission(toBinary(CommandEnvelopeSchema, command), toBinary(AdmissionSchema, admission)),
+    ErrorCode.CONFLICT,
+    "admission identity mismatch",
+  );
 }
 
-function validateHandshake(request: HandshakeRequest, response: HandshakeResponse): void {
-  if (!request.protocol || !response.protocol ||
-      request.protocol.version !== response.protocol.version ||
-      request.protocol.descriptorDigest !== response.protocol.descriptorDigest) {
-    throw new WireError(ErrorCode.UNSUPPORTED, "protocol identity mismatch");
-  }
-  const supported = new Set(
-    (response.supported?.capabilities ?? []).map(value => `${value.name}\u0000${value.version}`),
+async function validateHandshake(request: HandshakeRequest, response: HandshakeResponse): Promise<void> {
+  const contracts = await NativeContracts.create();
+  assertNativeWireResult(
+    contracts.validateWireHandshake(toBinary(HandshakeRequestSchema, request), toBinary(HandshakeResponseSchema, response)),
+    ErrorCode.UNSUPPORTED,
+    "protocol identity mismatch",
   );
-  for (const capability of request.required?.capabilities ?? []) {
-    if (!supported.has(`${capability.name}\u0000${capability.version}`)) {
-      throw new WireError(ErrorCode.UNSUPPORTED, `unsupported capability: ${capability.name}`);
-    }
+}
+
+async function validateCommand(command: CommandEnvelope): Promise<void> {
+  const contracts = await NativeContracts.create();
+  assertNativeWireResult(
+    contracts.validateWireCommand(toBinary(CommandEnvelopeSchema, command)),
+    ErrorCode.INVALID,
+    "invalid command envelope",
+  );
+  assertNativeWireResult(
+    contracts.validateWireCommandProtocol(toBinary(CommandEnvelopeSchema, command)),
+    ErrorCode.UNSUPPORTED,
+    "protocol identity mismatch",
+  );
+}
+
+async function validateResume(request: ResumeRequest): Promise<void> {
+  const contracts = await NativeContracts.create();
+  assertNativeWireResult(
+    contracts.validateWireResume(toBinary(ResumeRequestSchema, request)),
+    ErrorCode.UNSUPPORTED,
+    "protocol identity mismatch",
+  );
+}
+
+async function validateObserve(request: ObserveRequest): Promise<void> {
+  const contracts = await NativeContracts.create();
+  assertNativeWireResult(
+    contracts.validateWireObserve(toBinary(ObserveRequestSchema, request)),
+    ErrorCode.INVALID,
+    "invalid observe request",
+  );
+}
+
+async function validateCancel(request: CancelRequest): Promise<void> {
+  const contracts = await NativeContracts.create();
+  assertNativeWireResult(
+    contracts.validateWireCancel(toBinary(CancelRequestSchema, request)),
+    ErrorCode.INVALID,
+    "invalid cancel request",
+  );
+}
+
+function assertNativeWireResult(bytes: Uint8Array, fallbackCode: ErrorCode, fallbackMessage: string): void {
+  if (bytes.byteLength === 0) return;
+  try {
+    const error = fromBinary(ErrorSchema, bytes);
+    throw new WireError(
+      error.code === ErrorCode.UNSPECIFIED ? fallbackCode : error.code,
+      error.message || fallbackMessage,
+    );
+  } catch (error) {
+    if (error instanceof WireError) throw error;
+    throw new WireError(fallbackCode, fallbackMessage);
   }
 }
 

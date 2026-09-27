@@ -1,5 +1,24 @@
 /* tslint:disable */
 /* eslint-disable */
+/**
+ * Ordered authority-resolution level from the runtime root to one invocation.
+ */
+export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | "turn" | "task" | "invocation";
+
+/**
+ * Stable wire identity used during compatibility handshakes.
+ */
+export interface ProtocolIdentity {
+    /**
+     * Semantic protocol version.
+     */
+    version: string;
+    /**
+     * Digest of the canonical descriptor set.
+     */
+    descriptor_digest: string;
+}
+
 
 /**
  * Opaque synchronous reducer hosted in WebAssembly.
@@ -142,6 +161,17 @@ export class WasmReducer {
 export function batchMemberOperationId(group: string, batch: string, index: number): string;
 
 /**
+ * Decodes a generated aggregate kind using the native enum mapping.
+ */
+export function decodeAggregateKind(value: number): any;
+
+/**
+ * Decodes and validates a canonical Protobuf apply response using Rust-owned
+ * event, authority, scope, digest, and payload rules.
+ */
+export function decodeApplyResponse(bytes: Uint8Array): any;
+
+/**
  * Decodes a complete canonical attachment list without a reducer instance.
  */
 export function decodeAttachmentManifest(manifest: any, bytes: Uint8Array, item_count: number): any;
@@ -151,6 +181,11 @@ export function decodeAttachmentManifest(manifest: any, bytes: Uint8Array, item_
  * JavaScript Number. Large serde integers are returned as `BigInt`.
  */
 export function decodeCanonicalJson(bytes: Uint8Array): any;
+
+/**
+ * Decodes one canonical event payload using the native event union.
+ */
+export function decodeEventPayload(event_type: string, canonical_payload_json: Uint8Array): any;
 
 /**
  * Parses external JSON with exact integers but without demanding canonical
@@ -224,10 +259,70 @@ export function validateConversationMessageId(value: string): string;
 export function validateIdentity(kind: string, value: string): string;
 
 /**
+ * Validates a model-visible tool definition using the native contract.
+ */
+export function validateToolDefinition(definition: any): void;
+
+/**
+ * Validates one tool invocation against its registered definition.
+ */
+export function validateToolInvocation(definition: any, invocation: any): void;
+
+/**
+ * Validates one successful tool result against its registered definition.
+ */
+export function validateToolResult(definition: any, result: any): void;
+
+/**
  * Applies the same JSON Schema admission used by Rust tool execution before
  * a TypeScript facade turns an untrusted model value into a typed argument.
  */
 export function validateToolValue(schema: any, value: any): any;
+
+/**
+ * Validates a protobuf admission identity; returns encoded `Error` bytes, or empty on success.
+ */
+export function validateWireAdmission(command: Uint8Array, admission: Uint8Array): Uint8Array;
+
+/**
+ * Validates a protobuf cancel request using the canonical Rust scope rules.
+ */
+export function validateWireCancel(request: Uint8Array): Uint8Array;
+
+/**
+ * Validates a protobuf cancellation identity; returns encoded `Error` bytes, or empty on success.
+ */
+export function validateWireCancellation(request: Uint8Array, response: Uint8Array): Uint8Array;
+
+/**
+ * Validates one complete protobuf command before it crosses a wire adapter.
+ */
+export function validateWireCommand(command: Uint8Array): Uint8Array;
+
+/**
+ * Validates only the protocol identity of a command envelope.
+ */
+export function validateWireCommandProtocol(command: Uint8Array): Uint8Array;
+
+/**
+ * Validates a protobuf handshake; returns encoded `Error` bytes, or empty on success.
+ */
+export function validateWireHandshake(request: Uint8Array, response: Uint8Array): Uint8Array;
+
+/**
+ * Validates a protobuf observe request using the canonical Rust scope rules.
+ */
+export function validateWireObserve(request: Uint8Array): Uint8Array;
+
+/**
+ * Validates a protobuf replay request against the compiled protocol identity.
+ */
+export function validateWireResume(request: Uint8Array): Uint8Array;
+
+/**
+ * Validates a protobuf operation status identity; returns encoded `Error` bytes, or empty on success.
+ */
+export function validateWireStatus(request: Uint8Array, status: Uint8Array): Uint8Array;
 
 /**
  * Checks immutable file identity without constructing a reducer or issuer.
@@ -240,8 +335,11 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
     readonly batchMemberOperationId: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly decodeAggregateKind: (a: number) => [number, number, number];
+    readonly decodeApplyResponse: (a: number, b: number) => [number, number, number];
     readonly decodeAttachmentManifest: (a: any, b: number, c: number, d: number) => [number, number, number];
     readonly decodeCanonicalJson: (a: number, b: number) => [number, number, number];
+    readonly decodeEventPayload: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly decodeJson: (a: number, b: number) => [number, number, number];
     readonly deriveOperationUuid: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly digestCanonicalJson: (a: any) => [number, number, number, number];
@@ -254,7 +352,19 @@ export interface InitOutput {
     readonly validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
     readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
     readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly validateToolDefinition: (a: any) => [number, number];
+    readonly validateToolInvocation: (a: any, b: any) => [number, number];
+    readonly validateToolResult: (a: any, b: any) => [number, number];
     readonly validateToolValue: (a: any, b: any) => [number, number, number];
+    readonly validateWireAdmission: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateWireCancel: (a: number, b: number) => [number, number];
+    readonly validateWireCancellation: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateWireCommand: (a: number, b: number) => [number, number];
+    readonly validateWireCommandProtocol: (a: number, b: number) => [number, number];
+    readonly validateWireHandshake: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateWireObserve: (a: number, b: number) => [number, number];
+    readonly validateWireResume: (a: number, b: number) => [number, number];
+    readonly validateWireStatus: (a: number, b: number, c: number, d: number) => [number, number];
     readonly verifyFileBytes: (a: any, b: number, c: number) => [number, number];
     readonly wasmreducer_apply: (a: number, b: any) => [number, number, number];
     readonly wasmreducer_applyWire: (a: number, b: number, c: number) => [number, number, number, number];

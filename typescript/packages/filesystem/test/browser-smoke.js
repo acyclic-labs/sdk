@@ -106,21 +106,26 @@ async function run() {
   );
   assert(batchLookup.retainedAllocationBytes > 0n, "batch lookup omitted retained-allocation evidence");
   const recordRead = await checkout.readFileRecordById(batchFileId);
+  const batchPayload = recordRead.record.payload;
   assert(
-    recordRead.record.fileKind === "regular" && recordRead.record.logicalBytes === 3n,
-    `identity record read was incorrect: ${recordRead.record.payloadKind}/${typeof recordRead.record.logicalBytes}/${String(recordRead.record.logicalBytes)}`,
+    recordRead.record.fileKind === "regular"
+      && (batchPayload.kind === "regular" || batchPayload.kind === "inline-regular")
+      && batchPayload.logicalBytes === 3n,
+    `identity record read was incorrect: ${batchPayload.kind}`,
   );
   recordRead.record.fileId.fill(0);
   recordRead.record.metadataObject.fill(0);
-  recordRead.record.payloadObject?.fill(0);
-  recordRead.record.inlineBytes?.fill(0);
+  if (recordRead.record.payload.kind === "regular") recordRead.record.payload.objectId.fill(0);
+  else recordRead.record.payload.bytes.fill(0);
   const isolatedRecordRead = await checkout.readFileRecordById(batchFileId);
+  const isolatedPayload = isolatedRecordRead.record.payload;
   assert(
     isolatedRecordRead.record.fileId.some((byte) => byte !== 0)
       && isolatedRecordRead.record.metadataObject.some((byte) => byte !== 0)
-      && (isolatedRecordRead.record.payloadObject?.some((byte) => byte !== 0)
-        ?? isolatedRecordRead.record.inlineBytes?.some((byte) => byte !== 0)
-        ?? false),
+      && isolatedPayload.kind === batchPayload.kind
+      && (isolatedPayload.kind === "regular"
+        ? isolatedPayload.objectId.some((byte) => byte !== 0)
+        : isolatedPayload.bytes.some((byte) => byte !== 0)),
     "record result buffers aliased canonical checkout state",
   );
   const recordPage = await checkout.listDirectoryRecords("/workspace/batch", undefined, 16);
@@ -149,14 +154,10 @@ async function run() {
   if (wideCreate.fileId === undefined) throw new Error("wide sparse file identity was absent");
   await wideCheckout.resizeFileById(wideCreate.fileId, wideLogicalBytes);
   const wideRecord = await wideCheckout.readFileRecordById(wideCreate.fileId);
-  assert(wideRecord.record.logicalBytes === wideLogicalBytes, "identity record lost exact 64-bit logical size");
+  assert(wideRecord.record.payload.kind === "regular" && wideRecord.record.payload.logicalBytes === wideLogicalBytes, "identity record lost exact 64-bit logical size");
   const wideAfter = await wideCheckout.checkpoint();
   const wideDiff = await wideVolume.diffGenerations(wideBefore.generationId, wideAfter.generationId, 8);
-  // Diffs list changed files in identity order. The volume root, whose
-  // identity is derived from the volume's, changes too and can sort first.
-  const wideChange = wideDiff.files.find((change) =>
-    change.fileId.every((byte, index) => byte === wideCreate.fileId[index]));
-  assert(wideChange?.after?.logicalBytes === wideLogicalBytes, "generation diff lost exact 64-bit logical size");
+  assert(wideDiff.files[0]?.after?.payload.kind === "regular" && wideDiff.files[0].after.payload.logicalBytes === wideLogicalBytes, "generation diff lost exact 64-bit logical size");
   await checkout.createSpecial("/workspace/nested-volume", "mount-boundary");
   assert((await checkout.lookupNoFollow("/workspace/nested-volume")).fileKind === "mount-boundary", "special mount boundary was not preserved");
   const createdData = await checkout.createFile("/workspace/data.bin", encoder.encode("head"));
@@ -234,7 +235,7 @@ async function run() {
   await windowsCheckout.createReparsePoint("/junction", reparsePayload);
   assert(new TextDecoder().decode((await windowsCheckout.readReparsePoint("/junction")).bytes) === "opaque-reparse", "reparse payload was not exact");
   const reparseStat = await windowsCheckout.statNoFollow("/junction");
-  assert(reparseStat.record?.fileKind === "reparse-point" && reparseStat.record.payloadKind === "reparse-point", "structured stat lost reparse identity");
+  assert(reparseStat.record?.fileKind === "reparse-point" && reparseStat.record.payload.kind === "reparse-point", "structured stat lost reparse identity");
   assert(reparseStat.metadataCanonicalBytes?.byteLength > 0, "structured stat omitted canonical metadata");
   const committed = await checkout.commit(new Uint8Array(16).fill(17));
   assert(committed.status === "committed", "browser commit did not publish");

@@ -91,7 +91,7 @@ export async function exerciseWorkspace(engine) {
     throw new Error("stale disjoint transaction did not retain its candidate");
   }
   const safeRebase = await disjointRacer.rebase(16);
-  if (safeRebase.status !== "rebased" || safeRebase.conflicts.length !== 0) {
+  if (safeRebase.status !== "rebased" || !(safeRebase.generationId instanceof Uint8Array)) {
     throw new Error("disjoint transaction did not rebase safely");
   }
   if ((await disjointRacer.commit()).status !== "committed") {
@@ -172,7 +172,7 @@ export async function exerciseWorkspace(engine) {
     { maximumGenerations: 64, maximumChanges: 64, maximumConflicts: 16 },
     new Uint8Array(16).fill(77),
   );
-  if (workspaceRebase.status !== "rebased" || workspaceRebase.conflicts.length !== 0) {
+  if (workspaceRebase.status !== "rebased" || !(workspaceRebase.generationId instanceof Uint8Array)) {
     throw new Error(`workspace live rebase failed: ${workspaceRebase.status}`);
   }
   if ((await fork.read("/upstream-rebase", 1n))[0] !== 9) {

@@ -19,7 +19,10 @@ tar -xzf "$work/acyclic-fs.tgz" -C "$work"
 mkdir "$work/package/test"
 cp test/node-memory.mjs test/workspace-composition.mjs "$work/package/test/"
 cd "$work/package"
-bun install --ignore-scripts
+# The archive is tested as an isolated npm consumer. Install its declared
+# runtime dependencies before importing the generated adapters; the repository
+# workspace's node_modules is intentionally outside this extracted package.
+bun install --ignore-scripts --no-save --no-progress
 timeout 30s bun test/node-memory.mjs
 # Prove that the isolated consumer used the archived WASM, not a workspace fallback.
 mv generated/wasm/acyclic_fs_wasm_bg.wasm "$work/withheld.wasm"

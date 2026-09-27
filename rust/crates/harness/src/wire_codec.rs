@@ -92,6 +92,19 @@ pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
     Ok((authority, event))
 }
 
+/// Decodes one canonical event payload and checks its generated discriminator.
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub(crate) fn decode_event_payload(event_type_name: &str, bytes: &[u8]) -> Result<EventPayload> {
+    let payload: EventPayload =
+        serde_json::from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))?;
+    if event_type_name != event_type(&payload) {
+        return Err(Error::Storage(
+            "event type disagrees with its payload".into(),
+        ));
+    }
+    Ok(payload)
+}
+
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
     let envelope =

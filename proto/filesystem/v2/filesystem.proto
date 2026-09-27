@@ -491,6 +491,8 @@ message WorkCounters {
   uint64 allocation_operations = 20;
   uint64 peak_allocation_bytes = 21;
   uint64 materializations = 22;
+  uint64 source_path_components = 23;
+  uint64 source_entries_visited = 24;
 }
 message DiffResponse {
   GenerationRef from = 1;

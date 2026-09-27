@@ -11,7 +11,7 @@ import type { ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, E
 import type { ApprovalBinding, InteractionId, InteractionResolution, InteractionTicket, ResolutionReceipt } from "./interaction.js";
 import type { ProjectMergeReceipt } from "./project.js";
 import type { PrivateDirectoryPage } from "./runtime.js";
-import type { ToolJsonSchema, ToolJsonValue } from "./model.js";
+import type { ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult } from "./model.js";
 import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
 
 /** Exact serde shape admitted by Rust `DurableBatchRequest`; hosts retain this value. */
@@ -133,6 +133,10 @@ type FixedSimpleContract = Exclude<SimpleContract, "provider_ref" | "volume_ref"
 const REQUIRED_NATIVE_EXPORTS = [
   "validateContract", "verifyFileBytes", "decodeAttachmentManifest",
   "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
+  "validateToolDefinition", "validateToolInvocation", "validateToolResult",
+  "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
+  "validateWireResume", "validateWireObserve", "validateWireCancel",
+  "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
   "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
   "fileDescriptor", "uuidFromDigestHalf", "decodeCanonicalJson", "decodeJson",
   "encodeCanonicalJson", "digestCanonicalJson",
@@ -219,6 +223,55 @@ export class NativeContracts {
     return normalizeNativeValue(this.native.validateToolValue(schema, value), true);
   }
 
+  /** Rust owns the complete model-visible tool definition contract. */
+  validateToolDefinition(definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">): void {
+    this.native.validateToolDefinition(nativeToolDefinition(definition));
+  }
+
+  /** Rust owns tool invocation identity and argument schema validation. */
+  validateToolInvocation(
+    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">,
+    invocation: Pick<ToolInvocation, "callId" | "name" | "arguments">,
+  ): void {
+    this.native.validateToolInvocation(nativeToolDefinition(definition), invocation);
+  }
+
+  /** Rust owns tool result output schema validation. */
+  validateToolResult(
+    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">,
+    result: ToolResult,
+  ): void {
+    this.native.validateToolResult(nativeToolDefinition(definition), result);
+  }
+
+  validateWireHandshake(request: Uint8Array, response: Uint8Array): Uint8Array {
+    return Uint8Array.from(this.native.validateWireHandshake(request, response));
+  }
+  validateWireCommand(command: Uint8Array): Uint8Array {
+    return Uint8Array.from(this.native.validateWireCommand(command));
+  }
+  validateWireCommandProtocol(command: Uint8Array): Uint8Array {
+    return Uint8Array.from(this.native.validateWireCommandProtocol(command));
+  }
+  validateWireResume(request: Uint8Array): Uint8Array {
+    return Uint8Array.from(this.native.validateWireResume(request));
+  }
+  validateWireObserve(request: Uint8Array): Uint8Array {
+    return Uint8Array.from(this.native.validateWireObserve(request));
+  }
+  validateWireCancel(request: Uint8Array): Uint8Array {
+    return Uint8Array.from(this.native.validateWireCancel(request));
+  }
+  validateWireAdmission(command: Uint8Array, admission: Uint8Array): Uint8Array {
+    return Uint8Array.from(this.native.validateWireAdmission(command, admission));
+  }
+  validateWireStatus(request: Uint8Array, status: Uint8Array): Uint8Array {
+    return Uint8Array.from(this.native.validateWireStatus(request, status));
+  }
+  validateWireCancellation(request: Uint8Array, response: Uint8Array): Uint8Array {
+    return Uint8Array.from(this.native.validateWireCancellation(request, response));
+  }
+
   validateConversationMessageId(value: string): ConversationMessageId {
     return this.native.validateConversationMessageId(value) as ConversationMessageId;
   }
@@ -289,6 +342,19 @@ export class NativeContracts {
     if (digest.byteLength !== 32) throw new TypeError("native canonical digest has an invalid length");
     return digest;
   }
+}
+
+/** Strip executable parser/handler members before crossing the serde WASM ABI. */
+function nativeToolDefinition(
+  definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">,
+): Readonly<{ name: string; revision: string; description: string; inputSchema: ToolJsonSchema; outputSchema: ToolJsonSchema }> {
+  return {
+    name: definition.name,
+    revision: definition.revision,
+    description: definition.description,
+    inputSchema: definition.inputSchema,
+    outputSchema: definition.outputSchema,
+  };
 }
 
 /** Rust owns typed integer projection; JS only unwraps bytes and maps. */

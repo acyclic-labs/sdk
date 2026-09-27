@@ -28,7 +28,7 @@ import {
   ProtocolIdentitySchema,
 } from "../generated/proto/protocol/v1/protocol_pb.js";
 
-const descriptorDigest = "83c50f0de80d2e1b73094283b8b54f8b37684327660c6f77b02311e9721f32c8";
+import { FILESYSTEM_DESCRIPTOR_DIGEST as descriptorDigest } from "../generated/descriptor-digest.js";
 
 const workspaceRef = create(WorkspaceRefSchema, {
   workspaceId: new Uint8Array(16).fill(1),

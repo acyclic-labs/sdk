@@ -81,7 +81,7 @@ export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts
 const DEFAULT_MAXIMUM_RESPONSE_BYTES = 24 * 1024 * 1024;
 const DEFAULT_MAXIMUM_CONFLICTS = 1_024;
 const PROTOCOL_VERSION = "1";
-const FILESYSTEM_DESCRIPTOR_DIGEST = "83c50f0de80d2e1b73094283b8b54f8b37684327660c6f77b02311e9721f32c8";
+const FILESYSTEM_DESCRIPTOR_DIGEST = "fee00a99396aaace851ff4ad12b408fbf87ee67f83eeea90e1c5adc9e2d5d3e5";
 
 export class HostedFsError extends Error {
   constructor(readonly code: string, message: string) {
