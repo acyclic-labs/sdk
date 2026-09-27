@@ -46,7 +46,7 @@ mod source_state;
 mod transfer;
 mod tree;
 mod tree_mutation;
-mod types;
+pub(crate) mod types;
 mod volume;
 
 pub use attribute::{
