@@ -1478,6 +1478,10 @@ mod tests {
             scheduler.operation(id(1)).map(|operation| operation.phase),
             Some(OperationPhase::Terminal)
         );
+        assert!(matches!(
+            scheduler.apply(measured.clone()),
+            Err(Error::Conflict(_))
+        ));
         let mut unfenced = measured;
         let SchedulerEvent::Completed { fence, .. } = &mut unfenced else {
             return Err(Error::Invalid("expected completion".into()));
