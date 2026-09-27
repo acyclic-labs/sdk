@@ -3,6 +3,7 @@ import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type Volume
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
 import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "./child-page-contract.js";
+import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 import { HARNESS_MAX_BATCH_INPUTS } from "./limits-contract.js";
 import { validateModelContent as validateModelContentWasm, validateModelMessages as validateModelMessagesWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
@@ -1134,7 +1135,7 @@ export class TaskContext {
   /** Discover an attached owner's private tree lazily under a signed read boundary. */
   async listPrivateDirectory(volume: VolumeRef<"agent_private">, grantedPrefix: string,
     path: string, expectedGeneration: ResourceRef<"generation"> | null = null, after: string | null = null,
-    maximumEntries = 256): Promise<PrivateDirectoryPage> {
+    maximumEntries = HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT): Promise<PrivateDirectoryPage> {
     this.signal.throwIfAborted();
     const content = this.#harness.content;
     if (!content?.directory) throw new Error("private directory provider is not bound");
@@ -1144,10 +1145,12 @@ export class TaskContext {
       && !this.#harness.scope.grants.includes(content.volumeReadCapability(checked))) {
       throw new Error("task scope cannot discover this directory");
     }
+    if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 1 || maximumEntries > HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM) {
+      throw new TypeError("private directory page limit is invalid");
+    }
     const page = this.#harness.contracts.validate("private_directory_page",
       await content.directory.list(checked, grantedPrefix, path, expectedGeneration, after, maximumEntries));
-    if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 1 || maximumEntries > 4096
-      || page.entries.length > maximumEntries
+    if (page.entries.length > maximumEntries
       || !this.#harness.contracts.canonicalEqual(page.generation.provider, checked.provider)
       || (expectedGeneration !== null && !this.#harness.contracts.canonicalEqual(page.generation, expectedGeneration))) {
       throw new TypeError("private directory provider returned an invalid page");

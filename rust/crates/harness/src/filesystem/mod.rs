@@ -5,9 +5,9 @@ use crate::{
     AgentId, Error, IdempotencyKey, Result,
     conversation::{
         Attachment, ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef, Limits,
-        PrivateDirectoryEntry, PrivateDirectoryEntryKind, PrivateDirectoryPage,
-        ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
-        decode_complete_attachment_manifest,
+        MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
+        PrivateDirectoryPage, ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner,
+        VolumeRef, decode_complete_attachment_manifest,
     },
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     distributed::SchedulerPayloadStore,
@@ -1891,7 +1891,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_entries: u32,
     ) -> Result<(GenerationRef, WorkspaceDirectoryPage)> {
         self.require_private_directory(volume, grant, path)?;
-        if maximum_entries == 0 || maximum_entries > 4096 {
+        if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
             return Err(Error::Invalid(
                 "private directory page limit is invalid".into(),
             ));

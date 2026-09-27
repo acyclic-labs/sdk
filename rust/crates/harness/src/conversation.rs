@@ -824,12 +824,15 @@ pub struct PrivateDirectoryPage {
     pub has_more: bool,
 }
 
+/// Maximum number of entries admitted in one private-directory page.
+pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = 4_096;
+
 impl PrivateDirectoryPage {
     /// Rejects malformed, duplicate, or out-of-order names independently of
     /// the concrete Filesystem page implementation.
     pub fn validate(&self) -> Result<()> {
         self.generation.validate()?;
-        if self.entries.len() > 4096 {
+        if self.entries.len() > MAX_PRIVATE_DIRECTORY_PAGE {
             return Err(Error::Invalid(
                 "private directory page exceeds protocol limit".into(),
             ));

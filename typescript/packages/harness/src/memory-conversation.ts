@@ -9,6 +9,7 @@ import { selectModelContext } from "./projection.js";
 import { MemoryContentStore } from "./memory-content-store.js";
 import type { ResourceRef } from "./fork.js";
 import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type ContentBindings, type ContentReader, type PrivateDirectoryPage, type RunOutput } from "./runtime.js";
+import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 
 const encoder = new TextEncoder();
 const manifestType = "application/vnd.acyclic.harness.attachments+json";
@@ -138,7 +139,7 @@ export class MemoryConversation {
   /** Owner-authenticated, generation-pinned listing; no prior FileRef is needed. */
   listPrivateDirectory(volume: VolumeRef<"agent_private">, grantedPrefix: string, path: string,
     expectedGeneration: ResourceRef<"generation"> | null = null, after: string | null = null,
-    maximumEntries = 256): Promise<PrivateDirectoryPage> {
+    maximumEntries = HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT): Promise<PrivateDirectoryPage> {
     const reader = this.#reader(volume).directory;
     if (!reader) throw new TypeError("owner has no private directory reader");
     return reader.list(volume, grantedPrefix, path, expectedGeneration, after, maximumEntries);
@@ -297,7 +298,7 @@ export class MemoryConversation {
   #listAuthorized(scope: Scope, volume: VolumeRef<"agent_private">, grantedPrefix: string,
     path: string, expected: ResourceRef<"generation"> | null, after: string | null, maximum: number): PrivateDirectoryPage {
     const generation = this.#checkDirectory(scope, volume, grantedPrefix, path, expected);
-    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 4096) {
+    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM) {
       throw new RangeError("private directory page limit is invalid");
     }
     if (after !== null) {

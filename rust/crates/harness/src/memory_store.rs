@@ -10,7 +10,7 @@
 use crate::contract::canonical_json_digest;
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 use crate::conversation::FileDescriptor;
-use crate::conversation::{FileRef, VolumeRef, is_internal_path};
+use crate::conversation::{FileRef, MAX_PRIVATE_DIRECTORY_PAGE, VolumeRef, is_internal_path};
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -273,7 +273,7 @@ impl MemoryStore {
         after: Option<&str>,
         maximum: usize,
     ) -> Result<MemoryStorePage> {
-        if maximum == 0 || maximum > 4096 {
+        if maximum == 0 || maximum > MAX_PRIVATE_DIRECTORY_PAGE {
             return Err(Error::Invalid(
                 "private directory page limit is invalid".into(),
             ));

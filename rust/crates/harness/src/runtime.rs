@@ -5,8 +5,8 @@ use crate::{
     Outcome, Result, TaskId,
     context::{Context, ContextInput, ContextPipeline},
     conversation::{
-        ContentPublisher, ContentResidencyVerifier, FileRef, Limits, PrivateDirectoryPage,
-        VolumeClass, VolumeOperation, VolumeRef, verified_content_bytes,
+        ContentPublisher, ContentResidencyVerifier, FileRef, Limits, MAX_PRIVATE_DIRECTORY_PAGE,
+        PrivateDirectoryPage, VolumeClass, VolumeOperation, VolumeRef, verified_content_bytes,
     },
     core::{ExtensionAdmission, Reducer, Scope},
     durable_tool::{ResumableToolRegistry, ResumableToolSession},
@@ -48,6 +48,8 @@ pub const MAX_CHILD_PAGE: usize = 1_024;
 pub const DEFAULT_CHILD_PAGE: usize = 256;
 /// Maximum UTF-8 byte length of a parent-local child slot.
 pub const MAX_CHILD_SLOT_BYTES: usize = 255;
+/// Default number of entries requested by the private-directory SDK facade.
+pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
 /// Maximum number of inputs admitted by one durable batch.
 pub const MAX_BATCH_INPUTS: usize = 65_536;
 
@@ -3652,7 +3654,7 @@ impl TaskContext {
         maximum_entries: u32,
     ) -> Result<PrivateDirectoryPage> {
         self.require_private_directory(volume, granted_prefix, path)?;
-        if maximum_entries == 0 || maximum_entries > 4096 {
+        if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
             return Err(Error::Invalid(
                 "private directory page limit is invalid".into(),
             ));

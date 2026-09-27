@@ -44,6 +44,7 @@ import {
   type ConversationMessageId,
 } from "../src/index.js";
 import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "../src/child-page-contract.js";
+import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
 const contracts = await NativeContracts.create();
 
@@ -100,6 +101,13 @@ test("Rust owns child page bounds, slot ordering, and the generated facade defau
     },
   }).build();
   await expect(malformedRuntime.children(parent)).rejects.toBeInstanceOf(TypeError);
+});
+
+test("private-directory pages keep their Rust-owned bounds distinct from child pages", () => {
+  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT).toBe(256);
+  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM).toBe(4096);
+  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT).toBeLessThanOrEqual(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM);
+  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM).not.toBe(HARNESS_CHILD_PAGE_MAXIMUM);
 });
 
 test("Rust and TypeScript share strict v2 task admission and execution placement fixtures", async () => {

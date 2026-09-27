@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_LIMITS, ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
   defineTool, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeHost, type OperationId,
   type RuntimeTaskId } from "../src/index.js";
+import { HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
 const wasm = readFileSync(fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)));
 const contracts = await NativeContracts.create();
@@ -600,6 +601,8 @@ test("unseen owner volumes mount lazily without granting writes", async () => {
   const first = await host.listPrivateDirectory(owner.volume, "notes", "notes", page.generation, null, 1);
   expect(first.entries).toEqual(page.entries);
   expect(first.hasMore).toBe(false);
+  await expect(host.listPrivateDirectory(owner.volume, "notes", "notes", page.generation, null,
+    HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM + 1)).rejects.toThrow("private directory page limit is invalid");
   expect(new TextDecoder().decode((await host.readPrivatePath(owner.volume, "notes",
     "notes/lazy.txt", page.generation)).bytes)).toBe("lazy owner bytes");
   await expect(host.listPrivateDirectory(owner.volume, "notes", "")).rejects.toThrow();
