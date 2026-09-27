@@ -68,6 +68,40 @@ pub fn terminal_metadata() -> Result<String, &'static str> {
     Ok(format!("[{}]", values.join(",")))
 }
 
+/// Return every fixed byte width declared by the canonical customer descriptor.
+///
+/// This is consumed by the TypeScript generator. Keeping the list derived from
+/// the same reflection descriptor used for validation makes a change to a
+/// `nonzero_fixed_bytes` option fail the generated-contract check instead of
+/// silently leaving a stale handwritten width in a client helper.
+pub fn fixed_width_metadata() -> Result<String, &'static str> {
+    let Some(pool) = pool() else {
+        return Err("inference reflection descriptor is unavailable");
+    };
+    let mut values = pool
+        .all_messages()
+        .flat_map(|message| {
+            let name = message.full_name().to_owned();
+            message
+                .fields()
+                .filter_map(move |field| {
+                    let width = u32_option(&field.options(), "nonzero_fixed_bytes");
+                    (width > 0).then(|| (name.clone(), field.name().to_owned(), width))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+        })
+        .collect::<Vec<_>>();
+    values.sort_unstable();
+    let entries = values
+        .into_iter()
+        .map(|(message, field, width)| {
+            format!(r#"{{"message":"{message}","field":"{field}","width":{width}}}"#)
+        })
+        .collect::<Vec<_>>();
+    Ok(format!("[{}]", entries.join(",")))
+}
+
 fn u32_option(message: &DynamicMessage, name: &str) -> u32 {
     match option(message, name) {
         Some(Value::U32(value)) => value,
@@ -589,5 +623,17 @@ mod tests {
             assert!(metadata.contains(r#""number":5,"kind":"cancelled","partial":true"#));
             assert!(metadata.contains(r#""number":7,"kind":"indeterminate","partial":true"#));
         }
+    }
+
+    #[test]
+    fn fixed_width_metadata_comes_from_field_options() {
+        let metadata = fixed_width_metadata().expect("descriptor metadata should load");
+        assert!(metadata.contains(
+            r#"{"message":"inference.customer.v1.RequestIdentity","field":"request_id","width":16}"#
+        ));
+        assert!(metadata.contains(
+            r#"{"message":"inference.customer.v1.ContextView","field":"revision","width":32}"#
+        ));
+        assert!(!metadata.contains(r#""width":0"#));
     }
 }

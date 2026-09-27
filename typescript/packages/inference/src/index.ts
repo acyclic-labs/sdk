@@ -54,6 +54,7 @@ import {
   WarmContextsService,
 } from "../generated/proto/inference/v1/inference_pb.js";
 import { http_path } from "../generated/proto/validation/v1/options_pb.js";
+import { INFERENCE_FIXED_WIDTHS } from "./widths.js";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";
 export { InferenceProtocolError } from "./contract.js";
@@ -146,7 +147,7 @@ export class InferenceClient {
     return receipt;
   }
   async inspectContext(revision: Uint8Array): Promise<ContextView> {
-    requireFixed(revision, 32, "context revision");
+    requireFixed(revision, INFERENCE_FIXED_WIDTHS.inspectContextRevision, "context revision");
     const view = await this.transport.inspectContext(create(InspectContextRequestSchema, { revision }));
     await validateContract("context_view", ContextViewSchema, view, revision);
     return view;
@@ -162,38 +163,40 @@ export class InferenceClient {
     return view;
   }
   async inspectWarm(commitment: Uint8Array): Promise<WarmView> {
-    requireFixed(commitment, 32, "warm commitment");
+    requireFixed(commitment, INFERENCE_FIXED_WIDTHS.inspectWarmCommitment, "warm commitment");
     const view = await this.transport.inspectWarm(create(InspectWarmRequestSchema, { commitment }));
     await validateContract("warm_commitment", WarmViewSchema, view, commitment);
     return view;
   }
   async renewWarm(request: RenewWarmRequest): Promise<WarmView> {
+    requireFixed(request.commitment, INFERENCE_FIXED_WIDTHS.renewWarmCommitment, "warm commitment");
     const view = await this.transport.renewWarm(request);
     await validateContract("warm_commitment", WarmViewSchema, view, request.commitment);
     return view;
   }
   async releaseWarm(request: ReleaseWarmRequest): Promise<WarmView> {
+    requireFixed(request.commitment, INFERENCE_FIXED_WIDTHS.releaseWarmCommitment, "warm commitment");
     const view = await this.transport.releaseWarm(request);
     await validateContract("warm_commitment", WarmViewSchema, view, request.commitment);
     return view;
   }
   async generate(request: GenerateRunRequest): Promise<GenerateRunResponse> {
     if (request.identity === undefined) throw new InferenceProtocolError("generate request identity is absent");
-    requireFixed(request.identity.clientInstance, 16, "generate client instance");
-    requireFixed(request.identity.requestId, 16, "generate request ID");
+    requireFixed(request.identity.clientInstance, INFERENCE_FIXED_WIDTHS.requestClientInstance, "generate client instance");
+    requireFixed(request.identity.requestId, INFERENCE_FIXED_WIDTHS.requestId, "generate request ID");
     const response = await this.transport.generateRun(request);
     if (response.run === undefined) throw new InferenceProtocolError("generate response omitted its run");
     await validateContract("generated_run_view", RunViewSchema, response.run, request.identity.requestId, request.context);
     return response;
   }
   async inspectRun(runId: Uint8Array, signal?: AbortSignal): Promise<RunView> {
-    requireFixed(runId, 16, "run ID");
+    requireFixed(runId, INFERENCE_FIXED_WIDTHS.inspectRunId, "run ID");
     const view = await this.transport.inspectRun(create(InspectRunRequestSchema, { runId }), signal);
     await validateContract("run_view", RunViewSchema, view, runId);
     return view;
   }
   async *watchRun(runId: Uint8Array, fromSequence = 0n, signal?: AbortSignal): AsyncIterable<RunEvent> {
-    requireFixed(runId, 16, "run ID");
+    requireFixed(runId, INFERENCE_FIXED_WIDTHS.watchRunId, "run ID");
     if (fromSequence < 0n) throw new InferenceProtocolError("run cursor must be non-negative");
     const view = await this.inspectRun(runId, signal);
     const state = await watchRunStart(toBinary(RunViewSchema, view), runId, fromSequence);
@@ -209,17 +212,17 @@ export class InferenceClient {
     }
   }
   async cancelRun(runId: Uint8Array): Promise<RunView> {
-    requireFixed(runId, 16, "run ID");
+    requireFixed(runId, INFERENCE_FIXED_WIDTHS.cancelRunId, "run ID");
     const view = await this.transport.cancelRun(create(InspectRunRequestSchema, { runId }));
     await validateContract("run_view", RunViewSchema, view, runId);
     return view;
   }
   async createEvaluation(request: CreateEvaluationRequest): Promise<EvaluationView> {
     if (request.identity === undefined) throw new InferenceProtocolError("evaluation request identity is absent");
-    requireFixed(request.identity.clientInstance, 16, "evaluation client instance");
-    requireFixed(request.identity.requestId, 16, "evaluation request ID");
+    requireFixed(request.identity.clientInstance, INFERENCE_FIXED_WIDTHS.requestClientInstance, "evaluation client instance");
+    requireFixed(request.identity.requestId, INFERENCE_FIXED_WIDTHS.requestId, "evaluation request ID");
     if (request.spec === undefined) throw new InferenceProtocolError("evaluation spec is absent");
-    requireFixed(request.spec.specDigest, 32, "evaluation spec digest");
+    requireFixed(request.spec.specDigest, INFERENCE_FIXED_WIDTHS.evaluationSpecDigest, "evaluation spec digest");
     await validateContract("evaluation_spec", EvaluationSpecSchema, request.spec);
     const view = await this.transport.createEvaluation(request);
     await validateContract("evaluation_view", EvaluationViewSchema, view, request.identity.requestId,
@@ -227,7 +230,7 @@ export class InferenceClient {
     return view;
   }
   async inspectEvaluation(evaluationId: Uint8Array): Promise<EvaluationView> {
-    requireFixed(evaluationId, 16, "evaluation ID");
+    requireFixed(evaluationId, INFERENCE_FIXED_WIDTHS.inspectEvaluationId, "evaluation ID");
     const view = await this.transport.inspectEvaluation(create(InspectEvaluationRequestSchema, { evaluationId }));
     await validateContract("evaluation_view", EvaluationViewSchema, view, evaluationId);
     return view;
