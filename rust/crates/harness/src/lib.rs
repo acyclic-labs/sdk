@@ -32,6 +32,11 @@ pub mod interaction;
 pub mod live;
 #[cfg(feature = "machines")]
 pub mod machines;
+#[cfg(any(
+    test,
+    feature = "filesystem",
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;

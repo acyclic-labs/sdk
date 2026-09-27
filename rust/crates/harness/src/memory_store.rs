@@ -6,8 +6,11 @@
 //! identity, byte deduplication, path heads, generation history, and bounded
 //! residency.
 
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 use crate::contract::canonical_json_digest;
-use crate::conversation::{FileDescriptor, FileRef, VolumeRef, is_internal_path};
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+use crate::conversation::FileDescriptor;
+use crate::conversation::{FileRef, VolumeRef, is_internal_path};
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -87,6 +90,7 @@ impl MemoryStore {
         })
     }
 
+    #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
     pub(crate) fn stage(
         &mut self,
         path: &str,
@@ -237,6 +241,7 @@ impl MemoryStore {
         Ok(stored.bytes.to_vec())
     }
 
+    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     pub(crate) fn has(&self, file: &FileRef) -> Result<bool> {
         file.validate()?;
         if file.volume() != &self.volume {
@@ -298,7 +303,9 @@ impl MemoryStore {
             {
                 continue;
             }
-            let remainder = &name[prefix.len()..];
+            let Some(remainder) = name.strip_prefix(&prefix) else {
+                continue;
+            };
             let segment = remainder.split('/').next().unwrap_or_default();
             if segment.is_empty() || (path.is_empty() && segment == ".system") {
                 continue;
@@ -319,9 +326,11 @@ impl MemoryStore {
         let entries = names
             .into_iter()
             .take(maximum)
-            .map(|name| MemoryStoreEntry {
-                kind: found[&name],
-                name,
+            .filter_map(|name| {
+                found
+                    .get(&name)
+                    .copied()
+                    .map(|kind| MemoryStoreEntry { kind, name })
             })
             .collect();
         Ok(MemoryStorePage {

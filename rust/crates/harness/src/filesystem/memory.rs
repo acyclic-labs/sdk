@@ -40,6 +40,21 @@ type MemoryHost = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 type MemoryJournal =
     FilesystemExecutionJournal<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
 
+fn new_memory_store(
+    volume: &VolumeRef,
+    maximum_file_bytes: u64,
+) -> Result<Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>> {
+    Ok(Arc::new(std::sync::Mutex::new(
+        crate::memory_store::MemoryStore::new(
+            volume.clone(),
+            maximum_file_bytes,
+            crate::conversation::MAX_PATH_BYTES as u64,
+            u64::MAX,
+            u64::MAX,
+        )?,
+    )))
+}
+
 /// A fully bound in-process journal and owner-private file volume. Its data is
 /// deliberately ephemeral; durable deployments bind persistent providers.
 pub struct MemoryHarnessStorage {
@@ -629,15 +644,7 @@ impl MemoryHarnessStorage {
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
         )?;
-        let memory_store = Arc::new(std::sync::Mutex::new(
-            crate::memory_store::MemoryStore::new(
-                volume.clone(),
-                maximum_file_bytes,
-                crate::conversation::MAX_PATH_BYTES as u64,
-                u64::MAX,
-                u64::MAX,
-            )?,
-        ));
+        let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
         host.create_volume(&volume).await?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
