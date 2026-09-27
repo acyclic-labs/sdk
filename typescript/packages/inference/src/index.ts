@@ -1,5 +1,6 @@
 import { create, fromJson, getOption, hasOption, toBinary, toJsonString, type DescMethod, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
+import { MAXIMUM_MESSAGE_BYTES } from "../generated/defaults.js";
 import {
   ContextViewSchema,
   CreateEvaluationRequestSchema,
@@ -279,7 +280,7 @@ export class HttpInferenceTransport implements InferenceTransport {
     readonly endpoint: string,
     readonly authorization: AuthorizationHeaders,
     readonly fetcher: typeof fetch = fetch,
-    readonly maximumEventBytes = 1024 * 1024,
+    readonly maximumEventBytes = MAXIMUM_MESSAGE_BYTES,
   ) {
     if (!Number.isSafeInteger(maximumEventBytes) || maximumEventBytes <= 0) {
       throw new RangeError("maximumEventBytes must be a positive safe integer byte ceiling");

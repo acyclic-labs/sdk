@@ -459,6 +459,38 @@ test("HTTP transport applies one byte ceiling per message without conflating net
   }).toThrow("run event exceeds configured bound");
 });
 
+test("HTTP transport derives the Rust ceiling and accepts events above one MiB", async () => {
+  const transportCeiling = 8 * 1024 * 1024;
+  const request = create(WatchRunRequestSchema, { runId: bytes(4) });
+  const validEvent = toJsonString(RunEventSchema, create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "progress", value: { kind: "x".repeat(1024 * 1024) } },
+  }));
+  expect(new TextEncoder().encode(validEvent).byteLength).toBeGreaterThan(1024 * 1024);
+  const valid = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(`${validEvent}\n`),
+  );
+  expect(valid.maximumMessageBytes).toBe(transportCeiling);
+  const events = [];
+  for await (const event of valid.watchRun(request)) events.push(event);
+  expect(events).toHaveLength(1);
+
+  const oversizedEvent = toJsonString(RunEventSchema, create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "progress", value: { kind: "x".repeat(transportCeiling) } },
+  }));
+  const oversized = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(`${oversizedEvent}\n`),
+  );
+  await expect(async () => {
+    for await (const _event of oversized.watchRun(request)) { /* exhaust */ }
+  }).toThrow("run event exceeds configured bound");
+});
+
 test("HTTP transport rejects insecure endpoints and bounded request, unary, and error bodies", async () => {
   expect(() => new HttpInferenceTransport("http://example.test", () => ({}))).toThrow(TypeError);
   expect(() => new HttpInferenceTransport("https://example.test?", () => ({}))).toThrow(TypeError);
