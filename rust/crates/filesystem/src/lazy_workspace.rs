@@ -3087,12 +3087,14 @@ where
                             .await
                         {
                             Ok(receipt) => receipt,
+                            // A directory only the authored generation holds
+                            // (one a fork created) has no source entries; the
+                            // authored phase lists it, or reports it absent.
                             Err(failure)
-                                if mounted.is_some()
-                                    && matches!(
-                                        failure.error,
-                                        DemandError::Absent | DemandError::NotDirectory
-                                    ) =>
+                                if matches!(
+                                    failure.error,
+                                    DemandError::Absent | DemandError::NotDirectory
+                                ) =>
                             {
                                 work = account_work(work, *failure.work, budget)?;
                                 source_absent = true;
@@ -4172,6 +4174,50 @@ where
         Ok(committed)
     }
 
+    /// Source paths this view removed, sorted: each a tombstone over the
+    /// source, which no authored generation holds. A merge cannot carry these
+    /// deletions, so its caller applies them to the parent separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns store failures, or a work failure past `maximum` tombstones.
+    pub async fn source_tombstones(
+        &self,
+        maximum: usize,
+    ) -> Result<Vec<String>, LazyWorkspaceError> {
+        let state = self.state().await?;
+        let mut pending = vec![state.overlay];
+        let mut tombstones = Vec::new();
+        while let Some(id) = pending.pop() {
+            let Some(LazyOverlay::Node {
+                path,
+                change,
+                left,
+                right,
+                ..
+            }) = self
+                .store
+                .load_lazy_overlay(id)
+                .await
+                .map_err(store_error)?
+            else {
+                continue;
+            };
+            if matches!(change, LazyOverlayChange::Tombstone) {
+                if tombstones.len() == maximum {
+                    return Err(LazyWorkspaceError::Work(format!(
+                        "more than {maximum} source tombstones"
+                    )));
+                }
+                tombstones.push(path);
+            }
+            pending.push(left);
+            pending.push(right);
+        }
+        tombstones.sort();
+        Ok(tombstones)
+    }
+
     /// Removes one path without confusing authored deletion with unresolved source state.
     pub async fn remove(&self, path: &str) -> Result<(), LazyWorkspaceError> {
         self.remove_if(path, None).await
@@ -4341,14 +4387,21 @@ where
             .store
             .load_lazy_workspace_measured(self.workspace.id(), budget, cancellation)
             .await?;
-        let state = receipt
+        let mut state = receipt
             .value
             .ok_or_else(|| LazyWorkspaceError::Store("lazy binding is absent".to_owned()))?;
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source != self.source.reference()
-        {
+        if state.schema_version != LAZY_STATE_SCHEMA || state.workspace_id != self.workspace.id() {
             return Err(LazyWorkspaceError::StaleSource);
+        }
+        let live = self.source.reference();
+        if state.source != live {
+            // Every view of one shared source follows its epoch: the same
+            // source, only advanced (a refresh of the physical root), is
+            // adopted here rather than failing each view bound before it.
+            if state.source.identity != live.identity || state.source.epoch > live.epoch {
+                return Err(LazyWorkspaceError::StaleSource);
+            }
+            state = self.rebind_source().await?;
         }
         if state.pending_remove.is_some() {
             return Err(LazyWorkspaceError::Concurrent);
@@ -5498,6 +5551,63 @@ mod tests {
         ) -> DemandResult<Bytes> {
             Err(OperationFailure::before_work(DemandError::InvalidRequest))
         }
+    }
+
+    /// A view bound before its shared source advanced (a refresh of the
+    /// physical root) follows the new epoch on its next access instead of
+    /// failing: every fork of a root reads through one source.
+    #[tokio::test]
+    async fn a_view_follows_its_shared_source_to_a_newer_epoch() {
+        let fs = Fs::memory();
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let root = LazyWorkspace::attach(
+            &fs,
+            "follows",
+            Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await
+        .expect("attach");
+        root.stat("/observed.txt").await.expect("observe");
+        source.invalidate();
+        assert_eq!(
+            root.stat("/new.txt").await.expect("follows").logical_bytes,
+            Some(6)
+        );
+        assert_eq!(
+            root.snapshot().await.expect("snapshot").source,
+            source.reference()
+        );
+    }
+
+    #[tokio::test]
+    async fn source_tombstones_list_only_removed_source_paths() {
+        let fs = Fs::memory();
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let root = LazyWorkspace::attach(
+            &fs,
+            "tombstones",
+            Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await
+        .expect("attach");
+        root.stat("/kept.txt").await.expect("observe kept");
+        root.stat("/removed.txt").await.expect("observe removed");
+        root.remove("/removed.txt")
+            .await
+            .expect("remove source path");
+        root.remove("/also-removed.txt")
+            .await
+            .expect("remove unobserved source path");
+        assert_eq!(
+            root.source_tombstones(16).await.expect("tombstones"),
+            ["/also-removed.txt", "/removed.txt"]
+        );
+        assert!(matches!(
+            root.source_tombstones(1).await,
+            Err(LazyWorkspaceError::Work(_))
+        ));
     }
 
     #[tokio::test]
@@ -6760,10 +6870,6 @@ mod tests {
         root.stat("/observed.txt").await.expect("observe");
         let before = root.snapshot().await.expect("snapshot before rebind");
         source.invalidate();
-        assert!(matches!(
-            root.stat("/new.txt").await,
-            Err(LazyWorkspaceError::StaleSource)
-        ));
         let rebound = root.rebind_source().await.expect("rebind");
         assert_eq!(rebound.source, source.reference());
         assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);

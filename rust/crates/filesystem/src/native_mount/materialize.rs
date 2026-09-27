@@ -46,8 +46,16 @@ pub(crate) enum MaterializeMode {
     ReconstructibleView,
 }
 
+/// What a host applies for one record: the metadata it sets directly, and
+/// the root of named attributes it sets separately, whose values live in the
+/// generation rather than in the record.
+struct HostMetadata {
+    metadata: FileMetadata,
+    named_attributes: Option<crate::ObjectId>,
+}
+
 impl MaterializeMode {
-    fn host_metadata(metadata: FileMetadata) -> FileMetadata {
+    fn host_metadata(metadata: FileMetadata) -> HostMetadata {
         #[cfg(unix)]
         let mut metadata = metadata;
         #[cfg(unix)]
@@ -57,8 +65,29 @@ impl MaterializeMode {
         #[cfg(target_os = "linux")]
         {
             metadata.created_ns = crate::kernel::MetadataField::Unavailable;
+            // Linux files carry no BSD flags: "none" is exactly the host's
+            // state, so there is nothing to apply. Any set flag still fails
+            // closed as unrepresentable.
+            if metadata.posix_flags == crate::kernel::MetadataField::Value(0) {
+                metadata.posix_flags = crate::kernel::MetadataField::Unavailable;
+            }
         }
-        metadata
+        // Linux sets extended attributes one by one after the rest; other
+        // hosts still refuse them as unrepresentable.
+        #[cfg(target_os = "linux")]
+        let named_attributes = match metadata.named_attributes {
+            crate::kernel::MetadataField::Value(root) => {
+                metadata.named_attributes = crate::kernel::MetadataField::Unavailable;
+                Some(root)
+            }
+            _ => None,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let named_attributes = None;
+        HostMetadata {
+            metadata,
+            named_attributes,
+        }
     }
 }
 
@@ -1162,13 +1191,16 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     // read-only before its children have been created.
     if kind != FileKind::Directory {
         if let Some(metadata) = authenticated_metadata {
-            apply_host_metadata_offloaded(
+            apply_record_metadata(
+                reader,
                 host_root,
                 host_path,
-                MaterializeMode::host_metadata(metadata),
+                metadata,
+                budget,
+                cancellation,
+                receipt,
             )
-            .await
-            .map_err(|error| OperationFailure::new(error, receipt.work))?;
+            .await?;
         } else {
             apply_metadata(
                 reader,
@@ -1458,13 +1490,93 @@ async fn apply_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .await
         .map_err(|failure| map_engine_failure(failure, receipt.work))?;
     receipt.work = add_work(receipt.work, metadata.work)?;
-    apply_host_metadata_offloaded(
+    apply_record_metadata(
+        reader,
         host_root,
         host_path,
-        MaterializeMode::host_metadata(metadata.value),
+        metadata.value,
+        budget,
+        cancellation,
+        receipt,
     )
     .await
-    .map_err(|error| OperationFailure::new(error, receipt.work))
+}
+
+/// Applies one record's complete metadata to its materialized host path:
+/// the directly settable fields, then its named attributes.
+async fn apply_record_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    reader: &PinnedReader<A, O>,
+    host_root: &Arc<HostRoot>,
+    host_path: &Path,
+    metadata: FileMetadata,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    receipt: &mut MaterializationReceipt,
+) -> Result<(), OperationFailure<MaterializeError>> {
+    let host = MaterializeMode::host_metadata(metadata);
+    let attributes = match host.named_attributes {
+        Some(root) => {
+            let remaining = receipt.work.remaining(budget).map_err(|error| {
+                OperationFailure::new(MaterializeError::Work(error), receipt.work)
+            })?;
+            let read = reader
+                .read_named_attributes(root, remaining, cancellation)
+                .await
+                .map_err(|failure| map_engine_failure(failure, receipt.work))?;
+            receipt.work = add_work(receipt.work, read.work)?;
+            read.value
+                .into_iter()
+                .map(|(name, value)| {
+                    (name.class() == crate::kernel::AttributeClass::PosixXattr)
+                        .then(|| (name.as_bytes().to_vec(), value))
+                        .ok_or(MaterializeError::UnsupportedMetadata("named_attributes"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| OperationFailure::new(error, receipt.work))?
+        }
+        None => Vec::new(),
+    };
+    apply_host_metadata_offloaded(host_root, host_path, host.metadata)
+        .await
+        .map_err(|error| OperationFailure::new(error, receipt.work))?;
+    apply_host_attributes_offloaded(host_root, host_path, attributes)
+        .await
+        .map_err(|error| OperationFailure::new(error, receipt.work))
+}
+
+#[cfg(target_os = "linux")]
+async fn apply_host_attributes_offloaded(
+    host_root: &Arc<HostRoot>,
+    host_path: &Path,
+    attributes: Vec<(Vec<u8>, Bytes)>,
+) -> Result<(), MaterializeError> {
+    if attributes.is_empty() {
+        return Ok(());
+    }
+    let root = Arc::clone(host_root);
+    let path = host_path.to_path_buf();
+    acyclic_native_runtime::run_blocking_io(move || {
+        root.open_linux_metadata_target(&path)?
+            .set_extended_attributes(&attributes)
+    })
+    .await
+    .map_err(MaterializeError::Io)?
+    .map_err(linux_metadata_error)
+}
+
+#[cfg(not(target_os = "linux"))]
+#[allow(clippy::unused_async)]
+async fn apply_host_attributes_offloaded(
+    _host_root: &Arc<HostRoot>,
+    _host_path: &Path,
+    attributes: Vec<(Vec<u8>, Bytes)>,
+) -> Result<(), MaterializeError> {
+    // Only Linux projects attributes out of the record (see `host_metadata`).
+    if attributes.is_empty() {
+        Ok(())
+    } else {
+        Err(MaterializeError::UnsupportedMetadata("named_attributes"))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1910,6 +2022,36 @@ fn create_symlink(
 #[cfg(test)]
 mod restore_recovery_tests {
     use super::*;
+
+    /// A file created through a Linux mount records "no flags" (and its own
+    /// birth and change times); materializing it must not refuse any of
+    /// those, or no fork's new file could ever reach the root.
+    #[cfg(unix)]
+    #[test]
+    fn host_projection_drops_what_linux_cannot_or_need_not_apply() {
+        use crate::kernel::MetadataField;
+        let created = FileMetadata {
+            posix_flags: MetadataField::Value(0),
+            created_ns: MetadataField::Value(1),
+            changed_ns: MetadataField::Value(2),
+            ..FileMetadata::default()
+        };
+        let projected = MaterializeMode::host_metadata(created).metadata;
+        assert_eq!(projected.changed_ns, MetadataField::Unavailable);
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(projected.posix_flags, MetadataField::Unavailable);
+            assert_eq!(projected.created_ns, MetadataField::Unavailable);
+            let flagged = FileMetadata {
+                posix_flags: MetadataField::Value(1),
+                ..FileMetadata::default()
+            };
+            assert_eq!(
+                MaterializeMode::host_metadata(flagged).metadata.posix_flags,
+                MetadataField::Value(1)
+            );
+        }
+    }
 
     #[tokio::test]
     async fn native_materialization_rejects_unrepresentable_metadata()

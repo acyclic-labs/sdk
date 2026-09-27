@@ -1647,6 +1647,17 @@ where
         let after_directory = change
             .after
             .is_some_and(|record| record.kind == crate::kernel::FileKind::Directory);
+        // A directory with no earlier record that already exists on the host
+        // is a lazily promoted source directory. Replacing it wholesale would
+        // give it and every file under it new host identities; it is kept and
+        // each descendant is reconciled on its own.
+        if change.before.is_none()
+            && after_directory
+            && std::fs::symlink_metadata(root.join(&path))
+                .is_ok_and(|metadata| metadata.file_type().is_dir())
+        {
+            continue;
+        }
         if before_directory && after_directory {
             let stat = to_generation.stat(&format!("/{path}")).await?;
             metadata_edits.push(MaterializationEdit::SetMetadata {
@@ -1658,9 +1669,13 @@ where
         if before_directory || after_directory {
             structural_directories.push(path.clone());
         }
-        paths.push((path, change.after.is_some()));
+        let fresh_regular = change.before.is_none()
+            && change
+                .after
+                .is_some_and(|record| record.kind == crate::kernel::FileKind::Regular);
+        paths.push((path, change.after.is_some(), fresh_regular));
     }
-    paths.retain(|(path, _)| {
+    paths.retain(|(path, _, _)| {
         !structural_directories.iter().any(|directory| {
             path != directory
                 && path
@@ -1668,6 +1683,21 @@ where
                     .is_some_and(|suffix| suffix.starts_with('/'))
         })
     });
+    // A regular file with no earlier record that already sits on the host
+    // exactly as the generation holds it is a lazily promoted source file, not
+    // new content. Rewriting it would give it a new host identity, and every
+    // fork's promotion of that file is keyed by the identity it was read from.
+    let mut retained = Vec::with_capacity(paths.len());
+    for (path, install, fresh_regular) in paths {
+        if install
+            && fresh_regular
+            && host_holds_generation_file(&root, &path, to_generation).await?
+        {
+            continue;
+        }
+        retained.push((path, install));
+    }
+    let mut paths = retained;
     paths.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     let target = acyclic_native_runtime::run_blocking_io({
         let operation_directory = operation_directory.clone();
@@ -1715,6 +1745,56 @@ where
         .apply(plan)
         .await
         .map_err(Into::into)
+}
+
+/// Largest host file compared against a generation before publication skips
+/// rewriting it; larger files are always rewritten.
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+const MAXIMUM_PROMOTION_COMPARISON_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Whether the host already holds `path` as a regular file with exactly the
+/// generation's bytes (and, on Unix, its permission bits).
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+async fn host_holds_generation_file<A, O>(
+    root: &Path,
+    path: &str,
+    generation: &crate::Generation<A, O>,
+) -> Result<bool, NativeWorkspacePublicationError>
+where
+    A: crate::AsyncAuthorityStore,
+    O: crate::AsyncObjectStore,
+{
+    let host_path = root.join(path);
+    let Ok(metadata) = std::fs::symlink_metadata(&host_path) else {
+        return Ok(false);
+    };
+    if !metadata.is_file() || metadata.len() > MAXIMUM_PROMOTION_COMPARISON_BYTES {
+        return Ok(false);
+    }
+    let stat = generation.stat(&format!("/{path}")).await?;
+    if stat.kind != crate::kernel::FileKind::Regular || stat.logical_bytes != Some(metadata.len()) {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Some(mode) = stat.metadata.posix_mode
+            && mode & 0o7777 != metadata.permissions().mode() & 0o7777
+        {
+            return Ok(false);
+        }
+    }
+    let published = generation.read(&format!("/{path}"), metadata.len()).await?;
+    let host = std::fs::read(&host_path)?;
+    Ok(published.as_ref() == host.as_slice())
 }
 
 /// Core native workspace publication failure.

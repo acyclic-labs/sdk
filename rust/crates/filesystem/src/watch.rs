@@ -511,7 +511,13 @@ impl NativeWatch {
             let metadata = match candidate.symlink_metadata() {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // Absent from the source (a directory only a fork created,
+                    // say): nothing to watch here. Its creation is reported by
+                    // the deepest existing ancestor, which is watched instead.
                     candidate.pop();
+                    if candidate == self.root {
+                        return Ok(());
+                    }
                     break;
                 }
                 Err(error) => return Err(NativeWatchError::Io(error.to_string())),
