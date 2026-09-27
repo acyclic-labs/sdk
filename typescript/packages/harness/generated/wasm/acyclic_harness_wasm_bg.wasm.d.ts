@@ -28,6 +28,7 @@ export const validateConversationMessageId: (a: number, b: number) => [number, n
 export const validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const validateModelContent: (a: any, b: any) => [number, number];
 export const validateModelContextSelection: (a: any, b: any) => [number, number];
+export const validateTaskChildrenPage: (a: any) => [number, number, number];
 export const validateToolDefinition: (a: any) => [number, number];
 export const validateToolInvocation: (a: any, b: any) => [number, number];
 export const validateToolResult: (a: any, b: any) => [number, number];

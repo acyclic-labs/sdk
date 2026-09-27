@@ -42,6 +42,13 @@ use std::{
     },
 };
 
+/// Maximum number of direct owner-retained children returned by one page.
+pub const MAX_CHILD_PAGE: usize = 1_024;
+/// Default number of direct children requested by the SDK facade.
+pub const DEFAULT_CHILD_PAGE: usize = 256;
+/// Maximum UTF-8 byte length of a parent-local child slot.
+pub const MAX_CHILD_SLOT_BYTES: usize = 255;
+
 type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> BoxFuture<'static, Result<O>> + Send + Sync;
 
 enum TaskImplementation<I, O> {
@@ -1922,22 +1929,24 @@ impl Default for Bindings {
     }
 }
 
-fn validate_children_request(
+pub(crate) fn validate_children_request(
     parent: TaskId,
     after_slot: Option<&str>,
     maximum: usize,
 ) -> Result<()> {
     if parent.into_bytes() == [0; 16]
         || maximum == 0
-        || maximum > 1_024
-        || after_slot.is_some_and(|slot| slot.len() > 255 || slot.chars().any(char::is_control))
+        || maximum > MAX_CHILD_PAGE
+        || after_slot.is_some_and(|slot| {
+            slot.len() > MAX_CHILD_SLOT_BYTES || slot.chars().any(char::is_control)
+        })
     {
         return Err(Error::Invalid("task child page request is invalid".into()));
     }
     Ok(())
 }
 
-fn validate_children_page(
+pub(crate) fn validate_children_page(
     page: &TaskChildrenPage,
     expected_revision: Option<u64>,
     after_slot: Option<&str>,
@@ -1959,7 +1968,7 @@ fn validate_children_page(
     for child in &page.entries {
         if child.task_id.into_bytes() == [0; 16]
             || child.slot.trim().is_empty()
-            || child.slot.len() > 255
+            || child.slot.len() > MAX_CHILD_SLOT_BYTES
             || child.slot.chars().any(char::is_control)
             || previous.is_some_and(|slot| child.slot.as_str() <= slot)
             || !ids.insert(child.task_id)
@@ -6320,9 +6329,12 @@ mod tests {
         let parent = TaskId::from_bytes([1; 16]);
         assert!(validate_children_request(TaskId::from_bytes([0; 16]), None, 1).is_err());
         assert!(validate_children_request(parent, None, 0).is_err());
-        assert!(validate_children_request(parent, None, 1_025).is_err());
+        assert!(validate_children_request(parent, None, MAX_CHILD_PAGE + 1).is_err());
         assert!(validate_children_request(parent, Some("\u{7f}"), 1).is_err());
-        assert!(validate_children_request(parent, Some(&"x".repeat(256)), 1).is_err());
+        assert!(
+            validate_children_request(parent, Some(&"x".repeat(MAX_CHILD_SLOT_BYTES + 1)), 1)
+                .is_err()
+        );
         validate_children_request(parent, Some("résumé"), 1)?;
 
         let child = TaskChild {

@@ -32,8 +32,9 @@ use crate::{
     },
     resources::{ProviderRef, ResourceRef},
     runtime::{
-        BatchGroupPolicy, DurableBatchRequest, TaskAdmissionRecord, TaskRunLimits,
-        batch_member_operation_id, task_admission_identities, task_definition_digest,
+        BatchGroupPolicy, DurableBatchRequest, TaskAdmissionRecord, TaskChild, TaskChildrenPage,
+        TaskRunLimits, batch_member_operation_id, task_admission_identities,
+        task_definition_digest, validate_children_page, validate_children_request,
     },
     tool::{ToolDefinition, validate_value},
 };
@@ -69,6 +70,31 @@ struct WasmTaskRunLimitsInput {
     max_steps: Option<u64>,
     #[tsify(type = "bigint | null")]
     deadline_epoch_ms: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WasmTaskChild {
+    slot: String,
+    task_id: TaskId,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WasmTaskChildrenPage {
+    revision: u64,
+    entries: Vec<WasmTaskChild>,
+    next_after: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WasmTaskChildrenPageInput {
+    parent: TaskId,
+    expected_revision: Option<u64>,
+    after_slot: Option<String>,
+    maximum: u32,
+    page: WasmTaskChildrenPage,
 }
 
 #[derive(Deserialize, Tsify)]
@@ -391,6 +417,18 @@ export interface WasmBatchAdmissionRequest {
 export interface WasmTaskAdmissionIdentities {
     readonly task: WasmMachineIdentityWire;
     readonly machine: WasmMachineIdentityWire;
+}
+export interface WasmTaskChildrenPage {
+    readonly revision: bigint;
+    readonly entries: readonly Readonly<{ readonly slot: string; readonly taskId: string }>[];
+    readonly nextAfter: string | null;
+}
+export interface WasmTaskChildrenPageInput {
+    readonly parent: string;
+    readonly expectedRevision: bigint | null;
+    readonly afterSlot: string | null;
+    readonly maximum: number;
+    readonly page: WasmTaskChildrenPage;
 }
 "#;
 
@@ -997,7 +1035,7 @@ fn conversation_page_data(
     after_sequence: u64,
     limit: u32,
 ) -> Result<ConversationPage<'_>, JsValue> {
-    if limit == 0 || limit > 1_024 {
+    if limit == 0 || limit as usize > crate::conversation::MAX_CONVERSATION_PAGE_MESSAGES {
         return Err(JsValue::from_str("conversation page limit is invalid"));
     }
     let conversation = reducer
@@ -1223,6 +1261,43 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         _ => Err(JsValue::from_str("unknown Harness v2 contract kind")),
     }
+}
+
+/// Validates and reprojects one owner-retained direct-child page using the
+/// same bounds and bytewise slot ordering as native Harness hosts.
+#[wasm_bindgen(
+    js_name = validateTaskChildrenPage,
+    unchecked_return_type = "WasmTaskChildrenPage"
+)]
+pub fn validate_task_children_page(
+    #[wasm_bindgen(unchecked_param_type = "WasmTaskChildrenPageInput")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    let input: WasmTaskChildrenPageInput = from_js(value)?;
+    let maximum = usize::try_from(input.maximum)
+        .map_err(|_| JsValue::from_str("task child page maximum is not representable"))?;
+    validate_children_request(input.parent, input.after_slot.as_deref(), maximum)
+        .map_err(js_error)?;
+    let page = TaskChildrenPage {
+        revision: input.page.revision,
+        entries: input
+            .page
+            .entries
+            .iter()
+            .map(|entry| TaskChild {
+                slot: entry.slot.clone(),
+                task_id: entry.task_id,
+            })
+            .collect(),
+        next_after: input.page.next_after.clone(),
+    };
+    validate_children_page(
+        &page,
+        input.expected_revision,
+        input.after_slot.as_deref(),
+        maximum,
+    )
+    .map_err(js_error)?;
+    to_js(&input.page)
 }
 
 /// Applies the same JSON Schema admission used by Rust tool execution before

@@ -14,7 +14,7 @@ import type {
 import type { ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, ExtensionRecord, ExtensionStateMigration } from "./extension.js";
 import type { ApprovalBinding, InteractionId, InteractionResolution, InteractionTicket, ResolutionReceipt } from "./interaction.js";
 import type { ProjectMergeReceipt } from "./project.js";
-import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, RuntimeTaskId } from "./runtime.js";
+import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, RuntimeTaskId, TaskChildrenPage } from "./runtime.js";
 import type { ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult } from "./model.js";
 import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
 
@@ -152,6 +152,7 @@ const REQUIRED_NATIVE_EXPORTS = [
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
   "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
   "taskAdmissionIdentities", "admitTask", "admitBatch", "admitBatchRequest",
+  "validateTaskChildrenPage",
   "fileDescriptor", "uuidFromDigestHalf", "decodeCanonicalJson", "decodeJson",
   "encodeCanonicalJson", "digestCanonicalJson",
 ] as const satisfies readonly (keyof typeof wasm)[];
@@ -422,6 +423,33 @@ export class NativeContracts {
 
   conversationPage(core: WasmReducer, afterSequence: bigint, limit: number): ConversationPage {
     return freezeNative(normalizeNativeValue(core.conversationPage(afterSequence, limit))) as ConversationPage;
+  }
+
+  /** Rust validates and reprojects owner-retained child pages and their request bounds. */
+  validateTaskChildrenPage(
+    parent: RuntimeTaskId,
+    expectedRevision: bigint | null,
+    afterSlot: string | null,
+    maximum: number,
+    page: TaskChildrenPage,
+  ): TaskChildrenPage {
+    // Snapshot host objects before checking them and crossing the WASM ABI.
+    // Passing the original object would let a getter return a different value
+    // when Rust traverses it, defeating the boundary's single-read guarantee.
+    const revision = page.revision;
+    const entries = page.entries.map(entry => ({ slot: entry.slot, taskId: entry.taskId }));
+    const nextAfter = page.nextAfter;
+    if (typeof revision !== "bigint" || revision < 0n) {
+      throw new TypeError("native task child page revision is invalid");
+    }
+    const snapshot: TaskChildrenPage = { revision, entries, nextAfter };
+    return freezeNative(normalizeNativeValue(this.native.validateTaskChildrenPage({
+      parent,
+      expectedRevision,
+      afterSlot,
+      maximum,
+      page: snapshot,
+    }))) as TaskChildrenPage;
   }
 
   encodeCanonicalJson(value: unknown): Uint8Array {

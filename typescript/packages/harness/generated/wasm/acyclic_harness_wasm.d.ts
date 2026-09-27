@@ -150,6 +150,18 @@ export interface WasmTaskAdmissionIdentities {
     readonly task: WasmMachineIdentityWire;
     readonly machine: WasmMachineIdentityWire;
 }
+export interface WasmTaskChildrenPage {
+    readonly revision: bigint;
+    readonly entries: readonly Readonly<{ readonly slot: string; readonly taskId: string }>[];
+    readonly nextAfter: string | null;
+}
+export interface WasmTaskChildrenPageInput {
+    readonly parent: string;
+    readonly expectedRevision: bigint | null;
+    readonly afterSlot: string | null;
+    readonly maximum: number;
+    readonly page: WasmTaskChildrenPage;
+}
 
 
 /**
@@ -528,6 +540,12 @@ export function validateModelContent(content: any, limits: any): void;
 export function validateModelContextSelection(conversation: any, selection: any): void;
 
 /**
+ * Validates and reprojects one owner-retained direct-child page using the
+ * same bounds and bytewise slot ordering as native Harness hosts.
+ */
+export function validateTaskChildrenPage(value: WasmTaskChildrenPageInput): WasmTaskChildrenPage;
+
+/**
  * Validates a model-visible tool definition using the native contract.
  */
 export function validateToolDefinition(definition: any): void;
@@ -634,6 +652,7 @@ export interface InitOutput {
     readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly validateModelContent: (a: any, b: any) => [number, number];
     readonly validateModelContextSelection: (a: any, b: any) => [number, number];
+    readonly validateTaskChildrenPage: (a: any) => [number, number, number];
     readonly validateToolDefinition: (a: any) => [number, number];
     readonly validateToolInvocation: (a: any, b: any) => [number, number];
     readonly validateToolResult: (a: any, b: any) => [number, number];

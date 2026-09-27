@@ -4,6 +4,7 @@ use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
+    runtime::{MAX_CHILD_PAGE, MAX_CHILD_SLOT_BYTES},
     scheduler::{
         AssemblyKind, DurableOwner, EntrypointRef, LeaseFence, OperationSpec, OperationState,
         OrchestrationDecision, Reservation, ResourceSnapshot, Scheduler, SchedulerEvent,
@@ -24,8 +25,6 @@ use std::{collections::BTreeMap, sync::Arc};
 const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";
 const COORDINATOR_WIRE_VERSION: &str = "2";
 const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v2";
-const MAX_CHILD_PAGE: usize = 1_024;
-
 fn validate_child_page_request(
     parent: OperationId,
     after_slot: Option<&str>,
@@ -34,7 +33,9 @@ fn validate_child_page_request(
     if parent.into_bytes() == [0; 16]
         || maximum == 0
         || maximum > MAX_CHILD_PAGE
-        || after_slot.is_some_and(|slot| slot.len() > 255 || slot.chars().any(char::is_control))
+        || after_slot.is_some_and(|slot| {
+            slot.len() > MAX_CHILD_SLOT_BYTES || slot.chars().any(char::is_control)
+        })
     {
         return Err(Error::Invalid(
             "child hierarchy page request is invalid".into(),
@@ -65,7 +66,7 @@ fn validate_child_page(
     for entry in &page.entries {
         if entry.operation_id.into_bytes() == [0; 16]
             || entry.slot.trim().is_empty()
-            || entry.slot.len() > 255
+            || entry.slot.len() > MAX_CHILD_SLOT_BYTES
             || entry.slot.chars().any(char::is_control)
             || previous.is_some_and(|slot| entry.slot.as_str() <= slot)
             || !ids.insert(entry.operation_id)
@@ -1355,7 +1356,10 @@ mod tests {
         assert!(validate_child_page_request(parent, None, 0).is_err());
         assert!(validate_child_page_request(parent, None, MAX_CHILD_PAGE + 1).is_err());
         assert!(validate_child_page_request(parent, Some("\u{7f}"), 1).is_err());
-        assert!(validate_child_page_request(parent, Some(&"x".repeat(256)), 1).is_err());
+        assert!(
+            validate_child_page_request(parent, Some(&"x".repeat(MAX_CHILD_SLOT_BYTES + 1)), 1)
+                .is_err()
+        );
         validate_child_page_request(parent, Some("résumé"), 1)?;
 
         let page = ChildOperationPage {

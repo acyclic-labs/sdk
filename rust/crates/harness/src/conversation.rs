@@ -40,6 +40,8 @@ pub const MAX_LIMIT_MODEL_EVENTS_PER_STEP: usize = 1_000_000;
 pub const MAX_LIMIT_TOOL_CALLS_PER_STEP: usize = 1_000_000;
 /// Maximum canonical messages selected into one model request.
 pub const MAX_LIMIT_CONTEXT_MESSAGES: usize = 1_000_000;
+/// Maximum number of messages returned by one reducer conversation page.
+pub const MAX_CONVERSATION_PAGE_MESSAGES: usize = 1_024;
 
 /// Admission and rendering bounds. Each value may narrow the protocol ceiling;
 /// provider adapters may impose a still lower physical limit.
