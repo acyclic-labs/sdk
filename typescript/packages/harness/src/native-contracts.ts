@@ -134,6 +134,7 @@ const REQUIRED_NATIVE_EXPORTS = [
   "validateContract", "verifyFileBytes", "decodeAttachmentManifest",
   "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
   "validateToolDefinition", "validateToolInvocation", "validateToolResult",
+  "validateModelContent", "validateUserInput",
   "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
   "validateWireResume", "validateWireObserve", "validateWireCancel",
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",

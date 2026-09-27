@@ -112,7 +112,7 @@ async function qualifyAdapter(bindingPath, engineRoot) {
   const { mock } = await import("bun:test");
   const binding = createRequire(import.meta.url)(bindingPath);
   mock.module(`@acyclic-labs/fs-${process.platform}-${process.arch}`, () => binding);
-  const { openNativeFs, DEFAULT_OBJECT_CACHE_OPTIONS, portableVolumeOptions } = await import("../typescript/packages/filesystem/dist/native.js");
+  const { openNativeFs, openNativeWorkspaceGraph, DEFAULT_OBJECT_CACHE_OPTIONS, portableVolumeOptions } = await import("../typescript/packages/filesystem/dist/native.js");
   const engine = await openNativeFs({
     root: join(engineRoot, "public-adapter"),
     objectCache: {
@@ -157,6 +157,9 @@ async function qualifyAdapter(bindingPath, engineRoot) {
       const foreignWorkspace = await foreignEngine.createWorkspace("foreign");
       const foreignGeneration = await foreignWorkspace.sync();
       const foreignChange = await foreignWorkspace.diff(foreignGeneration, foreignGeneration, 32);
+      const forkAtChild = await workspace.forkAt("fork-at-child", before);
+      const forkAtChildGeneration = await forkAtChild.sync();
+      await forkAtChild.forkAt("fork-at-grandchild", forkAtChildGeneration);
       const rejectsForeign = async (operation, kind) => {
         try { await operation(); }
         catch (error) {
@@ -166,11 +169,18 @@ async function qualifyAdapter(bindingPath, engineRoot) {
         throw new Error(`native adapter accepted a foreign ${kind}`);
       };
       await rejectsForeign(() => workspace.forkAt("foreign-fork", foreignGeneration), "generation");
+      await rejectsForeign(() => forkAtChild.forkAt("foreign-fork-at-child", foreignGeneration), "generation");
       await rejectsForeign(() => workspace.diff(before, foreignGeneration, 32), "generation");
       await rejectsForeign(() => workspace.joinInto(foreignWorkspace, {
         history: "merge", maximumGenerations: 32, maximumChanges: 32, maximumConflicts: 32,
       }), "workspace");
       await rejectsForeign(() => changes.compose(foreignChange, 32), "change set");
+      const graph = await openNativeWorkspaceGraph(join(engineRoot, "graph-adapter"));
+      await graph.registerRoot(workspace);
+      const graphChild = await graph.fork(workspace, "graph-child");
+      const graphChildGeneration = await graphChild.sync();
+      await graphChild.forkAt("graph-grandchild", graphChildGeneration);
+      await rejectsForeign(() => graphChild.forkAt("foreign-graph-fork", foreignGeneration), "generation");
     } finally {
       foreignEngine.close();
     }

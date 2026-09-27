@@ -112,6 +112,7 @@ const nativeScope: NativeAdapterScope = {
   adaptChangeSet,
   workspaceHandles,
 };
+const workspaceScopes = new WeakMap<FsWorkspace, NativeAdapterScope>();
 type NativeFsHandle = { readonly raw: NativeRawFs; readonly scope: NativeAdapterScope };
 const fsHandles = new WeakMap<NativeFsEngine, NativeFsHandle>();
 const decodeMergeConflict = (raw: unknown) => decodeSharedMergeConflict(
@@ -342,8 +343,10 @@ function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
     async fork(parent, destination, idempotencyKey) {
       requireWorkspaceName(destination);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
+      const scope = workspaceScopes.get(parent) ?? nativeScope;
       return adaptWorkspace(
-        await raw.fork(rawWorkspace(parent), destination, idempotencyKey),
+        await raw.fork(rawWorkspace(parent, scope), destination, idempotencyKey),
+        scope,
       );
     },
     async authorizeJoin(childWorkspaceId, parentWorkspaceId) {
@@ -953,7 +956,7 @@ function adaptWorkspace(
       return adaptWorkspace(await raw.forkAt(
         destination,
         nativeBoundary<Parameters<typeof raw.forkAt>[1]>(scope.rawGeneration(generation)),
-      ));
+      ), scope);
     },
     async beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction> {
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
@@ -987,6 +990,7 @@ function adaptWorkspace(
     },
   };
   scope.workspaceHandles.set(workspace, raw);
+  workspaceScopes.set(workspace, scope);
   // Keep the module-wide registry for the engine-neutral workspace graph API.
   workspaceHandles.set(workspace, raw);
   return workspace;

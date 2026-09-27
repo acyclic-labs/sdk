@@ -5,9 +5,17 @@ import {
 import {
   validateModelContent, validateUserInput,
 } from "../generated/wasm/acyclic_harness_wasm.js";
+import * as harnessWasm from "../generated/wasm/acyclic_harness_wasm.js";
+import { assertHarnessWasmExports } from "../src/wasm-runtime.js";
 
 const contracts = await NativeContracts.create();
 const agent = "07070707-0707-0707-0707-070707070707" as AgentId;
+
+test("stale WASM modules fail compatibility checks before model dispatch", () => {
+  expect(() => assertHarnessWasmExports(harnessWasm)).not.toThrow();
+  expect(() => assertHarnessWasmExports({ ...harnessWasm, validateModelContent: undefined })).toThrow("required validators");
+  expect(() => assertHarnessWasmExports({ ...harnessWasm, validateUserInput: undefined })).toThrow("required validators");
+});
 
 async function file(): Promise<FileRef> {
   return contracts.validate("file_ref", {
