@@ -12,7 +12,7 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 /// Default maximum bytes read when resolving a file for the provider-neutral
@@ -79,6 +79,74 @@ pub struct SelectedModelContext {
     pub selection: ModelContextSelection,
     /// Typed model-visible values; do not append them to conversation history.
     pub messages: Vec<ModelMessage>,
+}
+
+/// Derives the bounded, ordered message identity set for one admitted user
+/// turn.  This is deliberately separate from byte projection: callers can
+/// commit the selection before invoking an asynchronous model or content
+/// provider, and retries can reuse the exact committed identities.
+pub fn bounded_model_context_selection(
+    conversation: &ConversationState,
+    user_id: Uuid,
+    maximum_messages: usize,
+) -> Result<ModelContextSelection> {
+    if maximum_messages == 0 {
+        return Err(Error::Invalid(
+            "model context message limit must be positive".into(),
+        ));
+    }
+    let current = conversation
+        .messages
+        .iter()
+        .position(|message| message.id == user_id)
+        .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?;
+    let prefix = conversation
+        .messages
+        .get(..=current)
+        .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?;
+    let mut ids = prefix
+        .iter()
+        .filter(|message| {
+            matches!(
+                message.kind,
+                MessageKind::System
+                    | MessageKind::User
+                    | MessageKind::Assistant
+                    | MessageKind::ToolCall
+                    | MessageKind::ToolResult
+            )
+        })
+        .map(|message| message.id)
+        .collect::<Vec<_>>();
+    if ids.len() > maximum_messages {
+        ids.drain(..ids.len() - maximum_messages);
+    }
+    // A bounded suffix can start inside a tool exchange. Never hand a
+    // provider a result whose precise call fell outside the window.
+    let included = ids.iter().copied().collect::<HashSet<_>>();
+    let by_id = prefix
+        .iter()
+        .map(|message| (message.id, message))
+        .collect::<HashMap<_, _>>();
+    ids.retain(|id| {
+        by_id.get(id).is_some_and(|message| {
+            message.kind != MessageKind::ToolResult
+                || message
+                    .reply_to
+                    .is_some_and(|call| included.contains(&call))
+        })
+    });
+    let selection = ModelContextSelection {
+        conversation_revision: conversation.messages.len() as u64,
+        message_ids: ids,
+    };
+    selection.validate(conversation)?;
+    if selection.message_ids.last() != Some(&user_id) {
+        return Err(Error::Conflict(
+            "turn identity is bound to another context selection".into(),
+        ));
+    }
+    Ok(selection)
 }
 
 impl SelectedModelContext {

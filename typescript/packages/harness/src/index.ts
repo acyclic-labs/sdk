@@ -14,7 +14,7 @@ import {
   ProtocolIdentitySchema,
 } from "../generated/proto/protocol/v1/protocol_pb.js";
 import { AgentHarness, HarnessBuilder, type AgentHarnessHost } from "./runtime.js";
-import type { ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, FileDescriptor, FileRef, Limits, VolumeRef, Attachment } from "./conversation.js";
+import type { Attachment, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, FileDescriptor, FileRef, Limits, ReferencedAttachments, VolumeRef } from "./conversation.js";
 import type { ToolJsonSchema } from "./model.js";
 import type { InteractionId } from "./interaction.js";
 import type { ResourceRef } from "./fork.js";
@@ -346,6 +346,23 @@ export class Harness {
   /** Applies the native Rust ref-only message and configured-limit contracts. */
   validateConversationMessage(message: ConversationMessage, limits: Limits): ConversationMessage {
     return this.#contracts.validate("conversation_message", message, limits);
+  }
+
+  /** Rust-owned deterministic admission and retry plan for one conversation turn. */
+  prepareConversationTurn(
+    conversation: Readonly<{ agent: string | null; messages: readonly ConversationMessage[] }>,
+    operationId: OperationId,
+    content: FileRef,
+    attachments: ReferencedAttachments,
+    limits: Limits,
+    existingSelection: Readonly<{ conversation_revision: bigint; message_ids: readonly ConversationMessageId[] }> | null,
+    hasCompletedOutput: boolean,
+    canReconcile: boolean,
+  ): ReturnType<NativeContracts["prepareConversationTurn"]> {
+    return this.#contracts.prepareConversationTurn(
+      conversation, operationId, content, attachments, limits, existingSelection,
+      hasCompletedOutput, canReconcile,
+    );
   }
 
   /** Brands an exact message identity using this reducer's initialized Rust module. */

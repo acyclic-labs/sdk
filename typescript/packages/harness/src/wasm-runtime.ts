@@ -10,6 +10,7 @@ const REQUIRED_WASM_VALIDATORS = [
   "validateToolDefinition", "validateToolInvocation", "validateToolResult",
   "validateModelContent", "validateUserInput", "admitModelEvent", "selectModelContext",
   "validateModelContextSelection",
+  "prepareConversationTurn",
   "WasmContentStore",
 ] as const;
 

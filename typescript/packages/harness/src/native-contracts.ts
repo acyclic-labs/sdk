@@ -3,7 +3,7 @@ import initWasm, * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   InitInput, WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
-  WasmTaskIdentityInput,
+  WasmTaskIdentityInput, WasmTurnPreparation,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationPage, FileDescriptor, FileRef, Limits, MessageKind, ProviderRef, ReferencedAttachments, TaskOutcomeRecord, VolumeClass, VolumeRef,
@@ -147,6 +147,7 @@ const REQUIRED_NATIVE_EXPORTS = [
   "validateToolDefinition", "validateToolInvocation", "validateToolResult",
   "validateModelContent", "validateUserInput", "admitModelEvent", "selectModelContext",
   "validateModelContextSelection",
+  "prepareConversationTurn",
   "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
   "validateWireResume", "validateWireObserve", "validateWireCancel",
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
@@ -297,6 +298,23 @@ export class NativeContracts {
     selection: Readonly<{ conversation_revision: bigint; message_ids: readonly ConversationMessageId[] }>,
   ): void {
     this.native.validateModelContextSelection(conversation, selection);
+  }
+
+  /** Rust-owned deterministic admission and retry plan for one conversation turn. */
+  prepareConversationTurn(
+    conversation: Readonly<{ agent: string | null; messages: readonly ConversationMessage[] }>,
+    operationId: OperationId,
+    content: FileRef,
+    attachments: ReferencedAttachments,
+    limits: Limits,
+    existingSelection: Readonly<{ conversation_revision: bigint; message_ids: readonly ConversationMessageId[] }> | null,
+    hasCompletedOutput: boolean,
+    canReconcile: boolean,
+  ): WasmTurnPreparation {
+    return normalizeNativeValue(this.native.prepareConversationTurn(
+      conversation, operationId, content, attachments, limits, existingSelection,
+      hasCompletedOutput, canReconcile,
+    )) as WasmTurnPreparation;
   }
 
   validateWireHandshake(request: Uint8Array, response: Uint8Array): Uint8Array {

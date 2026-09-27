@@ -6,8 +6,8 @@ use crate::{
     Result,
     conversation::{
         Attachment, ContentGrant, ContentPublisher, ContentResidencyVerifier, ConversationMessage,
-        FileRef, Limits, MessageKind, ModelContextSelection, ReferencedAttachments, VolumeClass,
-        VolumeOperation, VolumeOwner, VolumeRef,
+        FileRef, Limits, MessageKind, ReferencedAttachments, VolumeClass, VolumeOperation,
+        VolumeOwner, VolumeRef,
     },
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
     executor::{ExecutionEvent, ExecutionJournal, TurnInput, TurnOutput},
@@ -31,7 +31,7 @@ use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     sync::Arc,
 };
 use uuid::Uuid;
@@ -796,46 +796,34 @@ impl MemoryHarnessStorage {
                 .await?
         };
         let user_operation = derived_operation_id(operation_id, b"conversation-user");
-        let user_id = Uuid::from_bytes(user_operation.into_bytes());
         let mut aggregate = self.open_conversation(limits).await?;
         let state = aggregate
             .reducer()
             .conversation()
             .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-        if let Some(last_user) = state
+        let existing_selection = aggregate
+            .reducer()
+            .context_selection_for_operation(operation_id)
+            .cloned();
+        let legacy_user_id = Uuid::from_bytes(user_operation.into_bytes());
+        let user_id_override = state
             .messages
             .iter()
-            .rfind(|message| message.kind == MessageKind::User)
-            && last_user.id != user_id
-            && !state.messages.iter().any(|message| {
-                message.kind == MessageKind::Assistant && message.reply_to == Some(last_user.id)
-            })
-        {
-            return Err(Error::Conflict(
-                "previous conversation turn is unresolved; retry it before admitting another"
-                    .into(),
-            ));
-        }
-        if let Some(existing) = state.messages.iter().find(|message| message.id == user_id) {
-            if existing.kind != MessageKind::User
-                || existing.content != content
-                || existing.attachments != referenced
-            {
-                return Err(Error::Conflict(
-                    "turn identity belongs to another user message".into(),
-                ));
-            }
-        } else {
-            let message = ConversationMessage {
-                id: user_id,
-                sequence: state.messages.len() as u64 + 1,
-                kind: MessageKind::User,
-                content,
-                attachments: referenced,
-                reply_to: None,
-                tool_call_id: None,
-                extensions: BTreeMap::new(),
-            };
+            .any(|message| message.id == legacy_user_id)
+            .then_some(legacy_user_id);
+        let preparation = crate::turn::prepare_turn_with_user_id(
+            state,
+            operation_id,
+            content,
+            referenced,
+            limits,
+            existing_selection,
+            false,
+            true,
+            user_id_override,
+        )?;
+        let user_id = preparation.user_id;
+        if let Some(message) = preparation.user_message.clone() {
             self.append_conversation(
                 &mut aggregate,
                 user_operation,
@@ -846,74 +834,18 @@ impl MemoryHarnessStorage {
             )
             .await?;
         }
-        let selection_operation = operation_id;
-        if aggregate
-            .reducer()
-            .context_selection_for_operation(selection_operation)
-            .is_none()
-        {
-            let state = aggregate
-                .reducer()
-                .conversation()
-                .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-            let current = state
-                .messages
-                .iter()
-                .position(|message| message.id == user_id)
-                .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?;
-            let prefix = state
-                .messages
-                .get(..=current)
-                .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?;
-            let mut ids = prefix
-                .iter()
-                .filter(|message| {
-                    matches!(
-                        message.kind,
-                        MessageKind::System
-                            | MessageKind::User
-                            | MessageKind::Assistant
-                            | MessageKind::ToolCall
-                            | MessageKind::ToolResult
-                    )
-                })
-                .map(|message| message.id)
-                .collect::<Vec<_>>();
-            if ids.len() > limits.context_messages {
-                ids.drain(..ids.len() - limits.context_messages);
-            }
-            // A bounded suffix can start inside a tool exchange. Never hand a
-            // provider a result whose precise call fell outside the window.
-            let included = ids.iter().copied().collect::<HashSet<_>>();
-            let by_id = prefix
-                .iter()
-                .map(|message| (message.id, message))
-                .collect::<HashMap<_, _>>();
-            ids.retain(|id| {
-                by_id.get(id).is_some_and(|message| {
-                    message.kind != MessageKind::ToolResult
-                        || message
-                            .reply_to
-                            .is_some_and(|call| included.contains(&call))
-                })
-            });
-            let selection = ModelContextSelection {
-                conversation_revision: state.messages.len() as u64,
-                message_ids: ids,
-            };
+        if preparation.selection_is_new {
             self.append_conversation(
                 &mut aggregate,
-                selection_operation,
+                operation_id,
                 "context",
-                Action::SelectModelContext { selection },
+                Action::SelectModelContext {
+                    selection: preparation.selection.clone(),
+                },
             )
             .await?;
         }
-        let selection = aggregate
-            .reducer()
-            .context_selection_for_operation(selection_operation)
-            .cloned()
-            .ok_or_else(|| Error::Storage("model context selection is missing".into()))?;
+        let selection = preparation.selection;
         let mut historical = aggregate
             .reducer()
             .conversation()
@@ -2003,6 +1935,16 @@ mod tests {
             )
             .await?;
         assert_eq!(output.text, "local response");
+        let first_aggregate = storage.open_conversation(bundle.limits()).await?;
+        let first_user = first_aggregate
+            .reducer()
+            .conversation()
+            .and_then(|conversation| conversation.messages.first())
+            .ok_or_else(|| Error::Invalid("conversation user message is missing".into()))?;
+        assert_eq!(
+            first_user.id,
+            crate::turn::canonical_user_message_id(operation_id)
+        );
         let replayed = storage
             .run_conversation(
                 &bundle,

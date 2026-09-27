@@ -182,6 +182,44 @@ test("local conversation publishes staged refs and pinned context before model d
   host.free();
 });
 
+test("projection read failure leaves the turn retryable before context commit", async () => {
+  const host = await MemoryConversation.create({ agent, wasm });
+  let calls = 0;
+  const runtime = Harness.builder(contracts).model(testModel, {
+    async *generate() {
+      calls += 1;
+      yield { kind: "content" as const, delta: "recovered" };
+      yield { kind: "completed" as const, metadata: {} };
+    },
+    async reconcile() { return undefined; },
+  }).build();
+  const operation = "11111111-1111-1111-1111-111111111111" as OperationId;
+  const content = await host.stage("turns/projection-failure/user.txt",
+    new TextEncoder().encode("question"), "text/plain", "user.txt");
+  const attachment = await host.stage("files/projection.txt", new TextEncoder().encode("attachment"), "text/plain", "projection.txt");
+  const attachments = Array.from({ length: 129 }, () => ({ file: attachment, label: null }));
+  const originalRead = host.read.bind(host);
+  let manifestReads = 0;
+  host.read = async file => {
+    if (file.path.endsWith("user-attachments.json")) {
+      manifestReads += 1;
+      if (manifestReads === 2) {
+        throw new Error("injected projection read failure");
+      }
+    }
+    return originalRead(file);
+  };
+  await expect(host.runConversation(runtime, operation, content, attachments))
+    .rejects.toThrow("injected projection read failure");
+  expect(host.snapshot().events.some(event => typeof event === "object" && event !== null
+    && "payload" in event && typeof event.payload === "object" && event.payload !== null
+    && "kind" in event.payload && event.payload.kind === "model_context_selected")).toBe(false);
+  const recovered = await host.runConversation(runtime, operation, content, attachments);
+  expect(recovered.text).toBe("recovered");
+  expect(calls).toBe(1);
+  host.free();
+});
+
 test("large attachment lists are manifest-backed and changed retry inputs are rejected", async () => {
   const host = await MemoryConversation.create({ agent, wasm });
   const runtime = Harness.builder(contracts).model(testModel, {
