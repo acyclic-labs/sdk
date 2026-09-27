@@ -283,7 +283,9 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     pub struct BrowserWorkspaceCommit {
-        #[tsify(type = "\"committed\" | \"already-committed\" | \"conflict\" | \"fenced\" | \"idempotency-conflict\"")]
+        #[tsify(
+            type = "\"committed\" | \"already-committed\" | \"conflict\" | \"fenced\" | \"idempotency-conflict\""
+        )]
         status: &'static str,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
@@ -352,7 +354,9 @@ mod bindings {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
-        #[tsify(type = "\"regular\" | \"directory\" | \"symbolic-link\" | \"fifo\" | \"socket\" | \"character-device\" | \"block-device\" | \"reparse-point\" | \"mount-boundary\"")]
+        #[tsify(
+            type = "\"regular\" | \"directory\" | \"symbolic-link\" | \"fifo\" | \"socket\" | \"character-device\" | \"block-device\" | \"reparse-point\" | \"mount-boundary\""
+        )]
         kind: &'static str,
         link_count: u64,
         logical_bytes: Option<u64>,
@@ -367,7 +371,9 @@ mod bindings {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
-        #[tsify(type = "\"regular\" | \"directory\" | \"symbolic-link\" | \"fifo\" | \"socket\" | \"character-device\" | \"block-device\" | \"reparse-point\" | \"mount-boundary\"")]
+        #[tsify(
+            type = "\"regular\" | \"directory\" | \"symbolic-link\" | \"fifo\" | \"socket\" | \"character-device\" | \"block-device\" | \"reparse-point\" | \"mount-boundary\""
+        )]
         kind: &'static str,
     }
 
@@ -399,7 +405,7 @@ mod bindings {
     }
 
     #[cfg(all(test, target_arch = "wasm32"))]
-    pub(crate) fn test_workspace_extent_plan_js() -> JsValue {
+    pub(crate) fn test_workspace_extent_plan_js() -> Result<JsValue, JsValue> {
         BrowserWorkspaceExtentPlan {
             spans: vec![BrowserWorkspaceExtentSpan {
                 offset: 9_007_199_254_740_993,
@@ -409,8 +415,8 @@ mod bindings {
             }],
         }
         .into_js()
-        .expect("extent plan test DTO must serialize")
-        .into()
+        .map(Into::into)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     #[derive(Deserialize, Serialize, Tsify)]
@@ -427,7 +433,9 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     pub struct BrowserJoinResult {
-        #[tsify(type = "\"applied\" | \"already-applied\" | \"no-changes\" | \"stale-target\" | \"conflicted\" | \"fenced\" | \"idempotency-conflict\"")]
+        #[tsify(
+            type = "\"applied\" | \"already-applied\" | \"no-changes\" | \"stale-target\" | \"conflicted\" | \"fenced\" | \"idempotency-conflict\""
+        )]
         status: &'static str,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
@@ -439,7 +447,9 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     pub struct BrowserWorkspaceRebaseResult {
-        #[tsify(type = "\"rebased\" | \"already-rebased\" | \"current\" | \"stale\" | \"conflicted\" | \"fenced\" | \"idempotency-conflict\"")]
+        #[tsify(
+            type = "\"rebased\" | \"already-rebased\" | \"current\" | \"stale\" | \"conflicted\" | \"fenced\" | \"idempotency-conflict\""
+        )]
         status: &'static str,
         #[tsify(type = "Uint8Array | undefined")]
         generation_id: Option<serde_bytes::ByteBuf>,
@@ -691,7 +701,11 @@ mod bindings {
 
         /// Atomically creates or replaces one complete file.
         #[wasm_bindgen]
-        pub async fn write(&self, path: String, bytes: Vec<u8>) -> Result<BrowserWorkspaceCommit, JsValue> {
+        pub async fn write(
+            &self,
+            path: String,
+            bytes: Vec<u8>,
+        ) -> Result<BrowserWorkspaceCommit, JsValue> {
             let outcome = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => {
                     Box::pin(value.write(&path, bytes::Bytes::from(bytes)))
@@ -6870,7 +6884,9 @@ mod bindings {
             MergeConflict::Binding { directory_id, name } => MergeConflictResult {
                 kind: "binding",
                 file_id: None,
-                directory_id: Some(serde_bytes::ByteBuf::from(directory_id.into_bytes().to_vec())),
+                directory_id: Some(serde_bytes::ByteBuf::from(
+                    directory_id.into_bytes().to_vec(),
+                )),
                 name: Some(encode_name_component(&name)),
             },
         }
@@ -7533,20 +7549,15 @@ mod wasm_abi_tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     #[wasm_bindgen_test]
-    fn workspace_extent_plan_preserves_u64_as_bigint() {
-        let plan = test_workspace_extent_plan_js();
-        let spans = Reflect::get(&plan, &JsValue::from_str("spans"))
-            .expect("extent plan spans must be present")
-            .dyn_into::<Array>()
-            .expect("extent plan spans must be an array");
-        let span = spans
-            .get(0)
-            .dyn_into::<js_sys::Object>()
-            .expect("extent plan span must be an object");
-        let offset = Reflect::get(&span, &JsValue::from_str("offset"))
-            .expect("extent span offset must be present")
-            .dyn_into::<BigInt>()
-            .expect("extent span offset must be a bigint");
-        assert_eq!(offset.to_string(10).unwrap().as_string().unwrap(), "9007199254740993");
+    fn workspace_extent_plan_preserves_u64_as_bigint() -> Result<(), JsValue> {
+        let plan = test_workspace_extent_plan_js()?;
+        let spans = Reflect::get(&plan, &JsValue::from_str("spans"))?.dyn_into::<Array>()?;
+        let span = spans.get(0).dyn_into::<js_sys::Object>()?;
+        let offset = Reflect::get(&span, &JsValue::from_str("offset"))?.dyn_into::<BigInt>()?;
+        assert_eq!(
+            offset.to_string(10)?.as_string().as_deref(),
+            Some("9007199254740993")
+        );
+        Ok(())
     }
 }
