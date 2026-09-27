@@ -227,6 +227,22 @@ export interface TaskRef<Input, Output> {
   readonly revision: string;
   readonly [taskRefBrand]: (input: Input) => Output;
 }
+/** Internal registry view: inputs are never supplied by the registry itself. */
+type ErasedTaskDefinition = TaskDefinition<never, unknown>;
+type ErasedTaskRef = TaskRef<never, unknown>;
+type ErasedTask = Task<unknown>;
+function eraseTaskDefinition<Input, Output>(definition: TaskDefinition<Input, Output>): ErasedTaskDefinition {
+  return definition as unknown as ErasedTaskDefinition;
+}
+function restoreTaskDefinition<Input, Output>(definition: ErasedTaskDefinition): TaskDefinition<Input, Output> {
+  return definition as unknown as TaskDefinition<Input, Output>;
+}
+function restoreTaskRef<Input, Output>(reference: ErasedTaskRef): TaskRef<Input, Output> {
+  return reference as unknown as TaskRef<Input, Output>;
+}
+function restoreTask<Output>(task: ErasedTask): Task<Output> {
+  return task as unknown as Task<Output>;
+}
 const taskReferences = new WeakMap<object, object>();
 const taskDefinitions = new WeakMap<object, object>();
 function publicTaskHandle<Input, Output>(definition: TaskDefinition<Input, Output>): TaskRef<Input, Output> {
@@ -1090,20 +1106,27 @@ export class TaskContext {
   }
   task<Input, Output>(definition: TaskDefinition<Input, Output>): TaskRef<Input, Output>;
   task(name: string): TaskRef<unknown, unknown>;
-  task(value: string | TaskDefinition<any, any>): TaskRef<any, any> {
-    const definition = typeof value === "string" ? this.#harness.task(value) : this.#harness.task(value);
-    this.#assertTask(definition);
-    return publicTaskHandle(definition);
+  task<Input, Output>(value: string | TaskDefinition<Input, Output>): TaskRef<Input, Output> {
+    if (typeof value === "string") {
+      const definition = this.#harness.task(value);
+      const erased = eraseTaskDefinition(definition);
+      this.#assertTask(erased);
+      return restoreTaskRef<Input, Output>(publicTaskHandle(erased));
+    }
+    const definition = this.#harness.task(value);
+    const erased = eraseTaskDefinition(definition);
+    this.#assertTask(erased);
+    return restoreTaskRef<Input, Output>(publicTaskHandle(erased));
   }
   tool<Input, Output>(definition: ToolDefinition<Input, Output>): ToolRef<Input, Output>;
   tool(name: string): ToolRef<unknown, unknown>;
-  tool(value: string | ToolDefinition<any, any>): ToolRef<any, any> {
+  tool<Input, Output>(value: string | ToolDefinition<Input, Output>): ToolRef<Input, Output> {
     const tool = typeof value === "string" ? this.#harness.tool(value) : this.#harness.tool(value);
     const capability = `tool:call:${tool.definition.name}`;
     if (!this.#harness.scope.grants.includes(capability)) throw new Error(`task scope lacks ${capability}`);
-    return tool;
+    return restoreToolRef<Input, Output>(tool);
   }
-  #assertTask<Input, Output>(definition: TaskDefinition<Input, Output>): void {
+  #assertTask(definition: ErasedTaskDefinition): void {
     this.#harness.task(definition);
     const capability = `task:spawn:${taskKey(definition.name, definition.revision)}`;
     if (!this.#harness.scope.grants.includes(capability)) throw new Error(`task scope lacks ${capability}`);
@@ -1241,19 +1264,19 @@ export class TaskContext {
   spawn<Input, Output>(task: TaskRef<Input, Output>, input: Input): Task<Output> {
     if (this.durable) throw new Error("durable descendants require admitted tasks and stable operation IDs");
     const definition = registeredTaskDefinition(task);
-    this.#assertTask(definition);
+    this.#assertTask(eraseTaskDefinition(definition));
     return this.#harness.spawn(definition, input);
   }
   admit<Input, Output>(task: TaskRef<Input, Output>, input: Input, operationId: string): Promise<Admission<Output>> {
     if (!this.durable || !this.taskId) throw new Error("a live task cannot claim durable descendant ownership");
     const definition = registeredTaskDefinition(task);
-    this.#assertTask(definition);
+    this.#assertTask(eraseTaskDefinition(definition));
     return this.#harness.admit(definition, input, operationId, this.taskId);
   }
   group<Output>(policy: GroupPolicy, id?: GroupId): TaskGroup<Output, "scoped"> {
     if (this.durable && (!this.taskId || !id)) throw new Error("durable task groups require stable group and parent identities");
     return new TaskGroup<Output, "scoped">(this.#harness, policy, id, this.durable ? this.taskId : undefined,
-      definition => this.#assertTask(definition));
+      definition => this.#assertTask(eraseTaskDefinition(definition)));
   }
   async interact(interaction: Interaction): Promise<Answer> {
     if (this.durable) {
@@ -1339,14 +1362,30 @@ interface RegisteredTool<Input, Output> {
   readonly executor?: ToolExecutor<Input, Output>;
   readonly machine?: MachineIdentityWire;
 }
-const publicToolHandles = new WeakMap<RegisteredTool<any, any>, ToolRef<any, any>>();
+type ErasedToolDefinition = ToolDefinition<never, unknown>;
+type ErasedToolRef = ToolRef<never, unknown>;
+type ErasedRegisteredTool = RegisteredTool<never, unknown>;
+function eraseToolDefinition<Input, Output>(definition: ToolDefinition<Input, Output>): ErasedToolDefinition {
+  return definition as unknown as ErasedToolDefinition;
+}
+function eraseRegisteredTool<Input, Output>(registered: RegisteredTool<Input, Output>): ErasedRegisteredTool {
+  return registered as unknown as ErasedRegisteredTool;
+}
+function restoreRegisteredTool<Input, Output>(registered: ErasedRegisteredTool): RegisteredTool<Input, Output> {
+  return registered as unknown as RegisteredTool<Input, Output>;
+}
+function restoreToolRef<Input, Output>(reference: ErasedToolRef): ToolRef<Input, Output> {
+  return reference as unknown as ToolRef<Input, Output>;
+}
+const publicToolHandles = new WeakMap<ErasedRegisteredTool, ErasedToolRef>();
 function publicToolHandle<Input, Output>(registered: RegisteredTool<Input, Output>): ToolRef<Input, Output> {
-  const cached = publicToolHandles.get(registered);
-  if (cached !== undefined) return cached as ToolRef<Input, Output>;
+  const erased = eraseRegisteredTool(registered);
+  const cached = publicToolHandles.get(erased);
+  if (cached !== undefined) return restoreToolRef<Input, Output>(cached);
   const { name, revision, description, inputSchema, outputSchema } = registered.definition;
   const handle = Object.freeze({ definition: Object.freeze({ name, revision, description, inputSchema, outputSchema }),
     ...(registered.machine ? { machine: registered.machine } : {}) }) as ToolRef<Input, Output>;
-  publicToolHandles.set(registered, handle);
+  publicToolHandles.set(erased, handle as unknown as ErasedToolRef);
   return handle;
 }
 
@@ -1554,8 +1593,8 @@ export interface HarnessBindings {
 
 export class HarnessBuilder {
   constructor(readonly contracts: NativeContracts) {}
-  readonly #tasks = new Map<string, TaskDefinition<any, any>>(); readonly #tools = new Map<string, RegisteredTool<any, any>>();
-  readonly #toolSources = new Map<string, ToolDefinition<any, any>>();
+  readonly #tasks = new Map<string, ErasedTaskDefinition>(); readonly #tools = new Map<string, ErasedRegisteredTool>();
+  readonly #toolSources = new Map<string, ErasedToolDefinition>();
   readonly #selectedTools = new Map<string, string>();
   #model?: BoundModel; #loop?: AgentLoop; #context?: ContextBuilder; #interactions?: InteractionHandler; #interactionResolver?: InteractionResolver; #policy?: Policy; #host?: HarnessRuntimeHost; #state?: HarnessRuntimeState; #spawner?: HarnessRuntimeSpawner; #execution?: HarnessExecutionProvider; #content?: ContentBindings; #artifacts?: ContentBindings; #forkPreparer?: ForkPreparer; #forkPublisher?: ForkPublisher; #workspaces?: ProjectWorkspaceProvider;
   readonly #grants: string[] = [];
@@ -1613,7 +1652,7 @@ export class HarnessBuilder {
       value.implementation.kind === "resumable" ? value.implementation.component.state : undefined]) {
       if (schema !== undefined) this.contracts.encodeCanonicalJson(schema.document);
     }
-    this.#tasks.set(key, value);
+    this.#tasks.set(key, eraseTaskDefinition(value));
     return this;
   }
   tool<Input, Output>(definition: ToolDefinition<Input, Output>, executor?: ToolExecutor<Input, Output>): this {
@@ -1643,9 +1682,9 @@ export class HarnessBuilder {
     const pinned = Object.freeze({ ...definition,
       inputSchema: freezeSchema(structuredClone(definition.inputSchema)),
       outputSchema: freezeSchema(structuredClone(definition.outputSchema)) });
-    this.#tools.set(key, Object.freeze({ definition: pinned,
-      ...(executor ? { executor } : {}), ...(machine ? { machine } : {}) }));
-    this.#toolSources.set(key, definition);
+    this.#tools.set(key, eraseRegisteredTool(Object.freeze({ definition: pinned,
+      ...(executor ? { executor } : {}), ...(machine ? { machine } : {}) })));
+    this.#toolSources.set(key, eraseToolDefinition(definition));
     if (previouslyRegistered) this.#selectedTools.delete(definition.name);
     else this.#selectedTools.set(definition.name, definition.revision);
     return this;
@@ -1676,13 +1715,13 @@ export class HarnessBuilder {
 interface AgentHarnessComponents { model?: BoundModel; loop?: AgentLoop; context?: ContextBuilder; interactions?: InteractionHandler; interactionResolver?: InteractionResolver; policy?: Policy; host?: HarnessRuntimeHost; state?: HarnessRuntimeState; spawner?: HarnessRuntimeSpawner; execution?: HarnessExecutionProvider; content?: ContentBindings; artifacts?: ContentBindings; forkPreparer?: ForkPreparer; forkPublisher?: ForkPublisher; workspaces?: ProjectWorkspaceProvider; limits?: Limits }
 const harnessConstruction = Symbol("HarnessBuilder-owned construction");
 export class AgentHarness {
-  readonly #tasks: ReadonlyMap<string, TaskDefinition<any, any>>; readonly #tools: ReadonlyMap<string, RegisteredTool<any, any>>;
+  readonly #tasks: ReadonlyMap<string, ErasedTaskDefinition>; readonly #tools: ReadonlyMap<string, ErasedRegisteredTool>;
   readonly #selectedTools: ReadonlyMap<string, string>;
-  readonly #toolSources: ReadonlyMap<string, ToolDefinition<any, any>>;
+  readonly #toolSources: ReadonlyMap<string, ErasedToolDefinition>;
   readonly #policyIdentity: PolicyIdentity | null;
   readonly components: Readonly<AgentHarnessComponents>;
   readonly #contentLimits: Limits;
-  constructor(tasks: ReadonlyMap<string, TaskDefinition<any, any>>, tools: ReadonlyMap<string, RegisteredTool<any, any>>, components: AgentHarnessComponents, readonly scope: ExecutionScope, readonly running: Map<RuntimeTaskId, Task<unknown>>, selectedTools: ReadonlyMap<string, string>, toolSources: ReadonlyMap<string, ToolDefinition<any, any>>, readonly contracts: NativeContracts, construction: typeof harnessConstruction) {
+  constructor(tasks: ReadonlyMap<string, ErasedTaskDefinition>, tools: ReadonlyMap<string, ErasedRegisteredTool>, components: AgentHarnessComponents, readonly scope: ExecutionScope, readonly running: Map<RuntimeTaskId, Task<unknown>>, selectedTools: ReadonlyMap<string, string>, toolSources: ReadonlyMap<string, ErasedToolDefinition>, readonly contracts: NativeContracts, construction: typeof harnessConstruction) {
     if (construction !== harnessConstruction) throw new TypeError("AgentHarness must be created through HarnessBuilder or scoped()");
     this.#tasks = new Map(tasks);
     this.#tools = new Map(tools);
@@ -1941,46 +1980,46 @@ export class AgentHarness {
   }
   task<Input, Output>(definition: TaskDefinition<Input, Output>): TaskDefinition<Input, Output>;
   task(name: string): TaskDefinition<unknown, unknown>;
-  task(value: string | TaskDefinition<any, any>): TaskDefinition<any, any> {
+  task<Input, Output>(value: string | TaskDefinition<Input, Output>): TaskDefinition<Input, Output> {
     if (typeof value !== "string") {
-      if (this.#tasks.get(taskKey(value.name, value.revision)) !== value) {
+      if (this.#tasks.get(taskKey(value.name, value.revision)) !== eraseTaskDefinition(value)) {
         throw new Error("task definition is not registered or no longer active");
       }
       return value;
     }
     const exact = this.#tasks.get(value);
-    if (exact) return exact;
+    if (exact) return restoreTaskDefinition<Input, Output>(exact);
     const matches = [...this.#tasks.values()].filter(definition => definition.name === value);
     if (matches.length > 1) throw new Error(`task revision is ambiguous: ${value}`);
     if (matches.length === 0) throw new Error(`task is not registered: ${value}`);
-    return matches[0]!;
+    return restoreTaskDefinition<Input, Output>(matches[0]!);
   }
   tool<Input, Output>(definition: ToolDefinition<Input, Output>): ToolRef<Input, Output>;
   tool(name: string): ToolRef<unknown, unknown>;
-  tool(value: string | ToolDefinition<any, any>): ToolRef<any, any> {
+  tool<Input, Output>(value: string | ToolDefinition<Input, Output>): ToolRef<Input, Output> {
     if (typeof value !== "string") {
       const key = toolKey(value.name, value.revision);
       const exact = this.#tools.get(key);
-      if (!exact || this.#toolSources.get(key) !== value) {
+      if (!exact || this.#toolSources.get(key) !== eraseToolDefinition(value)) {
         throw new Error("tool definition is not registered or no longer active");
       }
-      return publicToolHandle(exact);
+      return publicToolHandle(restoreRegisteredTool<Input, Output>(exact));
     }
     const name = value;
     const exact = this.#tools.get(name);
-    if (exact) return publicToolHandle(exact);
+    if (exact) return publicToolHandle(restoreRegisteredTool<Input, Output>(exact));
     const selected = this.#selectedTools.get(name);
-    if (selected) return publicToolHandle(this.#tools.get(toolKey(name, selected))!);
+    if (selected) return publicToolHandle(restoreRegisteredTool<Input, Output>(this.#tools.get(toolKey(name, selected))!));
     const matches = [...this.#tools.values()].filter(tool => tool.definition.name === name);
     if (matches.length > 1) throw new Error(`tool revision is ambiguous: ${name}`);
     if (matches.length === 0) throw new Error(`tool is not registered: ${name}`);
-    return publicToolHandle(matches[0]!);
+    return publicToolHandle(restoreRegisteredTool<Input, Output>(matches[0]!));
   }
   spawn<Input, Output>(definition: TaskDefinition<Input, Output>, input: Input): Task<Output> {
     if (this.components.execution) {
       throw new Error("live task closures cannot cross an execution provider; register a resumable task and admit it with a stable operation ID");
     }
-    if (this.#tasks.get(taskKey(definition.name, definition.revision)) !== definition) throw new Error("task definition is not registered or no longer active");
+    if (this.#tasks.get(taskKey(definition.name, definition.revision)) !== eraseTaskDefinition(definition)) throw new Error("task definition is not registered or no longer active");
     const parsed = definition.options.input?.parse(input) ?? input;
     if (definition.implementation.kind === "resumable") {
       throw new Error("resumable tasks require async durable admission; use admit with a stable operation ID");
@@ -1994,7 +2033,7 @@ export class AgentHarness {
   async admit<Input, Output>(definition: TaskDefinition<Input, Output>, input: Input, operationId: string, parentTaskId?: RuntimeTaskId): Promise<Admission<Output>> {
     this.#assertPolicyIdentity();
     this.contracts.validateIdentity("operation", operationId);
-    if (this.#tasks.get(taskKey(definition.name, definition.revision)) !== definition) return { kind: "rejected", reason: { code: "unregistered", message: "task definition is not registered or no longer active" } };
+    if (this.#tasks.get(taskKey(definition.name, definition.revision)) !== eraseTaskDefinition(definition)) return { kind: "rejected", reason: { code: "unregistered", message: "task definition is not registered or no longer active" } };
     if (definition.implementation.kind === "live") return { kind: "rejected", reason: { code: "unsupported", message: "live tasks are local-only; use spawn without a durable operation ID" } };
     const spawner = this.spawner;
     const host = this.state;
@@ -2024,7 +2063,7 @@ export class AgentHarness {
         }
         if (existing.admission === undefined) throw new Error("spawner omitted the retained admission request");
         this.attestAdmission(observed, existing.admission);
-        const task = validatedHostTask(observed.task, operationId, pinnedOutputSchema(definition), this.contracts);
+        const task = validatedHostTask<Output>(observed.task, operationId, pinnedOutputSchema(definition), this.contracts);
         this.running.set(task.id(), task as Task<unknown>);
         return { kind: "accepted", task };
       }
@@ -2048,7 +2087,7 @@ export class AgentHarness {
     }
     this.#assertPolicyIdentity();
     if (admission.kind !== "accepted") return admission;
-    const task = validatedHostTask(admission.task, operationId, pinnedOutputSchema(definition), this.contracts);
+    const task = validatedHostTask<Output>(admission.task, operationId, pinnedOutputSchema(definition), this.contracts);
     const observed = await observeAdmittedTask(host, task.id(), this, operationId);
     if (observed === null) return { kind: "indeterminate", operationId };
     if (observed.operationId !== operationId || observed.task.id() !== task.id()
@@ -2057,7 +2096,7 @@ export class AgentHarness {
       throw new Error("spawner and state host task bindings differ");
     }
     if (this.components.spawner || this.components.state) this.attestAdmission(observed, expected);
-    const authenticated = validatedHostTask(observed.task, operationId, pinnedOutputSchema(definition), this.contracts);
+    const authenticated = validatedHostTask<Output>(observed.task, operationId, pinnedOutputSchema(definition), this.contracts);
     this.running.set(authenticated.id(), authenticated as Task<unknown>);
     return { kind: "accepted", task: authenticated };
   }
@@ -2116,10 +2155,12 @@ export class AgentHarness {
   async #prepareToolCall<Input, Output>(tool: ToolRef<Input, Output>, input: Input,
     signal: AbortSignal, operationId?: string, providerCallId?: string) {
     signal.throwIfAborted();
-    const registered = this.#tools.get(toolKey(tool.definition.name, tool.definition.revision));
-    if (registered === undefined || publicToolHandle(registered) !== tool) {
+    const erased = this.#tools.get(toolKey(tool.definition.name, tool.definition.revision));
+    if (erased === undefined) {
       throw new Error("tool definition is not registered or no longer active");
     }
+    const registered = restoreRegisteredTool<Input, Output>(erased);
+    if (publicToolHandle(registered) !== tool) throw new Error("tool definition is not registered or no longer active");
     const capability = `tool:call:${tool.definition.name}`;
     if (!this.scope.grants.includes(capability)) throw new Error(`task scope lacks ${capability}`);
     const contracts = this.contracts;
@@ -2187,10 +2228,12 @@ export class AgentHarness {
         : answer.kind === "accepted" || answer.kind === "answered" ? "invalid_response" : answer.kind;
       throw new ToolApprovalError(kind, approval.operation_id);
     }
-    const registered = this.#tools.get(toolKey(tool.definition.name, tool.definition.revision));
-    if (registered === undefined || publicToolHandle(registered) !== tool) {
+    const erased = this.#tools.get(toolKey(tool.definition.name, tool.definition.revision));
+    if (erased === undefined) {
       throw new Error("tool definition is not registered or no longer active");
     }
+    const registered = restoreRegisteredTool<Input, Output>(erased);
+    if (publicToolHandle(registered) !== tool) throw new Error("tool definition is not registered or no longer active");
     if (registered.machine) throw new Error("resumable tool requires callDurable and its owner host");
     if (registered.definition.handler) return publishOutput(await registered.definition.handler(new ToolContext(this, signal, callId, taskId, false, invocation.operationId), parsedInput));
     if (!registered.executor) throw new Error(`tool has no executable binding: ${tool.definition.name}`);
@@ -2317,7 +2360,7 @@ export class AgentHarness {
       }
       throw new Error(`agent loop exceeded ${maxSteps} model steps`);
     });
-    const tasks = new Map(this.#tasks); tasks.set(taskKey(definition.name, definition.revision), definition);
+    const tasks = new Map(this.#tasks); tasks.set(taskKey(definition.name, definition.revision), eraseTaskDefinition(definition));
     const runtime = new AgentHarness(tasks, this.#tools, this.components, this.scope, this.running, this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction);
     const task = runtime.spawn(definition, input);
     const outcome = await task.result();
@@ -2326,21 +2369,21 @@ export class AgentHarness {
   }
   attach(id: RuntimeTaskId): Promise<Task<unknown>>;
   attach<Input, Output>(definition: TaskDefinition<Input, Output>, id: RuntimeTaskId): Promise<Task<Output>>;
-  async attach(value: RuntimeTaskId | TaskDefinition<any, any>, taskId?: RuntimeTaskId): Promise<Task<any>> {
-    const requested = typeof value === "string" ? undefined : this.task(value);
+  async attach<Input, Output>(value: RuntimeTaskId | TaskDefinition<Input, Output>, taskId?: RuntimeTaskId): Promise<Task<Output>> {
+    const requested = typeof value === "string" ? undefined : eraseTaskDefinition(this.task(value));
     const id = typeof value === "string" ? value : taskId;
     if (id === undefined) throw new TypeError("task identity is required");
     const local = this.running.get(id);
     if (local) {
       if (requested) throw new Error("local task attachments cannot claim a durable definition");
-      return local;
+      return restoreTask<Output>(local);
     }
     if (this.state) {
       this.#assertPolicyIdentity();
       const attachment = await this.state.attach(id, this);
       this.#assertPolicyIdentity();
       if (attachment.task.id() !== id) throw new Error("host attached a different task identity");
-      return this.#validatedHostAttachment(attachment, requested);
+      return restoreTask<Output>(this.#validatedHostAttachment(attachment, requested));
     }
     throw new Error("task identity is not retained locally and no durable harness host is bound");
   }
@@ -2382,7 +2425,7 @@ export class AgentHarness {
     return page;
   }
 
-  #validatedHostAttachment(attachment: HostTaskAttachment, requested?: TaskDefinition<any, any>): Task<unknown> {
+  #validatedHostAttachment(attachment: HostTaskAttachment, requested?: ErasedTaskDefinition): Task<unknown> {
     const definition = this.#tasks.get(taskKey(attachment.taskName, attachment.revision));
     if (!definition || (requested !== undefined && requested !== definition)
       || definition.revision !== attachment.revision
@@ -2501,8 +2544,8 @@ function durableMachineDigest<Input, Output>(definition: TaskDefinition<Input, O
   return bytes;
 }
 function validateTaskRequirements(
-  tasks: ReadonlyMap<string, TaskDefinition<any, any>>,
-  tools: ReadonlyMap<string, RegisteredTool<any, any>>,
+  tasks: ReadonlyMap<string, ErasedTaskDefinition>,
+  tools: ReadonlyMap<string, ErasedRegisteredTool>,
   components: AgentHarnessComponents,
   grants: readonly string[],
 ): void {
