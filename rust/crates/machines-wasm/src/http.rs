@@ -464,6 +464,86 @@ fn bind_created_machine(value: &Value, expected: &Value) -> Result<(), JsValue> 
     Ok(())
 }
 
+fn same_performance(machine: &Value, expected: &Value, label: &str) -> Result<(), JsValue> {
+    if one_of(
+        field(field(machine, "contract")?, "performance")?,
+        &["elastic", "dedicated"],
+        "machine performance",
+    )? != one_of(
+        field(expected, "performance")?,
+        &["elastic", "dedicated"],
+        "performance",
+    )? {
+        return Err(error(format!("{label} performance was substituted")));
+    }
+    Ok(())
+}
+
+fn bind_checkpoint_child(machine: &Value, expected: &Value) -> Result<(), JsValue> {
+    let checkpoint_id = expected_text(expected, "checkpointId")?;
+    same_text(
+        machine,
+        "lastCheckpoint",
+        expected,
+        "checkpointId",
+        "checkpoint child checkpoint",
+    )?;
+    let image = field(field(machine, "contract")?, "image")?;
+    if one_of(
+        field(image, "kind")?,
+        &["checkpoint"],
+        "checkpoint child image.kind",
+    )? != "checkpoint"
+    {
+        return Err(error("checkpoint child image was substituted"));
+    }
+    if text(field(image, "checkpointId")?, "checkpointId")? != checkpoint_id {
+        return Err(error("checkpoint child image was substituted"));
+    }
+    same_performance(machine, expected, "checkpoint child")
+}
+
+fn bind_machine_fork_children(
+    value: &Value,
+    expected: &Value,
+    fidelity: &str,
+) -> Result<(), JsValue> {
+    let source = expected_text(expected, "machineId")?;
+    let mut ids = std::collections::BTreeSet::new();
+    for child in array(field(value, "children")?, "children")? {
+        machine(child)?;
+        let id = text(field(child, "id")?, "machine.id")?;
+        if id == source || !ids.insert(id) {
+            return Err(error("machine fork returned duplicate or source children"));
+        }
+        if one_of(field(child, "state")?, STATES, "machine.state")? != "running" {
+            return Err(error("machine fork child is not running"));
+        }
+        if !field(child, "lastCheckpoint")?.is_null() {
+            return Err(error("machine fork child retained a checkpoint"));
+        }
+        let capabilities = array(
+            field(field(child, "contract")?, "capabilities")?,
+            "capabilities",
+        )?;
+        let has_live_fork = capabilities
+            .iter()
+            .any(|value| value.as_str() == Some("live-fork"));
+        let has_disk_fork = capabilities
+            .iter()
+            .any(|value| value.as_str() == Some("disk-fork"));
+        let consistent = match fidelity {
+            "memory-and-disk" => has_live_fork,
+            "disk-only" => has_disk_fork && !has_live_fork,
+            _ => false,
+        };
+        if !consistent {
+            return Err(error("machine fork child capabilities contradict fidelity"));
+        }
+    }
+    Ok(())
+}
+
 fn bind_mutation(route: &str, value: &Value, expected: &Value) -> Result<(), JsValue> {
     match route {
         http_route::MACHINES_CREATE => {
@@ -489,11 +569,21 @@ fn bind_mutation(route: &str, value: &Value, expected: &Value) -> Result<(), JsV
                 "machineId",
                 "machine fork source",
             )?;
-            same_count(value, "children", expected)
+            same_count(value, "children", expected)?;
+            let fidelity = one_of(
+                field(value, "fidelity")?,
+                &["memory-and-disk", "disk-only"],
+                "fidelity",
+            )?;
+            bind_machine_fork_children(value, expected, &fidelity)
         }
         http_route::CHECKPOINTS_FORK => {
             require_mutation_kind(value, "forked")?;
-            same_count(value, "machines", expected)
+            same_count(value, "machines", expected)?;
+            for child in array(field(value, "machines")?, "machines")? {
+                bind_checkpoint_child(child, expected)?;
+            }
+            Ok(())
         }
         http_route::MACHINES_SUSPEND => {
             require_mutation_kind(value, "suspended")?;
@@ -873,6 +963,146 @@ fn encode_base64(value: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn machine(
+        id: &str,
+        image: &Value,
+        capabilities: &[&str],
+        performance: &str,
+        last_checkpoint: &Value,
+    ) -> Value {
+        let digest = "a".repeat(64);
+        serde_json::json!({
+            "id": id,
+            "state": "running",
+            "contract": {
+                "image": image,
+                "capabilities": capabilities,
+                "compatibility": {"kind": "best-effort"},
+                "performance": performance,
+                "suspension": {"kind": "manual"},
+                "expiration": {"kind": "never"},
+                "networkPolicyDigestHex": digest,
+                "compatibilityRevisionHex": digest,
+                "budgets": {"spendMicros": {"$bigint": "0"}, "concurrency": 0}
+            },
+            "endpoints": [{"name": "default", "uri": "memory://machine"}],
+            "lastCheckpoint": last_checkpoint,
+            "createdAtUnixMs": 1,
+            "changedAtUnixMs": 1
+        })
+    }
+
+    #[test]
+    fn checkpoint_fork_children_are_bound_to_checkpoint_and_performance() {
+        let expected = serde_json::json!({
+            "checkpointId": "checkpoint-1",
+            "count": 1,
+            "performance": "elastic"
+        });
+        let response = |child| serde_json::json!({"kind": "forked", "machines": [child]});
+        let valid = machine(
+            "child",
+            &serde_json::json!({"kind": "checkpoint", "checkpointId": "checkpoint-1"}),
+            &["disk-fork"],
+            "elastic",
+            &serde_json::json!("checkpoint-1"),
+        );
+        assert!(validate_values(http_route::CHECKPOINTS_FORK, &response(valid), &expected).is_ok());
+
+        let wrong_checkpoint = machine(
+            "child",
+            &serde_json::json!({"kind": "checkpoint", "checkpointId": "other"}),
+            &["disk-fork"],
+            "elastic",
+            &serde_json::json!("other"),
+        );
+        assert!(
+            validate_values(
+                http_route::CHECKPOINTS_FORK,
+                &response(wrong_checkpoint),
+                &expected
+            )
+            .is_err()
+        );
+
+        let wrong_performance = machine(
+            "child",
+            &serde_json::json!({"kind": "checkpoint", "checkpointId": "checkpoint-1"}),
+            &["disk-fork"],
+            "dedicated",
+            &serde_json::json!("checkpoint-1"),
+        );
+        assert!(
+            validate_values(
+                http_route::CHECKPOINTS_FORK,
+                &response(wrong_performance),
+                &expected
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn machine_fork_children_are_fresh_and_match_fidelity() {
+        let expected = serde_json::json!({"machineId": "source", "count": 1});
+        let response = |child, fidelity| {
+            serde_json::json!({
+                "kind": "machine-forked",
+                "source": "source",
+                "fidelity": fidelity,
+                "children": [child]
+            })
+        };
+        let valid = machine(
+            "child",
+            &serde_json::json!({"kind": "managed-oci", "digestHex": "b".repeat(64)}),
+            &["disk-fork"],
+            "elastic",
+            &Value::Null,
+        );
+        assert!(
+            validate_values(
+                http_route::MACHINES_FORK,
+                &response(valid, "disk-only"),
+                &expected
+            )
+            .is_ok()
+        );
+
+        let source_child = machine(
+            "source",
+            &serde_json::json!({"kind": "managed-oci", "digestHex": "b".repeat(64)}),
+            &["disk-fork"],
+            "elastic",
+            &Value::Null,
+        );
+        assert!(
+            validate_values(
+                http_route::MACHINES_FORK,
+                &response(source_child, "disk-only"),
+                &expected
+            )
+            .is_err()
+        );
+
+        let wrong_capability = machine(
+            "child",
+            &serde_json::json!({"kind": "managed-oci", "digestHex": "b".repeat(64)}),
+            &["live-fork"],
+            "elastic",
+            &Value::Null,
+        );
+        assert!(
+            validate_values(
+                http_route::MACHINES_FORK,
+                &response(wrong_capability, "disk-only"),
+                &expected
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn digest_rejects_uppercase_and_zero() {
         assert!(!valid_digest(&"AB".repeat(32)));
