@@ -5,6 +5,8 @@ import { HostedFsError, openHostedFs } from "../dist/hosted.js";
 import {
   ApplyTransactionRequestSchema,
   CapabilitiesSchema,
+  ConflictSchema,
+  ConflictUse,
   CredentialRequestSchema,
   CredentialResponseSchema,
   GenerationRefSchema,
@@ -14,10 +16,13 @@ import {
   FilesystemProfile,
   MutationResponseSchema,
   MutationStatus,
+  RebaseTransactionResponseSchema,
   S3CredentialSchema,
   SourceInvalidationReason,
   SourceResponseSchema,
   SourceState,
+  SparseConflictSchema,
+  SparseTarget,
   WorkspaceRefSchema,
   WorkspaceResponseSchema,
   WorkspaceSchema,
@@ -96,6 +101,7 @@ function fixtureFetch(
   methods = [],
   sourceResponse,
   observed,
+  transactionResponse,
 ) {
   return async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
@@ -129,6 +135,9 @@ function fixtureFetch(
         status: MutationStatus.COMMITTED,
         generation: generationRef,
       }));
+    }
+    if (method === "RebaseTransaction") {
+      return grpcWebResponse(RebaseTransactionResponseSchema, transactionResponse ?? create(RebaseTransactionResponseSchema));
     }
     if (["GetSourceState", "ReconcileSource", "RescanSource", "SealSource"].includes(method)) {
       if (sourceResponse !== undefined) {
@@ -375,6 +384,32 @@ test("hosted transaction commits respect the negotiated conflict limit", async (
   expect((await transaction.commit()).status).toBe("committed");
   expect(requests).toHaveLength(1);
   expect(requests[0].maximumConflicts).toBe(1);
+  fs.close();
+});
+
+test("hosted transaction rebase rejects an unspecified sparse target", async () => {
+  const transactionResponse = create(RebaseTransactionResponseSchema, {
+    conflicts: [create(ConflictSchema, {
+      region: {
+        case: "sparseSeek",
+        value: create(SparseConflictSchema, {
+          fileId: new Uint8Array(16).fill(7),
+          offset: 0n,
+          target: SparseTarget.UNSPECIFIED,
+        }),
+      },
+      use: ConflictUse.OBSERVATION,
+    })],
+  });
+  const fs = await openHostedFs({
+    endpoint: "https://filesystem.example.test",
+    bearerToken: "token",
+    fetch: fixtureFetch([], "s3", undefined, validHandshake(), [], undefined, undefined, transactionResponse),
+  });
+  const workspace = await fs.createWorkspace("hosted-s3");
+  const transaction = await workspace.beginTransaction(new Uint8Array(16).fill(6));
+  await transaction.createDirectory("/malformed");
+  await expect(transaction.rebase(1)).rejects.toMatchObject({ code: "invalid_response" });
   fs.close();
 });
 

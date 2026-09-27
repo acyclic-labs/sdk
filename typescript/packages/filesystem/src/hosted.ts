@@ -4,6 +4,21 @@ import { createGrpcWebTransport } from "@connectrpc/connect-web";
 
 import { FILESYSTEM_DESCRIPTOR_DIGEST } from "../generated/descriptor-digest.js";
 import { DEFAULT_HOSTED_OPTIONS } from "../generated/defaults.js";
+import {
+  FILE_KIND_TO_KIND,
+  FILESYSTEM_PROFILE_TO_PROFILE,
+  MUTATION_STATUS_TO_COMMIT,
+  MUTATION_STATUS_TO_DELETE,
+  CONFLICT_USE_TO_USAGE,
+  JOIN_HISTORY_FROM_PUBLIC,
+  EXTENT_KIND_TO_KIND,
+  SOURCE_INVALIDATION_REASON_TO_REASON,
+  SOURCE_STATE_TO_STATUS,
+  REBASE_STATUS_TO_STATUS,
+  JOIN_STATUS_TO_STATUS,
+  SPARSE_TARGET_TO_TARGET,
+  NAME_ENCODING_TO_PUBLIC,
+} from "../generated/hosted-contract.js";
 
 import {
   ConflictUse,
@@ -19,8 +34,6 @@ import {
   OperationOptionsSchema,
   RebaseStatus,
   SourceInvalidationReason as WireSourceInvalidationReason,
-  SourceState as WireSourceState,
-  SparseTarget,
   type Conflict as WireConflict,
   type DiffResponse,
   type FileRecordSnapshot as WireFileRecordSnapshot,
@@ -55,7 +68,6 @@ import type {
   HostedFsWorkspace,
   JoinOptions,
   JoinResult,
-  JoinStatus,
   S3Access,
   SourceResult,
   MergeConflict,
@@ -64,7 +76,6 @@ import type {
   TreeEntrySnapshot,
   WorkCounters,
   WorkspaceCommit,
-  WorkspaceCommitStatus,
   WorkspaceDeleteStatus,
   WorkspaceDirectoryPage,
   WorkspaceExtentPlan,
@@ -73,15 +84,12 @@ import type {
   WorkspaceName,
   WorkspaceRebaseOptions,
   WorkspaceRebaseResult,
-  WorkspaceRebaseStatus,
   WorkspaceStat,
 } from "./contracts.js";
 import { secureServiceEndpoint } from "./endpoint.js";
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
-
-const DEFAULT_MAXIMUM_CONFLICTS = 1_024;
 
 export class HostedFsError extends Error {
   constructor(readonly code: string, message: string) {
@@ -380,25 +388,11 @@ function sourceResult(
   workspace: WireWorkspaceRef,
   response: WireSourceResponse,
 ): SourceResult {
-  const statuses: Partial<Record<WireSourceState, SourceResult["status"]>> = {
-    [WireSourceState.CLEAN]: "clean",
-    [WireSourceState.PENDING_CAPTURE]: "pending-capture",
-    [WireSourceState.NEEDS_RESCAN]: "needs-rescan",
-    [WireSourceState.CONFLICT]: "conflict",
-    [WireSourceState.SEALED]: "sealed",
-  };
-  const reasons: Partial<Record<WireSourceInvalidationReason, NonNullable<SourceResult["reason"]>>> = {
-    [WireSourceInvalidationReason.INITIAL_SNAPSHOT_REQUIRED]: "initial-snapshot-required",
-    [WireSourceInvalidationReason.QUEUE_OVERFLOW]: "queue-overflow",
-    [WireSourceInvalidationReason.NATIVE_RESCAN_REQUIRED]: "native-rescan-required",
-    [WireSourceInvalidationReason.BACKEND_ERROR]: "backend-error",
-    [WireSourceInvalidationReason.UNREPRESENTABLE_PATH]: "unrepresentable-path",
-    [WireSourceInvalidationReason.AMBIGUOUS_RENAME]: "ambiguous-rename",
-    [WireSourceInvalidationReason.ROOT_CHANGED]: "root-changed",
-  };
-  const status = statuses[response.state];
+  const status = SOURCE_STATE_TO_STATUS[response.state];
   if (status === undefined) throw new HostedFsError("invalid_response", "source state is invalid");
-  const reason = response.reason === WireSourceInvalidationReason.UNSPECIFIED ? undefined : reasons[response.reason];
+  const reason = response.reason === WireSourceInvalidationReason.UNSPECIFIED
+    ? undefined
+    : SOURCE_INVALIDATION_REASON_TO_REASON[response.reason];
   if (response.reason !== WireSourceInvalidationReason.UNSPECIFIED && reason === undefined) {
     throw new HostedFsError("invalid_response", "source invalidation reason is invalid");
   }
@@ -689,7 +683,8 @@ function transaction(
         base,
         mutations,
         operation: operationOptions,
-        maximumConflicts: Math.min(DEFAULT_MAXIMUM_CONFLICTS, client.maximumPageItems),
+        // Generated from Rust's DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS.
+        maximumConflicts: Math.min(DEFAULT_HOSTED_OPTIONS.maximumPageItems, client.maximumPageItems),
       }));
       return commit(response.status, response.generation);
     },
@@ -818,7 +813,8 @@ function transactionConflict(value: WireConflict): TransactionConflict {
       region = "sparse-seek";
       fileId = Uint8Array.from(value.region.value.fileId);
       offset = value.region.value.offset;
-      sparseTarget = value.region.value.target === SparseTarget.DATA ? "data" : "hole";
+      sparseTarget = SPARSE_TARGET_TO_TARGET[value.region.value.target];
+      if (sparseTarget === undefined) throw new HostedFsError("invalid_response", "invalid sparse target");
       break;
     case "directoryName":
       region = "directory-name";
@@ -863,14 +859,7 @@ function mergeConflict(value: WireConflict): MergeConflict {
 }
 
 function commit(status: MutationStatus, generationRef: WireGenerationRef | undefined): WorkspaceCommit {
-  const statuses: Partial<Record<MutationStatus, WorkspaceCommitStatus>> = {
-    [MutationStatus.COMMITTED]: "committed",
-    [MutationStatus.ALREADY_COMMITTED]: "already-committed",
-    [MutationStatus.CONFLICT]: "conflict",
-    [MutationStatus.FENCED]: "fenced",
-    [MutationStatus.IDEMPOTENCY_CONFLICT]: "idempotency-conflict",
-  };
-  const translated = statuses[status];
+  const translated = MUTATION_STATUS_TO_COMMIT[status];
   if (translated === undefined) throw new HostedFsError("invalid_response", "invalid mutation status");
   return { status: translated, generationId: copyOptionalBytes(generationRef?.generationId) };
 }
@@ -881,16 +870,7 @@ function workspaceRebase(
   conflicts: readonly WireConflict[],
   truncated: boolean,
 ): WorkspaceRebaseResult {
-  const statuses: Partial<Record<RebaseStatus, WorkspaceRebaseStatus>> = {
-    [RebaseStatus.REBASED]: "rebased",
-    [RebaseStatus.ALREADY_REBASED]: "already-rebased",
-    [RebaseStatus.CURRENT]: "current",
-    [RebaseStatus.STALE]: "stale",
-    [RebaseStatus.CONFLICTED]: "conflicted",
-    [RebaseStatus.FENCED]: "fenced",
-    [RebaseStatus.IDEMPOTENCY_CONFLICT]: "idempotency-conflict",
-  };
-  const translated = statuses[status];
+  const translated = REBASE_STATUS_TO_STATUS[status];
   if (translated === undefined) throw new HostedFsError("invalid_response", "invalid rebase status");
   return {
     status: translated,
@@ -906,16 +886,7 @@ function joinResult(
   conflicts: readonly WireConflict[],
   truncated: boolean,
 ): JoinResult {
-  const statuses: Partial<Record<WireJoinStatus, JoinStatus>> = {
-    [WireJoinStatus.APPLIED]: "applied",
-    [WireJoinStatus.ALREADY_APPLIED]: "already-applied",
-    [WireJoinStatus.NO_CHANGES]: "no-changes",
-    [WireJoinStatus.STALE_TARGET]: "stale-target",
-    [WireJoinStatus.CONFLICTED]: "conflicted",
-    [WireJoinStatus.FENCED]: "fenced",
-    [WireJoinStatus.IDEMPOTENCY_CONFLICT]: "idempotency-conflict",
-  };
-  const translated = statuses[status];
+  const translated = JOIN_STATUS_TO_STATUS[status];
   if (translated === undefined) throw new HostedFsError("invalid_response", "invalid join status");
   return {
     status: translated,
@@ -948,9 +919,7 @@ function optionalI64(value: OptionalI64 | undefined): bigint | undefined {
 }
 
 function logicalName(value: WireLogicalName): WorkspaceName {
-  const encoding = value.encoding === NameEncoding.UTF8 ? "utf8"
-    : value.encoding === NameEncoding.POSIX_BYTES ? "posix-bytes"
-      : value.encoding === NameEncoding.WINDOWS_UTF16LE ? "windows-utf16le" : undefined;
+  const encoding = NAME_ENCODING_TO_PUBLIC[value.encoding];
   if (encoding === undefined) throw new HostedFsError("invalid_response", "invalid name encoding");
   return { encoding, bytes: Uint8Array.from(value.bytes) };
 }
@@ -964,27 +933,15 @@ function wireName(value: WorkspaceName): { readonly encoding: NameEncoding; read
 }
 
 function fileKind(value: FileKind): WorkspaceFileKind {
-  switch (value) {
-    case FileKind.REGULAR: return "regular";
-    case FileKind.DIRECTORY: return "directory";
-    case FileKind.SYMBOLIC_LINK: return "symbolic-link";
-    case FileKind.FIFO: return "fifo";
-    case FileKind.SOCKET: return "socket";
-    case FileKind.CHARACTER_DEVICE: return "character-device";
-    case FileKind.BLOCK_DEVICE: return "block-device";
-    case FileKind.REPARSE_POINT: return "reparse-point";
-    case FileKind.MOUNT_BOUNDARY: return "mount-boundary";
-    default: throw new HostedFsError("invalid_response", "invalid file kind");
-  }
+  const translated = FILE_KIND_TO_KIND[value];
+  if (translated === undefined) throw new HostedFsError("invalid_response", "invalid file kind");
+  return translated;
 }
 
 function extentKind(value: ExtentKind): "hole" | "allocated-zero" | "content" {
-  switch (value) {
-    case ExtentKind.HOLE: return "hole";
-    case ExtentKind.ALLOCATED_ZERO: return "allocated-zero";
-    case ExtentKind.CONTENT: return "content";
-    default: throw new HostedFsError("invalid_response", "invalid extent kind");
-  }
+  const translated = EXTENT_KIND_TO_KIND[value];
+  if (translated === undefined) throw new HostedFsError("invalid_response", "invalid extent kind");
+  return translated;
 }
 
 function workCounters(value: WireWorkCounters): WorkCounters {
@@ -1038,38 +995,23 @@ function requireWorkspace(value: FsWorkspace, client: HostedClient): WorkspaceOw
 }
 
 function deleteStatus(value: MutationStatus): WorkspaceDeleteStatus {
-  switch (value) {
-    case MutationStatus.COMMITTED: return "deleted";
-    case MutationStatus.ALREADY_COMMITTED: return "already-deleted";
-    case MutationStatus.CONFLICT: return "conflict";
-    case MutationStatus.IDEMPOTENCY_CONFLICT: return "idempotency-conflict";
-    default: throw new HostedFsError("invalid_response", "invalid delete status");
-  }
+  const translated = MUTATION_STATUS_TO_DELETE[value];
+  if (translated === undefined) throw new HostedFsError("invalid_response", "invalid delete status");
+  return translated;
 }
 function profileFromWire(value: FilesystemProfile): FsProfile {
-  switch (value) {
-    case FilesystemProfile.PORTABLE: return "portable";
-    case FilesystemProfile.POSIX: return "posix";
-    case FilesystemProfile.WINDOWS: return "windows";
-    case FilesystemProfile.BROWSER: return "browser";
-    default: throw new HostedFsError("invalid_response", "filesystem profile is unsupported");
-  }
+  const translated = FILESYSTEM_PROFILE_TO_PROFILE[value];
+  if (translated === undefined) throw new HostedFsError("invalid_response", "filesystem profile is unsupported");
+  return translated;
 }
 function joinHistory(value: JoinOptions["history"]): JoinHistory {
-  switch (value) {
-    case "merge": return JoinHistory.MERGE;
-    case "rebase": return JoinHistory.REBASE;
-    case "squash": return JoinHistory.SQUASH;
-    case "cherry-pick": return JoinHistory.CHERRY_PICK;
-  }
+  if (!Object.hasOwn(JOIN_HISTORY_FROM_PUBLIC, value)) throw new TypeError("join history is invalid");
+  return JOIN_HISTORY_FROM_PUBLIC[value];
 }
 function conflictUse(value: ConflictUse): TransactionConflict["usage"] {
-  switch (value) {
-    case ConflictUse.OBSERVATION: return "observation";
-    case ConflictUse.MUTATION: return "mutation";
-    case ConflictUse.OBSERVATION_AND_MUTATION: return "observation-and-mutation";
-    default: throw new HostedFsError("invalid_response", "invalid conflict use");
-  }
+  const translated = CONFLICT_USE_TO_USAGE[value];
+  if (translated === undefined) throw new HostedFsError("invalid_response", "invalid conflict use");
+  return translated;
 }
 function validateJoin(value: JoinOptions): void {
   positiveU32(value.maximumGenerations, "maximum generations");
@@ -1141,8 +1083,9 @@ async function call<T>(request: Promise<T>): Promise<T> {
   catch (error) {
     if (error instanceof HostedFsError) throw error;
     if (error instanceof ConnectError) {
-      const codes: Partial<Record<Code, string>> = {
+      const codes: Record<Code, string | undefined> = {
         [Code.Canceled]: "cancelled",
+        [Code.Unknown]: undefined,
         [Code.InvalidArgument]: "invalid_argument",
         [Code.DeadlineExceeded]: "deadline_exceeded",
         [Code.NotFound]: "not_found",
