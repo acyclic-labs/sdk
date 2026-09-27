@@ -3,6 +3,27 @@ import type {
   TransactionConflict, TransactionRebaseResult, TransactionResult, WorkCounters, WorkspaceDirectoryPage,
   WorkspaceExtentPlan, WorkspaceName, WorkspaceStat,
 } from "./contracts.js";
+import type { BrowserWorkCounters } from "../generated/wasm/acyclic_fs_wasm.js";
+
+const workCounterKeys: readonly (keyof WorkCounters)[] = [
+  "authorityRecordsRead", "authorityRecordsAppended", "authorityBytesRead", "authorityBytesWritten",
+  "objectProbes", "backendReadOperations", "backendWriteOperations", "durabilityOperations", "pageReads",
+  "pageWrites", "objectBytesRead", "objectBytesWritten", "bytesHashed", "bytesCopied", "bytesEncoded",
+  "sourceBytesRead", "sourcePathComponents", "sourceEntriesVisited", "outputBytes", "itemsExamined", "itemsReturned", "allocationOperations",
+  "peakAllocationBytes", "materializations",
+];
+
+function safeWorkNumber(value: bigint, key: string): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number)) throw new RangeError(`WASM work counter ${key} exceeds the public safe number range`);
+  return number;
+}
+
+export function copyWork(value: BrowserWorkCounters): WorkCounters {
+  const result = {} as Record<keyof WorkCounters, number>;
+  for (const key of workCounterKeys) result[key] = safeWorkNumber(value[key], key);
+  return result;
+}
 
 function copyBytes(value: Uint8Array | undefined): Uint8Array | undefined {
   return value === undefined ? undefined : Uint8Array.from(value);
@@ -107,8 +128,8 @@ export function copyFileExtentPlan(value: {
   };
 }
 
-interface RawCommitFields<Status extends string> {
-  readonly status: Status;
+interface RawCommitFields {
+  readonly status: string;
   readonly generationId: unknown;
   readonly epoch: bigint | string | undefined;
   readonly sequence: bigint | string | undefined;
@@ -132,7 +153,12 @@ function copyFixedBytes(value: unknown, length: number, label: string): Uint8Arr
   throw new TypeError(`${label} must be ${length} bytes`);
 }
 
-export function copyRebaseResult(value: Pick<RebaseResult, "status" | "generationId" | "conflictCount" | "truncated">,
+export function copyRebaseResult(value: {
+  readonly status: string;
+  readonly generationId: Uint8Array | undefined;
+  readonly conflictCount: number;
+  readonly truncated: boolean;
+},
   work: WorkCounters): RebaseResult {
   if (value.status !== "safe" && value.status !== "conflicted") {
     throw new TypeError("checkout rebase has an invalid status");
@@ -153,11 +179,12 @@ export function copyTransactionResult(value: { readonly createdFileIds: readonly
   return { createdFileIds: copyCreatedFileIds(value.createdFileIds), work };
 }
 
-function copyCommitFields<Status extends string>(value: RawCommitFields<Status>, work: WorkCounters,
-  statuses: ReadonlySet<Status>) {
-  if (!statuses.has(value.status)) throw new TypeError("checkout result has an invalid status");
+function copyCommitFields<Status extends string>(value: RawCommitFields, work: WorkCounters,
+  statuses: ReadonlySet<Status>): Omit<RawCommitFields, "status"> & { readonly status: Status; readonly generationId: Uint8Array | undefined;
+    readonly epoch: bigint | undefined; readonly sequence: bigint | undefined; readonly committedFingerprint: Uint8Array | undefined; readonly work: WorkCounters } {
+  if (!statuses.has(value.status as Status)) throw new TypeError("checkout result has an invalid status");
   return {
-    status: value.status,
+    status: value.status as Status,
     generationId: copyFixedBytes(value.generationId, 32, "generation identity"),
     epoch: value.epoch === undefined ? undefined : BigInt(value.epoch),
     sequence: value.sequence === undefined ? undefined : BigInt(value.sequence),
@@ -166,11 +193,11 @@ function copyCommitFields<Status extends string>(value: RawCommitFields<Status>,
   };
 }
 
-export function copyCheckoutCommit(value: RawCommitFields<CommitResult["status"]>, work: WorkCounters): CommitResult {
+export function copyCheckoutCommit(value: RawCommitFields, work: WorkCounters): CommitResult {
   return copyCommitFields(value, work, commitStatuses);
 }
 
-type RawLiveMutation = RawCommitFields<LiveMutationResult["status"]> & Pick<LiveMutationResult, "conflictCount" | "truncated">;
+type RawLiveMutation = RawCommitFields & Pick<LiveMutationResult, "conflictCount" | "truncated">;
 
 export function copyLiveMutation(value: RawLiveMutation, work: WorkCounters): LiveMutationResult {
   return { ...copyCommitFields(value, work, liveStatuses), conflictCount: value.conflictCount, truncated: value.truncated };

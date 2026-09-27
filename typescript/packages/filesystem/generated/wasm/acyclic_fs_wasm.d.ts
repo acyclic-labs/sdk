@@ -1,5 +1,328 @@
 /* tslint:disable */
 /* eslint-disable */
+export interface BrowserBatchLookupEntryResult {
+    exists: boolean;
+    fileId: Uint8Array | undefined;
+    fileKind: string | undefined;
+    resolvedComponents: number;
+}
+
+export interface BrowserBatchLookupResult {
+    entries: BrowserBatchLookupEntryResult[];
+    retainedAllocationBytes: bigint;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserBindingChangeResult {
+    directoryId: Uint8Array;
+    name: NameComponentResult;
+    before: BrowserTreeEntryResult | undefined;
+    after: BrowserTreeEntryResult | undefined;
+}
+
+export interface BrowserCheckpointResult {
+    generationId: Uint8Array;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserCommitResult {
+    status: "committed" | "already-committed" | "conflict" | "fenced" | "idempotency-conflict";
+    generationId: Uint8Array | undefined;
+    epoch: bigint | undefined;
+    sequence: bigint | undefined;
+    committedFingerprint: Uint8Array | undefined;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserDirectoryEntryResult {
+    name: Uint8Array;
+    fileId: Uint8Array;
+    fileKind: string;
+}
+
+export interface BrowserDirectoryPageResult {
+    entries: BrowserDirectoryEntryResult[];
+    hasMore: boolean;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserDirectoryRecordEntryResult {
+    name: Uint8Array;
+    record: BrowserFileRecordResult;
+    metadataCanonicalBytes: Uint8Array;
+}
+
+export interface BrowserDirectoryRecordPageResult {
+    entries: BrowserDirectoryRecordEntryResult[];
+    hasMore: boolean;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserExportManifestResult {
+    manifestBytes: Uint8Array;
+    objects: Uint8Array[];
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserExtentSeekResult {
+    offset: bigint | undefined;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserExtentSpanResult {
+    kind: "hole" | "allocated-zero" | "content";
+    offset: bigint;
+    length: bigint;
+    sourceEnd: bigint;
+    objectId: Uint8Array | undefined;
+    objectOffset: bigint | undefined;
+}
+
+export interface BrowserFileReadResult {
+    bytes: Uint8Array;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserFileRecordChangeResult {
+    fileId: Uint8Array;
+    before: BrowserFileRecordResult | undefined;
+    after: BrowserFileRecordResult | undefined;
+}
+
+export interface BrowserFileRecordReadResult {
+    record: BrowserFileRecordResult;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserFileRecordResult {
+    fileId: Uint8Array;
+    fileKind: string;
+    linkCount: bigint;
+    metadataObject: Uint8Array;
+    payloadKind: string;
+    logicalBytes: bigint | undefined;
+    payloadObject: Uint8Array | undefined;
+    inlineBytes: Uint8Array | undefined;
+    deviceMajor: number | undefined;
+    deviceMinor: number | undefined;
+}
+
+export interface BrowserGenerationDiffResult {
+    files: BrowserFileRecordChangeResult[];
+    bindings: BrowserBindingChangeResult[];
+    truncated: boolean;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserJoinOptions {
+    history: string;
+    maximumGenerations: number;
+    maximumChanges: number;
+    maximumConflicts: number;
+}
+
+export interface BrowserJoinResult {
+    status: "applied" | "already-applied" | "no-changes" | "stale-target" | "conflicted" | "fenced" | "idempotency-conflict";
+    generationId: Uint8Array | undefined;
+    conflicts: MergeConflictResult[];
+    truncated: boolean;
+}
+
+export interface BrowserLiveMutationResult {
+    status: "committed" | "already-committed" | "conflicted" | "retry-limit" | "fenced" | "idempotency-conflict";
+    generationId: Uint8Array | undefined;
+    epoch: bigint | undefined;
+    sequence: bigint | undefined;
+    conflictCount: number;
+    truncated: boolean;
+    committedFingerprint: Uint8Array | undefined;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserLiveTransactionResult {
+    status: "committed" | "already-committed" | "conflicted" | "retry-limit" | "fenced" | "idempotency-conflict";
+    generationId: Uint8Array | undefined;
+    epoch: bigint | undefined;
+    sequence: bigint | undefined;
+    conflictCount: number;
+    truncated: boolean;
+    committedFingerprint: Uint8Array | undefined;
+    work: BrowserWorkCounters;
+    createdFileIds: (Uint8Array | undefined)[];
+}
+
+export interface BrowserLookupResult {
+    exists: boolean;
+    fileId: Uint8Array | undefined;
+    fileKind: string | undefined;
+    resolvedComponents: number;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserMergePreparationResult {
+    status: "prepared" | "conflicted";
+    generationId: Uint8Array | undefined;
+    conflicts: MergeConflictResult[];
+    truncated: boolean;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserMetadataResult {
+    canonicalBytes: Uint8Array;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserMutationResult {
+    fileId: Uint8Array | undefined;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserNamedAttributeNameResult {
+    attributeClass: "posix-xattr" | "windows-stream" | "mac-resource-fork";
+    name: Uint8Array;
+}
+
+export interface BrowserNamedAttributePageResult {
+    entries: BrowserNamedAttributeNameResult[];
+    hasMore: boolean;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserNamedAttributeResult {
+    exists: boolean;
+    bytes: Uint8Array | undefined;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserRebaseResult {
+    status: "safe" | "conflicted";
+    generationId: Uint8Array | undefined;
+    conflictCount: number;
+    truncated: boolean;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserStatResult {
+    exists: boolean;
+    record: BrowserFileRecordResult | undefined;
+    metadataCanonicalBytes: Uint8Array | undefined;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserTransactionResult {
+    createdFileIds: (Uint8Array | undefined)[];
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserTreeEntryResult {
+    name: NameComponentResult;
+    fileId: Uint8Array;
+    fileKind: string;
+}
+
+export interface BrowserWorkCounters {
+    authorityRecordsRead: bigint;
+    authorityRecordsAppended: bigint;
+    authorityBytesRead: bigint;
+    authorityBytesWritten: bigint;
+    objectProbes: bigint;
+    backendReadOperations: bigint;
+    backendWriteOperations: bigint;
+    durabilityOperations: bigint;
+    pageReads: bigint;
+    pageWrites: bigint;
+    objectBytesRead: bigint;
+    objectBytesWritten: bigint;
+    bytesHashed: bigint;
+    bytesCopied: bigint;
+    bytesEncoded: bigint;
+    sourceBytesRead: bigint;
+    sourcePathComponents: bigint;
+    sourceEntriesVisited: bigint;
+    outputBytes: bigint;
+    itemsExamined: bigint;
+    itemsReturned: bigint;
+    allocationOperations: bigint;
+    peakAllocationBytes: bigint;
+    materializations: bigint;
+}
+
+export interface BrowserWorkspaceCommit {
+    status: "committed" | "already-committed" | "conflict" | "fenced" | "idempotency-conflict";
+    generationId: Uint8Array | undefined;
+}
+
+export interface BrowserWorkspaceDirectoryEntry {
+    name: BrowserWorkspaceName;
+    fileId: Uint8Array;
+    kind: "regular" | "directory" | "symbolic-link" | "fifo" | "socket" | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
+}
+
+export interface BrowserWorkspaceDirectoryPage {
+    entries: BrowserWorkspaceDirectoryEntry[];
+    hasMore: boolean;
+}
+
+export interface BrowserWorkspaceExtentPlan {
+    spans: BrowserWorkspaceExtentSpan[];
+}
+
+export interface BrowserWorkspaceExtentSpan {
+    offset: bigint;
+    length: bigint;
+    sourceEnd: bigint;
+    kind: "hole" | "allocated-zero" | "content";
+}
+
+export interface BrowserWorkspaceMetadata {
+    posixMode: number | undefined;
+    posixUid: number | undefined;
+    posixGid: number | undefined;
+    posixFlags: bigint | undefined;
+    windowsAttributes: number | undefined;
+    createdNs: bigint | undefined;
+    modifiedNs: bigint | undefined;
+    accessedNs: bigint | undefined;
+    changedNs: bigint | undefined;
+    hasNamedAttributes: boolean;
+    hasAcl: boolean;
+    hasSecurityDescriptor: boolean;
+}
+
+export interface BrowserWorkspaceName {
+    encoding: "utf8" | "posix-bytes" | "windows-utf16le";
+    bytes: Uint8Array;
+}
+
+export interface BrowserWorkspaceRebaseResult {
+    status: "rebased" | "already-rebased" | "current" | "stale" | "conflicted" | "fenced" | "idempotency-conflict";
+    generationId: Uint8Array | undefined;
+    conflicts: MergeConflictResult[];
+    truncated: boolean;
+}
+
+export interface BrowserWorkspaceStat {
+    fileId: Uint8Array;
+    kind: "regular" | "directory" | "symbolic-link" | "fifo" | "socket" | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
+    linkCount: bigint;
+    logicalBytes: bigint | undefined;
+    metadata: BrowserWorkspaceMetadata;
+}
+
+export interface MergeConflictResult {
+    kind: "file" | "binding";
+    fileId: Uint8Array | undefined;
+    directoryId: Uint8Array | undefined;
+    name: NameComponentResult | undefined;
+}
+
+export interface NameComponentResult {
+    encoding: "utf8" | "posix-bytes" | "windows-utf16le";
+    bytes: Uint8Array;
+}
+
+export type BrowserExtentPlanResult = { kind: "inline"; work: BrowserWorkCounters } | { kind: "sparse"; spans: BrowserExtentSpanResult[]; retainedAllocationBytes: bigint; work: BrowserWorkCounters };
+
 
 /**
  * One immutable semantic delta between exact generations.
@@ -11,7 +334,7 @@ export class BrowserChangeSet {
     /**
      * Stable path-independent records and namespace binding changes.
      */
-    changes(): any;
+    changes(): BrowserGenerationDiffResult;
     /**
      * Composes contiguous immutable deltas by diffing their outer endpoints.
      */
@@ -41,7 +364,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed operations, rejected semantics,
      * cancellation, storage, or bounded-work failure.
      */
-    applyTransaction(operations: any): Promise<any>;
+    applyTransaction(operations: any): Promise<BrowserTransactionResult>;
     /**
      * Builds an immutable candidate generation without publishing authority.
      *
@@ -50,7 +373,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for invalid checkout state, corruption,
      * cancellation, storage failure, or bounded-work exhaustion.
      */
-    checkpoint(): Promise<any>;
+    checkpoint(): Promise<BrowserCheckpointResult>;
     /**
      * Clones one logical range by immutable extent reference.
      *
@@ -59,7 +382,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths/ranges,
      * cancellation, storage, or bounded work.
      */
-    cloneFileRange(source: string, source_offset: bigint, destination: string, destination_offset: bigint, length: bigint): Promise<any>;
+    cloneFileRange(source: string, source_offset: bigint, destination: string, destination_offset: bigint, length: bigint): Promise<BrowserMutationResult>;
     /**
      * Clones one logical range between stable file identities.
      *
@@ -68,7 +391,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identities/ranges, absence,
      * invalid kinds, storage, cancellation, or bounded work.
      */
-    cloneFileRangeById(source_file_id: Uint8Array, source_offset: bigint, destination_file_id: Uint8Array, destination_offset: bigint, length: bigint): Promise<any>;
+    cloneFileRangeById(source_file_id: Uint8Array, source_offset: bigint, destination_file_id: Uint8Array, destination_offset: bigint, length: bigint): Promise<BrowserMutationResult>;
     /**
      * Checkpoints and conditionally publishes this private overlay.
      *
@@ -77,7 +400,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed operation identity, clean
      * or read-only checkout, closure failure, cancellation, or bounded work.
      */
-    commit(operation_id: Uint8Array): Promise<any>;
+    commit(operation_id: Uint8Array): Promise<BrowserCommitResult>;
     /**
      * Creates an exact POSIX character or block device identity.
      *
@@ -86,7 +409,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths/kinds, unsupported
      * profile semantics, storage, cancellation, or bounded work.
      */
-    createDevice(path: string, kind: string, major: number, minor: number): Promise<any>;
+    createDevice(path: string, kind: string, major: number, minor: number): Promise<BrowserMutationResult>;
     /**
      * Creates one empty directory in the private COW overlay.
      *
@@ -95,7 +418,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, conflicts,
      * cancellation, storage, allocation, or bounded work.
      */
-    createDirectory(path: string): Promise<any>;
+    createDirectory(path: string): Promise<BrowserMutationResult>;
     /**
      * Creates one regular file in the private COW overlay.
      *
@@ -104,7 +427,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, conflicts,
      * cancellation, storage, allocation, or bounded work.
      */
-    createFile(path: string, bytes: Uint8Array): Promise<any>;
+    createFile(path: string, bytes: Uint8Array): Promise<BrowserMutationResult>;
     /**
      * Creates an opaque exact Windows reparse-point payload.
      *
@@ -113,7 +436,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, unsupported profile
      * semantics, excessive payload, storage, cancellation, or bounded work.
      */
-    createReparsePoint(path: string, payload: Uint8Array): Promise<any>;
+    createReparsePoint(path: string, payload: Uint8Array): Promise<BrowserMutationResult>;
     /**
      * Creates an exact empty special namespace entry.
      *
@@ -122,7 +445,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths/kinds, unsupported
      * profile semantics, storage, cancellation, or bounded work.
      */
-    createSpecial(path: string, kind: string): Promise<any>;
+    createSpecial(path: string, kind: string): Promise<BrowserMutationResult>;
     /**
      * Creates one symbolic link with exact opaque target bytes.
      *
@@ -131,7 +454,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, conflicts,
      * excessive targets, cancellation, storage, or bounded work.
      */
-    createSymbolicLink(path: string, target: Uint8Array): Promise<any>;
+    createSymbolicLink(path: string, target: Uint8Array): Promise<BrowserMutationResult>;
     /**
      * Discards the private overlay and returns to its immutable base.
      *
@@ -139,7 +462,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for cancellation, corruption, storage, or work bounds.
      */
-    discard(): Promise<any>;
+    discard(): Promise<BrowserMutationResult>;
     /**
      * Builds a deterministic complete manifest for resumable transfer.
      *
@@ -148,7 +471,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for checkpoint, closure, authentication,
      * cancellation, storage, serialization, or bounded work.
      */
-    exportManifest(): Promise<any>;
+    exportManifest(): Promise<BrowserExportManifestResult>;
     /**
      * Creates one hard link within the volume.
      *
@@ -157,7 +480,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, invalid kinds,
      * conflicts, cancellation, storage, or bounded work.
      */
-    hardLink(source: string, destination: string): Promise<any>;
+    hardLink(source: string, destination: string): Promise<BrowserMutationResult>;
     /**
      * Returns one bounded ordered directory page.
      *
@@ -166,7 +489,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths/cursors,
      * non-directories, corruption, cancellation, or bounded work.
      */
-    listDirectory(path: string, after: string | null | undefined, maximum_entries: number): Promise<any>;
+    listDirectory(path: string, after: string | null | undefined, maximum_entries: number): Promise<BrowserDirectoryPageResult>;
     /**
      * Returns one bounded directory page with records and metadata fetched in batches.
      *
@@ -175,7 +498,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths/cursors,
      * non-directories, corruption, cancellation, or bounded work.
      */
-    listDirectoryRecords(path: string, after: string | null | undefined, maximum_entries: number): Promise<any>;
+    listDirectoryRecords(path: string, after: string | null | undefined, maximum_entries: number): Promise<BrowserDirectoryRecordPageResult>;
     /**
      * Returns one bounded ordered named-attribute page.
      *
@@ -183,7 +506,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for class, cursor, path, storage, cancellation, or work failure.
      */
-    listNamedAttributes(path: string, after_class: string | null | undefined, after_name: Uint8Array | null | undefined, maximum_entries: number): Promise<any>;
+    listNamedAttributes(path: string, after_class: string | null | undefined, after_name: Uint8Array | null | undefined, maximum_entries: number): Promise<BrowserNamedAttributePageResult>;
     /**
      * Resolves a bounded path batch with shared authenticated frontiers.
      *
@@ -192,7 +515,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for non-array/excessive/malformed paths,
      * storage, cancellation, authentication, or bounded-work failure.
      */
-    lookupBatchNoFollow(paths: any): Promise<any>;
+    lookupBatchNoFollow(paths: any): Promise<BrowserBatchLookupResult>;
     /**
      * Resolves one canonical absolute path without following links.
      *
@@ -201,7 +524,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths or authenticated
      * storage, cancellation, and bounded-work failures.
      */
-    lookupNoFollow(path: string): Promise<any>;
+    lookupNoFollow(path: string): Promise<BrowserLookupResult>;
     /**
      * Applies and publishes one direct-live transaction with bounded safe retries.
      *
@@ -211,7 +534,7 @@ export class BrowserCheckout {
      * wrong checkout mode, unresolved work, cancellation, storage, rebase,
      * or bounded-work failure.
      */
-    mutateLive(operations: any, operation_id: Uint8Array, maximum_attempts: number, maximum_conflicts: number): Promise<any>;
+    mutateLive(operations: any, operation_id: Uint8Array, maximum_attempts: number, maximum_conflicts: number): Promise<BrowserLiveTransactionResult>;
     /**
      * Plans one bounded sparse range without reading file content blobs.
      *
@@ -220,7 +543,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed path/range, invalid bounds,
      * non-regular kind, storage, cancellation, or bounded work.
      */
-    planFileExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<any>;
+    planFileExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserExtentPlanResult>;
     /**
      * Plans one bounded sparse range by stable file identity.
      *
@@ -229,7 +552,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity/range, invalid bounds,
      * non-regular kind, storage, cancellation, or bounded work.
      */
-    planFileExtentsById(file_id: Uint8Array, offset: bigint, length: bigint, maximum_spans: number): Promise<any>;
+    planFileExtentsById(file_id: Uint8Array, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserExtentPlanResult>;
     /**
      * Allocates sparse holes without replacing existing content.
      *
@@ -238,7 +561,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed values, unsupported
      * keep-size physical allocation, cancellation, storage, or bounded work.
      */
-    preallocateFile(path: string, offset: bigint, length: bigint, keep_size: boolean): Promise<any>;
+    preallocateFile(path: string, offset: bigint, length: bigint, keep_size: boolean): Promise<BrowserMutationResult>;
     /**
      * Allocates sparse holes by stable file identity.
      *
@@ -247,7 +570,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity/range, absence,
      * unsupported allocation, storage, cancellation, or bounded work.
      */
-    preallocateFileById(file_id: Uint8Array, offset: bigint, length: bigint, keep_size: boolean): Promise<any>;
+    preallocateFileById(file_id: Uint8Array, offset: bigint, length: bigint, keep_size: boolean): Promise<BrowserMutationResult>;
     /**
      * Prepares a bounded two-parent merge against the current authority head.
      *
@@ -256,7 +579,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity, invalid checkout
      * state, non-head parent, corruption, cancellation, or bounded work.
      */
-    prepareMerge(theirs: Uint8Array, maximum_changes: number, maximum_conflicts: number): Promise<any>;
+    prepareMerge(theirs: Uint8Array, maximum_changes: number, maximum_conflicts: number): Promise<BrowserMergePreparationResult>;
     /**
      * Reads one exact logical regular-file range.
      *
@@ -265,7 +588,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, invalid ranges,
      * non-regular files, corruption, cancellation, or bounded work.
      */
-    readFileRange(path: string, offset: bigint, length: bigint): Promise<any>;
+    readFileRange(path: string, offset: bigint, length: bigint): Promise<BrowserFileReadResult>;
     /**
      * Reads one exact logical range by stable file identity.
      *
@@ -274,7 +597,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity/range, absence,
      * non-regular kind, storage, cancellation, or bounded work.
      */
-    readFileRangeById(file_id: Uint8Array, offset: bigint, length: bigint): Promise<any>;
+    readFileRangeById(file_id: Uint8Array, offset: bigint, length: bigint): Promise<BrowserFileReadResult>;
     /**
      * Reads one complete candidate file record by stable identity.
      *
@@ -283,7 +606,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity, authenticated
      * absence, storage, cancellation, or bounded-work failure.
      */
-    readFileRecordById(file_id: Uint8Array): Promise<any>;
+    readFileRecordById(file_id: Uint8Array): Promise<BrowserFileRecordReadResult>;
     /**
      * Reads complete canonical metadata bytes for one path.
      *
@@ -291,7 +614,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for path, storage, codec, cancellation, or work failure.
      */
-    readMetadata(path: string): Promise<any>;
+    readMetadata(path: string): Promise<BrowserMetadataResult>;
     /**
      * Reads complete canonical metadata by stable file identity.
      *
@@ -300,7 +623,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity, absence, storage,
      * authentication, cancellation, encoding, or bounded work.
      */
-    readMetadataById(file_id: Uint8Array): Promise<any>;
+    readMetadataById(file_id: Uint8Array): Promise<BrowserMetadataResult>;
     /**
      * Reads one exact named attribute value.
      *
@@ -308,7 +631,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for class, name, path, storage, cancellation, or work failure.
      */
-    readNamedAttribute(path: string, attribute_class: string, name: Uint8Array): Promise<any>;
+    readNamedAttribute(path: string, attribute_class: string, name: Uint8Array): Promise<BrowserNamedAttributeResult>;
     /**
      * Reads one opaque Windows reparse-point payload without interpreting it.
      *
@@ -317,7 +640,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, wrong file kind,
      * storage, cancellation, authentication, or bounded work.
      */
-    readReparsePoint(path: string): Promise<any>;
+    readReparsePoint(path: string): Promise<BrowserFileReadResult>;
     /**
      * Reads one symbolic link's exact opaque target bytes without following it.
      *
@@ -326,7 +649,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, non-links,
      * corruption, cancellation, storage, or bounded work.
      */
-    readSymbolicLink(path: string): Promise<any>;
+    readSymbolicLink(path: string): Promise<BrowserFileReadResult>;
     /**
      * Safely advances to head and sparsely replays private mutations.
      *
@@ -335,7 +658,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for unsupported consistency, invalid
      * bounds, corruption, cancellation, storage, replay, or bounded work.
      */
-    rebaseHead(maximum_conflicts: number): Promise<any>;
+    rebaseHead(maximum_conflicts: number): Promise<BrowserRebaseResult>;
     /**
      * Explicitly advances a clean manual checkout to the authority head.
      *
@@ -344,7 +667,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for dirty state, storage, cancellation,
      * authentication, or bounded-work failure.
      */
-    refreshHead(): Promise<any>;
+    refreshHead(): Promise<BrowserCheckpointResult>;
     /**
      * Explicitly performs observation-safe synchronization for a live checkout.
      *
@@ -353,7 +676,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for unsupported mode, conflicts, storage,
      * cancellation, authentication, or bounded-work failure.
      */
-    refreshLive(): Promise<any>;
+    refreshLive(): Promise<BrowserCheckpointResult>;
     /**
      * Removes one namespace binding.
      *
@@ -362,7 +685,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths/identities,
      * conflicts, cancellation, storage, or bounded work.
      */
-    remove(path: string, expected_file_id?: Uint8Array | null): Promise<any>;
+    remove(path: string, expected_file_id?: Uint8Array | null): Promise<BrowserMutationResult>;
     /**
      * Removes one exact named attribute.
      *
@@ -370,7 +693,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for class, name, mutation, cancellation, or work failure.
      */
-    removeNamedAttribute(path: string, attribute_class: string, name: Uint8Array): Promise<any>;
+    removeNamedAttribute(path: string, attribute_class: string, name: Uint8Array): Promise<BrowserMutationResult>;
     /**
      * Atomically renames one binding within the volume.
      *
@@ -379,7 +702,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, conflicts,
      * cancellation, storage, or bounded work.
      */
-    rename(source: string, destination: string, replace: boolean): Promise<any>;
+    rename(source: string, destination: string, replace: boolean): Promise<BrowserMutationResult>;
     /**
      * Changes one regular file's logical length.
      *
@@ -388,7 +711,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed values, invalid kinds,
      * cancellation, storage, or bounded work.
      */
-    resizeFile(path: string, logical_bytes: bigint): Promise<any>;
+    resizeFile(path: string, logical_bytes: bigint): Promise<BrowserMutationResult>;
     /**
      * Changes logical length by stable file identity.
      *
@@ -397,7 +720,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity/length, absence,
      * invalid kind, storage, cancellation, or bounded work.
      */
-    resizeFileById(file_id: Uint8Array, logical_bytes: bigint): Promise<any>;
+    resizeFileById(file_id: Uint8Array, logical_bytes: bigint): Promise<BrowserMutationResult>;
     /**
      * Resolves an ordered path batch once into immutable generation-bound handles.
      *
@@ -415,7 +738,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity, wrong checkout
      * mode, absent staged work, cancellation, storage, rebase, or bounds.
      */
-    resumeLive(operation_id: Uint8Array, maximum_attempts: number, maximum_conflicts: number): Promise<any>;
+    resumeLive(operation_id: Uint8Array, maximum_attempts: number, maximum_conflicts: number): Promise<BrowserLiveMutationResult>;
     /**
      * Finds the next sparse data or hole boundary without reading file bodies.
      *
@@ -424,7 +747,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed path/offset/target,
      * non-regular kind, storage, cancellation, or bounded work.
      */
-    seekFileExtent(path: string, offset: bigint, target: string): Promise<any>;
+    seekFileExtent(path: string, offset: bigint, target: string): Promise<BrowserExtentSeekResult>;
     /**
      * Finds the next sparse boundary by stable file identity.
      *
@@ -433,7 +756,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity/offset/target,
      * non-regular kind, storage, cancellation, or bounded work.
      */
-    seekFileExtentById(file_id: Uint8Array, offset: bigint, target: string): Promise<any>;
+    seekFileExtentById(file_id: Uint8Array, offset: bigint, target: string): Promise<BrowserExtentSeekResult>;
     /**
      * Atomically replaces metadata and optional logical size for one path.
      *
@@ -442,7 +765,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed metadata/path, non-regular
      * resize, storage, cancellation, mutation, or bounded-work failure.
      */
-    setAttributes(path: string, canonical_bytes: Uint8Array, logical_bytes?: bigint | null): Promise<any>;
+    setAttributes(path: string, canonical_bytes: Uint8Array, logical_bytes?: bigint | null): Promise<BrowserMutationResult>;
     /**
      * Atomically replaces metadata and optional logical size by file identity.
      *
@@ -451,7 +774,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity/metadata,
      * non-regular resize, storage, cancellation, or bounded work.
      */
-    setAttributesById(file_id: Uint8Array, canonical_bytes: Uint8Array, logical_bytes?: bigint | null): Promise<any>;
+    setAttributesById(file_id: Uint8Array, canonical_bytes: Uint8Array, logical_bytes?: bigint | null): Promise<BrowserMutationResult>;
     /**
      * Atomically replaces complete canonical metadata for one path.
      *
@@ -459,7 +782,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for path, codec, mutation, cancellation, or work failure.
      */
-    setMetadata(path: string, canonical_bytes: Uint8Array): Promise<any>;
+    setMetadata(path: string, canonical_bytes: Uint8Array): Promise<BrowserMutationResult>;
     /**
      * Replaces complete canonical metadata by stable file identity.
      *
@@ -468,7 +791,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity/metadata, absence,
      * storage, cancellation, or bounded work.
      */
-    setMetadataById(file_id: Uint8Array, canonical_bytes: Uint8Array): Promise<any>;
+    setMetadataById(file_id: Uint8Array, canonical_bytes: Uint8Array): Promise<BrowserMutationResult>;
     /**
      * Returns one complete no-follow file record and canonical metadata.
      *
@@ -477,7 +800,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, storage,
      * authentication, cancellation, encoding, or bounded-work failure.
      */
-    statNoFollow(path: string): Promise<any>;
+    statNoFollow(path: string): Promise<BrowserStatResult>;
     /**
      * Replaces one logical file range in the private COW overlay.
      *
@@ -486,7 +809,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths/offsets,
      * non-regular files, cancellation, storage, or bounded work.
      */
-    writeFile(path: string, offset: bigint, bytes: Uint8Array): Promise<any>;
+    writeFile(path: string, offset: bigint, bytes: Uint8Array): Promise<BrowserMutationResult>;
     /**
      * Replaces one logical range by stable file identity.
      *
@@ -495,7 +818,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity/offset,
      * non-regular kind, storage, cancellation, or bounded work.
      */
-    writeFileById(file_id: Uint8Array, offset: bigint, bytes: Uint8Array): Promise<any>;
+    writeFileById(file_id: Uint8Array, offset: bigint, bytes: Uint8Array): Promise<BrowserMutationResult>;
     /**
      * Inserts or replaces one exact named attribute.
      *
@@ -503,7 +826,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for class, name, mode, mutation, cancellation, or work failure.
      */
-    writeNamedAttribute(path: string, attribute_class: string, name: Uint8Array, bytes: Uint8Array, mode: string): Promise<any>;
+    writeNamedAttribute(path: string, attribute_class: string, name: Uint8Array, bytes: Uint8Array, mode: string): Promise<BrowserMutationResult>;
     /**
      * Punches a hole or records physically allocated zeros.
      *
@@ -512,7 +835,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed ranges/kinds,
      * cancellation, storage, or bounded work.
      */
-    zeroFileRange(path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<any>;
+    zeroFileRange(path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<BrowserMutationResult>;
     /**
      * Punches a hole or records allocated zero by stable file identity.
      *
@@ -521,16 +844,11 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity/range, absence,
      * invalid kind, storage, cancellation, or bounded work.
      */
-    zeroFileRangeById(file_id: Uint8Array, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<any>;
+    zeroFileRangeById(file_id: Uint8Array, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<BrowserMutationResult>;
     /**
      * Returns exact bounded work used to acquire this checkout handle.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error when the bounded work receipt cannot be
-     * serialized for JavaScript.
      */
-    readonly acquisitionWork: any;
+    readonly acquisitionWork: BrowserWorkCounters;
 }
 
 /**
@@ -605,7 +923,7 @@ export class BrowserFs {
      * Returns a JavaScript error for malformed identity, absence,
      * corruption, cancellation, storage, or bounded work.
      */
-    exportObject(object_id: Uint8Array, maximum_bytes: bigint): Promise<any>;
+    exportObject(object_id: Uint8Array, maximum_bytes: bigint): Promise<BrowserFileReadResult>;
     /**
      * Idempotently imports one manifest-aligned immutable-object page.
      *
@@ -623,7 +941,7 @@ export class BrowserFs {
      * Returns a JavaScript error for malformed identity, digest mismatch,
      * cancellation, storage, or bounded work.
      */
-    importObject(object_id: Uint8Array, bytes: Uint8Array): Promise<any>;
+    importObject(object_id: Uint8Array, bytes: Uint8Array): Promise<BrowserMutationResult>;
     /**
      * Exact process-local immutable-object accelerator telemetry.
      *
@@ -676,19 +994,19 @@ export class BrowserGeneration {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    listDirectory(path: string, after: any | null | undefined, maximum_entries: number): Promise<any>;
+    listDirectory(path: string, after: any | null | undefined, maximum_entries: number): Promise<BrowserWorkspaceDirectoryPage>;
     /**
      * Retains this exact generation under one opaque identity.
      */
     pin(identity: string): Promise<BrowserGeneration>;
-    planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<any>;
+    planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserWorkspaceExtentPlan>;
     /**
      * Reads one complete file from this exact immutable state.
      */
     read(path: string, maximum_bytes: bigint): Promise<Uint8Array>;
     readRange(path: string, offset: bigint, length: bigint): Promise<Uint8Array>;
     readSymbolicLink(path: string): Promise<Uint8Array>;
-    stat(path: string): Promise<any>;
+    stat(path: string): Promise<BrowserWorkspaceStat>;
     /**
      * Content-addressed generation identity.
      */
@@ -706,6 +1024,15 @@ export class BrowserGitCompatRepository {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * Validates and canonicalizes a Rust Git output before JS projection.
+     */
+    canonicalizeOutputJson(value_json: string): string;
+    /**
+     * Validates and canonicalizes a durable pending transition before JS
+     * projection.
+     */
+    canonicalizePendingTransitionJson(value_json: string): string;
+    /**
      * Parses and executes a Git-shaped argv command using the Rust source of truth.
      */
     executeArgvJson(argv: string[], workspace_generation: Uint8Array, default_author: string, now_seconds: bigint): Promise<string>;
@@ -713,6 +1040,11 @@ export class BrowserGitCompatRepository {
      * Executes one typed command encoded with the public serde contract.
      */
     executeJson(command_json: string, workspace_generation: Uint8Array): Promise<string>;
+    /**
+     * Executes a natural JavaScript Git command through the Rust
+     * projection shared with the native binding.
+     */
+    executePublicJson(command_json: string, workspace_generation: Uint8Array): Promise<string>;
     /**
      * Creates process-local compatibility state for one SDK workspace.
      */
@@ -729,7 +1061,7 @@ export class BrowserJoinPlan {
     /**
      * Applies this immutable plan through one exact target-head CAS.
      */
-    apply(if_target: Uint8Array, idempotency_key?: Uint8Array | null): Promise<any>;
+    apply(if_target: Uint8Array, idempotency_key?: Uint8Array | null): Promise<BrowserJoinResult>;
     /**
      * Exact discovered common ancestor.
      */
@@ -750,11 +1082,11 @@ export class BrowserResolvedFile {
     /**
      * Reads one exact logical range without another namespace lookup.
      */
-    readRange(offset: bigint, length: bigint): Promise<any>;
+    readRange(offset: bigint, length: bigint): Promise<BrowserFileReadResult>;
     /**
      * Reads opaque symbolic-link target bytes without another namespace lookup.
      */
-    readSymbolicLink(): Promise<any>;
+    readSymbolicLink(): Promise<BrowserFileReadResult>;
     /**
      * Terminal file kind authenticated by the pinned generation.
      */
@@ -787,7 +1119,7 @@ export class BrowserResolvedFiles {
     /**
      * Exact work receipt for the shared namespace traversal.
      */
-    readonly work: any;
+    readonly work: BrowserWorkCounters;
 }
 
 /**
@@ -963,16 +1295,11 @@ export class BrowserVolume {
      * Returns a JavaScript error for malformed identities, corrupt
      * storage, cancellation, allocation, or bounded work.
      */
-    diffGenerations(before: Uint8Array, after: Uint8Array, maximum_changes: number): Promise<any>;
+    diffGenerations(before: Uint8Array, after: Uint8Array, maximum_changes: number): Promise<BrowserGenerationDiffResult>;
     /**
      * Returns exact bounded work used to acquire this volume handle.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error when the bounded work receipt cannot be
-     * serialized for JavaScript.
      */
-    readonly acquisitionWork: any;
+    readonly acquisitionWork: BrowserWorkCounters;
     /**
      * Returns the canonical 16-byte volume identity.
      */
@@ -1021,12 +1348,12 @@ export class BrowserWorkspace {
     /**
      * Advances this fork onto its source workspace's current generation.
      */
-    liveRebase(idempotency_key: Uint8Array | null | undefined, maximum_generations: number, maximum_changes: number, maximum_conflicts: number): Promise<any>;
+    liveRebase(idempotency_key: Uint8Array | null | undefined, maximum_generations: number, maximum_changes: number, maximum_conflicts: number): Promise<BrowserWorkspaceRebaseResult>;
     /**
      * Retains the current generation under one opaque stable identity.
      */
     pin(identity: string): Promise<BrowserGeneration>;
-    planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<any>;
+    planExtents(path: string, offset: bigint, length: bigint, maximum_spans: number): Promise<BrowserWorkspaceExtentPlan>;
     /**
      * Reads one complete regular file under a byte bound.
      */
@@ -1036,8 +1363,8 @@ export class BrowserWorkspace {
     /**
      * Removes one existing path atomically.
      */
-    remove(path: string): Promise<any>;
-    stat(path: string): Promise<any>;
+    remove(path: string): Promise<BrowserWorkspaceCommit>;
+    stat(path: string): Promise<BrowserWorkspaceStat>;
     /**
      * Synchronizes prior operations and returns the exact immutable head.
      */
@@ -1045,7 +1372,7 @@ export class BrowserWorkspace {
     /**
      * Atomically creates or replaces one complete file.
      */
-    write(path: string, bytes: Uint8Array): Promise<any>;
+    write(path: string, bytes: Uint8Array): Promise<BrowserWorkspaceCommit>;
     /**
      * Stable opaque workspace identity.
      */
@@ -1190,7 +1517,7 @@ export interface InitOutput {
     readonly browserchangeset_compose: (a: number, b: number, c: number) => any;
     readonly browserchangeset_from: (a: number) => number;
     readonly browserchangeset_to: (a: number) => number;
-    readonly browsercheckout_acquisitionWork: (a: number) => [number, number, number];
+    readonly browsercheckout_acquisitionWork: (a: number) => any;
     readonly browsercheckout_applyTransaction: (a: number, b: any) => any;
     readonly browsercheckout_checkpoint: (a: number) => any;
     readonly browsercheckout_cloneFileRange: (a: number, b: number, c: number, d: bigint, e: number, f: number, g: bigint, h: bigint) => any;
@@ -1270,8 +1597,11 @@ export interface InitOutput {
     readonly browsergeneration_readSymbolicLink: (a: number, b: number, c: number) => any;
     readonly browsergeneration_stat: (a: number, b: number, c: number) => any;
     readonly browsergeneration_workspaceId: (a: number) => [number, number];
+    readonly browsergitcompatrepository_canonicalizeOutputJson: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly browsergitcompatrepository_canonicalizePendingTransitionJson: (a: number, b: number, c: number) => [number, number, number, number];
     readonly browsergitcompatrepository_executeArgvJson: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: bigint) => any;
     readonly browsergitcompatrepository_executeJson: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browsergitcompatrepository_executePublicJson: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsergitcompatrepository_new: (a: number, b: number) => [number, number, number];
     readonly browserjoinplan_apply: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserjoinplan_commonAncestor: (a: number) => [number, number];
@@ -1283,7 +1613,7 @@ export interface InitOutput {
     readonly browserresolvedfile_readSymbolicLink: (a: number) => any;
     readonly browserresolvedfiles_length: (a: number) => number;
     readonly browserresolvedfiles_take: (a: number, b: number) => [number, number, number];
-    readonly browserresolvedfiles_work: (a: number) => [number, number, number];
+    readonly browserresolvedfiles_work: (a: number) => any;
     readonly browserspeculation_cancel: (a: number) => void;
     readonly browserspeculation_executeResidency: (a: number, b: number, c: number) => any;
     readonly browserspeculation_finishPromotion: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1308,7 +1638,7 @@ export interface InitOutput {
     readonly browsertransaction_write: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsertransaction_writeRange: (a: number, b: number, c: number, d: bigint, e: number, f: number) => any;
     readonly browsertransaction_zeroRange: (a: number, b: number, c: number, d: bigint, e: bigint, f: number, g: number) => any;
-    readonly browservolume_acquisitionWork: (a: number) => [number, number, number];
+    readonly browservolume_acquisitionWork: (a: number) => any;
     readonly browservolume_checkout: (a: number, b: any) => any;
     readonly browservolume_diffGenerations: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly browservolume_id: (a: number) => [number, number];
@@ -1354,10 +1684,10 @@ export interface InitOutput {
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__hae8e6b71f70a0cdc: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__h645af92b15c71abd: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h084ada5e0839d1da: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h36249d36b66faec8: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h07c1b6ab92805486: (a: number, b: number) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h65736f6e5215ff09: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hd45b3cccad240fdb: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

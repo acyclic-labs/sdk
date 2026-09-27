@@ -1002,6 +1002,8 @@ function workCounters(value: WireWorkCounters): WorkCounters {
     objectBytesWritten: safeNumber(value.objectBytesWritten, "object bytes written"),
     bytesHashed: safeNumber(value.bytesHashed, "bytes hashed"), bytesCopied: safeNumber(value.bytesCopied, "bytes copied"),
     bytesEncoded: safeNumber(value.bytesEncoded, "bytes encoded"), sourceBytesRead: safeNumber(value.sourceBytesRead, "source bytes read"),
+    sourcePathComponents: safeNumber(value.sourcePathComponents, "source path components"),
+    sourceEntriesVisited: safeNumber(value.sourceEntriesVisited, "source entries visited"),
     outputBytes: safeNumber(value.outputBytes, "output bytes"), itemsExamined: safeNumber(value.itemsExamined, "items examined"),
     itemsReturned: safeNumber(value.itemsReturned, "items returned"),
     allocationOperations: safeNumber(value.allocationOperations, "allocation operations"),

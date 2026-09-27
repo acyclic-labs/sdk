@@ -124,6 +124,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "thiserror",
+ "tsify-next",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

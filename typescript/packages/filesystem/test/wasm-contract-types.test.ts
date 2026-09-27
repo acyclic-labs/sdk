@@ -134,6 +134,26 @@ export type _WorkspaceRemoveResult = AssertExtends<
   Awaited<ReturnType<WasmRawWorkspace["remove"]>>,
   WorkspaceCommit
 >;
+export type _WorkspaceStatUsesGeneratedDto = AssertExtends<
+  Awaited<ReturnType<WasmRawWorkspace["stat"]>>,
+  GeneratedWasm.BrowserWorkspaceStat
+>;
+export type _GenerationPageUsesGeneratedDto = AssertExtends<
+  Awaited<ReturnType<WasmRawGeneration["listDirectory"]>>,
+  GeneratedWasm.BrowserWorkspaceDirectoryPage
+>;
+export type _GenerationExtentUsesGeneratedDto = AssertExtends<
+  Awaited<ReturnType<WasmRawGeneration["planExtents"]>>,
+  GeneratedWasm.BrowserWorkspaceExtentPlan
+>;
+export type _JoinUsesGeneratedDto = AssertExtends<
+  Awaited<ReturnType<WasmRawJoinPlan["apply"]>>,
+  GeneratedWasm.BrowserJoinResult
+>;
+export type _WorkspaceRebaseUsesGeneratedDto = AssertExtends<
+  Awaited<ReturnType<WasmRawWorkspace["liveRebase"]>>,
+  GeneratedWasm.BrowserWorkspaceRebaseResult
+>;
 
 type GeneratedFactoryExports = Pick<
   typeof GeneratedWasm,

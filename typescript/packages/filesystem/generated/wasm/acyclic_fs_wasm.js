@@ -23,7 +23,7 @@ export class BrowserChangeSet {
     }
     /**
      * Stable path-independent records and namespace binding changes.
-     * @returns {any}
+     * @returns {BrowserGenerationDiffResult}
      */
     changes() {
         const ret = wasm.browserchangeset_changes(this.__wbg_ptr);
@@ -85,19 +85,11 @@ export class BrowserCheckout {
     }
     /**
      * Returns exact bounded work used to acquire this checkout handle.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error when the bounded work receipt cannot be
-     * serialized for JavaScript.
-     * @returns {any}
+     * @returns {BrowserWorkCounters}
      */
     get acquisitionWork() {
         const ret = wasm.browsercheckout_acquisitionWork(this.__wbg_ptr);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
+        return ret;
     }
     /**
      * Applies one ordered sparse mutation batch atomically within this volume.
@@ -107,7 +99,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed operations, rejected semantics,
      * cancellation, storage, or bounded-work failure.
      * @param {any} operations
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserTransactionResult>}
      */
     applyTransaction(operations) {
         const ret = wasm.browsercheckout_applyTransaction(this.__wbg_ptr, operations);
@@ -120,7 +112,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for invalid checkout state, corruption,
      * cancellation, storage failure, or bounded-work exhaustion.
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserCheckpointResult>}
      */
     checkpoint() {
         const ret = wasm.browsercheckout_checkpoint(this.__wbg_ptr);
@@ -138,7 +130,7 @@ export class BrowserCheckout {
      * @param {string} destination
      * @param {bigint} destination_offset
      * @param {bigint} length
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     cloneFileRange(source, source_offset, destination, destination_offset, length) {
         const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -160,7 +152,7 @@ export class BrowserCheckout {
      * @param {Uint8Array} destination_file_id
      * @param {bigint} destination_offset
      * @param {bigint} length
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     cloneFileRangeById(source_file_id, source_offset, destination_file_id, destination_offset, length) {
         const ptr0 = passArray8ToWasm0(source_file_id, wasm.__wbindgen_malloc);
@@ -178,7 +170,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed operation identity, clean
      * or read-only checkout, closure failure, cancellation, or bounded work.
      * @param {Uint8Array} operation_id
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserCommitResult>}
      */
     commit(operation_id) {
         const ptr0 = passArray8ToWasm0(operation_id, wasm.__wbindgen_malloc);
@@ -197,7 +189,7 @@ export class BrowserCheckout {
      * @param {string} kind
      * @param {number} major
      * @param {number} minor
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     createDevice(path, kind, major, minor) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -215,7 +207,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, conflicts,
      * cancellation, storage, allocation, or bounded work.
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     createDirectory(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -232,7 +224,7 @@ export class BrowserCheckout {
      * cancellation, storage, allocation, or bounded work.
      * @param {string} path
      * @param {Uint8Array} bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     createFile(path, bytes) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -251,7 +243,7 @@ export class BrowserCheckout {
      * semantics, excessive payload, storage, cancellation, or bounded work.
      * @param {string} path
      * @param {Uint8Array} payload
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     createReparsePoint(path, payload) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -270,7 +262,7 @@ export class BrowserCheckout {
      * profile semantics, storage, cancellation, or bounded work.
      * @param {string} path
      * @param {string} kind
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     createSpecial(path, kind) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -289,7 +281,7 @@ export class BrowserCheckout {
      * excessive targets, cancellation, storage, or bounded work.
      * @param {string} path
      * @param {Uint8Array} target
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     createSymbolicLink(path, target) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -305,7 +297,7 @@ export class BrowserCheckout {
      * # Errors
      *
      * Returns a JavaScript error for cancellation, corruption, storage, or work bounds.
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     discard() {
         const ret = wasm.browsercheckout_discard(this.__wbg_ptr);
@@ -318,7 +310,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for checkpoint, closure, authentication,
      * cancellation, storage, serialization, or bounded work.
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserExportManifestResult>}
      */
     exportManifest() {
         const ret = wasm.browsercheckout_exportManifest(this.__wbg_ptr);
@@ -333,7 +325,7 @@ export class BrowserCheckout {
      * conflicts, cancellation, storage, or bounded work.
      * @param {string} source
      * @param {string} destination
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     hardLink(source, destination) {
         const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -353,7 +345,7 @@ export class BrowserCheckout {
      * @param {string} path
      * @param {string | null | undefined} after
      * @param {number} maximum_entries
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserDirectoryPageResult>}
      */
     listDirectory(path, after, maximum_entries) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -373,7 +365,7 @@ export class BrowserCheckout {
      * @param {string} path
      * @param {string | null | undefined} after
      * @param {number} maximum_entries
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserDirectoryRecordPageResult>}
      */
     listDirectoryRecords(path, after, maximum_entries) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -393,7 +385,7 @@ export class BrowserCheckout {
      * @param {string | null | undefined} after_class
      * @param {Uint8Array | null | undefined} after_name
      * @param {number} maximum_entries
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserNamedAttributePageResult>}
      */
     listNamedAttributes(path, after_class, after_name, maximum_entries) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -413,7 +405,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for non-array/excessive/malformed paths,
      * storage, cancellation, authentication, or bounded-work failure.
      * @param {any} paths
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserBatchLookupResult>}
      */
     lookupBatchNoFollow(paths) {
         const ret = wasm.browsercheckout_lookupBatchNoFollow(this.__wbg_ptr, paths);
@@ -427,7 +419,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths or authenticated
      * storage, cancellation, and bounded-work failures.
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserLookupResult>}
      */
     lookupNoFollow(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -447,7 +439,7 @@ export class BrowserCheckout {
      * @param {Uint8Array} operation_id
      * @param {number} maximum_attempts
      * @param {number} maximum_conflicts
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserLiveTransactionResult>}
      */
     mutateLive(operations, operation_id, maximum_attempts, maximum_conflicts) {
         const ptr0 = passArray8ToWasm0(operation_id, wasm.__wbindgen_malloc);
@@ -466,7 +458,7 @@ export class BrowserCheckout {
      * @param {bigint} offset
      * @param {bigint} length
      * @param {number} maximum_spans
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserExtentPlanResult>}
      */
     planFileExtents(path, offset, length, maximum_spans) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -485,7 +477,7 @@ export class BrowserCheckout {
      * @param {bigint} offset
      * @param {bigint} length
      * @param {number} maximum_spans
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserExtentPlanResult>}
      */
     planFileExtentsById(file_id, offset, length, maximum_spans) {
         const ptr0 = passArray8ToWasm0(file_id, wasm.__wbindgen_malloc);
@@ -504,7 +496,7 @@ export class BrowserCheckout {
      * @param {bigint} offset
      * @param {bigint} length
      * @param {boolean} keep_size
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     preallocateFile(path, offset, length, keep_size) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -523,7 +515,7 @@ export class BrowserCheckout {
      * @param {bigint} offset
      * @param {bigint} length
      * @param {boolean} keep_size
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     preallocateFileById(file_id, offset, length, keep_size) {
         const ptr0 = passArray8ToWasm0(file_id, wasm.__wbindgen_malloc);
@@ -541,7 +533,7 @@ export class BrowserCheckout {
      * @param {Uint8Array} theirs
      * @param {number} maximum_changes
      * @param {number} maximum_conflicts
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMergePreparationResult>}
      */
     prepareMerge(theirs, maximum_changes, maximum_conflicts) {
         const ptr0 = passArray8ToWasm0(theirs, wasm.__wbindgen_malloc);
@@ -559,7 +551,7 @@ export class BrowserCheckout {
      * @param {string} path
      * @param {bigint} offset
      * @param {bigint} length
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserFileReadResult>}
      */
     readFileRange(path, offset, length) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -577,7 +569,7 @@ export class BrowserCheckout {
      * @param {Uint8Array} file_id
      * @param {bigint} offset
      * @param {bigint} length
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserFileReadResult>}
      */
     readFileRangeById(file_id, offset, length) {
         const ptr0 = passArray8ToWasm0(file_id, wasm.__wbindgen_malloc);
@@ -593,7 +585,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity, authenticated
      * absence, storage, cancellation, or bounded-work failure.
      * @param {Uint8Array} file_id
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserFileRecordReadResult>}
      */
     readFileRecordById(file_id) {
         const ptr0 = passArray8ToWasm0(file_id, wasm.__wbindgen_malloc);
@@ -608,7 +600,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for path, storage, codec, cancellation, or work failure.
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMetadataResult>}
      */
     readMetadata(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -624,7 +616,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed identity, absence, storage,
      * authentication, cancellation, encoding, or bounded work.
      * @param {Uint8Array} file_id
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMetadataResult>}
      */
     readMetadataById(file_id) {
         const ptr0 = passArray8ToWasm0(file_id, wasm.__wbindgen_malloc);
@@ -641,7 +633,7 @@ export class BrowserCheckout {
      * @param {string} path
      * @param {string} attribute_class
      * @param {Uint8Array} name
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserNamedAttributeResult>}
      */
     readNamedAttribute(path, attribute_class, name) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -661,7 +653,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, wrong file kind,
      * storage, cancellation, authentication, or bounded work.
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserFileReadResult>}
      */
     readReparsePoint(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -677,7 +669,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, non-links,
      * corruption, cancellation, storage, or bounded work.
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserFileReadResult>}
      */
     readSymbolicLink(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -693,7 +685,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for unsupported consistency, invalid
      * bounds, corruption, cancellation, storage, replay, or bounded work.
      * @param {number} maximum_conflicts
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserRebaseResult>}
      */
     rebaseHead(maximum_conflicts) {
         const ret = wasm.browsercheckout_rebaseHead(this.__wbg_ptr, maximum_conflicts);
@@ -706,7 +698,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for dirty state, storage, cancellation,
      * authentication, or bounded-work failure.
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserCheckpointResult>}
      */
     refreshHead() {
         const ret = wasm.browsercheckout_refreshHead(this.__wbg_ptr);
@@ -719,7 +711,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for unsupported mode, conflicts, storage,
      * cancellation, authentication, or bounded-work failure.
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserCheckpointResult>}
      */
     refreshLive() {
         const ret = wasm.browsercheckout_refreshLive(this.__wbg_ptr);
@@ -734,7 +726,7 @@ export class BrowserCheckout {
      * conflicts, cancellation, storage, or bounded work.
      * @param {string} path
      * @param {Uint8Array | null} [expected_file_id]
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     remove(path, expected_file_id) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -753,7 +745,7 @@ export class BrowserCheckout {
      * @param {string} path
      * @param {string} attribute_class
      * @param {Uint8Array} name
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     removeNamedAttribute(path, attribute_class, name) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -775,7 +767,7 @@ export class BrowserCheckout {
      * @param {string} source
      * @param {string} destination
      * @param {boolean} replace
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     rename(source, destination, replace) {
         const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -794,7 +786,7 @@ export class BrowserCheckout {
      * cancellation, storage, or bounded work.
      * @param {string} path
      * @param {bigint} logical_bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     resizeFile(path, logical_bytes) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -811,7 +803,7 @@ export class BrowserCheckout {
      * invalid kind, storage, cancellation, or bounded work.
      * @param {Uint8Array} file_id
      * @param {bigint} logical_bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     resizeFileById(file_id, logical_bytes) {
         const ptr0 = passArray8ToWasm0(file_id, wasm.__wbindgen_malloc);
@@ -843,7 +835,7 @@ export class BrowserCheckout {
      * @param {Uint8Array} operation_id
      * @param {number} maximum_attempts
      * @param {number} maximum_conflicts
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserLiveMutationResult>}
      */
     resumeLive(operation_id, maximum_attempts, maximum_conflicts) {
         const ptr0 = passArray8ToWasm0(operation_id, wasm.__wbindgen_malloc);
@@ -861,7 +853,7 @@ export class BrowserCheckout {
      * @param {string} path
      * @param {bigint} offset
      * @param {string} target
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserExtentSeekResult>}
      */
     seekFileExtent(path, offset, target) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -881,7 +873,7 @@ export class BrowserCheckout {
      * @param {Uint8Array} file_id
      * @param {bigint} offset
      * @param {string} target
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserExtentSeekResult>}
      */
     seekFileExtentById(file_id, offset, target) {
         const ptr0 = passArray8ToWasm0(file_id, wasm.__wbindgen_malloc);
@@ -901,7 +893,7 @@ export class BrowserCheckout {
      * @param {string} path
      * @param {Uint8Array} canonical_bytes
      * @param {bigint | null} [logical_bytes]
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     setAttributes(path, canonical_bytes, logical_bytes) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -921,7 +913,7 @@ export class BrowserCheckout {
      * @param {Uint8Array} file_id
      * @param {Uint8Array} canonical_bytes
      * @param {bigint | null} [logical_bytes]
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     setAttributesById(file_id, canonical_bytes, logical_bytes) {
         const ptr0 = passArray8ToWasm0(file_id, wasm.__wbindgen_malloc);
@@ -939,7 +931,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for path, codec, mutation, cancellation, or work failure.
      * @param {string} path
      * @param {Uint8Array} canonical_bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     setMetadata(path, canonical_bytes) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -958,7 +950,7 @@ export class BrowserCheckout {
      * storage, cancellation, or bounded work.
      * @param {Uint8Array} file_id
      * @param {Uint8Array} canonical_bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     setMetadataById(file_id, canonical_bytes) {
         const ptr0 = passArray8ToWasm0(file_id, wasm.__wbindgen_malloc);
@@ -976,7 +968,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed paths, storage,
      * authentication, cancellation, encoding, or bounded-work failure.
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserStatResult>}
      */
     statNoFollow(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -994,7 +986,7 @@ export class BrowserCheckout {
      * @param {string} path
      * @param {bigint} offset
      * @param {Uint8Array} bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     writeFile(path, offset, bytes) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1014,7 +1006,7 @@ export class BrowserCheckout {
      * @param {Uint8Array} file_id
      * @param {bigint} offset
      * @param {Uint8Array} bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     writeFileById(file_id, offset, bytes) {
         const ptr0 = passArray8ToWasm0(file_id, wasm.__wbindgen_malloc);
@@ -1035,7 +1027,7 @@ export class BrowserCheckout {
      * @param {Uint8Array} name
      * @param {Uint8Array} bytes
      * @param {string} mode
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     writeNamedAttribute(path, attribute_class, name, bytes, mode) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1063,7 +1055,7 @@ export class BrowserCheckout {
      * @param {bigint} length
      * @param {boolean} allocated
      * @param {boolean} extend
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     zeroFileRange(path, offset, length, allocated, extend) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1083,7 +1075,7 @@ export class BrowserCheckout {
      * @param {bigint} length
      * @param {boolean} allocated
      * @param {boolean} extend
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     zeroFileRangeById(file_id, offset, length, allocated, extend) {
         const ptr0 = passArray8ToWasm0(file_id, wasm.__wbindgen_malloc);
@@ -1245,7 +1237,7 @@ export class BrowserFs {
      * corruption, cancellation, storage, or bounded work.
      * @param {Uint8Array} object_id
      * @param {bigint} maximum_bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserFileReadResult>}
      */
     exportObject(object_id, maximum_bytes) {
         const ptr0 = passArray8ToWasm0(object_id, wasm.__wbindgen_malloc);
@@ -1279,7 +1271,7 @@ export class BrowserFs {
      * cancellation, storage, or bounded work.
      * @param {Uint8Array} object_id
      * @param {Uint8Array} bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserMutationResult>}
      */
     importObject(object_id, bytes) {
         const ptr0 = passArray8ToWasm0(object_id, wasm.__wbindgen_malloc);
@@ -1391,7 +1383,7 @@ export class BrowserGeneration {
      * @param {string} path
      * @param {any | null | undefined} after
      * @param {number} maximum_entries
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceDirectoryPage>}
      */
     listDirectory(path, after, maximum_entries) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1415,7 +1407,7 @@ export class BrowserGeneration {
      * @param {bigint} offset
      * @param {bigint} length
      * @param {number} maximum_spans
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceExtentPlan>}
      */
     planExtents(path, offset, length, maximum_spans) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1459,7 +1451,7 @@ export class BrowserGeneration {
     }
     /**
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceStat>}
      */
     stat(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1495,6 +1487,57 @@ export class BrowserGitCompatRepository {
         wasm.__wbg_browsergitcompatrepository_free(ptr, 0);
     }
     /**
+     * Validates and canonicalizes a Rust Git output before JS projection.
+     * @param {string} value_json
+     * @returns {string}
+     */
+    canonicalizeOutputJson(value_json) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.browsergitcompatrepository_canonicalizeOutputJson(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Validates and canonicalizes a durable pending transition before JS
+     * projection.
+     * @param {string} value_json
+     * @returns {string}
+     */
+    canonicalizePendingTransitionJson(value_json) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(value_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.browsergitcompatrepository_canonicalizePendingTransitionJson(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Parses and executes a Git-shaped argv command using the Rust source of truth.
      * @param {string[]} argv
      * @param {Uint8Array} workspace_generation
@@ -1524,6 +1567,21 @@ export class BrowserGitCompatRepository {
         const ptr1 = passArray8ToWasm0(workspace_generation, wasm.__wbindgen_malloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.browsergitcompatrepository_executeJson(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    /**
+     * Executes a natural JavaScript Git command through the Rust
+     * projection shared with the native binding.
+     * @param {string} command_json
+     * @param {Uint8Array} workspace_generation
+     * @returns {Promise<string>}
+     */
+    executePublicJson(command_json, workspace_generation) {
+        const ptr0 = passStringToWasm0(command_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(workspace_generation, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browsergitcompatrepository_executePublicJson(this.__wbg_ptr, ptr0, len0, ptr1, len1);
         return ret;
     }
     /**
@@ -1569,7 +1627,7 @@ export class BrowserJoinPlan {
      * Applies this immutable plan through one exact target-head CAS.
      * @param {Uint8Array} if_target
      * @param {Uint8Array | null} [idempotency_key]
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserJoinResult>}
      */
     apply(if_target, idempotency_key) {
         const ptr0 = passArray8ToWasm0(if_target, wasm.__wbindgen_malloc);
@@ -1664,7 +1722,7 @@ export class BrowserResolvedFile {
      * Reads one exact logical range without another namespace lookup.
      * @param {bigint} offset
      * @param {bigint} length
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserFileReadResult>}
      */
     readRange(offset, length) {
         const ret = wasm.browserresolvedfile_readRange(this.__wbg_ptr, offset, length);
@@ -1672,7 +1730,7 @@ export class BrowserResolvedFile {
     }
     /**
      * Reads opaque symbolic-link target bytes without another namespace lookup.
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserFileReadResult>}
      */
     readSymbolicLink() {
         const ret = wasm.browserresolvedfile_readSymbolicLink(this.__wbg_ptr);
@@ -1724,14 +1782,11 @@ export class BrowserResolvedFiles {
     }
     /**
      * Exact work receipt for the shared namespace traversal.
-     * @returns {any}
+     * @returns {BrowserWorkCounters}
      */
     get work() {
         const ret = wasm.browserresolvedfiles_work(this.__wbg_ptr);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
+        return ret;
     }
 }
 if (Symbol.dispose) BrowserResolvedFiles.prototype[Symbol.dispose] = BrowserResolvedFiles.prototype.free;
@@ -2139,19 +2194,11 @@ export class BrowserVolume {
     }
     /**
      * Returns exact bounded work used to acquire this volume handle.
-     *
-     * # Errors
-     *
-     * Returns a JavaScript error when the bounded work receipt cannot be
-     * serialized for JavaScript.
-     * @returns {any}
+     * @returns {BrowserWorkCounters}
      */
     get acquisitionWork() {
         const ret = wasm.browservolume_acquisitionWork(this.__wbg_ptr);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
+        return ret;
     }
     /**
      * Opens the volume head with explicit access and consistency semantics.
@@ -2177,7 +2224,7 @@ export class BrowserVolume {
      * @param {Uint8Array} before
      * @param {Uint8Array} after
      * @param {number} maximum_changes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserGenerationDiffResult>}
      */
     diffGenerations(before, after, maximum_changes) {
         const ptr0 = passArray8ToWasm0(before, wasm.__wbindgen_malloc);
@@ -2332,7 +2379,7 @@ export class BrowserWorkspace {
      * @param {number} maximum_generations
      * @param {number} maximum_changes
      * @param {number} maximum_conflicts
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceRebaseResult>}
      */
     liveRebase(idempotency_key, maximum_generations, maximum_changes, maximum_conflicts) {
         var ptr0 = isLikeNone(idempotency_key) ? 0 : passArray8ToWasm0(idempotency_key, wasm.__wbindgen_malloc);
@@ -2372,7 +2419,7 @@ export class BrowserWorkspace {
      * @param {bigint} offset
      * @param {bigint} length
      * @param {number} maximum_spans
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceExtentPlan>}
      */
     planExtents(path, offset, length, maximum_spans) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -2417,7 +2464,7 @@ export class BrowserWorkspace {
     /**
      * Removes one existing path atomically.
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceCommit>}
      */
     remove(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -2427,7 +2474,7 @@ export class BrowserWorkspace {
     }
     /**
      * @param {string} path
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceStat>}
      */
     stat(path) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -2447,7 +2494,7 @@ export class BrowserWorkspace {
      * Atomically creates or replaces one complete file.
      * @param {string} path
      * @param {Uint8Array} bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserWorkspaceCommit>}
      */
     write(path, bytes) {
         const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -3538,23 +3585,23 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 941, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 989, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 808, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h36249d36b66faec8);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 811, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h65736f6e5215ff09);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 3, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hae8e6b71f70a0cdc);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h645af92b15c71abd);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 807, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h07c1b6ab92805486);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 812, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hd45b3cccad240fdb);
             return ret;
         },
         __wbindgen_cast_0000000000000005: function(arg0) {
@@ -3605,12 +3652,12 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__h07c1b6ab92805486(arg0, arg1) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h07c1b6ab92805486(arg0, arg1);
+function wasm_bindgen__convert__closures_____invoke__hd45b3cccad240fdb(arg0, arg1) {
+    wasm.wasm_bindgen__convert__closures_____invoke__hd45b3cccad240fdb(arg0, arg1);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h36249d36b66faec8(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h36249d36b66faec8(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h65736f6e5215ff09(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h65736f6e5215ff09(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8(arg0, arg1, arg2) {
@@ -3620,8 +3667,8 @@ function wasm_bindgen__convert__closures_____invoke__h52b70b151c954ca8(arg0, arg
     }
 }
 
-function wasm_bindgen__convert__closures_____invoke__hae8e6b71f70a0cdc(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__hae8e6b71f70a0cdc(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h645af92b15c71abd(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h645af92b15c71abd(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }

@@ -62,7 +62,7 @@ export type GitFilesystemAction =
   | { readonly Grep: { readonly pattern: string; readonly path: string | undefined; readonly tree: GitTreeRef } }
   | { readonly Clean: { readonly dry_run: boolean; readonly tree: GitTreeRef; readonly tracked_paths: readonly string[] } }
   | { readonly Archive: { readonly tree: GitTreeRef } }
-  | { readonly ApplyPatch: { readonly patch: readonly number[] } }
+  | { readonly ApplyPatch: { readonly patch: Uint8Array } }
   | { readonly CheckIgnore: { readonly paths: readonly string[]; readonly tree: GitTreeRef } };
 export type GitFilesystemResult =
   | { readonly Captured: { readonly tree: GitTreeRef; readonly tracked_paths: readonly string[]; readonly proof: GitCaptureProof | undefined } }

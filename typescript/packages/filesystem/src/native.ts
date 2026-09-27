@@ -70,12 +70,12 @@ import type {
 } from "./compat.js";
 import {
   adaptCompatibilityWire,
-  encodeGitCompatCommand,
   finishGitCompatOutput,
   gitCompatSafeTimestamp,
   parseGitCompatOutputJson,
   parseGitPendingTransitionJson,
   stringifyGitFilesystemResult,
+  stringifyGitCompatCommand,
 } from "./compat.js";
 
 import { adaptWorkspaceContextRegistry } from "./workspace-context.js";
@@ -417,29 +417,33 @@ function adaptOperationWindowCoordinator(
 }
 
 function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository {
+  const projectOutput = (value: string) => parseGitCompatOutputJson(raw.canonicalizeOutputJson(value));
+  const projectPending = (value: string) => parseGitPendingTransitionJson(
+    raw.canonicalizePendingTransitionJson(value),
+  );
   const repository: GitCompatRepository = {
     async execute(command: GitCompatCommand, workspaceGeneration: GenerationIdentity) {
-      return parseGitCompatOutputJson(
-        await raw.executeJson(JSON.stringify(encodeGitCompatCommand(command)), workspaceGeneration),
+      return projectOutput(
+        await raw.executePublicJson(stringifyGitCompatCommand(command), workspaceGeneration),
       );
     },
     async executeArgv(argv, workspaceGeneration, defaultAuthor, nowSeconds) {
       gitCompatSafeTimestamp(nowSeconds);
-      return parseGitCompatOutputJson(
+      return projectOutput(
         await raw.executeArgvJson(argv, workspaceGeneration, defaultAuthor, nowSeconds.toString()),
       );
     },
     async pendingTransition() {
       const value = await raw.pendingTransitionJson();
-      return value == null ? undefined : parseGitPendingTransitionJson(value);
+      return value == null ? undefined : projectPending(value);
     },
     async completeTransition(transition, resultingGeneration) {
-      return parseGitCompatOutputJson(
+      return projectOutput(
         await raw.completeTransitionJson(transition, resultingGeneration),
       );
     },
     async completeTransitionResult(transition, result) {
-      return parseGitCompatOutputJson(
+      return projectOutput(
         await raw.completeTransitionResultJson(transition, stringifyGitFilesystemResult(result)),
       );
     },
@@ -475,7 +479,7 @@ function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository 
       head: GitCommitIdentity | undefined,
       switchToBranch: boolean,
     ) {
-      return parseGitCompatOutputJson(
+      return projectOutput(
         await raw.registerBranchWorkspaceJson(
           branch,
           workspaceId,
@@ -493,7 +497,7 @@ function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository 
       authoredAtSeconds: bigint,
     ) {
       gitCompatSafeTimestamp(authoredAtSeconds);
-      return parseGitCompatOutputJson(
+      return projectOutput(
         await raw.recordCommitJson(
           expectedHead === undefined ? undefined : gitCommitBytes(expectedHead),
           generation,
