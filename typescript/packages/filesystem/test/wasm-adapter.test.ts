@@ -345,10 +345,10 @@ describe("WASM adapter canonical boundaries", () => {
       const bindingSource = await engine.createWorkspace("binding-conflict-source");
       const bindingTarget = await bindingSource.fork("binding-conflict-target");
       const sourceTx = await bindingSource.beginTransaction();
-      await sourceTx.createDirectory("/same-directory");
+      await sourceTx.write("/same-entry", Uint8Array.of(1));
       await sourceTx.commit();
       const targetTx = await bindingTarget.beginTransaction();
-      await targetTx.createDirectory("/same-directory");
+      await targetTx.write("/same-entry", Uint8Array.of(2));
       await targetTx.commit();
       const bindingJoin = await bindingSource.joinInto(bindingTarget, {
         history: "merge", maximumGenerations: 8, maximumChanges: 16, maximumConflicts: 8,
