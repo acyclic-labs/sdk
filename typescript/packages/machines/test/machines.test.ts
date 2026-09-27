@@ -357,10 +357,32 @@ describe("Machines simulation", () => {
     expect(await serve(checkpointed).checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"))).toEqual(checkpointed);
     await expect(serve({ ...checkpointed, checkpoint: { ...checkpointed.checkpoint, source: machineId("other-source") } }).checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"))).rejects.toThrow("substituted");
 
+    const checkpointForked = await simulated.fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"));
+    if (checkpointForked.kind !== "forked") throw new Error("wrong checkpoint fork outcome");
+    expect(await serve(checkpointForked).fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"))).toEqual(checkpointForked);
+    const substitutedCheckpoint = checkpointId("other-checkpoint");
+    await expect(serve({
+      ...checkpointForked,
+      machines: checkpointForked.machines.map(machine => ({
+        ...machine,
+        lastCheckpoint: substitutedCheckpoint,
+        contract: { ...machine.contract, image: { kind: "checkpoint", checkpointId: substitutedCheckpoint } },
+      })),
+    }).fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"))).rejects.toThrow("checkpoint");
+
     const forked = await simulated.forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"));
     if (forked.kind !== "machine-forked") throw new Error("wrong machine fork outcome");
     expect(await serve(forked).forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"))).toEqual(forked);
     await expect(serve({ ...forked, source: machineId("other-source") }).forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"))).rejects.toThrow("substituted");
+    await expect(serve({
+      ...forked,
+      children: forked.children.map((machine, index) => index === 0 ? { ...machine, id: created.machine.id } : machine),
+    }).forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"))).rejects.toThrow("source");
+    await expect(serve({
+      ...forked,
+      fidelity: "disk-only",
+      children: forked.children.map(machine => ({ ...machine, contract: { ...machine.contract, capabilities: ["live-fork"] as const } })),
+    }).forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"))).rejects.toThrow("capabilities");
 
     const policy = { kind: "suspension-policy-set" as const, machineId: created.machine.id, policy: { kind: "manual" as const } };
     expect(await serve(policy).setSuspensionPolicy(created.machine.id, policy.policy, idempotencyKey("hosted-mutation-policy"))).toEqual(policy);
