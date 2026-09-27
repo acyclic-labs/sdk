@@ -587,6 +587,16 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::children_from_wire)
                 .and_then(|request| memory::validate_limit(request.limit)),
+            "children_page" => wire::ChildrenPageRequest::decode(input)
+                .map_err(|_| StreamError::InvalidArgument)
+                .and_then(wire_codec::children_page_from_wire)
+                .and_then(|request| {
+                    if request.after.is_some() && request.hierarchy_version.is_none() {
+                        return Err(StreamError::InvalidArgument);
+                    }
+                    Ok(request)
+                })
+                .and_then(|request| memory::validate_limit(request.limit)),
             _ => Err(StreamError::InvalidArgument),
         });
     result.map_or_else(|error| error_code_str(&error).to_owned(), |_| String::new())
@@ -943,6 +953,27 @@ mod http {
                 let mut entries = vec![("limit", Value::from(request.limit))];
                 if let Some(parent) = request.parent {
                     entries.insert(0, ("parent", json_string(parent.to_string())));
+                }
+                Ok(json_object(entries))
+            }
+            "children/page" => {
+                let request =
+                    wire::ChildrenPageRequest::decode(input).map_err(|_| "invalid_argument")?;
+                let request = wire_codec::children_page_from_wire(request)
+                    .map_err(|error| error_code_str(&error))?;
+                if request.after.is_some() && request.hierarchy_version.is_none() {
+                    return Err("invalid_argument");
+                }
+                memory::validate_limit(request.limit).map_err(|error| error_code_str(&error))?;
+                let mut entries = vec![("limit", Value::from(request.limit))];
+                if let Some(parent) = request.parent {
+                    entries.insert(0, ("parent", json_string(parent.to_string())));
+                }
+                if let Some(after) = request.after {
+                    entries.insert(0, ("after", json_string(after.to_string())));
+                }
+                if let Some(version) = request.hierarchy_version {
+                    entries.insert(0, ("hierarchyVersion", json_bytes(version.as_bytes())));
                 }
                 Ok(json_object(entries))
             }
@@ -1312,6 +1343,32 @@ mod http {
         Ok(result.into())
     }
 
+    fn children_page_js(value: &Value) -> Result<JsValue> {
+        let item = object(value)?;
+        id(field(item, "hierarchyVersion")?)?;
+        let result = Object::new();
+        set(
+            &result,
+            "hierarchyVersion",
+            &bytes_js(field(item, "hierarchyVersion")?)?,
+        )?;
+        set(
+            &result,
+            "children",
+            &array_js(field(item, "children")?, |value| {
+                let child = object(value)?;
+                path(field(child, "path")?)?;
+                let result = Object::new();
+                set(&result, "path", &string_js(field(child, "path")?)?)?;
+                Ok(result.into())
+            })?,
+        )?;
+        if let Some(next_after) = item.get("nextAfter").filter(|value| !value.is_null()) {
+            set(&result, "nextAfter", &string_js(next_after)?)?;
+        }
+        Ok(result.into())
+    }
+
     fn append_result_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
         let result = Object::new();
@@ -1639,6 +1696,7 @@ mod http {
                 set(&result, "path", &string_js(field(item, "path")?)?)?;
                 Ok(result.into())
             }),
+            Some("children_page") => children_page_js(value),
             Some("commit") => commit_result_js(value),
             Some("envelope") => envelope_js(value),
             Some("observation") => {

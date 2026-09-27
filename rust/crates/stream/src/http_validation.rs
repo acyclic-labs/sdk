@@ -115,6 +115,30 @@ fn validate_record(value: &Value) -> Result {
     id(field(item, "commitId")?)
 }
 
+fn validate_children_page(value: &Value) -> Result {
+    let item = object(value)?;
+    id(field(item, "hierarchyVersion")?)?;
+    let children = array(field(item, "children")?)?;
+    let mut previous: Option<&str> = None;
+    for child in children {
+        let child = object(child)?;
+        let path_value = field(child, "path")?;
+        path(path_value)?;
+        let current = string(path_value)?;
+        if previous.is_some_and(|previous| previous >= current) {
+            return Err("children are not ordered");
+        }
+        previous = Some(current);
+    }
+    if let Some(next_after) = item.get("nextAfter").filter(|value| !value.is_null()) {
+        let next_after = string(next_after)?;
+        if previous != Some(next_after) {
+            return Err("child continuation does not match final child");
+        }
+    }
+    Ok(())
+}
+
 fn validate_append_result(value: &Value) -> Result {
     let item = object(value)?;
     if boolean(field(item, "ok")?)? {
@@ -301,6 +325,7 @@ pub fn validate(route: &str, value: &Value) -> Result {
             }
             Ok(())
         }
+        Some("children_page") => validate_children_page(value),
         Some("commit") => validate_commit_result(value),
         Some("envelope") => validate_envelope(value),
         Some("observation") => {
@@ -385,6 +410,30 @@ mod tests {
         let response = format!(r#"[{{"sequence":"0","value":"","commitId":"{commit_id}"}}]"#);
 
         assert!(super::validate("read", &json_fixture(&response)?).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn hosted_http_validation_checks_children_page_continuations() -> serde_json::Result<()> {
+        let commit_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let valid = format!(
+            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/a"}},{{"path":"runs/b"}}],"nextAfter":"runs/b"}}"#
+        );
+        assert!(super::validate("children/page", &json_fixture(&valid)?).is_ok());
+
+        let null_continuation =
+            format!(r#"{{"hierarchyVersion":"{commit_id}","children":[],"nextAfter":null}}"#);
+        assert!(super::validate("children/page", &json_fixture(&null_continuation)?).is_ok());
+
+        let wrong_continuation = format!(
+            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/a"}}],"nextAfter":"runs/b"}}"#
+        );
+        assert!(super::validate("children/page", &json_fixture(&wrong_continuation)?).is_err());
+
+        let unordered = format!(
+            r#"{{"hierarchyVersion":"{commit_id}","children":[{{"path":"runs/b"}},{{"path":"runs/a"}}]}}"#
+        );
+        assert!(super::validate("children/page", &json_fixture(&unordered)?).is_err());
         Ok(())
     }
 }

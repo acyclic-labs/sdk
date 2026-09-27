@@ -65,6 +65,7 @@ pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("delete", "delete"),
     ("read", "records"),
     ("children", "children"),
+    ("children/page", "children_page"),
     ("commit", "commit"),
     ("commits/read", "envelope"),
     ("tokens/create", "token"),

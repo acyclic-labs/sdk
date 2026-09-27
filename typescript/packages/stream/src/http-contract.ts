@@ -2,7 +2,7 @@
 
 import { decodeHttpResponse as decodeHttpResponseWasm } from "../generated/wasm/acyclic_stream_wasm.js";
 import type {
-  AccessToken, AppendResult, CommittedEnvelope, EncodedRecord, ForkReceipt,
+  AccessToken, AppendResult, ChildrenPage, CommittedEnvelope, EncodedRecord, ForkReceipt,
   IdempotencyObservation, TrimReceipt, DeleteReceipt, CommitResult, Sequence, StreamBounds,
 } from "./types.js";
 
@@ -16,6 +16,7 @@ export const HTTP_RESPONSE_CONTRACT = Object.freeze({
   "delete": "delete",
   "read": "records",
   "children": "children",
+  "children/page": "children_page",
   "commit": "commit",
   "commits/read": "envelope",
   "tokens/create": "token",
@@ -33,6 +34,7 @@ type HttpResponseByKind = {
   delete: DeleteReceipt;
   records: readonly EncodedRecord[];
   children: readonly { readonly path: string }[];
+  children_page: ChildrenPage;
   commit: CommitResult;
   envelope: CommittedEnvelope;
   token: AccessToken;

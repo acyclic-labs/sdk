@@ -2,7 +2,7 @@ import { pathValue, validateAppend } from "./client.js";
 import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
 import { publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, DeleteReceipt, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamBounds, StreamProvider, TrimReceipt } from "./types.js";
-import { StreamError, commitId } from "./types.js";
+import { StreamError } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
@@ -68,12 +68,21 @@ export class HttpStreamProvider implements StreamProvider {
     if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > StreamLimit.MAX_ITEMS) {
       throw new StreamError("limit_exceeded", `child page limit must be between 1 and ${StreamLimit.MAX_ITEMS}`);
     }
-    return this.#requestRaw("children/page", {
+    await validateWireRequest({
+      kind: "children_page",
       ...(request.parent === undefined ? {} : { parent: request.parent }),
       ...(request.after === undefined ? {} : { after: request.after }),
-      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: rawBase64(request.hierarchyVersion) }),
+      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
       limit: request.limit,
-    }, decodeChildrenPage);
+    });
+    const input = wireRequest({
+      kind: "children_page",
+      ...(request.parent === undefined ? {} : { parent: request.parent }),
+      ...(request.after === undefined ? {} : { after: request.after }),
+      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
+      limit: request.limit,
+    });
+    return this.#request("children/page", await encodeHttpRequest("children/page", input));
   }
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> { const authored = structuredClone(request); const retained = structuredClone(options); const input = await normalizeWireCommitBytes(authored, retained); return this.#request("commit", await encodeHttpRequest("commit", input)); }
   async readCommit(value: CommitId): Promise<CommittedEnvelope> { const input = wireReadCommitRequest(value); return this.#request("commits/read", await encodeHttpRequest("commits/read", input)); }
@@ -121,14 +130,6 @@ export class HttpStreamProvider implements StreamProvider {
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding: ${error instanceof Error ? error.message : String(error)}`, response.status); }
     if (!response.ok) throw await hostedError(route, text, response.status);
     try { await ensureStreamWasm(); return decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
-  }
-  async #requestRaw<Result>(route: string, body: unknown, project: (value: unknown) => Result, signal?: AbortSignal): Promise<Result> {
-    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: JSON.stringify(body), ...(signal === undefined ? {} : { signal }) });
-    let text: string;
-    try { text = await boundedText(response, this.#maximum); }
-    catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding`, response.status); }
-    if (!response.ok) throw await hostedError(route, text, response.status);
-    try { return project(JSON.parse(text)); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
   }
 }
 
@@ -190,9 +191,4 @@ async function boundedText(response: Response, maximum: number): Promise<string>
   return decoder.decode(bytes);
 }
 async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> { if (signal?.aborted) return; await new Promise<void>(resolve => { const finish = () => { clearTimeout(timeout); signal?.removeEventListener("abort", finish); resolve(); }; const timeout = setTimeout(finish, milliseconds); signal?.addEventListener("abort", finish, { once: true }); }); }
-function rawObject(value: unknown): Record<string, unknown> { if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("expected object"); return value as Record<string, unknown>; }
-function rawBase64(value: Uint8Array): string { let binary = ""; for (const byte of value) binary += String.fromCharCode(byte); return btoa(binary); }
-function rawString(value: unknown, name: string): string { if (typeof value !== "string" || value.length === 0) throw new TypeError(`${name} must be text`); return value; }
-function rawBytes(value: unknown, name: string): Uint8Array { const encoded = rawString(value, name); try { return Uint8Array.from(atob(encoded), char => char.charCodeAt(0)); } catch { throw new TypeError(`${name} must be base64`); } }
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
-function decodeChildrenPage(value: unknown): ChildrenPage { const item = rawObject(value); const hierarchyVersion = commitId(rawBytes(item.hierarchyVersion, "hierarchyVersion")); const rawChildren = item.children; if (!Array.isArray(rawChildren)) throw new TypeError("children must be an array"); const children = rawChildren.map(child => { const path = rawObject(child).path; return { path: rawString(path, "child.path") }; }); const nextAfter = item.nextAfter === undefined || item.nextAfter === null ? undefined : rawString(item.nextAfter, "nextAfter"); if (nextAfter !== undefined && nextAfter !== children.at(-1)?.path) throw new TypeError("child continuation does not match final child"); return { hierarchyVersion, children, ...(nextAfter === undefined ? {} : { nextAfter }) }; }

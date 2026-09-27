@@ -5,7 +5,7 @@ import {
   CommitMutationSchema, CommitRequestSchema, DeleteMutationSchema, DeleteRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
   TrimMutationSchema, TrimRequestSchema, ReadRequestSchema, FollowRequestSchema,
-  ChildrenRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
+  ChildrenRequestSchema, ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema,
 } from "../generated/proto/stream/v2/stream_pb.js";
 import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitRequest } from "./types.js";
@@ -88,7 +88,8 @@ type WireRequest =
   | { readonly kind: "delete"; readonly path: string; readonly key?: IdempotencyKey }
   | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number }
   | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
-  | { readonly kind: "children"; readonly parent?: string; readonly limit: number };
+  | { readonly kind: "children"; readonly parent?: string; readonly limit: number }
+  | { readonly kind: "children_page"; readonly parent?: string; readonly after?: string; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
 
 export type HttpRequestRoute = HttpRoute;
 
@@ -163,6 +164,17 @@ export function wireRequest(request: WireRequest): Uint8Array {
         requireLimitType(request.limit);
         return toBinary(ChildrenRequestSchema, create(ChildrenRequestSchema, {
           limit: request.limit, ...(request.parent === undefined ? {} : { parent: request.parent }),
+        }));
+      case "children_page":
+        if (request.parent !== undefined) requirePathType(request.parent);
+        if (request.after !== undefined) requirePathType(request.after);
+        if (request.hierarchyVersion !== undefined) requireBytesType(request.hierarchyVersion);
+        requireLimitType(request.limit);
+        return toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, {
+          limit: request.limit,
+          ...(request.parent === undefined ? {} : { parent: request.parent }),
+          ...(request.after === undefined ? {} : { after: request.after }),
+          ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
         }));
       default: throw new StreamError("invalid_argument", "stream request kind is invalid");
   }

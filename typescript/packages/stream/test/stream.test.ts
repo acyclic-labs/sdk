@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { create, toBinary } from "@bufbuild/protobuf";
-import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, DeleteRequestSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema, TrimRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
+import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, DeleteRequestSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema, TrimRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
 import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm } from "../src/contract.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
@@ -514,6 +514,7 @@ describe("website Stream contract", () => {
     expect(encoded("delete", toBinary(DeleteRequestSchema, create(DeleteRequestSchema, { path: "events", idempotencyKey: retry })))).toEqual({ path: "events", idempotencyKey: retryWire });
     expect(encoded("read", toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "events", from: 5n, limit: 6 })))).toEqual({ path: "events", from: "5", limit: 6 });
     expect(encoded("children", toBinary(ChildrenRequestSchema, create(ChildrenRequestSchema, { parent: "runs", limit: 7 })))).toEqual({ parent: "runs", limit: 7 });
+    expect(encoded("children/page", toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, { parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 7 })))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: 7 });
     const commit = create(CommitRequestSchema, {
       conditions: [create(CommitConditionSchema, { condition: { case: "tail", value: create(TailConditionSchema, { path: "events", expected: 8n }) } })],
       mutations: [create(CommitMutationSchema, { mutation: { case: "append", value: create(AppendMutationSchema, { path: "events", records: [new Uint8Array([9])] }) } })],
@@ -522,6 +523,21 @@ describe("website Stream contract", () => {
     const commitBody = encoded("commit", normalizeCommitRequest(toBinary(CommitRequestSchema, commit)));
     expect(commitBody).toEqual({ request: { conditions: [{ path: "events", ifTail: "8" }], mutations: [{ append: { path: "events", values: ["CQ=="] } }] }, options: { idempotencyKey: retryWire } });
     expect(encoded("commits/read", toBinary(ReadCommitRequestSchema, create(ReadCommitRequestSchema, { commitId: new Uint8Array(32).fill(7) })))).toEqual({ commitId: encodedCommitId });
+  });
+
+  test("hosted children pages use the Rust response contract", async () => {
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+      expect(JSON.parse(String(init?.body))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: 2 });
+      return new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/b" }));
+    } });
+    const page = await provider.childrenPage({ parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 2 });
+    expect(page).toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [{ path: "runs/b" }], nextAfter: "runs/b" });
+
+    const nullContinuation = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [], nextAfter: null })) });
+    await expect(nullContinuation.childrenPage({ parent: "runs", limit: 2 })).resolves.toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [] });
+
+    const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/a" })) });
+    await expect(malformed.childrenPage({ parent: "runs", limit: 2 })).rejects.toMatchObject({ code: "invalid_response" });
   });
 
   test("read captures one cursor before asynchronous validation", async () => {
