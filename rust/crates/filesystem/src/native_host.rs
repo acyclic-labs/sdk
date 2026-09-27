@@ -668,6 +668,7 @@ impl LinuxMetadataTarget {
     /// raw name, and reads each back. Linux gives a symbolic link no user
     /// attributes, so asking for any on one fails closed.
     #[allow(unsafe_code)]
+    #[cfg(feature = "native-mount")]
     pub(crate) fn set_extended_attributes(
         &self,
         attributes: &[(Vec<u8>, bytes::Bytes)],
@@ -1810,6 +1811,7 @@ impl MacMetadataTarget {
     /// Sets each extended attribute on the held inode by its exact raw
     /// name, and reads each back. A node no descriptor can hold (a socket,
     /// say) takes none: asking for any on one fails closed.
+    #[cfg(feature = "native-mount")]
     pub(crate) fn set_extended_attributes(
         &self,
         attributes: &[(Vec<u8>, bytes::Bytes)],
