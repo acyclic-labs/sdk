@@ -1,6 +1,6 @@
 import { create, fromJson, getOption, hasOption, toBinary, toJsonString, type DescMethod, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
-import { MAXIMUM_MESSAGE_BYTES } from "../generated/defaults.js";
+import { MAXIMUM_HTTP_JSON_BYTES } from "../generated/defaults.js";
 import {
   ContextViewSchema,
   CreateEvaluationRequestSchema,
@@ -251,7 +251,14 @@ function utf8Length(value: string): number {
 async function readBoundedText(response: Response, maximumBytes: number, kind: string): Promise<string> {
   if (response.body === null) return "";
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decode = (bytes: Uint8Array, stream: boolean): string => {
+    try {
+      return decoder.decode(bytes, { stream });
+    } catch {
+      throw new InferenceTransportError(response.status, `${kind} is not valid UTF-8`);
+    }
+  };
   const chunks: string[] = [];
   let observed = 0;
   let completed = false;
@@ -263,9 +270,9 @@ async function readBoundedText(response: Response, maximumBytes: number, kind: s
       if (observed > maximumBytes) {
         throw new InferenceTransportError(response.status, `${kind} exceeds configured bound`);
       }
-      chunks.push(decoder.decode(item.value, { stream: true }));
+      chunks.push(decode(item.value, true));
     }
-    chunks.push(decoder.decode());
+    chunks.push(decode(new Uint8Array(), false));
     completed = true;
     return chunks.join("");
   } finally {
@@ -280,7 +287,8 @@ export class HttpInferenceTransport implements InferenceTransport {
     readonly endpoint: string,
     readonly authorization: AuthorizationHeaders,
     readonly fetcher: typeof fetch = fetch,
-    readonly maximumEventBytes = MAXIMUM_MESSAGE_BYTES,
+    /** Rust-derived HTTP JSON/NDJSON ceiling; protobuf wire validation remains 8 MiB. */
+    readonly maximumEventBytes = MAXIMUM_HTTP_JSON_BYTES,
   ) {
     if (!Number.isSafeInteger(maximumEventBytes) || maximumEventBytes <= 0) {
       throw new RangeError("maximumEventBytes must be a positive safe integer byte ceiling");
@@ -346,34 +354,41 @@ export class HttpInferenceTransport implements InferenceTransport {
     const response = await this.#request(route.path, toJsonString(route.input, request), signal);
     if (response.body === null) throw new InferenceTransportError(response.status, "run watch has no body");
     const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const decodeLine = (bytes: Uint8Array): string => {
+      try {
+        return decoder.decode(bytes);
+      } catch {
+        throw new InferenceTransportError(response.status, "run event is not valid UTF-8");
+      }
+    };
+    let lineBuffer = new Uint8Array(Math.min(this.maximumMessageBytes, 1024));
+    let lineLength = 0;
     let completed = false;
     try {
       for (;;) {
         const item = await reader.read();
         if (item.done) break;
-        buffer += decoder.decode(item.value, { stream: true });
-        for (;;) {
-          const newline = buffer.indexOf("\n");
-          if (newline < 0) break;
-          const rawLine = buffer.slice(0, newline);
-          buffer = buffer.slice(newline + 1);
-          if (utf8Length(rawLine) > this.maximumMessageBytes) {
+        for (const byte of item.value) {
+          if (byte === 0x0a) {
+            const rawLine = decodeLine(lineBuffer.subarray(0, lineLength));
+            lineLength = 0;
+            const line = rawLine.trim();
+            if (line.length > 0) yield fromJson(route.output, JSON.parse(line));
+            continue;
+          }
+          if (lineLength >= this.maximumMessageBytes) {
             throw new InferenceTransportError(response.status, "run event exceeds configured bound");
           }
-          const line = rawLine.trim();
-          if (line.length > 0) yield fromJson(route.output, JSON.parse(line));
-        }
-        if (utf8Length(buffer) > this.maximumMessageBytes) {
-          throw new InferenceTransportError(response.status, "run event exceeds configured bound");
+          if (lineLength === lineBuffer.length) {
+            const next = new Uint8Array(Math.min(this.maximumMessageBytes, lineBuffer.length * 2));
+            next.set(lineBuffer);
+            lineBuffer = next;
+          }
+          lineBuffer[lineLength++] = byte;
         }
       }
-      const rawFinal = `${buffer}${decoder.decode()}`;
-      if (utf8Length(rawFinal) > this.maximumMessageBytes) {
-        throw new InferenceTransportError(response.status, "run event exceeds configured bound");
-      }
-      const final = rawFinal.trim();
+      const final = decodeLine(lineBuffer.subarray(0, lineLength)).trim();
       if (final.length > 0) yield fromJson(route.output, JSON.parse(final));
       completed = true;
     } finally {

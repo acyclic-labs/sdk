@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { create, toJsonString } from "@bufbuild/protobuf";
+import { create, toBinary, toJsonString } from "@bufbuild/protobuf";
 import {
   ContextViewSchema,
   contextRevision,
@@ -42,6 +42,7 @@ import {
   type InferenceTransport,
 } from "../src/index.js";
 import { runTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
+import { MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES } from "../generated/defaults.js";
 
 const bytes = (value: number) => new Uint8Array([value]);
 const revision = (value: number) => new Uint8Array(32).fill(value);
@@ -459,8 +460,52 @@ test("HTTP transport applies one byte ceiling per message without conflating net
   }).toThrow("run event exceeds configured bound");
 });
 
-test("HTTP transport derives the Rust ceiling and accepts events above one MiB", async () => {
-  const transportCeiling = 8 * 1024 * 1024;
+test("HTTP watch frames adversarial one-byte network chunks linearly", async () => {
+  const request = create(WatchRunRequestSchema, { runId: bytes(4) });
+  const event = toJsonString(RunEventSchema, create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "progress", value: { kind: "é🙂".repeat(32 * 1024) } },
+  }));
+  const encoded = new TextEncoder().encode(`${event}\r\n`);
+  let offset = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset === encoded.byteLength) {
+        controller.close();
+      } else {
+        controller.enqueue(encoded.subarray(offset, ++offset));
+      }
+    },
+  });
+  const transport = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(stream),
+  );
+  const events = [];
+  for await (const value of transport.watchRun(request)) events.push(value);
+  expect(events).toHaveLength(1);
+});
+
+test("HTTP watch rejects malformed UTF-8 frames as transport errors", async () => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array([0xff, 0x0a]));
+      controller.close();
+    },
+  });
+  const transport = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(stream),
+  );
+  await expect(async () => {
+    for await (const _event of transport.watchRun(create(WatchRunRequestSchema, { runId: bytes(4) }))) { /* exhaust */ }
+  }).toThrow("run event is not valid UTF-8");
+});
+
+test("HTTP transport derives separate Rust wire and JSON ceilings", async () => {
+  const transportCeiling = MAXIMUM_HTTP_JSON_BYTES;
   const request = create(WatchRunRequestSchema, { runId: bytes(4) });
   const validEvent = toJsonString(RunEventSchema, create(RunEventSchema, {
     sequence: 0n,
@@ -489,6 +534,46 @@ test("HTTP transport derives the Rust ceiling and accepts events above one MiB",
   await expect(async () => {
     for await (const _event of oversized.watchRun(request)) { /* exhaust */ }
   }).toThrow("run event exceeds configured bound");
+
+  const output = new Uint8Array(Math.floor(6.5 * 1024 * 1024)).fill(7);
+  const bytesEvent = create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "output", value: output },
+  });
+  const wireBytes = toBinary(RunEventSchema, bytesEvent).byteLength;
+  const json = toJsonString(RunEventSchema, bytesEvent);
+  const jsonBytes = new TextEncoder().encode(json).byteLength;
+  expect(wireBytes).toBeLessThan(MAXIMUM_MESSAGE_BYTES);
+  expect(jsonBytes).toBeGreaterThan(MAXIMUM_MESSAGE_BYTES);
+  expect(jsonBytes).toBeLessThan(MAXIMUM_HTTP_JSON_BYTES);
+  const expanded = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(`${json}\n`),
+  );
+  const expandedEvents = [];
+  for await (const value of expanded.watchRun(request)) expandedEvents.push(value);
+  expect(expandedEvents).toHaveLength(1);
+
+  // Escaped control characters can expand beyond the JSON policy even when
+  // their protobuf wire representation remains below the 8 MiB wire ceiling.
+  const controlEvent = create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "progress", value: { kind: "\0".repeat(2_800_000) } },
+  });
+  const controlWireBytes = toBinary(RunEventSchema, controlEvent).byteLength;
+  const controlJson = toJsonString(RunEventSchema, controlEvent);
+  const controlJsonBytes = new TextEncoder().encode(controlJson).byteLength;
+  expect(controlWireBytes).toBeLessThan(MAXIMUM_MESSAGE_BYTES);
+  expect(controlJsonBytes).toBeGreaterThan(MAXIMUM_HTTP_JSON_BYTES);
+  const escaped = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(`${controlJson}\n`),
+  );
+  await expect(async () => {
+    for await (const _event of escaped.watchRun(request)) { /* exhaust */ }
+  }).toThrow("run event exceeds configured bound");
 });
 
 test("HTTP transport rejects insecure endpoints and bounded request, unary, and error bodies", async () => {
@@ -516,6 +601,13 @@ test("HTTP transport rejects insecure endpoints and bounded request, unary, and 
   );
   await expect(unaryBound.listModels()).rejects.toThrow("unary response exceeds configured bound");
 
+  const malformedUnary = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(new Uint8Array([0xff])),
+  );
+  await expect(malformedUnary.listModels()).rejects.toThrow("unary response is not valid UTF-8");
+
   const errorBound = new HttpInferenceTransport(
     "https://example.test",
     () => ({ authorization: "Bearer test" }),
@@ -523,6 +615,13 @@ test("HTTP transport rejects insecure endpoints and bounded request, unary, and 
     64,
   );
   await expect(errorBound.listModels()).rejects.toThrow("error response exceeds configured bound");
+
+  const malformedError = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(new Uint8Array([0xff]), { status: 400 }),
+  );
+  await expect(malformedError.listModels()).rejects.toThrow("error response is not valid UTF-8");
 
   const whitespaceBound = new HttpInferenceTransport(
     "https://example.test",
