@@ -571,6 +571,20 @@ describe("website Stream contract", () => {
     expect(added).toBe(removed);
   });
 
+  test("hosted follow does not fetch when its signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let requests = 0;
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => {
+      requests += 1;
+      return new Response('"0"');
+    } });
+
+    await expect(provider.follow("events", { from: 0n, signal: controller.signal })[Symbol.asyncIterator]().next())
+      .resolves.toEqual({ done: true, value: undefined });
+    expect(requests).toBe(0);
+  });
+
   test("hosted non-success responses preserve canonical Stream error codes", async () => {
     for (const failure of [
       { wireCode: "not_found", code: "stream_not_found", status: 404 },

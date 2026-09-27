@@ -41,6 +41,7 @@ export class HttpStreamProvider implements StreamProvider {
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     const { from, signal } = options;
     await validateWireRequest({ kind: "follow", path, from });
+    if (signal?.aborted) return;
     const tail = await this.#tail(path, signal);
     if (from > tail) throw new StreamError("out_of_range", "follow cursor is beyond the stream tail");
     let next = from;
