@@ -4010,7 +4010,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             || candidate.plan.truncated
             || candidate.plan.conflicts.len() != candidate.resolutions.len()
             || conflict_keys.len() != candidate.plan.conflicts.len()
-            || !candidate.resolutions.keys().eq(conflict_keys.into_iter())
+            || !candidate.resolutions.keys().eq(conflict_keys)
         {
             return Err(DrivenJoinError::StaleCandidate);
         }

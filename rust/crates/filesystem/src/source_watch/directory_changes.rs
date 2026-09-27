@@ -450,10 +450,11 @@ fn translate(mut bytes: &[u8], extended: bool, changes: &mut Vec<HostChange>) {
             changes.push(HostChange::Everything);
             return;
         };
-        let units = name
-            .chunks_exact(2)
-            .map(|pair| <[u8; 2]>::try_from(pair).map_or(0, u16::from_le_bytes))
-            .collect::<Vec<_>>();
+        let Some(units) = crate::kernel::types::utf16le_units(name) else {
+            changes.push(HostChange::Everything);
+            return;
+        };
+        let units = units.collect::<Vec<_>>();
         let path = PathBuf::from(OsString::from_wide(&units));
         let action = bytes
             .get(4..8)
