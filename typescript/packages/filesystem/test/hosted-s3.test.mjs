@@ -413,6 +413,25 @@ test("hosted transaction rebase rejects an unspecified sparse target", async () 
   fs.close();
 });
 
+test("hosted join rejects an inherited history key before PlanJoin serialization", async () => {
+  const methods = [];
+  const fs = await openHostedFs({
+    endpoint: "https://filesystem.example.test",
+    bearerToken: "token",
+    fetch: fixtureFetch([], "s3", undefined, validHandshake(), methods),
+  });
+  const source = await fs.createWorkspace("hosted-s3");
+  const target = await fs.createWorkspace("hosted-s3");
+  await expect(source.joinInto(target, {
+    history: "toString",
+    maximumGenerations: 1,
+    maximumChanges: 1,
+    maximumConflicts: 1,
+  })).rejects.toBeInstanceOf(TypeError);
+  expect(methods).not.toContain("PlanJoin");
+  fs.close();
+});
+
 test("hosted discovery rejects an incomplete or incompatible handshake", async () => {
   const missingProtocol = create(HandshakeResponseSchema, {
     capabilities: validHandshake().capabilities,
