@@ -1172,64 +1172,434 @@ pub enum GitCommandOutput {
     Paths(Vec<String>),
 }
 
-/// Object variants emitted by the JSON compatibility output projection.
-/// `NoOp` is encoded as the literal JSON string and is absent here.
-pub const GIT_COMPAT_OUTPUT_VARIANTS: &[&str] = &[
-    "Status",
-    "Commits",
-    "Branches",
-    "Tags",
-    "Committed",
-    "Bisect",
-    "Action",
-    "Prepared",
-    "Filesystem",
-    "Text",
-    "Paths",
-];
+/// Defines one canonical enum tag inventory and its exhaustive Rust matcher.
+/// The inventory and match arms must be updated together when an enum changes.
+macro_rules! git_compat_enum_contract {
+    (
+        $enum:ident,
+        $inventory:ident;
+        [$($name:literal => $pattern:pat),+ $(,)?];
+        [$($extra_name:literal => $extra_pattern:pat),* $(,)?]
+    ) => {
+        #[doc = "Canonical serde/TypeScript variant inventory."]
+        pub const $inventory: &[&str] = &[$($name),+];
 
-/// Tagged action and result names emitted by the filesystem executor wire
-/// projection. These stay beside the canonical Rust enums so adapters do not
-/// maintain a second variant inventory.
-pub const GIT_COMPAT_ACTION_VARIANTS: &[&str] = &[
-    "CaptureCommit",
-    "ForkBranch",
-    "SwitchWorkspace",
-    "Diff",
-    "RestoreGeneration",
-    "RestorePaths",
-    "Join",
-    "ApplyCommit",
-    "Blame",
-    "Grep",
-    "Clean",
-    "Archive",
-    "ApplyPatch",
-    "CheckIgnore",
-];
-
-/// Tagged result names emitted by the filesystem executor wire projection.
-pub const GIT_COMPAT_RESULT_VARIANTS: &[&str] = &["Captured", "Forked", "Applied", "Data"];
-
-impl GitCommandOutput {
-    /// Returns the canonical serde/TypeScript tag for this output.
-    #[must_use]
-    pub const fn variant_name(&self) -> &'static str {
-        match self {
-            Self::NoOp => "NoOp",
-            Self::Status(_) => "Status",
-            Self::Commits(_) => "Commits",
-            Self::Branches { .. } => "Branches",
-            Self::Tags(_) => "Tags",
-            Self::Committed(_) => "Committed",
-            Self::Bisect(_) => "Bisect",
-            Self::Action(_) => "Action",
-            Self::Prepared { .. } => "Prepared",
-            Self::Filesystem(_) => "Filesystem",
-            Self::Text(_) => "Text",
-            Self::Paths(_) => "Paths",
+        impl $enum {
+            /// Returns the canonical serde/TypeScript tag for this value.
+            #[must_use]
+            pub const fn variant_name(&self) -> &'static str {
+                match self {
+                    $($pattern => $name,)+
+                    $($extra_pattern => $extra_name,)*
+                }
+            }
         }
-    }
+    };
+}
+
+/// Defines a scalar enum inventory, its natural TypeScript literal values,
+/// and an exhaustive serde-tag matcher from one declaration.
+macro_rules! git_compat_scalar_contract {
+    (
+        $enum:ident,
+        $inventory:ident,
+        $typescript:ident;
+        $wire_mapping:ident;
+        [$($wire:literal => $ts:literal => $pattern:pat),+ $(,)?]
+    ) => {
+        #[doc = "Canonical serde variant inventory."]
+        pub const $inventory: &[&str] = &[$($wire),+];
+        #[doc = "Natural TypeScript literal values for the canonical enum."]
+        pub const $typescript: &[&str] = &[$($ts),+];
+        #[doc = "Natural TypeScript values paired with their serde wire tags."]
+        pub const $wire_mapping: &[(&str, &str)] = &[$(($ts, $wire)),+];
+
+        impl $enum {
+            /// Returns the canonical serde tag for this value.
+            #[must_use]
+            pub const fn variant_name(&self) -> &'static str {
+                match self {
+                    $($pattern => $wire,)+
+                }
+            }
+        }
+    };
+}
+
+git_compat_enum_contract! {
+    GitCommand, GIT_COMPAT_COMMAND_VARIANTS;
+    [
+        "Status" => GitCommand::Status,
+        "Diff" => GitCommand::Diff { .. },
+        "Log" => GitCommand::Log { .. },
+        "Show" => GitCommand::Show { .. },
+        "Add" => GitCommand::Add { .. },
+        "Commit" => GitCommand::Commit { .. },
+        "Branch" => GitCommand::Branch { .. },
+        "Switch" => GitCommand::Switch { .. },
+        "Restore" => GitCommand::Restore { .. },
+        "Reset" => GitCommand::Reset { .. },
+        "Merge" => GitCommand::Merge { .. },
+        "MergeContinue" => GitCommand::MergeContinue,
+        "MergeAbort" => GitCommand::MergeAbort,
+        "Rebase" => GitCommand::Rebase { .. },
+        "StashPush" => GitCommand::StashPush,
+        "StashPop" => GitCommand::StashPop,
+        "CherryPick" => GitCommand::CherryPick { .. },
+        "Revert" => GitCommand::Revert { .. },
+        "Tag" => GitCommand::Tag { .. },
+        "Blame" => GitCommand::Blame { .. },
+        "Grep" => GitCommand::Grep { .. },
+        "Clean" => GitCommand::Clean { .. },
+        "Archive" => GitCommand::Archive { .. },
+        "Apply" => GitCommand::Apply { .. },
+        "Bisect" => GitCommand::Bisect { .. },
+        "RevParse" => GitCommand::RevParse { .. },
+        "SymbolicRef" => GitCommand::SymbolicRef { .. },
+        "MergeBase" => GitCommand::MergeBase { .. },
+        "LsFiles" => GitCommand::LsFiles,
+        "CheckIgnore" => GitCommand::CheckIgnore { .. },
+    ];
+    []
+}
+
+git_compat_scalar_contract! {
+    GitResetMode,
+    GIT_COMPAT_RESET_MODE_VARIANTS,
+    GIT_COMPAT_RESET_MODE_TYPESCRIPT_VARIANTS;
+    GIT_COMPAT_RESET_MODE_WIRE;
+    [
+        "Soft" => "soft" => GitResetMode::Soft,
+        "Mixed" => "mixed" => GitResetMode::Mixed,
+        "Hard" => "hard" => GitResetMode::Hard,
+    ]
+}
+
+git_compat_scalar_contract! {
+    GitDirtyState,
+    GIT_COMPAT_DIRTY_STATE_VARIANTS,
+    GIT_COMPAT_DIRTY_STATE_TYPESCRIPT_VARIANTS;
+    GIT_COMPAT_DIRTY_STATE_WIRE;
+    [
+        "clean" => "clean" => GitDirtyState::Clean,
+        "dirty" => "dirty" => GitDirtyState::Dirty,
+        "unknown" => "unknown" => GitDirtyState::Unknown,
+    ]
+}
+
+/// Natural TypeScript projection for each canonical command variant.
+///
+/// The Rust serde enums remain the wire authority. These declarations describe
+/// the synchronous adapter surface generated for native callers, so a new
+/// canonical variant cannot silently disappear from the TypeScript union.
+pub const GIT_COMPAT_COMMAND_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
+    ("Status", r#"{ readonly kind: "status" }"#),
+    (
+        "Diff",
+        r#"{ readonly kind: "diff"; readonly cached?: boolean }"#,
+    ),
+    (
+        "Log",
+        r#"{ readonly kind: "log"; readonly maximum: number }"#,
+    ),
+    (
+        "Show",
+        r#"{ readonly kind: "show"; readonly object?: string }"#,
+    ),
+    (
+        "Add",
+        r#"{ readonly kind: "add"; readonly paths: readonly string[] }"#,
+    ),
+    (
+        "Commit",
+        r#"{ readonly kind: "commit"; readonly message: string; readonly author: string; readonly authoredAtSeconds: bigint }"#,
+    ),
+    (
+        "Branch",
+        r#"{ readonly kind: "branch"; readonly create?: string }"#,
+    ),
+    (
+        "Switch",
+        r#"{ readonly kind: "switch"; readonly branch: string; readonly create?: boolean }"#,
+    ),
+    (
+        "Restore",
+        r#"{ readonly kind: "restore"; readonly source?: string; readonly paths: readonly string[] }"#,
+    ),
+    (
+        "Reset",
+        r#"{ readonly kind: "reset"; readonly target: string; readonly mode: GitResetMode }"#,
+    ),
+    (
+        "Merge",
+        r#"{ readonly kind: "merge"; readonly branch: string }"#,
+    ),
+    ("MergeContinue", r#"{ readonly kind: "merge-continue" }"#),
+    ("MergeAbort", r#"{ readonly kind: "merge-abort" }"#),
+    (
+        "Rebase",
+        r#"{ readonly kind: "rebase"; readonly branch: string }"#,
+    ),
+    ("StashPush", r#"{ readonly kind: "stash-push" }"#),
+    ("StashPop", r#"{ readonly kind: "stash-pop" }"#),
+    (
+        "CherryPick",
+        r#"{ readonly kind: "cherry-pick"; readonly object: string }"#,
+    ),
+    (
+        "Revert",
+        r#"{ readonly kind: "revert"; readonly object: string }"#,
+    ),
+    (
+        "Tag",
+        r#"{ readonly kind: "tag"; readonly name?: string; readonly target?: string; readonly delete?: boolean }"#,
+    ),
+    (
+        "Blame",
+        r#"{ readonly kind: "blame"; readonly path: string }"#,
+    ),
+    (
+        "Grep",
+        r#"{ readonly kind: "grep"; readonly pattern: string; readonly path?: string }"#,
+    ),
+    (
+        "Clean",
+        r#"{ readonly kind: "clean"; readonly dryRun: boolean }"#,
+    ),
+    (
+        "Archive",
+        r#"{ readonly kind: "archive"; readonly object?: string }"#,
+    ),
+    (
+        "Apply",
+        r#"{ readonly kind: "apply"; readonly patch: Uint8Array }"#,
+    ),
+    (
+        "Bisect",
+        r#"{ readonly kind: "bisect"; readonly arguments: readonly string[] }"#,
+    ),
+    (
+        "RevParse",
+        r#"{ readonly kind: "rev-parse"; readonly argument: string }"#,
+    ),
+    (
+        "SymbolicRef",
+        r#"{ readonly kind: "symbolic-ref"; readonly short?: boolean }"#,
+    ),
+    (
+        "MergeBase",
+        r#"{ readonly kind: "merge-base"; readonly left: string; readonly right: string }"#,
+    ),
+    ("LsFiles", r#"{ readonly kind: "ls-files" }"#),
+    (
+        "CheckIgnore",
+        r#"{ readonly kind: "check-ignore"; readonly paths: readonly string[] }"#,
+    ),
+];
+
+/// Natural TypeScript projections for executor actions, results, and outputs.
+/// These are emitted with the Rust contract and consumed by the declaration
+/// generator; the adapter does not maintain a second variant shape table.
+pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
+    (
+        "CaptureCommit",
+        r#"{ readonly CaptureCommit: { readonly workspace_tree: GitTreeRef; readonly head_tree: GitTreeRef | undefined; readonly head_workspace_tree: GitTreeRef | undefined; readonly tracked_paths: readonly string[]; readonly message: string; readonly author: string; readonly authored_at_seconds: number; readonly expected_head: GitCommitIdentity | undefined } }"#,
+    ),
+    (
+        "ForkBranch",
+        r#"{ readonly ForkBranch: { readonly branch: string; readonly source_tree: GitTreeRef; readonly head: GitCommitIdentity | undefined; readonly switch: boolean } }"#,
+    ),
+    (
+        "SwitchWorkspace",
+        r#"{ readonly SwitchWorkspace: { readonly workspace_id: WorkspaceIdentity } }"#,
+    ),
+    (
+        "Diff",
+        r#"{ readonly Diff: { readonly from: GitTreeRef | undefined; readonly to: GitTreeRef; readonly tracked_paths: readonly string[] } }"#,
+    ),
+    (
+        "RestoreGeneration",
+        r#"{ readonly RestoreGeneration: { readonly tree: GitTreeRef; readonly paths: readonly string[] | undefined } }"#,
+    ),
+    (
+        "RestorePaths",
+        r#"{ readonly RestorePaths: { readonly tree: GitTreeRef; readonly paths: readonly string[] } }"#,
+    ),
+    (
+        "Join",
+        r#"{ readonly Join: { readonly target_tree: GitTreeRef; readonly source_workspace: WorkspaceIdentity; readonly rebase: boolean; readonly tracked_paths: readonly string[] } }"#,
+    ),
+    (
+        "ApplyCommit",
+        r#"{ readonly ApplyCommit: { readonly commit: GitCommitIdentity; readonly reverse: boolean; readonly base: GitTreeRef | undefined; readonly source: GitTreeRef | undefined; readonly paths: readonly string[]; readonly tracked_paths: readonly string[] } }"#,
+    ),
+    (
+        "Blame",
+        r#"{ readonly Blame: { readonly path: string; readonly commits: readonly GitCommit[] } }"#,
+    ),
+    (
+        "Grep",
+        r#"{ readonly Grep: { readonly pattern: string; readonly path: string | undefined; readonly tree: GitTreeRef } }"#,
+    ),
+    (
+        "Clean",
+        r#"{ readonly Clean: { readonly dry_run: boolean; readonly tree: GitTreeRef; readonly tracked_paths: readonly string[] } }"#,
+    ),
+    (
+        "Archive",
+        r#"{ readonly Archive: { readonly tree: GitTreeRef } }"#,
+    ),
+    (
+        "ApplyPatch",
+        r#"{ readonly ApplyPatch: { readonly patch: readonly number[] } }"#,
+    ),
+    (
+        "CheckIgnore",
+        r#"{ readonly CheckIgnore: { readonly paths: readonly string[]; readonly tree: GitTreeRef } }"#,
+    ),
+];
+
+/// Natural TypeScript projections for executor result variants.
+pub const GIT_COMPAT_RESULT_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
+    (
+        "Captured",
+        r#"{ readonly Captured: { readonly tree: GitTreeRef; readonly tracked_paths: readonly string[]; readonly proof: GitCaptureProof | undefined } }"#,
+    ),
+    (
+        "Forked",
+        r#"{ readonly Forked: { readonly workspace_id: WorkspaceIdentity } }"#,
+    ),
+    (
+        "Applied",
+        r#"{ readonly Applied: { readonly tree: GitTreeRef | undefined; readonly tracked_paths: readonly string[] | undefined } }"#,
+    ),
+    (
+        "Data",
+        r#"{ readonly Data: { readonly kind: string; readonly value: unknown } }"#,
+    ),
+];
+
+/// Natural TypeScript projections for command output variants.
+pub const GIT_COMPAT_OUTPUT_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
+    ("Status", r#"{ readonly Status: GitCompatStatus }"#),
+    ("Commits", r#"{ readonly Commits: readonly GitCommit[] }"#),
+    (
+        "Branches",
+        r#"{ readonly Branches: { readonly current: string; readonly branches: readonly GitBranch[] } }"#,
+    ),
+    (
+        "Tags",
+        r#"{ readonly Tags: Readonly<Record<string, GitCommitIdentity>> }"#,
+    ),
+    ("Committed", r#"{ readonly Committed: GitCommit }"#),
+    ("Bisect", r#"{ readonly Bisect: GitBisectResult }"#),
+    ("Action", r#"{ readonly Action: GitFilesystemAction }"#),
+    (
+        "Prepared",
+        r#"{ readonly Prepared: { readonly transition: OperationIdentity; readonly action: GitFilesystemAction } }"#,
+    ),
+    (
+        "Filesystem",
+        r#"{ readonly Filesystem: GitFilesystemResult }"#,
+    ),
+    ("Text", r#"{ readonly Text: string }"#),
+    ("Paths", r#"{ readonly Paths: readonly string[] }"#),
+];
+
+/// Shared nested TypeScript projections used by the variant declarations.
+/// Keeping these beside the serde model lets the schema fixture test inspect
+/// nested fields instead of only checking the outer enum tags.
+pub const GIT_COMPAT_NESTED_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
+    (
+        "GitCompatStatus",
+        r#"export interface GitCompatStatus { readonly branch: string; readonly head: GitCommitIdentity | undefined; readonly workspace: GitTreeRef; readonly dirty: GitDirtyState; readonly allChangesStaged: true; }"#,
+    ),
+    (
+        "GitBisectResult",
+        r#"export interface GitBisectResult { readonly active: boolean; readonly good: GitCommitIdentity | undefined; readonly bad: GitCommitIdentity | undefined; readonly current: GitCommitIdentity | undefined; readonly remaining: number; readonly first_bad: GitCommitIdentity | undefined; }"#,
+    ),
+    (
+        "GitGenerationRef",
+        r#"export interface GitGenerationRef { readonly workspace_id: WorkspaceIdentity; readonly generation: GenerationIdentity; }"#,
+    ),
+    (
+        "GitTreeRefExact",
+        r#"export type GitTreeRefExact = { readonly kind: "exact"; readonly workspace_id: WorkspaceIdentity; readonly generation: GenerationIdentity };"#,
+    ),
+    (
+        "GitTreeRefLazy",
+        r#"export type GitTreeRefLazy = { readonly kind: "lazy"; readonly id: Uint8Array; readonly workspace_id: WorkspaceIdentity; readonly authored_generation: GenerationIdentity; readonly source: GitLazySource; readonly overlay: Uint8Array; readonly shadows: Uint8Array };"#,
+    ),
+    (
+        "GitLazySource",
+        r#"export interface GitLazySource { readonly identity: Uint8Array; readonly epoch: bigint; }"#,
+    ),
+    (
+        "GitTreeRef",
+        r#"export type GitTreeRef = GitTreeRefExact | GitTreeRefLazy;"#,
+    ),
+    (
+        "GitCaptureProof",
+        r#"export interface GitCaptureProof { readonly fork_parent: GitTreeRef; readonly initial_generation: GenerationIdentity; readonly operation_id: OperationIdentity; }"#,
+    ),
+    (
+        "GitCommit",
+        r#"export interface GitCommit { readonly id: GitCommitIdentity; readonly tree: GitTreeRef; readonly workspace_tree: GitTreeRef; readonly capture_proof: GitCaptureProof | undefined; readonly tracked_paths: readonly string[]; readonly parents: readonly GitCommitIdentity[]; readonly author: string; readonly authored_at_seconds: number; readonly message: string; }"#,
+    ),
+    (
+        "GitBranch",
+        r#"export interface GitBranch { readonly name: string; readonly workspace_id: WorkspaceIdentity; readonly head: GitCommitIdentity | undefined; readonly tracked_paths: readonly string[]; }"#,
+    ),
+];
+
+git_compat_enum_contract! {
+    GitFilesystemAction, GIT_COMPAT_ACTION_VARIANTS;
+    [
+        "CaptureCommit" => GitFilesystemAction::CaptureCommit { .. },
+        "ForkBranch" => GitFilesystemAction::ForkBranch { .. },
+        "SwitchWorkspace" => GitFilesystemAction::SwitchWorkspace { .. },
+        "Diff" => GitFilesystemAction::Diff { .. },
+        "RestoreGeneration" => GitFilesystemAction::RestoreGeneration { .. },
+        "RestorePaths" => GitFilesystemAction::RestorePaths { .. },
+        "Join" => GitFilesystemAction::Join { .. },
+        "ApplyCommit" => GitFilesystemAction::ApplyCommit { .. },
+        "Blame" => GitFilesystemAction::Blame { .. },
+        "Grep" => GitFilesystemAction::Grep { .. },
+        "Clean" => GitFilesystemAction::Clean { .. },
+        "Archive" => GitFilesystemAction::Archive { .. },
+        "ApplyPatch" => GitFilesystemAction::ApplyPatch { .. },
+        "CheckIgnore" => GitFilesystemAction::CheckIgnore { .. },
+    ];
+    []
+}
+
+git_compat_enum_contract! {
+    GitFilesystemResult, GIT_COMPAT_RESULT_VARIANTS;
+    [
+        "Captured" => GitFilesystemResult::Captured { .. },
+        "Forked" => GitFilesystemResult::Forked { .. },
+        "Applied" => GitFilesystemResult::Applied { .. },
+        "Data" => GitFilesystemResult::Data { .. },
+    ];
+    []
+}
+
+git_compat_enum_contract! {
+    GitCommandOutput, GIT_COMPAT_OUTPUT_VARIANTS;
+    [
+        "Status" => GitCommandOutput::Status(_),
+        "Commits" => GitCommandOutput::Commits(_),
+        "Branches" => GitCommandOutput::Branches { .. },
+        "Tags" => GitCommandOutput::Tags(_),
+        "Committed" => GitCommandOutput::Committed(_),
+        "Bisect" => GitCommandOutput::Bisect(_),
+        "Action" => GitCommandOutput::Action(_),
+        "Prepared" => GitCommandOutput::Prepared { .. },
+        "Filesystem" => GitCommandOutput::Filesystem(_),
+        "Text" => GitCommandOutput::Text(_),
+        "Paths" => GitCommandOutput::Paths(_),
+    ];
+    ["NoOp" => GitCommandOutput::NoOp]
 }
 
 /// Durable optimistic-concurrency adapter for private compatibility state.
@@ -5411,6 +5781,628 @@ mod tests {
         assert_eq!(
             GIT_COMPAT_TRANSITION_ID_BYTES,
             std::mem::size_of::<GitTransitionId>()
+        );
+    }
+
+    fn declared_fields(declaration: &str, variant: &str) -> BTreeSet<String> {
+        declaration
+            .split("readonly ")
+            .skip(1)
+            .filter_map(|field| field.split_once(':').map(|(name, _)| name.trim()))
+            .filter(|name| *name != variant)
+            .map(|name| name.trim_end_matches('?').to_owned())
+            .collect()
+    }
+
+    fn direct_declared_fields(declaration: &str) -> BTreeSet<String> {
+        let mut fields = BTreeSet::new();
+        let mut depth = 0_usize;
+        let bytes = declaration.as_bytes();
+        let mut index = 0_usize;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'{' => depth += 1,
+                b'}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            let previous = bytes[..index]
+                .iter()
+                .rev()
+                .find(|byte| !byte.is_ascii_whitespace())
+                .copied();
+            if depth == 1
+                && bytes[index..].starts_with(b"readonly ")
+                && matches!(previous, None | Some(b'{') | Some(b';'))
+            {
+                let start = index + b"readonly ".len();
+                if let Some(end) = bytes[start..].iter().position(|byte| *byte == b':') {
+                    let name = String::from_utf8_lossy(&bytes[start..start + end]);
+                    fields.insert(name.trim().trim_end_matches('?').to_owned());
+                }
+            }
+            index += 1;
+        }
+        fields
+    }
+
+    fn assert_typescript_fields_match_serde(
+        label: &str,
+        declarations: &[(&str, &str)],
+        inventory: &[&str],
+        values: impl IntoIterator<Item = (String, serde_json::Value)>,
+    ) {
+        let values = values.into_iter().collect::<BTreeMap<_, _>>();
+        let declared_names = declarations
+            .iter()
+            .map(|(variant, _)| *variant)
+            .collect::<BTreeSet<_>>();
+        let inventory_names = inventory.iter().copied().collect::<BTreeSet<_>>();
+        let fixture_names = values.keys().map(String::as_str).collect::<BTreeSet<_>>();
+        assert_eq!(declared_names, inventory_names, "{label} inventory drift");
+        assert_eq!(fixture_names, inventory_names, "{label} fixture drift");
+        for (variant, declaration) in declarations {
+            let Some(value) = values.get(*variant) else {
+                panic!("missing {label} fixture for {variant}");
+            };
+            let Some(payload) = value.get(*variant).and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            let declared = declared_fields(declaration, variant);
+            if declared.is_empty() {
+                continue;
+            }
+            let actual = payload.keys().cloned().collect::<BTreeSet<_>>();
+            assert_eq!(
+                declared, actual,
+                "{label} TypeScript schema drift for {variant}"
+            );
+        }
+    }
+
+    fn assert_command_typescript_fields_match_serde(commands: Vec<GitCommand>) {
+        let values = commands.into_iter().map(|command| {
+            let variant_name = command.variant_name();
+            let value = serde_json::to_value(&command).expect("command JSON");
+            let variant = match &value {
+                serde_json::Value::String(variant) => variant.clone(),
+                serde_json::Value::Object(object) => {
+                    object.keys().next().expect("command tag").clone()
+                }
+                _ => panic!("invalid command JSON"),
+            };
+            assert_eq!(variant, variant_name, "command serde tag drift");
+            (variant, value)
+        });
+        let values = values.collect::<BTreeMap<_, _>>();
+        let declared_names = GIT_COMPAT_COMMAND_TYPESCRIPT_TYPES
+            .iter()
+            .map(|(variant, _)| *variant)
+            .collect::<BTreeSet<_>>();
+        let inventory_names = GIT_COMPAT_COMMAND_VARIANTS
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let fixture_names = values.keys().map(String::as_str).collect::<BTreeSet<_>>();
+        assert_eq!(declared_names, inventory_names, "command inventory drift");
+        assert_eq!(fixture_names, inventory_names, "command fixture drift");
+        for (variant, declaration) in GIT_COMPAT_COMMAND_TYPESCRIPT_TYPES {
+            let Some(value) = values.get(*variant) else {
+                panic!("missing command fixture for {variant}");
+            };
+            let Some(payload) = value.get(*variant).and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            let declared = declared_fields(declaration, "kind")
+                .into_iter()
+                .map(|field| match field.as_str() {
+                    "authoredAtSeconds" => "authored_at_seconds".to_owned(),
+                    "dryRun" => "dry_run".to_owned(),
+                    other => other.to_owned(),
+                })
+                .collect::<BTreeSet<_>>();
+            let actual = payload.keys().cloned().collect::<BTreeSet<_>>();
+            assert_eq!(
+                declared, actual,
+                "command TypeScript schema drift for {variant}"
+            );
+        }
+    }
+
+    fn natural_field_name(name: &str) -> &str {
+        match name {
+            "all_changes_staged" => "allChangesStaged",
+            other => other,
+        }
+    }
+
+    fn declared_field_type<'a>(declaration: &'a str, field: &str) -> Option<&'a str> {
+        let marker = format!("readonly {field}");
+        let start = declaration.find(&marker)? + marker.len();
+        let rest = declaration.get(start..)?;
+        let rest = rest.strip_prefix('?').unwrap_or(rest);
+        let rest = rest.strip_prefix(':')?.trim_start();
+        Some(rest.split(';').next().unwrap_or(rest).trim())
+    }
+
+    fn assert_json_value_matches_typescript_hint(
+        declaration: &str,
+        field: &str,
+        value: &serde_json::Value,
+    ) {
+        let Some(type_hint) = declared_field_type(declaration, field) else {
+            panic!("TypeScript schema is missing nested field {field}");
+        };
+        let matches = match value {
+            serde_json::Value::Null => type_hint.contains("undefined"),
+            serde_json::Value::Bool(_) => {
+                type_hint.contains("boolean") || type_hint == "true" || type_hint == "false"
+            }
+            serde_json::Value::Number(_) => {
+                type_hint.contains("number") || type_hint.contains("bigint")
+            }
+            serde_json::Value::String(_) => {
+                type_hint.contains("string")
+                    || type_hint.contains("Identity")
+                    || type_hint.contains("GitDirtyState")
+                    || type_hint.starts_with('"')
+            }
+            serde_json::Value::Array(_) => {
+                type_hint.contains("[]")
+                    || type_hint.contains("Uint8Array")
+                    || type_hint.contains("Identity")
+            }
+            serde_json::Value::Object(_) => {
+                type_hint.contains("Git") || type_hint.contains('{') || type_hint.contains("Record")
+            }
+        };
+        assert!(
+            matches,
+            "TypeScript type hint for {field} ({type_hint}) does not match serde value {value}"
+        );
+    }
+
+    fn assert_nested_typescript_projection(
+        type_name: &str,
+        declaration: &str,
+        value: &serde_json::Value,
+    ) {
+        let Some(object) = value.as_object() else {
+            panic!("{type_name} fixture is not an object");
+        };
+        let declared = direct_declared_fields(declaration);
+        let actual = object
+            .keys()
+            .map(|key| natural_field_name(key).to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            declared, actual,
+            "nested {type_name} TypeScript schema drift"
+        );
+        for (key, child) in object {
+            let field = natural_field_name(key);
+            assert_json_value_matches_typescript_hint(declaration, field, child);
+        }
+    }
+
+    #[test]
+    fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
+        let commit = GitCommit::new(tree(1), Vec::new(), "agent", 0, "fixture");
+        let reset_modes = [GitResetMode::Soft, GitResetMode::Mixed, GitResetMode::Hard];
+        let dirty_states = [
+            GitDirtyState::Clean,
+            GitDirtyState::Dirty,
+            GitDirtyState::Unknown,
+        ];
+        assert_eq!(
+            GIT_COMPAT_RESET_MODE_VARIANTS.len(),
+            GIT_COMPAT_RESET_MODE_TYPESCRIPT_VARIANTS.len()
+        );
+        assert_eq!(
+            GIT_COMPAT_RESET_MODE_VARIANTS.len(),
+            GIT_COMPAT_RESET_MODE_WIRE.len()
+        );
+        assert_eq!(
+            GIT_COMPAT_DIRTY_STATE_VARIANTS.len(),
+            GIT_COMPAT_DIRTY_STATE_TYPESCRIPT_VARIANTS.len()
+        );
+        assert_eq!(
+            GIT_COMPAT_DIRTY_STATE_VARIANTS.len(),
+            GIT_COMPAT_DIRTY_STATE_WIRE.len()
+        );
+        for (index, mode) in reset_modes.into_iter().enumerate() {
+            let json = serde_json::to_value(mode).expect("reset mode JSON");
+            let actual = json.as_str().expect("reset mode tag");
+            let (typescript, wire) = GIT_COMPAT_RESET_MODE_WIRE[index];
+            assert_eq!(actual, wire, "reset mode serde tag drift");
+            assert_eq!(mode.variant_name(), wire, "reset mode matcher drift");
+            assert_eq!(GIT_COMPAT_RESET_MODE_VARIANTS[index], wire);
+            assert_eq!(GIT_COMPAT_RESET_MODE_TYPESCRIPT_VARIANTS[index], typescript);
+        }
+        for (index, state) in dirty_states.into_iter().enumerate() {
+            let json = serde_json::to_value(state).expect("dirty state JSON");
+            let actual = json.as_str().expect("dirty state tag");
+            let (typescript, wire) = GIT_COMPAT_DIRTY_STATE_WIRE[index];
+            assert_eq!(actual, wire, "dirty state serde tag drift");
+            assert_eq!(state.variant_name(), wire, "dirty state matcher drift");
+            assert_eq!(GIT_COMPAT_DIRTY_STATE_VARIANTS[index], wire);
+            assert_eq!(
+                GIT_COMPAT_DIRTY_STATE_TYPESCRIPT_VARIANTS[index],
+                typescript
+            );
+        }
+        assert_eq!(
+            GIT_COMPAT_RESET_MODE_VARIANTS
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            GIT_COMPAT_RESET_MODE_VARIANTS.len()
+        );
+        assert_eq!(
+            GIT_COMPAT_RESET_MODE_WIRE
+                .iter()
+                .map(|(_, wire)| wire)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            GIT_COMPAT_RESET_MODE_WIRE.len()
+        );
+        assert_eq!(
+            GIT_COMPAT_DIRTY_STATE_VARIANTS
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            GIT_COMPAT_DIRTY_STATE_VARIANTS.len()
+        );
+        assert_eq!(
+            GIT_COMPAT_DIRTY_STATE_WIRE
+                .iter()
+                .map(|(_, wire)| wire)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            GIT_COMPAT_DIRTY_STATE_WIRE.len()
+        );
+        assert_command_typescript_fields_match_serde(vec![
+            GitCommand::Status,
+            GitCommand::Diff { cached: true },
+            GitCommand::Log { maximum: 2 },
+            GitCommand::Show {
+                object: Some(GitObjectName("HEAD".to_owned())),
+            },
+            GitCommand::Add {
+                paths: vec!["path".to_owned()],
+            },
+            GitCommand::Commit {
+                message: "message".to_owned(),
+                author: "agent".to_owned(),
+                authored_at_seconds: 0,
+            },
+            GitCommand::Branch {
+                create: Some("topic".to_owned()),
+            },
+            GitCommand::Switch {
+                branch: "topic".to_owned(),
+                create: true,
+            },
+            GitCommand::Restore {
+                source: Some(GitObjectName("HEAD".to_owned())),
+                paths: vec!["path".to_owned()],
+            },
+            GitCommand::Reset {
+                target: GitObjectName("HEAD".to_owned()),
+                mode: GitResetMode::Hard,
+            },
+            GitCommand::Merge {
+                branch: "topic".to_owned(),
+            },
+            GitCommand::MergeContinue,
+            GitCommand::MergeAbort,
+            GitCommand::Rebase {
+                branch: "main".to_owned(),
+            },
+            GitCommand::StashPush,
+            GitCommand::StashPop,
+            GitCommand::CherryPick {
+                object: GitObjectName("HEAD".to_owned()),
+            },
+            GitCommand::Revert {
+                object: GitObjectName("HEAD".to_owned()),
+            },
+            GitCommand::Tag {
+                name: Some("v1".to_owned()),
+                target: Some(GitObjectName("HEAD".to_owned())),
+                delete: false,
+            },
+            GitCommand::Blame {
+                path: "path".to_owned(),
+            },
+            GitCommand::Grep {
+                pattern: "needle".to_owned(),
+                path: Some("path".to_owned()),
+            },
+            GitCommand::Clean { dry_run: true },
+            GitCommand::Archive {
+                object: Some(GitObjectName("HEAD".to_owned())),
+            },
+            GitCommand::Apply { patch: vec![1, 2] },
+            GitCommand::Bisect {
+                arguments: vec!["start".to_owned()],
+            },
+            GitCommand::RevParse {
+                argument: "HEAD".to_owned(),
+            },
+            GitCommand::SymbolicRef { short: true },
+            GitCommand::MergeBase {
+                left: GitObjectName("HEAD".to_owned()),
+                right: GitObjectName("main".to_owned()),
+            },
+            GitCommand::LsFiles,
+            GitCommand::CheckIgnore {
+                paths: vec!["path".to_owned()],
+            },
+        ]);
+        let lazy_tree: GitTreeRef = serde_json::from_value(serde_json::json!({
+            "kind": "lazy",
+            "id": vec![1; 32],
+            "workspace_id": vec![2; 16],
+            "authored_generation": vec![3; 32],
+            "source": { "identity": vec![4; 16], "epoch": 7 },
+            "overlay": vec![5; 32],
+            "shadows": vec![6; 32],
+        }))
+        .expect("lazy tree fixture");
+        let lazy_tree_json = serde_json::to_value(lazy_tree).expect("lazy tree fixture");
+        let nested_values = [
+            (
+                "GitCompatStatus",
+                serde_json::to_value(GitStatus {
+                    branch: "main".to_owned(),
+                    head: Some(commit.id),
+                    workspace: tree(1),
+                    dirty: GitDirtyState::Dirty,
+                    all_changes_staged: true,
+                })
+                .expect("status fixture"),
+            ),
+            (
+                "GitBisectResult",
+                serde_json::to_value(GitBisectResult {
+                    active: true,
+                    good: Some(commit.id),
+                    bad: None,
+                    current: Some(commit.id),
+                    remaining: 1,
+                    first_bad: None,
+                })
+                .expect("bisect fixture"),
+            ),
+            (
+                "GitGenerationRef",
+                serde_json::to_value(GitGenerationRef {
+                    workspace_id: workspace(),
+                    generation: generation(1),
+                })
+                .expect("generation fixture"),
+            ),
+            (
+                "GitTreeRefExact",
+                serde_json::to_value(tree(1)).expect("exact tree fixture"),
+            ),
+            ("GitTreeRefLazy", lazy_tree_json.clone()),
+            ("GitLazySource", lazy_tree_json["source"].clone()),
+            (
+                "GitCaptureProof",
+                serde_json::to_value(GitCaptureProof {
+                    fork_parent: tree(1),
+                    initial_generation: generation(1),
+                    operation_id: OperationId::from_bytes([7; 16]),
+                })
+                .expect("capture proof fixture"),
+            ),
+            (
+                "GitCommit",
+                serde_json::to_value(&commit).expect("commit fixture"),
+            ),
+            (
+                "GitBranch",
+                serde_json::to_value(GitBranch {
+                    name: "main".to_owned(),
+                    workspace_id: workspace(),
+                    head: Some(commit.id),
+                    tracked_paths: BTreeSet::from(["path".to_owned()]),
+                })
+                .expect("branch fixture"),
+            ),
+        ];
+        for (type_name, value) in nested_values {
+            let (_, declaration) = GIT_COMPAT_NESTED_TYPESCRIPT_TYPES
+                .iter()
+                .find(|(name, _)| *name == type_name)
+                .expect("nested TypeScript declaration");
+            assert_nested_typescript_projection(type_name, declaration, &value);
+        }
+        let actions = vec![
+            GitFilesystemAction::CaptureCommit {
+                workspace_tree: tree(1),
+                head_tree: Some(tree(2)),
+                head_workspace_tree: Box::new(Some(tree(3))),
+                tracked_paths: BTreeSet::from(["tracked".to_owned()]),
+                message: "message".to_owned(),
+                author: "agent".to_owned(),
+                authored_at_seconds: 0,
+                expected_head: Some(commit.id),
+            },
+            GitFilesystemAction::ForkBranch {
+                branch: "topic".to_owned(),
+                source_tree: tree(1),
+                head: Some(commit.id),
+                switch: true,
+            },
+            GitFilesystemAction::SwitchWorkspace {
+                workspace_id: workspace(),
+            },
+            GitFilesystemAction::Diff {
+                from: Some(tree(1)),
+                to: tree(2),
+                tracked_paths: BTreeSet::new(),
+            },
+            GitFilesystemAction::RestoreGeneration {
+                tree: tree(1),
+                paths: Some(BTreeSet::from(["path".to_owned()])),
+            },
+            GitFilesystemAction::RestorePaths {
+                tree: tree(1),
+                paths: vec!["path".to_owned()],
+            },
+            GitFilesystemAction::Join {
+                target_tree: tree(1),
+                source_workspace: workspace(),
+                rebase: false,
+                tracked_paths: BTreeSet::new(),
+            },
+            GitFilesystemAction::ApplyCommit {
+                commit: commit.id,
+                reverse: false,
+                base: Some(tree(1)),
+                source: Some(tree(2)),
+                paths: BTreeSet::new(),
+                tracked_paths: BTreeSet::new(),
+            },
+            GitFilesystemAction::Blame {
+                path: "path".to_owned(),
+                commits: vec![commit.clone()],
+            },
+            GitFilesystemAction::Grep {
+                pattern: "needle".to_owned(),
+                path: Some("path".to_owned()),
+                tree: tree(1),
+            },
+            GitFilesystemAction::Clean {
+                dry_run: true,
+                tree: tree(1),
+                tracked_paths: BTreeSet::new(),
+            },
+            GitFilesystemAction::Archive { tree: tree(1) },
+            GitFilesystemAction::ApplyPatch { patch: vec![1, 2] },
+            GitFilesystemAction::CheckIgnore {
+                paths: vec!["path".to_owned()],
+                tree: tree(1),
+            },
+        ];
+        let action_values = actions.into_iter().map(|action| {
+            let variant_name = action.variant_name();
+            let variant = serde_json::to_value(&action)
+                .expect("action JSON")
+                .as_object()
+                .expect("tagged action")
+                .keys()
+                .next()
+                .expect("action tag")
+                .clone();
+            assert_eq!(variant, variant_name, "action serde tag drift");
+            (variant, serde_json::to_value(action).expect("action JSON"))
+        });
+        assert_typescript_fields_match_serde(
+            "action",
+            GIT_COMPAT_ACTION_TYPESCRIPT_TYPES,
+            GIT_COMPAT_ACTION_VARIANTS,
+            action_values,
+        );
+
+        let results = vec![
+            GitFilesystemResult::Captured {
+                tree: tree(1),
+                tracked_paths: BTreeSet::new(),
+                proof: None,
+            },
+            GitFilesystemResult::Forked {
+                workspace_id: workspace(),
+            },
+            GitFilesystemResult::Applied {
+                tree: Some(tree(1)),
+                tracked_paths: Some(BTreeSet::new()),
+            },
+            GitFilesystemResult::Data {
+                kind: "fixture".to_owned(),
+                value: serde_json::json!({ "value": true }),
+            },
+        ];
+        let result_values = results.into_iter().map(|result| {
+            let variant_name = result.variant_name();
+            let value = serde_json::to_value(&result).expect("result JSON");
+            let variant = value
+                .as_object()
+                .expect("tagged result")
+                .keys()
+                .next()
+                .expect("result tag")
+                .clone();
+            assert_eq!(variant, variant_name, "result serde tag drift");
+            (variant, value)
+        });
+        assert_typescript_fields_match_serde(
+            "result",
+            GIT_COMPAT_RESULT_TYPESCRIPT_TYPES,
+            GIT_COMPAT_RESULT_VARIANTS,
+            result_values,
+        );
+
+        let outputs = vec![
+            GitCommandOutput::Status(GitStatus {
+                branch: "main".to_owned(),
+                head: Some(commit.id),
+                workspace: tree(1),
+                dirty: GitDirtyState::Dirty,
+                all_changes_staged: true,
+            }),
+            GitCommandOutput::Commits(vec![commit.clone()]),
+            GitCommandOutput::Branches {
+                current: "main".to_owned(),
+                branches: vec![GitBranch {
+                    name: "main".to_owned(),
+                    workspace_id: workspace(),
+                    head: Some(commit.id),
+                    tracked_paths: BTreeSet::new(),
+                }],
+            },
+            GitCommandOutput::Tags(BTreeMap::from([("v1".to_owned(), commit.id)])),
+            GitCommandOutput::Committed(commit),
+            GitCommandOutput::Bisect(GitBisectResult {
+                active: true,
+                good: None,
+                bad: None,
+                current: None,
+                remaining: 1,
+                first_bad: None,
+            }),
+            GitCommandOutput::Action(GitFilesystemAction::Archive { tree: tree(1) }),
+            GitCommandOutput::Prepared {
+                transition: GitTransitionId::from_bytes([4; 16]),
+                action: GitFilesystemAction::Archive { tree: tree(1) },
+            },
+            GitCommandOutput::Filesystem(GitFilesystemResult::Data {
+                kind: "fixture".to_owned(),
+                value: serde_json::json!({}),
+            }),
+            GitCommandOutput::Text("fixture".to_owned()),
+            GitCommandOutput::Paths(vec!["path".to_owned()]),
+        ];
+        let output_values = outputs.into_iter().map(|output| {
+            let variant_name = output.variant_name();
+            let value = serde_json::to_value(&output).expect("output JSON");
+            let variant = value
+                .as_object()
+                .expect("tagged output")
+                .keys()
+                .next()
+                .expect("output tag")
+                .clone();
+            assert_eq!(variant, variant_name, "output serde tag drift");
+            (variant, value)
+        });
+        assert_typescript_fields_match_serde(
+            "output",
+            GIT_COMPAT_OUTPUT_TYPESCRIPT_TYPES,
+            GIT_COMPAT_OUTPUT_VARIANTS,
+            output_values,
         );
     }
 

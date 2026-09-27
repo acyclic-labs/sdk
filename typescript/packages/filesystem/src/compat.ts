@@ -7,6 +7,9 @@ import type {
 } from "./contracts.js";
 import {
   GIT_COMPAT_BYTE_FIELDS,
+  GIT_COMPAT_DIRTY_STATE_VARIANTS,
+  GIT_COMPAT_DIRTY_STATE_WIRE,
+  GIT_COMPAT_RESET_MODE_WIRE,
   GIT_COMPAT_IDENTITY_LENGTHS,
   GIT_COMPAT_OPAQUE_PATHS,
   GIT_COMPAT_ACTION_VARIANTS,
@@ -14,22 +17,65 @@ import {
   GIT_COMPAT_PENDING_FIELDS,
   GIT_COMPAT_PUBLIC_ALIASES,
   GIT_COMPAT_RESULT_VARIANTS,
+  GIT_COMPAT_RESET_MODE_VARIANTS,
   GIT_COMPAT_TIMESTAMP_FIELDS,
   GIT_COMPAT_TRANSITION_IDENTITY_BYTES,
   GIT_COMPAT_UUID_PATHS,
+} from "../generated/git-compat-contract.js";
+import type {
+  GenerationIdentity,
+  GitBisectResult,
+  GitBranch,
+  GitCommit,
+  GitCaptureProof,
+  GitCommitIdentity,
+  GitCompatCommand,
+  GitCompatOutput,
+  GitCompatRepository,
+  GitCompatStatus,
+  GitFilesystemAction,
+  GitFilesystemExecutor,
+  GitFilesystemResult,
+  GitPendingTransition,
+  GitTreeRef,
+  OperationIdentity,
+  WorkspaceContextIdentity,
+  WorkspaceIdentity,
+  WorkspaceRootIdentity,
+} from "../generated/git-compat-contract.js";
+export type {
+  GenerationIdentity,
+  GitBisectResult,
+  GitBranch,
+  GitCaptureProof,
+  GitCommit,
+  GitCommitIdentity,
+  GitCompatCommand,
+  GitCompatOutput,
+  GitCompatRepository,
+  GitCompatStatus,
+  GitDirtyState,
+  GitFilesystemAction,
+  GitFilesystemExecutor,
+  GitFilesystemResult,
+  GitGenerationRef,
+  GitPendingTransition,
+  GitResetMode,
+  GitTreeRef,
+  OperationIdentity,
+  WorkspaceContextIdentity,
+  WorkspaceIdentity,
+  WorkspaceRootIdentity,
 } from "../generated/git-compat-contract.js";
 
 const gitCompatOutputVariants = [...GIT_COMPAT_OUTPUT_VARIANTS] as const;
 const gitCompatActionVariants = [...GIT_COMPAT_ACTION_VARIANTS] as const;
 const gitCompatResultVariants = [...GIT_COMPAT_RESULT_VARIANTS] as const;
-
-export type WorkspaceIdentity = Uint8Array;
-export type GenerationIdentity = Uint8Array;
-export type OperationIdentity = Uint8Array;
-export type WorkspaceContextIdentity = Uint8Array;
-export type WorkspaceRootIdentity = Uint8Array;
-/** Canonical lowercase BLAKE3 compatibility commit ID. */
-export type GitCommitIdentity = string;
+const gitCompatDirtyStateVariants = [...GIT_COMPAT_DIRTY_STATE_VARIANTS] as const;
+const gitCompatResetModeVariants = [...GIT_COMPAT_RESET_MODE_VARIANTS] as const;
+const gitCompatDirtyStateWireToNatural = new Map(
+  Object.entries(GIT_COMPAT_DIRTY_STATE_WIRE).map(([natural, wire]) => [wire, natural]),
+);
 
 /** JSON values accepted by the versioned Rust compatibility boundary. */
 export type CompatibilityJson =
@@ -336,253 +382,6 @@ export interface MergeDriver {
   resolve(conflict: FilesystemConflict): Promise<MergeResolution> | MergeResolution;
 }
 
-export type GitResetMode = "soft" | "mixed" | "hard";
-
-export type GitCompatCommand =
-  | { readonly kind: "status" }
-  | { readonly kind: "diff"; readonly cached?: boolean }
-  | { readonly kind: "log"; readonly maximum: number }
-  | { readonly kind: "show"; readonly object?: string }
-  | { readonly kind: "add"; readonly paths: readonly string[] }
-  | {
-      readonly kind: "commit";
-      readonly message: string;
-      readonly author: string;
-      readonly authoredAtSeconds: bigint;
-    }
-  | { readonly kind: "branch"; readonly create?: string }
-  | { readonly kind: "switch"; readonly branch: string; readonly create?: boolean }
-  | { readonly kind: "restore"; readonly source?: string; readonly paths: readonly string[] }
-  | { readonly kind: "reset"; readonly target: string; readonly mode: GitResetMode }
-  | { readonly kind: "merge" | "rebase"; readonly branch: string }
-  | { readonly kind: "stash-push" | "stash-pop" }
-  | { readonly kind: "cherry-pick" | "revert"; readonly object: string }
-  | { readonly kind: "tag"; readonly name?: string; readonly target?: string; readonly delete?: boolean }
-  | { readonly kind: "blame"; readonly path: string }
-  | { readonly kind: "grep"; readonly pattern: string; readonly path?: string }
-  | { readonly kind: "clean"; readonly dryRun: boolean }
-  | { readonly kind: "archive"; readonly object?: string }
-  | { readonly kind: "apply"; readonly patch: Uint8Array }
-  | { readonly kind: "bisect"; readonly arguments: readonly string[] }
-  | { readonly kind: "rev-parse"; readonly argument: string }
-  | { readonly kind: "symbolic-ref"; readonly short?: boolean }
-  | { readonly kind: "merge-base"; readonly left: string; readonly right: string }
-  | { readonly kind: "ls-files" }
-  | { readonly kind: "check-ignore"; readonly paths: readonly string[] };
-
-export interface GitCompatStatus {
-  readonly branch: string;
-  readonly head: GitCommitIdentity | undefined;
-  readonly workspace: GitTreeRef;
-  readonly dirty: "clean" | "dirty" | "unknown";
-  readonly allChangesStaged: true;
-}
-
-export interface GitBisectResult {
-  readonly active: boolean;
-  readonly good: GitCommitIdentity | undefined;
-  readonly bad: GitCommitIdentity | undefined;
-  readonly current: GitCommitIdentity | undefined;
-  readonly remaining: number;
-  readonly first_bad: GitCommitIdentity | undefined;
-}
-
-export type GitCompatOutput =
-  | "NoOp"
-  | { readonly Status: GitCompatStatus }
-  | { readonly Commits: readonly Readonly<Record<string, unknown>>[] }
-  | { readonly Branches: Readonly<Record<string, unknown>> }
-  | { readonly Tags: Readonly<Record<string, unknown>> }
-  | { readonly Committed: Readonly<Record<string, unknown>> }
-  | { readonly Bisect: GitBisectResult }
-  | { readonly Action: GitFilesystemAction }
-  | {
-      readonly Prepared: {
-        readonly transition: OperationIdentity;
-        readonly action: GitFilesystemAction;
-      };
-    }
-  | { readonly Filesystem: GitFilesystemResult }
-  | { readonly Text: string }
-  | { readonly Paths: readonly string[] };
-
-export interface GitGenerationRef {
-  readonly workspace_id: WorkspaceIdentity;
-  readonly generation: GenerationIdentity;
-}
-
-/** Exact or source-backed tree, matching Rust's tagged GitTreeRef serde shape. */
-export type GitTreeRef =
-  | ({ readonly kind: "exact" } & GitGenerationRef)
-  | {
-      readonly kind: "lazy";
-      readonly id: Uint8Array;
-      readonly workspace_id: WorkspaceIdentity;
-      readonly authored_generation: GenerationIdentity;
-      readonly source: { readonly identity: Uint8Array; readonly epoch: bigint };
-      readonly overlay: Uint8Array;
-      readonly shadows: Uint8Array;
-    };
-
-/** SDK-verified-at-issuance fork origin; obtain it from core capture. */
-export interface GitCaptureProof {
-  readonly fork_parent: GitTreeRef;
-  readonly initial_generation: GenerationIdentity;
-  readonly operation_id: OperationIdentity;
-}
-
-/** Complete typed work request emitted by the compatibility state machine. */
-export type GitFilesystemAction =
-  | { readonly CaptureCommit: {
-      readonly workspace_tree: GitTreeRef;
-      readonly head_tree: GitTreeRef | undefined;
-      readonly head_workspace_tree: GitTreeRef | undefined;
-      readonly tracked_paths: readonly string[];
-      readonly message: string;
-      readonly author: string;
-      readonly authored_at_seconds: number;
-      readonly expected_head: GitCommitIdentity | undefined;
-    } }
-  | { readonly ForkBranch: {
-      readonly branch: string;
-      readonly source_tree: GitTreeRef;
-      readonly head: GitCommitIdentity | undefined;
-      readonly switch: boolean;
-    } }
-  | { readonly SwitchWorkspace: { readonly workspace_id: WorkspaceIdentity } }
-  | { readonly Diff: {
-      readonly from: GitTreeRef | undefined;
-      readonly to: GitTreeRef;
-      readonly tracked_paths: readonly string[];
-    } }
-  | { readonly RestoreGeneration: {
-      readonly tree: GitTreeRef;
-      readonly paths: readonly string[] | undefined;
-    } }
-  | { readonly RestorePaths: {
-      readonly tree: GitTreeRef;
-      readonly paths: readonly string[];
-    } }
-  | { readonly Join: {
-      readonly target_tree: GitTreeRef;
-      readonly source_workspace: WorkspaceIdentity;
-      readonly rebase: boolean;
-      readonly tracked_paths: readonly string[];
-    } }
-  | { readonly ApplyCommit: {
-      readonly commit: GitCommitIdentity;
-      readonly reverse: boolean;
-      readonly base: GitTreeRef | undefined;
-      readonly source: GitTreeRef | undefined;
-      readonly paths: readonly string[];
-      readonly tracked_paths: readonly string[];
-    } }
-  | { readonly Blame: {
-      readonly path: string;
-      readonly commits: readonly Readonly<Record<string, unknown>>[];
-    } }
-  | { readonly Grep: {
-      readonly pattern: string;
-      readonly path: string | undefined;
-      readonly tree: GitTreeRef;
-    } }
-  | { readonly Clean: {
-      readonly dry_run: boolean;
-      readonly tree: GitTreeRef;
-      readonly tracked_paths: readonly string[];
-    } }
-  | { readonly Archive: { readonly tree: GitTreeRef } }
-  | { readonly ApplyPatch: { readonly patch: readonly number[] } }
-  | { readonly CheckIgnore: {
-      readonly paths: readonly string[];
-      readonly tree: GitTreeRef;
-    } };
-
-export type GitFilesystemResult =
-  | {
-      readonly Captured: {
-        readonly tree: GitTreeRef;
-        readonly tracked_paths: readonly string[];
-        readonly proof: GitCaptureProof | undefined;
-      };
-    }
-  | { readonly Forked: { readonly workspace_id: WorkspaceIdentity } }
-  | { readonly Applied: {
-      readonly tree: GitTreeRef | undefined;
-      readonly tracked_paths: readonly string[] | undefined;
-    } }
-  | {
-      readonly Data: {
-        readonly kind: string;
-        readonly value: unknown;
-      };
-    };
-
-export interface GitPendingTransition {
-  readonly id: OperationIdentity;
-  readonly action: GitFilesystemAction;
-  /** Opaque private state mutation retained only for durable native recovery. */
-  readonly mutation: unknown;
-}
-
-/** Caller-owned filesystem execution. The callback receives a durable retry identity. */
-export interface GitFilesystemExecutor {
-  execute(
-    operationId: OperationIdentity,
-    action: GitFilesystemAction,
-  ): Promise<GitFilesystemResult>;
-}
-
-/** Backend-neutral Git-shaped façade. All modifications are automatically staged. */
-export interface GitCompatRepository {
-  execute(command: GitCompatCommand, workspaceGeneration: GenerationIdentity): Promise<GitCompatOutput>;
-  /** Executes argv after an `acyclic git` caller strips that two-token prefix. */
-  executeArgv(
-    argv: readonly string[],
-    workspaceGeneration: GenerationIdentity,
-    defaultAuthor: string,
-    nowSeconds: bigint,
-  ): Promise<GitCompatOutput>;
-  pendingTransition(): Promise<GitPendingTransition | undefined>;
-  completeTransition(
-    transition: OperationIdentity,
-    resultingGeneration?: GenerationIdentity,
-  ): Promise<GitCompatOutput>;
-  completeTransitionResult(
-    transition: OperationIdentity,
-    result: GitFilesystemResult,
-  ): Promise<GitCompatOutput>;
-  run(
-    command: GitCompatCommand,
-    workspaceGeneration: GenerationIdentity,
-    executor: GitFilesystemExecutor,
-  ): Promise<GitCompatOutput>;
-  /** Composed execution for argv following `acyclic git`; never bare system Git. */
-  runArgv(
-    argv: readonly string[],
-    workspaceGeneration: GenerationIdentity,
-    defaultAuthor: string,
-    nowSeconds: bigint,
-    executor: GitFilesystemExecutor,
-  ): Promise<GitCompatOutput>;
-  resume(executor: GitFilesystemExecutor): Promise<GitCompatOutput | undefined>;
-  abortTransition(transition: OperationIdentity): Promise<void>;
-  registerBranchWorkspace(
-    branch: string,
-    workspaceId: WorkspaceIdentity,
-    head: GitCommitIdentity | undefined,
-    switchToBranch: boolean,
-  ): Promise<GitCompatOutput>;
-  recordCommit(
-    expectedHead: GitCommitIdentity | undefined,
-    generation: GenerationIdentity,
-    trackedPaths: readonly string[],
-    message: string,
-    author: string,
-    authoredAtSeconds: bigint,
-  ): Promise<GitCompatOutput>;
-}
-
 /** Encode every advertised typed command into the native serde contract. */
 export function encodeGitCompatCommand(
   command: GitCompatCommand,
@@ -607,10 +406,12 @@ export function encodeGitCompatCommand(
     case "reset": return {
       Reset: {
         target: command.target,
-        mode: command.mode[0]!.toUpperCase() + command.mode.slice(1),
+        mode: resetModeJson(command.mode),
       },
     };
     case "merge": return { Merge: { branch: command.branch } };
+    case "merge-continue": return "MergeContinue";
+    case "merge-abort": return "MergeAbort";
     case "rebase": return { Rebase: { branch: command.branch } };
     case "stash-push": return "StashPush";
     case "stash-pop": return "StashPop";
@@ -635,6 +436,17 @@ export function encodeGitCompatCommand(
     case "ls-files": return "LsFiles";
     case "check-ignore": return { CheckIgnore: { paths: command.paths } };
   }
+}
+
+function resetModeJson(mode: string): string {
+  if (!gitCompatResetModeVariants.some(value => value === mode)) {
+    throw new TypeError(`Unsupported Git reset mode: ${mode}`);
+  }
+  const wireMode = GIT_COMPAT_RESET_MODE_WIRE[mode as keyof typeof GIT_COMPAT_RESET_MODE_WIRE];
+  if (typeof wireMode !== "string") {
+    throw new TypeError(`Git reset mode contract is missing ${mode}`);
+  }
+  return wireMode;
 }
 
 /** Reject timestamps that native JSON could persist but JavaScript could not read exactly. */
@@ -732,8 +544,12 @@ function normalizeGitCompatOutput(value: unknown): GitCompatOutput {
       if (allChangesStagedKey !== "allChangesStaged") {
         throw new TypeError("Git Status output alias contract is malformed");
       }
+      const dirty = typeof status.dirty === "string"
+        ? gitCompatDirtyStateWireToNatural.get(status.dirty)
+        : undefined;
       if (typeof status.branch !== "string"
-        || !["clean", "dirty", "unknown"].includes(status.dirty as string)
+        || dirty === undefined
+        || !gitCompatDirtyStateVariants.some(value => value === dirty)
         || status.all_changes_staged !== true) {
         throw new TypeError("Git Status output is malformed");
       }
@@ -741,7 +557,7 @@ function normalizeGitCompatOutput(value: unknown): GitCompatOutput {
         branch: status.branch,
         head: optionalCommit(status.head, "status head"),
         workspace: treeRef(status.workspace, "status workspace"),
-        dirty: status.dirty as GitCompatStatus["dirty"],
+        dirty: dirty as GitCompatStatus["dirty"],
         [allChangesStagedKey]: true,
       } };
     }
@@ -891,10 +707,9 @@ function normalizeResult(value: unknown): GitFilesystemResult {
   }
 }
 
-function normalizeCommit(value: unknown): Readonly<Record<string, unknown>> {
+function normalizeCommit(value: unknown): GitCommit {
   const commit = object(value, "commit");
   return {
-    ...commit,
     id: commitId(commit.id, "commit id"),
     tree: treeRef(commit.tree, "commit tree"),
     workspace_tree: treeRef(commit.workspace_tree, "commit workspace tree"),
@@ -907,10 +722,9 @@ function normalizeCommit(value: unknown): Readonly<Record<string, unknown>> {
   };
 }
 
-function normalizeBranch(value: unknown): Readonly<Record<string, unknown>> {
+function normalizeBranch(value: unknown): GitBranch {
   const branch = object(value, "branch");
   return {
-    ...branch,
     name: text(branch.name, "branch name"),
     workspace_id: gitIdentity(branch.workspace_id, "workspace_id", "branch workspace"),
     head: optionalCommit(branch.head, "branch head"),
@@ -925,7 +739,7 @@ function normalizeBisect(value: unknown): GitBisectResult {
     good: optionalCommit(result.good, "bisect good"),
     bad: optionalCommit(result.bad, "bisect bad"),
     current: optionalCommit(result.current, "bisect current"),
-    remaining: integer(result.remaining, "bisect remaining"),
+    remaining: u32(result.remaining, "bisect remaining"),
     first_bad: optionalCommit(result.first_bad, "bisect first bad"),
   };
 }
@@ -1136,6 +950,14 @@ function integer(value: unknown, label: string): number {
     throw new TypeError(`Git ${label} must be a safe integer`);
   }
   return value;
+}
+
+function u32(value: unknown, label: string): number {
+  const result = integer(value, label);
+  if (result < 0 || result > 0xffff_ffff) {
+    throw new TypeError(`Git ${label} must be a u32`);
+  }
+  return result;
 }
 
 function strings(value: unknown, label: string): readonly string[] {

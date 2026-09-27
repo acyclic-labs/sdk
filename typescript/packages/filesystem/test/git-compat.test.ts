@@ -11,6 +11,7 @@ import {
   type GitFilesystemAction,
   type GitFilesystemResult,
 } from "../src/compat.js";
+import { GIT_COMPAT_COMMAND_VARIANTS } from "../generated/git-compat-contract.js";
 
 const workspace = Uint8Array.from({ length: 16 }, (_, index) => index);
 const workspaceUuid = "00010203-0405-0607-0809-0a0b0c0d0e0f";
@@ -20,6 +21,12 @@ const exactTree = { kind: "exact" as const, workspace_id: workspace, generation 
 const exactTreeJson = { kind: "exact", workspace_id: Array.from(workspace), generation: Array.from(generation) };
 
 describe("Git compatibility command codec", () => {
+  test("tracks the complete Rust command inventory", () => {
+    expect(GIT_COMPAT_COMMAND_VARIANTS.has("MergeContinue")).toBe(true);
+    expect(GIT_COMPAT_COMMAND_VARIANTS.has("MergeAbort")).toBe(true);
+    expect(GIT_COMPAT_COMMAND_VARIANTS.has("CheckIgnore")).toBe(true);
+  });
+
   test("encodes every advertised typed command", () => {
     const commands: readonly GitCompatCommand[] = [
       { kind: "status" },
@@ -50,6 +57,8 @@ describe("Git compatibility command codec", () => {
     expect(encodeGitCompatCommand(commands[9]!)).toEqual({
       Reset: { target: "HEAD", mode: "Hard" },
     });
+    expect(encodeGitCompatCommand({ kind: "merge-continue" })).toBe("MergeContinue");
+    expect(encodeGitCompatCommand({ kind: "merge-abort" })).toBe("MergeAbort");
     expect(() => encodeGitCompatCommand({
       kind: "commit",
       message: "overflow",
@@ -178,6 +187,26 @@ describe("Git compatibility command codec", () => {
       Prepared: {
         transition: [1, 2],
         action: { ApplyPatch: { patch: [256] } },
+      },
+    }))).toThrow(TypeError);
+    expect(() => parseGitCompatOutputJson(JSON.stringify({
+      Bisect: {
+        active: true,
+        good: null,
+        bad: null,
+        current: null,
+        remaining: -1,
+        first_bad: null,
+      },
+    }))).toThrow(TypeError);
+    expect(() => parseGitCompatOutputJson(JSON.stringify({
+      Bisect: {
+        active: true,
+        good: null,
+        bad: null,
+        current: null,
+        remaining: 4_294_967_296,
+        first_bad: null,
       },
     }))).toThrow(TypeError);
     expect(() => parseGitCompatOutputJson('{"Unknown":{}}')).toThrow(TypeError);
