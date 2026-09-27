@@ -266,6 +266,20 @@ function validateSelectedContext(selected: SelectedModelContext, limits: Limits)
   for (const message of selected.messages) validateModelContent(message.content, limits);
 }
 
+/** Builds the one canonical model content value for a direct user turn. */
+function directUserContent(input: AgentInput<UserContentPart>): ModelContent {
+  if (input.content === undefined || input.content.length === 0) return input.prompt;
+  return input.prompt
+    ? [{ kind: "text", text: input.prompt }, ...input.content]
+    : input.content;
+}
+
+/** Detach direct input before admission so validation and dispatch share one snapshot. */
+function snapshotDirectUserContent(input: AgentInput<UserContentPart>): ModelContent {
+  const content = directUserContent(input);
+  return typeof content === "string" ? content : structuredClone(content);
+}
+
 function validateModelContent(content: ModelContent, limits: Limits): void {
   validateModelContentWasm(content, limits);
 }
@@ -2223,17 +2237,20 @@ export class AgentHarness {
     const input: RuntimeAgentInput = typeof value === "string" ? { prompt: value }
       : value.selectedContext === undefined ? value as AgentInput<UserContentPart>
       : { prompt: "", selectedContext: value.selectedContext };
+    let admittedDirectContent: ModelContent | undefined;
     if (input.selectedContext !== undefined) validateSelectedContext(input.selectedContext, this.limits);
     else {
-      if (typeof input.prompt !== "string" || !Array.isArray(input.content ?? [])) {
+      const prompt = input.prompt;
+      const content = input.content;
+      if (typeof prompt !== "string" || !Array.isArray(content ?? [])) {
         throw new TypeError("user input shape is invalid");
       }
-      if (input.content !== undefined && input.content.length > this.limits.attachments) {
+      if (content !== undefined && content.length > this.limits.attachments) {
         throw new TypeError("turn attachments exceed harness limits");
       }
-      const userContent: ModelContent = input.content === undefined
-        ? input.prompt
-        : input.prompt ? [{ kind: "text", text: input.prompt }, ...input.content] : input.content;
+      const directInput: AgentInput<UserContentPart> = content === undefined ? { prompt } : { prompt, content };
+      admittedDirectContent = snapshotDirectUserContent(directInput);
+      const userContent = admittedDirectContent!;
       validateUserInputWasm(userContent);
       validateModelContent(userContent, this.limits);
     }
@@ -2244,9 +2261,7 @@ export class AgentHarness {
       const model = this.scope.modelBinding ?? this.components.model;
       if (!model) throw new Error("no model or agent loop is bound");
       const contextBuilder = this.scope.contextBuilder ?? this.components.context;
-      const first: ModelMessage = { role: "user", content: input.content?.length
-        ? [{ kind: "text", text: input.prompt }, ...input.content]
-        : input.prompt };
+      const first: ModelMessage = { role: "user", content: admittedDirectContent ?? "" };
       const selected = input.selectedContext;
       const base = selected?.messages ?? [first];
       const messages: ModelMessage[] = [...(await contextBuilder?.build(input, base) ?? base)];
