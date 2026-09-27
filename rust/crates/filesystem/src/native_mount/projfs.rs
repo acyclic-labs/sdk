@@ -4413,6 +4413,7 @@ mod tests {
                         match change {
                             WatchChange::Created(path)
                             | WatchChange::Modified(path)
+                            | WatchChange::Arrived(path)
                             | WatchChange::MetadataChanged(path)
                             | WatchChange::Removed(path) => {
                                 seen.insert(path);

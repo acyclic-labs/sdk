@@ -277,6 +277,32 @@ test("installer recovers a lock whose owner exited", () => {
   }
 });
 
+test("installer reclaims a lock whose owner's PID now names another process", () => {
+  const value = fixture();
+  // A live process under the recorded PID, which started long after the
+  // (crashed) owner the lock records.
+  const bystander = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+  try {
+    const lock = join(value.bin, "install.lock");
+    mkdirSync(lock);
+    const createdAt = Date.now() - 3_600_000;
+    writeFileSync(join(lock, "owner.json"), JSON.stringify({
+      pid: bystander.pid,
+      createdAt,
+      startedAt: createdAt,
+    }));
+    const started = Date.now();
+    const recovered = install(value.bin);
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.ok(Date.now() - started < 60_000, "a reused PID must not hold the lock");
+    assert.equal(digest(value.installed), digest(value.source));
+    assert.equal(existsSync(lock), false);
+  } finally {
+    bystander.kill();
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
 test("installer rejects traversal in a recovery journal", () => {
   const value = fixture();
   try {

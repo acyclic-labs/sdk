@@ -7111,6 +7111,7 @@ fn encode_watch_change(change: WatchChange) -> NativeWatchChange {
     match change {
         WatchChange::Created(path) => single_watch_change("created", &path),
         WatchChange::Modified(path) => single_watch_change("modified", &path),
+        WatchChange::Arrived(path) => single_watch_change("arrived", &path),
         WatchChange::MetadataChanged(path) => single_watch_change("metadata", &path),
         WatchChange::Removed(path) => single_watch_change("removed", &path),
         WatchChange::Renamed { from, to } => NativeWatchChange {
