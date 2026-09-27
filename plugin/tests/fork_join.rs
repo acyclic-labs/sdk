@@ -507,8 +507,11 @@ fn extended_attributes_set_in_a_fork_reach_the_parent() {
         .arg(&tagged)
         .status();
     let attribute_set = set.is_ok_and(|status| status.success());
+    // Read-only, which denies setting attributes once the mode is applied.
+    make_read_only(&tagged);
     session.merge(&fork).expect("merge");
     assert!(session.files().contains(&"tagged.rs".to_owned()));
+    assert!(read_only(&session.repo.join("tagged.rs")));
     if attribute_set {
         let read = std::process::Command::new("getfattr")
             .args(["--only-values", "-n", "user.acyclic.test"])
@@ -519,6 +522,18 @@ fn extended_attributes_set_in_a_fork_reach_the_parent() {
     }
 }
 
+#[cfg(unix)]
+fn make_read_only(path: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o444)).expect("read-only");
+}
+
+#[cfg(unix)]
+fn read_only(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::metadata(path).expect("metadata").permissions().mode() & 0o777 == 0o444
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "requires live native mounts"]
@@ -527,10 +542,13 @@ fn no_host_metadata_files_are_merged() {
     let fork = session.spawn(&session.root(), "meta");
     let tagged = fork.path.join("tagged.rs");
     fs::write(&tagged, "x\n").expect("write");
-    let _ = std::process::Command::new("xattr")
+    let attribute_set = std::process::Command::new("xattr")
         .args(["-w", "com.acyclic.test", "1"])
         .arg(&tagged)
-        .status();
+        .status()
+        .is_ok_and(|status| status.success());
+    // Read-only, which denies setting attributes once the mode is applied.
+    make_read_only(&tagged);
     session.merge(&fork).expect("merge");
     assert!(
         !session.files().iter().any(|path| Path::new(path)
@@ -538,4 +556,13 @@ fn no_host_metadata_files_are_merged() {
             .is_some_and(|name| name.to_string_lossy().starts_with("._"))),
         "macOS host metadata files reached the parent"
     );
+    assert!(read_only(&session.repo.join("tagged.rs")));
+    if attribute_set {
+        let read = std::process::Command::new("xattr")
+            .args(["-p", "com.acyclic.test"])
+            .arg(session.repo.join("tagged.rs"))
+            .output()
+            .expect("xattr");
+        assert_eq!(String::from_utf8_lossy(&read.stdout).trim(), "1");
+    }
 }

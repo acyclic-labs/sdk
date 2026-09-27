@@ -1503,7 +1503,9 @@ async fn apply_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 /// Applies one record's complete metadata to its materialized host path:
-/// the directly settable fields, then its named attributes.
+/// its named attributes, then the directly settable fields. Writing an
+/// attribute needs write access, which a read-only final mode would deny,
+/// and changes only the ctime, which no host lets anyone set.
 async fn apply_record_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &PinnedReader<A, O>,
     host_root: &Arc<HostRoot>,
@@ -1536,10 +1538,10 @@ async fn apply_record_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         None => Vec::new(),
     };
-    apply_host_metadata_offloaded(host_root, host_path, host.metadata)
+    apply_host_attributes_offloaded(host_root, host_path, attributes)
         .await
         .map_err(|error| OperationFailure::new(error, receipt.work))?;
-    apply_host_attributes_offloaded(host_root, host_path, attributes)
+    apply_host_metadata_offloaded(host_root, host_path, host.metadata)
         .await
         .map_err(|error| OperationFailure::new(error, receipt.work))
 }
