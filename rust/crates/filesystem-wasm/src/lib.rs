@@ -507,6 +507,42 @@ mod bindings {
         .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
+    #[cfg(all(test, target_arch = "wasm32"))]
+    pub(crate) fn test_transfer_and_residency_results_js() -> Result<JsValue, JsValue> {
+        GenerationTransferBatchResult {
+            first_object: 9_007_199_254_740_993,
+            next_object: Some(9_007_199_254_740_994),
+            objects: vec![vec![1, 2, 3].into()],
+            work: test_browser_work(),
+        }
+        .into_js()
+        .map(Into::into)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    #[cfg(all(test, target_arch = "wasm32"))]
+    pub(crate) fn test_speculation_results_js() -> Result<JsValue, JsValue> {
+        BrowserSpeculationPreemption {
+            residency_operation_ids: vec![vec![4; 16].into()],
+            promotion_operation_ids: vec![vec![5; 16].into()],
+        }
+        .into_js()
+        .map(Into::into)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
+    #[cfg(all(test, target_arch = "wasm32"))]
+    pub(crate) fn test_oversized_transaction_array_rejected() -> Result<(), JsValue> {
+        let operations = js_sys::Array::new();
+        operations.set_length(2_049);
+        decode_authored_transactions(
+            operations.into(),
+            FilesystemProfile::Posix,
+            VolumeLimits::default(),
+        )
+        .map(|_| ())
+    }
+
     #[derive(Deserialize, Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(from_wasm_abi)]
@@ -2112,71 +2148,88 @@ mod bindings {
         cost_units_per_byte: u64,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserAdmissionResult {
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserAdmissionResult {
+        #[tsify(type = "\"admitted\" | \"rejected\"")]
         status: &'static str,
+        #[tsify(type = "string | undefined")]
         rejection: Option<&'static str>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserResidencyExecution {
-        object_bytes: String,
-        work: acyclic_fs::WorkCounters,
+    #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    pub struct BrowserResidencyExecution {
+        object_bytes: u64,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserPromotionAdmission {
+    #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    pub struct BrowserPromotionAdmission {
+        #[tsify(type = "\"satisfied\" | \"planned\" | \"rejected\"")]
         status: &'static str,
+        #[tsify(type = "string | undefined")]
         rejection: Option<&'static str>,
-        operation_id: Option<Vec<u8>>,
-        object_id: Option<Vec<u8>>,
-        source_location_id: Option<Vec<u8>>,
-        destination_location_id: Option<Vec<u8>>,
-        estimated_cost_units: Option<String>,
+        #[tsify(type = "Uint8Array | undefined")]
+        operation_id: Option<serde_bytes::ByteBuf>,
+        #[tsify(type = "Uint8Array | undefined")]
+        object_id: Option<serde_bytes::ByteBuf>,
+        #[tsify(type = "Uint8Array | undefined")]
+        source_location_id: Option<serde_bytes::ByteBuf>,
+        #[tsify(type = "Uint8Array | undefined")]
+        destination_location_id: Option<serde_bytes::ByteBuf>,
+        estimated_cost_units: Option<u64>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserSpeculationPreemption {
-        residency_operation_ids: Vec<Vec<u8>>,
-        promotion_operation_ids: Vec<Vec<u8>>,
+    #[tsify(into_wasm_abi)]
+    pub struct BrowserSpeculationPreemption {
+        #[tsify(type = "Uint8Array[]")]
+        residency_operation_ids: Vec<serde_bytes::ByteBuf>,
+        #[tsify(type = "Uint8Array[]")]
+        promotion_operation_ids: Vec<serde_bytes::ByteBuf>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserResidencyMetrics {
-        candidates: String,
-        admitted: String,
-        active: String,
-        active_bytes: String,
-        useful: String,
-        wasted: String,
-        rejected_fence: String,
-        rejected_duplicate: String,
-        rejected_capacity: String,
-        rejected_cost: String,
-        rejected_usefulness: String,
+    #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    pub struct BrowserResidencyMetrics {
+        candidates: u64,
+        admitted: u64,
+        active: u64,
+        active_bytes: u64,
+        useful: u64,
+        wasted: u64,
+        rejected_fence: u64,
+        rejected_duplicate: u64,
+        rejected_capacity: u64,
+        rejected_cost: u64,
+        rejected_usefulness: u64,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct BrowserPromotionMetrics {
-        candidates: String,
-        satisfied: String,
-        planned: String,
-        active: String,
-        active_bytes: String,
-        active_cost_units: String,
-        useful: String,
-        wasted: String,
-        rejected: String,
+    #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    pub struct BrowserPromotionMetrics {
+        candidates: u64,
+        satisfied: u64,
+        planned: u64,
+        active: u64,
+        active_bytes: u64,
+        active_cost_units: u64,
+        useful: u64,
+        wasted: u64,
+        rejected: u64,
     }
 
-    #[derive(Serialize)]
-    struct BrowserSpeculationMetrics {
+    #[derive(Serialize, Tsify)]
+    #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    pub struct BrowserSpeculationMetrics {
         residency: BrowserResidencyMetrics,
         promotion: BrowserPromotionMetrics,
     }
@@ -2320,15 +2373,22 @@ mod bindings {
         DirectLive,
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Serialize, Tsify)]
+    #[serde(transparent)]
+    #[allow(dead_code)]
+    pub struct BrowserPathBatch(Vec<String>);
+
+    #[derive(Deserialize, Serialize, Tsify)]
     #[serde(
         tag = "kind",
         rename_all = "kebab-case",
         rename_all_fields = "camelCase"
     )]
-    enum TransactionOperation {
+    #[tsify(large_number_types_as_bigints)]
+    pub enum TransactionOperation {
         CreateFile {
             path: String,
+            #[tsify(type = "Uint8Array")]
             bytes: serde_bytes::ByteBuf,
         },
         CreateDirectory {
@@ -2336,24 +2396,29 @@ mod bindings {
         },
         CreateSymbolicLink {
             path: String,
+            #[tsify(type = "Uint8Array")]
             target: serde_bytes::ByteBuf,
         },
         CreateSpecial {
             path: String,
+            #[tsify(type = "\"fifo\" | \"socket\" | \"mount-boundary\"")]
             file_kind: String,
         },
         CreateDevice {
             path: String,
+            #[tsify(type = "\"character-device\" | \"block-device\"")]
             file_kind: String,
             major: u32,
             minor: u32,
         },
         CreateReparsePoint {
             path: String,
+            #[tsify(type = "Uint8Array")]
             payload: serde_bytes::ByteBuf,
         },
         Remove {
             path: String,
+            #[tsify(type = "Uint8Array | undefined")]
             expected_file_id: Option<serde_bytes::ByteBuf>,
         },
         Rename {
@@ -2368,10 +2433,12 @@ mod bindings {
         Write {
             path: String,
             offset: u64,
+            #[tsify(type = "Uint8Array")]
             bytes: serde_bytes::ByteBuf,
         },
         SetMetadata {
             path: String,
+            #[tsify(type = "Uint8Array")]
             canonical_bytes: serde_bytes::ByteBuf,
         },
         Resize {
@@ -2883,20 +2950,23 @@ mod bindings {
         objects: Vec<Vec<u8>>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct GenerationTransferBatchResult {
-        first_object: String,
-        next_object: Option<String>,
-        objects: Vec<Vec<u8>>,
-        work: acyclic_fs::WorkCounters,
+    #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    pub struct GenerationTransferBatchResult {
+        first_object: u64,
+        next_object: Option<u64>,
+        #[tsify(type = "Uint8Array[]")]
+        objects: Vec<serde_bytes::ByteBuf>,
+        work: BrowserWorkCounters,
     }
 
-    #[derive(Serialize)]
+    #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    struct GenerationTransferCursorResult {
-        next_object: String,
-        work: acyclic_fs::WorkCounters,
+    #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    pub struct GenerationTransferCursorResult {
+        next_object: u64,
+        work: BrowserWorkCounters,
     }
 
     impl Default for BrowserWorkspaceContextRegistry {
@@ -3543,7 +3613,7 @@ mod bindings {
             cursor: u64,
             maximum_objects: u32,
             maximum_object_bytes: u64,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<GenerationTransferBatchResult, JsValue> {
             let manifest: ImportManifest =
                 serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
             let manifest = decode_export_manifest(&manifest)?;
@@ -3583,21 +3653,17 @@ mod bindings {
                     .await
                     .map_err(js_error)?,
             };
-            serde_wasm_bindgen::to_value(&GenerationTransferBatchResult {
-                first_object: receipt.value.first_object.next_object().to_string(),
-                next_object: receipt
-                    .value
-                    .next
-                    .map(|next| next.next_object().to_string()),
+            Ok(GenerationTransferBatchResult {
+                first_object: receipt.value.first_object.next_object(),
+                next_object: receipt.value.next.map(|next| next.next_object()),
                 objects: receipt
                     .value
                     .objects
                     .into_iter()
-                    .map(|object| object.bytes.to_vec())
+                    .map(|object| object.bytes.to_vec().into())
                     .collect(),
-                work: receipt.work,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Idempotently imports one manifest-aligned immutable-object page.
@@ -3613,7 +3679,7 @@ mod bindings {
             cursor: u64,
             objects: JsValue,
             maximum_objects: u32,
-        ) -> Result<JsValue, JsValue> {
+        ) -> Result<GenerationTransferCursorResult, JsValue> {
             let manifest: ImportManifest =
                 serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
             let manifest = decode_export_manifest(&manifest)?;
@@ -3658,11 +3724,10 @@ mod bindings {
                     .await
                     .map_err(js_error)?,
             };
-            serde_wasm_bindgen::to_value(&GenerationTransferCursorResult {
-                next_object: receipt.value.next_object().to_string(),
-                work: receipt.work,
+            Ok(GenerationTransferCursorResult {
+                next_object: receipt.value.next_object(),
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Restores authority only after authenticating a complete imported closure.
@@ -3725,7 +3790,7 @@ mod bindings {
         /// # Errors
         ///
         /// Returns a JavaScript error for malformed input or a failed bounded transition.
-        pub fn observe(&self, observation: JsValue) -> Result<JsValue, JsValue> {
+        pub fn observe(&self, observation: JsValue) -> Result<BrowserAdmissionResult, JsValue> {
             let observation: BrowserResidencyObservation =
                 serde_wasm_bindgen::from_value(observation).map_err(js_error)?;
             let admission = self
@@ -3759,7 +3824,7 @@ mod bindings {
                     rejection: Some(browser_residency_rejection(rejection)),
                 },
             };
-            serde_wasm_bindgen::to_value(&result).map_err(js_error)
+            Ok(result)
         }
 
         /// Executes one admitted residency prediction through the browser's
@@ -3770,7 +3835,10 @@ mod bindings {
         /// Returns a JavaScript error for an inactive operation, storage or
         /// authentication failure, bounded-work exhaustion, or cancellation.
         #[wasm_bindgen(js_name = executeResidency)]
-        pub async fn execute_residency(&self, operation_id: Vec<u8>) -> Result<JsValue, JsValue> {
+        pub async fn execute_residency(
+            &self,
+            operation_id: Vec<u8>,
+        ) -> Result<BrowserResidencyExecution, JsValue> {
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let controller = self
                 .controller
@@ -3810,11 +3878,10 @@ mod bindings {
                 }
             }
             .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&BrowserResidencyExecution {
-                object_bytes: receipt.value.to_string(),
-                work: receipt.work,
+            Ok(BrowserResidencyExecution {
+                object_bytes: receipt.value,
+                work: browser_work(receipt.work),
             })
-            .map_err(js_error)
         }
 
         /// Records terminal usefulness for one residency operation.
@@ -3841,7 +3908,10 @@ mod bindings {
         /// Returns a JavaScript error for malformed facts, unsupported tiers,
         /// inactive residency, or a failed bounded transition.
         #[wasm_bindgen(js_name = planPromotion)]
-        pub fn plan_promotion(&self, request: JsValue) -> Result<JsValue, JsValue> {
+        pub fn plan_promotion(
+            &self,
+            request: JsValue,
+        ) -> Result<BrowserPromotionAdmission, JsValue> {
             let request: BrowserPromotionRequest =
                 serde_wasm_bindgen::from_value(request).map_err(js_error)?;
             let operation_id = OperationId::from_bytes(fixed_16(&request.operation_id)?);
@@ -3870,7 +3940,7 @@ mod bindings {
             let admission = controller
                 .plan_promotion(permit, accepted_tiers, &residency, &destinations)
                 .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&browser_promotion_admission(admission)).map_err(js_error)
+            Ok(browser_promotion_admission(admission))
         }
 
         /// Records terminal usefulness for one promotion operation.
@@ -3896,14 +3966,17 @@ mod bindings {
         ///
         /// Returns a JavaScript error if exact bounded accounting fails.
         #[wasm_bindgen(js_name = preemptForForeground)]
-        pub fn preempt_for_foreground(&self, bytes: u64) -> Result<JsValue, JsValue> {
+        pub fn preempt_for_foreground(
+            &self,
+            bytes: u64,
+        ) -> Result<BrowserSpeculationPreemption, JsValue> {
             let value = self
                 .controller
                 .try_borrow_mut()
                 .map_err(|_| speculation_busy())?
                 .preempt_for_foreground(bytes)
                 .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&browser_speculation_preemption(value)).map_err(js_error)
+            Ok(browser_speculation_preemption(value))
         }
 
         /// Atomically fences both engines onto a new immutable generation.
@@ -3912,7 +3985,10 @@ mod bindings {
         ///
         /// Returns a JavaScript error for a malformed identity or failed transition.
         #[wasm_bindgen(js_name = replaceGeneration)]
-        pub fn replace_generation(&self, generation_id: Vec<u8>) -> Result<JsValue, JsValue> {
+        pub fn replace_generation(
+            &self,
+            generation_id: Vec<u8>,
+        ) -> Result<BrowserSpeculationPreemption, JsValue> {
             let value = self
                 .controller
                 .try_borrow_mut()
@@ -3921,7 +3997,7 @@ mod bindings {
                     fixed_32_owned(generation_id, "generation identity")?,
                 )))
                 .map_err(js_error)?;
-            serde_wasm_bindgen::to_value(&browser_speculation_preemption(value)).map_err(js_error)
+            Ok(browser_speculation_preemption(value))
         }
 
         /// Returns exact payload-free metrics for both engines.
@@ -3929,17 +4005,16 @@ mod bindings {
         /// # Errors
         ///
         /// Returns a JavaScript error if metrics cannot be serialized.
-        pub fn metrics(&self) -> Result<JsValue, JsValue> {
+        pub fn metrics(&self) -> Result<BrowserSpeculationMetrics, JsValue> {
             let metrics = self
                 .controller
                 .try_borrow()
                 .map_err(|_| speculation_busy())?
                 .metrics();
-            serde_wasm_bindgen::to_value(&BrowserSpeculationMetrics {
+            Ok(BrowserSpeculationMetrics {
                 residency: browser_residency_metrics(metrics.residency),
                 promotion: browser_promotion_metrics(metrics.promotion),
             })
-            .map_err(js_error)
         }
 
         /// Cooperatively cancels future residency execution from this owner.
@@ -4219,7 +4294,7 @@ mod bindings {
         #[wasm_bindgen(js_name = applyTransaction)]
         pub async fn apply_transaction(
             &mut self,
-            operations: JsValue,
+            #[wasm_bindgen(unchecked_param_type = "TransactionOperation[]")] operations: JsValue,
         ) -> Result<BrowserTransactionResult, JsValue> {
             let authored = decode_authored_transactions(operations, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
@@ -4445,13 +4520,13 @@ mod bindings {
         #[wasm_bindgen(js_name = lookupBatchNoFollow)]
         pub async fn lookup_batch_no_follow(
             &mut self,
-            paths: JsValue,
+            #[wasm_bindgen(unchecked_param_type = "BrowserPathBatch")] paths: JsValue,
         ) -> Result<BrowserBatchLookupResult, JsValue> {
-            if !js_sys::Array::is_array(&paths) {
-                return Err(js_error("lookup paths must be an array"));
-            }
             let maximum = self.limits.maximum_paths_per_batch;
-            if js_sys::Array::from(&paths).length() > maximum {
+            let paths_array = paths
+                .dyn_ref::<js_sys::Array>()
+                .ok_or_else(|| js_error("lookup paths must be an array"))?;
+            if paths_array.length() > maximum {
                 return Err(js_error("lookup path batch exceeds the configured bound"));
             }
             let decoded: Vec<String> = serde_wasm_bindgen::from_value(paths).map_err(js_error)?;
@@ -4865,12 +4940,12 @@ mod bindings {
         #[wasm_bindgen(js_name = resolveFiles)]
         pub async fn resolve_files(
             &mut self,
-            paths: JsValue,
+            #[wasm_bindgen(unchecked_param_type = "BrowserPathBatch")] paths: JsValue,
         ) -> Result<BrowserResolvedFiles, JsValue> {
+            let maximum = self.limits.maximum_paths_per_batch;
             let paths_array = paths
                 .dyn_ref::<js_sys::Array>()
                 .ok_or_else(|| js_error("resolved file paths must be an array"))?;
-            let maximum = self.limits.maximum_paths_per_batch;
             if paths_array.length() > maximum {
                 return Err(js_error("resolved file batch exceeds the configured bound"));
             }
@@ -6096,7 +6171,7 @@ mod bindings {
         #[wasm_bindgen(js_name = mutateLive)]
         pub async fn mutate_live(
             &mut self,
-            operations: JsValue,
+            #[wasm_bindgen(unchecked_param_type = "TransactionOperation[]")] operations: JsValue,
             operation_id: Vec<u8>,
             maximum_attempts: u32,
             maximum_conflicts: u32,
@@ -6460,19 +6535,21 @@ mod bindings {
                 status: "satisfied",
                 rejection: None,
                 operation_id: None,
-                object_id: Some(encode_object_id(residency.object_id)),
-                source_location_id: Some(residency.location_id.into_bytes().to_vec()),
+                object_id: Some(encode_object_id(residency.object_id).into()),
+                source_location_id: Some(residency.location_id.into_bytes().to_vec().into()),
                 destination_location_id: None,
                 estimated_cost_units: None,
             },
             PromotionAdmission::Planned(plan) => BrowserPromotionAdmission {
                 status: "planned",
                 rejection: None,
-                operation_id: Some(plan.candidate.operation_id.into_bytes().to_vec()),
-                object_id: Some(encode_object_id(plan.candidate.request.object_id)),
-                source_location_id: Some(plan.source.location_id.into_bytes().to_vec()),
-                destination_location_id: Some(plan.destination.location_id.into_bytes().to_vec()),
-                estimated_cost_units: Some(plan.estimated_cost_units.to_string()),
+                operation_id: Some(plan.candidate.operation_id.into_bytes().to_vec().into()),
+                object_id: Some(encode_object_id(plan.candidate.request.object_id).into()),
+                source_location_id: Some(plan.source.location_id.into_bytes().to_vec().into()),
+                destination_location_id: Some(
+                    plan.destination.location_id.into_bytes().to_vec().into(),
+                ),
+                estimated_cost_units: Some(plan.estimated_cost_units),
             },
             PromotionAdmission::Rejected(rejection) => BrowserPromotionAdmission {
                 status: "rejected",
@@ -6509,42 +6586,44 @@ mod bindings {
                 .residency
                 .into_iter()
                 .map(|operation| operation.into_bytes().to_vec())
+                .map(Into::into)
                 .collect(),
             promotion_operation_ids: value
                 .promotion
                 .into_iter()
                 .map(|operation| operation.into_bytes().to_vec())
+                .map(Into::into)
                 .collect(),
         }
     }
 
     fn browser_residency_metrics(value: acyclic_fs::ResidencyMetrics) -> BrowserResidencyMetrics {
         BrowserResidencyMetrics {
-            candidates: value.candidates.to_string(),
-            admitted: value.admitted.to_string(),
-            active: value.active.to_string(),
-            active_bytes: value.active_bytes.to_string(),
-            useful: value.useful.to_string(),
-            wasted: value.wasted.to_string(),
-            rejected_fence: value.rejected_fence.to_string(),
-            rejected_duplicate: value.rejected_duplicate.to_string(),
-            rejected_capacity: value.rejected_capacity.to_string(),
-            rejected_cost: value.rejected_cost.to_string(),
-            rejected_usefulness: value.rejected_usefulness.to_string(),
+            candidates: value.candidates,
+            admitted: value.admitted,
+            active: value.active,
+            active_bytes: value.active_bytes,
+            useful: value.useful,
+            wasted: value.wasted,
+            rejected_fence: value.rejected_fence,
+            rejected_duplicate: value.rejected_duplicate,
+            rejected_capacity: value.rejected_capacity,
+            rejected_cost: value.rejected_cost,
+            rejected_usefulness: value.rejected_usefulness,
         }
     }
 
     fn browser_promotion_metrics(value: acyclic_fs::PromotionMetrics) -> BrowserPromotionMetrics {
         BrowserPromotionMetrics {
-            candidates: value.candidates.to_string(),
-            satisfied: value.satisfied.to_string(),
-            planned: value.planned.to_string(),
-            active: value.active.to_string(),
-            active_bytes: value.active_bytes.to_string(),
-            active_cost_units: value.active_cost_units.to_string(),
-            useful: value.useful.to_string(),
-            wasted: value.wasted.to_string(),
-            rejected: value.rejected.to_string(),
+            candidates: value.candidates,
+            satisfied: value.satisfied,
+            planned: value.planned,
+            active: value.active,
+            active_bytes: value.active_bytes,
+            active_cost_units: value.active_cost_units,
+            useful: value.useful,
+            wasted: value.wasted,
+            rejected: value.rejected,
         }
     }
 
@@ -7821,7 +7900,8 @@ mod wasm_abi_tests {
     use super::bindings::{
         test_checkout_commit_result_js, test_checkout_export_manifest_result_js,
         test_checkout_metadata_result_js, test_checkout_mutation_result_js,
-        test_workspace_extent_plan_js,
+        test_oversized_transaction_array_rejected, test_speculation_results_js,
+        test_transfer_and_residency_results_js, test_workspace_extent_plan_js,
     };
     use js_sys::{Array, BigInt, Reflect};
     use wasm_bindgen::{JsCast, JsValue};
@@ -7869,5 +7949,40 @@ mod wasm_abi_tests {
         assert_eq!(copied.to_string(10)?.as_string().as_deref(), Some("17"));
         assert!(Reflect::get(&commit, &JsValue::from_str("sequence"))?.is_undefined());
         Ok(())
+    }
+
+    #[wasm_bindgen_test]
+    fn transfer_and_residency_dtos_preserve_bigints_and_bytes() -> Result<(), JsValue> {
+        let transfer = test_transfer_and_residency_results_js()?;
+        let first =
+            Reflect::get(&transfer, &JsValue::from_str("firstObject"))?.dyn_into::<BigInt>()?;
+        assert_eq!(
+            first.to_string(10)?.as_string().as_deref(),
+            Some("9007199254740993")
+        );
+        let objects =
+            Reflect::get(&transfer, &JsValue::from_str("objects"))?.dyn_into::<Array>()?;
+        assert_eq!(
+            objects.get(0).dyn_into::<js_sys::Uint8Array>()?.to_vec(),
+            vec![1, 2, 3]
+        );
+
+        let speculation = test_speculation_results_js()?;
+        let residency = Reflect::get(&speculation, &JsValue::from_str("residencyOperationIds"))?
+            .dyn_into::<Array>()?;
+        assert_eq!(
+            residency.get(0).dyn_into::<js_sys::Uint8Array>()?.length(),
+            16
+        );
+        Ok(())
+    }
+
+    #[wasm_bindgen_test]
+    fn oversized_transaction_array_is_rejected_before_decode() {
+        let result = test_oversized_transaction_array_rejected();
+        assert!(
+            result.is_err(),
+            "oversized transaction array unexpectedly decoded"
+        );
     }
 }

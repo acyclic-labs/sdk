@@ -98,7 +98,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for malformed operations, rejected semantics,
      * cancellation, storage, or bounded-work failure.
-     * @param {any} operations
+     * @param {TransactionOperation[]} operations
      * @returns {Promise<BrowserTransactionResult>}
      */
     applyTransaction(operations) {
@@ -404,7 +404,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for non-array/excessive/malformed paths,
      * storage, cancellation, authentication, or bounded-work failure.
-     * @param {any} paths
+     * @param {BrowserPathBatch} paths
      * @returns {Promise<BrowserBatchLookupResult>}
      */
     lookupBatchNoFollow(paths) {
@@ -435,7 +435,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed operations or identity,
      * wrong checkout mode, unresolved work, cancellation, storage, rebase,
      * or bounded-work failure.
-     * @param {any} operations
+     * @param {TransactionOperation[]} operations
      * @param {Uint8Array} operation_id
      * @param {number} maximum_attempts
      * @param {number} maximum_conflicts
@@ -818,7 +818,7 @@ export class BrowserCheckout {
      *
      * Returns a JavaScript error for non-pinned checkouts, malformed paths,
      * corruption, cancellation, or bounded work.
-     * @param {any} paths
+     * @param {BrowserPathBatch} paths
      * @returns {Promise<BrowserResolvedFiles>}
      */
     resolveFiles(paths) {
@@ -1222,7 +1222,7 @@ export class BrowserFs {
      * @param {bigint} cursor
      * @param {number} maximum_objects
      * @param {bigint} maximum_object_bytes
-     * @returns {Promise<any>}
+     * @returns {Promise<GenerationTransferBatchResult>}
      */
     exportGenerationBatch(manifest, cursor, maximum_objects, maximum_object_bytes) {
         const ret = wasm.browserfs_exportGenerationBatch(this.__wbg_ptr, manifest, cursor, maximum_objects, maximum_object_bytes);
@@ -1256,7 +1256,7 @@ export class BrowserFs {
      * @param {bigint} cursor
      * @param {any} objects
      * @param {number} maximum_objects
-     * @returns {Promise<any>}
+     * @returns {Promise<GenerationTransferCursorResult>}
      */
     importGenerationBatch(manifest, cursor, objects, maximum_objects) {
         const ret = wasm.browserfs_importGenerationBatch(this.__wbg_ptr, manifest, cursor, objects, maximum_objects);
@@ -1827,7 +1827,7 @@ export class BrowserSpeculation {
      * Returns a JavaScript error for an inactive operation, storage or
      * authentication failure, bounded-work exhaustion, or cancellation.
      * @param {Uint8Array} operation_id
-     * @returns {Promise<any>}
+     * @returns {Promise<BrowserResidencyExecution>}
      */
     executeResidency(operation_id) {
         const ptr0 = passArray8ToWasm0(operation_id, wasm.__wbindgen_malloc);
@@ -1875,7 +1875,7 @@ export class BrowserSpeculation {
      * # Errors
      *
      * Returns a JavaScript error if metrics cannot be serialized.
-     * @returns {any}
+     * @returns {BrowserSpeculationMetrics}
      */
     metrics() {
         const ret = wasm.browserspeculation_metrics(this.__wbg_ptr);
@@ -1891,7 +1891,7 @@ export class BrowserSpeculation {
      *
      * Returns a JavaScript error for malformed input or a failed bounded transition.
      * @param {any} observation
-     * @returns {any}
+     * @returns {BrowserAdmissionResult}
      */
     observe(observation) {
         const ret = wasm.browserspeculation_observe(this.__wbg_ptr, observation);
@@ -1908,7 +1908,7 @@ export class BrowserSpeculation {
      * Returns a JavaScript error for malformed facts, unsupported tiers,
      * inactive residency, or a failed bounded transition.
      * @param {any} request
-     * @returns {any}
+     * @returns {BrowserPromotionAdmission}
      */
     planPromotion(request) {
         const ret = wasm.browserspeculation_planPromotion(this.__wbg_ptr, request);
@@ -1924,7 +1924,7 @@ export class BrowserSpeculation {
      *
      * Returns a JavaScript error if exact bounded accounting fails.
      * @param {bigint} bytes
-     * @returns {any}
+     * @returns {BrowserSpeculationPreemption}
      */
     preemptForForeground(bytes) {
         const ret = wasm.browserspeculation_preemptForForeground(this.__wbg_ptr, bytes);
@@ -1940,7 +1940,7 @@ export class BrowserSpeculation {
      *
      * Returns a JavaScript error for a malformed identity or failed transition.
      * @param {Uint8Array} generation_id
-     * @returns {any}
+     * @returns {BrowserSpeculationPreemption}
      */
     replaceGeneration(generation_id) {
         const ptr0 = passArray8ToWasm0(generation_id, wasm.__wbindgen_malloc);

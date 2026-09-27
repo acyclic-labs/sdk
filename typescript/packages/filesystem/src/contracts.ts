@@ -1400,21 +1400,13 @@ export type WasmRawSpeculation = WasmTypedClass<WasmBinding.BrowserSpeculation, 
   observe: [observation: ResidencyObservation];
   planPromotion: [request: PromotionRequest];
 }, {
-  executeResidency: { readonly objectBytes: string; readonly work: WasmBinding.BrowserWorkCounters };
+  executeResidency: WasmBinding.BrowserResidencyExecution;
 }, {
-  observe: { readonly status: string; readonly rejection?: string };
-  metrics: Record<string, Record<string, string>>;
-  planPromotion: {
-    readonly status: string;
-    readonly rejection?: string;
-    readonly operationId?: Uint8Array;
-    readonly objectId?: Uint8Array;
-    readonly sourceLocationId?: Uint8Array;
-    readonly destinationLocationId?: Uint8Array;
-    readonly estimatedCostUnits?: string;
-  };
-  preemptForForeground: SpeculationPreemption;
-  replaceGeneration: SpeculationPreemption;
+  observe: WasmBinding.BrowserAdmissionResult;
+  metrics: WasmBinding.BrowserSpeculationMetrics;
+  planPromotion: WasmBinding.BrowserPromotionAdmission;
+  preemptForForeground: WasmBinding.BrowserSpeculationPreemption;
+  replaceGeneration: WasmBinding.BrowserSpeculationPreemption;
 }>;
 
 export type WasmRawVolume = WasmTypedClass<WasmBinding.BrowserVolume, {
@@ -1429,15 +1421,11 @@ export type WasmRawVolume = WasmTypedClass<WasmBinding.BrowserVolume, {
 export type WasmRawCheckout = WasmTypedClass<
   WasmBinding.BrowserCheckout,
   {
-    applyTransaction: [operations: readonly TransactionOperation[]];
     createDevice: [path: string, kind: DeviceKind, major: number, minor: number];
     createSpecial: [path: string, kind: EmptySpecialKind];
     listDirectory: [path: string, after: string | undefined, maximumEntries: number];
     listDirectoryRecords: [path: string, after: string | undefined, maximumEntries: number];
     listNamedAttributes: [path: string, afterClass: NamedAttributeClass | undefined, afterName: Uint8Array | undefined, maximumEntries: number];
-    lookupBatchNoFollow: [paths: readonly string[]];
-    mutateLive: [operations: readonly TransactionOperation[], operationId: Uint8Array, maximumAttempts: number, maximumConflicts: number];
-    resolveFiles: [paths: readonly string[]];
     remove: [path: string, expectedFileId: Uint8Array | undefined];
     seekFileExtent: [path: string, offset: bigint, target: ExtentSeekTarget];
     seekFileExtentById: [fileId: Uint8Array, offset: bigint, target: ExtentSeekTarget];
@@ -1521,13 +1509,8 @@ export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
   openVolume: WasmRawVolume;
   exportObject: WasmBinding.BrowserFileReadResult;
   importObject: WasmBinding.BrowserMutationResult;
-  exportGenerationBatch: {
-    readonly firstObject: string;
-    readonly nextObject: string | undefined;
-    readonly objects: readonly Uint8Array[];
-    readonly work: WasmBinding.BrowserWorkCounters;
-  };
-  importGenerationBatch: { readonly nextObject: string; readonly work: WasmBinding.BrowserWorkCounters };
+  exportGenerationBatch: WasmBinding.GenerationTransferBatchResult;
+  importGenerationBatch: WasmBinding.GenerationTransferCursorResult;
   restoreVolume: WasmRawVolume;
 }, {
   createSpeculation: WasmRawSpeculation;

@@ -154,6 +154,35 @@ export type _WorkspaceRebaseUsesGeneratedDto = AssertExtends<
   Awaited<ReturnType<WasmRawWorkspace["liveRebase"]>>,
   GeneratedWasm.BrowserWorkspaceRebaseResult
 >;
+export type _CheckoutTransactionInputUsesGeneratedDto = AssertExtends<
+  Parameters<WasmRawCheckout["applyTransaction"]>,
+  [operations: GeneratedWasm.TransactionOperation[]]
+>;
+export type _CheckoutBatchPathInputsUseGeneratedDto = AssertExtends<
+  Parameters<WasmRawCheckout["lookupBatchNoFollow"]>,
+  [paths: GeneratedWasm.BrowserPathBatch]
+>;
+export type _CheckoutResolvePathInputUsesGeneratedDto = AssertExtends<
+  Parameters<WasmRawCheckout["resolveFiles"]>,
+  [paths: GeneratedWasm.BrowserPathBatch]
+>;
+export type _TransferUsesGeneratedDtos = AssertExtends<
+  Awaited<ReturnType<WasmRawFs["exportGenerationBatch"]>>,
+  GeneratedWasm.GenerationTransferBatchResult
+> & AssertExtends<
+  Awaited<ReturnType<WasmRawFs["importGenerationBatch"]>>,
+  GeneratedWasm.GenerationTransferCursorResult
+>;
+export type _ResidencyUsesGeneratedDtos = AssertExtends<
+  Awaited<ReturnType<WasmRawSpeculation["executeResidency"]>>,
+  GeneratedWasm.BrowserResidencyExecution
+> & AssertExtends<
+  ReturnType<WasmRawSpeculation["metrics"]>,
+  GeneratedWasm.BrowserSpeculationMetrics
+> & AssertExtends<
+  ReturnType<WasmRawSpeculation["preemptForForeground"]>,
+  GeneratedWasm.BrowserSpeculationPreemption
+>;
 
 type GeneratedFactoryExports = Pick<
   typeof GeneratedWasm,

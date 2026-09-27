@@ -1,5 +1,10 @@
 /* tslint:disable */
 /* eslint-disable */
+export interface BrowserAdmissionResult {
+    status: "admitted" | "rejected";
+    rejection: string | undefined;
+}
+
 export interface BrowserBatchLookupEntryResult {
     exists: boolean;
     fileId: Uint8Array | undefined;
@@ -194,12 +199,63 @@ export interface BrowserNamedAttributeResult {
     work: BrowserWorkCounters;
 }
 
+export interface BrowserPromotionAdmission {
+    status: "satisfied" | "planned" | "rejected";
+    rejection: string | undefined;
+    operationId: Uint8Array | undefined;
+    objectId: Uint8Array | undefined;
+    sourceLocationId: Uint8Array | undefined;
+    destinationLocationId: Uint8Array | undefined;
+    estimatedCostUnits: bigint | undefined;
+}
+
+export interface BrowserPromotionMetrics {
+    candidates: bigint;
+    satisfied: bigint;
+    planned: bigint;
+    active: bigint;
+    activeBytes: bigint;
+    activeCostUnits: bigint;
+    useful: bigint;
+    wasted: bigint;
+    rejected: bigint;
+}
+
 export interface BrowserRebaseResult {
     status: "safe" | "conflicted";
     generationId: Uint8Array | undefined;
     conflictCount: number;
     truncated: boolean;
     work: BrowserWorkCounters;
+}
+
+export interface BrowserResidencyExecution {
+    objectBytes: bigint;
+    work: BrowserWorkCounters;
+}
+
+export interface BrowserResidencyMetrics {
+    candidates: bigint;
+    admitted: bigint;
+    active: bigint;
+    activeBytes: bigint;
+    useful: bigint;
+    wasted: bigint;
+    rejectedFence: bigint;
+    rejectedDuplicate: bigint;
+    rejectedCapacity: bigint;
+    rejectedCost: bigint;
+    rejectedUsefulness: bigint;
+}
+
+export interface BrowserSpeculationMetrics {
+    residency: BrowserResidencyMetrics;
+    promotion: BrowserPromotionMetrics;
+}
+
+export interface BrowserSpeculationPreemption {
+    residencyOperationIds: Uint8Array[];
+    promotionOperationIds: Uint8Array[];
 }
 
 export interface BrowserStatResult {
@@ -309,6 +365,18 @@ export interface BrowserWorkspaceStat {
     metadata: BrowserWorkspaceMetadata;
 }
 
+export interface GenerationTransferBatchResult {
+    firstObject: bigint;
+    nextObject: bigint | undefined;
+    objects: Uint8Array[];
+    work: BrowserWorkCounters;
+}
+
+export interface GenerationTransferCursorResult {
+    nextObject: bigint;
+    work: BrowserWorkCounters;
+}
+
 export interface MergeConflictResult {
     kind: "file" | "binding";
     fileId: Uint8Array | undefined;
@@ -322,6 +390,10 @@ export interface NameComponentResult {
 }
 
 export type BrowserExtentPlanResult = { kind: "inline"; work: BrowserWorkCounters } | { kind: "sparse"; spans: BrowserExtentSpanResult[]; retainedAllocationBytes: bigint; work: BrowserWorkCounters };
+
+export type BrowserPathBatch = string[];
+
+export type TransactionOperation = { kind: "create-file"; path: string; bytes: Uint8Array } | { kind: "create-directory"; path: string } | { kind: "create-symbolic-link"; path: string; target: Uint8Array } | { kind: "create-special"; path: string; fileKind: "fifo" | "socket" | "mount-boundary" } | { kind: "create-device"; path: string; fileKind: "character-device" | "block-device"; major: number; minor: number } | { kind: "create-reparse-point"; path: string; payload: Uint8Array } | { kind: "remove"; path: string; expectedFileId: Uint8Array | undefined } | { kind: "rename"; source: string; destination: string; replace: boolean } | { kind: "hard-link"; source: string; destination: string } | { kind: "write"; path: string; offset: bigint; bytes: Uint8Array } | { kind: "set-metadata"; path: string; canonicalBytes: Uint8Array } | { kind: "resize"; path: string; logicalBytes: bigint } | { kind: "zero-range"; path: string; offset: bigint; length: bigint; allocated: boolean; extend: boolean } | { kind: "preallocate"; path: string; offset: bigint; length: bigint; keepSize: boolean } | { kind: "clone-range"; source: string; sourceOffset: bigint; destination: string; destinationOffset: bigint; length: bigint };
 
 
 /**
@@ -364,7 +436,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed operations, rejected semantics,
      * cancellation, storage, or bounded-work failure.
      */
-    applyTransaction(operations: any): Promise<BrowserTransactionResult>;
+    applyTransaction(operations: TransactionOperation[]): Promise<BrowserTransactionResult>;
     /**
      * Builds an immutable candidate generation without publishing authority.
      *
@@ -515,7 +587,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for non-array/excessive/malformed paths,
      * storage, cancellation, authentication, or bounded-work failure.
      */
-    lookupBatchNoFollow(paths: any): Promise<BrowserBatchLookupResult>;
+    lookupBatchNoFollow(paths: BrowserPathBatch): Promise<BrowserBatchLookupResult>;
     /**
      * Resolves one canonical absolute path without following links.
      *
@@ -534,7 +606,7 @@ export class BrowserCheckout {
      * wrong checkout mode, unresolved work, cancellation, storage, rebase,
      * or bounded-work failure.
      */
-    mutateLive(operations: any, operation_id: Uint8Array, maximum_attempts: number, maximum_conflicts: number): Promise<BrowserLiveTransactionResult>;
+    mutateLive(operations: TransactionOperation[], operation_id: Uint8Array, maximum_attempts: number, maximum_conflicts: number): Promise<BrowserLiveTransactionResult>;
     /**
      * Plans one bounded sparse range without reading file content blobs.
      *
@@ -729,7 +801,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for non-pinned checkouts, malformed paths,
      * corruption, cancellation, or bounded work.
      */
-    resolveFiles(paths: any): Promise<BrowserResolvedFiles>;
+    resolveFiles(paths: BrowserPathBatch): Promise<BrowserResolvedFiles>;
     /**
      * Resumes an unresolved direct-live transaction with the same operation identity.
      *
@@ -914,7 +986,7 @@ export class BrowserFs {
      * Returns a JavaScript error for malformed manifests, invalid cursors,
      * cancellation, storage, allocation, or bounded-work failures.
      */
-    exportGenerationBatch(manifest: any, cursor: bigint, maximum_objects: number, maximum_object_bytes: bigint): Promise<any>;
+    exportGenerationBatch(manifest: any, cursor: bigint, maximum_objects: number, maximum_object_bytes: bigint): Promise<GenerationTransferBatchResult>;
     /**
      * Exports one exact authenticated immutable object for resumable transfer.
      *
@@ -932,7 +1004,7 @@ export class BrowserFs {
      * Returns a JavaScript error for malformed manifests, cursor/body
      * bounds, cancellation, storage, or bounded-work failures.
      */
-    importGenerationBatch(manifest: any, cursor: bigint, objects: any, maximum_objects: number): Promise<any>;
+    importGenerationBatch(manifest: any, cursor: bigint, objects: any, maximum_objects: number): Promise<GenerationTransferCursorResult>;
     /**
      * Idempotently imports one immutable object under its authenticated identity.
      *
@@ -1142,7 +1214,7 @@ export class BrowserSpeculation {
      * Returns a JavaScript error for an inactive operation, storage or
      * authentication failure, bounded-work exhaustion, or cancellation.
      */
-    executeResidency(operation_id: Uint8Array): Promise<any>;
+    executeResidency(operation_id: Uint8Array): Promise<BrowserResidencyExecution>;
     /**
      * Records terminal usefulness for one promotion operation.
      *
@@ -1166,7 +1238,7 @@ export class BrowserSpeculation {
      *
      * Returns a JavaScript error if metrics cannot be serialized.
      */
-    metrics(): any;
+    metrics(): BrowserSpeculationMetrics;
     /**
      * Records foreground demand and admits one authenticated successor.
      *
@@ -1174,7 +1246,7 @@ export class BrowserSpeculation {
      *
      * Returns a JavaScript error for malformed input or a failed bounded transition.
      */
-    observe(observation: any): any;
+    observe(observation: any): BrowserAdmissionResult;
     /**
      * Plans one bounded promotion from exact caller-observed location facts.
      *
@@ -1183,7 +1255,7 @@ export class BrowserSpeculation {
      * Returns a JavaScript error for malformed facts, unsupported tiers,
      * inactive residency, or a failed bounded transition.
      */
-    planPromotion(request: any): any;
+    planPromotion(request: any): BrowserPromotionAdmission;
     /**
      * Atomically preempts both engines before recording foreground bytes.
      *
@@ -1191,7 +1263,7 @@ export class BrowserSpeculation {
      *
      * Returns a JavaScript error if exact bounded accounting fails.
      */
-    preemptForForeground(bytes: bigint): any;
+    preemptForForeground(bytes: bigint): BrowserSpeculationPreemption;
     /**
      * Atomically fences both engines onto a new immutable generation.
      *
@@ -1199,7 +1271,7 @@ export class BrowserSpeculation {
      *
      * Returns a JavaScript error for a malformed identity or failed transition.
      */
-    replaceGeneration(generation_id: Uint8Array): any;
+    replaceGeneration(generation_id: Uint8Array): BrowserSpeculationPreemption;
 }
 
 /**
