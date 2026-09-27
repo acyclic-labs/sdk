@@ -54,7 +54,7 @@ impl Session {
         let repo = home.path().join("repo");
         fs::create_dir_all(repo.join("pkg")).expect("repository");
         fs::write(repo.join("README.md"), "base\n").expect("readme");
-        fs::write(repo.join("pkg/shared.py"), "VALUE = 1\n").expect("shared");
+        fs::write(repo.join("pkg/shared.rs"), "VALUE = 1\n").expect("shared");
         let initialized = std::process::Command::new("git")
             .args(["init", "-q"])
             .current_dir(&repo)
@@ -280,25 +280,25 @@ fn posix_operations_inside_a_fork_reach_the_parent_on_merge() {
     let session = Session::open("posix");
     let fork = session.spawn(&session.root(), "posix");
     fs::create_dir_all(fork.path.join("new/deeper")).expect("mkdir");
-    fs::write(fork.path.join("new/deeper/a.py"), "A = 1\n").expect("write");
-    assert_eq!(sorted_names(&fork.path.join("new/deeper")), ["a.py"]);
+    fs::write(fork.path.join("new/deeper/a.rs"), "A = 1\n").expect("write");
+    assert_eq!(sorted_names(&fork.path.join("new/deeper")), ["a.rs"]);
     fs::rename(
-        fork.path.join("new/deeper/a.py"),
-        fork.path.join("new/b.py"),
+        fork.path.join("new/deeper/a.rs"),
+        fork.path.join("new/b.rs"),
     )
     .expect("rename");
-    assert_eq!(sorted_names(&fork.path.join("new")), ["b.py", "deeper"]);
+    assert_eq!(sorted_names(&fork.path.join("new")), ["b.rs", "deeper"]);
     fs::remove_dir(fork.path.join("new/deeper")).expect("rmdir");
     fs::remove_file(fork.path.join("README.md")).expect("unlink");
-    fs::write(fork.path.join("pkg/shared.py"), "VALUE = 2\n").expect("edit");
-    assert_eq!(read(&fork.path.join("pkg/shared.py")), "VALUE = 2\n");
+    fs::write(fork.path.join("pkg/shared.rs"), "VALUE = 2\n").expect("edit");
+    assert_eq!(read(&fork.path.join("pkg/shared.rs")), "VALUE = 2\n");
     assert!(
         !session.repo.join("new").exists(),
         "a fork's writes must not reach its parent before merge"
     );
     session.merge(&fork).expect("merge");
-    assert_eq!(session.files(), ["new/b.py", "pkg/shared.py"]);
-    assert_eq!(read(&session.repo.join("pkg/shared.py")), "VALUE = 2\n");
+    assert_eq!(session.files(), ["new/b.rs", "pkg/shared.rs"]);
+    assert_eq!(read(&session.repo.join("pkg/shared.rs")), "VALUE = 2\n");
 }
 
 #[test]
@@ -309,7 +309,7 @@ fn renaming_a_source_file_moves_it_in_the_parent() {
     fs::rename(fork.path.join("README.md"), fork.path.join("GUIDE.md")).expect("rename");
     assert_eq!(sorted_names(&fork.path), ["GUIDE.md", "pkg"]);
     session.merge(&fork).expect("merge");
-    assert_eq!(session.files(), ["GUIDE.md", "pkg/shared.py"]);
+    assert_eq!(session.files(), ["GUIDE.md", "pkg/shared.rs"]);
     assert_eq!(read(&session.repo.join("GUIDE.md")), "base\n");
 }
 
@@ -319,10 +319,10 @@ fn a_deletion_travels_up_one_parent_at_a_time() {
     let session = Session::open("deletion");
     let child = session.spawn(&session.root(), "child");
     let grandchild = session.spawn(&child, "grandchild");
-    fs::remove_file(grandchild.path.join("pkg/shared.py")).expect("unlink");
+    fs::remove_file(grandchild.path.join("pkg/shared.rs")).expect("unlink");
     session.merge(&grandchild).expect("merge grandchild");
-    assert!(!child.path.join("pkg/shared.py").exists());
-    assert!(session.repo.join("pkg/shared.py").exists());
+    assert!(!child.path.join("pkg/shared.rs").exists());
+    assert!(session.repo.join("pkg/shared.rs").exists());
     session.merge(&child).expect("merge child");
     assert_eq!(session.files(), ["README.md"]);
 }
@@ -346,13 +346,13 @@ fn parallel_siblings_adding_to_one_directory_both_land() {
     let session = Session::open("siblings");
     let a = session.spawn(&session.root(), "a");
     let b = session.spawn(&session.root(), "b");
-    fs::write(a.path.join("pkg/a.py"), "a\n").expect("write a");
-    fs::write(b.path.join("pkg/b.py"), "b\n").expect("write b");
+    fs::write(a.path.join("pkg/a.rs"), "a\n").expect("write a");
+    fs::write(b.path.join("pkg/b.rs"), "b\n").expect("write b");
     session.merge(&a).expect("merge a");
     session.merge(&b).expect("merge b");
     assert_eq!(
         session.files(),
-        ["README.md", "pkg/a.py", "pkg/b.py", "pkg/shared.py"]
+        ["README.md", "pkg/a.rs", "pkg/b.rs", "pkg/shared.rs"]
     );
 }
 
@@ -362,12 +362,12 @@ fn a_sibling_edit_is_not_reverted_by_a_fork_that_never_touched_the_file() {
     let session = Session::open("bystander");
     let editor = session.spawn(&session.root(), "editor");
     let bystander = session.spawn(&session.root(), "bystander");
-    fs::write(editor.path.join("pkg/shared.py"), "VALUE = 2\n").expect("edit");
-    fs::write(bystander.path.join("other.py"), "x\n").expect("write");
+    fs::write(editor.path.join("pkg/shared.rs"), "VALUE = 2\n").expect("edit");
+    fs::write(bystander.path.join("other.rs"), "x\n").expect("write");
     session.merge(&editor).expect("merge editor");
     session.merge(&bystander).expect("merge bystander");
-    assert_eq!(read(&session.repo.join("pkg/shared.py")), "VALUE = 2\n");
-    assert_eq!(session.files(), ["README.md", "other.py", "pkg/shared.py"]);
+    assert_eq!(read(&session.repo.join("pkg/shared.rs")), "VALUE = 2\n");
+    assert_eq!(session.files(), ["README.md", "other.rs", "pkg/shared.rs"]);
 }
 
 #[test]
@@ -376,12 +376,12 @@ fn grandchildren_merge_into_their_parent_only() {
     let session = Session::open("grandchildren");
     let child = session.spawn(&session.root(), "child");
     let grandchild = session.spawn(&child, "grandchild");
-    fs::write(grandchild.path.join("deep.py"), "deep\n").expect("write");
+    fs::write(grandchild.path.join("deep.rs"), "deep\n").expect("write");
     session.merge(&grandchild).expect("merge grandchild");
-    assert_eq!(read(&child.path.join("deep.py")), "deep\n");
-    assert!(!session.repo.join("deep.py").exists());
+    assert_eq!(read(&child.path.join("deep.rs")), "deep\n");
+    assert!(!session.repo.join("deep.rs").exists());
     session.merge(&child).expect("merge child");
-    assert_eq!(read(&session.repo.join("deep.py")), "deep\n");
+    assert_eq!(read(&session.repo.join("deep.rs")), "deep\n");
 }
 
 #[test]
@@ -390,8 +390,8 @@ fn discard_drops_a_whole_subtree() {
     let session = Session::open("discard");
     let child = session.spawn(&session.root(), "doomed");
     let grandchild = session.spawn(&child, "doomed-child");
-    fs::write(child.path.join("c.py"), "c\n").expect("write child");
-    fs::write(grandchild.path.join("g.py"), "g\n").expect("write grandchild");
+    fs::write(child.path.join("c.rs"), "c\n").expect("write child");
+    fs::write(grandchild.path.join("g.rs"), "g\n").expect("write grandchild");
     session.discard(&child);
     let references = session
         .agents()
@@ -400,7 +400,7 @@ fn discard_drops_a_whole_subtree() {
         .collect::<Vec<_>>();
     assert!(!references.contains(&child.reference()));
     assert!(!references.contains(&grandchild.reference()));
-    assert_eq!(session.files(), ["README.md", "pkg/shared.py"]);
+    assert_eq!(session.files(), ["README.md", "pkg/shared.rs"]);
 }
 
 #[test]
@@ -412,7 +412,7 @@ fn a_conflict_is_reported_aborted_and_does_not_block_later_merges() {
     let third = session.spawn(&session.root(), "third");
     fs::write(first.path.join("README.md"), "from first\n").expect("first");
     fs::write(second.path.join("README.md"), "from second\n").expect("second");
-    fs::write(third.path.join("third.py"), "t\n").expect("third");
+    fs::write(third.path.join("third.rs"), "t\n").expect("third");
     session.merge(&first).expect("merge first");
     let conflicts = session
         .merge(&second)
@@ -421,7 +421,7 @@ fn a_conflict_is_reported_aborted_and_does_not_block_later_merges() {
     session.discard(&second);
     session.merge(&third).expect("merge third");
     assert_eq!(read(&session.repo.join("README.md")), "from first\n");
-    assert_eq!(session.files(), ["README.md", "pkg/shared.py", "third.py"]);
+    assert_eq!(session.files(), ["README.md", "pkg/shared.rs", "third.rs"]);
 }
 
 #[test]
@@ -431,13 +431,13 @@ fn a_deletion_survives_a_conflict_resolved_with_continue() {
     let editor = session.spawn(&session.root(), "editor");
     let other = session.spawn(&session.root(), "other");
     fs::write(
-        editor.path.join("pkg/shared.py"),
+        editor.path.join("pkg/shared.rs"),
         "VALUE = 2
 ",
     )
     .expect("edit");
     fs::write(
-        other.path.join("pkg/shared.py"),
+        other.path.join("pkg/shared.rs"),
         "VALUE = 3
 ",
     )
@@ -452,12 +452,12 @@ fn a_deletion_survives_a_conflict_resolved_with_continue() {
         "{conflicted}"
     );
     fs::write(
-        session.repo.join("pkg/shared.py"),
+        session.repo.join("pkg/shared.rs"),
         "VALUE = 3
 ",
     )
     .expect("resolve");
-    let (added, text) = session.run(&["git", "add", "pkg/shared.py"], &session.repo, b"");
+    let (added, text) = session.run(&["git", "add", "pkg/shared.rs"], &session.repo, b"");
     assert!(added, "acyclic git add failed: {text}");
     let continued = session.cli_json(&["git", "merge", "--continue"], &session.repo);
     assert_eq!(
@@ -466,11 +466,11 @@ fn a_deletion_survives_a_conflict_resolved_with_continue() {
         "{continued}"
     );
     assert_eq!(
-        read(&session.repo.join("pkg/shared.py")),
+        read(&session.repo.join("pkg/shared.rs")),
         "VALUE = 3
 "
     );
-    assert_eq!(session.files(), ["pkg/shared.py"]);
+    assert_eq!(session.files(), ["pkg/shared.rs"]);
 }
 
 #[test]
@@ -480,22 +480,22 @@ fn a_fork_keeps_creating_files_after_the_root_changes() {
     let waiting = session.spawn(&session.root(), "waiting");
     for name in ["one", "two"] {
         let fork = session.spawn(&session.root(), name);
-        fs::write(fork.path.join(format!("{name}.py")), format!("{name}\n")).expect("write");
+        fs::write(fork.path.join(format!("{name}.rs")), format!("{name}\n")).expect("write");
         session.merge(&fork).expect("merge");
     }
-    fs::write(waiting.path.join("late.py"), "late\n").expect("late file");
+    fs::write(waiting.path.join("late.rs"), "late\n").expect("late file");
     fs::create_dir(waiting.path.join("late-dir")).expect("late dir");
-    fs::write(waiting.path.join("late-dir/x.py"), "x\n").expect("late nested");
+    fs::write(waiting.path.join("late-dir/x.rs"), "x\n").expect("late nested");
     session.merge(&waiting).expect("merge waiting");
     assert_eq!(
         session.files(),
         [
             "README.md",
-            "late-dir/x.py",
-            "late.py",
-            "one.py",
-            "pkg/shared.py",
-            "two.py"
+            "late-dir/x.rs",
+            "late.rs",
+            "one.rs",
+            "pkg/shared.rs",
+            "two.rs"
         ]
     );
 }
@@ -506,7 +506,7 @@ fn a_fork_keeps_creating_files_after_the_root_changes() {
 fn extended_attributes_set_in_a_fork_reach_the_parent() {
     let session = Session::open("xattr");
     let fork = session.spawn(&session.root(), "meta");
-    let tagged = fork.path.join("tagged.py");
+    let tagged = fork.path.join("tagged.rs");
     fs::write(&tagged, "x\n").expect("write");
     let set = std::process::Command::new("setfattr")
         .args(["-n", "user.acyclic.test", "-v", "1"])
@@ -514,11 +514,11 @@ fn extended_attributes_set_in_a_fork_reach_the_parent() {
         .status();
     let attribute_set = set.is_ok_and(|status| status.success());
     session.merge(&fork).expect("merge");
-    assert!(session.files().contains(&"tagged.py".to_owned()));
+    assert!(session.files().contains(&"tagged.rs".to_owned()));
     if attribute_set {
         let read = std::process::Command::new("getfattr")
             .args(["--only-values", "-n", "user.acyclic.test"])
-            .arg(session.repo.join("tagged.py"))
+            .arg(session.repo.join("tagged.rs"))
             .output()
             .expect("getfattr");
         assert_eq!(read.stdout, b"1");
@@ -531,7 +531,7 @@ fn extended_attributes_set_in_a_fork_reach_the_parent() {
 fn no_host_metadata_files_are_merged() {
     let session = Session::open("appledouble");
     let fork = session.spawn(&session.root(), "meta");
-    let tagged = fork.path.join("tagged.py");
+    let tagged = fork.path.join("tagged.rs");
     fs::write(&tagged, "x\n").expect("write");
     let _ = std::process::Command::new("xattr")
         .args(["-w", "com.acyclic.test", "1"])

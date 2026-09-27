@@ -60,8 +60,9 @@ cd "$npm_stage"
 bun pm pack --ignore-scripts --filename "$bun_archive" --quiet
 
 mkdir "$work/consumer"
+protobuf_version="$(bun -e 'console.log(require(process.argv[1]).dependencies["@bufbuild/protobuf"])' "$root/typescript/packages/harness/package.json")"
 cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","dependencies":{"@acyclic-labs/harness":"file:$bun_archive_url","@bufbuild/protobuf":"2.14.1","fake-indexeddb":"6.2.4"}}
+{"private":true,"type":"module","dependencies":{"@acyclic-labs/harness":"file:$bun_archive_url","@bufbuild/protobuf":"$protobuf_version","fake-indexeddb":"6.2.4"}}
 EOF
 cd "$work/consumer"
 bun install --ignore-scripts
