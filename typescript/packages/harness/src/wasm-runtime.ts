@@ -8,7 +8,8 @@ const REQUIRED_WASM_VALIDATORS = [
   "validateWireResume", "validateWireObserve", "validateWireCancel",
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
   "validateToolDefinition", "validateToolInvocation", "validateToolResult",
-  "validateModelContent", "validateUserInput", "admitModelEvent",
+  "validateModelContent", "validateUserInput", "admitModelEvent", "selectModelContext",
+  "validateModelContextSelection",
 ] as const;
 
 /** Reject a stale binding before runtime code can call a missing validator. */

@@ -85,6 +85,23 @@ function renderObject(value, indent) {
   return `Object.freeze({\n${entries.join("\n")}\n${" ".repeat(indent - 2)}})`;
 }
 
+function renderDeclarationType(key, value, indent) {
+  if (typeof value === "string") return "string";
+  if (typeof value === "number") return BIGINT_FIELDS.has(key) ? "bigint" : "number";
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return renderDeclarationShape(value, indent + 2);
+  }
+  throw new Error(`unsupported Rust default declaration value for ${key}`);
+}
+
+function renderDeclarationShape(value, indent) {
+  const entries = Object.entries(value).map(([snakeKey, entry]) => {
+    const key = snakeToCamel(snakeKey);
+    return `${" ".repeat(indent)}readonly ${key}: ${renderDeclarationType(key, entry, indent)};`;
+  });
+  return `{\n${entries.join("\n")}\n${" ".repeat(indent - 2)}}`;
+}
+
 function renderSources(root) {
   const defaults = readRustDefaults(root);
   assertSafeIntegers(defaults);
@@ -92,17 +109,10 @@ function renderSources(root) {
   const source = `${header}export const DEFAULT_VOLUME_LIMITS = ${renderObject(defaults.volume_limits, 2)};\n\n` +
     `export const DEFAULT_OBJECT_CACHE_OPTIONS = ${renderObject(defaults.object_cache_options, 2)};\n\n` +
     `export const DEFAULT_HOSTED_OPTIONS = ${renderObject(defaults.hosted, 2)};\n`;
-  const declaration = `${header}import type { NativeVolumeLimits } from "./native/binding.js";\n` +
-    `import type { BrowserObjectCacheOptions } from "./wasm/acyclic_fs_wasm.js";\n\n` +
+  const declaration = `${header}import type { NativeObjectCacheOptions, NativeVolumeLimits } from "./native/binding.js";\n\n` +
     "export declare const DEFAULT_VOLUME_LIMITS: Readonly<NativeVolumeLimits>;\n" +
-    "export declare const DEFAULT_OBJECT_CACHE_OPTIONS: Readonly<BrowserObjectCacheOptions>;\n" +
-    "export declare const DEFAULT_HOSTED_OPTIONS: Readonly<{\n" +
-    "  readonly protocolVersion: string;\n" +
-    "  readonly maximumResponseBytes: number;\n" +
-    "  readonly maximumPageItems: number;\n" +
-    "  readonly maximumByteResponseEnvelopeBytes: number;\n" +
-    "  readonly minimumHandshakeResponseBytes: number;\n" +
-    "}>;\n";
+    "export declare const DEFAULT_OBJECT_CACHE_OPTIONS: Readonly<NativeObjectCacheOptions>;\n" +
+    `export declare const DEFAULT_HOSTED_OPTIONS: Readonly<${renderDeclarationShape(defaults.hosted, 2)}>;\n`;
   return { source, declaration };
 }
 

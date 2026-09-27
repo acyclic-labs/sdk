@@ -236,6 +236,13 @@ export function fileDescriptor(bytes: Uint8Array, media_type: string): any;
 export function forkSeedFromReport(report: any): any;
 
 /**
+ * Runs the canonical Rust conversation projection over bytes captured by the
+ * owner.  TypeScript supplies a map rather than a callback so authorization
+ * and async reads finish before this deterministic core is entered.
+ */
+export function selectModelContext(conversation: any, selection: any, files: any, maximum_messages: number, maximum_attachments: number, maximum_render_bytes: number, maximum_projected_attachments: number): Promise<any>;
+
+/**
  * Derives the same pinned task registration digest used by native admission.
  */
 export function taskIdentityDigest(name: string, version: string, input_schema: any, output_schema: any, requirements: any, machine_digest: Uint8Array): Uint8Array;
@@ -269,6 +276,12 @@ export function validateIdentity(kind: string, value: string): string;
  * Validates provider-neutral model content under the exact native limits.
  */
 export function validateModelContent(content: any, limits: any): void;
+
+/**
+ * Validates selection order and tool linkage before the host resolves any
+ * owner-mediated file bytes.
+ */
+export function validateModelContextSelection(conversation: any, selection: any): void;
 
 /**
  * Validates a model-visible tool definition using the native contract.
@@ -365,12 +378,14 @@ export interface InitOutput {
     readonly encodeCanonicalJson: (a: any) => [number, number, number, number];
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
+    readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
     readonly uuidFromDigestHalf: (a: number, b: number, c: number) => [number, number, number, number];
     readonly validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
     readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
     readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly validateModelContent: (a: any, b: any) => [number, number];
+    readonly validateModelContextSelection: (a: any, b: any) => [number, number];
     readonly validateToolDefinition: (a: any) => [number, number];
     readonly validateToolInvocation: (a: any, b: any) => [number, number];
     readonly validateToolResult: (a: any, b: any) => [number, number];
@@ -416,11 +431,13 @@ export interface InitOutput {
     readonly wasmreducer_verifyScope: (a: number, b: any) => [number, number];
     readonly wasmreducer_volumeCapability: (a: number, b: any, c: number, d: number) => [number, number, number, number];
     readonly wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
+    readonly wasm_bindgen__convert__closures_____invoke__hc30e87c21bf13099_69: (a: number, b: number, c: any, d: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
+    readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_start: () => void;

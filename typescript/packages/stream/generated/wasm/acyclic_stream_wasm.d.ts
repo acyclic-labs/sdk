@@ -94,6 +94,14 @@ export function is_stream_error_code(value: string): boolean;
 export function normalizeCommitRequest(input: Uint8Array): Uint8Array;
 
 /**
+ * Decode one unary memory-provider response from canonical protobuf bytes
+ * into the public JavaScript result shape. Rust owns the response oneofs,
+ * scalar widths, copied byte buffers, and camelCase projection at this
+ * boundary; TypeScript keeps only request adaptation and cursor lifecycle.
+ */
+export function projectMemoryResponse(operation: string, input: Uint8Array): unknown;
+
+/**
  * Project a hosted HTTP error code onto the public Stream error vocabulary.
  *
  * The hosted API may report either the Rust-owned wire code or a public alias.
@@ -158,6 +166,7 @@ export interface InitOutput {
     readonly encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly is_stream_error_code: (a: number, b: number) => number;
     readonly normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];
+    readonly projectMemoryResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly publicHttpErrorCode: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateAppendRequest: (a: number, b: number) => [number, number];
     readonly validateHttpResponse: (a: number, b: number, c: number, d: number) => [number, number];

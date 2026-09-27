@@ -8,8 +8,8 @@ use crate::model::FilesystemProfile as EmbeddedProfile;
 use crate::wire::filesystem::v2 as wire;
 use crate::wire::protocol::v1 as protocol;
 use crate::{
-    Digest, Fs, GenerationId, HostedSourceInvalidation, HostedSourceResult, HostedSourceState,
-    IdempotencyKey,
+    DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES, Digest, FILESYSTEM_PROTOCOL_VERSION, Fs, GenerationId,
+    HostedSourceInvalidation, HostedSourceResult, HostedSourceState, IdempotencyKey,
 };
 use bytes::Bytes;
 use futures::Stream;
@@ -27,10 +27,11 @@ type Client = wire::filesystem_service_client::FilesystemServiceClient<Channel>;
 
 /// Largest caller-supplied PEM trust bundle accepted by the hosted constructor.
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
-const MINIMUM_HANDSHAKE_RESPONSE_BYTES: usize = 512;
-// ExportChunk is the largest byte-bearing envelope: an eight-byte cursor,
-// 33-byte typed object ID, contents, terminal flag, tags, and length varints.
-const MAX_BYTE_RESPONSE_ENVELOPE_BYTES: u64 = 10 + 35 + 11 + 2;
+/// Smallest encoded response that can contain a valid protocol handshake.
+pub const MINIMUM_HANDSHAKE_RESPONSE_BYTES: usize = 512;
+/// Largest encoded byte-bearing envelope: an eight-byte cursor, 33-byte typed
+/// object ID, contents, terminal flag, tags, and length varints.
+pub const MAX_BYTE_RESPONSE_ENVELOPE_BYTES: u64 = 10 + 35 + 11 + 2;
 
 /// Connection and client-side response bounds for [`Fs::hosted`].
 #[derive(Clone, Eq, PartialEq)]
@@ -77,7 +78,8 @@ impl HostedFsOptions {
             endpoint: endpoint.into(),
             bearer_token: bearer_token.into(),
             ca_certificate_pem: None,
-            maximum_response_bytes: 16 * 1024 * 1024,
+            maximum_response_bytes: usize::try_from(DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES)
+                .expect("hosted response default fits usize"),
             maximum_request_bytes: 16 * 1024 * 1024,
             connect_timeout: Duration::from_secs(10),
             request_timeout: Duration::from_secs(30),
@@ -272,13 +274,13 @@ impl HostedFs {
         let mut handshake = Request::new(wire::HandshakeRequest {
             protocol: Some(protocol::HandshakeRequest {
                 protocol: Some(protocol::ProtocolIdentity {
-                    version: "1".to_owned(),
+                    version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
                     descriptor_digest: crate::descriptor_digest(),
                 }),
                 required: Some(protocol::CapabilitySet {
                     capabilities: vec![protocol::Capability {
                         name: "filesystem".to_owned(),
-                        version: "1".to_owned(),
+                        version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
                     }],
                 }),
             }),
@@ -1426,7 +1428,7 @@ fn validate_handshake(
     let protocol = handshake.protocol.ok_or(HostedFsError::InvalidResponse(
         "handshake protocol is absent",
     ))?;
-    if protocol.version != "1" {
+    if protocol.version != FILESYSTEM_PROTOCOL_VERSION {
         return Err(HostedFsError::InvalidResponse(
             "filesystem protocol version is unsupported",
         ));
@@ -1439,11 +1441,9 @@ fn validate_handshake(
     let supported = handshake.supported.ok_or(HostedFsError::InvalidResponse(
         "supported capabilities are absent",
     ))?;
-    if !supported
-        .capabilities
-        .iter()
-        .any(|capability| capability.name == "filesystem" && capability.version == "1")
-    {
+    if !supported.capabilities.iter().any(|capability| {
+        capability.name == "filesystem" && capability.version == FILESYSTEM_PROTOCOL_VERSION
+    }) {
         return Err(HostedFsError::InvalidResponse(
             "filesystem capability version is unsupported",
         ));
@@ -1451,7 +1451,7 @@ fn validate_handshake(
     let capabilities = response.capabilities.ok_or(HostedFsError::InvalidResponse(
         "filesystem capabilities are absent",
     ))?;
-    if capabilities.contract_version != "1" {
+    if capabilities.contract_version != FILESYSTEM_PROTOCOL_VERSION {
         return Err(HostedFsError::InvalidResponse(
             "filesystem contract version is unsupported",
         ));

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedFiles = directory => {
@@ -179,6 +180,15 @@ try {
     }
     if (!readFileSync(descriptor).equals(readFileSync(join(root, destination)))) {
       throw new Error(`generated descriptor drift: ${destination}`);
+    }
+  }
+  for (const [relative, declaration] of [
+    ["typescript/packages/filesystem/generated/descriptor-digest.js", false],
+    ["typescript/packages/filesystem/generated/descriptor-digest.d.ts", true],
+  ]) {
+    const expected = filesystemDescriptorDigestSource(root, declaration);
+    if (readFileSync(join(root, relative), "utf8") !== expected) {
+      throw new Error(`generated filesystem descriptor digest drift: ${relative}`);
     }
   }
 

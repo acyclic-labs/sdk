@@ -55,6 +55,27 @@ export interface ModelEventAdmission {
   readonly state: ModelEventAdmissionState;
 }
 
+/** Serde shape returned by the canonical Rust context projector. */
+export type NativeFileRef = Omit<FileRef, "descriptor"> & Readonly<{
+  descriptor: Omit<FileDescriptor, "byte_length"> & Readonly<{ byte_length: number | bigint }>;
+}>;
+export type NativeModelContentPart =
+  | Readonly<{ kind: "text"; text: string }>
+  | Readonly<{ kind: "file"; file: NativeFileRef; policy: "reference" | "bounded_full" | "native" }>
+  | Readonly<{ kind: "tool_call"; call_id: string; name: string; arguments: unknown }>
+  | Readonly<{ kind: "tool_result"; call_id: string; name: string; value: unknown }>;
+export type NativeModelContent = string | NativeModelContentPart | readonly NativeModelContentPart[];
+export interface NativeSelectedModelContext {
+  readonly selection: Readonly<{
+    readonly conversation_revision: bigint;
+    readonly message_ids: readonly ConversationMessageId[];
+  }>;
+  readonly messages: readonly Readonly<{
+    role: "system" | "user" | "assistant" | "tool";
+    content: NativeModelContent;
+  }>[];
+}
+
 export interface MachineIdentityWire {
   readonly name: string;
   readonly version: string;
@@ -148,7 +169,8 @@ const REQUIRED_NATIVE_EXPORTS = [
   "validateContract", "verifyFileBytes", "decodeAttachmentManifest",
   "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
   "validateToolDefinition", "validateToolInvocation", "validateToolResult",
-  "validateModelContent", "validateUserInput", "admitModelEvent",
+  "validateModelContent", "validateUserInput", "admitModelEvent", "selectModelContext",
+  "validateModelContextSelection",
   "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
   "validateWireResume", "validateWireObserve", "validateWireCancel",
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
@@ -273,6 +295,30 @@ export class NativeContracts {
       throw new TypeError("native model event admission returned an invalid state");
     }
     return freezeNative({ ...admitted, state: { ...admittedState, calls: [...admittedState.calls] } });
+  }
+
+  /** Runs the bounded canonical Rust projection over owner-captured bytes. */
+  selectModelContext(
+    conversation: Readonly<{ agent: string | null; messages: readonly ConversationMessage[] }>,
+    selection: Readonly<{ conversation_revision: bigint; message_ids: readonly ConversationMessageId[] }>,
+    files: ReadonlyMap<string, Uint8Array>,
+    maximumMessages: number,
+    maximumAttachments: number,
+    maximumRenderBytes: number,
+    maximumProjectedAttachments: number,
+  ): Promise<NativeSelectedModelContext> {
+    return this.native.selectModelContext(
+      conversation, selection, files, maximumMessages, maximumAttachments, maximumRenderBytes,
+      maximumProjectedAttachments,
+    ).then(value => normalizeNativeValue(value) as NativeSelectedModelContext);
+  }
+
+  /** Runs canonical selection/linkage checks before owner-mediated reads. */
+  validateModelContextSelection(
+    conversation: Readonly<{ agent: string | null; messages: readonly ConversationMessage[] }>,
+    selection: Readonly<{ conversation_revision: bigint; message_ids: readonly ConversationMessageId[] }>,
+  ): void {
+    this.native.validateModelContextSelection(conversation, selection);
   }
 
   validateWireHandshake(request: Uint8Array, response: Uint8Array): Uint8Array {

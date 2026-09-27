@@ -90,6 +90,13 @@ test("explicit model selection resolves complete manifest-backed attachments bey
   expect(Array.isArray(parts) ? parts.length : 0).toBe(131);
   expect(Array.isArray(parts) ? parts[0] : null).toEqual({ kind: "file", file: content, policy: "bounded_full" });
   expect(Array.isArray(parts) ? parts[1] : null).toEqual({ kind: "file", file: image, policy: "native" });
+  const bounded = await selectModelContext(state, { conversationRevision: 1n, messageIds: [id] }, {
+    ...options, maxProjectedAttachments: 1,
+  });
+  const boundedParts = bounded.messages[0]?.content;
+  expect(Array.isArray(boundedParts) ? boundedParts.length : 0).toBe(3);
+  expect(Array.isArray(boundedParts) ? boundedParts.at(-1) : null)
+    .toEqual({ kind: "text", text: "[129 additional attachments omitted from this bounded model context]" });
   await expect(selectModelContext(state, { conversationRevision: 1n, messageIds: [id] }, {
     ...options, decodeManifest: async () => [{ file: content, label: null }],
   })).rejects.toThrow("disagrees with canonical manifest");
@@ -164,6 +171,53 @@ test("tool projection links each result to its exact call, even when provider ca
     .rejects.toThrow("lacks its call");
 });
 
+test("tool linkage and exact JSON numbers fail before owner reads", async () => {
+  const callBytes = new TextEncoder().encode(JSON.stringify({ call_id: "reused", name: "tool", arguments: {} }));
+  const call = await reference("tool/preflight-call.json", callBytes, "application/json");
+  const resultBytes = new TextEncoder().encode(JSON.stringify({ value: "unused" }));
+  const result = await reference("tool/preflight-result.json", resultBytes, "application/json");
+  const callId = fixtureId("30303030-3030-3030-3030-303030303030");
+  const resultId = fixtureId("40404040-4040-4040-4040-404040404040");
+  const malformed = {
+    id: resultId, sequence: 2n, kind: "tool_result" as const, content: result,
+    attachments: { kind: "inline" as const, items: [] }, reply_to: null, tool_call_id: "reused", extensions: {},
+  } as unknown as ConversationMessage;
+  const state = conversationState(
+    { id: callId, sequence: 1n, kind: "tool_call", content: call,
+      attachments: { kind: "inline", items: [] }, reply_to: null, tool_call_id: "reused", extensions: {} },
+    malformed,
+  );
+  let reads = 0;
+  await expect(selectModelContext(state, { conversationRevision: 2n, messageIds: [callId, resultId] }, {
+    resolveFile: async () => { reads++; return new Uint8Array(); },
+  })).rejects.toThrow("lacks its call");
+  expect(reads).toBe(0);
+
+  const inexactCallBytes = new TextEncoder().encode('{"call_id":"reused","name":"tool","arguments":{"n":1e20}}');
+  const inexactCall = await reference("tool/inexact-call.json", inexactCallBytes, "application/json");
+  const inexactState = conversationState({
+    id: callId, sequence: 1n, kind: "tool_call", content: inexactCall,
+    attachments: { kind: "inline", items: [] }, reply_to: null, tool_call_id: "reused", extensions: {},
+  });
+  await expect(selectModelContext(inexactState, { conversationRevision: 1n, messageIds: [callId] }, {
+    resolveFile: async () => inexactCallBytes,
+  })).rejects.toThrow("inexact");
+});
+
+test("tool JSON artifacts retain the 16 MiB parser ceiling", async () => {
+  const oversizedBytes = new TextEncoder().encode(
+    `{"call_id":"reused","name":"tool","arguments":{"padding":"${"x".repeat(16 * 1024 * 1024)}"}}`,
+  );
+  const oversized = await reference("tool/oversized.json", oversizedBytes, "application/json");
+  const callId = fixtureId("60606060-6060-6060-6060-606060606060");
+  const state = conversationState({ id: callId, sequence: 1n, kind: "tool_call", content: oversized,
+    attachments: { kind: "inline", items: [] }, reply_to: null, tool_call_id: "reused", extensions: {} });
+  await expect(selectModelContext(state, { conversationRevision: 1n, messageIds: [callId] }, {
+    maxRenderBytes: 32 * 1024 * 1024,
+    resolveFile: async () => oversizedBytes,
+  })).rejects.toThrow("JSON byte limit");
+});
+
 test("large primary text stays a reference while a primary image stays native", async () => {
   const text = await reference("messages/large.txt", new TextEncoder().encode("longer than eight"), "text/plain");
   const image = await reference("messages/photo.png", new Uint8Array([137, 80, 78, 71]), "image/png");
@@ -179,6 +233,33 @@ test("large primary text stays a reference while a primary image stays native", 
   expect(projected.messages[1]?.content).toEqual([{ kind: "file", file: image, policy: "native" }]);
 });
 
+test("safe integer limits above the WASM u32 ABI ceiling remain accepted", async () => {
+  const content = await reference("messages/u32-bound.txt", new TextEncoder().encode("bound"), "text/plain");
+  const state = conversationState({ id, sequence: 1n, kind: "user", content,
+    attachments: { kind: "inline", items: [] }, reply_to: null, tool_call_id: null, extensions: {} });
+  const projected = await selectModelContext(state, { conversationRevision: 1n, messageIds: [id] }, {
+    maxMessages: Number.MAX_SAFE_INTEGER,
+    maxAttachments: Number.MAX_SAFE_INTEGER,
+  });
+  expect(projected.messages).toHaveLength(1);
+});
+
+test("specialized conversation kinds fail before resolving manifest attachments", async () => {
+  const content = await reference("messages/interaction.txt", new TextEncoder().encode("interaction"), "text/plain");
+  const manifestBytes = contracts.encodeAttachmentManifest([{ file: content, label: null }]);
+  const manifest = await reference("manifests/interaction.json", manifestBytes,
+    "application/vnd.acyclic.harness.attachments+json");
+  const interactionId = fixtureId("50505050-5050-5050-5050-505050505050");
+  const state = conversationState({ id: interactionId, sequence: 1n, kind: "interaction", content,
+    attachments: { kind: "manifest", manifest, item_count: 1 },
+    reply_to: null, tool_call_id: null, extensions: {} });
+  let manifestReads = 0;
+  await expect(selectModelContext(state, { conversationRevision: 1n, messageIds: [interactionId] }, {
+    resolveManifest: async () => { manifestReads++; return manifestBytes; },
+  })).rejects.toThrow("requires a specialized model projection");
+  expect(manifestReads).toBe(0);
+});
+
 test("a compacted remote view uses its authoritative revision, not its loaded message count", async () => {
   const content = await reference("messages/retained.txt", new TextEncoder().encode("retained"), "text/plain");
   const view: ProjectableConversation = {
@@ -189,6 +270,11 @@ test("a compacted remote view uses its authoritative revision, not its loaded me
   const selected = await selectModelContext(view, { conversationRevision: view.revision,
     messageIds: [id] }, {});
   expect(selected.selection.conversationRevision).toBe(view.revision);
+  const beyondRevision: ProjectableConversation = {
+    ...view, messages: [{ ...view.messages[0]!, sequence: view.revision + 1n }],
+  };
+  await expect(selectModelContext(beyondRevision, { conversationRevision: view.revision,
+    messageIds: [id] }, {})).rejects.toThrow("ordered and unique");
   await expect(selectModelContext(view, { conversationRevision: view.revision - 1n,
     messageIds: [id] }, {})).rejects.toThrow("stale");
 });

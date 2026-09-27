@@ -23,6 +23,13 @@ use tonic::{Request, Response, Status};
 
 type WireStream<T> = Pin<Box<dyn futures::Stream<Item = Result<T, Status>> + Send + 'static>>;
 
+/// Version of the public Filesystem protocol identity.
+pub const FILESYSTEM_PROTOCOL_VERSION: &str = "1";
+/// Default maximum encoded response accepted by the hosted Filesystem service.
+pub const DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+/// Default maximum page size advertised by the hosted Filesystem service.
+pub const DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS: u32 = 1_024;
+
 enum JoinTargetHead<A, O> {
     Expected {
         head: crate::Head,
@@ -50,9 +57,9 @@ impl Default for FilesystemWireLimits {
     fn default() -> Self {
         Self {
             maximum_request_bytes: 16 * 1024 * 1024,
-            maximum_response_bytes: 16 * 1024 * 1024,
+            maximum_response_bytes: DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES,
             maximum_transaction_mutations: 2_048,
-            maximum_page_items: 1_024,
+            maximum_page_items: DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS,
             maximum_credential_seconds: 3_600,
         }
     }
@@ -428,7 +435,7 @@ where
             .protocol
             .and_then(|value| value.protocol)
         {
-            if !requested.version.is_empty() && requested.version != "1" {
+            if !requested.version.is_empty() && requested.version != FILESYSTEM_PROTOCOL_VERSION {
                 return Err(Status::failed_precondition(
                     "unsupported filesystem contract version",
                 ));
@@ -441,7 +448,7 @@ where
             }
         }
         let protocol = protocol::ProtocolIdentity {
-            version: "1".to_owned(),
+            version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
             descriptor_digest: crate::descriptor_digest(),
         };
         Ok(Response::new(wire::HandshakeResponse {
@@ -450,12 +457,12 @@ where
                 supported: Some(protocol::CapabilitySet {
                     capabilities: vec![protocol::Capability {
                         name: "filesystem".to_owned(),
-                        version: "1".to_owned(),
+                        version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
                     }],
                 }),
             }),
             capabilities: Some(wire::Capabilities {
-                contract_version: "1".to_owned(),
+                contract_version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
                 profiles: vec![
                     wire::FilesystemProfile::Portable as i32,
                     wire::FilesystemProfile::Posix as i32,

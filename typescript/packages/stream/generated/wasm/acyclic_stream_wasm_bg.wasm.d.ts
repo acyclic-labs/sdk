@@ -8,6 +8,7 @@ export const decodeHttpResponse: (a: number, b: number, c: number, d: number) =>
 export const encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const is_stream_error_code: (a: number, b: number) => number;
 export const normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];
+export const projectMemoryResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const publicHttpErrorCode: (a: number, b: number, c: number, d: number) => [number, number];
 export const validateAppendRequest: (a: number, b: number) => [number, number];
 export const validateHttpResponse: (a: number, b: number, c: number, d: number) => [number, number];

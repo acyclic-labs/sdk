@@ -15,6 +15,13 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+#[derive(Debug, Deserialize)]
+struct ProjectedToolInvocation {
+    call_id: String,
+    name: String,
+    arguments: serde_json::Value,
+}
+
 /// Provider-owned, grant-checked resolver for a complete attachment manifest.
 pub trait AttachmentListResolver: Send + Sync {
     /// Verifies the pinned manifest bytes and returns its complete ordered list.
@@ -90,9 +97,39 @@ pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
     maximum_attachments: usize,
     maximum_render_bytes: u64,
 ) -> Result<SelectedModelContext> {
+    select_model_context_with_projection_limit(
+        conversation,
+        selection,
+        resolver,
+        maximum_messages,
+        maximum_attachments,
+        maximum_render_bytes,
+        1_022,
+    )
+    .await
+}
+
+/// Selects a bounded ordered subset with an explicit provider attachment
+/// ceiling.  The public native convenience keeps the protocol ceiling of
+/// 1,022; remote adapters may choose a lower bound without reimplementing the
+/// projection reducer.
+#[allow(
+    clippy::too_many_lines,
+    reason = "projection enforces one bounded ordered selection"
+)]
+pub async fn select_model_context_with_projection_limit<R: AttachmentListResolver + ?Sized>(
+    conversation: &ConversationState,
+    selection: ModelContextSelection,
+    resolver: &R,
+    maximum_messages: usize,
+    maximum_attachments: usize,
+    maximum_render_bytes: u64,
+    maximum_projected_attachments: usize,
+) -> Result<SelectedModelContext> {
     selection.validate(conversation)?;
     if maximum_messages == 0
         || maximum_render_bytes == 0
+        || maximum_projected_attachments > 1_022
         || selection.message_ids.len() > maximum_messages
     {
         return Err(Error::Invalid(
@@ -118,9 +155,9 @@ pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
             .ok_or_else(|| Error::Invalid("selected conversation message is missing".into()))?;
         message.validate()?;
         if message.kind == MessageKind::ToolCall {
-            let invocation: ToolInvocation =
+            let invocation: ProjectedToolInvocation =
                 read_json_artifact(resolver, &message.content, maximum_render_bytes).await?;
-            invocation.validate()?;
+            ToolInvocation::validate_identity(&invocation.call_id, &invocation.name)?;
             if message.tool_call_id.as_deref() != Some(invocation.call_id.as_str()) {
                 return Err(Error::Invalid(
                     "tool call artifact identity does not match its record".into(),
@@ -157,9 +194,7 @@ pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
                 .and_then(|id| tool_calls.get(&id))
                 .ok_or_else(|| Error::Invalid("selected tool result lacks its call".into()))?;
             if linked_call_id != call_id {
-                return Err(Error::Invalid(
-                    "selected tool result has a mismatched call".into(),
-                ));
+                return Err(Error::Invalid("selected tool result lacks its call".into()));
             }
             let attachments = resolve_attachments(message, resolver, maximum_attachments).await?;
             let projection = attachments
@@ -210,7 +245,7 @@ pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
             ));
         }
         let attachments = resolve_attachments(message, resolver, maximum_attachments).await?;
-        let projected_count = attachments.len().min(1_022);
+        let projected_count = attachments.len().min(maximum_projected_attachments);
         let omitted_count = attachments.len() - projected_count;
         for attachment in attachments.into_iter().take(projected_count) {
             attachment.validate()?;
@@ -241,11 +276,131 @@ pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
     })
 }
 
+/// Selects from a loaded, possibly compacted conversation view whose
+/// authoritative revision is retained separately from the number of loaded
+/// messages.  The full-history variant above remains strict for native
+/// callers; this entry point is the bridge used by remote/WASM views.
+pub async fn select_model_context_at_revision<R: AttachmentListResolver + ?Sized>(
+    conversation: &ConversationState,
+    selection: ModelContextSelection,
+    conversation_revision: u64,
+    resolver: &R,
+    maximum_messages: usize,
+    maximum_attachments: usize,
+    maximum_render_bytes: u64,
+    maximum_projected_attachments: usize,
+) -> Result<SelectedModelContext> {
+    validate_model_context_selection_at_revision(conversation, &selection, conversation_revision)?;
+    let loaded_revision = u64::try_from(conversation.messages.len())
+        .map_err(|_| Error::Invalid("conversation message count exceeds u64".into()))?;
+    let loaded_selection = ModelContextSelection {
+        conversation_revision: loaded_revision,
+        message_ids: selection.message_ids.clone(),
+    };
+    let mut selected = select_model_context_with_projection_limit(
+        conversation,
+        loaded_selection,
+        resolver,
+        maximum_messages,
+        maximum_attachments,
+        maximum_render_bytes,
+        maximum_projected_attachments,
+    )
+    .await?;
+    selected.selection.conversation_revision = conversation_revision;
+    Ok(selected)
+}
+
+/// Validates selection order and role/linkage semantics without resolving any
+/// owner bytes.  Remote adapters use this before collecting authorized reads.
+pub fn validate_model_context_selection_at_revision(
+    conversation: &ConversationState,
+    selection: &ModelContextSelection,
+    conversation_revision: u64,
+) -> Result<()> {
+    if selection.conversation_revision != conversation_revision {
+        return Err(Error::Conflict(
+            "model context selection has a stale conversation revision".into(),
+        ));
+    }
+    let by_id = conversation
+        .messages
+        .iter()
+        .map(|message| (message.id, message))
+        .collect::<HashMap<_, _>>();
+    if by_id.len() != conversation.messages.len() {
+        return Err(Error::Invalid(
+            "conversation has duplicate message identities".into(),
+        ));
+    }
+    let mut previous_sequence = 0;
+    let mut tool_calls: HashMap<Uuid, &ConversationMessage> = HashMap::new();
+    for id in &selection.message_ids {
+        let message = by_id
+            .get(id)
+            .copied()
+            .ok_or_else(|| Error::Invalid("selected conversation message is missing".into()))?;
+        if message.sequence <= previous_sequence || message.sequence > conversation_revision {
+            return Err(Error::Invalid(
+                "model context selection is not ordered and unique".into(),
+            ));
+        }
+        previous_sequence = message.sequence;
+        message.validate()?;
+        match &message.kind {
+            MessageKind::ToolCall => {
+                if message.content.descriptor().media_type() != "application/json" {
+                    return Err(Error::Invalid(
+                        "tool artifact type or rendering limit is invalid".into(),
+                    ));
+                }
+                tool_calls.insert(message.id, message);
+            }
+            MessageKind::ToolResult => {
+                if message.content.descriptor().media_type() != "application/json" {
+                    return Err(Error::Invalid(
+                        "tool result artifact type is invalid".into(),
+                    ));
+                }
+                let call_id = message
+                    .tool_call_id
+                    .as_deref()
+                    .ok_or_else(|| Error::Invalid("tool result lacks call identity".into()))?;
+                let linked_call_id = message
+                    .reply_to
+                    .and_then(|id| {
+                        tool_calls
+                            .get(&id)
+                            .and_then(|call| call.tool_call_id.as_deref())
+                    })
+                    .ok_or_else(|| Error::Invalid("selected tool result lacks its call".into()))?;
+                if linked_call_id != call_id {
+                    return Err(Error::Invalid("selected tool result lacks its call".into()));
+                }
+            }
+            MessageKind::System | MessageKind::User | MessageKind::Assistant => {}
+            kind => {
+                return Err(Error::Unsupported(format!(
+                    "message kind {:?} requires a specialized model projection",
+                    kind
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Sized>(
     resolver: &R,
     file: &FileRef,
     maximum_bytes: u64,
 ) -> Result<T> {
+    const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
+    if file.descriptor().byte_length() > MAX_JSON_BYTES {
+        return Err(Error::Invalid(
+            "tool artifact exceeds JSON byte limit".into(),
+        ));
+    }
     if file.descriptor().media_type() != "application/json"
         || file.descriptor().byte_length() > maximum_bytes
     {
@@ -254,14 +409,57 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
         ));
     }
     let bytes = resolver.read(file).await?;
+    if bytes.len() as u64 > MAX_JSON_BYTES {
+        return Err(Error::Invalid(
+            "resolved tool artifact exceeds JSON byte limit".into(),
+        ));
+    }
     if bytes.len() as u64 > maximum_bytes {
         return Err(Error::Invalid(
             "resolved tool artifact exceeds rendering limit".into(),
         ));
     }
     file.descriptor().verify(&bytes)?;
-    serde_json::from_slice(&bytes)
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
+    validate_model_json_numbers(&value)?;
+    serde_json::from_value(value)
         .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))
+}
+
+fn validate_model_json_numbers(value: &serde_json::Value) -> Result<()> {
+    match value {
+        serde_json::Value::Array(values) => values.iter().try_for_each(validate_model_json_numbers),
+        serde_json::Value::Object(values) => {
+            values.values().try_for_each(validate_model_json_numbers)
+        }
+        serde_json::Value::Number(number) => {
+            const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+            if let Some(value) = number.as_i64() {
+                if !(-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value) {
+                    return Err(Error::Invalid(
+                        "tool artifact contains an inexact number".into(),
+                    ));
+                }
+            } else if let Some(value) = number.as_u64() {
+                if value > MAX_SAFE_INTEGER as u64 {
+                    return Err(Error::Invalid(
+                        "tool artifact contains an inexact number".into(),
+                    ));
+                }
+            } else if let Some(value) = number.as_f64()
+                && (!value.is_finite()
+                    || (value == 0.0 && value.is_sign_negative())
+                    || (value.fract() == 0.0 && value.abs() > MAX_SAFE_INTEGER as f64))
+            {
+                return Err(Error::Invalid(
+                    "tool artifact contains an inexact number".into(),
+                ));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 async fn resolve_attachments<R: AttachmentListResolver + ?Sized>(

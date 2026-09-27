@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { create, toBinary } from "@bufbuild/protobuf";
-import { AppendMutationSchema, AppendRequestSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, DeleteRequestSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema, TrimRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
-import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
+import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, DeleteRequestSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema, TrimRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
+import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm } from "../src/contract.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
 
@@ -317,6 +317,47 @@ describe("website Stream contract", () => {
     firstRead.value[0] = 77;
     const secondRead = (await provider.read("projection/events", { from: 1n, limit: 1 }).next()).value;
     expect(secondRead?.value).toEqual(new Uint8Array([4]));
+  });
+
+  test("Rust memory response projector owns widths, copies, and missing oneofs", () => {
+    const sourceCommitId = new Uint8Array(32).fill(9);
+    const projected = projectMemoryResponse("append", toBinary(AppendResponseSchema, create(AppendResponseSchema, {
+      outcome: { case: "committed", value: { start: 0xffff_ffff_ffff_ffffn, end: 0xffff_ffff_ffff_ffffn, tail: 0xffff_ffff_ffff_ffffn, commitId: sourceCommitId } },
+    }))) as { readonly ok: true; readonly start: bigint; readonly commitId: Uint8Array };
+    expect(projected).toMatchObject({ ok: true, start: 0xffff_ffff_ffff_ffffn });
+    expect(projected.commitId).toEqual(sourceCommitId);
+    expect(projected.commitId).not.toBe(sourceCommitId);
+    sourceCommitId[0] = 1;
+    expect(projected.commitId[0]).toBe(9);
+    expect(() => projectMemoryResponse("append", toBinary(AppendResponseSchema, create(AppendResponseSchema)))).toThrow();
+    expect(() => projectMemoryResponse("commit", toBinary(CommitResponseSchema, create(CommitResponseSchema)))).toThrow();
+    expect(() => projectMemoryResponse("read_commit", toBinary(CommittedEnvelopeSchema, create(CommittedEnvelopeSchema, { commitId: sourceCommitId, mutations: [{}] })))).toThrow();
+    expect(() => projectMemoryResponse("commit", toBinary(CommitResponseSchema, create(CommitResponseSchema, {
+      outcome: { case: "committed", value: {
+        commitId: sourceCommitId,
+        mutations: [{ mutation: { case: "append", value: {
+          path: "events", start: 0n, end: 1n, tail: 1n,
+          records: [{ sequence: 0n, value: new Uint8Array([1]), commitId: new Uint8Array() }],
+        } } }],
+      } },
+    })))).toThrow();
+  });
+
+  test("projects commit responses larger than the bounded request size", () => {
+    const commitId = new Uint8Array(32).fill(9);
+    const records = Array.from({ length: 1024 }, (_, sequence) => ({
+      sequence: BigInt(sequence), value: new Uint8Array(1050).fill(sequence & 0xff), commitId,
+    }));
+    const bytes = toBinary(CommitResponseSchema, create(CommitResponseSchema, {
+      outcome: { case: "committed", value: {
+        commitId,
+        mutations: [{ mutation: { case: "append", value: {
+          path: "events", start: 0n, end: 1024n, tail: 1024n, records,
+        } } }],
+      } },
+    }));
+    expect(bytes.byteLength).toBeGreaterThan(StreamLimit.MAX_COMMAND_BYTES);
+    expect(projectMemoryResponse("commit", bytes)).toMatchObject({ ok: true, tails: { events: 1024n }, forks: [] });
   });
 
   test("binds commit identities to request content", async () => {

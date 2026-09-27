@@ -629,6 +629,15 @@ pub fn decode_http_response(route: &str, response_json: &str) -> Result<JsValue,
     http::decode(route, &value).map_err(JsValue::from_str)
 }
 
+/// Decode one unary memory-provider response from canonical protobuf bytes
+/// into the public JavaScript result shape. Rust owns the response oneofs,
+/// scalar widths, copied byte buffers, and camelCase projection at this
+/// boundary; TypeScript keeps only request adaptation and cursor lifecycle.
+#[wasm_bindgen(js_name = projectMemoryResponse, unchecked_return_type = "unknown")]
+pub fn project_memory_response(operation: &str, input: &[u8]) -> Result<JsValue, JsValue> {
+    http::decode_wire_response(operation, input).map_err(JsValue::from_str)
+}
+
 mod http {
     use super::*;
 
@@ -964,6 +973,265 @@ mod http {
         serde_json::to_string(&request_json(route, input)?).map_err(|_| "could not encode request")
     }
 
+    fn record_json(value: &wire::Record) -> Value {
+        json_object(vec![
+            ("sequence", json_u64(value.sequence)),
+            ("value", json_bytes(value.value.as_ref())),
+            ("commitId", json_bytes(value.commit_id.as_ref())),
+        ])
+    }
+
+    fn append_value(value: wire::AppendResponse) -> Result<Value> {
+        let outcome = value.outcome.ok_or("invalid_response")?;
+        Ok(match outcome {
+            wire::append_response::Outcome::Committed(receipt) => json_object(vec![
+                ("ok", Value::Bool(true)),
+                ("start", json_u64(receipt.start)),
+                ("end", json_u64(receipt.end)),
+                ("tail", json_u64(receipt.tail)),
+                ("commitId", json_bytes(receipt.commit_id.as_ref())),
+            ]),
+            wire::append_response::Outcome::Conflict(conflict) => json_object(vec![
+                ("ok", Value::Bool(false)),
+                ("code", json_string("tail_conflict")),
+                ("actualTail", json_u64(conflict.actual_tail)),
+            ]),
+        })
+    }
+
+    fn fork_value(value: wire::ForkReceipt) -> Value {
+        json_object(vec![
+            ("source", json_string(value.source)),
+            ("destination", json_string(value.destination)),
+            ("forkedAt", json_u64(value.forked_at)),
+            ("tail", json_u64(value.tail)),
+            ("commitId", json_bytes(value.commit_id.as_ref())),
+        ])
+    }
+
+    fn trim_value(value: wire::TrimReceipt) -> Value {
+        json_object(vec![
+            ("path", json_string(value.path)),
+            ("trimPoint", json_u64(value.trim_point)),
+            ("commitId", json_bytes(value.commit_id.as_ref())),
+        ])
+    }
+
+    fn delete_value(value: wire::DeleteReceipt) -> Value {
+        json_object(vec![
+            ("path", json_string(value.path)),
+            ("commitId", json_bytes(value.commit_id.as_ref())),
+        ])
+    }
+
+    fn mutation_value(value: &wire::CommittedMutation) -> Result<Value> {
+        let mutation = value.mutation.as_ref().ok_or("invalid_response")?;
+        Ok(match mutation {
+            wire::committed_mutation::Mutation::Append(value) => json_object(vec![
+                ("type", json_string("append")),
+                ("path", json_string(value.path.clone())),
+                ("start", json_u64(value.start)),
+                ("end", json_u64(value.end)),
+                ("tail", json_u64(value.tail)),
+                (
+                    "records",
+                    Value::Array(value.records.iter().map(record_json).collect()),
+                ),
+            ]),
+            wire::committed_mutation::Mutation::Fork(value) => json_object(vec![
+                ("type", json_string("fork")),
+                ("source", json_string(value.source.clone())),
+                ("destination", json_string(value.destination.clone())),
+                ("forkedAt", json_u64(value.forked_at)),
+                ("tail", json_u64(value.tail)),
+                (
+                    "records",
+                    Value::Array(value.records.iter().map(record_json).collect()),
+                ),
+            ]),
+            wire::committed_mutation::Mutation::Trim(value) => json_object(vec![
+                ("type", json_string("trim")),
+                ("path", json_string(value.path.clone())),
+                ("trimPoint", json_u64(value.trim_point)),
+            ]),
+            wire::committed_mutation::Mutation::Delete(value) => json_object(vec![
+                ("type", json_string("delete")),
+                ("path", json_string(value.path.clone())),
+            ]),
+        })
+    }
+
+    fn envelope_value(value: wire::CommittedEnvelope) -> Result<Value> {
+        let mutations = value
+            .mutations
+            .iter()
+            .map(mutation_value)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(json_object(vec![
+            ("commitId", json_bytes(value.commit_id.as_ref())),
+            ("mutations", Value::Array(mutations)),
+        ]))
+    }
+
+    fn conflict_value(value: &wire::CommitConflict) -> Result<Value> {
+        let conflict = value.conflict.as_ref().ok_or("invalid_response")?;
+        Ok(match conflict {
+            wire::commit_conflict::Conflict::Tail(value) => {
+                let mut entries = vec![
+                    ("path", json_string(value.path.clone())),
+                    ("expectedTail", json_u64(value.expected)),
+                ];
+                if let Some(actual) = value.actual {
+                    entries.push(("actualTail", json_u64(actual)));
+                }
+                json_object(entries)
+            }
+            wire::commit_conflict::Conflict::Exists(value) => json_object(vec![
+                ("path", json_string(value.path.clone())),
+                ("expectedAbsent", Value::Bool(true)),
+                ("actual", json_string("exists")),
+            ]),
+            wire::commit_conflict::Conflict::Retired(value) => json_object(vec![
+                ("path", json_string(value.path.clone())),
+                ("expectedAbsent", Value::Bool(true)),
+                ("actual", json_string("retired")),
+            ]),
+        })
+    }
+
+    fn commit_value(value: wire::CommitResponse) -> Result<Value> {
+        let outcome = value.outcome.ok_or("invalid_response")?;
+        Ok(match outcome {
+            wire::commit_response::Outcome::Committed(envelope) => {
+                // Commit responses can be larger than the bounded command
+                // request that produced them. Validate the complete envelope
+                // before deriving its compact public result so nested records
+                // cannot bypass identity and width checks.
+                let envelope_json = envelope_value(envelope.clone())?;
+                validate("commits/read", &envelope_json)?;
+                let mut tails = serde_json::Map::new();
+                let mut forks = Vec::new();
+                for mutation in &envelope.mutations {
+                    let mutation = mutation.mutation.as_ref().ok_or("invalid_response")?;
+                    match mutation {
+                        wire::committed_mutation::Mutation::Append(value) => {
+                            tails.insert(value.path.clone(), json_u64(value.tail));
+                        }
+                        wire::committed_mutation::Mutation::Fork(value) => {
+                            forks.push(json_object(vec![
+                                ("path", json_string(value.destination.clone())),
+                                ("tail", json_u64(value.tail)),
+                            ]))
+                        }
+                        wire::committed_mutation::Mutation::Trim(_)
+                        | wire::committed_mutation::Mutation::Delete(_) => {}
+                    }
+                }
+                json_object(vec![
+                    ("ok", Value::Bool(true)),
+                    ("commitId", json_bytes(envelope.commit_id.as_ref())),
+                    ("tails", Value::Object(tails)),
+                    ("forks", Value::Array(forks)),
+                ])
+            }
+            wire::commit_response::Outcome::Conflict(conflicts) => json_object(vec![
+                ("ok", Value::Bool(false)),
+                ("code", json_string("conflict")),
+                (
+                    "conflicts",
+                    Value::Array(
+                        conflicts
+                            .conflicts
+                            .iter()
+                            .map(conflict_value)
+                            .collect::<Result<Vec<_>>>()?,
+                    ),
+                ),
+            ]),
+        })
+    }
+
+    fn observation_value(value: wire::InspectIdempotencyResponse) -> Result<Option<Value>> {
+        let Some(observation) = value.observation else {
+            return Ok(None);
+        };
+        let outcome = observation.outcome.ok_or("invalid_response")?;
+        let outcome = match outcome {
+            wire::idempotency_observation::Outcome::Append(value) => json_object(vec![
+                ("type", json_string("append")),
+                ("outcome", append_value(value)?),
+            ]),
+            wire::idempotency_observation::Outcome::Fork(value) => json_object(vec![
+                ("type", json_string("fork")),
+                ("receipt", fork_value(value)),
+            ]),
+            wire::idempotency_observation::Outcome::Trim(value) => json_object(vec![
+                ("type", json_string("trim")),
+                ("receipt", trim_value(value)),
+            ]),
+            wire::idempotency_observation::Outcome::Delete(value) => json_object(vec![
+                ("type", json_string("delete")),
+                ("receipt", delete_value(value)),
+            ]),
+            wire::idempotency_observation::Outcome::Commit(value) => json_object(vec![
+                ("type", json_string("commit")),
+                ("outcome", commit_value(value)?),
+            ]),
+        };
+        Ok(Some(json_object(vec![
+            (
+                "idempotencyKey",
+                json_bytes(observation.idempotency_key.as_ref()),
+            ),
+            (
+                "requestDigest",
+                json_bytes(observation.request_digest.as_ref()),
+            ),
+            ("outcome", outcome),
+        ])))
+    }
+
+    pub(super) fn decode_wire_response(operation: &str, input: &[u8]) -> Result<JsValue> {
+        let (route, value) = match operation {
+            "inspect_idempotency" => {
+                let value = wire::InspectIdempotencyResponse::decode(input)
+                    .map_err(|_| "invalid_response")?;
+                let Some(value) = observation_value(value)? else {
+                    return Ok(JsValue::UNDEFINED);
+                };
+                ("idempotency/inspect", value)
+            }
+            "append" => (
+                "append",
+                append_value(wire::AppendResponse::decode(input).map_err(|_| "invalid_response")?)?,
+            ),
+            "fork" => (
+                "fork",
+                fork_value(wire::ForkReceipt::decode(input).map_err(|_| "invalid_response")?),
+            ),
+            "trim" => (
+                "trim",
+                trim_value(wire::TrimReceipt::decode(input).map_err(|_| "invalid_response")?),
+            ),
+            "delete" => (
+                "delete",
+                delete_value(wire::DeleteReceipt::decode(input).map_err(|_| "invalid_response")?),
+            ),
+            "commit" => (
+                "commit",
+                commit_value(wire::CommitResponse::decode(input).map_err(|_| "invalid_response")?)?,
+            ),
+            "read_commit" => (
+                "commits/read",
+                envelope_value(
+                    wire::CommittedEnvelope::decode(input).map_err(|_| "invalid_response")?,
+                )?,
+            ),
+            _ => return Err("invalid_argument"),
+        };
+        decode(route, &value)
+    }
+
     fn object(value: &Value) -> Result<&serde_json::Map<String, Value>> {
         value.as_object().ok_or("expected object")
     }
@@ -1246,6 +1514,13 @@ mod http {
                 )?;
                 set(&result, "forkedAt", &bigint_js(field(item, "forkedAt")?)?)?;
                 set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
+                if item.get("records").is_some() {
+                    set(
+                        &result,
+                        "records",
+                        &array_js(field(item, "records")?, record_js)?,
+                    )?;
+                }
             }
             "trim" => {
                 path(field(item, "path")?)?;

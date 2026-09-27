@@ -2,6 +2,9 @@ import { create, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Client, type Interceptor } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
 
+import { FILESYSTEM_DESCRIPTOR_DIGEST } from "../generated/descriptor-digest.js";
+import { DEFAULT_HOSTED_OPTIONS } from "../generated/defaults.js";
+
 import {
   ConflictUse,
   ExtentKind,
@@ -78,10 +81,7 @@ import { secureServiceEndpoint } from "./endpoint.js";
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
 
-const DEFAULT_MAXIMUM_RESPONSE_BYTES = 24 * 1024 * 1024;
 const DEFAULT_MAXIMUM_CONFLICTS = 1_024;
-const PROTOCOL_VERSION = "1";
-const FILESYSTEM_DESCRIPTOR_DIGEST = "fee00a99396aaace851ff4ad12b408fbf87ee67f83eeea90e1c5adc9e2d5d3e5";
 
 export class HostedFsError extends Error {
   constructor(readonly code: string, message: string) {
@@ -103,8 +103,14 @@ interface HostedClient {
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
   if (options.bearerToken.length === 0) throw new RangeError("bearer token must be non-empty");
-  const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_MAXIMUM_RESPONSE_BYTES;
+  const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
   positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
+  if (maximumResponseBytes < DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes) {
+    throw new RangeError(
+      `maximum response bytes must be at least ${DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes}`,
+    );
+  }
+  const maximumPayloadResponseBytes = maximumResponseBytes - DEFAULT_HOSTED_OPTIONS.maximumByteResponseEnvelopeBytes;
   const send = options.fetch ?? globalThis.fetch;
   if (send === undefined) throw new TypeError("this runtime does not provide fetch");
   let negotiatedMaximumRequestBytes: bigint | undefined;
@@ -128,20 +134,20 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
   }));
   const handshake = await call(rpcClient.handshake({
     protocol: {
-      protocol: { version: PROTOCOL_VERSION, descriptorDigest: FILESYSTEM_DESCRIPTOR_DIGEST },
-      required: { capabilities: [{ name: "filesystem", version: PROTOCOL_VERSION }] },
+      protocol: { version: DEFAULT_HOSTED_OPTIONS.protocolVersion, descriptorDigest: FILESYSTEM_DESCRIPTOR_DIGEST },
+      required: { capabilities: [{ name: "filesystem", version: DEFAULT_HOSTED_OPTIONS.protocolVersion }] },
     },
   }));
   const negotiated = required(handshake.protocol, "handshake response");
   const protocol = required(negotiated.protocol, "handshake protocol");
-  if (protocol.version !== PROTOCOL_VERSION) throw new HostedFsError("protocol", "filesystem protocol version is unsupported");
+  if (protocol.version !== DEFAULT_HOSTED_OPTIONS.protocolVersion) throw new HostedFsError("protocol", "filesystem protocol version is unsupported");
   if (protocol.descriptorDigest !== FILESYSTEM_DESCRIPTOR_DIGEST) throw new HostedFsError("protocol", "filesystem descriptor digest does not match");
   const supported = required(negotiated.supported, "supported capabilities");
-  if (!supported.capabilities.some(capability => capability.name === "filesystem" && capability.version === PROTOCOL_VERSION)) {
+  if (!supported.capabilities.some(capability => capability.name === "filesystem" && capability.version === DEFAULT_HOSTED_OPTIONS.protocolVersion)) {
     throw new HostedFsError("protocol", "filesystem capability version is unsupported");
   }
   const advertised = required(handshake.capabilities, "filesystem capabilities");
-  if (advertised.contractVersion !== PROTOCOL_VERSION) throw new HostedFsError("protocol", "filesystem contract version is unsupported");
+  if (advertised.contractVersion !== DEFAULT_HOSTED_OPTIONS.protocolVersion) throw new HostedFsError("protocol", "filesystem contract version is unsupported");
   if (advertised.maximumRequestBytes <= 0n || advertised.maximumResponseBytes <= 0n) {
     throw new HostedFsError("protocol", "filesystem capabilities contain an unbounded byte limit");
   }
@@ -149,9 +155,9 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
   positiveSafeInteger(advertised.maximumTransactionMutations, "maximum transaction mutations");
   positiveSafeInteger(advertised.maximumPageItems, "maximum page items");
   const profiles = advertised.profiles.map(profileFromWire);
-  const negotiatedResponseBytes = advertised.maximumResponseBytes < BigInt(maximumResponseBytes)
+  const negotiatedResponseBytes = advertised.maximumResponseBytes < BigInt(maximumPayloadResponseBytes)
     ? advertised.maximumResponseBytes
-    : BigInt(maximumResponseBytes);
+    : BigInt(maximumPayloadResponseBytes);
   const client: HostedClient = {
     rpc: rpcClient,
     maximumResponseBytes: Number(negotiatedResponseBytes),

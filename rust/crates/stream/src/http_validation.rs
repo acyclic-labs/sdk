@@ -223,6 +223,11 @@ fn validate_mutation(value: &Value) -> Result {
             if forked_at > tail {
                 return Err("invalid fork positions");
             }
+            if let Some(records) = item.get("records") {
+                for record in array(records)? {
+                    validate_record(record)?;
+                }
+            }
         }
         "trim" => {
             path(field(item, "path")?)?;

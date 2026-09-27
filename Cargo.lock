@@ -160,6 +160,7 @@ dependencies = [
  "tsify-next",
  "uuid",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

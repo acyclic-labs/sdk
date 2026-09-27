@@ -218,6 +218,27 @@ export function normalizeCommitRequest(input) {
 }
 
 /**
+ * Decode one unary memory-provider response from canonical protobuf bytes
+ * into the public JavaScript result shape. Rust owns the response oneofs,
+ * scalar widths, copied byte buffers, and camelCase projection at this
+ * boundary; TypeScript keeps only request adaptation and cursor lifecycle.
+ * @param {string} operation
+ * @param {Uint8Array} input
+ * @returns {unknown}
+ */
+export function projectMemoryResponse(operation, input) {
+    const ptr0 = passStringToWasm0(operation, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.projectMemoryResponse(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * Project a hosted HTTP error code onto the public Stream error vocabulary.
  *
  * The hosted API may report either the Rust-owned wire code or a public alias.

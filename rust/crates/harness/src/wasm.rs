@@ -12,9 +12,9 @@ use crate::{
     AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
     SessionId, TaskId, TurnId,
     conversation::{
-        Attachment, ContentGrant, ConversationMessage, FileDescriptor, FileRef, Limits,
-        ReferencedAttachments, TaskOutcomeRecord, VolumeOperation, VolumeRef,
-        decode_attachment_manifest, encode_attachment_manifest,
+        Attachment, ContentGrant, ConversationMessage, ConversationState, FileDescriptor, FileRef,
+        Limits, ModelContextSelection, ReferencedAttachments, TaskOutcomeRecord, VolumeOperation,
+        VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
         AggregateKind, ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
@@ -26,6 +26,10 @@ use crate::{
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
     merge::ProjectMergeReceipt,
     model::{ModelContent, ModelEvent},
+    projection::{
+        AttachmentListResolver, select_model_context_at_revision,
+        validate_model_context_selection_at_revision,
+    },
     resources::{ProviderRef, ResourceRef},
     runtime::{DurableBatchRequest, batch_member_operation_id, task_definition_digest},
     tool::{ToolDefinition, validate_value},
@@ -34,6 +38,77 @@ use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use wasm_bindgen::prelude::*;
+
+/// Exact bytes captured by the owner-facing TypeScript adapter before Rust
+/// performs the canonical projection.  The map key is the canonical JSON
+/// spelling of a `FileRef`; bytes are never resolved by path or display name.
+struct WasmProjectionResolver {
+    files: std::collections::HashMap<String, Vec<u8>>,
+}
+
+impl WasmProjectionResolver {
+    fn from_js(value: JsValue) -> Result<Self, JsValue> {
+        let map = value
+            .dyn_into::<js_sys::Map>()
+            .map_err(|_| JsValue::from_str("projection files must be a Map"))?;
+        let mut files = std::collections::HashMap::new();
+        let mut failure = None;
+        map.for_each(&mut |bytes, key| {
+            if failure.is_some() {
+                return;
+            }
+            let Some(key) = key.as_string() else {
+                failure = Some(JsValue::from_str(
+                    "projection file map keys must be canonical JSON strings",
+                ));
+                return;
+            };
+            if !js_sys::Uint8Array::is_type_of(&bytes) {
+                failure = Some(JsValue::from_str(
+                    "projection file map values must be Uint8Array",
+                ));
+                return;
+            }
+            files.insert(key, js_sys::Uint8Array::new(&bytes).to_vec());
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        Ok(Self { files })
+    }
+
+    fn key(file: &FileRef) -> Result<String, crate::Error> {
+        String::from_utf8(crate::contract::canonical_json_bytes(file)?)
+            .map_err(|error| crate::Error::Invalid(format!("file reference is not UTF-8: {error}")))
+    }
+
+    fn bytes(&self, file: &FileRef) -> Result<Vec<u8>, crate::Error> {
+        let key = Self::key(file)?;
+        self.files.get(&key).cloned().ok_or_else(|| {
+            crate::Error::Unsupported("projection file bytes were not captured".into())
+        })
+    }
+}
+
+impl AttachmentListResolver for WasmProjectionResolver {
+    fn resolve<'a>(
+        &'a self,
+        manifest: &'a FileRef,
+        item_count: u32,
+    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<Attachment>>> {
+        Box::pin(async move {
+            let bytes = self.bytes(manifest)?;
+            decode_attachment_manifest(manifest, &bytes, item_count)
+        })
+    }
+
+    fn read<'a>(
+        &'a self,
+        file: &'a FileRef,
+    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<u8>>> {
+        Box::pin(async move { self.bytes(file) })
+    }
+}
 
 /// Derives the same immutable per-slot operation as Rust durable admission.
 #[wasm_bindgen(js_name = batchMemberOperationId)]
@@ -705,6 +780,63 @@ pub fn decode_attachment_manifest_bytes(
 ) -> Result<JsValue, JsValue> {
     let manifest: FileRef = from_js(manifest)?;
     to_js_admitted(&decode_attachment_manifest(&manifest, &bytes, item_count).map_err(js_error)?)
+}
+
+/// Runs the canonical Rust conversation projection over bytes captured by the
+/// owner.  TypeScript supplies a map rather than a callback so authorization
+/// and async reads finish before this deterministic core is entered.
+#[wasm_bindgen(js_name = selectModelContext)]
+pub async fn select_model_context_wasm(
+    conversation: JsValue,
+    selection: JsValue,
+    files: JsValue,
+    maximum_messages: u32,
+    maximum_attachments: u32,
+    maximum_render_bytes: f64,
+    maximum_projected_attachments: u32,
+) -> Result<JsValue, JsValue> {
+    let conversation: ConversationState = from_js(conversation)?;
+    let selection: ModelContextSelection = from_js(selection)?;
+    let resolver = WasmProjectionResolver::from_js(files)?;
+    if !maximum_render_bytes.is_finite()
+        || maximum_render_bytes < 0.0
+        || maximum_render_bytes.fract() != 0.0
+        || maximum_render_bytes > 9_007_199_254_740_991.0
+    {
+        return Err(JsValue::from_str(
+            "maximum render bytes must be a safe non-negative integer",
+        ));
+    }
+    let selected = select_model_context_at_revision(
+        &conversation,
+        selection.clone(),
+        selection.conversation_revision,
+        &resolver,
+        maximum_messages as usize,
+        maximum_attachments as usize,
+        maximum_render_bytes as u64,
+        maximum_projected_attachments as usize,
+    )
+    .await
+    .map_err(js_error)?;
+    to_js(&selected)
+}
+
+/// Validates selection order and tool linkage before the host resolves any
+/// owner-mediated file bytes.
+#[wasm_bindgen(js_name = validateModelContextSelection)]
+pub fn validate_model_context_selection_wasm(
+    conversation: JsValue,
+    selection: JsValue,
+) -> Result<(), JsValue> {
+    let conversation: ConversationState = from_js(conversation)?;
+    let selection: ModelContextSelection = from_js(selection)?;
+    validate_model_context_selection_at_revision(
+        &conversation,
+        &selection,
+        selection.conversation_revision,
+    )
+    .map_err(js_error)
 }
 
 /// Converts a fully captured report into its canonical publishable child seed.
