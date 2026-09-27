@@ -138,6 +138,10 @@ pub enum WatchChange {
     Created(NamespacePath),
     /// File content or an unspecified property may have changed.
     Modified(NamespacePath),
+    /// A rename whose other end is unknown bound this name: what it names
+    /// now, subtree and all, whatever was there before. A same-kind entry
+    /// keeps its identity, as for [`Self::Modified`].
+    Arrived(NamespacePath),
     /// Metadata or named attributes may have changed.
     MetadataChanged(NamespacePath),
     /// A namespace entry disappeared.
@@ -511,7 +515,13 @@ impl NativeWatch {
             let metadata = match candidate.symlink_metadata() {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // Absent from the source (a directory only a fork created,
+                    // say): nothing to watch here. Its creation is reported by
+                    // the deepest existing ancestor, which is watched instead.
                     candidate.pop();
+                    if candidate == self.root {
+                        return Ok(());
+                    }
                     break;
                 }
                 Err(error) => return Err(NativeWatchError::Io(error.to_string())),
@@ -547,6 +557,7 @@ impl NativeWatch {
                 }
                 WatchChange::Created(_)
                 | WatchChange::Modified(_)
+                | WatchChange::Arrived(_)
                 | WatchChange::MetadataChanged(_) => {}
             }
         }
@@ -1355,14 +1366,19 @@ fn map_event(
             // other half was lost.
             #[cfg(target_os = "linux")]
             _ => Err(WatchInvalidationReason::AmbiguousRename),
-            // FSEvents never pairs renames, and `ReadDirectoryChangesW`
-            // delivers each half as its own event, so a lone half is the
-            // ordinary case there. It proves the same thing a creation hint
-            // does: this path changed, look at it. The capture resolves a
-            // modified hint by stat, treating a vanished path as removed
-            // (subtree and all), so both ends of a rename land exactly
-            // without guessing which was which. Invalidating instead made
-            // every atomic save, `mv`, and `git checkout` cost a full rescan.
+            // `ReadDirectoryChangesW` delivers each half as its own event and
+            // says which it is: a new name arrived, subtree and all, or an old
+            // one went away. Invalidating instead made every atomic save,
+            // `mv`, and `git checkout` cost a full rescan.
+            #[cfg(windows)]
+            (RenameMode::To, [to]) => Ok(vec![WatchChange::Arrived(to.clone())]),
+            #[cfg(windows)]
+            (RenameMode::From, [from]) => Ok(vec![WatchChange::Removed(from.clone())]),
+            // FSEvents never pairs renames nor says which end a path was, so
+            // a lone half proves only that the path changed: look at it. The
+            // capture resolves a modified hint by stat, treating a vanished
+            // path as removed (subtree and all), so both ends of a rename
+            // land exactly without guessing which was which.
             #[cfg(not(target_os = "linux"))]
             (_, paths) => Ok(paths.iter().cloned().map(WatchChange::Modified).collect()),
         };

@@ -131,6 +131,33 @@ function processExists(pid) {
   }
 }
 
+// When the process holding `pid` started, in epoch milliseconds, as the OS
+// reports it; null when that cannot be read.
+function processStartedAt(pid) {
+  const [command, args] = process.platform === "win32"
+    ? ["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`]]
+    : ["ps", ["-o", "lstart=", "-p", String(pid)]];
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" },
+    timeout: 10_000,
+  });
+  if (result.error || result.status !== 0) return null;
+  const started = Date.parse(result.stdout.trim());
+  return Number.isFinite(started) ? started : null;
+}
+
+// Whether the OS gave a crashed lock owner's PID to another process, which
+// started at another time. The OS reports start times to the second, and the
+// owner measures its own from inside the process, so a few seconds apart is
+// still the same process.
+function ownerPidReused(owner) {
+  if (!Number.isFinite(owner.startedAt)) return false;
+  const started = processStartedAt(owner.pid);
+  return started !== null && Math.abs(started - owner.startedAt) > 5_000;
+}
+
 function wait(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
@@ -139,12 +166,20 @@ function acquireInstallLock(directory) {
   const path = join(directory, "install.lock");
   const ownerPath = join(path, "owner.json");
   const deadline = Date.now() + 120_000;
+  // Asking the OS spawns a process: ask about once a second, not per poll.
+  // The owner may crash and lose its PID to another process at any time.
+  let reused = null;
   while (true) {
     let acquired = false;
     try {
       mkdirSync(path);
       acquired = true;
-      writeFileSync(ownerPath, `${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`);
+      const now = Date.now();
+      writeFileSync(ownerPath, `${JSON.stringify({
+        pid: process.pid,
+        createdAt: now,
+        startedAt: Math.round(now - process.uptime() * 1000),
+      })}\n`);
       syncFile(ownerPath);
       return () => rmSync(path, { recursive: true, force: true });
     } catch (error) {
@@ -155,11 +190,16 @@ function acquireInstallLock(directory) {
       if (error?.code !== "EEXIST") throw error;
       let owner;
       try { owner = readJson(ownerPath); } catch { owner = null; }
+      const named = Number.isInteger(owner?.pid) && owner.pid > 0;
       let initialized = true;
-      if (!Number.isInteger(owner?.pid) || owner.pid <= 0) {
+      if (!named) {
         try { initialized = Date.now() - statSync(path).mtimeMs >= 5_000; } catch { initialized = false; }
       }
-      if (initialized && (!Number.isInteger(owner?.pid) || owner.pid <= 0 || !processExists(owner.pid))) {
+      const alive = named && processExists(owner.pid);
+      if (alive && (reused?.owner !== JSON.stringify(owner) || Date.now() - reused.at >= 1_000)) {
+        reused = { owner: JSON.stringify(owner), at: Date.now(), value: ownerPidReused(owner) };
+      }
+      if (initialized && (!alive || reused.value)) {
         const stale = `${path}.stale-${process.pid}-${Date.now()}`;
         try {
           renameSync(path, stale);
@@ -170,7 +210,7 @@ function acquireInstallLock(directory) {
         continue;
       }
       if (Date.now() >= deadline) {
-        throw new Error(`timed out waiting for Acyclic installer process ${owner.pid}`);
+        throw new Error(`timed out waiting for Acyclic installer process ${owner?.pid}`);
       }
       wait(25);
     }

@@ -16,11 +16,11 @@
     "licenses": "bun scripts/check-js-licenses.mjs"
   },
   "devDependencies": {
-    "@bufbuild/buf": "1.72.0",
-    "@bufbuild/protoc-gen-es": "2.14.1",
+    "@bufbuild/buf": "1.73.0",
+    "@bufbuild/protoc-gen-es": "2.15.0",
     "@napi-rs/cli": "3.10.5",
     "@noble/hashes": "2.4.0",
-    "@types/bun": "1.4.0",
+    "@types/bun": "1.4.2",
     "@types/node": "26.4.1",
     "ajv": "8.20.0",
     "typescript": "7.0.2"

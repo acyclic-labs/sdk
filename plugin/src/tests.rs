@@ -2767,6 +2767,34 @@ fn root_git_uses_the_same_repository_and_materializer() {
         .expect("plugin root Git thread");
 }
 
+/// Writes `name` into `directory` under `root` from a separate process, as an
+/// agent's tool does. `ProjFS` reports only other processes' I/O to its
+/// provider, which runs in this test's process.
+fn write_as_another_process(root: &Path, directory: &str, name: &str, contents: &str) {
+    #[cfg(windows)]
+    let status = std::process::Command::new("cmd.exe")
+        .args([
+            "/D",
+            "/C",
+            &format!(
+                "(if not exist {directory} mkdir {directory}) && (echo {contents}> {directory}\\{name})"
+            ),
+        ])
+        .current_dir(root)
+        .status()
+        .expect("spawn writer");
+    #[cfg(not(windows))]
+    let status = std::process::Command::new("sh")
+        .args([
+            "-c",
+            &format!("mkdir -p {directory} && printf %s {contents} > {directory}/{name}"),
+        ])
+        .current_dir(root)
+        .status()
+        .expect("spawn writer");
+    assert!(status.success(), "external write failed");
+}
+
 #[test]
 fn unobserved_parent_directory_reports_a_typed_merge_conflict() {
     std::thread::Builder::new()
@@ -2808,20 +2836,25 @@ fn unobserved_parent_directory_reports_a_typed_merge_conflict() {
                         .await
                         .expect("child start");
                     let child_root = route_path(&control.state.routes["child"]);
-                    fs::create_dir_all(child_root.join("sub")).expect("child mounted directory");
-                    fs::write(child_root.join("sub/cache.tmp"), b"child")
-                        .expect("child mounted file");
+                    write_as_another_process(&child_root, "sub", "cache.tmp", "child");
                     fs::write(root.join("sub/cache.tmp"), b"parent").expect("parent file");
                     let result = control
                         .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
                         .await
                         .expect("typed conflict, not an invalid candidate");
-                    assert_eq!(result["status"], "conflicted");
-                    assert!(result["conflicts"].as_array().is_some_and(|conflicts| {
-                        conflicts.iter().any(|conflict| {
-                            conflict["path"] == "/sub" && conflict["kind"] == "Binding"
-                        })
-                    }));
+                    // Both directories merge by path; only the file both
+                    // sides added under one name conflicts.
+                    assert_eq!(result["status"], "conflicted", "{result}");
+                    assert!(
+                        result["conflicts"].as_array().is_some_and(|conflicts| {
+                            conflicts.len() == 1
+                                && conflicts.iter().all(|conflict| {
+                                    conflict["path"] == "/sub/cache.tmp"
+                                        && conflict["kind"] == "Binding"
+                                })
+                        }),
+                        "{result}"
+                    );
                     assert_eq!(
                         fs::read(root.join("sub/cache.tmp")).expect("parent file remains"),
                         b"parent"

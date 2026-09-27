@@ -231,6 +231,8 @@ for (const [family, artifacts] of Object.entries(compatibilityArtifacts)) {
     }
   }
 }
+// Generated code runs only on the protobuf runtime of its generator's release.
+const protobufRuntime = (await load("package.json")).devDependencies?.["@bufbuild/protoc-gen-es"];
 for (const [stem, packages] of packagedTypeScriptBindings) {
   const family = stem.split("/")[0];
   if (!packages.includes(family)) continue;
@@ -239,7 +241,7 @@ for (const [stem, packages] of packagedTypeScriptBindings) {
   if (manifest.exports?.["./proto"]?.types !== `${prefix}.d.ts`
     || manifest.exports["./proto"].default !== `${prefix}.js`
     || !manifest.files?.some(path => path === "generated" || path === "generated/proto")
-    || manifest.dependencies?.["@bufbuild/protobuf"] !== "2.14.1") {
+    || manifest.dependencies?.["@bufbuild/protobuf"] !== protobufRuntime) {
     throw new Error(`${family} generated protobuf package export mismatch`);
   }
 }

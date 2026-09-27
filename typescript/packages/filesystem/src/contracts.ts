@@ -626,7 +626,7 @@ export interface NativeNamespacePath {
 }
 
 export type NativeWatchChange =
-  | { readonly kind: "created" | "modified" | "metadata" | "removed"; readonly path: NativeNamespacePath }
+  | { readonly kind: "created" | "modified" | "arrived" | "metadata" | "removed"; readonly path: NativeNamespacePath }
   | { readonly kind: "renamed"; readonly from: NativeNamespacePath; readonly to: NativeNamespacePath };
 
 export type NativeWatchBatch =

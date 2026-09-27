@@ -50,8 +50,9 @@ bash scripts/stage-npm-package.sh typescript/packages/inference "$npm_stage"
 cd "$npm_stage"
 bun pm pack --ignore-scripts --filename "$bun_archive" --quiet
 mkdir "$work/consumer"
+protobuf_version="$(bun -e 'console.log(require(process.argv[1]).dependencies["@bufbuild/protobuf"])' "$root/typescript/packages/inference/package.json")"
 cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","dependencies":{"@acyclic-labs/inference":"file:$bun_archive_url","@bufbuild/protobuf":"2.14.1"}}
+{"private":true,"type":"module","dependencies":{"@acyclic-labs/inference":"file:$bun_archive_url","@bufbuild/protobuf":"$protobuf_version"}}
 EOF
 cat >"$work/consumer/smoke.mjs" <<'EOF'
 import { InferenceClient, ListModelsResponseSchema } from "@acyclic-labs/inference";

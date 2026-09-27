@@ -53,6 +53,13 @@ native_mount_tests() {
     --ignored --test-threads=1 native_mount::
 }
 
+# Black-box fork/join conformance through hooks, the CLI and live mounts. The
+# shared test support module carries ignored tests of its own, skipped here.
+fork_join_conformance() {
+  cargo test -p acyclic-plugin --locked --test fork_join -- \
+    --ignored --test-threads=1 --skip support::
+}
+
 case "$lane" in
   gate)
     if ! rustup component list --installed | grep -Eq '^llvm-tools-'; then
@@ -199,6 +206,7 @@ case "$lane" in
     background napi native_binding
     cargo test -p acyclic-fs --features native-mount --locked --lib -- \
       --ignored --test-threads=1
+    fork_join_conformance
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
     finish napi release
@@ -353,6 +361,7 @@ case "$lane" in
     cargo test --workspace --all-features --locked
     finish napi release x86_64
     native_mount_tests
+    fork_join_conformance
     ;;
   *)
     echo "unknown qualification lane: $lane" >&2
