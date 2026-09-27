@@ -12,6 +12,8 @@ describe("hosted Objects WASM response projection", () => {
     });
     await expect(provider({ error: { code: "bucket_exists", message: "name taken" } }).createBucket("taken"))
       .rejects.toMatchObject({ code: "bucket_exists", message: "name taken" });
+    await expect(provider({ code: null, message: null, error: { code: "bucket_exists", message: "name taken" } }).createBucket("taken"))
+      .rejects.toMatchObject({ code: "bucket_exists", message: "name taken" });
     await expect(provider({ code: "precondition_failed", message: "bucket has objects" }).deleteBucket(bucket))
       .rejects.toMatchObject({ code: "bucket_not_empty", message: "bucket has objects" });
     await expect(provider({ code: "new_server_code" }).createBucket("taken"))
