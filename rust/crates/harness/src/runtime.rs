@@ -208,6 +208,43 @@ pub(crate) fn task_definition_digest(
     }))
 }
 
+/// Builds the two identities that durable hosts retain for one resumable task.
+/// This is the shared construction path for native admission and the WASM
+/// adapter; JavaScript must not reproduce the digest envelope or machine
+/// identity rules itself.
+pub fn task_admission_identities(
+    name: &str,
+    version: &str,
+    input_schema: &Value,
+    output_schema: &Value,
+    requirements: &BTreeSet<String>,
+    machine_digest: &[u8],
+) -> Result<(ComponentIdentity, MachineIdentity)> {
+    let machine_digest: [u8; 32] = machine_digest
+        .try_into()
+        .map_err(|_| Error::Invalid("machine digest must contain exactly 32 bytes".into()))?;
+    let task_digest = task_definition_digest(
+        name,
+        version,
+        input_schema,
+        output_schema,
+        requirements,
+        Some(machine_digest),
+    )?;
+    Ok((
+        ComponentIdentity {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            digest: task_digest,
+        },
+        MachineIdentity {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            digest: machine_digest,
+        },
+    ))
+}
+
 pub(crate) fn validate_task_schemas(input: &Value, output: &Value, resumable: bool) -> Result<()> {
     for (name, schema) in [("input", input), ("output", output)] {
         jsonschema::validator_for(schema)
@@ -443,6 +480,54 @@ pub struct TaskChildrenPage {
 }
 
 impl TaskAdmissionRecord {
+    /// Constructs and validates an exact admission envelope from the fields
+    /// supplied by an SDK boundary. Identity derivation and all invariants are
+    /// deliberately owned here so native and WASM callers share one path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        operation_id: OperationId,
+        name: &str,
+        version: &str,
+        input: Value,
+        input_schema: Value,
+        output_schema: Value,
+        requirements: &BTreeSet<String>,
+        machine_digest: &[u8],
+        parent: Option<TaskId>,
+        grants: Capabilities,
+        limits: Limits,
+        run_limits: TaskRunLimits,
+        policy: Option<ComponentIdentity>,
+        extensions: Option<ExtensionAdmission>,
+        execution: Option<ExecutionPlacement>,
+    ) -> Result<Self> {
+        let (task, machine) = task_admission_identities(
+            name,
+            version,
+            &input_schema,
+            &output_schema,
+            requirements,
+            machine_digest,
+        )?;
+        let record = Self {
+            operation_id,
+            task,
+            machine,
+            input,
+            input_schema,
+            output_schema,
+            parent,
+            grants,
+            limits,
+            run_limits,
+            policy,
+            extensions,
+            execution,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
     /// Validates the provider-neutral request independently of registration.
     /// The owner additionally checks the exact registered task and authority.
     pub fn validate(&self) -> Result<()> {
@@ -2896,21 +2981,23 @@ impl AgentHarness {
         let value =
             serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
         validate_value(&definition.input_schema, &value, "task input")?;
-        let mut expected = TaskAdmissionRecord {
+        let mut expected = TaskAdmissionRecord::from_parts(
             operation_id,
-            task: definition.identity.clone(),
-            machine: machine.identity().clone(),
-            input: value.clone(),
-            input_schema: definition.input_schema.clone(),
-            output_schema: definition.output_schema.clone(),
+            &definition.identity.name,
+            &definition.identity.version,
+            value,
+            definition.input_schema.clone(),
+            definition.output_schema.clone(),
+            &definition.requirements,
+            &machine.identity().digest,
             parent,
-            grants: scope.grants().clone(),
-            limits: scope.limits(),
-            run_limits: scope.run_limits(),
-            policy: self.policy_identity.clone(),
-            extensions: scope.extensions().cloned(),
-            execution: None,
-        };
+            scope.grants().clone(),
+            scope.limits(),
+            scope.run_limits(),
+            self.policy_identity.clone(),
+            scope.extensions().cloned(),
+            None,
+        )?;
         // Reconcile an already committed operation before checking extension
         // admission state. This path must remain available after a local or
         // registry-wide disable; only the subsequent new-admission path is
@@ -4295,6 +4382,58 @@ struct DurableBatchWire {
 }
 
 impl DurableBatchRequest {
+    /// Constructs and validates an exact immutable batch envelope from SDK
+    /// boundary fields. Inputs and task identities are projected in Rust so
+    /// all members and native hosts use the same admission semantics.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        group_id: GroupId,
+        batch_id: BatchId,
+        group_policy: BatchGroupPolicy,
+        name: &str,
+        version: &str,
+        inputs: Vec<Value>,
+        input_schema: Value,
+        output_schema: Value,
+        requirements: &BTreeSet<String>,
+        machine_digest: &[u8],
+        parent: Option<TaskId>,
+        grants: Capabilities,
+        limits: Limits,
+        run_limits: TaskRunLimits,
+        extensions: Option<ExtensionAdmission>,
+        policy: Option<ComponentIdentity>,
+        execution: Option<ExecutionPlacement>,
+    ) -> Result<Self> {
+        let (task, machine) = task_admission_identities(
+            name,
+            version,
+            &input_schema,
+            &output_schema,
+            requirements,
+            machine_digest,
+        )?;
+        let scope = RuntimeScope::new(grants, limits)?
+            .with_run_limits(run_limits)?
+            .with_replayed_extensions(extensions)?;
+        let request = Self {
+            group_id,
+            batch_id,
+            group_policy,
+            task,
+            machine,
+            inputs,
+            input_schema,
+            output_schema,
+            parent,
+            scope,
+            policy,
+            execution,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
     /// Validates the complete retained manifest before any child is observed
     /// or admitted. A syntactically valid JSON envelope is not sufficient.
     pub fn validate(&self) -> Result<()> {
@@ -4757,22 +4896,25 @@ impl RuntimeGroup {
                 Ok(value)
             })
             .collect::<Result<Vec<_>>>()?;
-        let request = DurableBatchRequest {
+        DurableBatchRequest::from_parts(
             group_id,
-            batch_id: batch.id,
-            group_policy: self.batch_policy,
-            task: definition.identity.clone(),
-            machine: machine.identity().clone(),
+            batch.id,
+            self.batch_policy,
+            &definition.identity.name,
+            &definition.identity.version,
             inputs,
-            input_schema: definition.input_schema.clone(),
-            output_schema: definition.output_schema.clone(),
+            definition.input_schema.clone(),
+            definition.output_schema.clone(),
+            definition.requirements(),
+            &machine.identity().digest,
             parent,
-            scope: self.scope.clone(),
-            policy: self.harness.policy_identity.clone(),
-            execution: None,
-        };
-        request.validate()?;
-        Ok(request)
+            self.scope.grants().clone(),
+            self.scope.limits(),
+            self.scope.run_limits(),
+            self.scope.extensions().cloned(),
+            self.harness.policy_identity.clone(),
+            None,
+        )
     }
 
     async fn admitted_batch<O>(
@@ -5308,7 +5450,388 @@ mod tests {
     use super::*;
     use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
     use crate::resources::ProviderRef;
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn generated_interface_fields(source: &str, name: &str) -> BTreeSet<String> {
+        let header = format!("export interface {name} {{");
+        let bytes = source.as_bytes();
+        let Some(header_offset) = bytes
+            .windows(header.len())
+            .position(|window| window == header.as_bytes())
+        else {
+            return BTreeSet::new();
+        };
+        let start = header_offset + header.len();
+        let mut depth = 1_u32;
+        let Some(end) = bytes[start..]
+            .iter()
+            .enumerate()
+            .find_map(|(offset, byte)| {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(offset)
+            })
+        else {
+            return BTreeSet::new();
+        };
+        let body = std::str::from_utf8(&bytes[start..start + end]).unwrap_or_default();
+        body.lines()
+            .filter_map(|line| {
+                let field = line.trim().strip_prefix("readonly ")?;
+                Some(field.split_once(':')?.0.trim().to_owned())
+            })
+            .collect()
+    }
+
+    fn serialized_object_fields(value: &Value) -> BTreeSet<String> {
+        value
+            .as_object()
+            .map(|fields| fields.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn generated_admission_declarations_cover_every_rust_owned_wire_field() -> Result<()> {
+        let source = include_str!(
+            "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts"
+        );
+        let expected = [
+            (
+                "WasmMachineIdentityWire",
+                ["name", "version", "digest"].as_slice(),
+            ),
+            (
+                "WasmNativeLimitsWire",
+                [
+                    "file_bytes",
+                    "path_bytes",
+                    "attachments",
+                    "render_bytes",
+                    "model_steps",
+                    "model_events_per_step",
+                    "tool_calls_per_step",
+                    "context_messages",
+                ]
+                .as_slice(),
+            ),
+            (
+                "WasmTaskRunLimitsWire",
+                ["concurrency", "max_steps", "deadline_epoch_ms"].as_slice(),
+            ),
+            (
+                "WasmProviderRefWire",
+                ["namespace", "family", "version"].as_slice(),
+            ),
+            ("WasmProjectVolumeOwnerWire", ["kind", "id"].as_slice()),
+            ("WasmAgentVolumeOwnerWire", ["kind", "id"].as_slice()),
+            ("WasmSessionVolumeOwnerWire", ["kind", "id"].as_slice()),
+            (
+                "WasmVolumeRefWire",
+                ["provider", "id", "class", "owner"].as_slice(),
+            ),
+            (
+                "WasmFileDescriptorWire",
+                ["sha256", "byte_length", "media_type"].as_slice(),
+            ),
+            (
+                "WasmFileRefWire",
+                ["volume", "path", "version", "descriptor", "display_name"].as_slice(),
+            ),
+            ("WasmAuthorityWire", ["kind", "id"].as_slice()),
+            (
+                "WasmEventReferenceWire",
+                ["authority", "revision"].as_slice(),
+            ),
+            (
+                "WasmExtensionDependencyWire",
+                ["name", "version"].as_slice(),
+            ),
+            (
+                "WasmExtensionConfigurationWire",
+                ["extension", "schema_digest", "content"].as_slice(),
+            ),
+            (
+                "WasmResourceRefWire",
+                ["kind", "provider", "key", "version"].as_slice(),
+            ),
+            (
+                "WasmExecutionPlacementWire",
+                ["provider", "build", "environment", "readiness_revision"].as_slice(),
+            ),
+            (
+                "WasmExtensionAdmissionWire",
+                ["source", "selected", "configurations"].as_slice(),
+            ),
+            (
+                "WasmTaskAdmissionWire",
+                [
+                    "contract",
+                    "operation_id",
+                    "task",
+                    "machine",
+                    "input",
+                    "input_schema",
+                    "output_schema",
+                    "parent",
+                    "grants",
+                    "limits",
+                    "run_limits",
+                    "policy",
+                    "extensions",
+                    "execution",
+                ]
+                .as_slice(),
+            ),
+            (
+                "WasmDurableBatchWire",
+                [
+                    "contract",
+                    "group_id",
+                    "batch_id",
+                    "group_policy",
+                    "task",
+                    "machine",
+                    "inputs",
+                    "input_schema",
+                    "output_schema",
+                    "parent",
+                    "grants",
+                    "limits",
+                    "run_limits",
+                    "extensions",
+                    "policy",
+                    "execution",
+                ]
+                .as_slice(),
+            ),
+            (
+                "WasmTaskAdmissionIdentities",
+                ["task", "machine"].as_slice(),
+            ),
+        ];
+        for (name, fields) in expected {
+            assert_eq!(
+                generated_interface_fields(source, name),
+                fields.iter().map(|field| (*field).to_owned()).collect()
+            );
+        }
+        let compact = source.split_whitespace().collect::<String>();
+        for signature in [
+            "exportfunctionadmitBatch(value:WasmBatchAdmissionInput):WasmDurableBatchWire;",
+            "exportfunctionadmitTask(value:WasmTaskAdmissionInput):WasmTaskAdmissionWire;",
+            "exportfunctiontaskAdmissionIdentities(value:WasmTaskIdentityInput):WasmTaskAdmissionIdentities;",
+        ] {
+            assert!(
+                compact.contains(signature),
+                "missing generated signature {signature}"
+            );
+        }
+
+        let schema = serde_json::json!({"type": "integer"});
+        let requirements = BTreeSet::new();
+        let mut extension_value: Value =
+            serde_json::from_str(include_str!("../fixtures/v2/extension-admission.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        extension_value["selected"] = serde_json::json!([
+            { "name": "example.state", "version": 1 }
+        ]);
+        extension_value["configurations"] = serde_json::json!([serde_json::from_str::<Value>(
+            include_str!("../fixtures/v2/extension-configuration.json")
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?]);
+        let extensions: ExtensionAdmission = serde_json::from_value(extension_value)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        extensions.validate()?;
+        let policy = ComponentIdentity {
+            name: "fixture.policy".into(),
+            version: "1".into(),
+            digest: [45; 32],
+        };
+        let execution: ExecutionPlacement =
+            serde_json::from_str(include_str!("../fixtures/v2/execution-placement.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        execution.validate()?;
+        let task = TaskAdmissionRecord::from_parts(
+            OperationId::from_bytes([41; 16]),
+            "fixture.task",
+            "1",
+            serde_json::json!(7),
+            schema.clone(),
+            schema.clone(),
+            &requirements,
+            &[42; 32],
+            None,
+            Capabilities::new([] as [String; 0]),
+            Limits::default(),
+            TaskRunLimits {
+                concurrency: None,
+                max_steps: None,
+                deadline_epoch_ms: None,
+            },
+            Some(policy.clone()),
+            Some(extensions.clone()),
+            Some(execution.clone()),
+        )?;
+        let batch = DurableBatchRequest::from_parts(
+            GroupId::from_bytes([43; 16]),
+            BatchId::from_bytes([44; 16]),
+            BatchGroupPolicy::CollectAll,
+            "fixture.task",
+            "1",
+            vec![serde_json::json!(7), serde_json::json!(8)],
+            schema.clone(),
+            schema,
+            &requirements,
+            &[42; 32],
+            None,
+            Capabilities::new([] as [String; 0]),
+            Limits::default(),
+            TaskRunLimits {
+                concurrency: None,
+                max_steps: None,
+                deadline_epoch_ms: None,
+            },
+            Some(extensions),
+            Some(policy),
+            Some(execution),
+        )?;
+        let task_wire = task.canonical_value();
+        let batch_wire = batch.canonical_value();
+        for (name, value) in [
+            ("WasmTaskAdmissionWire", &task_wire),
+            ("WasmDurableBatchWire", &batch_wire),
+        ] {
+            assert_eq!(
+                serialized_object_fields(value),
+                generated_interface_fields(source, name),
+                "generated declaration drift for serialized {name}"
+            );
+        }
+        for (name, value) in [
+            ("WasmMachineIdentityWire", &task_wire["task"]),
+            ("WasmMachineIdentityWire", &task_wire["machine"]),
+            ("WasmNativeLimitsWire", &task_wire["limits"]),
+            ("WasmTaskRunLimitsWire", &task_wire["run_limits"]),
+            ("WasmMachineIdentityWire", &batch_wire["task"]),
+            ("WasmMachineIdentityWire", &batch_wire["machine"]),
+            ("WasmNativeLimitsWire", &batch_wire["limits"]),
+            ("WasmTaskRunLimitsWire", &batch_wire["run_limits"]),
+        ] {
+            assert_eq!(
+                serialized_object_fields(value),
+                generated_interface_fields(source, name),
+                "generated declaration drift for serialized nested {name}"
+            );
+        }
+        for (name, value) in [
+            ("WasmMachineIdentityWire", &task_wire["policy"]),
+            ("WasmExtensionAdmissionWire", &task_wire["extensions"]),
+            ("WasmEventReferenceWire", &task_wire["extensions"]["source"]),
+            (
+                "WasmAuthorityWire",
+                &task_wire["extensions"]["source"]["authority"],
+            ),
+            (
+                "WasmExtensionDependencyWire",
+                &task_wire["extensions"]["selected"][0],
+            ),
+            (
+                "WasmExtensionConfigurationWire",
+                &task_wire["extensions"]["configurations"][0],
+            ),
+            (
+                "WasmFileRefWire",
+                &task_wire["extensions"]["configurations"][0]["content"],
+            ),
+            (
+                "WasmVolumeRefWire",
+                &task_wire["extensions"]["configurations"][0]["content"]["volume"],
+            ),
+            (
+                "WasmAgentVolumeOwnerWire",
+                &task_wire["extensions"]["configurations"][0]["content"]["volume"]["owner"],
+            ),
+            (
+                "WasmProviderRefWire",
+                &task_wire["extensions"]["configurations"][0]["content"]["volume"]["provider"],
+            ),
+            (
+                "WasmFileDescriptorWire",
+                &task_wire["extensions"]["configurations"][0]["content"]["descriptor"],
+            ),
+            ("WasmExecutionPlacementWire", &task_wire["execution"]),
+            (
+                "WasmMachineIdentityWire",
+                &task_wire["execution"]["provider"],
+            ),
+            ("WasmResourceRefWire", &task_wire["execution"]["build"]),
+            (
+                "WasmResourceRefWire",
+                &task_wire["execution"]["environment"],
+            ),
+        ] {
+            assert_eq!(
+                serialized_object_fields(value),
+                generated_interface_fields(source, name),
+                "generated declaration drift for populated nested {name}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generated_file_ref_wire_matches_rust_serde_fixture() -> Result<()> {
+        let file = FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("local", "filesystem", "2")?,
+                "project",
+                VolumeClass::Project,
+                VolumeOwner::Project("workspace".into()),
+            )?,
+            "config.json",
+            "generation-1",
+            FileDescriptor::from_bytes(br#"{}"#, "application/json")?,
+            "config.json",
+        )?;
+        let value =
+            serde_json::to_value(&file).map_err(|error| Error::Invalid(error.to_string()))?;
+        let source = include_str!(
+            "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts"
+        );
+        let object_fields = |value: &Value| {
+            value
+                .as_object()
+                .map(|fields| fields.keys().cloned().collect::<BTreeSet<_>>())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            object_fields(&value),
+            generated_interface_fields(source, "WasmFileRefWire")
+        );
+        assert_eq!(
+            object_fields(&value["volume"]),
+            generated_interface_fields(source, "WasmVolumeRefWire")
+        );
+        assert_eq!(
+            object_fields(&value["volume"]["provider"]),
+            generated_interface_fields(source, "WasmProviderRefWire")
+        );
+        assert_eq!(
+            object_fields(&value["volume"]["owner"]),
+            generated_interface_fields(source, "WasmProjectVolumeOwnerWire")
+        );
+        assert_eq!(
+            object_fields(&value["descriptor"]),
+            generated_interface_fields(source, "WasmFileDescriptorWire")
+        );
+        assert_eq!(value["volume"]["owner"]["kind"], "project");
+        assert_eq!(value["descriptor"]["media_type"], "application/json");
+        Ok(())
+    }
 
     struct CompletedModel {
         requests: std::sync::Mutex<Vec<ModelRequest>>,

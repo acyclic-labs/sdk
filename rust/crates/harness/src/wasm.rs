@@ -31,13 +31,313 @@ use crate::{
         validate_model_context_selection_at_revision,
     },
     resources::{ProviderRef, ResourceRef},
-    runtime::{DurableBatchRequest, batch_member_operation_id, task_definition_digest},
+    runtime::{
+        BatchGroupPolicy, DurableBatchRequest, TaskAdmissionRecord, TaskRunLimits,
+        batch_member_operation_id, task_admission_identities, task_definition_digest,
+    },
     tool::{ToolDefinition, validate_value},
 };
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use std::collections::BTreeSet;
+use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+#[tsify(large_number_types_as_bigints)]
+struct WasmLimitsInput {
+    file_bytes: u64,
+    path_bytes: u64,
+    attachments: u64,
+    render_bytes: u64,
+    model_steps: u64,
+    model_events_per_step: u64,
+    tool_calls_per_step: u64,
+    context_messages: u64,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi, large_number_types_as_bigints)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskRunLimitsInput {
+    #[tsify(type = "bigint | null")]
+    concurrency: Option<u64>,
+    #[tsify(type = "bigint | null")]
+    max_steps: Option<u64>,
+    #[tsify(type = "bigint | null")]
+    deadline_epoch_ms: Option<u64>,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskIdentityInput {
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "string")]
+    version: String,
+    #[tsify(type = "unknown")]
+    input_schema: serde_json::Value,
+    #[tsify(type = "unknown")]
+    output_schema: serde_json::Value,
+    #[tsify(type = "readonly string[]")]
+    requirements: BTreeSet<String>,
+    #[tsify(type = "readonly number[]")]
+    machine_digest: Vec<u8>,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskAdmissionInput {
+    #[tsify(type = "string")]
+    operation_id: OperationId,
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "string")]
+    version: String,
+    #[tsify(type = "unknown")]
+    input: serde_json::Value,
+    #[tsify(type = "unknown")]
+    input_schema: serde_json::Value,
+    #[tsify(type = "unknown")]
+    output_schema: serde_json::Value,
+    #[tsify(type = "readonly string[]")]
+    requirements: BTreeSet<String>,
+    #[tsify(type = "readonly number[]")]
+    machine_digest: Vec<u8>,
+    #[tsify(type = "string | null")]
+    parent: Option<TaskId>,
+    #[tsify(type = "readonly string[]")]
+    grants: Vec<String>,
+    limits: WasmLimitsInput,
+    run_limits: WasmTaskRunLimitsInput,
+    #[tsify(type = "WasmMachineIdentityWire | null")]
+    policy: Option<crate::registry::ComponentIdentity>,
+    #[tsify(type = "WasmExtensionAdmissionWire | null")]
+    extensions: Option<ExtensionAdmission>,
+    #[tsify(type = "WasmExecutionPlacementWire | null")]
+    execution: Option<crate::runtime::ExecutionPlacement>,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmBatchAdmissionInput {
+    #[tsify(type = "string")]
+    group_id: GroupId,
+    #[tsify(type = "string")]
+    batch_id: BatchId,
+    #[tsify(type = "\"collect-all\" | \"cancel-on-failure\"")]
+    group_policy: BatchGroupPolicy,
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "string")]
+    version: String,
+    #[tsify(type = "readonly unknown[]")]
+    inputs: Vec<serde_json::Value>,
+    #[tsify(type = "unknown")]
+    input_schema: serde_json::Value,
+    #[tsify(type = "unknown")]
+    output_schema: serde_json::Value,
+    #[tsify(type = "readonly string[]")]
+    requirements: BTreeSet<String>,
+    #[tsify(type = "readonly number[]")]
+    machine_digest: Vec<u8>,
+    #[tsify(type = "string | null")]
+    parent: Option<TaskId>,
+    #[tsify(type = "readonly string[]")]
+    grants: Vec<String>,
+    limits: WasmLimitsInput,
+    run_limits: WasmTaskRunLimitsInput,
+    #[tsify(type = "WasmExtensionAdmissionWire | null")]
+    extensions: Option<ExtensionAdmission>,
+    #[tsify(type = "WasmMachineIdentityWire | null")]
+    policy: Option<crate::registry::ComponentIdentity>,
+    #[tsify(type = "WasmExecutionPlacementWire | null")]
+    execution: Option<crate::runtime::ExecutionPlacement>,
+}
+
+fn wasm_limits(input: WasmLimitsInput) -> Result<Limits, crate::Error> {
+    Ok(Limits {
+        file_bytes: input.file_bytes,
+        path_bytes: usize::try_from(input.path_bytes)
+            .map_err(|_| crate::Error::Invalid("path_bytes is not representable".into()))?,
+        attachments: usize::try_from(input.attachments)
+            .map_err(|_| crate::Error::Invalid("attachments is not representable".into()))?,
+        render_bytes: input.render_bytes,
+        model_steps: usize::try_from(input.model_steps)
+            .map_err(|_| crate::Error::Invalid("model_steps is not representable".into()))?,
+        model_events_per_step: usize::try_from(input.model_events_per_step).map_err(|_| {
+            crate::Error::Invalid("model_events_per_step is not representable".into())
+        })?,
+        tool_calls_per_step: usize::try_from(input.tool_calls_per_step).map_err(|_| {
+            crate::Error::Invalid("tool_calls_per_step is not representable".into())
+        })?,
+        context_messages: usize::try_from(input.context_messages)
+            .map_err(|_| crate::Error::Invalid("context_messages is not representable".into()))?,
+    })
+}
+
+fn wasm_run_limits(input: WasmTaskRunLimitsInput) -> Result<TaskRunLimits, crate::Error> {
+    Ok(TaskRunLimits {
+        concurrency: input
+            .concurrency
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| crate::Error::Invalid("concurrency is not representable".into()))?,
+        max_steps: input
+            .max_steps
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| crate::Error::Invalid("max_steps is not representable".into()))?,
+        deadline_epoch_ms: input.deadline_epoch_ms,
+    })
+}
+
+// These wire declarations are emitted from the same Rust WASM module as the
+// admission constructors.  The input declarations above are Tsify-derived;
+// these output declarations keep the canonical serde projection typed without
+// reintroducing a second TypeScript-owned contract.
+#[wasm_bindgen(typescript_custom_section)]
+const ADMISSION_WIRE_TYPES: &'static str = r#"
+export interface WasmMachineIdentityWire {
+    readonly name: string;
+    readonly version: string;
+    readonly digest: readonly number[];
+}
+export type WasmToolJsonValue = null | string | number | boolean | readonly WasmToolJsonValue[] | Readonly<{ [key: string]: WasmToolJsonValue }>;
+export type WasmToolJsonSchema = boolean | Readonly<{ [key: string]: WasmToolJsonValue }>;
+export interface WasmNativeLimitsWire {
+    readonly file_bytes: bigint;
+    readonly path_bytes: bigint;
+    readonly attachments: bigint;
+    readonly render_bytes: bigint;
+    readonly model_steps: bigint;
+    readonly model_events_per_step: bigint;
+    readonly tool_calls_per_step: bigint;
+    readonly context_messages: bigint;
+}
+export interface WasmTaskRunLimitsWire {
+    readonly concurrency: bigint | null;
+    readonly max_steps: bigint | null;
+    readonly deadline_epoch_ms: bigint | null;
+}
+export interface WasmProviderRefWire {
+    readonly namespace: string;
+    readonly family: string;
+    readonly version: string;
+}
+export interface WasmProjectVolumeOwnerWire {
+    readonly kind: "project";
+    readonly id: string;
+}
+export interface WasmAgentVolumeOwnerWire {
+    readonly kind: "agent";
+    readonly id: string;
+}
+export interface WasmSessionVolumeOwnerWire {
+    readonly kind: "session";
+    readonly id: string;
+}
+export type WasmVolumeOwnerWire =
+    | WasmProjectVolumeOwnerWire
+    | WasmAgentVolumeOwnerWire
+    | WasmSessionVolumeOwnerWire;
+export interface WasmVolumeRefWire {
+    readonly provider: WasmProviderRefWire;
+    readonly id: string;
+    readonly class: "project" | "agent_private" | "session_shared";
+    readonly owner: WasmVolumeOwnerWire;
+}
+export interface WasmFileDescriptorWire {
+    readonly sha256: readonly number[];
+    readonly byte_length: number;
+    readonly media_type: string;
+}
+export interface WasmFileRefWire {
+    readonly volume: WasmVolumeRefWire;
+    readonly path: string;
+    readonly version: string;
+    readonly descriptor: WasmFileDescriptorWire;
+    readonly display_name: string;
+}
+export interface WasmAuthorityWire {
+    readonly kind: "agent";
+    readonly id: string;
+}
+export interface WasmEventReferenceWire {
+    readonly authority: WasmAuthorityWire;
+    readonly revision: bigint;
+}
+export interface WasmExtensionDependencyWire {
+    readonly name: string;
+    readonly version: number;
+}
+export interface WasmExtensionConfigurationWire {
+    readonly extension: WasmExtensionDependencyWire;
+    readonly schema_digest: readonly number[];
+    readonly content: WasmFileRefWire;
+}
+export interface WasmResourceRefWire {
+    readonly kind: "workspace" | "generation" | "artifact" | "sandbox" | "checkpoint" | "stream" | "context" | "run";
+    readonly provider: WasmProviderRefWire;
+    readonly key: readonly number[];
+    readonly version: string | null;
+}
+export interface WasmExecutionPlacementWire {
+    readonly provider: WasmMachineIdentityWire;
+    readonly build: WasmResourceRefWire & Readonly<{ kind: "artifact" }>;
+    readonly environment: (WasmResourceRefWire & Readonly<{ kind: "sandbox" }>) | null;
+    readonly readiness_revision: readonly number[];
+}
+export interface WasmExtensionAdmissionWire {
+    readonly source: WasmEventReferenceWire;
+    readonly selected: readonly WasmExtensionDependencyWire[];
+    readonly configurations: readonly WasmExtensionConfigurationWire[];
+}
+export interface WasmTaskAdmissionWire {
+    readonly contract: "harness.task-admission.v2";
+    readonly operation_id: string;
+    readonly task: WasmMachineIdentityWire;
+    readonly machine: WasmMachineIdentityWire;
+    readonly input: unknown;
+    readonly input_schema: WasmToolJsonSchema;
+    readonly output_schema: WasmToolJsonSchema;
+    readonly parent: string | null;
+    readonly grants: readonly string[];
+    readonly limits: WasmNativeLimitsWire;
+    readonly run_limits: WasmTaskRunLimitsWire;
+    readonly policy: WasmMachineIdentityWire | null;
+    readonly extensions: WasmExtensionAdmissionWire | null;
+    readonly execution: WasmExecutionPlacementWire | null;
+}
+export interface WasmDurableBatchWire {
+    readonly contract: "harness.batch.v2";
+    readonly group_id: string;
+    readonly batch_id: string;
+    readonly group_policy: "collect-all" | "cancel-on-failure";
+    readonly task: WasmMachineIdentityWire;
+    readonly machine: WasmMachineIdentityWire;
+    readonly inputs: readonly unknown[];
+    readonly input_schema: WasmToolJsonSchema;
+    readonly output_schema: WasmToolJsonSchema;
+    readonly parent: string | null;
+    readonly grants: readonly string[];
+    readonly limits: WasmNativeLimitsWire;
+    readonly run_limits: WasmTaskRunLimitsWire;
+    readonly extensions: WasmExtensionAdmissionWire | null;
+    readonly policy: WasmMachineIdentityWire | null;
+    readonly execution: WasmExecutionPlacementWire | null;
+}
+export interface WasmTaskAdmissionIdentities {
+    readonly task: WasmMachineIdentityWire;
+    readonly machine: WasmMachineIdentityWire;
+}
+"#;
 
 /// Exact bytes captured by the owner-facing TypeScript adapter before Rust
 /// performs the canonical projection.  The map key is the canonical JSON
@@ -153,6 +453,89 @@ pub fn task_identity_digest_wasm(
     )
     .map(|digest| digest.to_vec())
     .map_err(js_error)
+}
+
+/// Derives the exact task and machine identities retained by durable
+/// admission. The digest envelope and resumable machine pin are shared with
+/// native Rust registration.
+#[wasm_bindgen(
+    js_name = taskAdmissionIdentities,
+    unchecked_return_type = "WasmTaskAdmissionIdentities"
+)]
+pub fn task_admission_identities_wasm(
+    #[wasm_bindgen(unchecked_param_type = "WasmTaskIdentityInput")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    let input: WasmTaskIdentityInput = from_js(value)?;
+    let (task, machine) = task_admission_identities(
+        &input.name,
+        &input.version,
+        &input.input_schema,
+        &input.output_schema,
+        &input.requirements,
+        &input.machine_digest,
+    )
+    .map_err(js_error)?;
+    to_js_admitted(&serde_json::json!({ "task": task, "machine": machine }))
+}
+
+/// Builds and validates the complete owner-retained task admission envelope.
+/// TypeScript supplies public values, while Rust owns identity derivation,
+/// schema/value validation, limits, authority, and execution binding.
+#[wasm_bindgen(js_name = admitTask, unchecked_return_type = "WasmTaskAdmissionWire")]
+pub fn admit_task_wasm(
+    #[wasm_bindgen(unchecked_param_type = "WasmTaskAdmissionInput")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    let input: WasmTaskAdmissionInput = from_js(value)?;
+    let record = TaskAdmissionRecord::from_parts(
+        input.operation_id,
+        &input.name,
+        &input.version,
+        input.input,
+        input.input_schema,
+        input.output_schema,
+        &input.requirements,
+        &input.machine_digest,
+        input.parent,
+        Capabilities::new(input.grants),
+        wasm_limits(input.limits).map_err(js_error)?,
+        wasm_run_limits(input.run_limits).map_err(js_error)?,
+        input.policy,
+        input.extensions,
+        input.execution,
+    )
+    .map_err(js_error)?;
+    to_js_admitted(&record.canonical_value())
+}
+
+/// Builds and validates the complete immutable batch request before any
+/// member admission. Inputs, task identity, limits, policy, and route are
+/// projected by the same Rust constructor used by native hosts.
+#[wasm_bindgen(js_name = admitBatch, unchecked_return_type = "WasmDurableBatchWire")]
+pub fn admit_batch_wasm(
+    #[wasm_bindgen(unchecked_param_type = "WasmBatchAdmissionInput")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    let input: WasmBatchAdmissionInput = from_js(value)?;
+    let request = DurableBatchRequest::from_parts(
+        input.group_id,
+        input.batch_id,
+        input.group_policy,
+        &input.name,
+        &input.version,
+        input.inputs,
+        input.input_schema,
+        input.output_schema,
+        &input.requirements,
+        &input.machine_digest,
+        input.parent,
+        Capabilities::new(input.grants),
+        wasm_limits(input.limits).map_err(js_error)?,
+        wasm_run_limits(input.run_limits).map_err(js_error)?,
+        input.extensions,
+        input.policy,
+        input.execution,
+    )
+    .map_err(js_error)?;
+    to_js_admitted(&request.canonical_value())
 }
 
 /// Derives a stable child operation/message identity from one admitted operation

@@ -1,5 +1,141 @@
 /* tslint:disable */
 /* eslint-disable */
+
+export interface WasmMachineIdentityWire {
+    readonly name: string;
+    readonly version: string;
+    readonly digest: readonly number[];
+}
+export type WasmToolJsonValue = null | string | number | boolean | readonly WasmToolJsonValue[] | Readonly<{ [key: string]: WasmToolJsonValue }>;
+export type WasmToolJsonSchema = boolean | Readonly<{ [key: string]: WasmToolJsonValue }>;
+export interface WasmNativeLimitsWire {
+    readonly file_bytes: bigint;
+    readonly path_bytes: bigint;
+    readonly attachments: bigint;
+    readonly render_bytes: bigint;
+    readonly model_steps: bigint;
+    readonly model_events_per_step: bigint;
+    readonly tool_calls_per_step: bigint;
+    readonly context_messages: bigint;
+}
+export interface WasmTaskRunLimitsWire {
+    readonly concurrency: bigint | null;
+    readonly max_steps: bigint | null;
+    readonly deadline_epoch_ms: bigint | null;
+}
+export interface WasmProviderRefWire {
+    readonly namespace: string;
+    readonly family: string;
+    readonly version: string;
+}
+export interface WasmProjectVolumeOwnerWire {
+    readonly kind: "project";
+    readonly id: string;
+}
+export interface WasmAgentVolumeOwnerWire {
+    readonly kind: "agent";
+    readonly id: string;
+}
+export interface WasmSessionVolumeOwnerWire {
+    readonly kind: "session";
+    readonly id: string;
+}
+export type WasmVolumeOwnerWire =
+| WasmProjectVolumeOwnerWire
+| WasmAgentVolumeOwnerWire
+| WasmSessionVolumeOwnerWire;
+export interface WasmVolumeRefWire {
+    readonly provider: WasmProviderRefWire;
+    readonly id: string;
+    readonly class: "project" | "agent_private" | "session_shared";
+    readonly owner: WasmVolumeOwnerWire;
+}
+export interface WasmFileDescriptorWire {
+    readonly sha256: readonly number[];
+    readonly byte_length: number;
+    readonly media_type: string;
+}
+export interface WasmFileRefWire {
+    readonly volume: WasmVolumeRefWire;
+    readonly path: string;
+    readonly version: string;
+    readonly descriptor: WasmFileDescriptorWire;
+    readonly display_name: string;
+}
+export interface WasmAuthorityWire {
+    readonly kind: "agent";
+    readonly id: string;
+}
+export interface WasmEventReferenceWire {
+    readonly authority: WasmAuthorityWire;
+    readonly revision: bigint;
+}
+export interface WasmExtensionDependencyWire {
+    readonly name: string;
+    readonly version: number;
+}
+export interface WasmExtensionConfigurationWire {
+    readonly extension: WasmExtensionDependencyWire;
+    readonly schema_digest: readonly number[];
+    readonly content: WasmFileRefWire;
+}
+export interface WasmResourceRefWire {
+    readonly kind: "workspace" | "generation" | "artifact" | "sandbox" | "checkpoint" | "stream" | "context" | "run";
+    readonly provider: WasmProviderRefWire;
+    readonly key: readonly number[];
+    readonly version: string | null;
+}
+export interface WasmExecutionPlacementWire {
+    readonly provider: WasmMachineIdentityWire;
+    readonly build: WasmResourceRefWire & Readonly<{ kind: "artifact" }>;
+    readonly environment: (WasmResourceRefWire & Readonly<{ kind: "sandbox" }>) | null;
+    readonly readiness_revision: readonly number[];
+}
+export interface WasmExtensionAdmissionWire {
+    readonly source: WasmEventReferenceWire;
+    readonly selected: readonly WasmExtensionDependencyWire[];
+    readonly configurations: readonly WasmExtensionConfigurationWire[];
+}
+export interface WasmTaskAdmissionWire {
+    readonly contract: "harness.task-admission.v2";
+    readonly operation_id: string;
+    readonly task: WasmMachineIdentityWire;
+    readonly machine: WasmMachineIdentityWire;
+    readonly input: unknown;
+    readonly input_schema: WasmToolJsonSchema;
+    readonly output_schema: WasmToolJsonSchema;
+    readonly parent: string | null;
+    readonly grants: readonly string[];
+    readonly limits: WasmNativeLimitsWire;
+    readonly run_limits: WasmTaskRunLimitsWire;
+    readonly policy: WasmMachineIdentityWire | null;
+    readonly extensions: WasmExtensionAdmissionWire | null;
+    readonly execution: WasmExecutionPlacementWire | null;
+}
+export interface WasmDurableBatchWire {
+    readonly contract: "harness.batch.v2";
+    readonly group_id: string;
+    readonly batch_id: string;
+    readonly group_policy: "collect-all" | "cancel-on-failure";
+    readonly task: WasmMachineIdentityWire;
+    readonly machine: WasmMachineIdentityWire;
+    readonly inputs: readonly unknown[];
+    readonly input_schema: WasmToolJsonSchema;
+    readonly output_schema: WasmToolJsonSchema;
+    readonly parent: string | null;
+    readonly grants: readonly string[];
+    readonly limits: WasmNativeLimitsWire;
+    readonly run_limits: WasmTaskRunLimitsWire;
+    readonly extensions: WasmExtensionAdmissionWire | null;
+    readonly policy: WasmMachineIdentityWire | null;
+    readonly execution: WasmExecutionPlacementWire | null;
+}
+export interface WasmTaskAdmissionIdentities {
+    readonly task: WasmMachineIdentityWire;
+    readonly machine: WasmMachineIdentityWire;
+}
+
+
 /**
  * Ordered authority-resolution level from the runtime root to one invocation.
  */
@@ -17,6 +153,70 @@ export interface ProtocolIdentity {
      * Digest of the canonical descriptor set.
      */
     descriptor_digest: string;
+}
+
+export interface WasmBatchAdmissionInput {
+    group_id: string;
+    batch_id: string;
+    group_policy: "collect-all" | "cancel-on-failure";
+    name: string;
+    version: string;
+    inputs: readonly unknown[];
+    input_schema: unknown;
+    output_schema: unknown;
+    requirements: readonly string[];
+    machine_digest: readonly number[];
+    parent: string | null;
+    grants: readonly string[];
+    limits: WasmLimitsInput;
+    run_limits: WasmTaskRunLimitsInput;
+    extensions: WasmExtensionAdmissionWire | null;
+    policy: WasmMachineIdentityWire | null;
+    execution: WasmExecutionPlacementWire | null;
+}
+
+export interface WasmLimitsInput {
+    file_bytes: bigint;
+    path_bytes: bigint;
+    attachments: bigint;
+    render_bytes: bigint;
+    model_steps: bigint;
+    model_events_per_step: bigint;
+    tool_calls_per_step: bigint;
+    context_messages: bigint;
+}
+
+export interface WasmTaskAdmissionInput {
+    operation_id: string;
+    name: string;
+    version: string;
+    input: unknown;
+    input_schema: unknown;
+    output_schema: unknown;
+    requirements: readonly string[];
+    machine_digest: readonly number[];
+    parent: string | null;
+    grants: readonly string[];
+    limits: WasmLimitsInput;
+    run_limits: WasmTaskRunLimitsInput;
+    policy: WasmMachineIdentityWire | null;
+    extensions: WasmExtensionAdmissionWire | null;
+    execution: WasmExecutionPlacementWire | null;
+}
+
+export interface WasmTaskIdentityInput {
+    name: string;
+    version: string;
+    input_schema: unknown;
+    output_schema: unknown;
+    requirements: readonly string[];
+    machine_digest: readonly number[];
+}
+
+export interface WasmTaskRunLimitsInput {
+    concurrency: bigint | null;
+    max_steps: bigint | null;
+    deadline_epoch_ms: bigint | null;
 }
 
 
@@ -156,11 +356,25 @@ export class WasmReducer {
 }
 
 /**
+ * Builds and validates the complete immutable batch request before any
+ * member admission. Inputs, task identity, limits, policy, and route are
+ * projected by the same Rust constructor used by native hosts.
+ */
+export function admitBatch(value: WasmBatchAdmissionInput): WasmDurableBatchWire;
+
+/**
  * Admits one provider model event with the native stream rules and returns
  * the detached state needed for the next event. Text accounting is cumulative
  * across model steps while event and tool-call bounds reset at each step.
  */
 export function admitModelEvent(event: any, limits: any, state: any): any;
+
+/**
+ * Builds and validates the complete owner-retained task admission envelope.
+ * TypeScript supplies public values, while Rust owns identity derivation,
+ * schema/value validation, limits, authority, and execution binding.
+ */
+export function admitTask(value: WasmTaskAdmissionInput): WasmTaskAdmissionWire;
 
 /**
  * Derives the same immutable per-slot operation as Rust durable admission.
@@ -241,6 +455,13 @@ export function forkSeedFromReport(report: any): any;
  * and async reads finish before this deterministic core is entered.
  */
 export function selectModelContext(conversation: any, selection: any, files: any, maximum_messages: number, maximum_attachments: number, maximum_render_bytes: number, maximum_projected_attachments: number): Promise<any>;
+
+/**
+ * Derives the exact task and machine identities retained by durable
+ * admission. The digest envelope and resumable machine pin are shared with
+ * native Rust registration.
+ */
+export function taskAdmissionIdentities(value: WasmTaskIdentityInput): WasmTaskAdmissionIdentities;
 
 /**
  * Derives the same pinned task registration digest used by native admission.
@@ -364,7 +585,9 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmreducer_free: (a: number, b: number) => void;
+    readonly admitBatch: (a: any) => [number, number, number];
     readonly admitModelEvent: (a: any, b: any, c: any) => [number, number, number];
+    readonly admitTask: (a: any) => [number, number, number];
     readonly batchMemberOperationId: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly decodeAggregateKind: (a: number) => [number, number, number];
     readonly decodeApplyResponse: (a: number, b: number) => [number, number, number];
@@ -379,6 +602,7 @@ export interface InitOutput {
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
     readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
+    readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
     readonly uuidFromDigestHalf: (a: number, b: number, c: number) => [number, number, number, number];
     readonly validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];

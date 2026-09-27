@@ -29,6 +29,7 @@ import {
   type HarnessRuntimeState,
   type TaskAdmissionRecord,
   type TaskAdmissionWire,
+  type NativeLimitsWire,
   type WorkflowAdmissionWire,
   type MessageId,
   type Outcome,
@@ -75,6 +76,58 @@ test("native task and workflow admissions preserve Rust u64 values as BigInt", a
   const workflowText = (await Bun.file(new URL("../../../../fixtures/harness/v2/workflow-admission.json", import.meta.url)).text()).trim();
   const workflow = contracts.validate("workflow_admission", JSON.parse(workflowText));
   expect(workflow.initial.revision).toBe(0n);
+});
+
+test("Rust owns durable task and batch projection identities", () => {
+  const limits: NativeLimitsWire = {
+    file_bytes: BigInt(DEFAULT_LIMITS.file_bytes), path_bytes: BigInt(DEFAULT_LIMITS.path_bytes),
+    attachments: BigInt(DEFAULT_LIMITS.attachments), render_bytes: BigInt(DEFAULT_LIMITS.render_bytes),
+    model_steps: BigInt(DEFAULT_LIMITS.model_steps), model_events_per_step: BigInt(DEFAULT_LIMITS.model_events_per_step),
+    tool_calls_per_step: BigInt(DEFAULT_LIMITS.tool_calls_per_step), context_messages: BigInt(DEFAULT_LIMITS.context_messages),
+  };
+  const common = {
+    name: "projection.task",
+    version: "1",
+    input_schema: { type: "integer" },
+    output_schema: { type: "integer" },
+    requirements: [],
+    machine_digest: Array(32).fill(9),
+    parent: null,
+    grants: [],
+    limits,
+    run_limits: { concurrency: null, max_steps: null, deadline_epoch_ms: null },
+    policy: null,
+    extensions: null,
+    execution: null,
+  } as const;
+  const identities = contracts.taskAdmissionIdentities({
+    name: common.name, version: common.version, input_schema: common.input_schema,
+    output_schema: common.output_schema, requirements: common.requirements,
+    machine_digest: common.machine_digest,
+  });
+  const task = contracts.admitTask({
+    ...common,
+    operation_id: "12345678-1234-4234-8234-123456789abc",
+    input: 4,
+  });
+  expect(task.task).toEqual(identities.task);
+  expect(task.machine).toEqual(identities.machine);
+  expect(contracts.validate("task_admission", task)).toEqual(task);
+
+  const batch = contracts.admitBatch({
+    ...common,
+    group_id: "22345678-1234-4234-8234-123456789abc",
+    batch_id: "32345678-1234-4234-8234-123456789abc",
+    group_policy: "collect-all",
+    inputs: [4, 5],
+  });
+  expect(contracts.validate("durable_batch_request", batch)).toEqual(batch);
+  expect(batch.inputs).toEqual([4n, 5n]);
+  expect(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0))
+    .not.toBe(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 1));
+  expect(() => contracts.admitBatch({ ...common,
+    group_id: batch.group_id, batch_id: batch.batch_id, group_policy: "collect-all", inputs: ["wrong"],
+  })).toThrow();
 });
 const testModel = { provider: "fixture", name: "fixture", revision: "1", options: {} } as const;
 const fixtureMessageId = (value: string): ConversationMessageId => value as ConversationMessageId;
@@ -791,6 +844,12 @@ describe("typed agent runtime", () => {
       async qualifyBatch() { throw new Error("batch route is not registered"); },
     };
     const runtime = Harness.builder(contracts).execution(execution).task(definition).task(localClosure).build();
+    const unbound = Harness.builder(contracts).task(definition).build();
+    expect(() => unbound.admissionRecord(operationId, definition, 3, undefined, placement))
+      .toThrow("unbound execution route");
+    expect(() => runtime.admissionRecord(operationId, definition, 3, undefined,
+      { ...placement, provider: policyIdentity("other.execution", "1", Uint8Array.from({ length: 32 }, () => 8)) }))
+      .toThrow("another provider");
     expect(() => runtime.spawn(localClosure, 3)).toThrow("live task closures cannot cross an execution provider");
     expect((await runtime.admit(definition, 3, operationId)).kind).toBe("accepted");
     // The full task-admission envelope owns the canonical representation of

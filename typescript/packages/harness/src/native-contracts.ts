@@ -1,6 +1,10 @@
 /** Explicitly initialized Rust contract validator with strongly typed v2 inputs. */
 import initWasm, * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
-import type { InitInput, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
+import type {
+  InitInput, WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer,
+  WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
+  WasmTaskIdentityInput,
+} from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationPage, FileDescriptor, FileRef, Limits, MessageKind, ProviderRef, ReferencedAttachments, TaskOutcomeRecord, VolumeClass, VolumeRef,
 } from "./conversation.js";
@@ -13,6 +17,13 @@ import type { ProjectMergeReceipt } from "./project.js";
 import type { PrivateDirectoryPage } from "./runtime.js";
 import type { ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult } from "./model.js";
 import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
+
+/** Rust generated admission projection input and output shapes. */
+export type TaskAdmissionProjectionInput = WasmTaskAdmissionInput;
+export type BatchAdmissionProjectionInput = WasmBatchAdmissionInput;
+export type TaskAdmissionWire = WasmTaskAdmissionWire;
+export type DurableBatchWire = WasmDurableBatchWire;
+export type TaskAdmissionIdentities = WasmTaskAdmissionIdentities;
 
 /** Exact serde shape admitted by Rust `DurableBatchRequest`; hosts retain this value. */
 export interface ExecutionPlacementWire {
@@ -82,24 +93,6 @@ export interface MachineIdentityWire {
   readonly digest: readonly number[];
 }
 
-/** Exact Rust serde shape; the durable owner retains this v2 envelope. */
-export interface TaskAdmissionWire {
-  readonly contract: "harness.task-admission.v2";
-  readonly operation_id: string;
-  readonly task: MachineIdentityWire;
-  readonly machine: MachineIdentityWire;
-  readonly input: unknown;
-  readonly input_schema: ToolJsonSchema;
-  readonly output_schema: ToolJsonSchema;
-  readonly parent: string | null;
-  readonly grants: readonly string[];
-  readonly limits: NativeLimitsWire;
-  readonly run_limits: TaskRunLimitsWire;
-  readonly policy: MachineIdentityWire | null;
-  readonly extensions: ExtensionAdmission | null;
-  readonly execution: ExecutionPlacementWire | null;
-}
-
 /** Exact Rust serde shape for a pinned resumable-tool machine admission. */
 export interface WorkflowAdmissionWire {
   readonly operation_id: string;
@@ -109,25 +102,6 @@ export interface WorkflowAdmissionWire {
     revision: bigint;
     state: unknown;
   }>;
-}
-
-export interface DurableBatchWire {
-  readonly contract: "harness.batch.v2";
-  readonly group_id: string;
-  readonly batch_id: string;
-  readonly group_policy: "collect-all" | "cancel-on-failure";
-  readonly task: MachineIdentityWire;
-  readonly machine: MachineIdentityWire;
-  readonly inputs: readonly unknown[];
-  readonly input_schema: ToolJsonSchema;
-  readonly output_schema: ToolJsonSchema;
-  readonly parent: string | null;
-  readonly grants: readonly string[];
-  readonly limits: NativeLimitsWire;
-  readonly run_limits: TaskRunLimitsWire;
-  readonly extensions: ExtensionAdmission | null;
-  readonly policy: MachineIdentityWire | null;
-  readonly execution: ExecutionPlacementWire | null;
 }
 
 interface ContractValues {
@@ -175,6 +149,7 @@ const REQUIRED_NATIVE_EXPORTS = [
   "validateWireResume", "validateWireObserve", "validateWireCancel",
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
   "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
+  "taskAdmissionIdentities", "admitTask", "admitBatch",
   "fileDescriptor", "uuidFromDigestHalf", "decodeCanonicalJson", "decodeJson",
   "encodeCanonicalJson", "digestCanonicalJson",
 ] as const satisfies readonly (keyof typeof wasm)[];
@@ -374,6 +349,35 @@ export class NativeContracts {
     return Object.freeze(Array.from(digest));
   }
 
+  taskAdmissionIdentities(value: WasmTaskIdentityInput): TaskAdmissionIdentities {
+    return freezeNative(normalizeTypedNativeValue(this.native.taskAdmissionIdentities({
+      ...value,
+      requirements: [...value.requirements],
+      machine_digest: [...value.machine_digest],
+    })));
+  }
+
+  /** Rust-owned durable task admission and canonical envelope projection. */
+  admitTask(value: TaskAdmissionProjectionInput): TaskAdmissionWire {
+    return freezeNative(normalizeTypedNativeValue(this.native.admitTask({
+      ...value,
+      requirements: [...value.requirements],
+      machine_digest: [...value.machine_digest],
+      grants: [...value.grants],
+    })));
+  }
+
+  /** Rust-owned immutable batch request construction and validation. */
+  admitBatch(value: BatchAdmissionProjectionInput): DurableBatchWire {
+    return freezeNative(normalizeTypedNativeValue(this.native.admitBatch({
+      ...value,
+      requirements: [...value.requirements],
+      machine_digest: [...value.machine_digest],
+      inputs: [...value.inputs],
+      grants: [...value.grants],
+    })));
+  }
+
   idFromDigest(digest: Uint8Array, kind: "operation"): OperationId;
   idFromDigest(digest: Uint8Array, kind: "interaction"): InteractionId;
   idFromDigest(digest: Uint8Array, kind: "operation" | "interaction"): OperationId | InteractionId {
@@ -461,6 +465,9 @@ function normalizeNativeValue(value: unknown, safeJsonNumbers = false, preserveL
       normalizeNativeValue(child, safeJsonNumbers, preserveLargeBigInts)] as const));
   }
   return value;
+}
+function normalizeTypedNativeValue<Value>(value: Value): Value {
+  return normalizeNativeValue(value) as Value;
 }
 function boundedJsonNumber(value: bigint): number {
   const exact = Number(value);

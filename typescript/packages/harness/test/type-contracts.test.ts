@@ -7,6 +7,9 @@ import type {
 import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool, parseIdentity, resourceRef } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
 import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
+import type {
+  WasmExtensionAdmissionWire, WasmFileRefWire, WasmTaskAdmissionInput,
+} from "../generated/wasm/acyclic_harness_wasm.js";
 
 const provider = { namespace: "type-test", family: "filesystem", version: "2" } as const;
 const project: VolumeRef<"project"> = {
@@ -142,6 +145,20 @@ function nativeAdmissionIsRequiredAtComposition(native: NativeContracts): void {
   // @ts-expect-error content routing cannot silently skip Rust volume admission
   composeContentBindings([{ volume: project, content }]);
   void [builder, content];
+}
+
+function generatedAdmissionBoundaryRejectsOpaqueRoutes(): void {
+  const input = {} as WasmTaskAdmissionInput;
+  // @ts-expect-error Rust-owned admission inputs reject an arbitrary execution route
+  input.execution = "bad";
+  // @ts-expect-error Rust-owned admission inputs reject an arbitrary policy identity
+  input.policy = "bad";
+  const extension = {} as WasmExtensionAdmissionWire;
+  const content: WasmFileRefWire = extension.configurations[0]!.content;
+  // @ts-expect-error extension configuration content must be a generated FileRef wire
+  const invalidContent: WasmFileRefWire = "bad";
+  void [content, invalidContent];
+  void input;
 }
 
 function cannotConstructRuntimeDirectly(): void {
@@ -292,6 +309,7 @@ test("v2 ownership, revision, and authority contracts remain discriminated", () 
   void canonicalComparisonKeepsItsRecordType;
   void nativeAdmissionDoesNotPromiseOriginalIdentitySpelling;
   void nativeAdmissionIsRequiredAtComposition;
+  void generatedAdmissionBoundaryRejectsOpaqueRoutes;
   void recordedEventCannotExposeBearerProof;
   void admittedContentCannotBeRebound;
   void identityConstructorsKeepDistinctBrands;

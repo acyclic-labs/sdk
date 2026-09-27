@@ -1,7 +1,7 @@
 import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
-import { NativeContracts, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeLimitsWire, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
+import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
 import { validateModelContent as validateModelContentWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import type { SelectedModelContext } from "./projection.js";
@@ -864,40 +864,46 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     let request: BatchAdmissionRequest;
     try {
       const contracts = this.#harness.contracts;
-      const members = (admittedInputs ?? this.#validateBatchInputs(definition, batch)).map((input, index) => {
-        return this.#harness.admissionRecord(contracts.batchMemberOperationId(this.id, batch.id, index),
-          definition, input, this.parentTaskId);
-      });
-      const identities = durableWireIdentities(definition, contracts);
+      const inputs = admittedInputs ?? this.#validateBatchInputs(definition, batch);
+      const machineDigest = durableMachineDigest(definition);
+      const requirements = [...definition.options.requirements ?? []];
       const policy = this.#harness.durablePolicyIdentity();
       if (this.policy.kind === "cancel-on-failure" && !this.#harness.spawner?.cancelBatch) {
         throw new BatchProviderError("durable cancel-on-failure requires owner-retained batch cancellation");
       }
-      const base = contracts.validate("durable_batch_request", {
-        contract: "harness.batch.v2", group_id: this.id, batch_id: batch.id,
+      const baseInput = (): BatchAdmissionProjectionInput => ({
+        group_id: this.id,
+        batch_id: batch.id,
         group_policy: this.policy.kind,
-        task: identities.task,
-        machine: identities.machine,
-        inputs: members.map(member => member.input), input_schema: definition.options.input.document,
-        output_schema: definition.options.output!.document, parent: this.parentTaskId ?? null,
-        grants: [...this.#harness.scope.grants].sort(), limits: nativeLimits(this.#harness.limits),
+        name: definition.name,
+        version: definition.revision,
+        inputs,
+        input_schema: definition.options.input!.document,
+        output_schema: definition.options.output!.document,
+        requirements,
+        machine_digest: machineDigest,
+        parent: this.parentTaskId ?? null,
+        grants: [...this.#harness.scope.grants].sort(),
+        limits: nativeLimits(this.#harness.limits),
         run_limits: nativeRunLimits(this.#harness.scope.limits),
-        extensions: null, policy, execution: null,
+        extensions: null,
+        policy,
+        execution: null,
       });
+      const base = contracts.admitBatch(baseInput());
       let execution = retainedExecution ?? null;
       if (retainedExecution === undefined && this.#harness.components.execution) {
         try {
-          execution = contracts.validate("execution_placement",
-            await this.#harness.components.execution.qualifyBatch(base));
+          execution = contracts.validate("execution_placement", await this.#harness.components.execution.qualifyBatch(base));
         } catch (error) {
           throw new ExecutionQualificationError(error instanceof Error ? error.message : String(error));
         }
       }
       this.#harness.validateExecutionPlacement(execution);
-      const canonical = execution === null ? base : contracts.validate("durable_batch_request",
-        { ...base, execution });
-      const admittedMembers = execution === null ? members
-        : members.map(member => freezeSchema({ ...member, execution }));
+      const canonical = execution === null ? base : contracts.admitBatch({ ...baseInput(), execution });
+      const admittedMembers = inputs.map((input, index) => this.#harness.admissionRecord(
+        contracts.batchMemberOperationId(this.id, batch.id, index), definition, input,
+        this.parentTaskId, execution));
       const body = { contract: "harness.batch.v2" as const, groupId: this.id, batchId: batch.id,
         taskName: definition.name, revision: definition.revision,
         implementationDigest: definition.options.implementationDigest,
@@ -1840,20 +1846,29 @@ export class AgentHarness {
   assertPolicyIdentity(): void { this.#assertPolicyIdentity(); }
   /** Canonical, owner-attestable inputs and authority for one durable task. */
   admissionRecord<Input, Output>(operationId: string, definition: TaskDefinition<Input, Output>,
-    input: Input, parentTaskId?: RuntimeTaskId): TaskAdmissionRecord {
+    input: Input, parentTaskId?: RuntimeTaskId, execution: ExecutionPlacementWire | null = null): TaskAdmissionRecord {
     if (definition.implementation.kind !== "resumable" || !definition.options.input || !definition.options.output
       || !definition.options.implementationDigest) throw new TypeError("durable admission requires a pinned resumable task");
-    const identities = durableWireIdentities(definition, this.contracts);
-    const limits = this.scope.limits;
-    return freezeSchema(this.contracts.validate("task_admission", {
-      contract: "harness.task-admission.v2", operation_id: operationId,
-      task: identities.task, machine: identities.machine,
-      input, input_schema: definition.options.input.document, output_schema: definition.options.output.document,
-      parent: parentTaskId ?? null, grants: [...this.scope.grants].sort(),
+    if (execution !== null) this.validateExecutionPlacement(execution);
+    const machineDigest = durableMachineDigest(definition);
+    const projection: TaskAdmissionProjectionInput = {
+      operation_id: operationId,
+      name: definition.name,
+      version: definition.revision,
+      input,
+      input_schema: definition.options.input.document,
+      output_schema: definition.options.output.document,
+      requirements: [...definition.options.requirements ?? []],
+      machine_digest: machineDigest,
+      parent: parentTaskId ?? null,
+      grants: [...this.scope.grants].sort(),
       limits: nativeLimits(this.#contentLimits),
-      run_limits: nativeRunLimits(limits),
-      policy: this.durablePolicyIdentity(), extensions: null, execution: null,
-    }));
+      run_limits: nativeRunLimits(this.scope.limits),
+      policy: this.durablePolicyIdentity(),
+      extensions: null,
+      execution,
+    };
+    return freezeSchema(this.contracts.admitTask(projection));
   }
   validateExecutionPlacement(value: ExecutionPlacementWire | null): void {
     const selected = this.components.execution;
@@ -2470,18 +2485,28 @@ function nativeRunLimits(value: EffectiveScope["limits"]): TaskRunLimitsWire {
 }
 function durableWireIdentities<Input, Output>(definition: TaskDefinition<Input, Output>, contracts: NativeContracts):
   { readonly task: TaskAdmissionWire["task"]; readonly machine: TaskAdmissionWire["machine"] } {
-  const { implementationDigest, input, output, requirements } = definition.options;
-  if (definition.implementation.kind !== "resumable" || !implementationDigest || !input || !output) {
+  const { input, output } = definition.options;
+  if (definition.implementation.kind !== "resumable" || !input || !output) {
     throw new TypeError("durable identity requires a pinned resumable definition");
   }
-  const machineDigest = [...implementationDigest.matchAll(/../g)]
-    .map(match => Number.parseInt(match[0]!, 16));
-  const taskDigest = contracts.taskIdentityDigest(definition.name, definition.revision,
-    input.document, output.document, requirements ?? [], Uint8Array.from(machineDigest));
-  return {
-    task: { name: definition.name, version: definition.revision, digest: taskDigest },
-    machine: { name: definition.name, version: definition.revision, digest: machineDigest },
-  };
+  return contracts.taskAdmissionIdentities({
+    name: definition.name,
+    version: definition.revision,
+    input_schema: input.document,
+    output_schema: output.document,
+    requirements: [...definition.options.requirements ?? []],
+    machine_digest: durableMachineDigest(definition),
+  });
+}
+
+function durableMachineDigest<Input, Output>(definition: TaskDefinition<Input, Output>): readonly number[] {
+  const { implementationDigest } = definition.options;
+  if (definition.implementation.kind !== "resumable" || !implementationDigest) {
+    throw new TypeError("durable identity requires a pinned resumable definition");
+  }
+  const bytes = [...implementationDigest.matchAll(/../g)].map(match => Number.parseInt(match[0]!, 16));
+  if (bytes.length !== 32) throw new TypeError("durable machine digest must contain 32 bytes");
+  return bytes;
 }
 function validateTaskRequirements(
   tasks: ReadonlyMap<string, TaskDefinition<any, any>>,
