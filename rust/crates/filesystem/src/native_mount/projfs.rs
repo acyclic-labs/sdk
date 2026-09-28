@@ -120,6 +120,11 @@ struct Runtime {
     /// changes.
     placeholders: Arc<Placeholders>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
+    /// Held while one handle's metadata edits are read from the source and
+    /// written back. `ProjFS` names each handle apart, so handles to one file
+    /// close concurrently; each applies only what it changed, on what the
+    /// one before it left.
+    metadata_edits: Arc<Mutex<()>>,
     post_operation_failure: Arc<Mutex<PostOperationFailures>>,
     callbacks: CallbackGate,
 }
@@ -1924,6 +1929,7 @@ impl ProjFsSession {
             projection: Arc::new(Mutex::new(ProjectionCache::default())),
             placeholders: Arc::new(Placeholders::new()),
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
+            metadata_edits: Arc::new(Mutex::new(())),
             post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
             callbacks: callback_gate,
         });
@@ -3468,6 +3474,7 @@ unsafe fn notification(
     let metadata_baselines = Arc::clone(&runtime.metadata_baselines);
     let projection = Arc::clone(&runtime.projection);
     let metadata_probes = Arc::clone(&runtime.metadata_probes);
+    let metadata_edits = Arc::clone(&runtime.metadata_edits);
     let metadata_root = Arc::clone(&runtime.metadata_root);
     let post_operation_failure = Arc::clone(&runtime.post_operation_failure);
     let operation_failures = Arc::clone(&post_operation_failure);
@@ -3591,7 +3598,12 @@ unsafe fn notification(
             let basis = ReadBasis::sample(source.as_ref());
             let lookup = source.lookup(&capture_path);
             match lookup {
-                Ok(Some(lookup)) if metadata_changed_since_open(baseline, host) => {
+                Ok(Some(_)) if metadata_changed_since_open(baseline, host) => {
+                    let _edit = lock_recover(metadata_edits.as_ref());
+                    let Some(lookup) = source.lookup(&capture_path)? else {
+                        defer_host_capture(operation_failures.as_ref(), capture_path);
+                        return Ok(());
+                    };
                     capture_changed_windows_metadata(
                         source.as_ref(),
                         &capture_path,
