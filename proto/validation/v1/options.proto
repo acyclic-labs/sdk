@@ -1,0 +1,35 @@
+syntax = "proto2";
+package acyclic.validation.v1;
+
+import "google/protobuf/descriptor.proto";
+
+// Exact nonzero byte length for a public identity, revision, profile, or digest.
+extend google.protobuf.FieldOptions {
+  optional uint32 nonzero_fixed_bytes = 51001;
+  // Presence required for a message that carries a replay or binding invariant.
+  optional bool required_message = 51002;
+  optional bool positive_uint64 = 51003;
+  optional uint32 min_items = 51005;
+  optional uint32 max_items = 51006;
+  // Nonempty UTF-8 string or bytes value, bounded by its encoded byte length.
+  optional uint32 nonempty_max_bytes = 51007;
+  optional uint64 max_uint64 = 51008;
+  optional bool known_nonzero_enum = 51009;
+  optional uint32 nonempty_max_item_bytes = 51010;
+}
+
+// Marks terminal outcomes that may contain incomplete output.
+extend google.protobuf.EnumValueOptions {
+  optional bool partial_terminal = 51011;
+}
+
+extend google.protobuf.OneofOptions {
+  optional bool required_oneof = 51004;
+}
+
+// Relative authenticated HTTP path for a public inference RPC. The path is
+// rooted below /v1/inference and is the sole source for the SDK transport
+// route; every public RPC must declare exactly one nonempty path.
+extend google.protobuf.MethodOptions {
+  optional string http_path = 51012;
+}

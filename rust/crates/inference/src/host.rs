@@ -848,21 +848,12 @@ impl Run {
     /// Returns transport or authenticated service rejection before the stream is established.
     pub async fn watch(&self, from_sequence: u64) -> Result<RunEvents, Error> {
         let view = self.inspect().await?;
-        if view.result.is_some() {
-            let end = view
-                .last_sequence
-                .checked_add(1)
-                .ok_or(Error::Invalid("Run sequence exhausted"))?;
-            if from_sequence > end {
-                return Err(Error::Invalid("Run cursor exceeds retained events"));
-            }
-            if from_sequence == end {
-                return Ok(RunEvents {
-                    stream: None,
-                    expected: from_sequence,
-                    terminal: true,
-                });
-            }
+        let state = contract::watch_run_start(&view, from_sequence).map_err(contract_error)?;
+        if state.is_terminal() {
+            return Ok(RunEvents {
+                stream: None,
+                state,
+            });
         }
         let stream = self
             .client
@@ -875,8 +866,7 @@ impl Run {
             .into_inner();
         Ok(RunEvents {
             stream: Some(stream),
-            expected: from_sequence,
-            terminal: false,
+            state,
         })
     }
 
@@ -899,8 +889,7 @@ impl Run {
 /// Validating event-stream observation. Dropping it never cancels the Run.
 pub struct RunEvents {
     stream: Option<tonic::Streaming<wire::RunEvent>>,
-    expected: u64,
-    terminal: bool,
+    state: contract::WatchRunState,
 }
 
 impl RunEvents {
@@ -914,26 +903,10 @@ impl RunEvents {
             return Ok(None);
         };
         let Some(event) = stream.message().await? else {
-            if self.terminal {
-                return Ok(None);
-            }
-            return Err(Error::Invalid("Run stream ended before terminal"));
+            self.state.finish().map_err(Error::Invalid)?;
+            return Ok(None);
         };
-        if self.terminal || event.sequence != self.expected || event.event.is_none() {
-            return Err(Error::Invalid("Run event order or shape differs"));
-        }
-        self.expected = self
-            .expected
-            .checked_add(1)
-            .ok_or(Error::Invalid("Run sequence exhausted"))?;
-        if let Some(wire::run_event::Event::Terminal(value)) = event.event {
-            if wire::RunTerminal::try_from(value).unwrap_or(wire::RunTerminal::Unspecified)
-                == wire::RunTerminal::Unspecified
-            {
-                return Err(Error::Invalid("Run terminal is invalid"));
-            }
-            self.terminal = true;
-        }
+        contract::watch_run_event(&mut self.state, &event).map_err(contract_error)?;
         Ok(Some(event))
     }
 }
@@ -1100,16 +1073,49 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_contains_customer_and_validation_files() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let descriptor = prost_types::FileDescriptorSet::decode(DESCRIPTOR)?;
+        assert_eq!(descriptor.file.len(), 3);
+        let descriptor_names: Vec<_> = descriptor
+            .file
+            .iter()
+            .map(|file| file.name.as_deref())
+            .collect();
+        assert_eq!(
+            descriptor_names,
+            [
+                Some("google/protobuf/descriptor.proto"),
+                Some("validation/v1/options.proto"),
+                Some("inference/v1/inference.proto"),
+            ]
+        );
+        let file = descriptor
+            .file
+            .iter()
+            .find(|file| file.name.as_deref() == Some("inference/v1/inference.proto"))
+            .ok_or("inference descriptor is missing")?;
+        assert_eq!(file.package.as_deref(), Some("inference.customer.v1"));
+        assert_eq!(
+            file.dependency,
+            vec!["validation/v1/options.proto".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
     #[allow(
         clippy::indexing_slicing,
         reason = "each index is preceded by an assert_eq! on the corresponding Vec's len(), so the index is proven in-bounds"
     )]
-    fn descriptor_contains_only_customer_contract() -> Result<(), Box<dyn std::error::Error>> {
+    fn descriptor_exposes_customer_services_and_messages() -> Result<(), Box<dyn std::error::Error>>
+    {
         let descriptor = prost_types::FileDescriptorSet::decode(DESCRIPTOR)?;
-        assert_eq!(descriptor.file.len(), 1);
-        let file = &descriptor.file[0];
-        assert_eq!(file.package.as_deref(), Some("inference.customer.v1"));
-        assert!(file.dependency.is_empty());
+        let file = descriptor
+            .file
+            .iter()
+            .find(|file| file.name.as_deref() == Some("inference/v1/inference.proto"))
+            .ok_or("inference descriptor is missing")?;
         assert_eq!(file.service.len(), 5);
         assert_eq!(file.service[0].name.as_deref(), Some("ModelsService"));
         assert_eq!(file.service[0].method.len(), 1);
@@ -1193,6 +1199,62 @@ mod tests {
                 "private/source dependency in customer manifest"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn descriptor_declares_unique_http_routes_for_every_rpc()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pool = prost_reflect::DescriptorPool::decode(DESCRIPTOR)?;
+        let file = pool
+            .get_file_by_name("inference/v1/inference.proto")
+            .ok_or("inference descriptor is missing")?;
+        let extension = pool
+            .get_extension_by_name("acyclic.validation.v1.http_path")
+            .ok_or("http_path descriptor extension is missing")?;
+        let expected = [
+            "models/list",
+            "contexts/create",
+            "contexts/inspect",
+            "contexts/mutate",
+            "warm/retain",
+            "warm/inspect",
+            "warm/renew",
+            "warm/release",
+            "runs/generate",
+            "runs/inspect",
+            "runs/watch",
+            "runs/cancel",
+            "evaluations/create",
+            "evaluations/inspect",
+        ];
+        let mut routes = Vec::new();
+        for service in file.services() {
+            for method in service.methods() {
+                let options = method.options();
+                assert!(
+                    options.has_extension(&extension),
+                    "{}.{} has no http_path",
+                    service.name(),
+                    method.name()
+                );
+                let path = options.get_extension(&extension).into_owned();
+                let prost_reflect::Value::String(path) = path else {
+                    return Err(format!(
+                        "{}.{} has an invalid http_path option",
+                        service.name(),
+                        method.name()
+                    )
+                    .into());
+                };
+                assert!(!path.is_empty());
+                routes.push(path);
+            }
+        }
+        assert_eq!(routes.len(), expected.len());
+        assert_eq!(routes, expected);
+        let unique: std::collections::HashSet<_> = routes.iter().collect();
+        assert_eq!(unique.len(), routes.len());
         Ok(())
     }
 

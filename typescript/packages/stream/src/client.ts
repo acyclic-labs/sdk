@@ -1,5 +1,6 @@
 import { HttpStreamProvider } from "./http.js";
 import { MemoryStreamProvider } from "./memory.js";
+import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
 import type {
   AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions,
   CommitRequest, CommitResult, CreateTokenRequest, DeleteReceipt, FollowOptions, ForkOptions,
@@ -7,6 +8,7 @@ import type {
   StreamBounds, StreamProvider, TrimReceipt,
 } from "./types.js";
 import { StreamError, compareStreamPaths } from "./types.js";
+import { ensureStreamWasm, normalizeWireCommit, validatePathValue, validateSequenceValue, validateWireAppend } from "./contract.js";
 
 export interface Codec<Value> {
   encode(value: Value): Uint8Array;
@@ -56,6 +58,9 @@ export class StreamClient {
   inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> { return this.provider.inspectIdempotency(key); }
   children(parent: string | undefined, options: { readonly limit: number } | number): AsyncIterable<{ readonly path: string }> {
     const limit = typeof options === "number" ? options : options.limit;
+    if (parent !== undefined) pathValue(parent);
+    positiveInteger(limit, "limit");
+    if (limit > StreamLimit.MAX_ITEMS) throw new RangeError(`child page limit exceeds ${StreamLimit.MAX_ITEMS}`);
     return this.childrenAll(parent, limit);
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
@@ -70,7 +75,6 @@ export class StreamClient {
       throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
     }
     positiveInteger(request.limit, "limit");
-    if (request.limit > 1_024) throw new RangeError("child page limit exceeds 1024");
     const page = await this.provider.childrenPage(request);
     if (page.hierarchyVersion.byteLength !== 32) throw new StreamError("invalid_page", "provider returned an invalid hierarchy version");
     const expectedVersion = request.hierarchyVersion;
@@ -96,7 +100,7 @@ export class StreamClient {
     return page;
   }
   /** Traverses all direct children, failing rather than silently skipping a concurrent hierarchy change. */
-  async *childrenAll(parent?: string, limit = 1_024): AsyncIterable<{ readonly path: string }> {
+  async *childrenAll(parent?: string, limit = StreamLimit.MAX_ITEMS): AsyncIterable<{ readonly path: string }> {
     let request: ChildrenPageRequest = { ...(parent === undefined ? {} : { parent }), limit };
     for (;;) {
       const page = await this.childrenPage(request);
@@ -106,7 +110,7 @@ export class StreamClient {
         after: page.nextAfter, hierarchyVersion: page.hierarchyVersion };
     }
   }
-  commit(request: CommitRequest, options: CommitOptions): Promise<CommitResult> {
+  async commit(request: CommitRequest, options: CommitOptions): Promise<CommitResult> {
     const conditions = request.conditions.map(condition => {
       if ("stream" in condition) {
         sameProvider(this.provider, condition.stream);
@@ -133,7 +137,7 @@ export class StreamClient {
       sameProvider(this.provider, mutation.delete.stream);
       return { delete: { path: mutation.delete.stream.path } };
     });
-    return this.provider.commit({ conditions, mutations }, options);
+    return this.provider.commit(await normalizeWireCommit({ conditions, mutations }, options), options);
   }
   readCommit(commitId: CommitId): Promise<CommittedEnvelope> { return this.provider.readCommit(commitId); }
 }
@@ -154,7 +158,9 @@ export class Stream<Value = Uint8Array> {
   bounds(): Promise<StreamBounds> { return this.provider.bounds(this.path); }
   append(value: Value, options?: AppendOptions): Promise<AppendResult> { return this.appendBatch([value], options); }
   appendBatch(values: readonly Value[], options?: AppendOptions): Promise<AppendResult> {
-    if (values.length === 0) throw new RangeError("appendBatch requires at least one value");
+    if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) {
+      return Promise.reject(new StreamError("limit_exceeded", `append requires 1..${StreamLimit.MAX_ITEMS} records`));
+    }
     if (options?.ifTail !== undefined) sequence(options.ifTail);
     return this.provider.append(this.path, values.map(value => this.codec.encode(value)), options);
   }
@@ -169,7 +175,6 @@ export class Stream<Value = Uint8Array> {
   async *read(options: ReadOptions): AsyncIterable<Record<Value>> {
     sequence(options.from);
     positiveInteger(options.limit, "limit");
-    if (options.limit > 1_024) throw new RangeError("read limit exceeds 1024");
     for await (const item of this.provider.read(this.path, options)) yield { ...item, value: this.codec.decode(item.value) };
   }
   async *follow(options: FollowOptions): AsyncIterable<Record<Value>> {
@@ -182,22 +187,28 @@ function sameProvider(provider: StreamProvider, stream: Stream<unknown>): void {
   if (stream.provider !== provider) throw new StreamError("provider_mismatch", "coordinated commit streams must use one provider");
 }
 export function pathValue(value: string): void {
-  const segments = value.split("/");
-  if (!value || value.length > 65_535 || segments.length > 1_024 || segments.some(part =>
-    !part || part === "." || part === ".." || [...part].some(character => {
-      const code = character.charCodeAt(0);
-      return code <= 32 || code >= 127 || character === "\\";
-    }))) {
-    throw new StreamError("invalid_path", "path must contain canonical non-empty segments");
-  }
+  validatePathValue(value);
 }
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
 export function sequence(value: bigint): bigint {
-  if (typeof value !== "bigint" || value < 0n || value > 0xffff_ffff_ffff_ffffn) throw new RangeError("sequence must be an unsigned 64-bit integer");
-  return value;
+  return validateSequenceValue(value);
 }
 export function positiveInteger(value: number, name: string): void {
-  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive safe integer`);
+  if (!Number.isSafeInteger(value) || value < 1 || value > StreamLimit.MAX_ITEMS) throw new RangeError(`${name} must be between 1 and ${StreamLimit.MAX_ITEMS}`);
+}
+/** Synchronous compatibility helper; provider append admission is Rust-owned. */
+export function validateRecords(values: readonly Uint8Array[]): void {
+  if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) throw new RangeError(`append requires 1..${StreamLimit.MAX_ITEMS} records`);
+  for (const value of values) {
+    if (!(value instanceof Uint8Array) || value.byteLength > StreamLimit.MAX_RECORD_BYTES) throw new RangeError(`record must contain at most ${StreamLimit.MAX_RECORD_BYTES} bytes`);
+  }
+}
+export async function validateAppend(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<void> {
+  // Validate path before optional fields so the canonical path error wins.
+  await ensureStreamWasm();
+  validatePathValue(path);
+  if (options?.ifTail !== undefined) sequence(options.ifTail);
+  await validateWireAppend(path, values, options);
 }
 function environmentValue(name: string): string {
   const runtime = globalThis as typeof globalThis & { process?: { env?: Readonly<{ [key: string]: string | undefined }> } };

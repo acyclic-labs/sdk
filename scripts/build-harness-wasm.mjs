@@ -10,6 +10,10 @@ if (unexpected.length > 0) {
 }
 const cargo = cargoArgument || process.env.ACYCLIC_CARGO_BIN || "cargo";
 const wasmBindgen = wasmBindgenArgument || process.env.ACYCLIC_WASM_BINDGEN_BIN || "wasm-bindgen";
+const version = spawnSync(wasmBindgen, ["--version"], { cwd: root, encoding: "utf8" });
+if (version.error || version.status !== 0 || version.stdout.trim() !== "wasm-bindgen 0.2.117") {
+  throw new Error("wasm-bindgen 0.2.117 is required to build harness WASM");
+}
 const run = (executable, args, options = {}) => {
   const result = spawnSync(executable, args, { cwd: root, stdio: "inherit", ...options });
   if (result.error) throw result.error;

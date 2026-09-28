@@ -5,8 +5,8 @@ use crate::{
     Outcome, Result, TaskId,
     context::{Context, ContextInput, ContextPipeline},
     conversation::{
-        ContentPublisher, ContentResidencyVerifier, FileRef, Limits, PrivateDirectoryPage,
-        VolumeClass, VolumeOperation, VolumeRef, verified_content_bytes,
+        ContentPublisher, ContentResidencyVerifier, FileRef, Limits, MAX_PRIVATE_DIRECTORY_PAGE,
+        PrivateDirectoryPage, VolumeClass, VolumeOperation, VolumeRef, verified_content_bytes,
     },
     core::{ExtensionAdmission, Reducer, Scope},
     durable_tool::{ResumableToolRegistry, ResumableToolSession},
@@ -41,6 +41,17 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+
+/// Maximum number of direct owner-retained children returned by one page.
+pub const MAX_CHILD_PAGE: usize = 1_024;
+/// Default number of direct children requested by the SDK facade.
+pub const DEFAULT_CHILD_PAGE: usize = 256;
+/// Maximum UTF-8 byte length of a parent-local child slot.
+pub const MAX_CHILD_SLOT_BYTES: usize = 255;
+/// Default number of entries requested by the private-directory SDK facade.
+pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
+/// Maximum number of inputs admitted by one durable batch.
+pub const MAX_BATCH_INPUTS: usize = 65_536;
 
 type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> BoxFuture<'static, Result<O>> + Send + Sync;
 
@@ -206,6 +217,43 @@ pub(crate) fn task_definition_digest(
         "requirements": requirements,
         "machine_digest": machine_digest,
     }))
+}
+
+/// Builds the two identities that durable hosts retain for one resumable task.
+/// This is the shared construction path for native admission and the WASM
+/// adapter; JavaScript must not reproduce the digest envelope or machine
+/// identity rules itself.
+pub fn task_admission_identities(
+    name: &str,
+    version: &str,
+    input_schema: &Value,
+    output_schema: &Value,
+    requirements: &BTreeSet<String>,
+    machine_digest: &[u8],
+) -> Result<(ComponentIdentity, MachineIdentity)> {
+    let machine_digest: [u8; 32] = machine_digest
+        .try_into()
+        .map_err(|_| Error::Invalid("machine digest must contain exactly 32 bytes".into()))?;
+    let task_digest = task_definition_digest(
+        name,
+        version,
+        input_schema,
+        output_schema,
+        requirements,
+        Some(machine_digest),
+    )?;
+    Ok((
+        ComponentIdentity {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            digest: task_digest,
+        },
+        MachineIdentity {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            digest: machine_digest,
+        },
+    ))
 }
 
 pub(crate) fn validate_task_schemas(input: &Value, output: &Value, resumable: bool) -> Result<()> {
@@ -443,6 +491,54 @@ pub struct TaskChildrenPage {
 }
 
 impl TaskAdmissionRecord {
+    /// Constructs and validates an exact admission envelope from the fields
+    /// supplied by an SDK boundary. Identity derivation and all invariants are
+    /// deliberately owned here so native and WASM callers share one path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        operation_id: OperationId,
+        name: &str,
+        version: &str,
+        input: Value,
+        input_schema: Value,
+        output_schema: Value,
+        requirements: &BTreeSet<String>,
+        machine_digest: &[u8],
+        parent: Option<TaskId>,
+        grants: Capabilities,
+        limits: Limits,
+        run_limits: TaskRunLimits,
+        policy: Option<ComponentIdentity>,
+        extensions: Option<ExtensionAdmission>,
+        execution: Option<ExecutionPlacement>,
+    ) -> Result<Self> {
+        let (task, machine) = task_admission_identities(
+            name,
+            version,
+            &input_schema,
+            &output_schema,
+            requirements,
+            machine_digest,
+        )?;
+        let record = Self {
+            operation_id,
+            task,
+            machine,
+            input,
+            input_schema,
+            output_schema,
+            parent,
+            grants,
+            limits,
+            run_limits,
+            policy,
+            extensions,
+            execution,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
     /// Validates the provider-neutral request independently of registration.
     /// The owner additionally checks the exact registered task and authority.
     pub fn validate(&self) -> Result<()> {
@@ -1656,6 +1752,176 @@ pub(crate) fn validate_policy_identity(identity: &ComponentIdentity) -> Result<(
     Ok(())
 }
 
+/// Provider capabilities visible to task dependency admission.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TaskDependencyEnvironment {
+    /// A model provider is bound for this composition.
+    pub model: bool,
+    /// A context builder is bound for this composition.
+    pub context: bool,
+    /// An interaction router is bound for this composition.
+    pub interactions: bool,
+    /// A policy provider is bound for this composition.
+    pub policy: bool,
+    /// A durable host is bound for this composition.
+    pub host: bool,
+    /// Owner-retained task state is bound for this composition.
+    pub state: bool,
+    /// Durable admission is bound for this composition.
+    pub spawner: bool,
+    /// Owner-retained content is bound for this composition.
+    pub content: bool,
+    /// Owner-retained artifacts are bound for this composition.
+    pub artifacts: bool,
+    /// The content writer and its capability grant are both available.
+    pub content_write: bool,
+    /// The artifact writer and its capability grant are both available.
+    pub artifacts_write: bool,
+    /// Exact extension versions selected for this composition.
+    pub extensions: BTreeSet<(String, u32)>,
+}
+
+/// Validates an immutable task dependency graph and its provider requirements.
+///
+/// Names and versions are always resolved exactly.  This is the contract used
+/// by both native Rust composition and the TypeScript builder through WASM;
+/// callers must not reproduce this graph walk in another language.
+pub fn validate_task_requirements(
+    tasks: &BTreeMap<(String, String), BTreeSet<String>>,
+    tools: &BTreeSet<(String, String)>,
+    environment: &TaskDependencyEnvironment,
+    grants: &BTreeSet<String>,
+) -> Result<()> {
+    let validator = TaskDependencyValidator {
+        tasks,
+        tools,
+        environment,
+        grants,
+    };
+    let mut marks = BTreeMap::new();
+    for key in tasks.keys() {
+        validator.visit(key, &mut marks)?;
+    }
+    Ok(())
+}
+
+struct TaskDependencyValidator<'a> {
+    tasks: &'a BTreeMap<(String, String), BTreeSet<String>>,
+    tools: &'a BTreeSet<(String, String)>,
+    environment: &'a TaskDependencyEnvironment,
+    grants: &'a BTreeSet<String>,
+}
+
+impl TaskDependencyValidator<'_> {
+    fn visit(
+        &self,
+        key: &(String, String),
+        marks: &mut BTreeMap<(String, String), u8>,
+    ) -> Result<()> {
+        match marks.get(key).copied() {
+            Some(1) => {
+                return Err(Error::Invalid(format!(
+                    "task dependency cycle at {}@{}",
+                    key.0, key.1
+                )));
+            }
+            Some(2) => return Ok(()),
+            _ => {}
+        }
+        let requirements = self.tasks.get(key).ok_or_else(|| {
+            Error::Invalid(format!(
+                "unsatisfied task requirement: task:{}@{}",
+                key.0, key.1
+            ))
+        })?;
+        marks.insert(key.clone(), 1);
+        for requirement in requirements {
+            self.validate_requirement(requirement, marks)?;
+        }
+        marks.insert(key.clone(), 2);
+        Ok(())
+    }
+
+    fn validate_requirement(
+        &self,
+        requirement: &str,
+        marks: &mut BTreeMap<(String, String), u8>,
+    ) -> Result<()> {
+        if let Some(target) = parse_dependency_target(requirement, "task:")? {
+            if !self.tasks.contains_key(&target) {
+                return Err(missing_task_requirement(requirement));
+            }
+            return self.visit(&target, marks);
+        }
+        if let Some(target) = parse_dependency_target(requirement, "tool:")? {
+            return self.tools.contains(&target).then_some(()).ok_or_else(|| {
+                Error::Invalid(format!("unsatisfied tool requirement: {requirement}"))
+            });
+        }
+        if self.provider_requirement_satisfied(requirement)? {
+            return Ok(());
+        }
+        Err(missing_task_requirement(requirement))
+    }
+
+    fn provider_requirement_satisfied(&self, requirement: &str) -> Result<bool> {
+        let available = match requirement {
+            "model" => Some(self.environment.model),
+            "context" => Some(self.environment.context),
+            "interactions" => Some(self.environment.interactions),
+            "policy" => Some(self.environment.policy),
+            "host" => Some(self.environment.host),
+            "state" => Some(self.environment.state),
+            "spawner" => Some(self.environment.spawner),
+            "content" => Some(self.environment.content),
+            "artifacts" => Some(self.environment.artifacts),
+            "content:write" => Some(self.environment.content_write),
+            "artifacts:write" => Some(self.environment.artifacts_write),
+            _ => None,
+        };
+        if let Some(available) = available {
+            return if available {
+                Ok(true)
+            } else {
+                Err(missing_task_requirement(requirement))
+            };
+        }
+        if let Some(grant) = requirement.strip_prefix("grant:") {
+            return Ok(!grant.is_empty() && self.grants.contains(grant));
+        }
+        if let Some(extension) = requirement.strip_prefix("extension:") {
+            let (name, version) = extension.rsplit_once('@').ok_or_else(|| {
+                Error::Invalid(format!("invalid extension dependency {requirement}"))
+            })?;
+            let version = version.parse::<u32>().map_err(|_| {
+                Error::Invalid(format!("invalid extension dependency {requirement}"))
+            })?;
+            return Ok(!name.is_empty()
+                && !name.contains('@')
+                && self
+                    .environment
+                    .extensions
+                    .contains(&(name.to_owned(), version)));
+        }
+        Ok(false)
+    }
+}
+
+fn parse_dependency_target(requirement: &str, prefix: &str) -> Result<Option<(String, String)>> {
+    let Some(value) = requirement.strip_prefix(prefix) else {
+        return Ok(None);
+    };
+    let target = value
+        .rsplit_once('@')
+        .filter(|(name, version)| !name.is_empty() && !version.is_empty() && !name.contains('@'))
+        .ok_or_else(|| Error::Invalid(format!("invalid {prefix} dependency {requirement}")))?;
+    Ok(Some((target.0.to_owned(), target.1.to_owned())))
+}
+
+fn missing_task_requirement(requirement: &str) -> Error {
+    Error::Invalid(format!("unsatisfied task requirement: {requirement}"))
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     reason = "the terminal outcome is consumed by this admission boundary"
@@ -1790,7 +2056,10 @@ impl Bindings {
         let spawner = self
             .spawner
             .or_else(|| execution.as_ref().map(|route| route.spawner()));
-        let durable_ready = self.durable_host.is_some() || (state.is_some() && spawner.is_some());
+        let host_available = self.durable_host.is_some();
+        let state_available = host_available || state.is_some();
+        let spawner_available = host_available || spawner.is_some();
+        let durable_ready = host_available || (state_available && spawner_available);
         let runtime = AgentHarness::with_policy_internal(
             self.tasks,
             self.tools,
@@ -1803,6 +2072,8 @@ impl Bindings {
             self.artifacts,
             self.policy,
             durable_ready,
+            state_available,
+            spawner_available,
         )?;
         let runtime = match state {
             Some(state) => runtime.bind_state(state)?,
@@ -1837,22 +2108,24 @@ impl Default for Bindings {
     }
 }
 
-fn validate_children_request(
+pub(crate) fn validate_children_request(
     parent: TaskId,
     after_slot: Option<&str>,
     maximum: usize,
 ) -> Result<()> {
     if parent.into_bytes() == [0; 16]
         || maximum == 0
-        || maximum > 1_024
-        || after_slot.is_some_and(|slot| slot.len() > 255 || slot.chars().any(char::is_control))
+        || maximum > MAX_CHILD_PAGE
+        || after_slot.is_some_and(|slot| {
+            slot.len() > MAX_CHILD_SLOT_BYTES || slot.chars().any(char::is_control)
+        })
     {
         return Err(Error::Invalid("task child page request is invalid".into()));
     }
     Ok(())
 }
 
-fn validate_children_page(
+pub(crate) fn validate_children_page(
     page: &TaskChildrenPage,
     expected_revision: Option<u64>,
     after_slot: Option<&str>,
@@ -1874,7 +2147,7 @@ fn validate_children_page(
     for child in &page.entries {
         if child.task_id.into_bytes() == [0; 16]
             || child.slot.trim().is_empty()
-            || child.slot.len() > 255
+            || child.slot.len() > MAX_CHILD_SLOT_BYTES
             || child.slot.chars().any(char::is_control)
             || previous.is_some_and(|slot| child.slot.as_str() <= slot)
             || !ids.insert(child.task_id)
@@ -2356,6 +2629,7 @@ impl AgentHarness {
         policy: Option<Arc<dyn ToolPolicy>>,
     ) -> Result<Arc<Self>> {
         let durable_ready = host.is_some();
+        let host_available = host.is_some();
         Self::with_policy_internal(
             tasks,
             tools,
@@ -2368,6 +2642,8 @@ impl AgentHarness {
             artifacts,
             policy,
             durable_ready,
+            host_available,
+            host_available,
         )
     }
 
@@ -2387,6 +2663,8 @@ impl AgentHarness {
         artifacts: Option<ArtifactBindings>,
         policy: Option<Arc<dyn ToolPolicy>>,
         durable_ready: bool,
+        state_available: bool,
+        spawner_available: bool,
     ) -> Result<Arc<Self>> {
         if concurrency == 0 {
             return Err(Error::Invalid(
@@ -2427,6 +2705,8 @@ impl AgentHarness {
             &resumable_tools,
             &scope,
             durable_ready,
+            state_available,
+            spawner_available,
             interactions.is_some(),
             content.as_ref(),
             artifacts.as_ref(),
@@ -2896,21 +3176,23 @@ impl AgentHarness {
         let value =
             serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
         validate_value(&definition.input_schema, &value, "task input")?;
-        let mut expected = TaskAdmissionRecord {
+        let mut expected = TaskAdmissionRecord::from_parts(
             operation_id,
-            task: definition.identity.clone(),
-            machine: machine.identity().clone(),
-            input: value.clone(),
-            input_schema: definition.input_schema.clone(),
-            output_schema: definition.output_schema.clone(),
+            &definition.identity.name,
+            &definition.identity.version,
+            value,
+            definition.input_schema.clone(),
+            definition.output_schema.clone(),
+            &definition.requirements,
+            &machine.identity().digest,
             parent,
-            grants: scope.grants().clone(),
-            limits: scope.limits(),
-            run_limits: scope.run_limits(),
-            policy: self.policy_identity.clone(),
-            extensions: scope.extensions().cloned(),
-            execution: None,
-        };
+            scope.grants().clone(),
+            scope.limits(),
+            scope.run_limits(),
+            self.policy_identity.clone(),
+            scope.extensions().cloned(),
+            None,
+        )?;
         // Reconcile an already committed operation before checking extension
         // admission state. This path must remain available after a local or
         // registry-wide disable; only the subsequent new-admission path is
@@ -2993,149 +3275,75 @@ fn validate_task_dependencies(
     resumable_tools: &ResumableToolRegistry,
     scope: &RuntimeScope,
     has_host: bool,
+    has_state: bool,
+    has_spawner: bool,
     has_interactions: bool,
     content: Option<&ContentBindings>,
     artifacts: Option<&ArtifactBindings>,
     has_policy: bool,
 ) -> Result<()> {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "walk context remains explicit for dependency validation"
-    )]
-    fn visit(
-        key: &(String, String),
-        tasks: &TaskRegistry,
-        tools: &ToolRegistry,
-        resumable_tools: &ResumableToolRegistry,
-        scope: &RuntimeScope,
-        has_host: bool,
-        has_interactions: bool,
-        content: Option<&ContentBindings>,
-        artifacts: Option<&ArtifactBindings>,
-        has_policy: bool,
-        marks: &mut BTreeMap<(String, String), u8>,
-    ) -> Result<()> {
-        match marks.get(key).copied() {
-            Some(1) => {
-                return Err(Error::Invalid(format!(
-                    "task dependency cycle at {}@{}",
-                    key.0, key.1
-                )));
-            }
-            Some(2) => return Ok(()),
-            _ => {}
+    let task_requirements = tasks
+        .0
+        .iter()
+        .map(|(key, entry)| (key.clone(), entry.requirements.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut available_tools = BTreeSet::new();
+    for requirement in task_requirements.values().flat_map(BTreeSet::iter) {
+        let Some((name, version)) = requirement
+            .strip_prefix("tool:")
+            .and_then(|value| value.rsplit_once('@'))
+        else {
+            continue;
+        };
+        if tools.get_version(name, version).is_some()
+            || resumable_tools.get(name, version).is_some()
+        {
+            available_tools.insert((name.to_owned(), version.to_owned()));
         }
-        marks.insert(key.clone(), 1);
-        if let Some(entry) = tasks.0.get(key) {
-            for requirement in &entry.requirements {
-                if let Some(target) = requirement.strip_prefix("task:") {
-                    let (target, version) = target.rsplit_once('@').ok_or_else(|| {
-                        Error::Invalid(format!("invalid task dependency {requirement}"))
-                    })?;
-                    let target_key = (target.to_owned(), version.to_owned());
-                    if !tasks.0.contains_key(&target_key) {
-                        return Err(Error::Invalid(format!(
-                            "missing task dependency {requirement}"
-                        )));
-                    }
-                    visit(
-                        &target_key,
-                        tasks,
-                        tools,
-                        resumable_tools,
-                        scope,
-                        has_host,
-                        has_interactions,
-                        content,
-                        artifacts,
-                        has_policy,
-                        marks,
-                    )?;
-                } else if let Some(target) = requirement.strip_prefix("tool:") {
-                    let (target, version) = target.rsplit_once('@').ok_or_else(|| {
-                        Error::Invalid(format!("invalid tool dependency {requirement}"))
-                    })?;
-                    if tools.get_version(target, version).is_none()
-                        && resumable_tools.get(target, version).is_none()
-                    {
-                        return Err(Error::Invalid(format!(
-                            "missing tool dependency {requirement}"
-                        )));
-                    }
-                } else if requirement == "host" && has_host
-                    || requirement == "model" && scope.grants.contains("model:generate")
-                    || requirement == "context" && scope.grants.contains("context:build")
-                    || requirement == "interactions"
-                        && (has_interactions || has_host)
-                        && scope.grants.contains("interaction:route")
-                    || requirement == "policy" && has_policy
-                    || requirement == "content" && content.is_some()
-                    || requirement == "artifacts" && artifacts.is_some()
-                    || requirement == "content:write"
-                        && content
-                            .and_then(|binding| binding.writer.as_ref())
-                            .is_some_and(|writer| {
-                                writer
-                                    .volume()
-                                    .capability(VolumeOperation::Write)
-                                    .is_ok_and(|grant| scope.grants.contains(&grant))
-                            })
-                    || requirement == "artifacts:write"
-                        && artifacts
-                            .and_then(|binding| binding.writer.as_ref())
-                            .is_some_and(|writer| {
-                                writer
-                                    .volume()
-                                    .capability(VolumeOperation::Write)
-                                    .is_ok_and(|grant| scope.grants.contains(&grant))
-                            })
-                    || requirement
-                        .strip_prefix("grant:")
-                        .is_some_and(|grant| scope.grants.contains(grant))
-                    || requirement.strip_prefix("extension:").is_some_and(|value| {
-                        let Some((name, version)) = value.rsplit_once('@') else {
-                            return false;
-                        };
-                        let Ok(version) = version.parse::<u32>() else {
-                            return false;
-                        };
-                        scope.extension_runtime().is_some_and(|runtime| {
-                            runtime.accepts_new_admissions()
-                                && runtime.selected().iter().any(|identity| {
-                                    identity.name == name && identity.version == version
-                                })
-                        })
-                    })
-                {
-                    // The pinned composition satisfies this provider/capability dependency.
-                } else {
-                    return Err(Error::Invalid(format!(
-                        "task {} has missing dependency {requirement}",
-                        entry.identity.name
-                    )));
-                }
-            }
-        }
-        marks.insert(key.clone(), 2);
-        Ok(())
     }
-    let mut marks = BTreeMap::new();
-    for key in tasks.0.keys() {
-        visit(
-            key,
-            tasks,
-            tools,
-            resumable_tools,
-            scope,
-            has_host,
-            has_interactions,
-            content,
-            artifacts,
-            has_policy,
-            &mut marks,
-        )?;
-    }
-    Ok(())
+    let content_write = content
+        .and_then(|binding| binding.writer.as_ref())
+        .is_some_and(|writer| {
+            writer
+                .volume()
+                .capability(VolumeOperation::Write)
+                .is_ok_and(|grant| scope.grants.contains(&grant))
+        });
+    let artifacts_write = artifacts
+        .and_then(|binding| binding.writer.as_ref())
+        .is_some_and(|writer| {
+            writer
+                .volume()
+                .capability(VolumeOperation::Write)
+                .is_ok_and(|grant| scope.grants.contains(&grant))
+        });
+    let extensions = scope
+        .extension_runtime()
+        .filter(|runtime| runtime.accepts_new_admissions())
+        .map(|runtime| {
+            runtime
+                .selected()
+                .iter()
+                .map(|identity| (identity.name.clone(), identity.version))
+                .collect()
+        })
+        .unwrap_or_default();
+    let environment = TaskDependencyEnvironment {
+        model: scope.grants.contains("model:generate"),
+        context: scope.grants.contains("context:build"),
+        interactions: (has_interactions || has_host) && scope.grants.contains("interaction:route"),
+        policy: has_policy,
+        host: has_host,
+        state: has_state,
+        spawner: has_spawner,
+        content: content.is_some(),
+        artifacts: artifacts.is_some(),
+        content_write,
+        artifacts_write,
+        extensions,
+    };
+    let grants = scope.grants.iter().map(str::to_owned).collect();
+    validate_task_requirements(&task_requirements, &available_tools, &environment, &grants)
 }
 
 /// Capability-scoped context passed to live task code.
@@ -3460,7 +3668,7 @@ impl TaskContext {
         maximum_entries: u32,
     ) -> Result<PrivateDirectoryPage> {
         self.require_private_directory(volume, granted_prefix, path)?;
-        if maximum_entries == 0 || maximum_entries > 4096 {
+        if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
             return Err(Error::Invalid(
                 "private directory page limit is invalid".into(),
             ));
@@ -4295,10 +4503,62 @@ struct DurableBatchWire {
 }
 
 impl DurableBatchRequest {
+    /// Constructs and validates an exact immutable batch envelope from SDK
+    /// boundary fields. Inputs and task identities are projected in Rust so
+    /// all members and native hosts use the same admission semantics.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        group_id: GroupId,
+        batch_id: BatchId,
+        group_policy: BatchGroupPolicy,
+        name: &str,
+        version: &str,
+        inputs: Vec<Value>,
+        input_schema: Value,
+        output_schema: Value,
+        requirements: &BTreeSet<String>,
+        machine_digest: &[u8],
+        parent: Option<TaskId>,
+        grants: Capabilities,
+        limits: Limits,
+        run_limits: TaskRunLimits,
+        extensions: Option<ExtensionAdmission>,
+        policy: Option<ComponentIdentity>,
+        execution: Option<ExecutionPlacement>,
+    ) -> Result<Self> {
+        let (task, machine) = task_admission_identities(
+            name,
+            version,
+            &input_schema,
+            &output_schema,
+            requirements,
+            machine_digest,
+        )?;
+        let scope = RuntimeScope::new(grants, limits)?
+            .with_run_limits(run_limits)?
+            .with_replayed_extensions(extensions)?;
+        let request = Self {
+            group_id,
+            batch_id,
+            group_policy,
+            task,
+            machine,
+            inputs,
+            input_schema,
+            output_schema,
+            parent,
+            scope,
+            policy,
+            execution,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
     /// Validates the complete retained manifest before any child is observed
     /// or admitted. A syntactically valid JSON envelope is not sufficient.
     pub fn validate(&self) -> Result<()> {
-        if self.inputs.len() > 65_536 {
+        if self.inputs.len() > MAX_BATCH_INPUTS {
             return Err(Error::Invalid("batch has too many inputs".into()));
         }
         validate_identity(&self.task.name, &self.task.version)?;
@@ -4727,7 +4987,7 @@ impl RuntimeGroup {
                 "durable batch policy overrides require a pinned host policy".into(),
             ));
         }
-        if batch.inputs.len() > 65_536 {
+        if batch.inputs.len() > MAX_BATCH_INPUTS {
             return Err(Error::Invalid("batch has too many inputs".into()));
         }
         let registered = self
@@ -4757,22 +5017,25 @@ impl RuntimeGroup {
                 Ok(value)
             })
             .collect::<Result<Vec<_>>>()?;
-        let request = DurableBatchRequest {
+        DurableBatchRequest::from_parts(
             group_id,
-            batch_id: batch.id,
-            group_policy: self.batch_policy,
-            task: definition.identity.clone(),
-            machine: machine.identity().clone(),
+            batch.id,
+            self.batch_policy,
+            &definition.identity.name,
+            &definition.identity.version,
             inputs,
-            input_schema: definition.input_schema.clone(),
-            output_schema: definition.output_schema.clone(),
+            definition.input_schema.clone(),
+            definition.output_schema.clone(),
+            definition.requirements(),
+            &machine.identity().digest,
             parent,
-            scope: self.scope.clone(),
-            policy: self.harness.policy_identity.clone(),
-            execution: None,
-        };
-        request.validate()?;
-        Ok(request)
+            self.scope.grants().clone(),
+            self.scope.limits(),
+            self.scope.run_limits(),
+            self.scope.extensions().cloned(),
+            self.harness.policy_identity.clone(),
+            None,
+        )
     }
 
     async fn admitted_batch<O>(
@@ -5308,7 +5571,557 @@ mod tests {
     use super::*;
     use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
     use crate::resources::ProviderRef;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn generated_interface_fields(source: &str, name: &str) -> BTreeSet<String> {
+        let header = format!("export interface {name} {{");
+        let bytes = source.as_bytes();
+        let Some(header_offset) = bytes
+            .windows(header.len())
+            .position(|window| window == header.as_bytes())
+        else {
+            return BTreeSet::new();
+        };
+        let start = header_offset + header.len();
+        let mut depth = 1_u32;
+        let Some(end) = bytes[start..]
+            .iter()
+            .enumerate()
+            .find_map(|(offset, byte)| {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(offset)
+            })
+        else {
+            return BTreeSet::new();
+        };
+        let body = std::str::from_utf8(&bytes[start..start + end]).unwrap_or_default();
+        body.lines()
+            .filter_map(|line| {
+                let field = line.trim().strip_prefix("readonly ")?;
+                Some(field.split_once(':')?.0.trim().to_owned())
+            })
+            .collect()
+    }
+
+    fn serialized_object_fields(value: &Value) -> BTreeSet<String> {
+        value
+            .as_object()
+            .map(|fields| fields.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn dependency_fixture(
+        requirements: &[(&str, &[&str])],
+    ) -> BTreeMap<(String, String), BTreeSet<String>> {
+        requirements
+            .iter()
+            .map(|(name, requirements)| {
+                (
+                    (String::from(*name), String::from("1")),
+                    requirements
+                        .iter()
+                        .map(|value| String::from(*value))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn task_requirement_projection_rejects_missing_versions_and_cycles() {
+        let tools = BTreeSet::from([(String::from("tool"), String::from("2"))]);
+        let environment = TaskDependencyEnvironment::default();
+        let grants = BTreeSet::new();
+        let missing = dependency_fixture(&[("parent", &["task:leaf@1"])]);
+        assert!(validate_task_requirements(&missing, &tools, &environment, &grants).is_err());
+
+        let cycle = dependency_fixture(&[("left", &["task:right@1"]), ("right", &["task:left@1"])]);
+        let result = validate_task_requirements(&cycle, &tools, &environment, &grants);
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert!(error.to_string().contains("task dependency cycle"));
+        }
+    }
+
+    #[test]
+    fn native_task_requirements_keep_provider_grants_bound() -> Result<()> {
+        let definition =
+            TaskDefinition::live("provider-bound", "1", |_context, _input: ()| async {
+                Ok::<(), Error>(())
+            })?
+            .requires("model")?
+            .requires("context")?
+            .requires("interactions")?;
+        let mut tasks = TaskRegistry::default();
+        tasks.register(definition)?;
+        let tools = ToolRegistry::new();
+        let all_grants = ["model:generate", "context:build", "interaction:route"];
+        let complete_scope = RuntimeScope::new(
+            Capabilities::new(all_grants.iter().copied()),
+            Limits::default(),
+        )?;
+        assert!(
+            validate_task_dependencies(
+                &tasks,
+                &tools,
+                &ResumableToolRegistry::default(),
+                &complete_scope,
+                false,
+                false,
+                false,
+                true,
+                None,
+                None,
+                false,
+            )
+            .is_ok()
+        );
+
+        for missing_grant in all_grants {
+            let scope = RuntimeScope::new(
+                Capabilities::new(
+                    all_grants
+                        .iter()
+                        .copied()
+                        .filter(|grant| *grant != missing_grant),
+                ),
+                Limits::default(),
+            )?;
+            assert!(
+                validate_task_dependencies(
+                    &tasks,
+                    &tools,
+                    &ResumableToolRegistry::default(),
+                    &scope,
+                    false,
+                    false,
+                    false,
+                    true,
+                    None,
+                    None,
+                    false,
+                )
+                .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_task_requirements_accept_state_without_spawner() -> Result<()> {
+        let state_task = TaskDefinition::live("state-only", "1", |_context, _input: ()| async {
+            Ok::<(), Error>(())
+        })?
+        .requires("state")?;
+        let mut bindings = Bindings::local();
+        bindings.tasks.register(state_task)?;
+        bindings.state = Some(Arc::new(StateOnlyProvider));
+        assert!(bindings.build().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn task_requirement_projection_checks_grants_and_extensions() {
+        let tasks =
+            dependency_fixture(&[("root", &["grant:task:run", "extension:example.state@3"])]);
+        let mut environment = TaskDependencyEnvironment::default();
+        environment
+            .extensions
+            .insert((String::from("example.state"), 3));
+        let grants = BTreeSet::from([String::from("task:run")]);
+        assert!(
+            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants).is_ok()
+        );
+        environment.extensions.clear();
+        assert!(
+            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants).is_err()
+        );
+    }
+
+    fn generated_wasm_declarations() -> Result<Option<String>> {
+        let workspace_typescript =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../typescript");
+        let path =
+            workspace_typescript.join("packages/harness/generated/wasm/acyclic_harness_wasm.d.ts");
+        match std::fs::read_to_string(path) {
+            Ok(source) => Ok(Some(source)),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && !workspace_typescript.is_dir() =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(Error::Storage(format!(
+                "generated WASM declaration is unavailable: {error}"
+            ))),
+        }
+    }
+
+    #[test]
+    fn generated_admission_declarations_cover_every_rust_owned_wire_field() -> Result<()> {
+        let Some(source) = generated_wasm_declarations()? else {
+            eprintln!(
+                "skipping generated WASM declaration freshness check: TypeScript package is absent"
+            );
+            return Ok(());
+        };
+        let expected = [
+            (
+                "WasmMachineIdentityWire",
+                ["name", "version", "digest"].as_slice(),
+            ),
+            (
+                "WasmNativeLimitsWire",
+                [
+                    "file_bytes",
+                    "path_bytes",
+                    "attachments",
+                    "render_bytes",
+                    "model_steps",
+                    "model_events_per_step",
+                    "tool_calls_per_step",
+                    "context_messages",
+                ]
+                .as_slice(),
+            ),
+            (
+                "WasmTaskRunLimitsWire",
+                ["concurrency", "max_steps", "deadline_epoch_ms"].as_slice(),
+            ),
+            (
+                "WasmProviderRefWire",
+                ["namespace", "family", "version"].as_slice(),
+            ),
+            ("WasmProjectVolumeOwnerWire", ["kind", "id"].as_slice()),
+            ("WasmAgentVolumeOwnerWire", ["kind", "id"].as_slice()),
+            ("WasmSessionVolumeOwnerWire", ["kind", "id"].as_slice()),
+            (
+                "WasmVolumeRefWire",
+                ["provider", "id", "class", "owner"].as_slice(),
+            ),
+            (
+                "WasmFileDescriptorWire",
+                ["sha256", "byte_length", "media_type"].as_slice(),
+            ),
+            (
+                "WasmFileRefWire",
+                ["volume", "path", "version", "descriptor", "display_name"].as_slice(),
+            ),
+            ("WasmAuthorityWire", ["kind", "id"].as_slice()),
+            (
+                "WasmEventReferenceWire",
+                ["authority", "revision"].as_slice(),
+            ),
+            (
+                "WasmExtensionDependencyWire",
+                ["name", "version"].as_slice(),
+            ),
+            (
+                "WasmExtensionConfigurationWire",
+                ["extension", "schema_digest", "content"].as_slice(),
+            ),
+            (
+                "WasmResourceRefWire",
+                ["kind", "provider", "key", "version"].as_slice(),
+            ),
+            (
+                "WasmExecutionPlacementWire",
+                ["provider", "build", "environment", "readiness_revision"].as_slice(),
+            ),
+            (
+                "WasmExtensionAdmissionWire",
+                ["source", "selected", "configurations"].as_slice(),
+            ),
+            (
+                "WasmTaskAdmissionWire",
+                [
+                    "contract",
+                    "operation_id",
+                    "task",
+                    "machine",
+                    "input",
+                    "input_schema",
+                    "output_schema",
+                    "parent",
+                    "grants",
+                    "limits",
+                    "run_limits",
+                    "policy",
+                    "extensions",
+                    "execution",
+                ]
+                .as_slice(),
+            ),
+            (
+                "WasmDurableBatchWire",
+                [
+                    "contract",
+                    "group_id",
+                    "batch_id",
+                    "group_policy",
+                    "task",
+                    "machine",
+                    "inputs",
+                    "input_schema",
+                    "output_schema",
+                    "parent",
+                    "grants",
+                    "limits",
+                    "run_limits",
+                    "extensions",
+                    "policy",
+                    "execution",
+                ]
+                .as_slice(),
+            ),
+            (
+                "WasmBatchAdmissionRequest",
+                [
+                    "contract",
+                    "groupId",
+                    "batchId",
+                    "taskName",
+                    "revision",
+                    "implementationDigest",
+                    "parentTaskId",
+                    "policy",
+                    "members",
+                    "canonical",
+                    "inputDigest",
+                ]
+                .as_slice(),
+            ),
+            (
+                "WasmTaskAdmissionIdentities",
+                ["task", "machine"].as_slice(),
+            ),
+        ];
+        for (name, fields) in expected {
+            assert_eq!(
+                generated_interface_fields(&source, name),
+                fields.iter().map(|field| (*field).to_owned()).collect()
+            );
+        }
+        let compact = source.split_whitespace().collect::<String>();
+        for signature in [
+            "exportfunctionadmitBatch(value:WasmBatchAdmissionInput):WasmDurableBatchWire;",
+            "exportfunctionadmitBatchRequest(value:WasmBatchAdmissionInput):WasmBatchAdmissionRequest;",
+            "exportfunctionadmitTask(value:WasmTaskAdmissionInput):WasmTaskAdmissionWire;",
+            "exportfunctiontaskAdmissionIdentities(value:WasmTaskIdentityInput):WasmTaskAdmissionIdentities;",
+        ] {
+            assert!(
+                compact.contains(signature),
+                "missing generated signature {signature}"
+            );
+        }
+
+        let schema = serde_json::json!({"type": "integer"});
+        let requirements = BTreeSet::new();
+        let mut extension_value: Value =
+            serde_json::from_str(include_str!("../fixtures/v2/extension-admission.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        extension_value["selected"] = serde_json::json!([
+            { "name": "example.state", "version": 1 }
+        ]);
+        extension_value["configurations"] = serde_json::json!([serde_json::from_str::<Value>(
+            include_str!("../fixtures/v2/extension-configuration.json")
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?]);
+        let extensions: ExtensionAdmission = serde_json::from_value(extension_value)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        extensions.validate()?;
+        let policy = ComponentIdentity {
+            name: "fixture.policy".into(),
+            version: "1".into(),
+            digest: [45; 32],
+        };
+        let execution: ExecutionPlacement =
+            serde_json::from_str(include_str!("../fixtures/v2/execution-placement.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        execution.validate()?;
+        let task = TaskAdmissionRecord::from_parts(
+            OperationId::from_bytes([41; 16]),
+            "fixture.task",
+            "1",
+            serde_json::json!(7),
+            schema.clone(),
+            schema.clone(),
+            &requirements,
+            &[42; 32],
+            None,
+            Capabilities::new([] as [String; 0]),
+            Limits::default(),
+            TaskRunLimits {
+                concurrency: None,
+                max_steps: None,
+                deadline_epoch_ms: None,
+            },
+            Some(policy.clone()),
+            Some(extensions.clone()),
+            Some(execution.clone()),
+        )?;
+        let batch = DurableBatchRequest::from_parts(
+            GroupId::from_bytes([43; 16]),
+            BatchId::from_bytes([44; 16]),
+            BatchGroupPolicy::CollectAll,
+            "fixture.task",
+            "1",
+            vec![serde_json::json!(7), serde_json::json!(8)],
+            schema.clone(),
+            schema,
+            &requirements,
+            &[42; 32],
+            None,
+            Capabilities::new([] as [String; 0]),
+            Limits::default(),
+            TaskRunLimits {
+                concurrency: None,
+                max_steps: None,
+                deadline_epoch_ms: None,
+            },
+            Some(extensions),
+            Some(policy),
+            Some(execution),
+        )?;
+        let task_wire = task.canonical_value();
+        let batch_wire = batch.canonical_value();
+        for (name, value) in [
+            ("WasmTaskAdmissionWire", &task_wire),
+            ("WasmDurableBatchWire", &batch_wire),
+        ] {
+            assert_eq!(
+                serialized_object_fields(value),
+                generated_interface_fields(&source, name),
+                "generated declaration drift for serialized {name}"
+            );
+        }
+        for (name, value) in [
+            ("WasmMachineIdentityWire", &task_wire["task"]),
+            ("WasmMachineIdentityWire", &task_wire["machine"]),
+            ("WasmNativeLimitsWire", &task_wire["limits"]),
+            ("WasmTaskRunLimitsWire", &task_wire["run_limits"]),
+            ("WasmMachineIdentityWire", &batch_wire["task"]),
+            ("WasmMachineIdentityWire", &batch_wire["machine"]),
+            ("WasmNativeLimitsWire", &batch_wire["limits"]),
+            ("WasmTaskRunLimitsWire", &batch_wire["run_limits"]),
+        ] {
+            assert_eq!(
+                serialized_object_fields(value),
+                generated_interface_fields(&source, name),
+                "generated declaration drift for serialized nested {name}"
+            );
+        }
+        for (name, value) in [
+            ("WasmMachineIdentityWire", &task_wire["policy"]),
+            ("WasmExtensionAdmissionWire", &task_wire["extensions"]),
+            ("WasmEventReferenceWire", &task_wire["extensions"]["source"]),
+            (
+                "WasmAuthorityWire",
+                &task_wire["extensions"]["source"]["authority"],
+            ),
+            (
+                "WasmExtensionDependencyWire",
+                &task_wire["extensions"]["selected"][0],
+            ),
+            (
+                "WasmExtensionConfigurationWire",
+                &task_wire["extensions"]["configurations"][0],
+            ),
+            (
+                "WasmFileRefWire",
+                &task_wire["extensions"]["configurations"][0]["content"],
+            ),
+            (
+                "WasmVolumeRefWire",
+                &task_wire["extensions"]["configurations"][0]["content"]["volume"],
+            ),
+            (
+                "WasmAgentVolumeOwnerWire",
+                &task_wire["extensions"]["configurations"][0]["content"]["volume"]["owner"],
+            ),
+            (
+                "WasmProviderRefWire",
+                &task_wire["extensions"]["configurations"][0]["content"]["volume"]["provider"],
+            ),
+            (
+                "WasmFileDescriptorWire",
+                &task_wire["extensions"]["configurations"][0]["content"]["descriptor"],
+            ),
+            ("WasmExecutionPlacementWire", &task_wire["execution"]),
+            (
+                "WasmMachineIdentityWire",
+                &task_wire["execution"]["provider"],
+            ),
+            ("WasmResourceRefWire", &task_wire["execution"]["build"]),
+            (
+                "WasmResourceRefWire",
+                &task_wire["execution"]["environment"],
+            ),
+        ] {
+            assert_eq!(
+                serialized_object_fields(value),
+                generated_interface_fields(&source, name),
+                "generated declaration drift for populated nested {name}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn generated_file_ref_wire_matches_rust_serde_fixture() -> Result<()> {
+        let file = FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("local", "filesystem", "2")?,
+                "project",
+                VolumeClass::Project,
+                VolumeOwner::Project("workspace".into()),
+            )?,
+            "config.json",
+            "generation-1",
+            FileDescriptor::from_bytes(br#"{}"#, "application/json")?,
+            "config.json",
+        )?;
+        let value =
+            serde_json::to_value(&file).map_err(|error| Error::Invalid(error.to_string()))?;
+        let Some(source) = generated_wasm_declarations()? else {
+            eprintln!("skipping generated FileRef declaration check: TypeScript package is absent");
+            return Ok(());
+        };
+        let object_fields = |value: &Value| {
+            value
+                .as_object()
+                .map(|fields| fields.keys().cloned().collect::<BTreeSet<_>>())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            object_fields(&value),
+            generated_interface_fields(&source, "WasmFileRefWire")
+        );
+        assert_eq!(
+            object_fields(&value["volume"]),
+            generated_interface_fields(&source, "WasmVolumeRefWire")
+        );
+        assert_eq!(
+            object_fields(&value["volume"]["provider"]),
+            generated_interface_fields(&source, "WasmProviderRefWire")
+        );
+        assert_eq!(
+            object_fields(&value["volume"]["owner"]),
+            generated_interface_fields(&source, "WasmProjectVolumeOwnerWire")
+        );
+        assert_eq!(
+            object_fields(&value["descriptor"]),
+            generated_interface_fields(&source, "WasmFileDescriptorWire")
+        );
+        assert_eq!(value["volume"]["owner"]["kind"], "project");
+        assert_eq!(value["descriptor"]["media_type"], "application/json");
+        Ok(())
+    }
 
     struct CompletedModel {
         requests: std::sync::Mutex<Vec<ModelRequest>>,
@@ -5579,6 +6392,36 @@ mod tests {
         }
     }
 
+    struct StateOnlyProvider;
+
+    impl TaskStateProvider for StateOnlyProvider {
+        fn policy_identity(&self) -> Option<ComponentIdentity> {
+            None
+        }
+        fn observe_admission<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
+            Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
+        }
+        fn resume_scope<'a>(
+            &'a self,
+            _task_id: TaskId,
+            _operation_id: OperationId,
+        ) -> BoxFuture<'a, Result<RuntimeScope>> {
+            Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
+        }
+        fn outcome<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+            Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
+        }
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
+        }
+    }
+
     #[test]
     fn resumable_task_requires_pinned_nontrivial_input_and_output_schemas() -> Result<()> {
         let machine: Arc<dyn ResumableMachine> = Arc::new(TestMachine {
@@ -5756,9 +6599,12 @@ mod tests {
         let parent = TaskId::from_bytes([1; 16]);
         assert!(validate_children_request(TaskId::from_bytes([0; 16]), None, 1).is_err());
         assert!(validate_children_request(parent, None, 0).is_err());
-        assert!(validate_children_request(parent, None, 1_025).is_err());
+        assert!(validate_children_request(parent, None, MAX_CHILD_PAGE + 1).is_err());
         assert!(validate_children_request(parent, Some("\u{7f}"), 1).is_err());
-        assert!(validate_children_request(parent, Some(&"x".repeat(256)), 1).is_err());
+        assert!(
+            validate_children_request(parent, Some(&"x".repeat(MAX_CHILD_SLOT_BYTES + 1)), 1)
+                .is_err()
+        );
         validate_children_request(parent, Some("résumé"), 1)?;
 
         let child = TaskChild {

@@ -8,6 +8,7 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
+    "types": ["node"],
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "composite": true,

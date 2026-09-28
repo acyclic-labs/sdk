@@ -45,6 +45,12 @@ message MutationIdentity {
   string idempotency_key = 1;
 }
 
+// Fixed limits shared by every Objects transport.
+enum ObjectsLimit {
+  OBJECTS_LIMIT_UNSPECIFIED = 0;
+  OBJECTS_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES = 256;
+}
+
 message Bucket {
   BucketRef bucket = 1;
   google.protobuf.Timestamp created_at = 2;

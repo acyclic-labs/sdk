@@ -1,61 +1,151 @@
 /** Public shape-free Machines contracts. The deterministic provider is process-local only. */
-import { digestHex } from "./digest.js";
+
+import type { PublicEnum } from "./enums.js";
+import { managedOci as managedOciRust } from "../generated/wasm/acyclic_machines_wasm.js";
+import type {
+  Capability as WireCapability,
+  ExpirationKind as WireExpirationKind,
+  MachineStatus as WireMachineStatus,
+  OperationStatus as WireOperationStatus, Performance as WirePerformance,
+  PressureKind as WirePressureKind,
+} from "../generated/proto/machines/v1/machines_pb.js";
+import type {
+  BudgetsIn as WireBudgetsIn,
+  CheckpointOut as WireCheckpointOut,
+  CompatibilityOut as WireCompatibilityOut,
+  ContractOut as WireContractOut,
+  CreateIn as WireCreateIn,
+  EndpointOut as WireEndpointOut,
+  EventOut as WireEventOut,
+  EventsOut as WireEventsOut,
+  FactOut as WireFactOut,
+  ImageOut as WireImageOut,
+  MutationOut as WireMutationOut,
+  ObservationOut as WireObservationOut,
+  OperationOut as WireOperationOut,
+  PageOut as WirePageOut,
+  QualificationOut as WireQualificationOut,
+  TimedOut as WireTimedOut,
+  UsageOut as WireUsageOut,
+} from "../generated/wasm/acyclic_machines_wasm.js";
+import { ensureMachinesWasm, normalizeIdentity } from "./wasm-runtime.js";
+
+// The root package is self-initializing so synchronous identity constructors
+// are ready after an ordinary package import in browsers as well as Node/Bun.
+await ensureMachinesWasm();
+
+/** Preserve the Rust generated field set while making public DTOs immutable. */
+type ReadonlyGenerated<Value> = Value extends unknown
+  ? { readonly [Key in keyof Value]: Value[Key] }
+  : never;
 
 declare const machineBrand: unique symbol;
 export type IdempotencyKey = string & { readonly [machineBrand]: "IdempotencyKey" };
 export type MachineId = string & { readonly [machineBrand]: "MachineId" };
 export type CheckpointId = string & { readonly [machineBrand]: "CheckpointId" };
 export type OperationId = string & { readonly [machineBrand]: "OperationId" };
-export function idempotencyKey(value: string): IdempotencyKey { if (!value.trim()) throw new TypeError("idempotency key is required"); return value as IdempotencyKey; }
-export function machineId(value: string): MachineId { if (!value.trim()) throw new TypeError("machine ID is required"); return value as MachineId; }
-export function checkpointId(value: string): CheckpointId { if (!value.trim()) throw new TypeError("checkpoint ID is required"); return value as CheckpointId; }
-export function operationId(value: string): OperationId { if (!value.trim()) throw new TypeError("operation ID is required"); return value as OperationId; }
-export type OperationPhase = "pending" | "succeeded" | "cancelled" | "indeterminate" | "failed";
-export interface OperationObservation { readonly id: OperationId; readonly phase: OperationPhase }
-export type Image =
-  | { readonly kind: "managed-oci"; readonly digestHex: string }
-  | { readonly kind: "custom"; readonly digestHex: string }
-  | { readonly kind: "checkpoint"; readonly checkpointId: CheckpointId };
+export function idempotencyKey(value: string): IdempotencyKey { return normalizeIdentity("idempotency", value) as IdempotencyKey; }
+export function machineId(value: string): MachineId { return normalizeIdentity("machine", value) as MachineId; }
+export function checkpointId(value: string): CheckpointId { return normalizeIdentity("checkpoint", value) as CheckpointId; }
+export function operationId(value: string): OperationId { return normalizeIdentity("operation", value) as OperationId; }
+export type OperationPhase = PublicEnum<typeof WireOperationStatus>;
+export type OperationObservation = Omit<ReadonlyGenerated<WireOperationOut>, "id" | "phase"> & {
+  readonly id: OperationId;
+  readonly phase: OperationPhase;
+};
+type PublicImage<Value> = Value extends unknown
+  ? { readonly [Key in keyof Value]: Key extends "checkpointId" ? CheckpointId : Value[Key] }
+  : never;
+export type Image = PublicImage<ReadonlyGenerated<WireImageOut>>;
 
-export type Capability = "elastic-cpu" | "elastic-memory" | "live-checkpoint" | "live-fork" | "suspend-resume" | "live-movement" | "disk-fork";
-/** Fidelity of children produced by a live machine fork. */
-export type ForkFidelity = "memory-and-disk" | "disk-only";
-export function forkFidelity(capabilities: readonly Capability[]): ForkFidelity | null {
-  return capabilities.includes("live-fork") ? "memory-and-disk" : capabilities.includes("disk-fork") ? "disk-only" : null;
-}
-export type CompatibilityPolicy = { readonly kind: "best-effort" } | { readonly kind: "require"; readonly capabilities: readonly Capability[] };
-export type Performance = "elastic" | "dedicated";
-export type SuspensionPolicy = { readonly kind: "manual" } | { readonly kind: "after-idle"; readonly milliseconds: number };
-export type ExpirationPolicy = { readonly kind: "never" } | { readonly kind: "max-age" | "at" | "idle"; readonly milliseconds: number };
-export interface Budgets { readonly spendMicros: bigint; readonly concurrency: number }
+export type Capability = PublicEnum<typeof WireCapability>;
+type PublicCompatibility<Value> = Value extends unknown
+  ? { readonly [Key in keyof Value]: Key extends "capabilities" ? readonly Capability[] : Value[Key] }
+  : never;
+export type CompatibilityPolicy = PublicCompatibility<ReadonlyGenerated<WireCompatibilityOut>>;
+export type Performance = PublicEnum<typeof WirePerformance>;
+type PublicTimed = ReadonlyGenerated<WireTimedOut>;
+export type SuspensionPolicy = Extract<PublicTimed, { readonly kind: "manual" | "after-idle" }>;
+type ExpirationKind = PublicEnum<typeof WireExpirationKind>;
+export type ExpirationPolicy = Extract<PublicTimed, { readonly kind: Exclude<ExpirationKind, "never"> }>
+  | Extract<PublicTimed, { readonly kind: "never" }>;
+export type Budgets = ReadonlyGenerated<WireBudgetsIn>;
 
-export interface CreateMachine {
+type PublicCreate = ReadonlyGenerated<WireCreateIn>;
+export type CreateMachine = Omit<PublicCreate, "idempotencyKey" | "image" | "compatibility" | "performance" | "suspension" | "expiration" | "budgets"> & {
   readonly idempotencyKey: IdempotencyKey;
   readonly image: Image;
   readonly compatibility: CompatibilityPolicy;
   readonly performance: Performance;
   readonly suspension: SuspensionPolicy;
   readonly expiration: ExpirationPolicy;
-  readonly networkPolicyDigestHex: string;
   readonly budgets: Budgets;
-}
+};
 
-export interface MachineContract extends Omit<CreateMachine, "idempotencyKey"> {
+type PublicContract = ReadonlyGenerated<WireContractOut>;
+export type MachineContract = Omit<PublicContract, "image" | "capabilities" | "compatibility" | "performance" | "suspension" | "expiration" | "budgets"> & {
+  readonly image: Image;
   readonly capabilities: readonly Capability[];
-  readonly compatibilityRevisionHex: string;
-}
-export interface ImageQualification { readonly image: Image; readonly capabilities: readonly Capability[]; readonly compatibilityRevisionHex: string }
-export type MachineState = "starting" | "running" | "suspending" | "suspended" | "waking" | "destroying" | "destroyed" | "failed" | "indeterminate";
-export interface Endpoint { readonly name: string; readonly uri: string }
+  readonly compatibility: CompatibilityPolicy;
+  readonly performance: Performance;
+  readonly suspension: SuspensionPolicy;
+  readonly expiration: ExpirationPolicy;
+  readonly budgets: Budgets;
+};
+/** Fork fidelity is emitted by the Rust WASM DTO and follows its generated union. */
+export type ForkFidelity = Extract<MutationOutcome, { readonly kind: "machine-forked" }> extends infer Fork
+  ? Fork extends { readonly fidelity: infer Fidelity } ? Fidelity : never
+  : never;
+export type ImageQualification = Omit<ReadonlyGenerated<WireQualificationOut>, "image" | "capabilities"> & {
+  readonly image: Image;
+  readonly capabilities: readonly Capability[];
+};
+export type MachineState = PublicEnum<typeof WireMachineStatus>;
+export type Endpoint = ReadonlyGenerated<WireEndpointOut>;
 /** Timestamps and event cursors are deliberately limited to exact JavaScript safe integers. */
-export interface MachineObservation { readonly id: MachineId; readonly state: MachineState; readonly contract: MachineContract; readonly endpoints: readonly Endpoint[]; readonly lastCheckpoint: CheckpointId | null; readonly createdAtUnixMs: number; readonly changedAtUnixMs: number }
-export interface CheckpointObservation { readonly id: CheckpointId; readonly source: MachineId; readonly contract: MachineContract; readonly forkable: boolean; readonly createdAtUnixMs: number }
-export type Pressure = "customer-budget" | "machine-limit" | "service-saturation";
-export type EventFact = { readonly kind: "state"; readonly state: MachineState } | { readonly kind: "pressure"; readonly pressure: Pressure } | { readonly kind: "capacity-changed" };
+export type MachineObservation = Omit<ReadonlyGenerated<WireObservationOut>, "id" | "state" | "contract" | "endpoints" | "lastCheckpoint"> & {
+  readonly id: MachineId;
+  readonly state: MachineState;
+  readonly contract: MachineContract;
+  readonly endpoints: readonly Endpoint[];
+  readonly lastCheckpoint: CheckpointId | null;
+};
+export type CheckpointObservation = Omit<ReadonlyGenerated<WireCheckpointOut>, "id" | "source" | "contract"> & {
+  readonly id: CheckpointId;
+  readonly source: MachineId;
+  readonly contract: MachineContract;
+};
+export type Pressure = PublicEnum<typeof WirePressureKind>;
+type PublicFact<Value> = Value extends unknown
+  ? { readonly [Key in keyof Value]: Key extends "state" ? MachineState : Key extends "pressure" ? Pressure : Value[Key] }
+  : never;
+export type EventFact = PublicFact<ReadonlyGenerated<WireFactOut>>;
 /** Sequence and timestamp remain exact and are rejected above Number.MAX_SAFE_INTEGER. */
-export interface MachineEvent { readonly machine: MachineId; readonly sequence: number; readonly observedAtUnixMs: number; readonly fact: EventFact }
-export interface UsageReceipt { readonly machine: MachineId; readonly startUnixMs: number; readonly endUnixMs: number; readonly elasticCpuNs: bigint; readonly dedicatedCpuNs: bigint; readonly privateResidentByteSeconds: bigint; readonly durablePrivateBytes: bigint; readonly lineageReceiptSha256: Uint8Array; readonly egressBytes: bigint; readonly receipt: Uint8Array }
-export type MutationOutcome = { readonly kind: "created"; readonly machine: MachineObservation } | { readonly kind: "checkpointed"; readonly checkpoint: CheckpointObservation } | { readonly kind: "forked"; readonly machines: readonly MachineObservation[] } | { readonly kind: "machine-forked"; readonly source: MachineId; readonly fidelity: ForkFidelity; readonly children: readonly MachineObservation[] } | { readonly kind: "suspended" | "woken" | "machine-destroyed"; readonly machineId: MachineId } | { readonly kind: "suspension-policy-set"; readonly machineId: MachineId; readonly policy: SuspensionPolicy } | { readonly kind: "checkpoint-destroyed"; readonly checkpointId: CheckpointId };
+export type MachineEvent = Omit<ReadonlyGenerated<WireEventOut>, "machine" | "fact"> & {
+  readonly machine: MachineId;
+  readonly fact: EventFact;
+};
+export type UsageReceipt = Omit<ReadonlyGenerated<WireUsageOut>, "machine"> & { readonly machine: MachineId };
+type PublicMutation<Value> = Value extends unknown
+  ? { readonly [Key in keyof Value]: Key extends "machine" ? MachineObservation
+      : Key extends "checkpoint" ? CheckpointObservation
+      : Key extends "machines" ? readonly MachineObservation[]
+      : Key extends "children" ? readonly MachineObservation[]
+      : Key extends "machineId" ? MachineId
+      : Key extends "checkpointId" ? CheckpointId
+      : Key extends "source" ? MachineId
+      : Key extends "policy" ? SuspensionPolicy
+      : Value[Key] }
+  : never;
+export type MutationOutcome = PublicMutation<ReadonlyGenerated<WireMutationOut>>;
+
+export type MachinePage = Omit<ReadonlyGenerated<WirePageOut>, "machines" | "next"> & {
+  readonly machines: readonly MachineObservation[];
+  readonly next: MachineId | null;
+};
+export type MachineEventPage = Omit<ReadonlyGenerated<WireEventsOut>, "events"> & {
+  readonly events: readonly MachineEvent[];
+};
 
 /** Provider contract. Implementations must document their actual isolation and durability. */
 export interface MachinesProvider {
@@ -63,7 +153,7 @@ export interface MachinesProvider {
   qualifyImage(image: Image): Promise<ImageQualification>;
   create(request: CreateMachine): Promise<MutationOutcome>;
   inspectMachine(machineId: MachineId): Promise<MachineObservation>;
-  listMachines(after: MachineId | null, limit: number): Promise<{ readonly machines: readonly MachineObservation[]; readonly next: MachineId | null }>;
+  listMachines(after: MachineId | null, limit: number): Promise<MachinePage>;
   checkpoint(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
   inspectCheckpoint(checkpointId: CheckpointId): Promise<CheckpointObservation>;
   fork(checkpointId: CheckpointId, count: number, performance: Performance, key: IdempotencyKey): Promise<MutationOutcome>;
@@ -73,7 +163,7 @@ export interface MachinesProvider {
   setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, key: IdempotencyKey): Promise<MutationOutcome>;
   destroyMachine(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
   destroyCheckpoint(checkpointId: CheckpointId, key: IdempotencyKey): Promise<MutationOutcome>;
-  events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<{ readonly events: readonly MachineEvent[]; readonly nextSequence: number | null }>;
+  events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage>;
   usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt>;
   recover(key: IdempotencyKey): Promise<MutationOutcome>;
   recoverOperation(key: IdempotencyKey): Promise<OperationId>;
@@ -82,15 +172,12 @@ export interface MachinesProvider {
   watchOperation(operationId: OperationId): AsyncIterable<OperationObservation>;
 }
 
-/** Constructs a managed image only from an immutable OCI digest reference. */
-export function managedOci(reference: string): Extract<Image, { kind: "managed-oci" }> {
-  if (!/^.+@sha256:[0-9a-fA-F]{64}$/.test(reference)) throw new Error("OCI image must contain an immutable SHA-256 digest");
-  return { kind: "managed-oci", digestHex: digestHex(reference.slice(-64)) };
+/** Constructs a managed image using the Rust-generated OCI reference contract. */
+export function managedOci(reference: string): Image {
+  return managedOciRust(reference) as Image;
 }
-/** Constructs a custom image from a non-zero immutable SHA-256 digest. */
-export function customImage(value: string): Extract<Image, { kind: "custom" }> { return { kind: "custom", digestHex: digestHex(value) }; }
 
-export { SimulatedMachines } from "./memory.js";
+export { SimulatedMachines } from "./simulator.js";
+
 export * from "./client.js";
-export { HttpMachinesProvider, MachinesTransportError } from "./http.js";
-export type { HttpMachinesOptions } from "./http.js";
+export * from "./http.js";

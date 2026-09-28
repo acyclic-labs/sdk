@@ -10,7 +10,8 @@ pub mod wire {
 mod contract;
 pub use contract::{
     MAXIMUM_EVALUATION_CANDIDATES, MAXIMUM_EVALUATION_CASES, MAXIMUM_EVALUATION_METRICS,
-    MAXIMUM_EVALUATION_RESULTS, MAXIMUM_MESSAGE_BYTES, validate_customer_wire,
+    MAXIMUM_EVALUATION_RESULTS, MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES, WatchRunState,
+    validate_customer_wire, watch_run_start_state_wire, watch_run_start_wire,
 };
 
 #[cfg(feature = "host")]

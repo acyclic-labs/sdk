@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Harness browser wire validation smoke</title>
+<script type="importmap">
+{
+  "imports": {
+    "@bufbuild/protobuf": "/node_modules/@bufbuild/protobuf/dist/esm/index.js",
+    "@bufbuild/protobuf/codegenv2": "/node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js",
+    "@bufbuild/protobuf/wkt": "/node_modules/@bufbuild/protobuf/dist/esm/wkt/index.js"
+  }
+}
+</script>
+<body data-result="pending">
+<script type="module">
+import { create } from "@bufbuild/protobuf";
+import { EmbeddedWireTransport, Harness, WireError } from "../dist/index.js";
+import { ErrorCode, HandshakeRequestSchema, HandshakeResponseSchema, ResumeRequestSchema } from "../dist/proto.js";
+
+try {
+  const originalFetch = globalThis.fetch;
+  let failOnce = true;
+  globalThis.fetch = (input, init) => {
+    if (failOnce && new URL(input.url ?? input).pathname.endsWith("acyclic_harness_wasm_bg.wasm")) {
+      failOnce = false;
+      return Promise.reject(new Error("simulated temporary WASM fetch failure"));
+    }
+    return originalFetch(input, init);
+  };
+  const options = {
+    authority: { kind: "task", id: "browser" },
+    issuerId: "browser",
+    issuerKey: new Uint8Array(32).fill(7),
+  };
+  try {
+    await Harness.create(options);
+    throw new Error("temporary WASM fetch failure was ignored");
+  } catch (error) {
+    if (!String(error.message).includes("simulated temporary WASM fetch failure")) throw error;
+  }
+  const harness = await Harness.create(options);
+  globalThis.fetch = originalFetch;
+  const protocol = harness.protocolIdentity();
+  const api = {
+    async handshake(request) {
+      return create(HandshakeResponseSchema, { protocol: request.protocol, supported: { capabilities: [] } });
+    },
+    async *replay() {},
+    async submit() {},
+    async observe() { throw new Error("unused"); },
+    async cancel() { throw new Error("unused"); },
+  };
+  await new EmbeddedWireTransport(api, create(HandshakeRequestSchema, { protocol }))
+    .connect(create(ResumeRequestSchema, {}));
+  const foreign = new EmbeddedWireTransport(api, create(HandshakeRequestSchema, {
+    protocol: { ...protocol, descriptorDigest: "foreign" },
+  }));
+  try {
+    await foreign.connect(create(ResumeRequestSchema, {}));
+    throw new Error("foreign protocol accepted");
+  } catch (error) {
+    if (!(error instanceof WireError) || error.code !== ErrorCode.UNSUPPORTED) throw error;
+  }
+  harness.free();
+  document.body.dataset.result = "passed";
+} catch (error) {
+  document.body.dataset.result = `failed: ${error.message}`;
+}
+</script>
+</body>
+</html>

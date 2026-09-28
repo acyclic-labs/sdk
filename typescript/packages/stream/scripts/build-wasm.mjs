@@ -1,3 +1,1 @@
-import { buildProviderWasm } from "../../../../scripts/build-provider-wasm.mjs";
-
-await buildProviderWasm("stream");
+import "../../../../scripts/build-stream-wasm.mjs";

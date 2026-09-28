@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { create, toJsonString } from "@bufbuild/protobuf";
+import { create, toBinary, toJsonString } from "@bufbuild/protobuf";
 import {
   ContextViewSchema,
   contextRevision,
@@ -15,7 +15,11 @@ import {
   HttpInferenceTransport,
   Inference,
   InferenceClient,
+  InferenceProtocolError,
   InferenceTransportError,
+  itemId,
+  deriveInferenceHttpRoutes,
+  validateInferenceHttpPath,
   WarmState,
   InspectContextRequestSchema,
   InspectEvaluationRequestSchema,
@@ -38,10 +42,80 @@ import {
   WatchRunRequestSchema,
   type InferenceTransport,
 } from "../src/index.js";
+import { runTerminalMetadata, validateRunTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
+import { INFERENCE_FIXED_WIDTHS, validateInferenceFixedWidthMetadata } from "../src/widths.js";
+import { MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES } from "../generated/defaults.js";
+import { RUN_TERMINAL_METADATA } from "../generated/terminal-metadata.js";
 
 const bytes = (value: number) => new Uint8Array([value]);
 const revision = (value: number) => new Uint8Array(32).fill(value);
 const runIdentity = (value: number) => new Uint8Array(16).fill(value);
+
+test("protobuf method options derive every inference HTTP route and streaming kind", () => {
+  const routes = deriveInferenceHttpRoutes();
+  expect(new Set(routes.map(route => route.path)).size).toBe(routes.length);
+  expect(routes.map(route => `${route.method.parent.name}.${route.method.name}:${route.path}:${route.methodKind}`)).toEqual([
+    "ModelsService.List:models/list:unary",
+    "ContextsService.Create:contexts/create:unary",
+    "ContextsService.Inspect:contexts/inspect:unary",
+    "ContextsService.Mutate:contexts/mutate:unary",
+    "WarmContextsService.Retain:warm/retain:unary",
+    "WarmContextsService.Inspect:warm/inspect:unary",
+    "WarmContextsService.Renew:warm/renew:unary",
+    "WarmContextsService.Release:warm/release:unary",
+    "RunsService.Generate:runs/generate:unary",
+    "RunsService.Inspect:runs/inspect:unary",
+    "RunsService.Watch:runs/watch:server_streaming",
+    "RunsService.Cancel:runs/cancel:unary",
+    "EvaluationsService.Create:evaluations/create:unary",
+    "EvaluationsService.Inspect:evaluations/inspect:unary",
+  ]);
+});
+
+test("derived HTTP route validation rejects URL escape paths", () => {
+  for (const path of ["../escape", "runs\\watch", "runs/%2fwatch", "runs//watch", "runs/./watch", "runs/../watch", "/runs/watch", "runs/watch/"]) {
+    expect(() => validateInferenceHttpPath(path)).toThrow("inference HTTP route path is invalid");
+  }
+});
+
+test("Rust reflection supplies every nonzero terminal and validates request shape", async () => {
+  const metadata = await runTerminalMetadata();
+  expect(metadata).toEqual(RUN_TERMINAL_METADATA);
+  expect(metadata.map(item => item.kind)).toEqual([
+    "completed", "output-limited", "tool-call", "refusal", "cancelled", "failed", "indeterminate",
+  ]);
+  expect(metadata.filter(item => item.partial).map(item => item.kind)).toEqual(["cancelled", "failed", "indeterminate"]);
+  await expect(validateRuntimeShape(CreateContextRequestSchema, JSON.parse('{"model":7}'))).rejects.toThrow("invalid protobuf type");
+});
+
+test("terminal metadata validation rejects Rust/protobuf drift", () => {
+  const valid = RUN_TERMINAL_METADATA.map(item => ({ ...item }));
+  expect(validateRunTerminalMetadata(JSON.stringify(valid))).toEqual(valid);
+  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.slice(1)))).toThrow("does not cover the generated enum");
+  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.map((item, index) =>
+    index === 0 ? { ...item, kind: "renamed" } : item)))).toThrow("does not cover the generated enum");
+  expect(() => validateRunTerminalMetadata(JSON.stringify(valid.map((item, index) =>
+    index === 0 ? { ...item, partial: !item.partial } : item)))).toThrow("does not cover the generated enum");
+  expect(() => validateRunTerminalMetadata("[{\"number\":1,\"kind\":\"completed\"}]")).toThrow("invalid entry");
+});
+
+test("ergonomic identity helpers enforce Rust-derived fixed widths at both boundaries", () => {
+  expect(INFERENCE_FIXED_WIDTHS.runId).toBe(16);
+  expect(INFERENCE_FIXED_WIDTHS.contextRevision).toBe(32);
+  expect(() => runId(new Uint8Array(15))).toThrow("exactly 16 bytes");
+  expect(() => runId(new Uint8Array(17))).toThrow("exactly 16 bytes");
+  expect(itemId(new Uint8Array(15))).toHaveLength(15);
+  expect(itemId(new Uint8Array(16))).toHaveLength(16);
+  expect(itemId(new Uint8Array(17))).toHaveLength(17);
+  expect(itemId(new Uint8Array(0))).toHaveLength(0);
+  expect(() => contextRevision(new Uint8Array(31))).toThrow("exactly 32 bytes");
+  expect(() => contextRevision(new Uint8Array(33))).toThrow("exactly 32 bytes");
+  expect(runId(new Uint8Array(16))).toHaveLength(16);
+  expect(contextRevision(new Uint8Array(32))).toHaveLength(32);
+  expect(() => validateInferenceFixedWidthMetadata([{
+    message: "inference.customer.v1.RequestIdentity", field: "request_id", width: 0,
+  }])).toThrow("non-positive width");
+});
 const receipt = (value: number) => create(MutationReceiptSchema, { revision: revision(value), commandDigest: revision(value + 32), sequence: 1n });
 const contextView = (value: Uint8Array, model = "model") => create(ContextViewSchema, {
   revision: value,
@@ -115,7 +189,7 @@ test("generated lifecycle client covers contexts, warm commitments, runs, watch,
     spec: evaluationSpec(specDigest),
   }));
   await client.inspectEvaluation(evaluationId);
-  expect(called).toEqual(["models", "create", "inspect:1", "mutate", "retain", "inspect-warm", "renew", "release", "generate", "inspect-run", "watch:7", "cancel", "create-evaluation", "inspect-evaluation"]);
+  expect(called).toEqual(["models", "create", "inspect:1", "mutate", "retain", "inspect-warm", "renew", "release", "generate", "inspect-run", "inspect-run", "watch:7", "cancel", "create-evaluation", "inspect-evaluation"]);
 });
 
 test("high-level handles preserve typed context, run, and warm identities", async () => {
@@ -130,7 +204,7 @@ test("high-level handles preserve typed context, run, and warm identities", asyn
     async renewWarm(request) { return warmView(request.commitment, revision(3), request.expiresAtMs); },
     async releaseWarm(request) { return warmView(request.commitment, revision(3)); },
     async generateRun(request) { return create(GenerateRunResponseSchema, { run: { runId: request.identity!.requestId, input: request.context, model: "model" } }); },
-    async inspectRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", result: create(RunResultSchema, { output: bytes(9), terminal: RunTerminal.COMPLETED, context: create(ContextViewSchema, { revision: revision(10) }) }) }); },
+    async inspectRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", lastSequence: 4n, result: create(RunResultSchema, { output: bytes(9), terminal: RunTerminal.COMPLETED, context: create(ContextViewSchema, { revision: revision(10) }) }) }); },
     async *watchRun(request) { yield create(RunEventSchema, { sequence: request.fromSequence, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
     async cancelRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", cancellationRequested: true }); },
     async createEvaluation(request) { return evaluationView(request.identity!.requestId, request.spec!.specDigest); },
@@ -178,6 +252,39 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   const result = await new Inference(new InferenceClient(transport)).run(runId(id)).result();
   expect(result.terminal).toBe("completed");
 
+  let reopened = false;
+  const completed = new InferenceClient({
+    ...transport,
+    async inspectRun(request) { return create(RunViewSchema, {
+      runId: request.runId, input: revision(1), model: "model", lastSequence: 7n,
+      result: { terminal: RunTerminal.COMPLETED },
+    }); },
+    async *watchRun() { reopened = true; throw new Error("completed run was reopened"); },
+  });
+  let observed = 0;
+  for await (const _event of completed.watchRun(id, 8n)) observed += 1;
+  expect(observed).toBe(0);
+  expect(reopened).toBeFalse();
+  await expect(async () => {
+    for await (const _event of completed.watchRun(id, 9n)) { /* exhaust */ }
+  }).toThrow("Run cursor exceeds retained events");
+  expect(reopened).toBeFalse();
+
+  const controller = new AbortController();
+  const cancellable = new InferenceClient({
+    ...transport,
+    inspectRun(_request, signal) {
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+    },
+    async *watchRun() { reopened = true; throw new Error("watch opened after cancellation"); },
+  });
+  const pending = cancellable.watchRun(id, 0n, controller.signal)[Symbol.asyncIterator]().next();
+  controller.abort();
+  await expect(pending).rejects.toThrow("aborted");
+  expect(reopened).toBeFalse();
+
   const substituted = new InferenceClient({ ...transport, async inspectRun() { return create(RunViewSchema, { runId: runIdentity(9), input: revision(1), model: "model" }); } });
   await expect(substituted.inspectRun(id)).rejects.toThrow("identity differs");
 
@@ -194,8 +301,29 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   const malformed = new InferenceClient({ ...transport, async *watchRun() { yield create(RunEventSchema, { sequence: 2n }); } });
   await expect(async () => { for await (const _event of malformed.watchRun(id)) { /* exhaust */ } }).toThrow("run event order or shape differs");
 
+  const undefinedEvent = new InferenceClient({ ...transport, async *watchRun() { yield undefined as never; } });
+  await expect(async () => { for await (const _event of undefinedEvent.watchRun(id)) { /* exhaust */ } }).toThrow(InferenceProtocolError);
+
   const truncated = new InferenceClient({ ...transport, async *watchRun() { yield create(RunEventSchema, { sequence: 0n, event: { case: "progress", value: { kind: "queued" } } }); } });
   await expect(async () => { for await (const _event of truncated.watchRun(id)) { /* exhaust */ } }).toThrow("run stream ended before terminal");
+
+  const duplicate = new InferenceClient({ ...transport, async *watchRun() {
+    yield create(RunEventSchema, { sequence: 0n, event: { case: "progress", value: { kind: "queued" } } });
+    yield create(RunEventSchema, { sequence: 0n, event: { case: "terminal", value: RunTerminal.COMPLETED } });
+  } });
+  await expect(async () => { for await (const _event of duplicate.watchRun(id)) { /* exhaust */ } }).toThrow("run event order or shape differs");
+
+  const postTerminal = new InferenceClient({ ...transport, async *watchRun() {
+    yield create(RunEventSchema, { sequence: 0n, event: { case: "terminal", value: RunTerminal.COMPLETED } });
+    yield create(RunEventSchema, { sequence: 1n, event: { case: "progress", value: { kind: "late" } } });
+  } });
+  await expect(async () => { for await (const _event of postTerminal.watchRun(id)) { /* exhaust */ } }).toThrow("run event order or shape differs");
+
+  const overflow = new InferenceClient({ ...transport,
+    async inspectRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model" }); },
+    async *watchRun() { yield create(RunEventSchema, { sequence: (1n << 64n) - 1n, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
+  });
+  await expect(async () => { for await (const _event of overflow.watchRun(id, (1n << 64n) - 1n)) { /* exhaust */ } }).toThrow("Run sequence exhausted");
 
   expect(() => contextRevision(bytes(1))).toThrow("exactly 32 bytes");
   const substitutedContext = new InferenceClient({ ...transport, async inspectContext() { return contextView(revision(9)); } });
@@ -365,6 +493,122 @@ test("HTTP transport applies one byte ceiling per message without conflating net
   }).toThrow("run event exceeds configured bound");
 });
 
+test("HTTP watch frames adversarial one-byte network chunks linearly", async () => {
+  const request = create(WatchRunRequestSchema, { runId: bytes(4) });
+  const event = toJsonString(RunEventSchema, create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "progress", value: { kind: "é🙂".repeat(32 * 1024) } },
+  }));
+  const encoded = new TextEncoder().encode(`${event}\r\n`);
+  let offset = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset === encoded.byteLength) {
+        controller.close();
+      } else {
+        controller.enqueue(encoded.subarray(offset, ++offset));
+      }
+    },
+  });
+  const transport = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(stream),
+  );
+  const events = [];
+  for await (const value of transport.watchRun(request)) events.push(value);
+  expect(events).toHaveLength(1);
+});
+
+test("HTTP watch rejects malformed UTF-8 frames as transport errors", async () => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array([0xff, 0x0a]));
+      controller.close();
+    },
+  });
+  const transport = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(stream),
+  );
+  await expect(async () => {
+    for await (const _event of transport.watchRun(create(WatchRunRequestSchema, { runId: bytes(4) }))) { /* exhaust */ }
+  }).toThrow("run event is not valid UTF-8");
+});
+
+test("HTTP transport derives separate Rust wire and JSON ceilings", async () => {
+  const transportCeiling = MAXIMUM_HTTP_JSON_BYTES;
+  const request = create(WatchRunRequestSchema, { runId: bytes(4) });
+  const validEvent = toJsonString(RunEventSchema, create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "progress", value: { kind: "x".repeat(1024 * 1024) } },
+  }));
+  expect(new TextEncoder().encode(validEvent).byteLength).toBeGreaterThan(1024 * 1024);
+  const valid = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(`${validEvent}\n`),
+  );
+  expect(valid.maximumMessageBytes).toBe(transportCeiling);
+  const events = [];
+  for await (const event of valid.watchRun(request)) events.push(event);
+  expect(events).toHaveLength(1);
+
+  const oversizedEvent = toJsonString(RunEventSchema, create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "progress", value: { kind: "x".repeat(transportCeiling) } },
+  }));
+  const oversized = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(`${oversizedEvent}\n`),
+  );
+  await expect(async () => {
+    for await (const _event of oversized.watchRun(request)) { /* exhaust */ }
+  }).toThrow("run event exceeds configured bound");
+
+  const output = new Uint8Array(Math.floor(6.5 * 1024 * 1024)).fill(7);
+  const bytesEvent = create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "output", value: output },
+  });
+  const wireBytes = toBinary(RunEventSchema, bytesEvent).byteLength;
+  const json = toJsonString(RunEventSchema, bytesEvent);
+  const jsonBytes = new TextEncoder().encode(json).byteLength;
+  expect(wireBytes).toBeLessThan(MAXIMUM_MESSAGE_BYTES);
+  expect(jsonBytes).toBeGreaterThan(MAXIMUM_MESSAGE_BYTES);
+  expect(jsonBytes).toBeLessThan(MAXIMUM_HTTP_JSON_BYTES);
+  const expanded = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(`${json}\n`),
+  );
+  const expandedEvents = [];
+  for await (const value of expanded.watchRun(request)) expandedEvents.push(value);
+  expect(expandedEvents).toHaveLength(1);
+
+  // Escaped control characters can expand beyond the JSON policy even when
+  // their protobuf wire representation remains below the 8 MiB wire ceiling.
+  const controlEvent = create(RunEventSchema, {
+    sequence: 0n,
+    event: { case: "progress", value: { kind: "\0".repeat(2_800_000) } },
+  });
+  const controlWireBytes = toBinary(RunEventSchema, controlEvent).byteLength;
+  const controlJson = toJsonString(RunEventSchema, controlEvent);
+  const controlJsonBytes = new TextEncoder().encode(controlJson).byteLength;
+  expect(controlWireBytes).toBeLessThan(MAXIMUM_MESSAGE_BYTES);
+  expect(controlJsonBytes).toBeGreaterThan(MAXIMUM_HTTP_JSON_BYTES);
+  const escaped = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(`${controlJson}\n`),
+  );
+  await expect(async () => {
+    for await (const _event of escaped.watchRun(request)) { /* exhaust */ }
+  }).toThrow("run event exceeds configured bound");
+});
+
 test("HTTP transport rejects insecure endpoints and bounded request, unary, and error bodies", async () => {
   expect(() => new HttpInferenceTransport("http://example.test", () => ({}))).toThrow(TypeError);
   expect(() => new HttpInferenceTransport("https://example.test?", () => ({}))).toThrow(TypeError);
@@ -390,6 +634,13 @@ test("HTTP transport rejects insecure endpoints and bounded request, unary, and 
   );
   await expect(unaryBound.listModels()).rejects.toThrow("unary response exceeds configured bound");
 
+  const malformedUnary = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(new Uint8Array([0xff])),
+  );
+  await expect(malformedUnary.listModels()).rejects.toThrow("unary response is not valid UTF-8");
+
   const errorBound = new HttpInferenceTransport(
     "https://example.test",
     () => ({ authorization: "Bearer test" }),
@@ -397,6 +648,13 @@ test("HTTP transport rejects insecure endpoints and bounded request, unary, and 
     64,
   );
   await expect(errorBound.listModels()).rejects.toThrow("error response exceeds configured bound");
+
+  const malformedError = new HttpInferenceTransport(
+    "https://example.test",
+    () => ({ authorization: "Bearer test" }),
+    async () => new Response(new Uint8Array([0xff]), { status: 400 }),
+  );
+  await expect(malformedError.listModels()).rejects.toThrow("error response is not valid UTF-8");
 
   const whitespaceBound = new HttpInferenceTransport(
     "https://example.test",

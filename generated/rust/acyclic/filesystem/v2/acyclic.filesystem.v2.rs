@@ -707,6 +707,10 @@ pub struct WorkCounters {
     pub peak_allocation_bytes: u64,
     #[prost(uint64, tag = "22")]
     pub materializations: u64,
+    #[prost(uint64, tag = "23")]
+    pub source_path_components: u64,
+    #[prost(uint64, tag = "24")]
+    pub source_entries_visited: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DiffResponse {

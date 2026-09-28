@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { ExecutionScope, Harness, MAX_FORK_INHERITED_MESSAGES, NativeContracts, forkReadableReferences, forkSeed, resourceRef, validateForkReport, validateForkRequest, validateForkSeed,
+import { ExecutionScope, Harness, MAX_FORK_AGENTS, MAX_FORK_ATTACHMENT_MANIFEST_BYTES, MAX_FORK_INHERITED_BYTES,
+  MAX_FORK_INHERITED_MESSAGES, MAX_FORK_REFERENCE_BYTES, MAX_FORK_REFERENCES, MAX_FORK_RESOURCES,
+  NativeContracts, forkReadableReferences, forkSeed, resourceRef, validateForkReport, validateForkRequest, validateForkSeed,
   type AgentId, type ForkReport, type ForkRequest, type ForkSeed, type OperationId, type ResourceRevision, type ReferenceGrant } from "../src/index.js";
 
 const filesystem = { namespace: "test", family: "filesystem", version: "2" } as const;
@@ -28,6 +30,23 @@ const childProject: ResourceRevision = {
     generation: { kind: "generation", provider: filesystem, key: [2], version: null },
   },
 };
+
+test("Rust-owned fork ceilings preserve public bigint and number semantics", () => {
+  expect(typeof MAX_FORK_AGENTS).toBe("number");
+  expect(typeof MAX_FORK_RESOURCES).toBe("number");
+  expect(typeof MAX_FORK_REFERENCES).toBe("number");
+  expect(typeof MAX_FORK_ATTACHMENT_MANIFEST_BYTES).toBe("bigint");
+  expect(typeof MAX_FORK_INHERITED_BYTES).toBe("bigint");
+  expect(typeof MAX_FORK_REFERENCE_BYTES).toBe("bigint");
+  expect(typeof MAX_FORK_INHERITED_MESSAGES).toBe("bigint");
+  expect(MAX_FORK_AGENTS).toBeGreaterThan(0);
+  expect(MAX_FORK_RESOURCES).toBeGreaterThan(0);
+  expect(MAX_FORK_REFERENCES).toBeGreaterThan(0);
+  expect(MAX_FORK_ATTACHMENT_MANIFEST_BYTES).toBeGreaterThan(0n);
+  expect(MAX_FORK_INHERITED_BYTES).toBeGreaterThan(0n);
+  expect(MAX_FORK_REFERENCE_BYTES).toBeGreaterThan(0n);
+  expect(MAX_FORK_INHERITED_MESSAGES).toBeGreaterThan(0n);
+});
 
 test("Rust and TypeScript share the canonical v2 resource revision fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/resource-revision.json", import.meta.url)).text()).trim();
@@ -92,9 +111,9 @@ function report(): ForkReport {
         child_project_volume: childVolume,
         child_private_volume: privateVolume,
         inherited_through_sequence: 0n,
-        maximum_inherited_messages: 16_384n,
-        maximum_inherited_bytes: 64n * 1024n * 1024n,
-        maximum_inherited_references: 65_536,
+        maximum_inherited_messages: MAX_FORK_INHERITED_MESSAGES,
+        maximum_inherited_bytes: MAX_FORK_INHERITED_BYTES,
+        maximum_inherited_references: MAX_FORK_REFERENCES,
       },
       selections: [
         { required: true, revision: history },

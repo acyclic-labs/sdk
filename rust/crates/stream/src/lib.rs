@@ -10,10 +10,16 @@ use thiserror::Error;
 pub mod conformance;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+// The WASM adapter consumes this module on browser builds; native builds keep
+// it available for contract tests without pulling in JS bindings.
+#[allow(dead_code)]
+mod http_validation;
 #[cfg(feature = "local")]
 mod local;
 mod memory;
-#[cfg(any(feature = "grpc", feature = "local"))]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+mod wasm;
+#[allow(dead_code)]
 mod wire_codec;
 
 /// Generated canonical Stream v2 protocol.
@@ -30,19 +36,49 @@ pub use local::{
 pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.
-pub const MAX_RECORD_BYTES: usize = 64 * 1024;
+pub const MAX_RECORD_BYTES: usize = wire::StreamLimit::MaxRecordBytes as usize;
 /// Maximum records, participants, mutations, or path segments in one request.
-pub const MAX_ITEMS: usize = 1_024;
+pub const MAX_ITEMS: usize = wire::StreamLimit::MaxItems as usize;
 const REPLAY_PAGE: u32 = 1_024;
 const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
 /// Maximum canonical application command, including metadata.
-pub const MAX_COMMAND_BYTES: usize = 1024 * 1024 + 8 * 1024;
+pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
 /// Minimum durable replay window required from a provider.
 pub const MIN_IDEMPOTENCY_RETENTION_SECS: u64 = 24 * 60 * 60;
 /// Maximum caller retry-identity width.
-pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
+pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = wire::StreamLimit::MaxIdempotencyKeyBytes as usize;
 /// Maximum canonical path text accepted by the single-command wire format.
-pub const MAX_PATH_BYTES: usize = u16::MAX as usize;
+pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
+
+/// Route-to-response families for the hosted HTTP projection.
+///
+/// The TypeScript adapter generates its route/result association from this table, so adding a
+/// hosted route requires updating the canonical Rust validator and the generated client contract
+/// together.
+pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
+    ("idempotency/inspect", "observation"),
+    ("tail", "sequence"),
+    ("bounds", "bounds"),
+    ("append", "append"),
+    ("fork", "fork"),
+    ("trim", "trim"),
+    ("delete", "delete"),
+    ("read", "records"),
+    ("children", "children"),
+    ("children/page", "children_page"),
+    ("commit", "commit"),
+    ("commits/read", "envelope"),
+    ("tokens/create", "token"),
+];
+
+/// Canonical operation vocabulary accepted by Stream access-token grants.
+///
+/// The TypeScript client derives its public `TokenOperation` union from this
+/// ordered inventory. Keep entries stable because the order is part of the
+/// generated artifact and makes additions visible in code review.
+pub const TOKEN_OPERATIONS: &[&str] = &[
+    "list", "read", "follow", "append", "fork", "create", "trim", "delete", "commit",
+];
 
 /// Permanent account-relative slash-separated ASCII path.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -451,11 +487,25 @@ pub struct SystemUnixMillisClock;
 
 impl UnixMillisClock for SystemUnixMillisClock {
     fn now_unix_millis(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| {
-                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-            })
+        #[cfg(target_arch = "wasm32")]
+        {
+            let now = js_sys::Date::now().max(0.0).floor();
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "JavaScript Date returns f64; the integer cast saturates at u64 bounds"
+            )]
+            let millis = now as u64;
+            millis
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                })
+        }
     }
 }
 
@@ -940,6 +990,25 @@ pub enum StreamError {
     /// The provider cannot supply a required semantic capability.
     #[error("stream capability unsupported")]
     Unsupported,
+}
+
+#[cfg(test)]
+mod token_operation_tests {
+    use super::TOKEN_OPERATIONS;
+
+    #[test]
+    fn inventory_is_ordered_and_unique() {
+        assert_eq!(
+            TOKEN_OPERATIONS,
+            &[
+                "list", "read", "follow", "append", "fork", "create", "trim", "delete", "commit",
+            ]
+        );
+        let mut sorted = TOKEN_OPERATIONS.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), TOKEN_OPERATIONS.len());
+    }
 }
 
 #[cfg(test)]

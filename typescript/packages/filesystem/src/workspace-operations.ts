@@ -6,6 +6,10 @@ import type {
 import { copyWorkspaceExtentPlan, copyWorkspaceStat } from "./workspace-copies.js";
 import { parseWorkspaceCommit, parseWorkspaceDelete, validateWorkspaceRebaseOptions } from "./workspace-results.js";
 
+function nativeBoundary<T>(value: unknown): T {
+  return value as T;
+}
+
 type RawOperations = Pick<WasmRawWorkspace,
   "head" | "sync" | "checkpoint" | "pin" | "delete" |
   "read" | "readRange" | "stat" | "readSymbolicLink" |
@@ -77,7 +81,7 @@ export function adaptJoinPlanBase(
     async apply(ifTarget, idempotencyKey) {
       requireGenerationIdentity(ifTarget);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey);
-      return parseResult(await raw.apply(ifTarget, idempotencyKey));
+      return parseResult(nativeBoundary<Parameters<typeof parseResult>[0]>(await raw.apply(ifTarget, idempotencyKey)));
     },
     async close() {},
   };
@@ -87,7 +91,7 @@ export function adaptResolvableJoinPlan(
   raw: NativeRawJoinPlan,
   parseResult: (raw: WasmRawJoinResult) => JoinResult,
 ): ResolvableFsJoinPlan {
-  return Object.assign(adaptJoinPlanBase(raw, parseResult), {
+  return Object.assign(adaptJoinPlanBase(nativeBoundary<WasmRawJoinPlan>(raw), parseResult), {
     async applySides(
       ifTarget: Uint8Array,
       selections: readonly MergeConflictSelection[],
@@ -95,7 +99,7 @@ export function adaptResolvableJoinPlan(
     ): Promise<JoinResult> {
       requireGenerationIdentity(ifTarget);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey);
-      return parseResult(await raw.applySides(ifTarget, idempotencyKey, selections.map((selection) =>
+      return parseResult(nativeBoundary<Parameters<typeof parseResult>[0]>(await raw.applySides(ifTarget, idempotencyKey, selections.map((selection) =>
         selection.kind === "file"
           ? { kind: "file", fileId: Uint8Array.from(selection.fileId), side: selection.side }
           : {
@@ -104,7 +108,7 @@ export function adaptResolvableJoinPlan(
               name: { encoding: selection.name.encoding, bytes: Uint8Array.from(selection.name.bytes) },
               side: selection.side,
             }
-      )));
+      ))));
     },
   });
 }

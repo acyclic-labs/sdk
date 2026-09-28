@@ -140,6 +140,15 @@ impl From<ImageDigest> for [u8; 32] {
     }
 }
 
+/// Canonical immutable OCI digest separator.
+pub const MANAGED_OCI_REFERENCE_SEPARATOR: &str = "@sha256:";
+/// Canonical hexadecimal character count for a SHA-256 digest.
+pub const MANAGED_OCI_DIGEST_HEX_LENGTH: usize = 64;
+/// Hexadecimal characters accepted by the canonical OCI parser.
+pub const MANAGED_OCI_HEX_DIGITS: &str = "0123456789abcdefABCDEF";
+/// Character used to identify the all-zero digest rejected by the parser.
+pub const MANAGED_OCI_ZERO_DIGIT: char = '0';
+
 /// Immutable machine image selection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Image {
@@ -155,12 +164,12 @@ impl Image {
     /// Creates a managed OCI image reference after checking immutable digest syntax.
     pub fn oci(reference: impl Into<String>) -> Result<Self, ProviderError> {
         let reference = reference.into();
-        let Some((name, digest)) = reference.rsplit_once("@sha256:") else {
+        let Some((name, digest)) = reference.rsplit_once(MANAGED_OCI_REFERENCE_SEPARATOR) else {
             return Err(ProviderError::Invalid(
                 "OCI image must contain @sha256:<digest>".into(),
             ));
         };
-        if name.is_empty() || digest.len() != 64 {
+        if name.is_empty() || digest.len() != MANAGED_OCI_DIGEST_HEX_LENGTH {
             return Err(ProviderError::Invalid("OCI image digest is invalid".into()));
         }
         let bytes = hex::decode(digest)
@@ -1470,16 +1479,20 @@ impl MachinesProvider for SimulatedMachines {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         self.apply(key, MemoryIntent::Policy(machine, policy), move |state| {
-            let now = tick(state)?;
             let value = state
                 .machines
-                .get_mut(&machine)
+                .get(&machine)
                 .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
             if value.state == MachineState::Destroyed {
                 return Err(ProviderError::Conflict(
                     "destroyed machine cannot change policy".into(),
                 ));
             }
+            let now = tick(state)?;
+            let value = state
+                .machines
+                .get_mut(&machine)
+                .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
             value.contract.suspension = policy;
             value.changed_at_unix_ms = now;
             Ok(MutationOutcome::SuspensionPolicySet(machine, policy))
@@ -1721,6 +1734,37 @@ mod tests {
             provider.create(changed).await,
             Err(ProviderError::Conflict(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_policy_mutation_does_not_advance_the_simulation_clock() {
+        let provider = SimulatedMachines::default();
+        let first = provider
+            .create(request(IdempotencyKey::new()))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let MutationOutcome::Created(first) = first else {
+            unreachable!()
+        };
+        assert_eq!(first.created_at_unix_ms, 2);
+        assert!(matches!(
+            provider
+                .set_suspension_policy(
+                    MachineId::new(),
+                    SuspensionPolicy::Manual,
+                    IdempotencyKey::new()
+                )
+                .await,
+            Err(ProviderError::NotFound(_))
+        ));
+        let second = provider
+            .create(request(IdempotencyKey::new()))
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let MutationOutcome::Created(second) = second else {
+            unreachable!()
+        };
+        assert_eq!(second.created_at_unix_ms, 3);
     }
 
     #[tokio::test]
@@ -1996,6 +2040,7 @@ mod tests {
     #[test]
     fn managed_oci_requires_an_immutable_digest() {
         assert!(Image::oci("ghcr.io/acme/agent:latest").is_err());
+        assert!(Image::oci(format!("ghcr.io/acme/agent@sha256:{}", "0".repeat(64))).is_err());
         assert!(Image::oci(format!("ghcr.io/acme/agent@sha256:{}", "a".repeat(64))).is_ok());
     }
 

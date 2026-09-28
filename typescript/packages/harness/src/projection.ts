@@ -1,9 +1,18 @@
 /** Explicit, ref-only selection from canonical conversation history into model context. */
-import { DEFAULT_LIMITS, decodeAttachmentManifest,
-  verifyFileBytes, type Attachment, type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
-import { validateToolName, type ModelContentPart, type ModelMessage } from "./model.js";
-import { NativeContracts } from "./native-contracts.js";
+import { DEFAULT_LIMITS, verifyFileBytes,
+  type Attachment, type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
+import type { ModelContent, ModelContentPart, ModelMessage } from "./model.js";
+import { NativeContracts, type NativeModelContent, type NativeModelContentPart, type NativeSelectedModelContext } from "./native-contracts.js";
 import type { ContentBindings } from "./runtime.js";
+import {
+  HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS,
+  HARNESS_PROJECTION_DEFAULT_MAX_MANIFEST_BYTES,
+  HARNESS_PROJECTION_DEFAULT_MAX_MESSAGES,
+  HARNESS_PROJECTION_DEFAULT_MAX_RENDER_BYTES,
+  HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES,
+  HARNESS_PROJECTION_MAX_JSON_BYTES,
+  HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS,
+} from "./limits-contract.js";
 
 export interface ModelContextSelection {
   /** Exact conversation tail observed when this selection was made. */
@@ -89,7 +98,7 @@ export async function projectModelFile(
   if (!nativeImage && !boundedText) {
     throw new TypeError("unsupported file content for selected projection policy");
   }
-  const limit = options.maxResolvedBytes ?? 1_048_576;
+  const limit = options.maxResolvedBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES;
   if (!Number.isSafeInteger(limit) || limit < 0) throw new TypeError("maxResolvedBytes must be a non-negative safe integer");
   if (options.resolveFile === undefined) throw new TypeError("file byte resolution is unavailable");
   if (file.descriptor.byte_length > limit) throw new TypeError("file exceeds projection byte limit");
@@ -118,141 +127,162 @@ export async function selectModelContext(
     || selection.conversationRevision !== conversation.revision) {
     throw new TypeError("model context selection has a stale conversation revision");
   }
-  const maxManifestBytes = options.maxManifestBytes ?? 1_048_576;
-  const maxAttachments = options.maxAttachments ?? 256;
-  const maxMessages = options.maxMessages ?? 256;
-  const maxProjectedAttachments = options.maxProjectedAttachments ?? 1_022;
-  const maxRenderBytes = options.maxRenderBytes ?? 128 * 1024;
+  const maxManifestBytes = options.maxManifestBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_MANIFEST_BYTES;
+  const maxAttachments = options.maxAttachments ?? HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS;
+  const maxMessages = options.maxMessages ?? HARNESS_PROJECTION_DEFAULT_MAX_MESSAGES;
+  const maxProjectedAttachments = options.maxProjectedAttachments ?? HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS;
+  const maxRenderBytes = options.maxRenderBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_RENDER_BYTES;
   if (!Number.isSafeInteger(maxManifestBytes) || maxManifestBytes < 0
     || !Number.isSafeInteger(maxAttachments) || maxAttachments < 0
     || !Number.isSafeInteger(maxMessages) || maxMessages <= 0
-    || !Number.isSafeInteger(maxProjectedAttachments) || maxProjectedAttachments < 0 || maxProjectedAttachments > 1_022
+    || !Number.isSafeInteger(maxProjectedAttachments) || maxProjectedAttachments < 0
+      || maxProjectedAttachments > HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS
     || !Number.isSafeInteger(maxRenderBytes) || maxRenderBytes <= 0) {
     throw new TypeError("invalid projection limits");
   }
+  const contracts = await NativeContracts.create();
   if (selection.messageIds.length > maxMessages) throw new TypeError("selected message count exceeds projection limit");
   const byId = new Map(conversation.messages.map(message => [message.id, message]));
   if (byId.size !== conversation.messages.length) throw new TypeError("conversation has duplicate message identities");
-  const selected: ModelMessage[] = [];
-  const toolCalls = new Map<ConversationMessageId, { callId: string; name: string }>();
-  const contracts = await NativeContracts.create();
-  let previousSequence = 0n;
+  const validated = new Map<ConversationMessageId, ConversationState["messages"][number]>();
   for (const id of selection.messageIds) {
     const raw = byId.get(id);
     if (raw === undefined) throw new TypeError("selected conversation message is missing");
     const canonical = contracts.validate("conversation_message", raw, DEFAULT_LIMITS);
-    const message = options.validateMessage === undefined ? canonical
-      : contracts.validate("conversation_message", await options.validateMessage(canonical), DEFAULT_LIMITS);
-    if (message.sequence <= previousSequence || message.sequence > conversation.revision) {
-      throw new TypeError("model context selection is not ordered and unique");
-    }
-    previousSequence = message.sequence;
-    if (message.kind === "tool_call") {
-      const invocation = await readJsonArtifact(message.content, options.resolveFile, maxRenderBytes);
-      if (!isRecord(invocation) || typeof invocation.call_id !== "string"
-        || typeof invocation.name !== "string" || invocation.call_id !== message.tool_call_id
-        || !invocation.name) {
-        throw new TypeError("tool call artifact identity does not match its record");
-      }
-      validateToolName(invocation.name);
-      toolCalls.set(message.id, { callId: invocation.call_id, name: invocation.name });
-      selected.push({ role: "assistant", content: { kind: "tool_call", callId: invocation.call_id,
-        name: invocation.name, arguments: invocation.arguments } });
-      continue;
-    }
-    if (message.kind === "tool_result") {
-      // The complete output remains an artifact; the model sees only the
-      // separately bounded projection attachment.
-      if (message.content.descriptor.media_type !== "application/json") {
-        throw new TypeError("tool result artifact type is invalid");
-      }
-      const callId = message.tool_call_id;
-      const linked = message.reply_to === null ? undefined : toolCalls.get(message.reply_to);
-      if (callId === null || linked === undefined || linked.callId !== callId) {
-        throw new TypeError("selected tool result lacks its call");
-      }
-      const artifacts = await resolveAttachments(message.attachments, options.resolveManifest ?? options.resolveFile,
-        maxManifestBytes, maxAttachments, options.decodeManifest);
-      const projection = artifacts.find(artifact => artifact.label === "model_projection");
-      if (projection === undefined) throw new TypeError("tool result lacks its model projection");
-      const value = await readJsonArtifact(projection.file, options.resolveFile, maxRenderBytes);
-      selected.push({ role: "tool", content: { kind: "tool_result", callId, name: linked.name, value } });
-      continue;
-    }
-    if (message.kind !== "system" && message.kind !== "user" && message.kind !== "assistant") {
-      throw new TypeError(`message kind ${message.kind} requires a specialized model projection`);
-    }
-    const primaryType = message.content.descriptor.media_type;
-    const parts: ModelContentPart[] = [{
-      kind: "file", file: message.content,
-      policy: ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(primaryType) ? "native"
-        : primaryType.startsWith("text/") && message.content.descriptor.byte_length <= maxRenderBytes
-          ? "bounded_full" : "reference",
-    }];
-    const attachments = await resolveAttachments(message.attachments, options.resolveManifest ?? options.resolveFile,
-      maxManifestBytes, maxAttachments, options.decodeManifest);
-    if (attachments.length > maxAttachments) throw new TypeError("selected message exceeds attachment projection limit");
-    for (const attachment of attachments.slice(0, maxProjectedAttachments)) {
-      const type = attachment.file.descriptor.media_type;
-      parts.push({ kind: "file", file: attachment.file, policy: ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(type) ? "native" : "reference" });
-    }
-    if (attachments.length > maxProjectedAttachments) {
-      parts.push({ kind: "text", text: `[${attachments.length - maxProjectedAttachments} additional attachments omitted from this bounded model context]` });
-    }
-    selected.push({ role: message.kind, content: parts });
+    const owner = options.validateMessage === undefined ? canonical
+      : await options.validateMessage(canonical);
+    validated.set(id, contracts.validate("conversation_message", owner, DEFAULT_LIMITS));
   }
+  const projectedMessages = conversation.messages.map(message => validated.get(message.id) ?? message);
+  const nativeConversation = { agent: conversation.agent, messages: projectedMessages };
+  const nativeSelection = { conversation_revision: selection.conversationRevision, message_ids: selection.messageIds };
+  contracts.validateModelContextSelection(nativeConversation, nativeSelection);
+  const files = await captureProjectionFiles(projectedMessages,
+    selection.messageIds, options, contracts, maxManifestBytes, maxAttachments, maxRenderBytes);
+  const projected = await contracts.selectModelContext(
+    nativeConversation,
+    nativeSelection,
+    files, clampWasmU32(maxMessages), clampWasmU32(maxAttachments), maxRenderBytes, maxProjectedAttachments,
+  );
+  return projectNativeContext(projected);
+}
+
+async function captureProjectionFiles(
+  messages: readonly ConversationState["messages"][number][],
+  selectedIds: readonly ConversationMessageId[],
+  options: ConversationProjectionOptions,
+  contracts: NativeContracts,
+  maxManifestBytes: number,
+  maxAttachments: number,
+  maxRenderBytes: number,
+): Promise<Map<string, Uint8Array>> {
+  const files = new Map<string, Uint8Array>();
+  const byId = new Map(messages.map(message => [message.id, message]));
+  const fileKey = (file: FileRef): string => new TextDecoder().decode(contracts.encodeCanonicalJson(file));
+  const capture = async (
+    file: FileRef,
+    resolver: ConversationProjectionOptions["resolveFile"],
+    label: string,
+    limit: number,
+    ceiling?: number,
+  ) => {
+    if (resolver === undefined) throw new TypeError(`${label} resolution is unavailable`);
+    const reference = contracts.validate("file_ref", file);
+    if (ceiling !== undefined && reference.descriptor.byte_length > ceiling) {
+      throw new TypeError(`${label} exceeds JSON byte limit`);
+    }
+    if (reference.descriptor.byte_length > limit) throw new TypeError(`${label} exceeds its rendering limit`);
+    const bytes = await resolver(reference);
+    if (!(bytes instanceof Uint8Array)) throw new TypeError(`${label} resolver returned invalid bytes`);
+    if (ceiling !== undefined && bytes.byteLength > ceiling) {
+      throw new TypeError(`${label} exceeds JSON byte limit`);
+    }
+    if (bytes.byteLength > limit) throw new TypeError(`${label} exceeds its rendering limit`);
+    await verifyFileBytes(reference, bytes);
+    files.set(fileKey(reference), Uint8Array.from(bytes));
+    return bytes;
+  };
+  const manifestResolver = options.resolveManifest ?? options.resolveFile;
+  const manifest = async (reference: FileRef, itemCount: number): Promise<readonly Attachment[]> => {
+    if (itemCount > maxAttachments) throw new TypeError("selected message exceeds attachment projection limit");
+    if (reference.descriptor.byte_length > maxManifestBytes) throw new TypeError("attachment manifest exceeds projection limit");
+    const bytes = await capture(reference, manifestResolver, "attachment manifest", maxManifestBytes);
+    const canonical = contracts.decodeAttachmentManifest(reference, bytes, itemCount);
+    if (options.decodeManifest !== undefined) {
+      const ownerDecoded = await options.decodeManifest(reference, bytes, itemCount);
+      if (!contracts.canonicalEqual(canonical, ownerDecoded)) throw new TypeError("owner attachment decoder disagrees with canonical manifest");
+    }
+    return canonical;
+  };
+  for (const id of selectedIds) {
+    const message = byId.get(id);
+    if (message === undefined) throw new TypeError("selected conversation message is missing");
+    if (message.kind === "tool_call") {
+      await capture(message.content, options.resolveFile, "tool artifact", maxRenderBytes, HARNESS_PROJECTION_MAX_JSON_BYTES);
+      continue;
+    }
+    let attachments: readonly Attachment[] | undefined;
+    if (message.attachments.kind === "manifest") attachments = await manifest(message.attachments.manifest, message.attachments.item_count);
+    else attachments = message.attachments.items;
+    if (message.kind === "tool_result") {
+      const projection = attachments.find(attachment => attachment.label === "model_projection");
+      if (projection === undefined) throw new TypeError("tool result lacks its model projection");
+      await capture(projection.file, options.resolveFile, "tool artifact", maxRenderBytes, HARNESS_PROJECTION_MAX_JSON_BYTES);
+    }
+  }
+  return files;
+}
+
+function projectNativeContext(value: NativeSelectedModelContext): SelectedModelContext {
+  const mapContent = (content: NativeModelContent): ModelContent => {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) return content.map(part => mapContentPart(part as NativeModelContentPart));
+    return mapContentPart(content as NativeModelContentPart);
+  };
+  const mapContentPart = (part: NativeModelContentPart): ModelContentPart => {
+    if (part.kind === "tool_call") {
+      return { kind: part.kind, callId: part.call_id, name: part.name, arguments: normalizeModelJson(part.arguments) };
+    }
+    if (part.kind === "tool_result") {
+      return { kind: part.kind, callId: part.call_id, name: part.name, value: normalizeModelJson(part.value) };
+    }
+    if (part.kind === "file") {
+      const file = { ...part.file,
+        descriptor: { ...part.file.descriptor, byte_length: normalizeModelInteger(part.file.descriptor.byte_length) },
+      } as FileRef;
+      return { ...part, file };
+    }
+    return part;
+  };
   return Object.freeze({
-    selection: Object.freeze({ conversationRevision: selection.conversationRevision, messageIds: Object.freeze([...selection.messageIds]) }),
-    messages: Object.freeze(selected),
+    selection: Object.freeze({
+      conversationRevision: value.selection.conversation_revision,
+      messageIds: Object.freeze([...value.selection.message_ids]),
+    }),
+    messages: Object.freeze(value.messages.map(message => Object.freeze({ role: message.role, content: mapContent(message.content) }))),
   });
 }
 
-async function readJsonArtifact(file: FileRef,
-  resolver: ConversationProjectionOptions["resolveFile"], maxBytes: number): Promise<unknown> {
-  const reference = (await NativeContracts.create()).validate("file_ref", file);
-  if (reference.descriptor.media_type !== "application/json"
-    || reference.descriptor.byte_length > maxBytes) {
-    throw new TypeError("tool artifact type or rendering limit is invalid");
+function normalizeModelJson(value: unknown): unknown {
+  if (typeof value === "bigint") return normalizeModelInteger(value);
+  if (typeof value === "number" && (!Number.isFinite(value) || Object.is(value, -0)
+    || (Number.isInteger(value) && !Number.isSafeInteger(value)))) {
+    throw new TypeError("model projection contains an inexact number");
   }
-  if (resolver === undefined) throw new TypeError("tool artifact resolution is unavailable");
-  const bytes = await resolver(reference);
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength > maxBytes) {
-    throw new TypeError("resolved tool artifact exceeds rendering limit");
+  if (Array.isArray(value)) return value.map(normalizeModelJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, normalizeModelJson(child)]));
   }
-  await verifyFileBytes(reference, bytes);
-  return (await NativeContracts.create()).decodeModelJson(bytes);
+  return value;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function normalizeModelInteger(value: number | bigint): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number)) throw new TypeError("model projection integer exceeds JavaScript precision");
+  return number;
 }
 
-async function resolveAttachments(
-  value: ConversationState["messages"][number]["attachments"],
-  resolver: ((file: FileRef) => Promise<Uint8Array>) | undefined,
-  maxBytes: number,
-  maxAttachments: number,
-  decode: ConversationProjectionOptions["decodeManifest"],
-): Promise<readonly Attachment[]> {
-  const validated = (await NativeContracts.create()).validate("attachments", value);
-  if (validated.kind === "inline") return validated.items;
-  if (validated.item_count > maxAttachments) throw new TypeError("selected message exceeds attachment projection limit");
-  if (validated.manifest.descriptor.byte_length > maxBytes) throw new TypeError("attachment manifest exceeds projection limit");
-  if (resolver === undefined) throw new TypeError("attachment manifest resolution is unavailable");
-  const bytes = await resolver(validated.manifest);
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength > maxBytes) {
-    throw new TypeError("resolved attachment manifest exceeds projection limit");
-  }
-  const canonical = await decodeAttachmentManifest(validated.manifest, bytes, validated.item_count);
-  if (decode !== undefined) {
-    const ownerDecoded = await decode(validated.manifest, bytes, validated.item_count);
-    const contracts = await NativeContracts.create();
-    const canonicalBytes = contracts.encodeAttachmentManifest(canonical);
-    const ownerBytes = contracts.encodeAttachmentManifest(ownerDecoded);
-    if (canonicalBytes.length !== ownerBytes.length
-      || canonicalBytes.some((byte, index) => byte !== ownerBytes[index])) {
-      throw new TypeError("owner attachment decoder disagrees with canonical manifest");
-    }
-  }
-  return canonical;
+const WASM_U32_MAX = 4_294_967_295;
+function clampWasmU32(value: number): number {
+  return Math.min(value, WASM_U32_MAX);
 }

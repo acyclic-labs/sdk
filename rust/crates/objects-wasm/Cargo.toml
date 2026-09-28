@@ -1,21 +1,29 @@
 [package]
 name = "acyclic-objects-wasm"
-version.workspace = true
+version = "0.1.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "WebAssembly bindings for the canonical Objects memory provider"
 publish = false
-description = "Browser binding for the canonical Objects memory provider"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acyclic-objects = { path = "../objects", default-features = false }
+acyclic-objects = { version = "=0.1.5", path = "../objects", default-features = false }
 bytes.workspace = true
-js-sys.workspace = true
+base64 = "0.22.1"
 prost.workspace = true
+prost-types.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+time = { workspace = true, features = ["formatting", "parsing"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+tsify-next = { version = "0.5.6", features = ["js"] }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 

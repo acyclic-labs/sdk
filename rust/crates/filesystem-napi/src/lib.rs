@@ -32,8 +32,9 @@ use acyclic_fs::{
     WorkspaceDelete, WorkspaceDirectoryPage, WorkspaceExtentKind, WorkspaceExtentPlan,
     WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord, WorkspaceMetadata,
     WorkspaceOperationFinish, WorkspaceRebase, WorkspaceRootId, WorkspaceStat,
+    canonicalize_git_output_json, canonicalize_git_pending_transition_json,
     decode_generation_export_manifest, encode_generation_export_manifest,
-    native_watch_capabilities as sdk_native_watch_capabilities,
+    native_watch_capabilities as sdk_native_watch_capabilities, parse_git_public_command,
 };
 use acyclic_fs::{
     CaptureOptions, CaptureReceipt, CheckoutMountSource, MaterializeOptions, NativeMountRequest,
@@ -2194,6 +2195,7 @@ impl NativeChangeSet {
     /// # Errors
     ///
     /// Returns a JavaScript conversion error if the canonical result cannot be represented.
+    #[napi]
     pub fn changes(&self) -> Result<NativeGenerationDiff> {
         encode_generation_diff(self.inner.changes().clone(), self.inner.work())
     }
@@ -3140,6 +3142,45 @@ impl NativeGitCompatRepository {
         serde_json::to_string(&output).map_err(napi_error)
     }
 
+    /// Executes a natural JavaScript Git command through the Rust projection.
+    /// The projection owns public discriminators, defaults, and enum parsing;
+    /// TypeScript only supplies JSON-safe values at this boundary.
+    #[napi]
+    pub async fn execute_public_json(
+        &self,
+        command_json: String,
+        workspace_generation: Buffer,
+    ) -> Result<String> {
+        let command = parse_git_public_command(&command_json).map_err(napi_error)?;
+        let output = self
+            .inner
+            .execute(command, generation_id(&workspace_generation)?)
+            .await
+            .map_err(napi_error)?;
+        serde_json::to_string(&output).map_err(napi_error)
+    }
+
+    /// Validates and canonicalizes a Rust Git output before JS projection.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "N-API requires owned JavaScript strings"
+    )]
+    #[napi]
+    pub fn canonicalize_output_json(&self, value_json: String) -> Result<String> {
+        canonicalize_git_output_json(&value_json).map_err(napi_error)
+    }
+
+    /// Validates and canonicalizes a durable pending transition before JS
+    /// projection.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "N-API requires owned JavaScript strings"
+    )]
+    #[napi]
+    pub fn canonicalize_pending_transition_json(&self, value_json: String) -> Result<String> {
+        canonicalize_git_pending_transition_json(&value_json).map_err(napi_error)
+    }
+
     /// Returns any crash-recoverable prepared transition as stable JSON.
     #[napi]
     pub async fn pending_transition_json(&self) -> Result<Option<String>> {
@@ -3207,7 +3248,7 @@ impl NativeGitCompatRepository {
         branch: String,
         workspace_id: Buffer,
         head: Option<Buffer>,
-        switch: bool,
+        switch_to_branch: bool,
     ) -> Result<String> {
         let head = head.as_ref().map(|value| commit_id(value)).transpose()?;
         let output = self
@@ -3216,7 +3257,7 @@ impl NativeGitCompatRepository {
                 branch,
                 WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
                 head,
-                switch,
+                switch_to_branch,
             )
             .await
             .map_err(napi_error)?;

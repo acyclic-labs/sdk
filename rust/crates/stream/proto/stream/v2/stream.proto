@@ -4,6 +4,16 @@ package acyclic.stream.v2;
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/stream/v2;streamv2";
 
+// Canonical bounds shared by Rust and generated TypeScript clients.
+enum StreamLimit {
+  STREAM_LIMIT_UNSPECIFIED = 0;
+  STREAM_LIMIT_MAX_RECORD_BYTES = 65536;
+  STREAM_LIMIT_MAX_ITEMS = 1024;
+  STREAM_LIMIT_MAX_COMMAND_BYTES = 1056768;
+  STREAM_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES = 256;
+  STREAM_LIMIT_MAX_PATH_BYTES = 65535;
+}
+
 message Record {
   uint64 sequence = 1;
   bytes value = 2;
@@ -268,6 +278,20 @@ message IdempotencyObservation {
 
 message InspectIdempotencyResponse {
   optional IdempotencyObservation observation = 1;
+}
+
+// Hosted account token creation request.  This uses the same canonical path
+// and operation vocabulary as the Stream client, while the hosted adapter
+// owns its JSON spelling at the Rust/WASM boundary.
+message TokenGrant {
+  string path = 1;
+  optional bool subtree = 2;
+  repeated string operations = 3;
+}
+
+message CreateTokenRequest {
+  string expires_in = 1;
+  repeated TokenGrant allow = 2;
 }
 
 service StreamService {

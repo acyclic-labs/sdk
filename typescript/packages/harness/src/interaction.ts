@@ -2,8 +2,9 @@
 import type { FileRef } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
 import type { OperationId, Scope } from "./index.js";
+import type { InteractionKind } from "./enums.js";
+export type { InteractionKind } from "./enums.js";
 
-export type InteractionKind = "question" | "choice" | "form" | "approval";
 declare const interactionBrand: unique symbol;
 export type InteractionId = string & { readonly [interactionBrand]: "InteractionId" };
 

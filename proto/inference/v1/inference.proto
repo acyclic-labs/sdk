@@ -1,68 +1,93 @@
 syntax = "proto3";
 package inference.customer.v1;
 
+import "validation/v1/options.proto";
+
 option go_package = "github.com/acyclic-labs/sdk/go/gen/inference/v1;inferencev1";
 
 service ModelsService {
-  rpc List(ListModelsRequest) returns (ListModelsResponse);
+  rpc List(ListModelsRequest) returns (ListModelsResponse) {
+    option (acyclic.validation.v1.http_path) = "models/list";
+  }
 }
 
 message ListModelsRequest {}
 message ListModelsResponse {
-  repeated ModelCapability models = 1;
+  repeated ModelCapability models = 1 [
+    (acyclic.validation.v1.min_items) = 1,
+    (acyclic.validation.v1.max_items) = 4096
+  ];
 }
 message ModelCapability {
-  string model = 1;
-  bytes execution_profile = 2;
-  uint64 maximum_context = 3;
-  uint64 maximum_output = 4;
-  repeated string features = 5;
-  repeated RetentionProfile retention_profiles = 6;
+  string model = 1 [(acyclic.validation.v1.nonempty_max_bytes) = 256];
+  bytes execution_profile = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  uint64 maximum_context = 3 [(acyclic.validation.v1.positive_uint64) = true];
+  uint64 maximum_output = 4 [(acyclic.validation.v1.positive_uint64) = true];
+  repeated string features = 5 [
+    (acyclic.validation.v1.min_items) = 1,
+    (acyclic.validation.v1.max_items) = 64,
+    (acyclic.validation.v1.nonempty_max_item_bytes) = 64
+  ];
+  repeated RetentionProfile retention_profiles = 6 [(acyclic.validation.v1.max_items) = 64];
 }
 
 message RetentionProfile {
-  bytes profile = 1;
-  uint64 minimum_duration_ms = 2;
+  bytes profile = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  uint64 minimum_duration_ms = 2 [(acyclic.validation.v1.positive_uint64) = true];
   uint64 maximum_duration_ms = 3;
 }
 
 // Immutable canonical content operations. Execution/retention guarantees are
 // advertised separately; these methods do not admit a Run or a warm promise.
 service ContextsService {
-  rpc Create(CreateContextRequest) returns (MutationReceipt);
-  rpc Inspect(InspectContextRequest) returns (ContextView);
-  rpc Mutate(MutateContextRequest) returns (MutationReceipt);
+  rpc Create(CreateContextRequest) returns (MutationReceipt) {
+    option (acyclic.validation.v1.http_path) = "contexts/create";
+  }
+  rpc Inspect(InspectContextRequest) returns (ContextView) {
+    option (acyclic.validation.v1.http_path) = "contexts/inspect";
+  }
+  rpc Mutate(MutateContextRequest) returns (MutationReceipt) {
+    option (acyclic.validation.v1.http_path) = "contexts/mutate";
+  }
 }
 
 // Customer warm-retention commitments. Placement, workers, allocations,
 // migration, rebalancing, and cleanup mechanics remain private.
 service WarmContextsService {
-  rpc Retain(RetainWarmRequest) returns (WarmView);
-  rpc Inspect(InspectWarmRequest) returns (WarmView);
-  rpc Renew(RenewWarmRequest) returns (WarmView);
-  rpc Release(ReleaseWarmRequest) returns (WarmView);
+  rpc Retain(RetainWarmRequest) returns (WarmView) {
+    option (acyclic.validation.v1.http_path) = "warm/retain";
+  }
+  rpc Inspect(InspectWarmRequest) returns (WarmView) {
+    option (acyclic.validation.v1.http_path) = "warm/inspect";
+  }
+  rpc Renew(RenewWarmRequest) returns (WarmView) {
+    option (acyclic.validation.v1.http_path) = "warm/renew";
+  }
+  rpc Release(ReleaseWarmRequest) returns (WarmView) {
+    option (acyclic.validation.v1.http_path) = "warm/release";
+  }
 }
 
 message RetainWarmRequest {
-  RequestIdentity identity = 1;
-  bytes context = 2;
-  bytes latency_profile = 3;
-  uint64 expires_at_ms = 4;
+  RequestIdentity identity = 1 [(acyclic.validation.v1.required_message) = true];
+  bytes context = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes latency_profile = 3 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  uint64 expires_at_ms = 4 [(acyclic.validation.v1.positive_uint64) = true];
 }
 
 message InspectWarmRequest {
-  bytes commitment = 1;
+  bytes commitment = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
 
 message RenewWarmRequest {
-  RequestIdentity identity = 1;
-  bytes commitment = 2;
-  uint64 expires_at_ms = 3;
+  RequestIdentity identity = 1 [(acyclic.validation.v1.required_message) = true];
+  bytes commitment = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  uint64 expires_at_ms = 3 [(acyclic.validation.v1.positive_uint64) = true];
 }
 
 message ReleaseWarmRequest {
-  RequestIdentity identity = 1;
-  bytes commitment = 2;
+  RequestIdentity identity = 1 [(acyclic.validation.v1.required_message) = true];
+  bytes commitment = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
 
 enum WarmState {
@@ -74,55 +99,70 @@ enum WarmState {
 }
 
 message WarmView {
-  bytes commitment = 1;
-  bytes context = 2;
-  bytes model_profile = 3;
-  bytes latency_profile = 4;
-  uint64 expires_at_ms = 5;
-  WarmState state = 6;
-  bytes evidence_digest = 7;
-  bytes admission_receipt_id = 8;
-  uint64 sequence = 9;
+  bytes commitment = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes context = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes model_profile = 3 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes latency_profile = 4 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  uint64 expires_at_ms = 5 [(acyclic.validation.v1.positive_uint64) = true];
+  WarmState state = 6 [(acyclic.validation.v1.known_nonzero_enum) = true];
+  bytes evidence_digest = 7 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes admission_receipt_id = 8 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  uint64 sequence = 9 [(acyclic.validation.v1.positive_uint64) = true];
 }
 
 // Recoverable logical generation. Distribution, placement, migration, cache,
 // and worker identities are intentionally absent.
 service RunsService {
-  rpc Generate(GenerateRunRequest) returns (GenerateRunResponse);
-  rpc Inspect(InspectRunRequest) returns (RunView);
-  rpc Watch(WatchRunRequest) returns (stream RunEvent);
-  rpc Cancel(InspectRunRequest) returns (RunView);
+  rpc Generate(GenerateRunRequest) returns (GenerateRunResponse) {
+    option (acyclic.validation.v1.http_path) = "runs/generate";
+  }
+  rpc Inspect(InspectRunRequest) returns (RunView) {
+    option (acyclic.validation.v1.http_path) = "runs/inspect";
+  }
+  rpc Watch(WatchRunRequest) returns (stream RunEvent) {
+    option (acyclic.validation.v1.http_path) = "runs/watch";
+  }
+  rpc Cancel(InspectRunRequest) returns (RunView) {
+    option (acyclic.validation.v1.http_path) = "runs/cancel";
+  }
 }
 
 // Immutable, recoverable evaluation admissions. Candidate execution and grader
 // placement remain private; the customer contract contains only exact artifacts,
 // bounded suite inputs, metric semantics, and content-addressed observations.
 service EvaluationsService {
-  rpc Create(CreateEvaluationRequest) returns (EvaluationView);
-  rpc Inspect(InspectEvaluationRequest) returns (EvaluationView);
+  rpc Create(CreateEvaluationRequest) returns (EvaluationView) {
+    option (acyclic.validation.v1.http_path) = "evaluations/create";
+  }
+  rpc Inspect(InspectEvaluationRequest) returns (EvaluationView) {
+    option (acyclic.validation.v1.http_path) = "evaluations/inspect";
+  }
 }
 
 message EvaluationArtifact {
-  bytes digest = 1;
-  string media_type = 2;
-  uint64 logical_size = 3;
+  bytes digest = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  string media_type = 2 [(acyclic.validation.v1.nonempty_max_bytes) = 256];
+  uint64 logical_size = 3 [(acyclic.validation.v1.positive_uint64) = true];
 }
 
 message EvaluationCase {
-  bytes case_id = 1;
+  bytes case_id = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
   bytes input = 2;
-  optional bytes input_artifact_digest = 3;
+  optional bytes input_artifact_digest = 3 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
 
 message EvaluationSuite {
-  string identity = 1;
-  bytes digest = 2;
-  repeated EvaluationCase cases = 3;
+  string identity = 1 [(acyclic.validation.v1.nonempty_max_bytes) = 256];
+  bytes digest = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  repeated EvaluationCase cases = 3 [
+    (acyclic.validation.v1.min_items) = 1,
+    (acyclic.validation.v1.max_items) = 4096
+  ];
 }
 
 message EvaluationGrader {
-  bytes handle = 1;
-  bytes artifact_digest = 2;
+  bytes handle = 1 [(acyclic.validation.v1.nonempty_max_bytes) = 4096];
+  bytes artifact_digest = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
 
 enum EvaluationAggregation {
@@ -134,36 +174,45 @@ enum EvaluationAggregation {
 }
 
 message EvaluationMetric {
-  string identity = 1;
-  EvaluationAggregation aggregation = 2;
+  string identity = 1 [(acyclic.validation.v1.nonempty_max_bytes) = 256];
+  EvaluationAggregation aggregation = 2 [(acyclic.validation.v1.known_nonzero_enum) = true];
 }
 
 message EvaluationSpec {
-  repeated EvaluationArtifact candidates = 1;
-  EvaluationSuite suite = 2;
-  EvaluationGrader grader = 3;
-  repeated EvaluationMetric metrics = 4;
-  uint64 maximum_case_results = 5;
-  bytes spec_digest = 6;
+  repeated EvaluationArtifact candidates = 1 [
+    (acyclic.validation.v1.min_items) = 1,
+    (acyclic.validation.v1.max_items) = 256
+  ];
+  EvaluationSuite suite = 2 [(acyclic.validation.v1.required_message) = true];
+  EvaluationGrader grader = 3 [(acyclic.validation.v1.required_message) = true];
+  repeated EvaluationMetric metrics = 4 [
+    (acyclic.validation.v1.min_items) = 1,
+    (acyclic.validation.v1.max_items) = 64
+  ];
+  uint64 maximum_case_results = 5 [
+    (acyclic.validation.v1.positive_uint64) = true,
+    (acyclic.validation.v1.max_uint64) = 65536
+  ];
+  bytes spec_digest = 6 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
 
 message CreateEvaluationRequest {
-  RequestIdentity identity = 1;
-  EvaluationSpec spec = 2;
+  RequestIdentity identity = 1 [(acyclic.validation.v1.required_message) = true];
+  EvaluationSpec spec = 2 [(acyclic.validation.v1.required_message) = true];
 }
 
 message InspectEvaluationRequest {
-  bytes evaluation_id = 1;
+  bytes evaluation_id = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
 }
 
 message ExactRational {
   sint64 numerator = 1;
-  uint64 denominator = 2;
+  uint64 denominator = 2 [(acyclic.validation.v1.positive_uint64) = true];
 }
 
 message EvaluationMetricValue {
   string metric_identity = 1;
-  ExactRational value = 2;
+  ExactRational value = 2 [(acyclic.validation.v1.required_message) = true];
 }
 
 enum EvaluationCaseOutcome {
@@ -174,34 +223,34 @@ enum EvaluationCaseOutcome {
 }
 
 message EvaluationCaseResult {
-  bytes candidate_digest = 1;
-  bytes case_id = 2;
-  EvaluationGraderObservation observation = 3;
+  bytes candidate_digest = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes case_id = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
+  EvaluationGraderObservation observation = 3 [(acyclic.validation.v1.required_message) = true];
   repeated EvaluationMetricValue metrics = 4;
-  EvaluationCaseOutcome outcome = 5;
+  EvaluationCaseOutcome outcome = 5 [(acyclic.validation.v1.known_nonzero_enum) = true];
 }
 
 // The binding is SHA-256("acyclic.inference.grader-observation.v1\0" ||
 // native_output_digest || observation_digest). It proves which exact native
 // device output the grader observed without exposing either payload.
 message EvaluationGraderObservation {
-  bytes native_output_digest = 1;
-  bytes observation_digest = 2;
-  bytes binding_digest = 3;
+  bytes native_output_digest = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes observation_digest = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes binding_digest = 3 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
 
 message EvaluationAggregate {
-  bytes candidate_digest = 1;
+  bytes candidate_digest = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
   string metric_identity = 2;
-  EvaluationAggregation aggregation = 3;
-  ExactRational value = 4;
+  EvaluationAggregation aggregation = 3 [(acyclic.validation.v1.known_nonzero_enum) = true];
+  ExactRational value = 4 [(acyclic.validation.v1.required_message) = true];
 }
 
 message EvaluationResult {
-  bytes spec_digest = 1;
+  bytes spec_digest = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
   repeated EvaluationCaseResult case_results = 2;
   repeated EvaluationAggregate aggregates = 3;
-  bytes result_digest = 4;
+  bytes result_digest = 4 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
 
 enum EvaluationState {
@@ -214,16 +263,16 @@ enum EvaluationState {
 }
 
 message EvaluationView {
-  bytes evaluation_id = 1;
-  EvaluationSpec spec = 2;
-  EvaluationState state = 3;
+  bytes evaluation_id = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
+  EvaluationSpec spec = 2 [(acyclic.validation.v1.required_message) = true];
+  EvaluationState state = 3 [(acyclic.validation.v1.known_nonzero_enum) = true];
   optional EvaluationResult result = 4;
-  uint64 sequence = 5;
+  uint64 sequence = 5 [(acyclic.validation.v1.positive_uint64) = true];
 }
 
 message RequestIdentity {
-  bytes client_instance = 1;
-  bytes request_id = 2;
+  bytes client_instance = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
+  bytes request_id = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
 }
 
 enum ItemKind {
@@ -253,13 +302,13 @@ message Item {
 }
 
 message CreateContextRequest {
-  RequestIdentity identity = 1;
+  RequestIdentity identity = 1 [(acyclic.validation.v1.required_message) = true];
   string model = 2;
   repeated Item items = 3;
 }
 
 message InspectContextRequest {
-  bytes revision = 1;
+  bytes revision = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
 message Empty {}
 message Insert {
@@ -293,9 +342,10 @@ message Transfer {
   string model = 1;
 }
 message MutateContextRequest {
-  RequestIdentity identity = 1;
-  bytes source = 2;
+  RequestIdentity identity = 1 [(acyclic.validation.v1.required_message) = true];
+  bytes source = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
   oneof action {
+    option (acyclic.validation.v1.required_oneof) = true;
     Edits edit = 3;
     Empty fork = 4;
     Truncate truncate = 5;
@@ -306,25 +356,26 @@ message MutateContextRequest {
 }
 
 message MutationReceipt {
-  bytes revision = 1;
-  bytes command_digest = 2;
-  uint64 sequence = 3;
+  bytes revision = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes command_digest = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  uint64 sequence = 3 [(acyclic.validation.v1.positive_uint64) = true];
   // The recorded command's effect, not a promise of current or warm retention.
   bool retained = 4;
 }
 message ContextView {
-  bytes revision = 1;
-  optional bytes parent = 2;
-  bytes lineage = 3;
-  bytes execution_profile = 4;
-  bytes content_digest = 5;
+  bytes revision = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  optional bytes parent = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes lineage = 3 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes execution_profile = 4 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes content_digest = 5 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
   repeated Item items = 6;
-  string model = 7;
-  ContextProvenance provenance = 8;
+  string model = 7 [(acyclic.validation.v1.nonempty_max_bytes) = 256];
+  ContextProvenance provenance = 8 [(acyclic.validation.v1.required_message) = true];
 }
 
 message ContextProvenance {
   oneof origin {
+    option (acyclic.validation.v1.required_oneof) = true;
     Empty created = 1;
     ProvenanceSource derived = 2;
     ProvenanceSource forked = 3;
@@ -334,39 +385,39 @@ message ContextProvenance {
   }
 }
 message ProvenanceSource {
-  bytes source = 1;
+  bytes source = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
 message TransferProvenance {
-  bytes source = 1;
+  bytes source = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
   bool reused_compatible_state = 2;
 }
 message GenerationProvenance {
-  bytes run_id = 1;
-  bytes terminal_receipt_digest = 2;
+  bytes run_id = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
+  bytes terminal_receipt_digest = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
 message RunInputProvenance {
-  bytes source = 1;
-  bytes run_id = 2;
-  uint64 maximum_output = 3;
+  bytes source = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes run_id = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
+  uint64 maximum_output = 3 [(acyclic.validation.v1.positive_uint64) = true];
   optional uint64 seed = 4;
 }
 
 message GenerateRunRequest {
-  RequestIdentity identity = 1;
-  bytes context = 2;
-  Item input = 3;
-  uint64 maximum_output = 4;
+  RequestIdentity identity = 1 [(acyclic.validation.v1.required_message) = true];
+  bytes context = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  Item input = 3 [(acyclic.validation.v1.required_message) = true];
+  uint64 maximum_output = 4 [(acyclic.validation.v1.positive_uint64) = true];
   optional uint64 seed = 5;
 }
 
 message GenerateRunResponse {
-  RunView run = 1;
+  RunView run = 1 [(acyclic.validation.v1.required_message) = true];
 }
 message InspectRunRequest {
-  bytes run_id = 1;
+  bytes run_id = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
 }
 message WatchRunRequest {
-  bytes run_id = 1;
+  bytes run_id = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
   // Inclusive, zero-based public cursor.
   uint64 from_sequence = 2;
 }
@@ -377,9 +428,9 @@ enum RunTerminal {
   RUN_TERMINAL_OUTPUT_LIMITED = 2;
   RUN_TERMINAL_TOOL_CALL = 3;
   RUN_TERMINAL_REFUSAL = 4;
-  RUN_TERMINAL_CANCELLED = 5;
-  RUN_TERMINAL_FAILED = 6;
-  RUN_TERMINAL_INDETERMINATE = 7;
+  RUN_TERMINAL_CANCELLED = 5 [(acyclic.validation.v1.partial_terminal) = true];
+  RUN_TERMINAL_FAILED = 6 [(acyclic.validation.v1.partial_terminal) = true];
+  RUN_TERMINAL_INDETERMINATE = 7 [(acyclic.validation.v1.partial_terminal) = true];
 }
 
 message LogicalUsage {
@@ -390,24 +441,24 @@ message LogicalUsage {
 }
 
 message UsageReceipt {
-  bytes receipt_id = 1;
-  bytes model_profile = 2;
-  bytes meter_revision = 3;
-  LogicalUsage usage = 4;
-  bytes rate_card_revision = 5;
+  bytes receipt_id = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes model_profile = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes meter_revision = 3 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  LogicalUsage usage = 4 [(acyclic.validation.v1.required_message) = true];
+  bytes rate_card_revision = 5 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
 
 message RunResult {
   bytes output = 1;
   optional ContextView context = 2;
-  RunTerminal terminal = 3;
+  RunTerminal terminal = 3 [(acyclic.validation.v1.known_nonzero_enum) = true];
   optional UsageReceipt receipt = 4;
 }
 
 message RunView {
-  bytes run_id = 1;
-  bytes input = 2;
-  string model = 3;
+  bytes run_id = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
+  bytes input = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  string model = 3 [(acyclic.validation.v1.nonempty_max_bytes) = 256];
   uint64 last_sequence = 4;
   bool cancellation_requested = 5;
   optional RunResult result = 6;
@@ -416,9 +467,10 @@ message RunView {
 message RunEvent {
   uint64 sequence = 1;
   oneof event {
+    option (acyclic.validation.v1.required_oneof) = true;
     bytes output = 2;
     LogicalUsage usage = 3;
-    RunTerminal terminal = 4;
+    RunTerminal terminal = 4 [(acyclic.validation.v1.known_nonzero_enum) = true];
     RunProgress progress = 5;
   }
 }

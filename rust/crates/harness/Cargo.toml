@@ -15,7 +15,7 @@ build = "build.rs"
 crate-type = ["rlib", "cdylib"]
 
 [features]
-wasm = ["dep:js-sys", "dep:serde-wasm-bindgen", "dep:wasm-bindgen"]
+wasm = ["dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify-next", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
@@ -44,7 +44,9 @@ tonic = { workspace = true, optional = true }
 tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 serde-wasm-bindgen = { workspace = true, optional = true }
+tsify-next = { version = "0.5.6", features = ["js"], optional = true }
 wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
 
 [dev-dependencies]
 acyclic-stream = { version = "=0.1.5", path = "../stream" }

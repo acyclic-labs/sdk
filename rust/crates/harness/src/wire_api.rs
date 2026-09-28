@@ -1,16 +1,17 @@
 //! Transport-neutral server port implemented identically by every wire adapter.
 
+pub use crate::wire_validation::{
+    current_protocol, negotiate, validate_admission, validate_cancel_response,
+    validate_operation_status,
+};
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result,
     core::{Authority, Scope},
     scheduler::{OperationPhase, OperationState},
     wire,
-    wire_codec::{
-        decode_authority, decode_scope, encode_authority, protocol_identity, validate_protocol,
-    },
+    wire_codec::{decode_authority, decode_scope, encode_authority, validate_protocol},
 };
 use futures::{future::BoxFuture, stream::BoxStream};
-use std::collections::BTreeMap;
 
 /// Complete application-facing wire API. Adapters own framing, never semantics.
 ///
@@ -54,71 +55,6 @@ pub trait HarnessWireApi: Send + Sync + 'static {
         &'a self,
         request: wire::CancelRequest,
     ) -> BoxFuture<'a, Result<wire::CancelResponse>>;
-}
-
-/// Returns the protocol identity compiled into this crate.
-#[must_use]
-pub fn current_protocol() -> wire::ProtocolIdentity {
-    protocol_identity()
-}
-
-/// Validates a handshake and constructs the canonical response.
-pub fn negotiate(
-    request: &wire::HandshakeRequest,
-    supported: &wire::CapabilitySet,
-) -> Result<wire::HandshakeResponse> {
-    let expected = current_protocol();
-    let actual = request
-        .protocol
-        .as_ref()
-        .ok_or_else(|| Error::Invalid("handshake protocol is missing".into()))?;
-    if actual != &expected {
-        return Err(Error::Unsupported("protocol identity mismatch".into()));
-    }
-    let available = supported
-        .capabilities
-        .iter()
-        .map(|capability| ((capability.name.as_str(), capability.version.as_str()), ()))
-        .collect::<BTreeMap<_, _>>();
-    for required in request
-        .required
-        .as_ref()
-        .map_or(&[][..], |set| set.capabilities.as_slice())
-    {
-        if required.name.is_empty()
-            || required.version.is_empty()
-            || !available.contains_key(&(required.name.as_str(), required.version.as_str()))
-        {
-            return Err(Error::Unsupported(format!(
-                "unsupported capability {}@{}",
-                required.name, required.version
-            )));
-        }
-    }
-    Ok(wire::HandshakeResponse {
-        protocol: Some(expected),
-        supported: Some(supported.clone()),
-    })
-}
-
-/// Rejects malformed or non-identity-preserving admission results.
-pub fn validate_admission(
-    command: &wire::CommandEnvelope,
-    admission: &wire::Admission,
-) -> Result<()> {
-    let expected = command
-        .operation
-        .as_ref()
-        .ok_or_else(|| Error::Invalid("command operation identity is missing".into()))?;
-    let actual = admission
-        .operation
-        .as_ref()
-        .ok_or_else(|| Error::Conflict("admission operation identity is missing".into()))?;
-    if expected.operation_id.is_empty() || expected.idempotency_key.is_empty() || actual != expected
-    {
-        return Err(Error::Conflict("admission identity mismatch".into()));
-    }
-    Ok(())
 }
 
 /// Requires every stateless command to carry the exact negotiated wire identity.
@@ -223,56 +159,6 @@ pub fn operation_status(state: &OperationState) -> wire::OperationStatus {
         cancellation_requested: state.cancellation_requested,
         revision: state.revision,
     }
-}
-
-/// Rejects a status that is not bound to the exact observe request.
-pub fn validate_operation_status(
-    request: &wire::ObserveRequest,
-    status: &wire::OperationStatus,
-) -> Result<()> {
-    validate_protocol(status.protocol.as_ref())?;
-    if request.operation_id.is_empty()
-        || status
-            .operation
-            .as_ref()
-            .is_none_or(|operation| operation.operation_id != request.operation_id)
-        || status.owner != request.owner
-        || status.error.as_ref().is_some_and(|error| {
-            !error.operation_id.is_empty() && error.operation_id != request.operation_id
-        })
-        || wire::CompletionState::try_from(status.state)
-            .map_or(true, |state| state == wire::CompletionState::Unspecified)
-    {
-        return Err(Error::Conflict("operation status identity mismatch".into()));
-    }
-    Ok(())
-}
-
-/// Rejects a cancellation result that loses request or status identity.
-pub fn validate_cancel_response(
-    request: &wire::CancelRequest,
-    response: &wire::CancelResponse,
-) -> Result<()> {
-    let operation = wire::OperationIdentity {
-        operation_id: request.operation_id.clone(),
-        idempotency_key: request.idempotency_key.clone(),
-    };
-    if response.operation.as_ref() != Some(&operation) {
-        return Err(Error::Conflict("cancellation identity mismatch".into()));
-    }
-    let status = response
-        .status
-        .as_ref()
-        .ok_or_else(|| Error::Conflict("cancellation status is missing".into()))?;
-    validate_operation_status(
-        &wire::ObserveRequest {
-            protocol: request.protocol.clone(),
-            owner: request.owner.clone(),
-            operation_id: request.operation_id.clone(),
-            scope: request.scope.clone(),
-        },
-        status,
-    )
 }
 
 fn decode_control(

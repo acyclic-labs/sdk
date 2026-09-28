@@ -1,242 +1,207 @@
-import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
+import { fromBinary } from "@bufbuild/protobuf";
+import { is_stream_error_code, projectMemoryResponse, WasmMemoryStream } from "../generated/wasm/acyclic_stream_wasm.js";
+import type { StreamErrorCode as WasmStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema,
-  CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, DeleteRequestSchema,
-  DeleteReceiptSchema, ForkRequestSchema, ForkReceiptSchema, InspectIdempotencyRequestSchema,
-  InspectIdempotencyResponseSchema, FollowRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema,
-  TailRequestSchema, TailResponseSchema, TrimRequestSchema, TrimReceiptSchema,
+  ChildrenResponseSchema, ReadResponseSchema, TailResponseSchema,
 } from "../generated/proto/stream/v2/stream_pb.js";
+import { validateAppend } from "./client.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import type {
-  AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitConflict,
-  CommittedEnvelope, CommittedMutation, CommitOptions, CommitResult,
+  AppendOptions, AppendResult, CommittedEnvelope,
+  CommitId, CommitOptions, CommitResult,
   DeleteReceipt, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey,
-  IdempotencyObservation, IdempotencyOutcome, ProviderCommitRequest, ReadOptions, Sequence,
-  StreamBounds, StreamProvider, TrimReceipt,
+  IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence,
+  StreamBounds, StreamProvider, TrimReceipt, ChildrenPage, ChildrenPageRequest,
 } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 
-type WasmModule = typeof import("../generated/wasm/acyclic_stream_wasm.js");
-type RawMemoryStream = InstanceType<WasmModule["MemoryStreamBinding"]>;
-type RawFollow = Awaited<ReturnType<RawMemoryStream["follow"]>>;
-type UnaryMethod = { [Name in keyof RawMemoryStream]: RawMemoryStream[Name] extends (input: Uint8Array) => Promise<Uint8Array> ? Name : never }[keyof RawMemoryStream];
-
-let modulePromise: Promise<WasmModule> | undefined;
-async function loadModule(): Promise<WasmModule> {
-  modulePromise ??= (async () => {
-    const module = await import("../generated/wasm/acyclic_stream_wasm.js");
-    const node = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node;
-    if (node === undefined) await module.default();
-    else {
-      const fsPath: string = "node:fs/promises";
-      const { readFile } = await import(fsPath) as { readFile(url: URL): Promise<Uint8Array> };
-      await module.default(await readFile(new URL("../generated/wasm/acyclic_stream_wasm_bg.wasm", import.meta.url)));
-    }
-    return module;
-  })().catch(error => { modulePromise = undefined; throw error; });
-  return modulePromise;
-}
-
-function encode<Schema extends DescMessage>(schema: Schema, value: MessageShape<Schema>): Uint8Array {
-  try { return toBinary(schema, value); }
-  catch { throw new StreamError("invalid_argument", "request cannot be encoded as protobuf"); }
-}
-function decodeResponse<Schema extends DescMessage>(schema: Schema, value: Uint8Array): MessageShape<Schema> {
-  try { return fromBinary(schema, value); }
-  catch { throw new StreamError("invalid_response", "provider returned malformed protobuf bytes"); }
-}
-function asStreamError(error: unknown): StreamError {
-  const source = error as { code?: unknown; message?: unknown };
-  return new StreamError(typeof source?.code === "string" ? source.code : "unavailable", String(source?.message ?? error));
-}
-function uint32(value: number): number {
-  if (!Number.isInteger(value) || value < 0 || value > 0xffff_ffff) throw new StreamError("invalid_argument", "limit is outside the uint32 wire range");
-  return value;
-}
-function record(value: NonNullable<MessageShape<typeof ReadResponseSchema>["record"]>): EncodedRecord {
-  return { sequence: value.sequence, value: Uint8Array.from(value.value), commitId: commitId(value.commitId) };
-}
-function envelope(value: MessageShape<typeof CommittedEnvelopeSchema>): CommittedEnvelope {
-  const mutations: CommittedMutation[] = value.mutations.map(item => {
-    switch (item.mutation.case) {
-      case "append": { const data = item.mutation.value; return {
-        type: "append", path: data.path, start: data.start, end: data.end, tail: data.tail,
-        records: data.records.map(item => ({ sequence: item.sequence, value: Uint8Array.from(item.value), commitId: commitId(item.commitId) })),
-      }; }
-      case "fork": { const data = item.mutation.value; return { type: "fork", source: data.source, destination: data.destination, forkedAt: data.forkedAt, tail: data.tail,
-        records: data.records.map(item => ({ sequence: item.sequence, value: Uint8Array.from(item.value), commitId: commitId(item.commitId) })) }; }
-      case "trim": { const data = item.mutation.value; return { type: "trim", path: data.path, trimPoint: data.trimPoint }; }
-      case "delete": return { type: "delete", path: item.mutation.value.path };
-      default: throw new StreamError("invalid_response", "commit contains a mutation without a kind");
-    }
-  });
-  return { commitId: commitId(value.commitId), mutations };
-}
-function appendResult(value: MessageShape<typeof AppendResponseSchema>): AppendResult {
-  if (value.outcome.case === "committed") {
-    const item = value.outcome.value;
-    return { ok: true, start: item.start, end: item.end, tail: item.tail, commitId: commitId(item.commitId) };
-  }
-  if (value.outcome.case === "conflict") return { ok: false, code: "tail_conflict", actualTail: value.outcome.value.actualTail };
-  throw new StreamError("invalid_response", "append response has no outcome");
-}
-function forkReceipt(value: MessageShape<typeof ForkReceiptSchema>): ForkReceipt {
-  return { source: value.source, destination: value.destination, forkedAt: value.forkedAt, tail: value.tail, commitId: commitId(value.commitId) };
-}
-function trimReceipt(value: MessageShape<typeof TrimReceiptSchema>): TrimReceipt {
-  return { path: value.path, trimPoint: value.trimPoint, commitId: commitId(value.commitId) };
-}
-function deleteReceipt(value: MessageShape<typeof DeleteReceiptSchema>): DeleteReceipt {
-  return { path: value.path, commitId: commitId(value.commitId) };
-}
-function commitResult(value: MessageShape<typeof CommitResponseSchema>): CommitResult {
-  if (value.outcome.case === "conflict") {
-    const conflicts: CommitConflict[] = value.outcome.value.conflicts.map(item => {
-      switch (item.conflict.case) {
-        case "tail": return { path: item.conflict.value.path, expectedTail: item.conflict.value.expected, actualTail: item.conflict.value.actual ?? 0n };
-        case "exists": return { path: item.conflict.value.path, expectedAbsent: true, actual: "exists" };
-        case "retired": return { path: item.conflict.value.path, expectedAbsent: true, actual: "retired" };
-        default: throw new StreamError("invalid_response", "commit conflict has no kind");
-      }
-    });
-    return { ok: false, code: "conflict", conflicts };
-  }
-  if (value.outcome.case !== "committed") throw new StreamError("invalid_response", "commit response has no outcome");
-  const committed = envelope(value.outcome.value);
-  const tails: { [path: string]: Sequence } = {};
-  const forks: { path: string; tail: Sequence }[] = [];
-  for (const item of committed.mutations) {
-    if (item.type === "append") tails[item.path] = item.tail;
-    if (item.type === "fork") forks.push({ path: item.destination, tail: item.tail });
-  }
-  return { ok: true, commitId: committed.commitId, tails, forks };
-}
-function observation(value: NonNullable<MessageShape<typeof InspectIdempotencyResponseSchema>["observation"]>): IdempotencyObservation {
-  let outcome: IdempotencyOutcome;
-  switch (value.outcome.case) {
-    case "append": outcome = { type: "append", outcome: appendResult(value.outcome.value) }; break;
-    case "fork": outcome = { type: "fork", receipt: forkReceipt(value.outcome.value) }; break;
-    case "trim": outcome = { type: "trim", receipt: trimReceipt(value.outcome.value) }; break;
-    case "delete": outcome = { type: "delete", receipt: deleteReceipt(value.outcome.value) }; break;
-    case "commit": outcome = { type: "commit", outcome: commitResult(value.outcome.value) }; break;
-    default: throw new StreamError("invalid_response", "idempotency observation has no outcome");
-  }
-  return { idempotencyKey: idempotencyKey(value.idempotencyKey), requestDigest: Uint8Array.from(value.requestDigest), outcome };
-}
-
-/** Process-local Stream provider backed by the canonical Rust state machine. */
+/** Process-local adapter over the canonical Rust MemoryStream. */
 export class MemoryStreamProvider implements StreamProvider {
-  #raw: Promise<RawMemoryStream> | undefined;
-  #binding(): Promise<RawMemoryStream> {
-    return this.#raw ??= loadModule().then(module => new module.MemoryStreamBinding())
-      .catch(error => { this.#raw = undefined; throw error; });
+  readonly #inner: Promise<WasmMemoryStream>;
+
+  constructor() {
+    this.#inner = ensureStreamWasm().then(() => new WasmMemoryStream());
   }
 
-  async #call<Schema extends DescMessage>(method: UnaryMethod, input: Uint8Array, schema: Schema): Promise<MessageShape<Schema>> {
-    let result: Uint8Array;
-    try {
-      result = await (await this.#binding())[method](input);
-    } catch (error) { throw asStreamError(error); }
-    if (!(result instanceof Uint8Array)) throw new StreamError("invalid_response", "provider returned a non-binary response");
-    return decodeResponse(schema, result);
+  async #dispatch(operation: string, request: Uint8Array): Promise<Uint8Array> {
+    try { return await (await this.#inner).dispatch(operation, request); }
+    catch (error) { throw streamError(error, operation); }
   }
-  async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
-    const value = await this.#call("inspect_idempotency", encode(InspectIdempotencyRequestSchema,
-      create(InspectIdempotencyRequestSchema, { idempotencyKey: key })), InspectIdempotencyResponseSchema);
-    return value.observation === undefined ? undefined : observation(value.observation);
-  }
-  async tail(path: string): Promise<Sequence> { return (await this.bounds(path)).tail; }
-  async bounds(path: string): Promise<StreamBounds> {
-    const value = await this.#call("tail", encode(TailRequestSchema, create(TailRequestSchema, { path })), TailResponseSchema);
-    if (value.trimPoint === undefined) throw new StreamError("invalid_response", "memory provider omitted trim point");
-    return { trimPoint: value.trimPoint, tail: value.tail };
-  }
-  async append(path: string, values: readonly Uint8Array[], options: AppendOptions = {}): Promise<AppendResult> {
-    const input = encode(AppendRequestSchema, create(AppendRequestSchema, {
-      path, records: values.map(item => Uint8Array.from(item)),
-      ...(options.ifTail === undefined ? {} : { ifTail: options.ifTail }),
-      ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: Uint8Array.from(options.idempotencyKey) }),
-    }));
-    return appendResult(await this.#call("append", input, AppendResponseSchema));
-  }
-  async fork(source: string, destination: string, options: ForkOptions = {}): Promise<ForkReceipt> {
-    return forkReceipt(await this.#call("fork", encode(ForkRequestSchema, create(ForkRequestSchema, {
-      source, destination, ...(options.atTail === undefined ? {} : { atTail: options.atTail }),
-      ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: Uint8Array.from(options.idempotencyKey) }),
-    })), ForkReceiptSchema));
-  }
-  async trim(path: string, before: Sequence, key?: IdempotencyKey): Promise<TrimReceipt> {
-    return trimReceipt(await this.#call("trim", encode(TrimRequestSchema,
-      create(TrimRequestSchema, { path, before, idempotencyKey: key ?? crypto.getRandomValues(new Uint8Array(16)) })), TrimReceiptSchema));
-  }
-  async delete(path: string, key?: IdempotencyKey): Promise<DeleteReceipt> {
-    return deleteReceipt(await this.#call("delete", encode(DeleteRequestSchema,
-      create(DeleteRequestSchema, { path, idempotencyKey: key ?? crypto.getRandomValues(new Uint8Array(16)) })), DeleteReceiptSchema));
-  }
-  async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
-    const input = encode(ReadRequestSchema, create(ReadRequestSchema, { path, from: options.from, limit: uint32(options.limit) }));
-    let frames: Uint8Array[];
-    try { frames = await (await this.#binding()).read(input); }
-    catch (error) { throw asStreamError(error); }
-    for (const frame of frames) {
-      const value = decodeResponse(ReadResponseSchema, frame).record;
-      if (value === undefined) throw new StreamError("invalid_response", "read response omitted record");
-      yield record(value);
+
+  async #project<Result>(operation: string, request: Uint8Array): Promise<Result> {
+    const response = await this.#dispatch(operation, request);
+    try { return projectMemoryResponse(operation, response) as Result; }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new StreamError("invalid_response", `Rust ${operation} response is invalid: ${message}`);
     }
   }
-  async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
-    if (options.signal?.aborted) return;
-    let cursor: RawFollow | undefined;
-    let aborted = false;
-    const abort = () => { aborted = true; cursor?.close(); };
-    options.signal?.addEventListener("abort", abort, { once: true });
+
+  async #read(request: Uint8Array): Promise<readonly EncodedRecord[]> {
     try {
-      if (options.signal?.aborted) return;
-      const input = encode(FollowRequestSchema, create(FollowRequestSchema, { path, from: options.from }));
-      try { cursor = await (await this.#binding()).follow(input); }
-      catch (error) { throw asStreamError(error); }
-      if (aborted) { cursor.close(); return; }
-      for (;;) {
-        let frame: Uint8Array | undefined;
-        try { frame = await cursor.next(); }
-        catch (error) { throw asStreamError(error); }
-        if (frame === undefined || aborted) return;
-        const value = decodeResponse(ReadResponseSchema, frame).record;
-        if (value === undefined) throw new StreamError("invalid_response", "follow response omitted record");
-        yield record(value);
+      const values = await (await this.#inner).read(request);
+      return values.map(value => {
+        const response = fromBinary(ReadResponseSchema, value);
+        if (response.record === undefined) throw new StreamError("invalid_response", "Rust read response omitted its record");
+        return record(response.record);
+      });
+    } catch (error) { throw streamError(error, "read"); }
+  }
+
+  async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
+    const request = wireInspectIdempotencyRequest(key);
+    return this.#project<IdempotencyObservation | undefined>("inspect_idempotency", request);
+  }
+
+  async tail(path: string): Promise<Sequence> {
+    const request = await this.#request("tail", path);
+    return fromBinary(TailResponseSchema, await this.#dispatch("tail", request)).tail;
+  }
+  async bounds(path: string): Promise<StreamBounds> {
+    const response = fromBinary(TailResponseSchema, await this.#dispatch("bounds", await this.#request("bounds", path)));
+    if (response.trimPoint === undefined) throw new StreamError("invalid_response", "Rust bounds response omitted trim point");
+    return { trimPoint: response.trimPoint, tail: response.tail };
+  }
+
+  async append(path: string, values: readonly Uint8Array[], options: AppendOptions = {}): Promise<AppendResult> {
+    const records = values.map(value => value.slice());
+    const authored = structuredClone(options);
+    await validateAppend(path, records, authored);
+    const request = wireAppendRequest(path, records, authored);
+    return this.#project<AppendResult>("append", request);
+  }
+
+  async fork(source: string, destination: string, options: ForkOptions = {}): Promise<ForkReceipt> {
+    const authored = structuredClone(options);
+    await validateWireRequest({ kind: "fork", source, destination, options: authored });
+    const request = wireRequest({ kind: "fork", source, destination, options: authored });
+    return this.#project<ForkReceipt>("fork", request);
+  }
+
+  async trim(path: string, before: Sequence, key?: IdempotencyKey): Promise<TrimReceipt> {
+    const retainedKey = key === undefined ? randomKey() : idempotencyKey(key);
+    await validateWireRequest({ kind: "trim", path, before, key: retainedKey });
+    const request = wireRequest({ kind: "trim", path, before, key: retainedKey });
+    return this.#project<TrimReceipt>("trim", request);
+  }
+
+  async delete(path: string, key?: IdempotencyKey): Promise<DeleteReceipt> {
+    const retainedKey = key === undefined ? randomKey() : idempotencyKey(key);
+    await validateWireRequest({ kind: "delete", path, key: retainedKey });
+    const request = wireRequest({ kind: "delete", path, key: retainedKey });
+    return this.#project<DeleteReceipt>("delete", request);
+  }
+
+  async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
+    const { from, limit } = options;
+    await validateWireRequest({ kind: "read", path, from, limit });
+    const request = wireRequest({ kind: "read", path, from, limit });
+    for (const value of await this.#read(request)) yield value;
+  }
+
+  async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
+    const { from, signal } = options;
+    await validateWireRequest({ kind: "follow", path, from });
+    if (signal?.aborted) return;
+    const request = wireRequest({ kind: "follow", path, from });
+    let handle: Awaited<ReturnType<WasmMemoryStream["open_follow"]>>;
+    try { handle = await (await this.#inner).open_follow(request); }
+    catch (error) { throw streamError(error, "follow"); }
+    const close = () => handle.close();
+    signal?.addEventListener("abort", close, { once: true });
+    try {
+      while (!signal?.aborted) {
+        let bytes: Uint8Array | null;
+        try { bytes = await handle.next(); }
+        catch (error) { throw streamError(error, "follow"); }
+        if (bytes === null || signal?.aborted) return;
+        const response = fromBinary(ReadResponseSchema, bytes);
+        if (response.record === undefined) throw new StreamError("invalid_response", "Rust follow response omitted its record");
+        yield record(response.record);
       }
     } finally {
-      options.signal?.removeEventListener("abort", abort);
-      cursor?.close();
-      cursor?.free();
+      signal?.removeEventListener("abort", close);
+      handle.close();
+      handle.free();
+    }
+  }
+
+  async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> {
+    await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) });
+    const request = wireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) });
+    let values: Uint8Array[];
+    try { values = await (await this.#inner).children(request); }
+    catch (error) { throw streamError(error, "children"); }
+    for (const value of values) {
+      const response = fromBinary(ChildrenResponseSchema, value);
+      if (response.child === undefined) throw new StreamError("invalid_response", "Rust children response omitted its child");
+      yield { path: response.child.path };
     }
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
-    const value = await this.#call("children_page", encode(ChildrenPageRequestSchema,
-      create(ChildrenPageRequestSchema, {
-        ...(request.parent === undefined ? {} : { parent: request.parent }),
-        ...(request.after === undefined ? {} : { after: request.after }),
-        ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
-        limit: uint32(request.limit),
-      })), ChildrenPageResponseSchema);
-    return { hierarchyVersion: commitId(value.hierarchyVersion), children: value.children.map(item => ({ path: item.path })),
-      ...(value.nextAfter === undefined ? {} : { nextAfter: value.nextAfter }) };
+    if (request === null || typeof request !== "object") {
+      throw new StreamError("invalid_argument", "children page request must be an object");
+    }
+    const authored = { kind: "children_page" as const,
+      ...(request.parent === undefined ? {} : { parent: request.parent }),
+      ...(request.after === undefined ? {} : { after: request.after }),
+      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
+      limit: request.limit,
+    };
+    await validateWireRequest(authored);
+    const input = wireRequest(authored);
+    return this.#project<ChildrenPage>("children_page", input);
   }
+
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
-    const conditions = request.conditions.map(item => "ifTail" in item
-      ? { condition: { case: "tail" as const, value: { path: item.path, expected: item.ifTail } } }
-      : { condition: { case: "absent" as const, value: { path: item.path } } });
-    const mutations = request.mutations.map(item => {
-      if ("append" in item) return { mutation: { case: "append" as const, value: { path: item.append.path, records: item.append.values.map(value => Uint8Array.from(value)) } } };
-      if ("fork" in item) return { mutation: { case: "fork" as const, value: { source: item.fork.source, destination: item.fork.destination, atTail: item.fork.atTail,
-        records: item.fork.values.map(value => Uint8Array.from(value)) } } };
-      if ("trim" in item) return { mutation: { case: "trim" as const, value: { path: item.trim.path, before: item.trim.before } } };
-      return { mutation: { case: "delete" as const, value: { path: item.delete.path } } };
-    });
-    return commitResult(await this.#call("commit", encode(CommitRequestSchema,
-      create(CommitRequestSchema, { conditions, mutations, idempotencyKey: Uint8Array.from(options.idempotencyKey) })), CommitResponseSchema));
+    const authored = structuredClone(request);
+    const retainedOptions = structuredClone(options);
+    idempotencyKey(retainedOptions.idempotencyKey);
+    const input = await normalizeWireCommitBytes(authored, retainedOptions);
+    return this.#project<CommitResult>("commit", input);
   }
-  async readCommit(identity: Uint8Array): Promise<CommittedEnvelope> {
-    return envelope(await this.#call("read_commit", encode(ReadCommitRequestSchema,
-      create(ReadCommitRequestSchema, { commitId: commitId(identity) })), CommittedEnvelopeSchema));
+
+  async readCommit(value: CommitId): Promise<CommittedEnvelope> {
+    const request = wireReadCommitRequest(value);
+    return this.#project<CommittedEnvelope>("read_commit", request);
   }
+
+  async #request(kind: "tail" | "bounds", path: string): Promise<Uint8Array> {
+    await validateWireRequest({ kind, path });
+    return wireRequest({ kind, path });
+  }
+
+}
+
+function randomKey(): IdempotencyKey { return idempotencyKey(crypto.getRandomValues(new Uint8Array(16))); }
+export type StreamErrorCode = WasmStreamErrorCode;
+
+const isKnownStreamErrorCode = (value: string): value is StreamErrorCode => is_stream_error_code(value);
+
+function streamError(error: unknown, operation: string): Error {
+  if (error instanceof StreamError) return error;
+  let message: string;
+  let rawCode: unknown;
+  try {
+    message = error instanceof Error ? error.message : String(error);
+  } catch {
+    message = "Stream operation failed";
+  }
+  try {
+    rawCode = typeof error === "object" && error !== null ? (error as { readonly code?: unknown }).code : undefined;
+  } catch {
+    rawCode = undefined;
+  }
+  if (typeof rawCode !== "string" || !isKnownStreamErrorCode(rawCode)) {
+    return error instanceof Error ? error : new Error(message);
+  }
+  let code: string = rawCode;
+  if (rawCode === "not_found") code = operation === "read_commit" ? "commit_not_found" : "stream_not_found";
+  else if (rawCode === "already_exists") code = "destination_exists";
+  else if (rawCode === "retired") code = "stream_retired";
+  else if (rawCode === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
+  return new StreamError(code, message);
+}
+function record(value: { sequence: bigint; value: Uint8Array; commitId: Uint8Array }): EncodedRecord {
+  return { sequence: value.sequence, value: value.value, commitId: commitId(value.commitId) };
 }

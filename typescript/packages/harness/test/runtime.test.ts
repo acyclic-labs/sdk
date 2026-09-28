@@ -29,6 +29,7 @@ import {
   type HarnessRuntimeState,
   type TaskAdmissionRecord,
   type TaskAdmissionWire,
+  type NativeLimitsWire,
   type WorkflowAdmissionWire,
   type MessageId,
   type Outcome,
@@ -37,12 +38,77 @@ import {
   type TaskMessage,
   type ModelMessage,
   type ModelToolDefinition,
+  type UserContentPart,
   type FileRef,
   type VolumeRef,
   type ConversationMessageId,
 } from "../src/index.js";
+import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "../src/child-page-contract.js";
+import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
 const contracts = await NativeContracts.create();
+
+test("Rust owns child page bounds, slot ordering, and the generated facade default", async () => {
+  const parent = "12345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
+  const child = "22345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
+  const page = { revision: 7n, entries: [{ slot: "a", taskId: child }], nextAfter: null } as const;
+  expect(contracts.validateTaskChildrenPage(parent, 7n, null, HARNESS_CHILD_PAGE_MAXIMUM, page)).toEqual(page);
+  let revisionReads = 0;
+  const changingRevisionPage = {
+    get revision() {
+      revisionReads += 1;
+      return revisionReads === 1 ? 7n : 7;
+    },
+    entries: page.entries,
+    nextAfter: null,
+  } as unknown as typeof page;
+  expect(contracts.validateTaskChildrenPage(parent, 7n, null, 1, changingRevisionPage)).toEqual(page);
+  expect(revisionReads).toBe(1);
+  expect(() => contracts.validateTaskChildrenPage(parent, 6n, null, 1, page)).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, "a", 1, page)).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, HARNESS_CHILD_PAGE_MAXIMUM + 1, page)).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 0, page)).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
+    ...page, entries: [{ slot: "a", taskId: child }, { slot: "b", taskId: child }],
+  })).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
+    ...page, nextAfter: "b",
+  })).toThrow();
+  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
+    ...page, entries: [{ slot: "x".repeat(HARNESS_CHILD_SLOT_MAX_BYTES + 1), taskId: child }],
+  })).toThrow();
+
+  let observedMaximum = 0;
+  const state: HarnessRuntimeState = {
+    policyIdentity: () => null,
+    async attach() { throw new Error("not used"); },
+    async children(_parent, _revision, _after, maximum) {
+      observedMaximum = maximum;
+      return page;
+    },
+    async reconcileEffect() { return { state: "indeterminate" }; },
+    async send(message) { return { accepted: true, messageId: message.id }; },
+    async *inbox() { yield* []; },
+  };
+  const runtime = Harness.builder(contracts).state(state).build();
+  expect(await runtime.children(parent)).toEqual(page);
+  expect(observedMaximum).toBe(HARNESS_CHILD_PAGE_DEFAULT);
+
+  const malformedRuntime = Harness.builder(contracts).state({
+    ...state,
+    async children() {
+      return { ...page, revision: 7 as unknown as bigint };
+    },
+  }).build();
+  await expect(malformedRuntime.children(parent)).rejects.toBeInstanceOf(TypeError);
+});
+
+test("private-directory pages keep their Rust-owned bounds distinct from child pages", () => {
+  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT).toBe(256);
+  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM).toBe(4096);
+  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT).toBeLessThanOrEqual(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM);
+  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM).not.toBe(HARNESS_CHILD_PAGE_MAXIMUM);
+});
 
 test("Rust and TypeScript share strict v2 task admission and execution placement fixtures", async () => {
   const admissionText = (await Bun.file(new URL("../../../../fixtures/harness/v2/task-admission.json", import.meta.url)).text()).trim();
@@ -74,6 +140,69 @@ test("native task and workflow admissions preserve Rust u64 values as BigInt", a
   const workflowText = (await Bun.file(new URL("../../../../fixtures/harness/v2/workflow-admission.json", import.meta.url)).text()).trim();
   const workflow = contracts.validate("workflow_admission", JSON.parse(workflowText));
   expect(workflow.initial.revision).toBe(0n);
+});
+
+test("Rust owns durable task and batch projection identities", () => {
+  const limits: NativeLimitsWire = {
+    file_bytes: BigInt(DEFAULT_LIMITS.file_bytes), path_bytes: BigInt(DEFAULT_LIMITS.path_bytes),
+    attachments: BigInt(DEFAULT_LIMITS.attachments), render_bytes: BigInt(DEFAULT_LIMITS.render_bytes),
+    model_steps: BigInt(DEFAULT_LIMITS.model_steps), model_events_per_step: BigInt(DEFAULT_LIMITS.model_events_per_step),
+    tool_calls_per_step: BigInt(DEFAULT_LIMITS.tool_calls_per_step), context_messages: BigInt(DEFAULT_LIMITS.context_messages),
+  };
+  const common = {
+    name: "projection.task",
+    version: "1",
+    input_schema: { type: "integer" },
+    output_schema: { type: "integer" },
+    requirements: [],
+    machine_digest: Array(32).fill(9),
+    parent: null,
+    grants: [],
+    limits,
+    run_limits: { concurrency: null, max_steps: null, deadline_epoch_ms: null },
+    policy: null,
+    extensions: null,
+    execution: null,
+  } as const;
+  const identities = contracts.taskAdmissionIdentities({
+    name: common.name, version: common.version, input_schema: common.input_schema,
+    output_schema: common.output_schema, requirements: common.requirements,
+    machine_digest: common.machine_digest,
+  });
+  const task = contracts.admitTask({
+    ...common,
+    operation_id: "12345678-1234-4234-8234-123456789abc",
+    input: 4,
+  });
+  expect(task.task).toEqual(identities.task);
+  expect(task.machine).toEqual(identities.machine);
+  expect(contracts.validate("task_admission", task)).toEqual(task);
+
+  const batchInput = {
+    ...common,
+    group_id: "22345678-1234-4234-8234-123456789abc",
+    batch_id: "32345678-1234-4234-8234-123456789abc",
+    group_policy: "collect-all",
+    inputs: [4, 5],
+  } as const;
+  const batch = contracts.admitBatch(batchInput);
+  expect(contracts.validate("durable_batch_request", batch)).toEqual(batch);
+  expect(batch.inputs).toEqual([4n, 5n]);
+  expect(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0))
+    .not.toBe(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 1));
+  const projected = contracts.admitBatchRequest(batchInput);
+  expect(projected.canonical).toEqual(batch);
+  expect(projected.policy).toEqual({ kind: "collect-all" });
+  expect(projected.members).toHaveLength(2);
+  expect(projected.members.map(member => member.operation_id)).toEqual([
+    contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0),
+    contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 1),
+  ]);
+  expect(projected.inputDigest).toEqual(Array.from(contracts.digestCanonicalJson(batch)));
+  expect(projected.implementationDigest).toBe("09".repeat(32));
+  expect(() => contracts.admitBatch({ ...common,
+    group_id: batch.group_id, batch_id: batch.batch_id, group_policy: "collect-all", inputs: ["wrong"],
+  })).toThrow();
 });
 const testModel = { provider: "fixture", name: "fixture", revision: "1", options: {} } as const;
 const fixtureMessageId = (value: string): ConversationMessageId => value as ConversationMessageId;
@@ -331,6 +460,39 @@ describe("typed agent runtime", () => {
     expect(() => Harness.builder(contracts).task(left).task(right).build()).toThrow("task dependency cycle");
   });
 
+  test("admits exact grants but rejects unauthenticated extension requirements", () => {
+    const granted = TaskDefinition.live("granted-task", "1", () => 1,
+      { requirements: ["grant:task:run"] });
+    expect(() => Harness.builder(contracts).grant("task:run").task(granted).build()).not.toThrow();
+    expect(() => Harness.builder(contracts).task(granted).build()).toThrow("unsatisfied task requirement");
+    const extension = TaskDefinition.live("extension-task", "1", () => 1,
+      { requirements: ["extension:example.state@3"] });
+    expect(() => Harness.builder(contracts).task(extension).build()).toThrow("unsatisfied task requirement");
+  });
+
+  test("requires capability grants and a complete durable binding for task dependencies", () => {
+    const modelTask = TaskDefinition.live("model-task", "1", () => 1, { requirements: ["model"] });
+    const provider = {
+      async *generate() { yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    };
+    expect(() => Harness.builder(contracts).model(testModel, provider).task(modelTask).build())
+      .toThrow("unsatisfied task requirement");
+    expect(() => Harness.builder(contracts).model(testModel, provider)
+      .grant("model:generate").task(modelTask).build()).not.toThrow();
+    expect(() => Harness.builder(contracts).grant("model:generate").task(modelTask).build())
+      .not.toThrow();
+
+    const stateTask = TaskDefinition.live("state-task", "1", () => 1, { requirements: ["state"] });
+    const spawnerTask = TaskDefinition.live("spawner-task", "1", () => 1, { requirements: ["spawner"] });
+    const state = { policyIdentity: () => null } as unknown as HarnessRuntimeState;
+    const spawner = { policyIdentity: () => null } as unknown as HarnessRuntimeSpawner;
+    expect(Harness.builder(contracts).state(state).task(stateTask).build().state).toBe(state);
+    expect(() => Harness.builder(contracts).spawner(spawner).task(spawnerTask).build()).toThrow();
+    expect(() => Harness.builder(contracts).state(state).spawner(spawner)
+      .task(stateTask).task(spawnerTask).build()).not.toThrow();
+  });
+
   test("retains simultaneous pinned task revisions without an implicit latest", async () => {
     const first = TaskDefinition.live<void, number>("versioned", "1", () => 1);
     const second = TaskDefinition.live<void, number>("versioned", "2", () => 2);
@@ -504,7 +666,7 @@ describe("typed agent runtime", () => {
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
     if (wait.implementation.kind !== "resumable") throw new TypeError("expected resumable definition");
     expect(await wait.implementation.component.transition(context, 1)).toEqual({
-      kind: "wait", state: 2, operationId: "11111111-1111-1111-1111-111111111111",
+      kind: "wait", state: 2, operationId: "11111111-1111-1111-1111-111111111111" as OperationId,
       deadline: new Date("2030-01-01T00:00:00.000Z"),
     });
   });
@@ -702,9 +864,10 @@ describe("typed agent runtime", () => {
       policyIdentity: () => null,
       async attach(taskId) {
         if (taskId !== id) throw new Error("unknown task");
+        const admission = corruptAdmission && retained ? { ...retained, input: 4 } : retained;
         return { task: ownerTask, operationId: admissionId, taskName: "split",
           revision: "1", implementationDigest: durableDigest,
-          admission: corruptAdmission && retained ? { ...retained, input: 4 } : retained };
+          ...(admission === undefined ? {} : { admission }) };
       },
       async reconcileEffect() { return { state: "indeterminate" }; },
       async executeTool(taskId, effectId, _tool, input) {
@@ -721,8 +884,11 @@ describe("typed agent runtime", () => {
         retained = admission;
         return { kind: "accepted", task: untrustedTask };
       },
-      async reconcileAdmission() { return { task: untrustedTask, operationId: admissionId,
-        taskName: "split", revision: "1", implementationDigest: durableDigest, admission: retained }; },
+      async reconcileAdmission() {
+        return { task: untrustedTask, operationId: admissionId,
+          taskName: "split", revision: "1", implementationDigest: durableDigest,
+          ...(retained === undefined ? {} : { admission: retained }) };
+      },
     };
     const runtime = Harness.builder(contracts).state(state).spawner(spawner).task(definition)
       .tool(tool).grant("tool:call:split-tool").build();
@@ -759,8 +925,10 @@ describe("typed agent runtime", () => {
     let retained: TaskAdmissionRecord | undefined;
     let qualifications = 0;
     let corruptOwner = false;
-    const attachment = () => ({ task: ownerTask, operationId, taskName: "placed", revision: "1",
-      implementationDigest: durableDigest, admission: retained });
+    const attachment = () => retained === undefined
+      ? { task: ownerTask, operationId, taskName: "placed", revision: "1", implementationDigest: durableDigest }
+      : { task: ownerTask, operationId, taskName: "placed", revision: "1",
+        implementationDigest: durableDigest, admission: retained };
     const state: HarnessRuntimeState = {
       policyIdentity: () => null, executionIdentity: () => routeIdentity,
       async attach() { return corruptOwner && retained
@@ -784,6 +952,12 @@ describe("typed agent runtime", () => {
       async qualifyBatch() { throw new Error("batch route is not registered"); },
     };
     const runtime = Harness.builder(contracts).execution(execution).task(definition).task(localClosure).build();
+    const unbound = Harness.builder(contracts).task(definition).build();
+    expect(() => unbound.admissionRecord(operationId, definition, 3, undefined, placement))
+      .toThrow("unbound execution route");
+    expect(() => runtime.admissionRecord(operationId, definition, 3, undefined,
+      { ...placement, provider: policyIdentity("other.execution", "1", Uint8Array.from({ length: 32 }, () => 8)) }))
+      .toThrow("another provider");
     expect(() => runtime.spawn(localClosure, 3)).toThrow("live task closures cannot cross an execution provider");
     expect((await runtime.admit(definition, 3, operationId)).kind).toBe("accepted");
     // The full task-admission envelope owns the canonical representation of
@@ -1008,7 +1182,8 @@ describe("typed agent runtime", () => {
       async admitBatch(request) { retained = request; throw new AdmissionUncertainError(request.batchId); },
       async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
       async reconcileBatch(request) {
-        expect(request.inputDigest).toEqual(retained?.inputDigest);
+        if (retained === undefined) throw new Error("batch admission was not retained");
+        expect(request.inputDigest).toEqual(retained.inputDigest);
         return { taskName: request.taskName, revision: request.revision,
           implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
           entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
@@ -1586,6 +1761,44 @@ describe("typed agent runtime", () => {
     expect(observed[0]?.content).toEqual([{ kind: "text", text: "describe" }, { kind: "file", file, policy: "native" }]);
   });
 
+  test("content-only turns dispatch exactly the content admitted by Rust validation", async () => {
+    let observed: readonly ModelMessage[] = [];
+    const file = {
+      volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "project", class: "project" as const, owner: { kind: "project" as const, id: "project" } },
+      path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
+    };
+    const runtime = Harness.builder(contracts).model(testModel, {
+      async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    }).build();
+    await runtime.run({ prompt: "", content: [{ kind: "file", file, policy: "native" }] });
+    expect(observed[0]?.content).toEqual([{ kind: "file", file, policy: "native" }]);
+  });
+
+  test("direct input is snapshotted before validation and model dispatch", async () => {
+    let observed: readonly ModelMessage[] = [];
+    let contentReads = 0;
+    const file = {
+      volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "project", class: "project" as const, owner: { kind: "project" as const, id: "project" } },
+      path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
+    };
+    const validContent: readonly UserContentPart[] = [{ kind: "file", file, policy: "native" }];
+    const input = {
+      prompt: "",
+      get content(): readonly UserContentPart[] {
+        contentReads += 1;
+        return contentReads === 1 ? validContent : [{ kind: "text", text: "" }];
+      },
+    };
+    const runtime = Harness.builder(contracts).model(testModel, {
+      async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    }).build();
+    await runtime.run(input);
+    expect(contentReads).toBe(1);
+    expect(observed[0]?.content).toEqual(validContent);
+  });
+
   test("model identity and options are pinned at binding, including scoped overrides", async () => {
     const rootIdentity = { provider: "root", name: "model", revision: "3", options: { mode: "original" } };
     const seen: unknown[] = [];
@@ -1655,6 +1868,26 @@ describe("typed agent runtime", () => {
     expect(produced).toBe(3);
   });
 
+  test("model loop consumes the detached event returned by Rust admission", async () => {
+    let reads = 0;
+    const event = {
+      kind: "content" as const,
+      get delta(): string {
+        reads += 1;
+        return reads === 1 ? "ok" : "x".repeat(3);
+      },
+    };
+    const runtime = Harness.builder(contracts).limits({ file_bytes: 2, render_bytes: 2 }).model(testModel, {
+      async *generate() {
+        yield event;
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile() { return undefined; },
+    }).build();
+    await expect(runtime.run("x")).resolves.toMatchObject({ text: "ok" });
+    expect(reads).toBe(1);
+  });
+
   test("custom context builders cannot bypass model-content bounds", async () => {
     let dispatched = 0;
     const runtime = Harness.builder(contracts).limits({ render_bytes: 8 }).context({
@@ -1664,6 +1897,20 @@ describe("typed agent runtime", () => {
       async reconcile() { return undefined; },
     }).build();
     await expect(runtime.run("short")).rejects.toThrow("render limit");
+    expect(dispatched).toBe(0);
+  });
+
+  test("custom context builders use the native closed model-message contract", async () => {
+    let dispatched = 0;
+    const runtime = Harness.builder(contracts).context({
+      async build() {
+        return [{ role: "developer" as never, content: "safe" }];
+      },
+    }).model(testModel, {
+      async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    }).build();
+    await expect(runtime.run("safe")).rejects.toThrow();
     expect(dispatched).toBe(0);
   });
 
@@ -1702,10 +1949,12 @@ describe("typed agent runtime", () => {
 
   test("reused provider call IDs have distinct internal tool operations", async () => {
     const operations: string[] = [];
+    const argumentsSeen: number[] = [];
     const tool = defineTool<number, number>({ name: "again", revision: "1", description: "again",
       inputSchema: {}, outputSchema: {}, parseInput: parseNumber, parseOutput: parseNumber }, async (context, input) => {
       expect(context.callId).toBe("provider-call");
       operations.push(context.operationId!);
+      argumentsSeen.push(input);
       return input;
     });
     let step = 0;
@@ -1721,5 +1970,6 @@ describe("typed agent runtime", () => {
     expect((await runtime.run("again")).text).toBe("done");
     expect(operations).toHaveLength(2);
     expect(new Set(operations).size).toBe(2);
+    expect(argumentsSeen).toEqual([1, 2]);
   });
 });

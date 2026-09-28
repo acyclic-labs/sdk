@@ -12,9 +12,10 @@ use crate::{
     registry::ComponentIdentity,
     runtime::{
         BatchCancellationReport, BatchCancellationStatus, DurableBatchRequest,
-        DurableEffectObserver, DurableTaskHost, InputKey, RuntimeScope, TaskAdmissionRecord,
-        TaskChild, TaskChildrenPage, TaskRegistry, ToolPolicy, check_tool_approval, read_granted,
-        require_descendant_grant, validate_policy_identity, validate_task_schemas,
+        DurableEffectObserver, DurableTaskHost, InputKey, MAX_BATCH_INPUTS, RuntimeScope,
+        TaskAdmissionRecord, TaskChild, TaskChildrenPage, TaskRegistry, ToolPolicy,
+        check_tool_approval, read_granted, require_descendant_grant, validate_policy_identity,
+        validate_task_schemas,
     },
     scheduler::{
         DurableOwner, EntrypointRef, InboxItem, OperationSpec, Orchestration, ParentLink,
@@ -409,7 +410,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     fn validate_batch(&self, request: &DurableBatchRequest) -> Result<()> {
         request.validate()?;
-        if request.inputs.len() > 65_536
+        if request.inputs.len() > MAX_BATCH_INPUTS
             || request.execution.is_some()
             || request.policy != self.policy.as_ref().map(|policy| policy.identity())
             || request.machine.name != request.task.name

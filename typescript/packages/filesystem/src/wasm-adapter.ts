@@ -27,20 +27,20 @@ import type {
   ResolvedFile,
 } from "./contracts.js";
 
-import { copyMergeConflict, decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
+import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
   validateJoinOptions } from "./workspace-results.js";
 import { adaptTransaction } from "./transaction-adapter.js";
 import { createGenerationAdapter } from "./generation-adapter.js";
 import { createChangeSetAdapter } from "./change-set-adapter.js";
 import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, copyFileRecord,
   copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult } from "./binding-results.js";
-import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
+import { bigintRecord, copyWork, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptJoinPlanBase, workspaceOperations } from "./workspace-operations.js";
 
 const { adaptGeneration, rawGeneration } = createGenerationAdapter(
   copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan,
 );
-const generationDiff = (value: WasmRawGenerationDiff) => copyGenerationDiff(value, value.work);
+const generationDiff = (value: WasmRawGenerationDiff) => copyGenerationDiff(value, copyWork(value.work));
 const workspaceHandles = new WeakMap<FsWorkspace, WasmRawWorkspace>();
 const { adaptChangeSet } = createChangeSetAdapter(adaptGeneration, generationDiff);
 const decodeMergeConflict = (raw: WasmRawMergeConflict) => decodeSharedMergeConflict(raw, "WASM join");
@@ -66,11 +66,11 @@ export function adaptWasmFs(raw: WasmRawFs): FsVolumeEngine {
     async importObject(objectId, bytes) { return copyMutation(await raw.importObject(objectId, bytes)); },
     async exportGenerationBatch(manifest, cursor, maximumObjects, maximumObjectBytes): Promise<GenerationTransferBatch> {
       const value = await raw.exportGenerationBatch(manifest, cursor, maximumObjects, maximumObjectBytes);
-      return { firstObject: BigInt(value.firstObject), nextObject: value.nextObject === undefined ? undefined : BigInt(value.nextObject), objects: value.objects.map(copyBytes), work: value.work };
+      return { firstObject: BigInt(value.firstObject), nextObject: value.nextObject === undefined ? undefined : BigInt(value.nextObject), objects: value.objects.map(copyBytes), work: copyWork(value.work) };
     },
     async importGenerationBatch(manifest, cursor, objects, maximumObjects): Promise<GenerationTransferCursor> {
       const value = await raw.importGenerationBatch(manifest, cursor, objects, maximumObjects);
-      return { nextObject: BigInt(value.nextObject), work: value.work };
+      return { nextObject: BigInt(value.nextObject), work: copyWork(value.work) };
     },
     async restoreVolume(manifest, operationId): Promise<FsVolume> { return adaptVolume(await raw.restoreVolume(manifest, operationId)); },
     close(): void {
@@ -85,7 +85,7 @@ export { adaptWorkspaceContextRegistry as adaptWasmWorkspaceContextRegistry } fr
 function adaptVolume(raw: WasmRawVolume): FsVolume {
   return {
     get id() { return copyBytes(raw.id); },
-    get acquisitionWork() { return raw.acquisitionWork; },
+    get acquisitionWork() { return copyWork(raw.acquisitionWork); },
     async diffGenerations(before, after, maximumChanges) { return generationDiff(await raw.diffGenerations(before, after, maximumChanges)); },
     async checkout(options) { return adaptCheckout(await raw.checkout(options)); },
   };
@@ -93,45 +93,49 @@ function adaptVolume(raw: WasmRawVolume): FsVolume {
 
 function adaptCheckout(raw: WasmRawCheckout): FsCheckout {
   return {
-    get acquisitionWork() { return raw.acquisitionWork; },
-    async applyTransaction(operations) { const value = await raw.applyTransaction(operations); return copyTransactionResult(value, value.work); },
+    get acquisitionWork() { return copyWork(raw.acquisitionWork); },
+    async applyTransaction(operations) { const value = await raw.applyTransaction(Array.from(operations)); return copyTransactionResult(value, copyWork(value.work)); },
     async checkpoint() { return copyCheckpoint(await raw.checkpoint()); },
     async refreshHead() { return copyCheckpoint(await raw.refreshHead()); },
     async refreshLive() { return copyCheckpoint(await raw.refreshLive()); },
-    async exportManifest(): Promise<GenerationExportManifest> { const value = await raw.exportManifest(); return { manifestBytes: copyBytes(value.manifestBytes), objects: value.objects.map(copyBytes), work: value.work }; },
-    async prepareMerge(theirs, maximumChanges, maximumConflicts) { return parseMergePreparation(await raw.prepareMerge(theirs, maximumChanges, maximumConflicts), copyMergeConflict); },
-    async lookupNoFollow(path) { const value = await raw.lookupNoFollow(path); return { ...value, fileId: copyOptionalBytes(value.fileId) }; },
-    async lookupBatchNoFollow(paths) { const value = await raw.lookupBatchNoFollow(paths); return { entries: copyBatchLookupEntries(value.entries), retainedAllocationBytes: BigInt(value.retainedAllocationBytes), work: value.work }; },
-    async statNoFollow(path) { const value = await raw.statNoFollow(path); return copyStatResult(value, value.work); },
-    async readFileRecordById(fileId) { const value = await raw.readFileRecordById(fileId); return { record: copyFileRecord(value.record), work: value.work }; },
+    async exportManifest(): Promise<GenerationExportManifest> { const value = await raw.exportManifest(); return { manifestBytes: copyBytes(value.manifestBytes), objects: value.objects.map(copyBytes), work: copyWork(value.work) }; },
+    async prepareMerge(theirs, maximumChanges, maximumConflicts) {
+      const value = await raw.prepareMerge(theirs, maximumChanges, maximumConflicts);
+      return parseMergePreparation({ ...value, work: copyWork(value.work) },
+        value => decodeSharedMergeConflict(value, "WASM merge preparation"));
+    },
+    async lookupNoFollow(path) { const value = await raw.lookupNoFollow(path); return { ...value, fileId: copyOptionalBytes(value.fileId), work: copyWork(value.work) }; },
+    async lookupBatchNoFollow(paths) { const value = await raw.lookupBatchNoFollow(Array.from(paths)); return { entries: copyBatchLookupEntries(value.entries), retainedAllocationBytes: BigInt(value.retainedAllocationBytes), work: copyWork(value.work) }; },
+    async statNoFollow(path) { const value = await raw.statNoFollow(path); return copyStatResult(value, copyWork(value.work)); },
+    async readFileRecordById(fileId) { const value = await raw.readFileRecordById(fileId); return { record: copyFileRecord(value.record), work: copyWork(value.work) }; },
     async readMetadata(path) { return copyMetadata(await raw.readMetadata(path)); },
     async readMetadataById(fileId) { return copyMetadata(await raw.readMetadataById(fileId)); },
     async setMetadata(path, canonicalBytes) { return copyMutation(await raw.setMetadata(path, canonicalBytes)); },
     async setMetadataById(fileId, canonicalBytes) { return copyMutation(await raw.setMetadataById(fileId, canonicalBytes)); },
     async setAttributes(path, canonicalBytes, logicalBytes) { return copyMutation(await raw.setAttributes(path, canonicalBytes, logicalBytes)); },
     async setAttributesById(fileId, canonicalBytes, logicalBytes) { return copyMutation(await raw.setAttributesById(fileId, canonicalBytes, logicalBytes)); },
-    async readNamedAttribute(path, attributeClass, name) { const value = await raw.readNamedAttribute(path, attributeClass, name); return copyNamedAttributeResult(value, value.work); },
-    async listNamedAttributes(path, after, maximumEntries) { const value = await raw.listNamedAttributes(path, after?.attributeClass, after?.name, maximumEntries); return copyNamedAttributePage(value, value.work); },
+    async readNamedAttribute(path, attributeClass, name) { const value = await raw.readNamedAttribute(path, attributeClass, name); return copyNamedAttributeResult(value, copyWork(value.work)); },
+    async listNamedAttributes(path, after, maximumEntries) { const value = await raw.listNamedAttributes(path, after?.attributeClass, after?.name, maximumEntries); return copyNamedAttributePage(value, copyWork(value.work)); },
     async writeNamedAttribute(path, attributeClass, name, bytes, mode) { return copyMutation(await raw.writeNamedAttribute(path, attributeClass, name, bytes, mode)); },
     async removeNamedAttribute(path, attributeClass, name) { return copyMutation(await raw.removeNamedAttribute(path, attributeClass, name)); },
     async resolveFiles(paths) {
-      const value = await raw.resolveFiles(paths);
+      const value = await raw.resolveFiles(Array.from(paths));
       const files = Array.from({ length: value.length }, (_, index) => {
         const file = value.take(index);
         return file === undefined ? undefined : adaptResolvedFile(file);
       });
-      return { files, work: value.work };
+      return { files, work: copyWork(value.work) };
     },
     async readFileRange(path, offset, length) { return copyFileRead(await raw.readFileRange(path, offset, length)); },
     async readFileRangeById(fileId, offset, length) { return copyFileRead(await raw.readFileRangeById(fileId, offset, length)); },
     async planFileExtents(path, offset, length, maximumSpans) { return fileExtentPlan(await raw.planFileExtents(path, offset, length, maximumSpans)); },
     async planFileExtentsById(fileId, offset, length, maximumSpans) { return fileExtentPlan(await raw.planFileExtentsById(fileId, offset, length, maximumSpans)); },
-    async seekFileExtent(path, offset, target) { const value = await raw.seekFileExtent(path, offset, target); return { offset: value.offset === undefined ? undefined : BigInt(value.offset), work: value.work }; },
-    async seekFileExtentById(fileId, offset, target) { const value = await raw.seekFileExtentById(fileId, offset, target); return { offset: value.offset === undefined ? undefined : BigInt(value.offset), work: value.work }; },
+    async seekFileExtent(path, offset, target) { const value = await raw.seekFileExtent(path, offset, target); return { offset: value.offset === undefined ? undefined : BigInt(value.offset), work: copyWork(value.work) }; },
+    async seekFileExtentById(fileId, offset, target) { const value = await raw.seekFileExtentById(fileId, offset, target); return { offset: value.offset === undefined ? undefined : BigInt(value.offset), work: copyWork(value.work) }; },
     async readSymbolicLink(path) { return copyFileRead(await raw.readSymbolicLink(path)); },
     async readReparsePoint(path) { return copyFileRead(await raw.readReparsePoint(path)); },
-    async listDirectory(path, after, maximumEntries) { const value = await raw.listDirectory(path, after, maximumEntries); return copyDirectoryPage(value, value.work); },
-    async listDirectoryRecords(path, after, maximumEntries) { const value = await raw.listDirectoryRecords(path, after, maximumEntries); return copyDirectoryRecordPage(value, value.work); },
+    async listDirectory(path, after, maximumEntries) { const value = await raw.listDirectory(path, after, maximumEntries); return copyDirectoryPage(value, copyWork(value.work)); },
+    async listDirectoryRecords(path, after, maximumEntries) { const value = await raw.listDirectoryRecords(path, after, maximumEntries); return copyDirectoryRecordPage(value, copyWork(value.work)); },
     async createFile(path, bytes) { return copyMutation(await raw.createFile(path, bytes)); },
     async createDirectory(path) { return copyMutation(await raw.createDirectory(path)); },
     async createSymbolicLink(path, target) { return copyMutation(await raw.createSymbolicLink(path, target)); },
@@ -152,9 +156,9 @@ function adaptCheckout(raw: WasmRawCheckout): FsCheckout {
     async cloneFileRange(source, sourceOffset, destination, destinationOffset, length) { return copyMutation(await raw.cloneFileRange(source, sourceOffset, destination, destinationOffset, length)); },
     async cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length) { return copyMutation(await raw.cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length)); },
     async commit(operationId) { return commitResult(await raw.commit(operationId)); },
-    async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { return liveTransactionResult(await raw.mutateLive(operations, operationId, maximumAttempts, maximumConflicts)); },
+    async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { return liveTransactionResult(await raw.mutateLive(Array.from(operations), operationId, maximumAttempts, maximumConflicts)); },
     async resumeLive(operationId, maximumAttempts, maximumConflicts) { return liveMutationResult(await raw.resumeLive(operationId, maximumAttempts, maximumConflicts)); },
-    async rebaseHead(maximumConflicts) { const value = await raw.rebaseHead(maximumConflicts); return copyRebaseResult(value, value.work); },
+    async rebaseHead(maximumConflicts) { const value = await raw.rebaseHead(maximumConflicts); return copyRebaseResult(value, copyWork(value.work)); },
     async discard() { return copyMutation(await raw.discard()); },
   };
 }
@@ -171,8 +175,13 @@ function adaptResolvedFile(raw: import("./contracts.js").WasmRawResolvedFile): R
 
 function adaptSpeculation(raw: WasmRawSpeculation): Speculation {
   return {
-    async observe(value) { return raw.observe(value); },
-    async executeResidency(operationId) { const value = await raw.executeResidency(operationId); return { objectBytes: BigInt(value.objectBytes), work: value.work }; },
+    async observe(value) {
+      const result = raw.observe(value);
+      return result.rejection === undefined
+        ? { status: result.status }
+        : { status: result.status, rejection: result.rejection };
+    },
+    async executeResidency(operationId) { const value = await raw.executeResidency(operationId); return { objectBytes: BigInt(value.objectBytes), work: copyWork(value.work) }; },
     async finishResidency(operationId, useful) { raw.finishResidency(operationId, useful); },
     async planPromotion(request) {
       const value = raw.planPromotion(request);
@@ -201,16 +210,16 @@ function adaptSpeculation(raw: WasmRawSpeculation): Speculation {
 }
 
 function objectCacheStats(value: import("./contracts.js").WasmRawObjectCacheStats): ObjectCacheStats { return { hits: BigInt(value.hits), decodedHits: BigInt(value.decodedHits), misses: BigInt(value.misses), coalescedReads: BigInt(value.coalescedReads), evictions: BigInt(value.evictions), residentEntries: BigInt(value.residentEntries), residentBytes: BigInt(value.residentBytes), residentCanonicalObjects: BigInt(value.residentCanonicalObjects), residentCanonicalBytes: BigInt(value.residentCanonicalBytes), residentDecodedPages: BigInt(value.residentDecodedPages), residentDecodedBytes: BigInt(value.residentDecodedBytes), inFlight: BigInt(value.inFlight) }; }
-function copyCheckpoint(value: import("./contracts.js").CheckpointResult): import("./contracts.js").CheckpointResult { return { generationId: copyBytes(value.generationId), work: value.work }; }
-function copyMetadata(value: import("./contracts.js").MetadataResult): import("./contracts.js").MetadataResult { return { canonicalBytes: copyBytes(value.canonicalBytes), work: value.work }; }
+function copyCheckpoint(value: Awaited<ReturnType<WasmRawCheckout["checkpoint"]>>): import("./contracts.js").CheckpointResult { return { generationId: copyBytes(value.generationId), work: copyWork(value.work) }; }
+function copyMetadata(value: Awaited<ReturnType<WasmRawCheckout["readMetadata"]>>): import("./contracts.js").MetadataResult { return { canonicalBytes: copyBytes(value.canonicalBytes), work: copyWork(value.work) }; }
 function fileExtentPlan(value: Awaited<ReturnType<WasmRawCheckout["planFileExtents"]>>) {
-  return copyFileExtentPlan(value, value.work, "WASM", true);
+  return copyFileExtentPlan(value, copyWork(value.work), "WASM", true);
 }
-function copyFileRead(value: import("./contracts.js").FileReadResult): import("./contracts.js").FileReadResult { return { bytes: copyBytes(value.bytes), work: value.work }; }
-function copyMutation(value: import("./contracts.js").MutationResult): import("./contracts.js").MutationResult { return { ...value, fileId: copyOptionalBytes(value.fileId) }; }
-function commitResult(value: Awaited<ReturnType<WasmRawCheckout["commit"]>>) { return copyCheckoutCommit(value, value.work); }
-function liveMutationResult(value: Awaited<ReturnType<WasmRawCheckout["resumeLive"]>>) { return copyLiveMutation(value, value.work); }
-function liveTransactionResult(value: Awaited<ReturnType<WasmRawCheckout["mutateLive"]>>) { return copyLiveTransaction(value, value.work); }
+function copyFileRead(value: Awaited<ReturnType<WasmRawCheckout["readFileRange"]>>): import("./contracts.js").FileReadResult { return { bytes: copyBytes(value.bytes), work: copyWork(value.work) }; }
+function copyMutation(value: Awaited<ReturnType<WasmRawCheckout["createFile"]>>): import("./contracts.js").MutationResult { return { fileId: copyOptionalBytes(value.fileId), work: copyWork(value.work) }; }
+function commitResult(value: Awaited<ReturnType<WasmRawCheckout["commit"]>>) { return copyCheckoutCommit(value, copyWork(value.work)); }
+function liveMutationResult(value: Awaited<ReturnType<WasmRawCheckout["resumeLive"]>>) { return copyLiveMutation(value, copyWork(value.work)); }
+function liveTransactionResult(value: Awaited<ReturnType<WasmRawCheckout["mutateLive"]>>) { return copyLiveTransaction(value, copyWork(value.work)); }
 
 function adaptWorkspace(raw: WasmRawWorkspace): FsWorkspace {
   const workspace: FsWorkspace = {

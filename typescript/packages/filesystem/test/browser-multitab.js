@@ -34,6 +34,8 @@ const workFields = [
   "bytesCopied",
   "bytesEncoded",
   "sourceBytesRead",
+  "sourcePathComponents",
+  "sourceEntriesVisited",
   "outputBytes",
   "itemsExamined",
   "itemsReturned",
@@ -121,6 +123,30 @@ function speculationOptions() {
   };
 }
 
+async function assertRawCheckoutInputBounds(checkout) {
+  const oversizedOperations = new Array(100_000);
+  const oversizedPaths = new Array(100_000);
+  const calls = [
+    ["applyTransaction null", () => checkout.applyTransaction(null)],
+    ["applyTransaction oversized", () => checkout.applyTransaction(oversizedOperations)],
+    ["lookupBatchNoFollow null", () => checkout.lookupBatchNoFollow(null)],
+    ["lookupBatchNoFollow oversized", () => checkout.lookupBatchNoFollow(oversizedPaths)],
+    ["mutateLive null", () => checkout.mutateLive(null, new Uint8Array(16), 1, 1)],
+    ["mutateLive oversized", () => checkout.mutateLive(oversizedOperations, new Uint8Array(16), 1, 1)],
+    ["resolveFiles null", () => checkout.resolveFiles(null)],
+    ["resolveFiles oversized", () => checkout.resolveFiles(oversizedPaths)],
+  ];
+  for (const [name, call] of calls) {
+    let rejected = false;
+    try {
+      await call();
+    } catch {
+      rejected = true;
+    }
+    assert(rejected, `${name} unexpectedly accepted malformed or oversized input`);
+  }
+}
+
 async function exerciseSpeculation(fs, volume, checkout, operationSequence, accounting) {
   if (operationSequence === "create_write_read") {
     return { status: "not-applicable", verifiedBytes: 0 };
@@ -129,6 +155,7 @@ async function exerciseSpeculation(fs, volume, checkout, operationSequence, acco
     operationSequence === "speculative_residency" || operationSequence === "speculative_promotion",
     `unsupported targeted browser operation sequence ${operationSequence}`,
   );
+  await assertRawCheckoutInputBounds(checkout);
   const checkpoint = record(accounting, await checkout.checkpoint());
   const speculation = recordControl(
     accounting,
@@ -175,11 +202,11 @@ async function exerciseSpeculation(fs, volume, checkout, operationSequence, acco
   }
   recordControl(accounting, await speculation.finishResidency(operationId, true));
   const metrics = recordControl(accounting, await speculation.metrics());
-  assert(metrics.residency.useful === "1", "targeted browser residency usefulness diverged");
+  assert(metrics.residency.useful === 1n, "targeted browser residency usefulness diverged");
   if (operationSequence === "speculative_promotion") {
-    assert(metrics.promotion.useful === "1", "targeted browser promotion usefulness diverged");
+    assert(metrics.promotion.useful === 1n, "targeted browser promotion usefulness diverged");
   } else {
-    assert(metrics.promotion.useful === "0", "residency-only case mutated promotion outcomes");
+    assert(metrics.promotion.useful === 0n, "residency-only case mutated promotion outcomes");
   }
   const objectBytes = Number(execution.objectBytes);
   assert(Number.isSafeInteger(objectBytes) && objectBytes > 0, "speculative object byte count is invalid");

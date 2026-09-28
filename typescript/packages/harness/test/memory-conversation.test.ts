@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_LIMITS, ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
   defineTool, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeHost, type OperationId,
   type RuntimeTaskId } from "../src/index.js";
+import { HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
 const wasm = readFileSync(fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)));
 const contracts = await NativeContracts.create();
@@ -179,6 +180,44 @@ test("local conversation publishes staged refs and pinned context before model d
   expect(eventJson).not.toContain("question");
   expect(eventJson).not.toContain("answer");
   expect(new TextDecoder().decode(await host.read(history.messages[1]!.content))).toBe("answer");
+  host.free();
+});
+
+test("projection read failure leaves the turn retryable before context commit", async () => {
+  const host = await MemoryConversation.create({ agent, wasm });
+  let calls = 0;
+  const runtime = Harness.builder(contracts).model(testModel, {
+    async *generate() {
+      calls += 1;
+      yield { kind: "content" as const, delta: "recovered" };
+      yield { kind: "completed" as const, metadata: {} };
+    },
+    async reconcile() { return undefined; },
+  }).build();
+  const operation = "11111111-1111-1111-1111-111111111111" as OperationId;
+  const content = await host.stage("turns/projection-failure/user.txt",
+    new TextEncoder().encode("question"), "text/plain", "user.txt");
+  const attachment = await host.stage("files/projection.txt", new TextEncoder().encode("attachment"), "text/plain", "projection.txt");
+  const attachments = Array.from({ length: 129 }, () => ({ file: attachment, label: null }));
+  const originalRead = host.read.bind(host);
+  let manifestReads = 0;
+  host.read = async file => {
+    if (file.path.endsWith("user-attachments.json")) {
+      manifestReads += 1;
+      if (manifestReads === 2) {
+        throw new Error("injected projection read failure");
+      }
+    }
+    return originalRead(file);
+  };
+  await expect(host.runConversation(runtime, operation, content, attachments))
+    .rejects.toThrow("injected projection read failure");
+  expect(host.snapshot().events.some(event => typeof event === "object" && event !== null
+    && "payload" in event && typeof event.payload === "object" && event.payload !== null
+    && "kind" in event.payload && event.payload.kind === "model_context_selected")).toBe(false);
+  const recovered = await host.runConversation(runtime, operation, content, attachments);
+  expect(recovered.text).toBe("recovered");
+  expect(calls).toBe(1);
   host.free();
 });
 
@@ -562,6 +601,8 @@ test("unseen owner volumes mount lazily without granting writes", async () => {
   const first = await host.listPrivateDirectory(owner.volume, "notes", "notes", page.generation, null, 1);
   expect(first.entries).toEqual(page.entries);
   expect(first.hasMore).toBe(false);
+  await expect(host.listPrivateDirectory(owner.volume, "notes", "notes", page.generation, null,
+    HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM + 1)).rejects.toThrow("private directory page limit is invalid");
   expect(new TextDecoder().decode((await host.readPrivatePath(owner.volume, "notes",
     "notes/lazy.txt", page.generation)).bytes)).toBe("lazy owner bytes");
   await expect(host.listPrivateDirectory(owner.volume, "notes", "")).rejects.toThrow();

@@ -18,7 +18,6 @@ import type {
   NativeRawMutation,
   NativeRawTransactionOperation,
   NativeRawGenerationDiff,
-  NativeRawJoinResult,
   NativeRawMergeConflict,
   NativeRawSourceResult,
   NativeRawWorkspace,
@@ -51,6 +50,7 @@ import type {
   NativeRawOperationWindowPhase,
   NativeRawWorkspaceGraph,
   NativeRawWorkspaceLineageRecord,
+  WasmRawJoinResult,
 } from "./contracts.js";
 import type {
   GenerationIdentity,
@@ -70,12 +70,12 @@ import type {
 } from "./compat.js";
 import {
   adaptCompatibilityWire,
-  encodeGitCompatCommand,
   finishGitCompatOutput,
   gitCompatSafeTimestamp,
   parseGitCompatOutputJson,
   parseGitPendingTransitionJson,
   stringifyGitFilesystemResult,
+  stringifyGitCompatCommand,
 } from "./compat.js";
 
 import { adaptWorkspaceContextRegistry } from "./workspace-context.js";
@@ -93,11 +93,42 @@ import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as pa
 const { adaptGeneration, rawGeneration } = createGenerationAdapter(
   copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan,
 );
-const nativeGenerationDiff = (value: NativeRawGenerationDiff) => copyGenerationDiff(value, parseWork(value.workJson));
+const nativeGenerationDiff = (value: NativeRawGenerationDiff) => copyGenerationDiff(
+  nativeBoundary<Parameters<typeof copyGenerationDiff>[0]>(value),
+  parseWork(value.workJson),
+);
 const workspaceHandles = new WeakMap<FsWorkspace, NativeRawWorkspace>();
 const { adaptChangeSet } = createChangeSetAdapter(adaptGeneration, nativeGenerationDiff);
-const fsHandles = new WeakMap<NativeFsEngine, NativeRawFs>();
-const decodeMergeConflict = (raw: NativeRawMergeConflict) => decodeSharedMergeConflict(raw, "native merge");
+type NativeAdapterScope = {
+  readonly adaptGeneration: typeof adaptGeneration;
+  readonly rawGeneration: typeof rawGeneration;
+  readonly adaptChangeSet: typeof adaptChangeSet;
+  readonly workspaceHandles: WeakMap<FsWorkspace, NativeRawWorkspace>;
+};
+
+const nativeScope: NativeAdapterScope = {
+  adaptGeneration,
+  rawGeneration,
+  adaptChangeSet,
+  workspaceHandles,
+};
+const workspaceScopes = new WeakMap<FsWorkspace, NativeAdapterScope>();
+type NativeFsHandle = { readonly raw: NativeRawFs; readonly scope: NativeAdapterScope };
+const fsHandles = new WeakMap<NativeFsEngine, NativeFsHandle>();
+const decodeMergeConflict = (raw: unknown) => decodeSharedMergeConflict(
+  nativeBoundary<NativeRawMergeConflict>(raw),
+  "native merge",
+);
+
+/**
+ * Generated N-API declarations use Buffer while the provider adapters expose
+ * the SDK's Uint8Array surface. Nullable fields are normalized at their use sites. The
+ * runtime binding is the authority; this helper marks the one-way adapter
+ * boundary without introducing an untyped any escape hatch.
+ */
+function nativeBoundary<T>(value: unknown): T {
+  return value as T;
+}
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
@@ -297,11 +328,11 @@ export async function openNativeWorkspaceGraph(stateRoot: string): Promise<Works
 export async function openNativeOperationWindowCoordinator(
   filesystem: NativeFsEngine,
 ): Promise<OperationWindowCoordinator> {
-  const raw = fsHandles.get(filesystem);
-  if (raw === undefined) {
+  const handle = fsHandles.get(filesystem);
+  if (handle === undefined) {
     throw new TypeError("operation windows require a native filesystem opened by this module");
   }
-  return adaptOperationWindowCoordinator(raw.operationWindows());
+  return adaptOperationWindowCoordinator(handle.raw.operationWindows(), handle.scope);
 }
 
 function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
@@ -312,8 +343,10 @@ function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
     async fork(parent, destination, idempotencyKey) {
       requireWorkspaceName(destination);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
+      const scope = workspaceScopes.get(parent) ?? nativeScope;
       return adaptWorkspace(
-        await raw.fork(rawWorkspace(parent), destination, idempotencyKey),
+        await raw.fork(rawWorkspace(parent, scope), destination, idempotencyKey),
+        scope,
       );
     },
     async authorizeJoin(childWorkspaceId, parentWorkspaceId) {
@@ -333,6 +366,7 @@ function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
 
 function adaptOperationWindowCoordinator(
   raw: NativeRawOperationWindowCoordinator,
+  scope: NativeAdapterScope = nativeScope,
 ): OperationWindowCoordinator {
   return {
     async begin(workspaceId, parent, owner, nowMillis, expiresAtMillis) {
@@ -360,7 +394,7 @@ function adaptOperationWindowCoordinator(
     async finishWorkspace(workspace, lease, nowMillis, options) {
       validateWorkspaceRebaseOptions(options);
       const result = await raw.finishWorkspace(
-        rawWorkspace(workspace),
+        rawWorkspace(workspace, scope),
         nativeOperationWindowLease(lease),
         nowMillis,
         options,
@@ -370,42 +404,46 @@ function adaptOperationWindowCoordinator(
       }
       if (result.kind === "already-closed") return { kind: "already-closed" };
       if (result.kind === "reconciled" && result.rebase !== undefined) {
-        return { kind: "reconciled", rebase: parseWorkspaceRebaseResult(result.rebase) };
+        return { kind: "reconciled", rebase: parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(result.rebase)) };
       }
       throw new TypeError("native operation window returned a malformed workspace close result");
     },
     async recoverWorkspace(workspace, nowMillis, options) {
       validateWorkspaceRebaseOptions(options);
-      const result = await raw.recoverWorkspace(rawWorkspace(workspace), nowMillis, options);
-      return result === undefined ? undefined : parseWorkspaceRebaseResult(result);
+      const result = await raw.recoverWorkspace(rawWorkspace(workspace, scope), nowMillis, options);
+      return result == null ? undefined : parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(result));
     },
   };
 }
 
 function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository {
+  const projectOutput = (value: string) => parseGitCompatOutputJson(raw.canonicalizeOutputJson(value));
+  const projectPending = (value: string) => parseGitPendingTransitionJson(
+    raw.canonicalizePendingTransitionJson(value),
+  );
   const repository: GitCompatRepository = {
     async execute(command: GitCompatCommand, workspaceGeneration: GenerationIdentity) {
-      return parseGitCompatOutputJson(
-        await raw.executeJson(JSON.stringify(encodeGitCompatCommand(command)), workspaceGeneration),
+      return projectOutput(
+        await raw.executePublicJson(stringifyGitCompatCommand(command), workspaceGeneration),
       );
     },
     async executeArgv(argv, workspaceGeneration, defaultAuthor, nowSeconds) {
       gitCompatSafeTimestamp(nowSeconds);
-      return parseGitCompatOutputJson(
+      return projectOutput(
         await raw.executeArgvJson(argv, workspaceGeneration, defaultAuthor, nowSeconds.toString()),
       );
     },
     async pendingTransition() {
       const value = await raw.pendingTransitionJson();
-      return value === undefined ? undefined : parseGitPendingTransitionJson(value);
+      return value == null ? undefined : projectPending(value);
     },
     async completeTransition(transition, resultingGeneration) {
-      return parseGitCompatOutputJson(
+      return projectOutput(
         await raw.completeTransitionJson(transition, resultingGeneration),
       );
     },
     async completeTransitionResult(transition, result) {
-      return parseGitCompatOutputJson(
+      return projectOutput(
         await raw.completeTransitionResultJson(transition, stringifyGitFilesystemResult(result)),
       );
     },
@@ -441,7 +479,7 @@ function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository 
       head: GitCommitIdentity | undefined,
       switchToBranch: boolean,
     ) {
-      return parseGitCompatOutputJson(
+      return projectOutput(
         await raw.registerBranchWorkspaceJson(
           branch,
           workspaceId,
@@ -459,7 +497,7 @@ function adaptGitCompat(raw: NativeRawGitCompatRepository): GitCompatRepository 
       authoredAtSeconds: bigint,
     ) {
       gitCompatSafeTimestamp(authoredAtSeconds);
-      return parseGitCompatOutputJson(
+      return projectOutput(
         await raw.recordCommitJson(
           expectedHead === undefined ? undefined : gitCommitBytes(expectedHead),
           generation,
@@ -486,6 +524,17 @@ function gitCommitBytes(identity: GitCommitIdentity): Uint8Array {
 
 function adaptFs(raw: NativeRawFs): NativeFsEngine {
   const targetMount = nativeMount(raw.capabilities.platform, raw.capabilities.nativeMount);
+  const generationAdapter = createGenerationAdapter(
+    copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, "filesystem engine",
+  );
+  const changeSetAdapter = createChangeSetAdapter(
+    generationAdapter.adaptGeneration, nativeGenerationDiff, "filesystem engine",
+  );
+  const scope: NativeAdapterScope = {
+    ...generationAdapter,
+    adaptChangeSet: changeSetAdapter.adaptChangeSet,
+    workspaceHandles: new WeakMap<FsWorkspace, NativeRawWorkspace>(),
+  };
   const capabilities: EngineCapabilities = {
     version: raw.capabilities.version,
     platform: raw.capabilities.platform,
@@ -545,11 +594,11 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     },
     async createWorkspace(name: string): Promise<NativeFsWorkspace> {
       requireWorkspaceName(name);
-      return adaptWorkspace(await raw.createWorkspace(name));
+      return adaptWorkspace(await raw.createWorkspace(name), scope);
     },
     async openWorkspace(name: string): Promise<NativeFsWorkspace> {
       requireWorkspaceName(name);
-      return adaptWorkspace(await raw.openWorkspace(name));
+      return adaptWorkspace(await raw.openWorkspace(name), scope);
     },
     async attachDirectory(
       name: string,
@@ -561,7 +610,7 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
       requirePositiveInteger(options.maximumPaths, "maximum source paths");
       requirePositiveInteger(options.maximumExtentSpans, "maximum source extent spans");
       requirePositiveInteger(options.maximumQueuedChanges, "maximum queued source changes");
-      return adaptWorkspace(await raw.attachDirectory(name, path, options));
+      return adaptWorkspace(await raw.attachDirectory(name, path, options), scope);
     },
     get cancelled(): boolean {
       return raw.cancelled;
@@ -571,7 +620,7 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     },
     close(): void {},
   };
-  fsHandles.set(engine, raw);
+  fsHandles.set(engine, { raw, scope });
   return engine;
 }
 
@@ -591,7 +640,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     get acquisitionWork() { return parseWork(raw.acquisitionWorkJson); },
     async applyTransaction(operations) {
       const value = await raw.applyTransaction(operations.map(nativeTransactionOperation));
-      return copyTransactionResult(value, parseWork(value.workJson));
+      return copyTransactionResult({ ...value, createdFileIds: value.createdFileIds.map(id => id ?? undefined) }, parseWork(value.workJson));
     },
     async checkpoint() { return checkpointResult(await raw.checkpoint()); },
     async refreshHead() { return checkpointResult(await raw.refreshHead()); },
@@ -602,7 +651,10 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     },
     async prepareMerge(theirs, maximumChanges, maximumConflicts) {
       const value = await raw.prepareMerge(theirs, maximumChanges, maximumConflicts);
-      return parseMergePreparation({ ...value, work: parseWork(value.workJson) }, decodeMergeConflict);
+      return parseMergePreparation(
+        nativeBoundary<Parameters<typeof parseMergePreparation>[0]>({ ...value, work: parseWork(value.workJson), conflicts: value.conflicts }),
+        decodeMergeConflict,
+      );
     },
     mount(destination, writable) {
       const value = raw.mount(destination, writable);
@@ -627,15 +679,17 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     },
     async lookupBatchNoFollow(paths) {
       const value = await raw.lookupBatchNoFollow(paths);
-      return { entries: copyBatchLookupEntries(value.entries), retainedAllocationBytes: value.retainedAllocationBytes, work: parseWork(value.workJson) };
+      return { entries: copyBatchLookupEntries(
+        nativeBoundary<Parameters<typeof copyBatchLookupEntries>[0]>(value.entries),
+      ), retainedAllocationBytes: value.retainedAllocationBytes, work: parseWork(value.workJson) };
     },
     async statNoFollow(path) {
       const value = await raw.statNoFollow(path);
-      return copyStatResult(value, parseWork(value.workJson));
+      return copyStatResult(nativeBoundary<Parameters<typeof copyStatResult>[0]>(value), parseWork(value.workJson));
     },
     async readFileRecordById(fileId) {
       const value = await raw.readFileRecordById(fileId);
-      return { record: copyFileRecord(value.record), work: parseWork(value.workJson) };
+      return { record: copyFileRecord(nativeBoundary<Parameters<typeof copyFileRecord>[0]>(value.record)), work: parseWork(value.workJson) };
     },
     async readMetadata(path) { return metadataResult(await raw.readMetadata(path)); },
     async readMetadataById(fileId) { return metadataResult(await raw.readMetadataById(fileId)); },
@@ -645,11 +699,11 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     async setAttributesById(fileId, canonicalBytes, logicalBytes) { return mutationResult(await raw.setAttributesById(fileId, canonicalBytes, logicalBytes)); },
     async readNamedAttribute(path, attributeClass, name) {
       const value = await raw.readNamedAttribute(path, attributeClass, name);
-      return copyNamedAttributeResult(value, parseWork(value.workJson));
+      return copyNamedAttributeResult(nativeBoundary<Parameters<typeof copyNamedAttributeResult>[0]>(value), parseWork(value.workJson));
     },
     async listNamedAttributes(path, after, maximumEntries) {
       const value = await raw.listNamedAttributes(path, after?.attributeClass, after?.name, maximumEntries);
-      return copyNamedAttributePage(value, parseWork(value.workJson));
+      return copyNamedAttributePage(nativeBoundary<Parameters<typeof copyNamedAttributePage>[0]>(value), parseWork(value.workJson));
     },
     async writeNamedAttribute(path, attributeClass, name, bytes, mode) { return mutationResult(await raw.writeNamedAttribute(path, attributeClass, name, bytes, mode)); },
     async removeNamedAttribute(path, attributeClass, name) { return mutationResult(await raw.removeNamedAttribute(path, attributeClass, name)); },
@@ -657,7 +711,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
       const value = await raw.resolveFiles(paths);
       const files = Array.from({ length: value.length }, (_, index) => {
         const file = value.take(index);
-        return file === undefined ? undefined : adaptResolvedFile(file);
+        return file == null ? undefined : adaptResolvedFile(file);
       });
       return { files, work: parseWork(value.workJson) };
     },
@@ -665,8 +719,8 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     async readFileRangeById(fileId, offset, length) { return fileReadResult(await raw.readFileRangeById(fileId, offset, length)); },
     async planFileExtents(path, offset, length, maximumSpans) { return nativeFileExtentPlan(await raw.planFileExtents(path, offset, length, maximumSpans)); },
     async planFileExtentsById(fileId, offset, length, maximumSpans) { return nativeFileExtentPlan(await raw.planFileExtentsById(fileId, offset, length, maximumSpans)); },
-    async seekFileExtent(path, offset, target) { return seekResult(await raw.seekFileExtent(path, offset, target)); },
-    async seekFileExtentById(fileId, offset, target) { return seekResult(await raw.seekFileExtentById(fileId, offset, target)); },
+    async seekFileExtent(path, offset, target) { return seekResult(nativeBoundary<Parameters<typeof seekResult>[0]>(await raw.seekFileExtent(path, offset, target))); },
+    async seekFileExtentById(fileId, offset, target) { return seekResult(nativeBoundary<Parameters<typeof seekResult>[0]>(await raw.seekFileExtentById(fileId, offset, target))); },
     async readSymbolicLink(path) { return fileReadResult(await raw.readSymbolicLink(path)); },
     async readReparsePoint(path) { return fileReadResult(await raw.readReparsePoint(path)); },
     async listDirectory(path, after, maximumEntries) {
@@ -675,7 +729,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     },
     async listDirectoryRecords(path, after, maximumEntries) {
       const value = await raw.listDirectoryRecords(path, after, maximumEntries);
-      return copyDirectoryRecordPage(value, parseWork(value.workJson));
+      return copyDirectoryRecordPage(nativeBoundary<Parameters<typeof copyDirectoryRecordPage>[0]>(value), parseWork(value.workJson));
     },
     async createFile(path, bytes) { return mutationResult(await raw.createFile(path, bytes)); },
     async createDirectory(path) { return mutationResult(await raw.createDirectory(path)); },
@@ -701,7 +755,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     async resumeLive(operationId, maximumAttempts, maximumConflicts) { return liveMutationResult(await raw.resumeLive(operationId, maximumAttempts, maximumConflicts)); },
     async rebaseHead(maximumConflicts) {
       const value = await raw.rebaseHead(maximumConflicts);
-      return copyRebaseResult(value, parseWork(value.workJson));
+      return copyRebaseResult(nativeBoundary<Parameters<typeof copyRebaseResult>[0]>(value), parseWork(value.workJson));
     },
     async discard() { return mutationResult(await raw.discard()); },
     cancel() { raw.cancel(); },
@@ -739,8 +793,8 @@ function nativeWatchBatch(value: NativeRawWatchBatch): NativeWatchBatch {
   const work = parseWork(value.workJson);
   if (value.status === "changes" && value.firstSequence !== undefined && value.nextSequence !== undefined && value.reason === undefined) {
     return { status: "changes", epoch: value.epoch, firstSequence: value.firstSequence, nextSequence: value.nextSequence, changes: value.changes.map(change => {
-      if ((change.kind === "created" || change.kind === "modified" || change.kind === "arrived" || change.kind === "metadata" || change.kind === "removed") && change.path !== undefined && change.from === undefined && change.to === undefined) return { kind: change.kind, path: copyNamespacePath(change.path) };
-      if (change.kind === "renamed" && change.path === undefined && change.from !== undefined && change.to !== undefined) return { kind: "renamed", from: copyNamespacePath(change.from), to: copyNamespacePath(change.to) };
+      if ((change.kind === "created" || change.kind === "modified" || change.kind === "arrived" || change.kind === "metadata" || change.kind === "removed") && change.path !== undefined && change.from === undefined && change.to === undefined) return { kind: change.kind, path: copyNamespacePath(nativeBoundary<NativeNamespacePath>(change.path)) };
+      if (change.kind === "renamed" && change.path === undefined && change.from !== undefined && change.to !== undefined) return { kind: "renamed", from: copyNamespacePath(nativeBoundary<NativeNamespacePath>(change.from)), to: copyNamespacePath(nativeBoundary<NativeNamespacePath>(change.to)) };
       throw new TypeError("native binding returned a malformed watch change");
     }), work };
   }
@@ -825,53 +879,65 @@ function seekResult(value: { readonly offset: bigint | undefined; readonly workJ
 }
 
 function nativeFileExtentPlan(value: Awaited<ReturnType<NativeRawCheckout["planFileExtents"]>>) {
-  return copyFileExtentPlan(value, parseWork(value.workJson), "native binding");
+  return copyFileExtentPlan(
+    nativeBoundary<Parameters<typeof copyFileExtentPlan>[0]>(value),
+    parseWork(value.workJson),
+    "native binding",
+  );
 }
 
 function commitResult(value: Awaited<ReturnType<NativeRawCheckout["commit"]>>) {
-  return copyCheckoutCommit(value, parseWork(value.workJson));
+  return copyCheckoutCommit(nativeBoundary<Parameters<typeof copyCheckoutCommit>[0]>(value), parseWork(value.workJson));
 }
 
 function liveMutationResult(value: Awaited<ReturnType<NativeRawCheckout["resumeLive"]>>) {
-  return copyLiveMutation(value, parseWork(value.workJson));
+  return copyLiveMutation(nativeBoundary<Parameters<typeof copyLiveMutation>[0]>(value), parseWork(value.workJson));
 }
 
 function liveTransactionResult(value: Awaited<ReturnType<NativeRawCheckout["mutateLive"]>>) {
-  return copyLiveTransaction(value, parseWork(value.workJson));
+  return copyLiveTransaction(nativeBoundary<Parameters<typeof copyLiveTransaction>[0]>(value), parseWork(value.workJson));
 }
 
 function nativeTransactionOperation(value: TransactionOperation): NativeRawTransactionOperation {
   const operation: NativeRawTransactionOperation = {
     kind: value.kind,
-    path: "path" in value ? value.path : undefined,
-    source: "source" in value ? value.source : undefined,
-    destination: "destination" in value ? value.destination : undefined,
-    bytes: "bytes" in value ? value.bytes : undefined,
-    target: "target" in value ? value.target : undefined,
-    payload: "payload" in value ? value.payload : undefined,
-    expectedFileId: "expectedFileId" in value ? value.expectedFileId : undefined,
-    fileKind: "fileKind" in value ? value.fileKind : undefined,
-    offset: "offset" in value ? value.offset : undefined,
-    sourceOffset: "sourceOffset" in value ? value.sourceOffset : undefined,
-    destinationOffset: "destinationOffset" in value ? value.destinationOffset : undefined,
-    length: "length" in value ? value.length : undefined,
-    logicalBytes: "logicalBytes" in value ? value.logicalBytes : undefined,
-    major: "major" in value ? value.major : undefined,
-    minor: "minor" in value ? value.minor : undefined,
-    replace: "replace" in value ? value.replace : undefined,
-    allocated: "allocated" in value ? value.allocated : undefined,
-    extend: "extend" in value ? value.extend : undefined,
-    keepSize: "keepSize" in value ? value.keepSize : undefined,
-    canonicalBytes: "canonicalBytes" in value ? value.canonicalBytes : undefined,
+    ...("path" in value ? { path: value.path } : {}),
+    ...("source" in value ? { source: value.source } : {}),
+    ...("destination" in value ? { destination: value.destination } : {}),
+    ...("bytes" in value ? { bytes: copyBytes(value.bytes) } : {}),
+    ...("target" in value ? { target: copyBytes(value.target) } : {}),
+    ...("payload" in value ? { payload: copyBytes(value.payload) } : {}),
+    ...("expectedFileId" in value && value.expectedFileId !== undefined
+      ? { expectedFileId: copyBytes(value.expectedFileId) } : {}),
+    ...("fileKind" in value ? { fileKind: value.fileKind } : {}),
+    ...("offset" in value ? { offset: value.offset } : {}),
+    ...("sourceOffset" in value ? { sourceOffset: value.sourceOffset } : {}),
+    ...("destinationOffset" in value ? { destinationOffset: value.destinationOffset } : {}),
+    ...("length" in value ? { length: value.length } : {}),
+    ...("logicalBytes" in value ? { logicalBytes: value.logicalBytes } : {}),
+    ...("major" in value ? { major: value.major } : {}),
+    ...("minor" in value ? { minor: value.minor } : {}),
+    ...("replace" in value ? { replace: value.replace } : {}),
+    ...("allocated" in value ? { allocated: value.allocated } : {}),
+    ...("extend" in value ? { extend: value.extend } : {}),
+    ...("keepSize" in value ? { keepSize: value.keepSize } : {}),
+    ...("canonicalBytes" in value ? { canonicalBytes: copyBytes(value.canonicalBytes) } : {}),
   };
   return operation;
 }
 
-function adaptWorkspace(raw: NativeRawWorkspace): NativeFsWorkspace {
+function adaptWorkspace(
+  raw: NativeRawWorkspace,
+  scope: NativeAdapterScope = nativeScope,
+): NativeFsWorkspace {
   const workspace: NativeFsWorkspace = {
     get name() { return raw.name; },
     get id() { return copyBytes(raw.id); },
-    ...workspaceOperations(raw, adaptGeneration, parseWorkspaceRebaseResult),
+    ...workspaceOperations(
+      nativeBoundary<Parameters<typeof workspaceOperations>[0]>(raw),
+      value => scope.adaptGeneration(nativeBoundary<Parameters<typeof scope.adaptGeneration>[0]>(value)),
+      value => parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(value)),
+    ),
     async sourceState(): Promise<SourceResult> {
       return parseSourceResult(await raw.sourceState());
     },
@@ -882,30 +948,42 @@ function adaptWorkspace(raw: NativeRawWorkspace): NativeFsWorkspace {
       return parseSourceResult(await raw.rescanSource());
     },
     async seal(): Promise<FsGeneration> {
-      return adaptGeneration(await raw.seal());
+      return scope.adaptGeneration(nativeBoundary<Parameters<typeof scope.adaptGeneration>[0]>(await raw.seal()));
     },
     async fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
-      return adaptWorkspace(await raw.fork(destination, idempotencyKey));
+      return adaptWorkspace(await raw.fork(destination, idempotencyKey), scope);
     },
     async forkAt(destination: string, generation: FsGeneration): Promise<NativeFsWorkspace> {
       requireWorkspaceName(destination);
-      return adaptWorkspace(await raw.forkAt(destination, rawGeneration(generation)));
+      return adaptWorkspace(await raw.forkAt(
+        destination,
+        nativeBoundary<Parameters<typeof raw.forkAt>[1]>(scope.rawGeneration(generation)),
+      ), scope);
     },
     async beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction> {
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
-      return adaptTransaction(await raw.beginTransaction(idempotencyKey), copyTransactionRebase);
+      return adaptTransaction(
+        nativeBoundary<Parameters<typeof adaptTransaction>[0]>(await raw.beginTransaction(idempotencyKey)),
+        copyTransactionRebase,
+      );
     },
     async diff(from, to, maximumChanges): Promise<FsChangeSet> {
       requirePositiveInteger(maximumChanges, "maximum changes");
-      return adaptChangeSet(
-        await raw.diff(rawGeneration(from), rawGeneration(to), maximumChanges),
+      return scope.adaptChangeSet(
+        nativeBoundary<Parameters<typeof scope.adaptChangeSet>[0]>(
+          await raw.diff(
+            nativeBoundary<Parameters<typeof raw.diff>[0]>(scope.rawGeneration(from)),
+            nativeBoundary<Parameters<typeof raw.diff>[1]>(scope.rawGeneration(to)),
+            maximumChanges,
+          ),
+        ),
       );
     },
     async joinInto(target, options): Promise<ResolvableFsJoinPlan> {
       validateJoinOptions(options);
-      return adaptJoinPlan(await raw.joinInto(rawWorkspace(target), options));
+      return adaptJoinPlan(await raw.joinInto(rawWorkspace(target, scope), options));
     },
     async mount(destination, options): Promise<NativeWorkspaceMount> {
       if (destination.length === 0) throw new RangeError("mount destination must be non-empty");
@@ -915,19 +993,32 @@ function adaptWorkspace(raw: NativeRawWorkspace): NativeFsWorkspace {
       return adaptWorkspaceMount(await raw.mount(destination, options));
     },
   };
+  scope.workspaceHandles.set(workspace, raw);
+  workspaceScopes.set(workspace, scope);
+  // Keep the module-wide registry for the engine-neutral workspace graph API.
   workspaceHandles.set(workspace, raw);
   return workspace;
 }
 
-function rawWorkspace(workspace: FsWorkspace): NativeRawWorkspace {
-  const raw = workspaceHandles.get(workspace);
-  if (raw === undefined) throw new TypeError("workspace belongs to another filesystem runtime");
+function rawWorkspace(
+  workspace: FsWorkspace,
+  scope: NativeAdapterScope = nativeScope,
+): NativeRawWorkspace {
+  const raw = scope.workspaceHandles.get(workspace);
+  if (raw === undefined) throw new TypeError("workspace belongs to another filesystem engine");
   return raw;
 }
 
-const parseJoinResult = (value: NativeRawJoinResult): JoinResult => parseSharedJoinResult(value, decodeMergeConflict);
-const parseWorkspaceRebaseResult = (value: NativeRawJoinResult): WorkspaceRebaseResult => parseSharedWorkspaceRebaseResult(value, decodeMergeConflict);
-const adaptJoinPlan = (raw: import("./contracts.js").NativeRawJoinPlan): ResolvableFsJoinPlan => adaptResolvableJoinPlan(raw, parseJoinResult);
+const parseJoinResult = (value: WasmRawJoinResult): JoinResult => parseSharedJoinResult(
+  value,
+  decodeMergeConflict,
+);
+const parseWorkspaceRebaseResult = (value: WasmRawJoinResult): WorkspaceRebaseResult => parseSharedWorkspaceRebaseResult(
+  value,
+  decodeMergeConflict,
+);
+const adaptJoinPlan = (raw: import("./contracts.js").NativeRawJoinPlan): ResolvableFsJoinPlan =>
+  adaptResolvableJoinPlan(nativeBoundary<Parameters<typeof adaptResolvableJoinPlan>[0]>(raw), parseJoinResult);
 
 function parseSourceResult(value: NativeRawSourceResult): SourceResult {
   const { status } = value;
@@ -968,10 +1059,10 @@ function adaptWorkspaceMount(raw: NativeRawWorkspaceMount): NativeWorkspaceMount
       return raw.path;
     },
     sync() {
-      return raw.sync();
+      return nativeBoundary<Promise<void>>(raw.sync());
     },
     unmount() {
-      return raw.unmount();
+      return nativeBoundary<Promise<boolean>>(raw.unmount());
     },
   };
 }

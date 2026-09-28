@@ -1,8 +1,8 @@
 //! Canonical generated-wire translation for every remote filesystem deployment.
 
+use crate::hosted_contract;
 use crate::kernel::{
-    FileKind as EngineFileKind, FileMetadata, FilePayload, LogicalName, MetadataField,
-    NameEncoding, TreeEntry,
+    FileKind as EngineFileKind, FileMetadata, FilePayload, LogicalName, MetadataField, TreeEntry,
 };
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
 use crate::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
@@ -10,9 +10,8 @@ use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest,
     DurableCommit, ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory,
     JoinOutcome, MergeConflict, ObjectId, ObjectKind, Sequence, Transaction, TransactionCommit,
-    TransactionConflict, TransactionConflictRegion, TransactionDependencyUse, TransactionRebase,
-    TransactionSparseSeek, Workspace, WorkspaceDelete, WorkspaceError, WorkspaceExtentKind,
-    WorkspaceMetadata, WorkspaceRebase,
+    TransactionConflict, TransactionConflictRegion, TransactionRebase, Workspace, WorkspaceDelete,
+    WorkspaceError, WorkspaceMetadata, WorkspaceRebase,
 };
 use bytes::Bytes;
 use futures::{StreamExt, stream};
@@ -22,6 +21,13 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 type WireStream<T> = Pin<Box<dyn futures::Stream<Item = Result<T, Status>> + Send + 'static>>;
+
+/// Version of the public Filesystem protocol identity.
+pub const FILESYSTEM_PROTOCOL_VERSION: &str = "1";
+/// Default maximum encoded response accepted by the hosted Filesystem service.
+pub const DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+/// Default maximum page size advertised by the hosted Filesystem service.
+pub const DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS: u32 = 1_024;
 
 enum JoinTargetHead<A, O> {
     Expected {
@@ -50,9 +56,9 @@ impl Default for FilesystemWireLimits {
     fn default() -> Self {
         Self {
             maximum_request_bytes: 16 * 1024 * 1024,
-            maximum_response_bytes: 16 * 1024 * 1024,
+            maximum_response_bytes: DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES,
             maximum_transaction_mutations: 2_048,
-            maximum_page_items: 1_024,
+            maximum_page_items: DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS,
             maximum_credential_seconds: 3_600,
         }
     }
@@ -428,7 +434,7 @@ where
             .protocol
             .and_then(|value| value.protocol)
         {
-            if !requested.version.is_empty() && requested.version != "1" {
+            if !requested.version.is_empty() && requested.version != FILESYSTEM_PROTOCOL_VERSION {
                 return Err(Status::failed_precondition(
                     "unsupported filesystem contract version",
                 ));
@@ -441,7 +447,7 @@ where
             }
         }
         let protocol = protocol::ProtocolIdentity {
-            version: "1".to_owned(),
+            version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
             descriptor_digest: crate::descriptor_digest(),
         };
         Ok(Response::new(wire::HandshakeResponse {
@@ -450,18 +456,13 @@ where
                 supported: Some(protocol::CapabilitySet {
                     capabilities: vec![protocol::Capability {
                         name: "filesystem".to_owned(),
-                        version: "1".to_owned(),
+                        version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
                     }],
                 }),
             }),
             capabilities: Some(wire::Capabilities {
-                contract_version: "1".to_owned(),
-                profiles: vec![
-                    wire::FilesystemProfile::Portable as i32,
-                    wire::FilesystemProfile::Posix as i32,
-                    wire::FilesystemProfile::Windows as i32,
-                    wire::FilesystemProfile::Browser as i32,
-                ],
+                contract_version: FILESYSTEM_PROTOCOL_VERSION.to_owned(),
+                profiles: hosted_contract::supported_profiles(),
                 maximum_request_bytes: self.limits.maximum_request_bytes,
                 maximum_response_bytes: self.limits.maximum_response_bytes,
                 maximum_transaction_mutations: self.limits.maximum_transaction_mutations,
@@ -720,13 +721,7 @@ where
                         offset: span.offset,
                         length: span.length,
                     }),
-                    kind: match span.kind {
-                        WorkspaceExtentKind::Hole => wire::ExtentKind::Hole as i32,
-                        WorkspaceExtentKind::AllocatedZero => {
-                            wire::ExtentKind::AllocatedZero as i32
-                        }
-                        WorkspaceExtentKind::Content => wire::ExtentKind::Content as i32,
-                    },
+                    kind: hosted_contract::extent_kind(span.kind) as i32,
                 })
                 .collect(),
             truncated,
@@ -1775,24 +1770,15 @@ fn input_i64(value: Option<wire::OptionalI64>) -> Result<MetadataField<i64>, Sta
 }
 
 fn profile(value: i32) -> Result<EngineProfile, Status> {
-    match wire::FilesystemProfile::try_from(value).ok() {
-        Some(wire::FilesystemProfile::Portable) => Ok(EngineProfile::Portable),
-        Some(wire::FilesystemProfile::Posix) => Ok(EngineProfile::Posix),
-        Some(wire::FilesystemProfile::Windows) => Ok(EngineProfile::Windows),
-        Some(wire::FilesystemProfile::Browser) => Ok(EngineProfile::Browser),
-        Some(wire::FilesystemProfile::Unspecified) | None => {
-            Err(Status::invalid_argument("filesystem profile is required"))
-        }
-    }
+    let value = wire::FilesystemProfile::try_from(value)
+        .ok()
+        .ok_or_else(|| Status::invalid_argument("filesystem profile is required"))?;
+    hosted_contract::profile_from_wire(value)
+        .ok_or_else(|| Status::invalid_argument("filesystem profile is required"))
 }
 
 fn profile_message(value: EngineProfile) -> i32 {
-    match value {
-        EngineProfile::Portable => wire::FilesystemProfile::Portable as i32,
-        EngineProfile::Posix => wire::FilesystemProfile::Posix as i32,
-        EngineProfile::Windows => wire::FilesystemProfile::Windows as i32,
-        EngineProfile::Browser => wire::FilesystemProfile::Browser as i32,
-    }
+    hosted_contract::profile(value) as i32
 }
 
 fn source_state_message(
@@ -2128,11 +2114,7 @@ fn tree_entry_snapshot(entry: &TreeEntry) -> wire::TreeEntrySnapshot {
 }
 
 fn logical_name(name: &LogicalName) -> wire::LogicalName {
-    let encoding = match name.encoding() {
-        NameEncoding::Utf8 => wire::NameEncoding::Utf8,
-        NameEncoding::PosixBytes => wire::NameEncoding::PosixBytes,
-        NameEncoding::WindowsUtf16Le => wire::NameEncoding::WindowsUtf16le,
-    };
+    let encoding = hosted_contract::name_encoding(name.encoding());
     wire::LogicalName {
         encoding: encoding as i32,
         bytes: name.as_bytes().to_vec(),
@@ -2140,16 +2122,10 @@ fn logical_name(name: &LogicalName) -> wire::LogicalName {
 }
 
 fn input_logical_name(name: wire::LogicalName) -> Result<LogicalName, Status> {
-    let encoding = match wire::NameEncoding::try_from(name.encoding)
-        .map_err(|_| Status::invalid_argument("name encoding is invalid"))?
-    {
-        wire::NameEncoding::Utf8 => NameEncoding::Utf8,
-        wire::NameEncoding::PosixBytes => NameEncoding::PosixBytes,
-        wire::NameEncoding::WindowsUtf16le => NameEncoding::WindowsUtf16Le,
-        wire::NameEncoding::Unspecified => {
-            return Err(Status::invalid_argument("name encoding is required"));
-        }
-    };
+    let value = wire::NameEncoding::try_from(name.encoding)
+        .map_err(|_| Status::invalid_argument("name encoding is invalid"))?;
+    let encoding = hosted_contract::name_encoding_from_wire(value)
+        .ok_or_else(|| Status::invalid_argument("name encoding is required"))?;
     LogicalName::new(encoding, name.bytes, 255)
         .map_err(|error| Status::invalid_argument(error.to_string()))
 }
@@ -2172,6 +2148,8 @@ fn work_counters(work: crate::WorkCounters) -> wire::WorkCounters {
         bytes_copied: work.bytes_copied,
         bytes_encoded: work.bytes_encoded,
         source_bytes_read: work.source_bytes_read,
+        source_path_components: work.source_path_components,
+        source_entries_visited: work.source_entries_visited,
         output_bytes: work.output_bytes,
         items_examined: work.items_examined,
         items_returned: work.items_returned,
@@ -2213,26 +2191,14 @@ fn join_plan_id(
 }
 
 fn join_history(value: i32) -> Result<JoinHistory, Status> {
-    match wire::JoinHistory::try_from(value)
-        .map_err(|_| Status::invalid_argument("join history is invalid"))?
-    {
-        wire::JoinHistory::Merge => Ok(JoinHistory::Merge),
-        wire::JoinHistory::Rebase => Ok(JoinHistory::Rebase),
-        wire::JoinHistory::Squash => Ok(JoinHistory::Squash),
-        wire::JoinHistory::CherryPick => Ok(JoinHistory::CherryPick),
-        wire::JoinHistory::Unspecified => {
-            Err(Status::invalid_argument("join history must be specified"))
-        }
-    }
+    let value = wire::JoinHistory::try_from(value)
+        .map_err(|_| Status::invalid_argument("join history is invalid"))?;
+    hosted_contract::join_history_from_wire(value)
+        .ok_or_else(|| Status::invalid_argument("join history must be specified"))
 }
 
 const fn join_history_code(value: JoinHistory) -> u8 {
-    match value {
-        JoinHistory::Merge => 1,
-        JoinHistory::Rebase => 2,
-        JoinHistory::Squash => 3,
-        JoinHistory::CherryPick => 4,
-    }
+    hosted_contract::join_history(value) as u8
 }
 
 fn encode_object_id(object: ObjectId) -> Vec<u8> {
@@ -2327,10 +2293,7 @@ fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
         } => Region::SparseSeek(wire::SparseConflict {
             file_id: file_id.into_bytes().to_vec(),
             offset,
-            target: match target {
-                TransactionSparseSeek::Data => wire::SparseTarget::Data as i32,
-                TransactionSparseSeek::Hole => wire::SparseTarget::Hole as i32,
-            },
+            target: hosted_contract::sparse_target(target) as i32,
         }),
         TransactionConflictRegion::DirectoryName { directory_id, name } => {
             Region::DirectoryName(wire::DirectoryNameConflict {
@@ -2350,13 +2313,7 @@ fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
     };
     wire::Conflict {
         region: Some(region),
-        r#use: match value.usage {
-            TransactionDependencyUse::Observation => wire::ConflictUse::Observation as i32,
-            TransactionDependencyUse::Mutation => wire::ConflictUse::Mutation as i32,
-            TransactionDependencyUse::ObservationAndMutation => {
-                wire::ConflictUse::ObservationAndMutation as i32
-            }
-        },
+        r#use: hosted_contract::conflict_use(value.usage) as i32,
         expected_digest: value
             .expected
             .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
@@ -2491,17 +2448,7 @@ fn output_i64(value: Option<i64>) -> wire::OptionalI64 {
 }
 
 fn file_kind(value: EngineFileKind) -> i32 {
-    (match value {
-        EngineFileKind::Regular => wire::FileKind::Regular,
-        EngineFileKind::Directory => wire::FileKind::Directory,
-        EngineFileKind::SymbolicLink => wire::FileKind::SymbolicLink,
-        EngineFileKind::Fifo => wire::FileKind::Fifo,
-        EngineFileKind::Socket => wire::FileKind::Socket,
-        EngineFileKind::CharacterDevice => wire::FileKind::CharacterDevice,
-        EngineFileKind::BlockDevice => wire::FileKind::BlockDevice,
-        EngineFileKind::ReparsePoint => wire::FileKind::ReparsePoint,
-        EngineFileKind::MountBoundary => wire::FileKind::MountBoundary,
-    }) as i32
+    hosted_contract::file_kind(value) as i32
 }
 
 fn required<T>(value: Option<T>, name: &'static str) -> Result<T, Status> {
@@ -2528,6 +2475,7 @@ fn status(error: &WorkspaceError) -> Status {
         | WorkspaceError::NoCommonAncestor
         | WorkspaceError::LineageLimit
         | WorkspaceError::JoinLimit
+        | WorkspaceError::StaleTarget
         | WorkspaceError::ChangedPathLimit
         | WorkspaceError::NotFork => Status::failed_precondition(error.to_string()),
         WorkspaceError::Cancelled(_) => Status::cancelled(error.to_string()),

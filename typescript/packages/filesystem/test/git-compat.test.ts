@@ -1,16 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import {
-  encodeGitCompatCommand,
   finishGitCompatOutput,
   gitCompatSafeTimestamp,
   parseGitCompatOutputJson,
   parseGitPendingTransitionJson,
   stringifyGitFilesystemResult,
+  stringifyGitCompatCommand,
   type GitCompatCommand,
   type GitCompatOutput,
   type GitFilesystemAction,
   type GitFilesystemResult,
 } from "../src/compat.js";
+import { GIT_COMPAT_COMMAND_VARIANTS } from "../generated/git-compat-contract.js";
 
 const workspace = Uint8Array.from({ length: 16 }, (_, index) => index);
 const workspaceUuid = "00010203-0405-0607-0809-0a0b0c0d0e0f";
@@ -20,7 +21,13 @@ const exactTree = { kind: "exact" as const, workspace_id: workspace, generation 
 const exactTreeJson = { kind: "exact", workspace_id: Array.from(workspace), generation: Array.from(generation) };
 
 describe("Git compatibility command codec", () => {
-  test("encodes every advertised typed command", () => {
+  test("tracks the complete Rust command inventory", () => {
+    expect(GIT_COMPAT_COMMAND_VARIANTS.has("MergeContinue")).toBe(true);
+    expect(GIT_COMPAT_COMMAND_VARIANTS.has("MergeAbort")).toBe(true);
+    expect(GIT_COMPAT_COMMAND_VARIANTS.has("CheckIgnore")).toBe(true);
+  });
+
+  test("serializes every advertised typed command for Rust projection", () => {
     const commands: readonly GitCompatCommand[] = [
       { kind: "status" },
       { kind: "diff", cached: true },
@@ -46,16 +53,22 @@ describe("Git compatibility command codec", () => {
       { kind: "apply", patch: new TextEncoder().encode("patch") },
       { kind: "bisect", arguments: ["start", "bad", "good"] },
     ];
-    expect(commands.map((command) => JSON.stringify(encodeGitCompatCommand(command)))).toHaveLength(23);
-    expect(encodeGitCompatCommand(commands[9]!)).toEqual({
-      Reset: { target: "HEAD", mode: "Hard" },
+    expect(commands.map((command) => JSON.parse(stringifyGitCompatCommand(command)))).toHaveLength(23);
+    expect(JSON.parse(stringifyGitCompatCommand(commands[9]!))).toEqual({
+      kind: "reset", target: "HEAD", mode: "hard",
     });
-    expect(() => encodeGitCompatCommand({
+    expect(JSON.parse(stringifyGitCompatCommand({ kind: "merge-continue" }))).toEqual({
+      kind: "merge-continue",
+    });
+    expect(JSON.parse(stringifyGitCompatCommand({ kind: "merge-abort" }))).toEqual({
+      kind: "merge-abort",
+    });
+    expect(JSON.parse(stringifyGitCompatCommand({
       kind: "commit",
       message: "overflow",
       author: "agent",
       authoredAtSeconds: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
-    })).toThrow(RangeError);
+    })).authoredAtSeconds).toBe("9007199254740992");
     expect(gitCompatSafeTimestamp(10n)).toBe(10);
     expect(() => gitCompatSafeTimestamp(BigInt(Number.MAX_SAFE_INTEGER) + 1n)).toThrow(RangeError);
   });
@@ -112,6 +125,10 @@ describe("Git compatibility command codec", () => {
       kind: "nested-bytes",
       value: { bytes: [1, 2], nested: [[3]] },
     } });
+    expect(() => stringifyGitFilesystemResult({ Data: {
+      kind: "nested-bigint",
+      value: { nested: { epoch: BigInt(Number.MAX_SAFE_INTEGER) + 1n } },
+    } })).toThrow(TypeError);
   });
 
   test("preserves lazy trees, tracked paths, and issued capture proofs", () => {
@@ -174,19 +191,60 @@ describe("Git compatibility command codec", () => {
 
   test("rejects malformed machine-readable output", () => {
     expect(() => parseGitCompatOutputJson('{"Status":{"branch":"main"}}')).toThrow(TypeError);
+    expect(() => parseGitCompatOutputJson(JSON.stringify({ Text: 42 }))).toThrow(TypeError);
+    expect(() => parseGitCompatOutputJson(JSON.stringify({ Action: "bad" }))).toThrow(TypeError);
+    expect(() => parseGitCompatOutputJson(JSON.stringify({ Action: { Unknown: {} } }))).toThrow(TypeError);
+    expect(() => parseGitCompatOutputJson(JSON.stringify({
+      Status: {
+        branch: "main",
+        head: null,
+        workspace: exactTreeJson,
+        dirty: "future",
+        all_changes_staged: true,
+      },
+    }))).toThrow(TypeError);
     expect(() => parseGitCompatOutputJson(JSON.stringify({
       Prepared: {
         transition: [1, 2],
         action: { ApplyPatch: { patch: [256] } },
       },
     }))).toThrow(TypeError);
+    expect(() => parseGitCompatOutputJson(JSON.stringify({
+      Bisect: {
+        active: true,
+        good: null,
+        bad: null,
+        current: null,
+        remaining: -1,
+        first_bad: null,
+      },
+    }))).toThrow(TypeError);
+    expect(() => parseGitCompatOutputJson(JSON.stringify({
+      Bisect: {
+        active: true,
+        good: null,
+        bad: null,
+        current: null,
+        remaining: 4_294_967_296,
+        first_bad: null,
+      },
+    }))).toThrow(TypeError);
     expect(() => parseGitCompatOutputJson('{"Unknown":{}}')).toThrow(TypeError);
+    expect(() => parseGitPendingTransitionJson(JSON.stringify({
+      action: { ApplyPatch: { patch: [1] } },
+      mutation: "NoOp",
+    }))).toThrow(TypeError);
+    expect(() => parseGitPendingTransitionJson(JSON.stringify({
+      id: workspaceUuid,
+      action: "bad",
+      mutation: "NoOp",
+    }))).toThrow(TypeError);
   });
 });
 
 describe("Git compatibility durable execution", () => {
   test("returns the filesystem result when a no-op transition completes", async () => {
-    const action: GitFilesystemAction = { ApplyPatch: { patch: [1, 2, 3] } };
+    const action: GitFilesystemAction = { ApplyPatch: { patch: Uint8Array.from([1, 2, 3]) } };
     const result: GitFilesystemResult = { Applied: { tree: exactTree, tracked_paths: undefined } };
     let completed: Uint8Array | undefined;
     const output = await finishGitCompatOutput(
@@ -209,7 +267,7 @@ describe("Git compatibility durable execution", () => {
   });
 
   test("rejects a non-durable action", async () => {
-    const output: GitCompatOutput = { Action: { ApplyPatch: { patch: [1] } } };
+    const output: GitCompatOutput = { Action: { ApplyPatch: { patch: Uint8Array.from([1]) } } };
     await expect(finishGitCompatOutput(
       { async completeTransitionResult() { return "NoOp"; } },
       output,

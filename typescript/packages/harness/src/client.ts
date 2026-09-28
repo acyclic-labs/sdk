@@ -1,6 +1,7 @@
 import type { AggregateKind, Authority, OperationId } from "./index.js";
 import type { FileRef, ReferencedAttachments } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
+import { isSafeAuthorityId } from "./authority-contract.js";
 
 export interface ReplayCursor {
   readonly generation: string;
@@ -250,27 +251,27 @@ export class HarnessClient<Event = unknown> {
   ) {}
 
   handle(kind: AggregateKind, id: string): AggregateHandle<Event> {
-    return new AggregateHandle(this, { kind, id });
+    return new AggregateHandle(this, authority(kind, id));
   }
 
   agent(id: string): AgentHandle<Event> {
-    return new AgentHandle(this, { kind: "agent", id });
+    return new AgentHandle(this, authority("agent", id));
   }
 
   conversation(id: string): ConversationHandle<Event> {
-    return new ConversationHandle(this, { kind: "conversation", id });
+    return new ConversationHandle(this, authority("conversation", id));
   }
 
   session(id: string): SessionHandle<Event> {
-    return new SessionHandle(this, { kind: "session", id });
+    return new SessionHandle(this, authority("session", id));
   }
 
   turn(id: string): TurnHandle<Event> {
-    return new TurnHandle(this, { kind: "turn", id });
+    return new TurnHandle(this, authority("turn", id));
   }
 
   task(id: string): TaskHandle<Event> {
-    return new TaskHandle(this, { kind: "task", id });
+    return new TaskHandle(this, authority("task", id));
   }
 
   /** Registers at-least-once projection delivery; callbacks must be idempotent. */
@@ -485,6 +486,11 @@ function authorityKey(authority: Authority): string {
   return `${authority.kind}:${authority.id}`;
 }
 
+function authority(kind: AggregateKind, id: string): Authority {
+  if (!isSafeAuthorityId(id)) throw new TypeError("aggregate identity is not a safe path segment");
+  return { kind, id };
+}
+
 function isCursorStore(store: OutboxStore): store is OutboxStore & CursorStore {
   return "loadCursors" in store && "putCursor" in store && "deleteCursor" in store;
 }
@@ -513,6 +519,9 @@ async function assertOutboxSafe(command: ClientCommand): Promise<ClientCommand> 
     || Object.keys(admitted.authority).length !== 2
     || !Object.keys(admitted.authority).every(field => field === "kind" || field === "id")) {
     throw new TypeError("offline outbox authority contains an unsupported field");
+  }
+  if (!isSafeAuthorityId(admitted.authority.id)) {
+    throw new TypeError("offline outbox authority contains an unsafe identity");
   }
   const forbidden = /(?:token|authorization|credential|secret|password|api[_-]?key|(?:^|[_-])(?:scope|proof|body|text|bytes|base64|data)(?:$|[_-]))/i;
   const visit = (value: unknown, ancestors: Set<object>): void => {

@@ -6,22 +6,15 @@ import type {
 } from "./conversation.js";
 import { DEFAULT_LIMITS } from "./conversation.js";
 import { selectModelContext } from "./projection.js";
+import { MemoryContentStore } from "./memory-content-store.js";
 import type { ResourceRef } from "./fork.js";
 import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type ContentBindings, type ContentReader, type PrivateDirectoryPage, type RunOutput } from "./runtime.js";
+import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 
 const encoder = new TextEncoder();
 const manifestType = "application/vnd.acyclic.harness.attachments+json";
 const defaultResidentBytes = 256 * 1024 * 1024;
 const defaultResidentFiles = 65_536;
-
-function compareUtf8(left: string, right: string): number {
-  const a = encoder.encode(left);
-  const b = encoder.encode(right);
-  for (let index = 0; index < Math.min(a.length, b.length); index++) {
-    if (a[index] !== b[index]) return a[index]! - b[index]!;
-  }
-  return a.length - b.length;
-}
 
 export interface MemoryConversationOptions {
   readonly agent: AgentId;
@@ -45,26 +38,22 @@ export class MemoryConversation {
   readonly #stagingLimits: Limits;
   readonly #maxResidentBytes: number;
   readonly #maxResidentFiles: number;
-  #residentBytes = 0;
+  readonly #content: MemoryContentStore;
   readonly #foreign = new Map<string, ContentReader>();
   #foreignMount: ((volume: VolumeRef) => Readonly<{ owner: MemoryConversation; scope: Scope }>) | undefined;
-  readonly #files = new Map<string, Readonly<{ reference: FileRef; bytes: Uint8Array }>>();
-  readonly #blobs = new Map<string, Uint8Array>();
-  readonly #paths = new Map<string, FileRef>();
-  readonly #pathHistory = new Map<string, Array<Readonly<{ generation: bigint; file: FileRef }>>>();
-  #generation = 0n;
   readonly #uploads = new Map<string, Promise<FileRef>>();
   readonly #outputs = new Map<string, RunOutput>();
   #turns: Promise<void> = Promise.resolve();
 
   private constructor(core: Harness, scope: Scope, volume: VolumeRef<"agent_private", "memory">,
-    limits: Limits, maxResidentBytes: number, maxResidentFiles: number) {
+    limits: Limits, maxResidentBytes: number, maxResidentFiles: number, content: MemoryContentStore) {
     this.#core = core;
     this.#scope = scope;
     this.#volume = core.validateVolumeRef(volume);
     this.#stagingLimits = limits;
     this.#maxResidentBytes = maxResidentBytes;
     this.#maxResidentFiles = maxResidentFiles;
+    this.#content = content;
   }
 
   static async create(options: MemoryConversationOptions): Promise<MemoryConversation> {
@@ -94,7 +83,10 @@ export class MemoryConversation {
         "conversation:bind", "conversation:append", "conversation:select_context",
         core.volumeCapability(volume, "read"), core.volumeCapability(volume, "write"),
       ]);
-      const host = new MemoryConversation(core, scope, volume, limits, maxResidentBytes, maxResidentFiles);
+      const content = new MemoryContentStore(volume, limits.file_bytes, limits.path_bytes,
+        maxResidentBytes, maxResidentFiles);
+      const host = new MemoryConversation(core, scope, volume, limits, maxResidentBytes,
+        maxResidentFiles, content);
       host.#apply(core.identity("operation", crypto.randomUUID()), "bind", { kind: "bind_conversation", agent: options.agent });
       return host;
     } catch (error) {
@@ -147,7 +139,7 @@ export class MemoryConversation {
   /** Owner-authenticated, generation-pinned listing; no prior FileRef is needed. */
   listPrivateDirectory(volume: VolumeRef<"agent_private">, grantedPrefix: string, path: string,
     expectedGeneration: ResourceRef<"generation"> | null = null, after: string | null = null,
-    maximumEntries = 256): Promise<PrivateDirectoryPage> {
+    maximumEntries = HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT): Promise<PrivateDirectoryPage> {
     const reader = this.#reader(volume).directory;
     if (!reader) throw new TypeError("owner has no private directory reader");
     return reader.list(volume, grantedPrefix, path, expectedGeneration, after, maximumEntries);
@@ -230,15 +222,11 @@ export class MemoryConversation {
   snapshot(): ReturnType<Harness["snapshot"]> { return this.#core.snapshot(); }
   free(): void {
     this.#core.free();
-    this.#files.clear();
-    this.#blobs.clear();
-    this.#paths.clear();
-    this.#pathHistory.clear();
+    this.#content.free();
     this.#uploads.clear();
     this.#outputs.clear();
     this.#foreign.clear();
     this.#foreignMount = undefined;
-    this.#residentBytes = 0;
   }
 
   /** Store immutable bytes before any record can refer to them. */
@@ -254,58 +242,7 @@ export class MemoryConversation {
    */
   async #stage(path: string, bytes: Uint8Array, mediaType: string, displayName: string,
     updatePath: boolean): Promise<FileRef> {
-    if (bytes.byteLength > this.#stagingLimits.file_bytes) {
-      throw new TypeError("staged file exceeds harness limits");
-    }
-    if (path === ".system" || path.startsWith(".system/")) {
-      throw new TypeError("internal storage paths are reserved");
-    }
-    const descriptor = this.#core.fileDescriptor(bytes, mediaType);
-    const version = [...this.#core.canonicalJsonDigest([path, descriptor.sha256,
-      descriptor.byte_length, descriptor.media_type, displayName])]
-      .map(byte => byte.toString(16).padStart(2, "0")).join("");
-    const reference = this.#validatedFile({ volume: this.#volume, path, version, descriptor, display_name: displayName });
-    this.#core.validateFileUnderLimits(reference, this.#stagingLimits);
-    const key = this.#fileStorageKey(reference);
-    const prior = this.#files.get(key);
-    if (prior !== undefined && (this.#fileKey(prior.reference) !== this.#fileKey(reference)
-      || prior.bytes.byteLength !== bytes.byteLength || prior.bytes.some((byte, i) => byte !== bytes[i]))) {
-      throw new TypeError("immutable file version was reused for another file contract");
-    }
-    for (const existing of this.#paths.keys()) {
-      if (existing !== path && (existing.startsWith(`${path}/`) || path.startsWith(`${existing}/`))) {
-        throw new TypeError("file path conflicts with an existing directory");
-      }
-    }
-    if (prior === undefined) {
-      if (this.#files.size >= this.#maxResidentFiles) {
-        throw new TypeError("memory content retention limit exceeded");
-      }
-      const blobKey = this.#blobKey(reference);
-      let resident = this.#blobs.get(blobKey);
-      if (resident !== undefined && (resident.byteLength !== bytes.byteLength
-        || resident.some((byte, index) => byte !== bytes[index]))) {
-        throw new TypeError("content digest was reused for different bytes");
-      }
-      if (resident === undefined) {
-        if (bytes.byteLength > this.#maxResidentBytes - this.#residentBytes) {
-          throw new TypeError("memory content retention limit exceeded");
-        }
-        resident = Uint8Array.from(bytes);
-        this.#blobs.set(blobKey, resident);
-        this.#residentBytes += resident.byteLength;
-      }
-      this.#files.set(key, { reference, bytes: resident });
-    }
-    if (updatePath && (this.#fileKey(this.#paths.get(path) ?? reference) !== this.#fileKey(reference)
-      || !this.#paths.has(path))) {
-      this.#paths.set(path, reference);
-      this.#generation++;
-      const history = this.#pathHistory.get(path) ?? [];
-      history.push({ generation: this.#generation, file: reference });
-      this.#pathHistory.set(path, history);
-    }
-    return reference;
+    return this.#content.stage(path, bytes, mediaType, displayName, updatePath);
   }
 
   /** Possession of a ref is not a foreign-owner read grant. */
@@ -336,20 +273,21 @@ export class MemoryConversation {
       throw new TypeError("directory belongs to another owner");
     }
     this.#core.verifyPrivateDirectoryRead(scope, volume, grantedPrefix, path);
-    if (expected === null) return this.#generation;
+    const current = this.#content.generation();
+    if (expected === null) return current;
     const version = expected.version;
     if (version === null || version.length > 20 || !/^(0|[1-9][0-9]*)$/.test(version)) {
       throw new TypeError("private directory generation is unavailable");
     }
     const generation = BigInt(version);
-    if (generation > this.#generation || !this.#core.canonicalEqual(
+    if (generation > current || !this.#core.canonicalEqual(
       this.#core.validateResourceRef(expected), this.#directoryGeneration(version))) {
       throw new TypeError("private directory generation is unavailable");
     }
     return generation;
   }
 
-  #directoryGeneration(version = this.#generation.toString()): ResourceRef<"generation"> {
+  #directoryGeneration(version = this.#content.generation().toString()): ResourceRef<"generation"> {
     return this.#core.validateResourceRef({
       kind: "generation", provider: this.#volume.provider,
       key: [...this.#core.canonicalJsonDigest([this.#volume.id, version])],
@@ -360,50 +298,29 @@ export class MemoryConversation {
   #listAuthorized(scope: Scope, volume: VolumeRef<"agent_private">, grantedPrefix: string,
     path: string, expected: ResourceRef<"generation"> | null, after: string | null, maximum: number): PrivateDirectoryPage {
     const generation = this.#checkDirectory(scope, volume, grantedPrefix, path, expected);
-    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 4096) {
+    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM) {
       throw new RangeError("private directory page limit is invalid");
     }
     if (after !== null) {
       this.#core.directoryReadCapability(volume, path ? `${path}/${after}` : after);
       if (after.includes("/")) throw new TypeError("directory cursor must name one entry");
     }
-    const prefix = path ? `${path}/` : "";
-    const found = new Map<string, PrivateDirectoryPage["entries"][number]>();
-    for (const [name, history] of this.#pathHistory) {
-      if (history[0]!.generation > generation) continue;
-      if (!name.startsWith(prefix)) continue;
-      const remainder = name.slice(prefix.length);
-      const segment = remainder.split("/", 1)[0]!;
-      if (!segment || (!path && segment === ".system")) continue;
-      if (remainder.includes("/")) found.set(segment, { name: segment, kind: "directory" });
-      else if (!found.has(segment)) found.set(segment, { name: segment, kind: "file" });
-    }
-    const names = [...found.keys()].sort(compareUtf8)
-      .filter(name => after === null || compareUtf8(name, after) > 0);
-    const entries = names.slice(0, maximum).map(name => found.get(name)!);
+    const page = this.#content.list(path, generation, after, maximum);
+    const entries = page.entries;
     return this.#core.validatePrivateDirectoryPage({
-      generation: this.#directoryGeneration(expected?.version ?? undefined), entries, hasMore: names.length > maximum,
+      generation: this.#directoryGeneration(expected?.version ?? undefined), entries, hasMore: page.hasMore,
     });
   }
 
   async #readPathAuthorized(scope: Scope, volume: VolumeRef<"agent_private">, grantedPrefix: string,
     path: string, expected: ResourceRef<"generation"> | null): Promise<Readonly<{ file: FileRef; bytes: Uint8Array }>> {
     const generation = this.#checkDirectory(scope, volume, grantedPrefix, path, expected);
-    const history = this.#pathHistory.get(path);
-    let file: FileRef | undefined;
-    if (history) {
-      for (let index = history.length - 1; index >= 0; index--) {
-        const revision = history[index]!;
-        if (revision.generation <= generation) { file = revision.file; break; }
-      }
-    }
-    if (!file) throw new TypeError("owner has no file at this path");
+    const file = this.#content.readPath(path, generation);
     return { file, bytes: await this.readAuthorized(scope, file) };
   }
 
   #localBytes(file: FileRef): Uint8Array | undefined {
-    const resident = this.#files.get(this.#fileStorageKey(file));
-    return resident !== undefined && this.#fileKey(resident.reference) === this.#fileKey(file) ? resident.bytes : undefined;
+    return this.#content.has(file) ? this.#content.read(file) : undefined;
   }
 
   /** Projection rebuilt from canonical reducer events, not a parallel mutable transcript. */
@@ -470,8 +387,7 @@ export class MemoryConversation {
     const marker = encoder.encode(outcome === "failed" ? "f" : "c");
     const preferredPath = `turns/${operationId}/terminal`;
     const path = encoder.encode(preferredPath).byteLength <= limits.path_bytes
-      && ![...this.#paths.keys()].some(existing => existing !== preferredPath
-        && (existing.startsWith(`${preferredPath}/`) || preferredPath.startsWith(`${existing}/`)))
+      && !this.#content.pathConflicts(preferredPath)
       ? preferredPath : user.content.path;
     const terminal = await this.#stage(path, marker, "text/plain", `${outcome}.txt`, false);
     this.#core.validateFileUnderLimits(terminal, limits);
@@ -491,61 +407,40 @@ export class MemoryConversation {
     this.#core.validateFileUnderLimits(userContent, limits);
     await this.read(userContent);
     const list = await this.#attachments(operationId, "user", attachments, limits);
-    const userId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "user"));
     let state = this.conversation();
-    const unresolved = [...state.messages].reverse().find(message => message.kind === "user");
-    if (unresolved !== undefined && unresolved.id !== userId
-      && !state.messages.some(message => (message.kind === "assistant"
-        || (message.kind === "system" && Object.hasOwn(message.extensions, "acyclic.turn.outcome")))
-        && message.reply_to === unresolved.id)) {
-      throw new TypeError("previous conversation turn is unresolved; retry that operation first");
+    const completed = this.#outputs.get(operationId);
+    const assistantId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "assistant"));
+    const completedReady = completed !== undefined && state.messages.some(message => message.id === assistantId);
+    let committedSelection: { readonly conversation_revision: bigint; readonly message_ids: readonly ConversationMessageId[] } | null = null;
+    for (const event of this.#events()) {
+      if (event.operation_id === operationId && event.payload.kind === "model_context_selected") {
+        committedSelection = event.payload.selection;
+        break;
+      }
     }
-    const outcomeNotice = state.messages.find(message => message.kind === "system" && message.reply_to === userId
-      && Object.hasOwn(message.extensions, "acyclic.turn.outcome"));
-    if (outcomeNotice !== undefined) {
-      const abandonedId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "indeterminate-notice"));
-      throw new TypeError(outcomeNotice.id === abandonedId
-        ? "conversation turn was explicitly abandoned after an indeterminate model outcome"
-        : "conversation turn already has a terminal outcome");
-    }
-    const existing = state.messages.find(message => message.id === userId);
-    if (existing === undefined) {
+    const preparation = this.#core.prepareConversationTurn(
+      state, operationId, userContent, list, limits, committedSelection,
+      completed !== undefined, runtime.canReconcileSelectedTurn(),
+    );
+    const userId = this.#core.conversationMessageId(preparation.user_id);
+    if (preparation.append_user) {
       this.#append(this.#core.deriveOperationId(operationId, "user-event"), "user", {
         id: userId, sequence: BigInt(state.messages.length + 1), kind: "user", content: userContent,
         attachments: list, reply_to: null, tool_call_id: null, extensions: {},
       }, limits);
-    } else if (existing.kind !== "user" || this.#fileKey(existing.content) !== this.#fileKey(userContent)
-      || !this.#sameAttachments(existing.attachments, list)) {
-      throw new TypeError("turn identity is bound to another user message");
     }
-    const completed = this.#outputs.get(operationId);
-    const assistantId = this.#core.conversationMessageId(this.#core.deriveOperationId(operationId, "assistant"));
-    if (completed !== undefined && state.messages.some(message => message.id === assistantId)) {
+    if (preparation.disposition === "completed" && completed !== undefined && completedReady) {
       return structuredClone(completed);
     }
-    state = this.conversation();
-    let selection: { readonly conversation_revision: bigint; readonly message_ids: readonly ConversationMessageId[] } | undefined;
-    for (const event of this.#events()) {
-      if (event.operation_id === operationId && event.payload.kind === "model_context_selected") {
-        selection = event.payload.selection;
-        break;
-      }
-    }
-    const newSelection = selection === undefined;
-    if (selection === undefined) {
-      const current = state.messages.findIndex(message => message.id === userId);
-      const eligible = state.messages.slice(0, current + 1)
-        .filter(message => ["system", "user", "assistant", "tool_call", "tool_result"].includes(message.kind));
-      const suffix = eligible.slice(-limits.context_messages);
-      const included = new Set(suffix.map(message => message.id));
-      selection = { conversation_revision: BigInt(state.messages.length),
-        message_ids: suffix.filter(message => message.kind !== "tool_result"
-          || (message.reply_to !== null && included.has(message.reply_to))).map(message => message.id) };
-    }
-    if (selection.message_ids.at(-1) !== userId) throw new TypeError("operation is bound to another context selection");
-    if (!newSelection && completed === undefined && !runtime.canReconcileSelectedTurn()) {
+    if (preparation.disposition === "indeterminate") {
       throw new IndeterminateModelTurnError(operationId);
     }
+    state = this.conversation();
+    const selection = {
+      conversation_revision: preparation.selection.conversation_revision,
+      message_ids: preparation.selection.message_ids.map(id => this.#core.conversationMessageId(id)),
+    };
+    const newSelection = preparation.selection_is_new;
     let stableOutput = completed;
     if (stableOutput === undefined) {
       const selectedLength = Number(selection.conversation_revision);
@@ -687,14 +582,6 @@ export class MemoryConversation {
 
   #fileKey(file: FileRef): string {
     return this.#core.fileReadCapability(file);
-  }
-
-  #fileStorageKey(file: FileRef): string {
-    return JSON.stringify([this.#volumeKey(file.volume), file.path, file.version]);
-  }
-
-  #blobKey(file: FileRef): string {
-    return `${file.descriptor.byte_length}:${file.descriptor.sha256.map(byte => byte.toString(16).padStart(2, "0")).join("")}`;
   }
 
   #sameAttachments(left: ReferencedAttachments, right: ReferencedAttachments): boolean {

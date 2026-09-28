@@ -397,6 +397,33 @@ pub struct ErrorDetail {
     #[prost(string, tag = "2")]
     pub request_id: ::prost::alloc::string::String,
 }
+/// Fixed limits shared by every Objects transport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ObjectsLimit {
+    Unspecified = 0,
+    MaxIdempotencyKeyBytes = 256,
+}
+impl ObjectsLimit {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OBJECTS_LIMIT_UNSPECIFIED",
+            Self::MaxIdempotencyKeyBytes => "OBJECTS_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OBJECTS_LIMIT_UNSPECIFIED" => Some(Self::Unspecified),
+            "OBJECTS_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES" => Some(Self::MaxIdempotencyKeyBytes),
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ListingMode {

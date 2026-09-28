@@ -42,7 +42,8 @@ elif command -v wslpath >/dev/null 2>&1; then
 fi
 
 cd "$root"
-bun run --filter '@acyclic-labs/inference' build
+bun scripts/build-inference-wasm.mjs
+bun x tsc -b typescript/packages/inference/tsconfig.json
 bun test typescript/packages/inference/test
 npm_stage="$work/npm-package"
 bash scripts/stage-npm-package.sh typescript/packages/inference "$npm_stage"
@@ -61,13 +62,16 @@ if (ListModelsResponseSchema.typeName !== "inference.customer.v1.ListModelsRespo
     RunViewSchema.typeName !== "inference.customer.v1.RunView") throw new Error("inference schemas missing");
 let substitute = false;
 const client = new InferenceClient({
-  async listModels() { return { $typeName: "inference.customer.v1.ListModelsResponse", models: [] }; },
+  async listModels() { return { $typeName: "inference.customer.v1.ListModelsResponse", models: [{
+    model: "smoke", executionProfile: new Uint8Array(32).fill(1), maximumContext: 1n,
+    maximumOutput: 1n, features: ["generation"], retentionProfiles: [],
+  }] }; },
   async inspectRun(request) { return create(RunViewSchema, {
     runId: substitute ? new Uint8Array(16).fill(9) : request.runId,
     input: new Uint8Array(32).fill(2), model: "model",
   }); },
 });
-if ((await client.listModels()).models.length !== 0) throw new Error("inference client did not execute");
+if ((await client.listModels()).models.length !== 1) throw new Error("inference client did not execute");
 const runId = new Uint8Array(16).fill(1);
 if ((await client.inspectRun(runId)).model !== "model") throw new Error("packed inference WASM validator did not execute");
 substitute = true;
@@ -90,29 +94,46 @@ cargo_bin="cargo"
 source_manifest="$root/Cargo.toml"
 package_target="$work/package-target"
 package_target_argument="$package_target"
+contract_source="$root/rust/crates/inference-contract"
 if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   cargo_bin="cargo.exe"
   source_manifest="$(wslpath -w "$source_manifest")"
   package_target_argument="$(wslpath -w "$package_target")"
+  contract_source="$(wslpath -w "$contract_source")"
 fi
 version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$source_manifest" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => console.log(JSON.parse(input).packages.find(item => item.name === "acyclic-inference").version))')"
-"$cargo_bin" package --locked --no-verify -p acyclic-inference --manifest-path "$source_manifest" --target-dir "$package_target_argument"
+"$cargo_bin" package --locked --no-verify -p acyclic-inference-contract --manifest-path "$source_manifest" --target-dir "$package_target_argument"
+"$cargo_bin" package --locked --no-verify -p acyclic-inference --manifest-path "$source_manifest" --target-dir "$package_target_argument" \
+  --config "patch.crates-io.acyclic-inference-contract.path=\"$contract_source\""
 crate="$package_target/package/acyclic-inference-${version}.crate"
+contract_crate="$package_target/package/acyclic-inference-contract-${version}.crate"
 
 tar -xf "$crate" -C "$test_root"
+tar -xf "$contract_crate" -C "$test_root"
 test_manifest="$test_root/acyclic-inference-${version}/Cargo.toml"
+contract_path="$test_root/acyclic-inference-contract-${version}"
 if [[ "$cargo_bin" == "cargo.exe" ]]; then
   test_manifest="$(wslpath -w "$test_manifest")"
+  contract_path="$(wslpath -w "$contract_path")"
 fi
-"$cargo_bin" test --manifest-path "$test_manifest"
+"$cargo_bin" test --manifest-path "$test_manifest" \
+  --config "patch.crates-io.acyclic-inference-contract.path=\"$contract_path\""
 
 if [[ "$#" -eq 1 ]]; then
   output="$1"
   mkdir -p "$output"
-  install -m 0644 "$crate" "$typescript_archive" "$output/"
-  (cd "$output" && sha256sum "$(basename "$crate")" acyclic-inference.tgz > SHA256SUMS)
+  install -m 0644 "$crate" "$contract_crate" "$typescript_archive" "$output/"
+  (cd "$output" && sha256sum "$(basename "$crate")" "$(basename "$contract_crate")" acyclic-inference.tgz > SHA256SUMS)
   printf '%s\n' "$source_sha" >"$output/SOURCE_COMMIT"
 elif [[ "$#" -ne 0 ]]; then
   echo "usage: check-inference-package.sh [OUTPUT]" >&2
   exit 2
+fi
+
+final_git_status="$work/final-git-status"
+git status --porcelain=v1 --untracked-files=all >"$final_git_status"
+if [[ -s "$final_git_status" ]]; then
+  echo "package check mutated the source checkout" >&2
+  cat "$final_git_status" >&2
+  exit 1
 fi

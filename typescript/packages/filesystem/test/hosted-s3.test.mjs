@@ -5,18 +5,24 @@ import { HostedFsError, openHostedFs } from "../dist/hosted.js";
 import {
   ApplyTransactionRequestSchema,
   CapabilitiesSchema,
+  ConflictSchema,
+  ConflictUse,
   CredentialRequestSchema,
   CredentialResponseSchema,
   GenerationRefSchema,
   GenerationResponseSchema,
+  HandshakeRequestSchema,
   HandshakeResponseSchema,
   FilesystemProfile,
   MutationResponseSchema,
   MutationStatus,
+  RebaseTransactionResponseSchema,
   S3CredentialSchema,
   SourceInvalidationReason,
   SourceResponseSchema,
   SourceState,
+  SparseConflictSchema,
+  SparseTarget,
   WorkspaceRefSchema,
   WorkspaceResponseSchema,
   WorkspaceSchema,
@@ -28,7 +34,8 @@ import {
   ProtocolIdentitySchema,
 } from "../generated/proto/protocol/v1/protocol_pb.js";
 
-const descriptorDigest = "83c50f0de80d2e1b73094283b8b54f8b37684327660c6f77b02311e9721f32c8";
+import { FILESYSTEM_DESCRIPTOR_DIGEST as descriptorDigest } from "../generated/descriptor-digest.js";
+import { DEFAULT_HOSTED_OPTIONS } from "../generated/defaults.js";
 
 const workspaceRef = create(WorkspaceRefSchema, {
   workspaceId: new Uint8Array(16).fill(1),
@@ -62,16 +69,22 @@ function frame(flag, payload) {
 function validHandshake(sourceReconciliation = false) {
   return create(HandshakeResponseSchema, {
     protocol: create(ProtocolHandshakeResponseSchema, {
-      protocol: create(ProtocolIdentitySchema, { version: "1", descriptorDigest }),
+      protocol: create(ProtocolIdentitySchema, {
+        version: DEFAULT_HOSTED_OPTIONS.protocolVersion,
+        descriptorDigest,
+      }),
       supported: create(CapabilitySetSchema, {
-        capabilities: [create(CapabilitySchema, { name: "filesystem", version: "1" })],
+        capabilities: [create(CapabilitySchema, {
+          name: "filesystem",
+          version: DEFAULT_HOSTED_OPTIONS.protocolVersion,
+        })],
       }),
     }),
     capabilities: create(CapabilitiesSchema, {
-      contractVersion: "1",
+      contractVersion: DEFAULT_HOSTED_OPTIONS.protocolVersion,
       profiles: [FilesystemProfile.PORTABLE],
       maximumRequestBytes: 8_388_608n,
-      maximumResponseBytes: 16_777_216n,
+      maximumResponseBytes: BigInt(DEFAULT_HOSTED_OPTIONS.maximumResponseBytes),
       maximumTransactionMutations: 64,
       maximumPageItems: 64,
       s3Credentials: true,
@@ -87,12 +100,18 @@ function fixtureFetch(
   handshake = validHandshake(),
   methods = [],
   sourceResponse,
+  observed,
+  transactionResponse,
 ) {
   return async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
     const method = new URL(request.url).pathname.split("/").at(-1);
     methods.push(method);
     if (method === "Handshake") {
+      if (observed !== undefined) {
+        const framed = new Uint8Array(await request.arrayBuffer());
+        observed.handshake = fromBinary(HandshakeRequestSchema, framed.subarray(5));
+      }
       return grpcWebResponse(HandshakeResponseSchema, handshake);
     }
     if (method === "CreateWorkspace") {
@@ -116,6 +135,9 @@ function fixtureFetch(
         status: MutationStatus.COMMITTED,
         generation: generationRef,
       }));
+    }
+    if (method === "RebaseTransaction") {
+      return grpcWebResponse(RebaseTransactionResponseSchema, transactionResponse ?? create(RebaseTransactionResponseSchema));
     }
     if (["GetSourceState", "ReconcileSource", "RescanSource", "SealSource"].includes(method)) {
       if (sourceResponse !== undefined) {
@@ -154,6 +176,58 @@ function fixtureFetch(
   };
 }
 
+test("hosted handshake and transport bounds use generated Rust defaults", async () => {
+  const observed = {};
+  const fs = await openHostedFs({
+    endpoint: "https://filesystem.example.test",
+    bearerToken: "token",
+    fetch: fixtureFetch([], "s3", undefined, validHandshake(), [], undefined, observed),
+  });
+  expect(observed.handshake.protocol.protocol).toMatchObject({
+    version: DEFAULT_HOSTED_OPTIONS.protocolVersion,
+    descriptorDigest,
+  });
+  expect(observed.handshake.protocol.required.capabilities[0]).toMatchObject({
+    name: "filesystem",
+    version: DEFAULT_HOSTED_OPTIONS.protocolVersion,
+  });
+  fs.close();
+
+  const oversized = async () => new Response(new Uint8Array(), {
+    status: 200,
+    headers: {
+      "content-length": String(DEFAULT_HOSTED_OPTIONS.maximumResponseBytes + 1),
+    },
+  });
+  const failure = await openHostedFs({
+    endpoint: "https://filesystem.example.test",
+    bearerToken: "token",
+    fetch: oversized,
+  }).catch(error => error);
+  expect(failure).toBeInstanceOf(HostedFsError);
+  expect(failure.message).toBe("filesystem response exceeds its local bound");
+
+  await expect(openHostedFs({
+    endpoint: "https://filesystem.example.test",
+    bearerToken: "token",
+    maximumResponseBytes: DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes - 1,
+    fetch: fixtureFetch([], "s3"),
+  })).rejects.toThrow(
+    `maximum response bytes must be at least ${DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes}`,
+  );
+
+  const minimum = await openHostedFs({
+    endpoint: "https://filesystem.example.test",
+    bearerToken: "token",
+    maximumResponseBytes: DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes,
+    fetch: fixtureFetch([], "s3"),
+  });
+  expect(minimum.capabilities.maximumResponseBytes).toBe(BigInt(
+    DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes - DEFAULT_HOSTED_OPTIONS.maximumByteResponseEnvelopeBytes,
+  ));
+  minimum.close();
+});
+
 test("hosted S3 access preserves scope, expiry, idempotency, and response fields", async () => {
   const requests = [];
   const expiresAtUnixSeconds = BigInt(Math.floor(Date.now() / 1_000) + 60);
@@ -180,7 +254,9 @@ test("hosted S3 access preserves scope, expiry, idempotency, and response fields
     version: "1",
     profiles: ["portable"],
     maximumRequestBytes: 8_388_608n,
-    maximumResponseBytes: 16_777_216n,
+    maximumResponseBytes: BigInt(
+      DEFAULT_HOSTED_OPTIONS.maximumResponseBytes - DEFAULT_HOSTED_OPTIONS.maximumByteResponseEnvelopeBytes,
+    ),
     maximumTransactionMutations: 64,
     maximumPageItems: 64,
     s3Credentials: true,
@@ -308,6 +384,51 @@ test("hosted transaction commits respect the negotiated conflict limit", async (
   expect((await transaction.commit()).status).toBe("committed");
   expect(requests).toHaveLength(1);
   expect(requests[0].maximumConflicts).toBe(1);
+  fs.close();
+});
+
+test("hosted transaction rebase rejects an unspecified sparse target", async () => {
+  const transactionResponse = create(RebaseTransactionResponseSchema, {
+    conflicts: [create(ConflictSchema, {
+      region: {
+        case: "sparseSeek",
+        value: create(SparseConflictSchema, {
+          fileId: new Uint8Array(16).fill(7),
+          offset: 0n,
+          target: SparseTarget.UNSPECIFIED,
+        }),
+      },
+      use: ConflictUse.OBSERVATION,
+    })],
+  });
+  const fs = await openHostedFs({
+    endpoint: "https://filesystem.example.test",
+    bearerToken: "token",
+    fetch: fixtureFetch([], "s3", undefined, validHandshake(), [], undefined, undefined, transactionResponse),
+  });
+  const workspace = await fs.createWorkspace("hosted-s3");
+  const transaction = await workspace.beginTransaction(new Uint8Array(16).fill(6));
+  await transaction.createDirectory("/malformed");
+  await expect(transaction.rebase(1)).rejects.toMatchObject({ code: "invalid_response" });
+  fs.close();
+});
+
+test("hosted join rejects an inherited history key before PlanJoin serialization", async () => {
+  const methods = [];
+  const fs = await openHostedFs({
+    endpoint: "https://filesystem.example.test",
+    bearerToken: "token",
+    fetch: fixtureFetch([], "s3", undefined, validHandshake(), methods),
+  });
+  const source = await fs.createWorkspace("hosted-s3");
+  const target = await fs.createWorkspace("hosted-s3");
+  await expect(source.joinInto(target, {
+    history: "toString",
+    maximumGenerations: 1,
+    maximumChanges: 1,
+    maximumConflicts: 1,
+  })).rejects.toBeInstanceOf(TypeError);
+  expect(methods).not.toContain("PlanJoin");
   fs.close();
 });
 

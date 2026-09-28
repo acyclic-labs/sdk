@@ -4,11 +4,12 @@ import {
   GenerateRunRequestSchema, MutateContextRequestSchema, ReleaseWarmRequestSchema,
   RenewWarmRequestSchema, RequestIdentitySchema, RetainWarmRequestSchema, TransferSchema,
   TruncateSchema,
-  RunTerminal,
   type ContextProvenance, type ContextView, type Edit, type Item, type ModelCapability,
   type MutateContextRequest, type MutationReceipt, type RunEvent, type RunResult, type RunView, type WarmView,
 } from "../generated/proto/inference/v1/inference_pb.js";
 import { InferenceProtocolError } from "./index.js";
+import { runTerminalMetadata, type RunTerminalKind } from "./contract.js";
+import { INFERENCE_FIXED_WIDTHS } from "./widths.js";
 
 declare const inferenceBrand: unique symbol;
 export type ContextRevision = Uint8Array & { readonly [inferenceBrand]: "ContextRevision" };
@@ -18,12 +19,13 @@ export type OperationId = RunId;
 export type WarmCommitment = Uint8Array & { readonly [inferenceBrand]: "WarmCommitment" };
 export type ItemId = Uint8Array & { readonly [inferenceBrand]: "ItemId" };
 export type ExecutionProfile = Uint8Array & { readonly [inferenceBrand]: "ExecutionProfile" };
-export function contextRevision(value: Uint8Array): ContextRevision { return brandedBytes<ContextRevision>(value, "context revision", 32); }
-export function runId(value: Uint8Array): RunId { return brandedBytes<RunId>(value, "run ID", 16); }
+export function contextRevision(value: Uint8Array): ContextRevision { return brandedBytes<ContextRevision>(value, "context revision", INFERENCE_FIXED_WIDTHS.contextRevision); }
+export function runId(value: Uint8Array): RunId { return brandedBytes<RunId>(value, "run ID", INFERENCE_FIXED_WIDTHS.runId); }
 export function operationId(value: Uint8Array): OperationId { return runId(value); }
-export function warmCommitment(value: Uint8Array): WarmCommitment { return brandedBytes<WarmCommitment>(value, "warm commitment", 32); }
-export function itemId(value: Uint8Array): ItemId { return brandedBytes<ItemId>(value, "item ID", 16); }
-export function executionProfile(value: Uint8Array): ExecutionProfile { return brandedBytes<ExecutionProfile>(value, "execution profile", 32); }
+export function warmCommitment(value: Uint8Array): WarmCommitment { return brandedBytes<WarmCommitment>(value, "warm commitment", INFERENCE_FIXED_WIDTHS.warmCommitment); }
+/** The protobuf contract leaves item identity bytes opaque and unconstrained. */
+export function itemId(value: Uint8Array): ItemId { if (!(value instanceof Uint8Array)) throw new TypeError("item ID must be a Uint8Array"); return Uint8Array.from(value) as ItemId; }
+export function executionProfile(value: Uint8Array): ExecutionProfile { return brandedBytes<ExecutionProfile>(value, "execution profile", INFERENCE_FIXED_WIDTHS.executionProfile); }
 export interface InferenceRequestIdentity { readonly clientInstance: Uint8Array; readonly requestId: Uint8Array }
 export interface MutationOptions { readonly identity?: InferenceRequestIdentity }
 export interface GenerateOptions extends MutationOptions { readonly maximumOutput: bigint; readonly seed?: bigint }
@@ -50,7 +52,7 @@ export class Inference {
   constructor(readonly client: InferenceOperations) {}
   static async fromEnv(environment: Readonly<Record<string, string | undefined>> = runtimeEnvironment()): Promise<Inference> { const endpoint = requiredEnvironment(environment, "ACYCLIC_INFERENCE_ENDPOINT"); const token = requiredEnvironment(environment, "ACYCLIC_API_KEY"); const { HttpInferenceTransport, InferenceClient } = await import("./index.js"); return new Inference(new InferenceClient(new HttpInferenceTransport(endpoint, () => ({ authorization: `Bearer ${token}` })))); }
   models(): Promise<{ readonly models: ModelCapability[] }> { return this.client.listModels(); }
-  async create(model: string, items: readonly Item[], options: MutationOptions = {}): Promise<Context> { const receipt = await this.client.createContext(create(CreateContextRequestSchema, { identity: wireIdentity(options.identity ?? this.identity()), model, items: [...items] })); return new Context(this, contextRevision(receipt.revision)); }
+  async create(model: string, items: readonly Item[], options: MutationOptions = {}): Promise<Context> { const receipt = await this.client.createContext(create(CreateContextRequestSchema, { identity: wireIdentity(options.identity ?? this.identity()), model, items: [...items] })); return new Context(this, brandedBytes<ContextRevision>(receipt.revision, "context revision", INFERENCE_FIXED_WIDTHS.mutationRevision)); }
   /** A revision identifies an immutable context; items are described by the generated contract. */
   context(revision: ContextRevision): Context { return new Context(this, revision); }
   async attach(revision: ContextRevision): Promise<Context> { await this.client.inspectContext(revision); return this.context(revision); }
@@ -77,7 +79,7 @@ export class Context {
   async delete(options: MutationOptions = {}): Promise<MutationReceipt> { return this.inference.client.mutateContext(create(MutateContextRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), source: this.revision, action: { case: "release", value: create(EmptySchema) } })); }
   async generate(input: Item, options: GenerateOptions): Promise<Run> { const response = await this.inference.client.generate(create(GenerateRunRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), context: this.revision, input, maximumOutput: options.maximumOutput, ...(options.seed === undefined ? {} : { seed: options.seed }) })); if (!response.run) throw new InferenceProtocolError("generate response omitted its run"); return new Run(this.inference, runId(response.run.runId)); }
   async retain(policy: RetentionPolicy): Promise<Warm> { const view = await this.inference.client.retainWarm(create(RetainWarmRequestSchema, { identity: wireIdentity(policy.identity ?? this.inference.identity()), context: this.revision, latencyProfile: policy.latencyProfile, expiresAtMs: policy.expiresAtMs })); return new Warm(this.inference, warmCommitment(view.commitment)); }
-  async #mutate(action: MutateContextRequest["action"], options: MutationOptions): Promise<Context> { const receipt = await this.inference.client.mutateContext(create(MutateContextRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), source: this.revision, action })); return new Context(this.inference, contextRevision(receipt.revision)); }
+  async #mutate(action: MutateContextRequest["action"], options: MutationOptions): Promise<Context> { const receipt = await this.inference.client.mutateContext(create(MutateContextRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), source: this.revision, action })); return new Context(this.inference, brandedBytes<ContextRevision>(receipt.revision, "context revision", INFERENCE_FIXED_WIDTHS.mutationRevision)); }
 }
 
 export class Run {
@@ -107,7 +109,7 @@ export class Warm {
   async release(options: MutationOptions = {}): Promise<WarmView> { return this.inference.client.releaseWarm(create(ReleaseWarmRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), commitment: this.commitment })); }
 }
 
-export type RunTerminalKind = "completed" | "output-limited" | "tool-call" | "refusal" | "cancelled" | "failed" | "indeterminate";
+export type { RunTerminalKind };
 export interface RunOutcome {
   readonly terminal: RunTerminalKind;
   readonly output: Uint8Array;
@@ -117,25 +119,16 @@ export interface RunOutcome {
   readonly partial: boolean;
   readonly receipt: RunResult["receipt"];
 }
-function outcome(inference: Inference, result: RunResult): RunOutcome {
-  const terminal = terminalKind(result.terminal);
+async function outcome(inference: Inference, result: RunResult): Promise<RunOutcome> {
+  const metadata = await runTerminalMetadata();
+  const descriptor = metadata.find(item => item.number === result.terminal);
+  if (descriptor === undefined) throw new InferenceProtocolError("run result has an unspecified terminal outcome");
+  const terminal = descriptor.kind;
   const context = result.context === undefined ? null : new Context(inference, contextRevision(result.context.revision));
-  return { terminal, output: result.output, context, continuationValid: context !== null, partial: terminal === "output-limited" || terminal === "cancelled" || terminal === "failed" || terminal === "indeterminate", receipt: result.receipt };
-}
-function terminalKind(value: RunTerminal): RunTerminalKind {
-  switch (value) {
-    case RunTerminal.COMPLETED: return "completed";
-    case RunTerminal.OUTPUT_LIMITED: return "output-limited";
-    case RunTerminal.TOOL_CALL: return "tool-call";
-    case RunTerminal.REFUSAL: return "refusal";
-    case RunTerminal.CANCELLED: return "cancelled";
-    case RunTerminal.FAILED: return "failed";
-    case RunTerminal.INDETERMINATE: return "indeterminate";
-    default: throw new InferenceProtocolError("run result has an unspecified terminal outcome");
-  }
+  return { terminal, output: result.output, context, continuationValid: context !== null, partial: descriptor.partial, receipt: result.receipt };
 }
 function brandedBytes<Brand extends Uint8Array>(value: Uint8Array, name: string, length: number): Brand { if (!(value instanceof Uint8Array) || value.byteLength !== length) throw new TypeError(`${name} must be exactly ${length} bytes`); return Uint8Array.from(value) as Brand; }
-const randomIdentity = (): Uint8Array => crypto.getRandomValues(new Uint8Array(16));
+const randomIdentity = (): Uint8Array => crypto.getRandomValues(new Uint8Array(INFERENCE_FIXED_WIDTHS.requestId));
 const wireIdentity = (value: InferenceRequestIdentity) => create(RequestIdentitySchema, value);
 const runtimeEnvironment = (): Readonly<Record<string, string | undefined>> => (globalThis as typeof globalThis & { process?: { env?: Readonly<Record<string, string | undefined>> } }).process?.env ?? {};
 function requiredEnvironment(environment: Readonly<Record<string, string | undefined>>, name: string): string { const value = environment[name]; if (!value?.trim()) throw new InferenceProtocolError(`${name} is required`); return value; }

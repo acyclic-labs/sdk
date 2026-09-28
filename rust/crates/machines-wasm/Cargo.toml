@@ -1,23 +1,30 @@
 [package]
 name = "acyclic-machines-wasm"
-version.workspace = true
+version = "0.1.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "WebAssembly bindings for the canonical Machines simulator"
 publish = false
-description = "Browser binding for the canonical Machines simulator"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acyclic-machines = { path = "../machines", default-features = false }
-futures.workspace = true
-js-sys.workspace = true
-prost.workspace = true
+acyclic-machines = { version = "=0.1.5", path = "../machines", default-features = false }
+serde.workspace = true
+serde_bytes.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
+futures.workspace = true
+hex.workspace = true
 uuid.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+serde-wasm-bindgen.workspace = true
+tsify-next = { version = "0.5.6", features = ["js"] }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 

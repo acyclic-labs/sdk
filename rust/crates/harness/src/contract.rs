@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
+/// Maximum UTF-8 byte length for names crossing a component boundary.
+pub const COMPONENT_LABEL_MAX_BYTES: usize = 255;
+
+/// Exact labels and separators rejected by every component registry.
+pub const COMPONENT_LABEL_FORBIDDEN_EXACT: [&str; 2] = [".", ".."];
+/// Separators rejected by every component registry.
+pub const COMPONENT_LABEL_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
+
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
 /// Conversion through Value preserves full-width serde integer values while
 /// avoiding struct declaration order as an accidental wire contract.
@@ -84,18 +92,20 @@ fn write_canonical_json(
     Ok(())
 }
 
-/// One cross-target spelling rule for pinned component and command names.
-pub(crate) fn validate_component_label(value: &str, field: &str) -> Result<()> {
-    if value.is_empty()
-        || value.len() > 255
+/// Returns whether a component label satisfies the shared Rust spelling rule.
+pub fn is_valid_component_label(value: &str) -> bool {
+    !(value.is_empty()
+        || value.len() > COMPONENT_LABEL_MAX_BYTES
         || value
             .chars()
             .any(|character| character.is_whitespace() || character.is_control())
-        || value.contains('/')
-        || value.contains('\\')
-        || value == "."
-        || value == ".."
-    {
+        || value.contains(COMPONENT_LABEL_FORBIDDEN_SEPARATORS)
+        || COMPONENT_LABEL_FORBIDDEN_EXACT.contains(&value))
+}
+
+/// One cross-target spelling rule for pinned component and command names.
+pub(crate) fn validate_component_label(value: &str, field: &str) -> Result<()> {
+    if !is_valid_component_label(value) {
         return Err(Error::Invalid(format!("{field} is invalid")));
     }
     Ok(())
@@ -231,6 +241,10 @@ pub enum Outcome<T> {
 
 /// Stable wire identity used during compatibility handshakes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(
+    all(feature = "wasm", target_arch = "wasm32"),
+    derive(tsify_next::Tsify)
+)]
 pub struct ProtocolIdentity {
     /// Semantic protocol version.
     pub version: String,
@@ -289,6 +303,10 @@ pub struct AuthorityPolicy {
 
 /// Ordered authority-resolution level from the runtime root to one invocation.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(
+    all(feature = "wasm", target_arch = "wasm32"),
+    derive(tsify_next::Tsify)
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityLevel {
     /// Runtime-wide policy.
@@ -469,5 +487,33 @@ mod tests {
             },])
             .is_err()
         );
+    }
+
+    #[test]
+    fn component_label_validation_is_byte_bounded_and_unicode_precise() {
+        assert!(validate_component_label("alpha", "label").is_ok());
+        assert!(validate_component_label(&"é".repeat(127), "label").is_ok());
+        assert!(validate_component_label(&"😀".repeat(63), "label").is_ok());
+        for value in [
+            "",
+            ".",
+            "..",
+            "/",
+            "\\",
+            "a\n",
+            "a\u{00a0}",
+            "a\u{2003}",
+            "a\u{007f}",
+        ] {
+            assert!(
+                validate_component_label(value, "label").is_err(),
+                "{value:?}"
+            );
+        }
+        assert!(validate_component_label(&"a".repeat(COMPONENT_LABEL_MAX_BYTES), "label").is_ok());
+        assert!(
+            validate_component_label(&"a".repeat(COMPONENT_LABEL_MAX_BYTES + 1), "label").is_err()
+        );
+        assert!(validate_component_label(&"é".repeat(128), "label").is_err());
     }
 }

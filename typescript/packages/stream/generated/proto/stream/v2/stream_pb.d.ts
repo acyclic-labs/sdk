@@ -4,7 +4,7 @@
 // @generated from file stream/v2/stream.proto (package acyclic.stream.v2, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
@@ -1152,6 +1152,99 @@ export declare type InspectIdempotencyResponse = Message<"acyclic.stream.v2.Insp
  * Use `create(InspectIdempotencyResponseSchema)` to create a new message.
  */
 export declare const InspectIdempotencyResponseSchema: GenMessage<InspectIdempotencyResponse>;
+
+/**
+ * Hosted account token creation request.  This uses the same canonical path
+ * and operation vocabulary as the Stream client, while the hosted adapter
+ * owns its JSON spelling at the Rust/WASM boundary.
+ *
+ * @generated from message acyclic.stream.v2.TokenGrant
+ */
+export declare type TokenGrant = Message<"acyclic.stream.v2.TokenGrant"> & {
+  /**
+   * @generated from field: string path = 1;
+   */
+  path: string;
+
+  /**
+   * @generated from field: optional bool subtree = 2;
+   */
+  subtree?: boolean | undefined;
+
+  /**
+   * @generated from field: repeated string operations = 3;
+   */
+  operations: string[];
+};
+
+/**
+ * Describes the message acyclic.stream.v2.TokenGrant.
+ * Use `create(TokenGrantSchema)` to create a new message.
+ */
+export declare const TokenGrantSchema: GenMessage<TokenGrant>;
+
+/**
+ * @generated from message acyclic.stream.v2.CreateTokenRequest
+ */
+export declare type CreateTokenRequest = Message<"acyclic.stream.v2.CreateTokenRequest"> & {
+  /**
+   * @generated from field: string expires_in = 1;
+   */
+  expiresIn: string;
+
+  /**
+   * @generated from field: repeated acyclic.stream.v2.TokenGrant allow = 2;
+   */
+  allow: TokenGrant[];
+};
+
+/**
+ * Describes the message acyclic.stream.v2.CreateTokenRequest.
+ * Use `create(CreateTokenRequestSchema)` to create a new message.
+ */
+export declare const CreateTokenRequestSchema: GenMessage<CreateTokenRequest>;
+
+/**
+ * Canonical bounds shared by Rust and generated TypeScript clients.
+ *
+ * @generated from enum acyclic.stream.v2.StreamLimit
+ */
+export enum StreamLimit {
+  /**
+   * @generated from enum value: STREAM_LIMIT_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: STREAM_LIMIT_MAX_RECORD_BYTES = 65536;
+   */
+  MAX_RECORD_BYTES = 65536,
+
+  /**
+   * @generated from enum value: STREAM_LIMIT_MAX_ITEMS = 1024;
+   */
+  MAX_ITEMS = 1024,
+
+  /**
+   * @generated from enum value: STREAM_LIMIT_MAX_COMMAND_BYTES = 1056768;
+   */
+  MAX_COMMAND_BYTES = 1056768,
+
+  /**
+   * @generated from enum value: STREAM_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES = 256;
+   */
+  MAX_IDEMPOTENCY_KEY_BYTES = 256,
+
+  /**
+   * @generated from enum value: STREAM_LIMIT_MAX_PATH_BYTES = 65535;
+   */
+  MAX_PATH_BYTES = 65535,
+}
+
+/**
+ * Describes the enum acyclic.stream.v2.StreamLimit.
+ */
+export declare const StreamLimitSchema: GenEnum<StreamLimit>;
 
 /**
  * @generated from service acyclic.stream.v2.StreamService

@@ -1561,10 +1561,11 @@ impl HostRoot {
     ///
     /// The destination name only ever holds the complete copy: bytes are
     /// written under a [`StagedWindowsFile`] beside it and linked into place
-    /// once complete. Whatever ends the copy early, a failure, a cancelled
-    /// caller, or the process dying, the kernel removes the staged name, so
-    /// the destination stays exactly as absent as it was and nothing is
-    /// left behind.
+    /// once complete. If copying ends before publication, the kernel removes
+    /// the staged name and the destination stays absent. A cancelled caller
+    /// can race with a completed publication, so it may observe either an
+    /// absent destination or the complete copy; it can never observe partial
+    /// contents. Process death likewise leaves no staged name behind.
     #[cfg(windows)]
     pub async fn copy_file_from(
         &self,
@@ -1594,7 +1595,12 @@ impl HostRoot {
                 if sender.is_closed() {
                     return Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"));
                 }
-                acyclic_native_runtime::run_blocking_io(move || staged.publish(&name)).await?
+                acyclic_native_runtime::run_blocking_io(move || {
+                    let result = staged.publish(&name);
+                    drop(staged);
+                    result
+                })
+                .await?
             }
             .await;
             let _ = sender.send(result);

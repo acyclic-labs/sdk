@@ -1,0 +1,35 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __streamErrorCodeContract: (a: any) => any;
+export const __wbg_wasmfollow_free: (a: number, b: number) => void;
+export const __wbg_wasmmemorystream_free: (a: number, b: number) => void;
+export const decodeHttpResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const is_stream_error_code: (a: number, b: number) => number;
+export const normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];
+export const projectMemoryResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const publicHttpErrorCode: (a: number, b: number, c: number, d: number) => [number, number];
+export const validateAppendRequest: (a: number, b: number) => [number, number];
+export const validateHttpResponse: (a: number, b: number, c: number, d: number) => [number, number];
+export const validatePath: (a: number, b: number) => [number, number];
+export const validateRequest: (a: number, b: number, c: number, d: number) => [number, number];
+export const validateSequence: (a: number, b: number) => [number, number];
+export const wasmfollow_close: (a: number) => void;
+export const wasmfollow_next: (a: number) => any;
+export const wasmmemorystream_children: (a: number, b: number, c: number) => any;
+export const wasmmemorystream_dispatch: (a: number, b: number, c: number, d: number, e: number) => any;
+export const wasmmemorystream_new: () => number;
+export const wasmmemorystream_open_follow: (a: number, b: number, c: number) => any;
+export const wasmmemorystream_read: (a: number, b: number, c: number) => any;
+export const wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_: (a: number, b: number, c: any) => [number, number];
+export const wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_destroy_closure: (a: number, b: number) => void;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_start: () => void;

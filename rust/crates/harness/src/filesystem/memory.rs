@@ -6,8 +6,8 @@ use crate::{
     Result,
     conversation::{
         Attachment, ContentGrant, ContentPublisher, ContentResidencyVerifier, ConversationMessage,
-        FileRef, Limits, MessageKind, ModelContextSelection, ReferencedAttachments, VolumeClass,
-        VolumeOperation, VolumeOwner, VolumeRef,
+        FileRef, Limits, MessageKind, ReferencedAttachments, VolumeClass, VolumeOperation,
+        VolumeOwner, VolumeRef,
     },
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
     executor::{ExecutionEvent, ExecutionJournal, TurnInput, TurnOutput},
@@ -31,7 +31,7 @@ use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     sync::Arc,
 };
 use uuid::Uuid;
@@ -39,6 +39,21 @@ use uuid::Uuid;
 type MemoryHost = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 type MemoryJournal =
     FilesystemExecutionJournal<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
+
+fn new_memory_store(
+    volume: &VolumeRef,
+    maximum_file_bytes: u64,
+) -> Result<Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>> {
+    Ok(Arc::new(std::sync::Mutex::new(
+        crate::memory_store::MemoryStore::new(
+            volume.clone(),
+            maximum_file_bytes,
+            crate::conversation::MAX_PATH_BYTES as u64,
+            u64::MAX,
+            u64::MAX,
+        )?,
+    )))
+}
 
 /// A fully bound in-process journal and owner-private file volume. Its data is
 /// deliberately ephemeral; durable deployments bind persistent providers.
@@ -56,6 +71,7 @@ pub struct MemoryHarnessStorage {
     stream: StreamClient<MemoryStream>,
     conversation: Authority,
     maximum_file_bytes: u64,
+    memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
 /// Ready-to-run local Harness with an isolated conversation and private volume.
@@ -339,6 +355,9 @@ impl ToolExecutor for LocalStageFileTool {
         Box::pin(async move {
             let input: StageFileInput = serde_json::from_value(invocation.arguments)
                 .map_err(|error| Error::Invalid(format!("stage_file input is invalid: {error}")))?;
+            if input.text.len() as u64 > self.maximum_bytes {
+                return Err(Error::Invalid("staged file exceeds harness limits".into()));
+            }
             let retry =
                 IdempotencyKey::new(format!("local-tool-stage:{}", invocation.operation_id))?;
             let file = self
@@ -355,6 +374,11 @@ impl ToolExecutor for LocalStageFileTool {
                     &retry,
                 )
                 .await?;
+            self.publisher
+                .memory_store
+                .lock()
+                .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
+                .stage_reference(&file, input.text.as_bytes(), true)?;
             Ok(ToolResult {
                 value: json!({"file": file}),
             })
@@ -439,6 +463,7 @@ struct MemoryContentPublisher {
     volume: VolumeRef,
     write: ContentGrant,
     maximum_file_bytes: u64,
+    memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
 impl ContentPublisher for MemoryContentPublisher {
@@ -460,7 +485,8 @@ impl ContentPublisher for MemoryContentPublisher {
                 "local-upload:{operation_id}:{}",
                 path_digest.to_hex()
             ))?;
-            self.host
+            let persisted = self
+                .host
                 .put_content(
                     &self.volume,
                     &self.write,
@@ -471,7 +497,14 @@ impl ContentPublisher for MemoryContentPublisher {
                     self.maximum_file_bytes,
                     &retry,
                 )
-                .await
+                .await?;
+            let staged = self
+                .memory_store
+                .lock()
+                .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
+                .stage_reference(&persisted, bytes, true)?;
+            debug_assert_eq!(persisted, staged);
+            Ok(persisted)
         })
     }
 }
@@ -611,6 +644,7 @@ impl MemoryHarnessStorage {
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
         )?;
+        let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
         host.create_volume(&volume).await?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
@@ -674,6 +708,7 @@ impl MemoryHarnessStorage {
             volume: volume.clone(),
             write: write.clone(),
             maximum_file_bytes,
+            memory_store: memory_store.clone(),
         });
         Ok(Self {
             journal,
@@ -689,6 +724,7 @@ impl MemoryHarnessStorage {
             stream,
             conversation,
             maximum_file_bytes,
+            memory_store,
         })
     }
 
@@ -760,46 +796,34 @@ impl MemoryHarnessStorage {
                 .await?
         };
         let user_operation = derived_operation_id(operation_id, b"conversation-user");
-        let user_id = Uuid::from_bytes(user_operation.into_bytes());
         let mut aggregate = self.open_conversation(limits).await?;
         let state = aggregate
             .reducer()
             .conversation()
             .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-        if let Some(last_user) = state
+        let existing_selection = aggregate
+            .reducer()
+            .context_selection_for_operation(operation_id)
+            .cloned();
+        let legacy_user_id = Uuid::from_bytes(user_operation.into_bytes());
+        let user_id_override = state
             .messages
             .iter()
-            .rfind(|message| message.kind == MessageKind::User)
-            && last_user.id != user_id
-            && !state.messages.iter().any(|message| {
-                message.kind == MessageKind::Assistant && message.reply_to == Some(last_user.id)
-            })
-        {
-            return Err(Error::Conflict(
-                "previous conversation turn is unresolved; retry it before admitting another"
-                    .into(),
-            ));
-        }
-        if let Some(existing) = state.messages.iter().find(|message| message.id == user_id) {
-            if existing.kind != MessageKind::User
-                || existing.content != content
-                || existing.attachments != referenced
-            {
-                return Err(Error::Conflict(
-                    "turn identity belongs to another user message".into(),
-                ));
-            }
-        } else {
-            let message = ConversationMessage {
-                id: user_id,
-                sequence: state.messages.len() as u64 + 1,
-                kind: MessageKind::User,
-                content,
-                attachments: referenced,
-                reply_to: None,
-                tool_call_id: None,
-                extensions: BTreeMap::new(),
-            };
+            .any(|message| message.id == legacy_user_id)
+            .then_some(legacy_user_id);
+        let preparation = crate::turn::prepare_turn_with_user_id(
+            state,
+            operation_id,
+            content,
+            referenced,
+            limits,
+            existing_selection,
+            false,
+            true,
+            user_id_override,
+        )?;
+        let user_id = preparation.user_id;
+        if let Some(message) = preparation.user_message.clone() {
             self.append_conversation(
                 &mut aggregate,
                 user_operation,
@@ -810,74 +834,18 @@ impl MemoryHarnessStorage {
             )
             .await?;
         }
-        let selection_operation = operation_id;
-        if aggregate
-            .reducer()
-            .context_selection_for_operation(selection_operation)
-            .is_none()
-        {
-            let state = aggregate
-                .reducer()
-                .conversation()
-                .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-            let current = state
-                .messages
-                .iter()
-                .position(|message| message.id == user_id)
-                .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?;
-            let prefix = state
-                .messages
-                .get(..=current)
-                .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?;
-            let mut ids = prefix
-                .iter()
-                .filter(|message| {
-                    matches!(
-                        message.kind,
-                        MessageKind::System
-                            | MessageKind::User
-                            | MessageKind::Assistant
-                            | MessageKind::ToolCall
-                            | MessageKind::ToolResult
-                    )
-                })
-                .map(|message| message.id)
-                .collect::<Vec<_>>();
-            if ids.len() > limits.context_messages {
-                ids.drain(..ids.len() - limits.context_messages);
-            }
-            // A bounded suffix can start inside a tool exchange. Never hand a
-            // provider a result whose precise call fell outside the window.
-            let included = ids.iter().copied().collect::<HashSet<_>>();
-            let by_id = prefix
-                .iter()
-                .map(|message| (message.id, message))
-                .collect::<HashMap<_, _>>();
-            ids.retain(|id| {
-                by_id.get(id).is_some_and(|message| {
-                    message.kind != MessageKind::ToolResult
-                        || message
-                            .reply_to
-                            .is_some_and(|call| included.contains(&call))
-                })
-            });
-            let selection = ModelContextSelection {
-                conversation_revision: state.messages.len() as u64,
-                message_ids: ids,
-            };
+        if preparation.selection_is_new {
             self.append_conversation(
                 &mut aggregate,
-                selection_operation,
+                operation_id,
                 "context",
-                Action::SelectModelContext { selection },
+                Action::SelectModelContext {
+                    selection: preparation.selection.clone(),
+                },
             )
             .await?;
         }
-        let selection = aggregate
-            .reducer()
-            .context_selection_for_operation(selection_operation)
-            .cloned()
-            .ok_or_else(|| Error::Storage("model context selection is missing".into()))?;
+        let selection = preparation.selection;
         let mut historical = aggregate
             .reducer()
             .conversation()
@@ -1202,6 +1170,14 @@ impl MemoryHarnessStorage {
 
     /// Reads a pinned owner-private version after verifying its descriptor.
     pub async fn read(&self, file: &FileRef) -> Result<Vec<u8>> {
+        if let Ok(bytes) = self
+            .memory_store
+            .lock()
+            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
+            .read(file)
+        {
+            return Ok(bytes);
+        }
         self.content_verifier.read(file).await
     }
 
@@ -1215,7 +1191,8 @@ impl MemoryHarnessStorage {
         after: Option<&LogicalName>,
         maximum_entries: u32,
     ) -> Result<(GenerationRef, WorkspaceDirectoryPage)> {
-        self.content_verifier
+        let page = self
+            .content_verifier
             .list_private_directory(
                 &self.volume,
                 "",
@@ -1224,7 +1201,24 @@ impl MemoryHarnessStorage {
                 after,
                 maximum_entries,
             )
-            .await
+            .await?;
+        // Exercise the same bounded path/generation core used by WASM for
+        // every native owner listing. The filesystem page remains the source
+        // of its provider generation proof; direct host-owned files may not
+        // exist in the ephemeral shared index and are retained in that page.
+        let after_text = after.and_then(LogicalName::unicode_text);
+        let core = self
+            .memory_store
+            .lock()
+            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?;
+        let generation = core.generation();
+        let _shared_page = core.list(
+            path,
+            Some(generation),
+            after_text.as_deref(),
+            maximum_entries as usize,
+        )?;
+        Ok(page)
     }
 
     /// Publishes one owner-mediated exact-file read scope to another agent,
@@ -1288,9 +1282,28 @@ impl MemoryHarnessStorage {
         path: &str,
         expected_generation: Option<&GenerationRef>,
     ) -> Result<(FileRef, Vec<u8>)> {
-        self.delegated_reader(scope)?
+        let resolved = self
+            .delegated_reader(scope)?
             .read_private_path(&self.volume, granted_prefix, path, expected_generation)
-            .await
+            .await?;
+        // A delegated read still uses the filesystem verifier for the signed
+        // scope and generation proof. When the path is also present in the
+        // shared core (all content staged through this storage), use the core
+        // path head and resident bytes for the returned payload. Direct
+        // provider files, such as host-owned manifests, intentionally fall
+        // back to the verifier result.
+        let core = self
+            .memory_store
+            .lock()
+            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?;
+        let shared = core.read_path(path, None);
+        match shared {
+            Ok(reference) if reference == resolved.0 => {
+                let bytes = core.read(&reference)?;
+                Ok((reference, bytes))
+            }
+            _ => Ok(resolved),
+        }
     }
 
     fn delegated_reader(
@@ -1922,6 +1935,16 @@ mod tests {
             )
             .await?;
         assert_eq!(output.text, "local response");
+        let first_aggregate = storage.open_conversation(bundle.limits()).await?;
+        let first_user = first_aggregate
+            .reducer()
+            .conversation()
+            .and_then(|conversation| conversation.messages.first())
+            .ok_or_else(|| Error::Invalid("conversation user message is missing".into()))?;
+        assert_eq!(
+            first_user.id,
+            crate::turn::canonical_user_message_id(operation_id)
+        );
         let replayed = storage
             .run_conversation(
                 &bundle,

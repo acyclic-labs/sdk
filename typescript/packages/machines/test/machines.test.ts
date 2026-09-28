@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { HttpMachinesProvider, Machines, MachinesTransportError, SimulatedMachines, customImage, forkFidelity, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
-import { decodeUsageReceipt, wireResults } from "../src/wire-results.ts";
-import { create, toBinary } from "@bufbuild/protobuf";
-import { ImageKind, ImageQualificationSchema, MachineIdSchema, MutationOutcomeSchema, UsageReceiptSchema } from "../generated/proto/machines/v1/machines_pb.js";
+import { HttpMachinesProvider, Machines, MachinesTransportError, SimulatedMachines, checkpointId, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
+import { normalize_identity as rustNormalizeIdentity, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
+import { ensureMachinesWasm } from "../src/wasm-runtime.ts";
 
 const request = (idempotencyKey: string): CreateMachine => ({
   idempotencyKey,
@@ -16,34 +15,115 @@ const request = (idempotencyKey: string): CreateMachine => ({
 });
 
 describe("Machines simulation", () => {
-  test("live forks preserve fidelity, idempotency, and source lifetime", async () => {
-    expect(forkFidelity(["live-fork", "disk-fork"])).toBe("memory-and-disk");
-    expect(forkFidelity(["disk-fork"])).toBe("disk-only");
-    expect(forkFidelity(["live-checkpoint"])).toBeNull();
-    const provider = new SimulatedMachines();
-    const created = await provider.create(request("live-source"));
-    if (created.kind !== "created") throw new Error("wrong create outcome");
-    const forked = await provider.forkMachine(created.machine.id, 2, idempotencyKey("live-fork"));
-    if (forked.kind !== "machine-forked") throw new Error("wrong fork outcome");
-    expect(forked.source).toBe(created.machine.id);
-    expect(forked.fidelity).toBe("memory-and-disk");
-    expect(forked.children).toHaveLength(2);
-    expect(new Set(forked.children.map(child => child.id)).size).toBe(2);
-    expect(await provider.forkMachine(created.machine.id, 2, idempotencyKey("live-fork"))).toEqual(forked);
-    await expect(provider.forkMachine(created.machine.id, 3, idempotencyKey("live-fork"))).rejects.toThrow();
-    await expect(provider.destroyMachine(created.machine.id, idempotencyKey("destroy-too-early"))).rejects.toThrow();
-    for (const child of forked.children) await provider.destroyMachine(child.id, idempotencyKey(`destroy-${child.id}`));
-    await provider.destroyMachine(created.machine.id, idempotencyKey("destroy-after-children"));
-    const disk = new SimulatedMachines({ capabilities: ["disk-fork", "suspend-resume"] });
-    const diskSource = await disk.create(request("disk-source"));
-    if (diskSource.kind !== "created") throw new Error("wrong create outcome");
-    const diskFork = await disk.forkMachine(diskSource.machine.id, 1, idempotencyKey("disk-fork"));
-    expect(diskFork.kind === "machine-forked" && diskFork.fidelity).toBe("disk-only");
-    const unsupported = new SimulatedMachines({ capabilities: ["live-checkpoint"] });
-    const plain = await unsupported.create(request("plain-source"));
-    if (plain.kind !== "created") throw new Error("wrong create outcome");
-    await expect(unsupported.forkMachine(plain.machine.id, 1, idempotencyKey("unsupported"))).rejects.toThrow();
+  test("uses the Rust OCI constructor and preserves its public image shape", async () => {
+    await ensureMachinesWasm();
+    expect(managedOci(`ghcr.io/acyclic/agent@sha256:${"a".repeat(64)}`)).toEqual({ kind: "managed-oci", digestHex: "a".repeat(64) });
+    expect(managedOci(`registry.example/app@sha256:${"AB".repeat(32)}`)).toEqual({ kind: "managed-oci", digestHex: "ab".repeat(32) });
+    expect(managedOci(`registry.example/one@sha256:${"0".repeat(63)}1`)).toEqual({ kind: "managed-oci", digestHex: `${"0".repeat(63)}1` });
+    expect(() => managedOci("registry.example/one:latest")).toThrow("OCI image must contain @sha256:<digest>");
+    expect(() => managedOci(`registry.example/one@sha256:${"0".repeat(64)}`)).toThrow("image digest cannot be zero");
+    expect(() => managedOci(`registry.example/one@sha256:${"a".repeat(63)}`)).toThrow("OCI image digest is invalid");
+    expect(() => managedOci(`registry.example/one@sha256:${"g".repeat(64)}`)).toThrow("OCI image digest is invalid");
   });
+
+  test("normalizes public identities through the Rust contract", async () => {
+    await ensureMachinesWasm();
+    expect(idempotencyKey("caller-key")).toBe(rustNormalizeIdentity("idempotency", "caller-key"));
+    expect(machineId("machine-label")).toBe(rustNormalizeIdentity("machine", "machine-label"));
+    expect(checkpointId("checkpoint-label")).toBe(rustNormalizeIdentity("checkpoint", "checkpoint-label"));
+    expect(operationId("operation-label")).toBe(rustNormalizeIdentity("operation", "operation-label"));
+    const uuid = "01020304-0506-4708-890a-0b0c0d0e0f10";
+    expect(machineId(uuid)).toBe(uuid);
+    expect(() => idempotencyKey("")).toThrow("identity value is required");
+  });
+
+  test("rejects malformed WASM inputs through the async boundary", async () => {
+    await ensureMachinesWasm();
+    const wasm = new WasmSimulatedMachines();
+    expect(JSON.parse(WasmSimulatedMachines.encodeHttpRequest({ count: 7n, bytes: Uint8Array.of(0, 255, 128) }))).toEqual({ count: { $bigint: "7" }, bytes: { $bytes: "AP+A" } });
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => WasmSimulatedMachines.encodeHttpRequest(cyclic)).toThrow("cyclic");
+    const accessor: Record<string, unknown> = {};
+    Object.defineProperty(accessor, "value", { enumerable: true, get: () => 1 });
+    expect(() => WasmSimulatedMachines.encodeHttpRequest(accessor)).toThrow("accessor");
+    const reject = async (invoke: () => Promise<unknown>, message?: string) => {
+      const pending = invoke();
+      expect(pending).toBeInstanceOf(Promise);
+      if (message === undefined) await expect(pending).rejects.toThrow();
+      else await expect(pending).rejects.toThrow(message);
+    };
+    const base = {
+      idempotencyKey: "malformed-wasm",
+      image: { kind: "custom", digestHex: "07".repeat(32) },
+      compatibility: { kind: "best-effort" },
+      performance: "elastic",
+      suspension: { kind: "manual" },
+      expiration: { kind: "never" },
+      networkPolicyDigestHex: "08".repeat(32),
+      budgets: { spendMicros: 0n, concurrency: 0 },
+    };
+    try {
+      await reject(() => wasm.listMachines({ after: null, limit: 1.5 as never }));
+      await reject(() => wasm.create({ ...base, budgets: { spendMicros: 1.5 as never, concurrency: 0 } }));
+      await reject(() => wasm.create({ ...base, compatibility: { kind: "require", capabilities: ["elastic-cpu", "elastic-cpu"] } }), "duplicates");
+      await reject(() => wasm.create({ ...base, compatibility: { kind: "best-effort", capabilities: [] } as never }), "unknown field");
+      await reject(() => wasm.create({ ...base, suspension: { kind: "after-idle", milliseconds: 0 } }), "nonzero");
+      await reject(() => wasm.create({ ...base, suspension: { kind: "manual", milliseconds: 1 } as never }), "unknown field");
+      await reject(() => wasm.create({ ...base, expiration: { kind: "never", milliseconds: 1 } as never }), "unknown field");
+      await reject(() => wasm.create({ ...base, expiration: { kind: "max-age", milliseconds: 0 } }), "nonzero");
+      await reject(() => wasm.qualifyImage({ kind: "managed-oci", digestHex: "0".repeat(64) }), "zero");
+    } finally {
+      wasm.free();
+    }
+  });
+
+  test("does not advance the Rust clock for a missing suspension-policy target", async () => {
+    const provider = new SimulatedMachines();
+    const first = await provider.create(request("policy-clock-first"));
+    if (first.kind !== "created") throw new Error("wrong create outcome");
+    await expect(provider.setSuspensionPolicy(machineId("missing"), { kind: "manual" }, idempotencyKey("policy-clock-missing"))).rejects.toThrow("not found");
+    const second = await provider.create(request("policy-clock-second"));
+    if (second.kind !== "created") throw new Error("wrong create outcome");
+    expect(second.machine.createdAtUnixMs).toBe(first.machine.createdAtUnixMs + 1);
+  });
+
+  test("routes every lifecycle operation through the Rust simulator", async () => {
+    const provider = new SimulatedMachines();
+    const created = await provider.create(request("full-lifecycle"));
+    if (created.kind !== "created") throw new Error("wrong create outcome");
+    const id = created.machine.id;
+    const suspended = await provider.suspend(id, idempotencyKey("suspend-full"));
+    expect(suspended).toEqual({ kind: "suspended", machineId: id });
+    expect((await provider.inspectMachine(id)).state).toBe("suspended");
+    const woken = await provider.wake(id, idempotencyKey("wake-full"));
+    expect(woken).toEqual({ kind: "woken", machineId: id });
+    const policy = { kind: "manual" } as const;
+    expect(await provider.setSuspensionPolicy(id, policy, idempotencyKey("policy-full"))).toEqual({ kind: "suspension-policy-set", machineId: id, policy });
+    expect((await provider.inspectMachine(id)).contract.suspension).toEqual(policy);
+    const events = await provider.events(id, null, 16);
+    expect(events.events.map(event => event.fact)).toEqual([
+      { kind: "state", state: "running" }, { kind: "state", state: "suspended" }, { kind: "state", state: "running" },
+    ]);
+    expect((await provider.events(id, 1, 16)).events.map(event => event.sequence)).toEqual([2, 3]);
+    const captured = await provider.checkpoint(id, idempotencyKey("checkpoint-full"));
+    if (captured.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
+    expect(await provider.inspectCheckpoint(captured.checkpoint.id)).toEqual(captured.checkpoint);
+    const forked = await provider.fork(captured.checkpoint.id, 2, "dedicated", idempotencyKey("fork-full"));
+    if (forked.kind !== "forked") throw new Error("wrong fork outcome");
+    expect(forked.machines.map(machine => machine.contract.performance)).toEqual(["dedicated", "dedicated"]);
+    expect((await provider.listMachines(null, 256)).machines).toHaveLength(3);
+    expect(await provider.recover(idempotencyKey("fork-full"))).toEqual(forked);
+    const usage = await provider.usage(id, 1, 2);
+    expect(usage.machine).toBe(id);
+    expect(usage.receipt).toBeInstanceOf(Uint8Array);
+    expect(usage.lineageReceiptSha256).toBeInstanceOf(Uint8Array);
+    expect(await provider.destroyCheckpoint(captured.checkpoint.id, idempotencyKey("destroy-checkpoint-full"))).toEqual({ kind: "checkpoint-destroyed", checkpointId: captured.checkpoint.id });
+    await expect(provider.fork(captured.checkpoint.id, 1, "elastic", idempotencyKey("fork-after-destroy"))).rejects.toThrow("fork");
+    expect(await provider.destroyMachine(id, idempotencyKey("destroy-machine-full"))).toEqual({ kind: "machine-destroyed", machineId: id });
+    expect((await provider.inspectMachine(id)).state).toBe("destroyed");
+  });
+
   test("exposes checked high-level qualification, attachment, recovery, and bounded listing", async () => {
     const provider = new SimulatedMachines();
     const machines = new Machines(provider);
@@ -51,7 +131,7 @@ describe("Machines simulation", () => {
     expect((await machines.qualifyImage(image)).image).toEqual(image);
     const created = await machines.create({ ...request("high-level"), idempotencyKey: idempotencyKey("high-level") });
     expect((await machines.attach(created.id)).id).toBe(created.id);
-    await expect(machines.attach(machineId("missing"))).rejects.toThrow("not found");
+    await expect(machines.attach(machineId("missing"))).rejects.toThrow("resource not found");
     const operation = await machines.recoverOperation(idempotencyKey("high-level"));
     expect(await machines.recover(operation.id)).toEqual({ id: operation.id, phase: "succeeded" });
     expect(await machines.recoverMutation(idempotencyKey("high-level"))).toHaveProperty("kind", "created");
@@ -62,6 +142,34 @@ describe("Machines simulation", () => {
     const none: string[] = [];
     for await (const machine of machines.list({ maximum: 0 })) none.push(machine.id);
     expect(none).toEqual([]);
+  });
+
+  test("does not impose a client-side maximum beyond safe integer precision", async () => {
+    const provider = new SimulatedMachines();
+    const machines = new Machines(provider);
+    const iterator = machines.list({ maximum: 65_537 });
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  test("uses Rust-generated page limits for high-level defaults", async () => {
+    const provider = new SimulatedMachines();
+    let listLimit: number | undefined;
+    const listMachines = provider.listMachines.bind(provider);
+    provider.listMachines = async (after, limit) => {
+      listLimit = limit;
+      return listMachines(after, limit);
+    };
+    const machines = new Machines(provider);
+    await machines.list().next();
+    expect(listLimit).toBe(256);
+
+    let eventLimit: number | undefined;
+    provider.events = async (_machineId, _afterSequence, limit) => {
+      eventLimit = limit;
+      return { events: [], nextSequence: null };
+    };
+    await machines.machine(machineId("page-limit-test")).events();
+    expect(eventLimit).toBe(1024);
   });
 
   test("constructs a hosted client from explicit or process environment", () => {
@@ -79,9 +187,10 @@ describe("Machines simulation", () => {
   test("copies caller-owned budgets into the retained machine contract", async () => {
     const provider = new SimulatedMachines();
     const authored = request("owned-budget");
-    const created = await provider.create(authored);
-    if (created.kind !== "created") throw new Error("wrong create outcome");
+    const pending = provider.create(authored);
     (authored.budgets as { concurrency: number }).concurrency = 99;
+    const created = await pending;
+    if (created.kind !== "created") throw new Error("wrong create outcome");
     expect((await provider.inspectMachine(created.machine.id)).contract.budgets.concurrency).toBe(0);
   });
 
@@ -95,8 +204,8 @@ describe("Machines simulation", () => {
     const observations = [];
     for await (const observation of provider.watchOperation(operation)) observations.push(observation);
     expect(observations).toEqual([expected]);
-    await expect(provider.recoverOperation("unknown")).rejects.toThrow("not found");
-    await expect(provider.inspectOperation("operation:unknown:0")).rejects.toThrow("not found");
+    await expect(provider.recoverOperation("unknown")).rejects.toThrow("resource not found");
+    await expect(provider.inspectOperation("operation:unknown:0")).rejects.toThrow("resource not found");
   });
 
   test("uses the lineage receipt commitment instead of the retired quantity", async () => {
@@ -108,85 +217,18 @@ describe("Machines simulation", () => {
     expect("lineageSharedBytes" in usage).toBe(false);
   });
 
-  test("preserves exact u64 usage quantities across the Rust protobuf boundary", () => {
-    const value = decodeUsageReceipt(toBinary(UsageReceiptSchema, create(UsageReceiptSchema, {
-      machine: create(MachineIdSchema, { value: Uint8Array.from({ length: 16 }, () => 1) }),
-      startUnixMs: 1n, endUnixMs: 2n,
-      elasticCpuNs: 9007199254740993n, dedicatedCpuNs: 18446744073709551615n,
-      privateResidentByteSeconds: 9007199254740995n, durablePrivateBytes: 9007199254740997n,
-      lineageReceiptSha256: new Uint8Array(32), egressBytes: 9007199254740999n, receipt: new Uint8Array(),
-    })));
-    expect(value.elasticCpuNs).toBe(9007199254740993n);
-    expect(value.dedicatedCpuNs).toBe(18446744073709551615n);
-    expect(value.egressBytes).toBe(9007199254740999n);
-  });
-
-  test("rejects substituted protobuf qualification and mutation identities", () => {
-    const digest = new Uint8Array(32).fill(7);
-    const qualification = toBinary(ImageQualificationSchema, create(ImageQualificationSchema, {
-      image: { kind: ImageKind.CUSTOM, immutableReference: { case: "customDigest", value: digest } },
-      compatibilityRevision: new Uint8Array(32).fill(8),
-    }));
-    expect(() => wireResults.qualification(qualification, { kind: "custom", digestHex: "09".repeat(32) })).toThrow("substituted");
-    const mutation = toBinary(MutationOutcomeSchema, create(MutationOutcomeSchema, {
-      result: { case: "suspended", value: { value: new Uint8Array(16).fill(7) } },
-    }));
-    expect(() => wireResults.mutation(mutation, { kind: "suspended", machineId: machineId("different") })).toThrow("substituted");
-  });
-
-  test("rejects zero and malformed image digests at every Machines boundary", async () => {
-    const zero = "0".repeat(64);
-    expect(() => managedOci(`registry.example/app@sha256:${zero}`)).toThrow("non-zero");
-    expect(() => customImage(zero)).toThrow("non-zero");
-    const malformed = { kind: "custom" as const, digestHex: zero };
-    await expect(new SimulatedMachines().qualifyImage(malformed)).rejects.toThrow("non-zero");
-    await expect(new SimulatedMachines().create({ ...request("zero-network"), networkPolicyDigestHex: zero })).rejects.toThrow("non-zero");
-    const hosted = new HttpMachinesProvider({ endpoint: "https://example.test", token: "token", fetcher: (() => { throw new Error("fetch should not run"); }) as typeof fetch });
-    await expect(hosted.qualifyImage(malformed)).rejects.toThrow("non-zero");
-    for (const bytes of [new Uint8Array(31).fill(1), new Uint8Array(32)]) {
-      const qualification = toBinary(ImageQualificationSchema, create(ImageQualificationSchema, {
-        image: { kind: ImageKind.CUSTOM, immutableReference: { case: "customDigest", value: bytes } },
-        compatibilityRevision: new Uint8Array(32).fill(8),
-      }));
-      expect(() => wireResults.qualification(qualification, { kind: "custom", digestHex: "01".repeat(32) })).toThrow("digest");
-    }
-  });
-
-  test("rejects non-u32 counts before entering the WASM boundary", async () => {
+  test("keeps Rust generated byte DTOs owned by each result", async () => {
     const provider = new SimulatedMachines();
-    await expect(provider.listMachines(null, 1.5)).rejects.toThrow(RangeError);
-    await expect(provider.events("machine" as never, null, -1)).rejects.toThrow(RangeError);
-    await expect(provider.fork("checkpoint" as never, 0x1_0000_0000, "elastic", "key" as never)).rejects.toThrow(RangeError);
-  });
-
-  test("normalizes checkpoint image identities at the Rust boundary", async () => {
-    const provider = new SimulatedMachines();
-    const image = { kind: "checkpoint" as const, checkpointId: "captured" as never };
-    const first = await provider.qualifyImage(image);
-    const second = await provider.qualifyImage(image);
-    expect(first.image).toEqual(second.image);
-    expect(first.image.kind).toBe("checkpoint");
-    if (first.image.kind === "checkpoint") expect(first.image.checkpointId).toMatch(/^[0-9a-f-]{36}$/);
-  });
-
-  test("validates observations against Rust-normalized identity arguments", async () => {
-    const provider = new SimulatedMachines();
-    const created = await provider.create(request("normalized-observation"));
+    const created = await provider.create(request("usage-owned-by-result"));
     if (created.kind !== "created") throw new Error("wrong create outcome");
-    const alias = machineId(created.machine.id.toUpperCase());
-    expect((await provider.inspectMachine(alias)).id).toBe(created.machine.id);
-    expect((await provider.events(alias, null, 8)).events[0]?.machine).toBe(created.machine.id);
-    expect((await provider.usage(alias, 1, 2)).machine).toBe(created.machine.id);
-    const captured = await provider.checkpoint(alias, "normalized-checkpoint" as never);
-    if (captured.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
-    expect((await provider.inspectCheckpoint(captured.checkpoint.id.toUpperCase() as never)).id).toBe(captured.checkpoint.id);
-    const operation = await provider.recoverOperation("normalized-observation" as never);
-    const operationAlias = operation.toUpperCase() as never;
-    expect((await provider.inspectOperation(operationAlias)).id).toBe(operation);
-    expect((await provider.cancel(operationAlias)).id).toBe(operation);
-    const watched = [];
-    for await (const value of provider.watchOperation(operationAlias)) watched.push(value.id);
-    expect(watched).toEqual([operation]);
+    const first = await provider.usage(created.machine.id, 1, 2);
+    const expectedLineage = first.lineageReceiptSha256.slice();
+    const expectedReceipt = first.receipt.slice();
+    first.lineageReceiptSha256[0] ^= 0xff;
+    if (first.receipt.length > 0) first.receipt[0] ^= 0xff;
+    const second = await provider.usage(created.machine.id, 1, 2);
+    expect(second.lineageReceiptSha256).toEqual(expectedLineage);
+    expect(second.receipt).toEqual(expectedReceipt);
   });
 
   test("canonical replay ignores object insertion order", async () => {
@@ -219,25 +261,10 @@ describe("Machines simulation", () => {
     expect((await provider.inspectMachine(forked.machines[0]!.id)).state).toBe("running");
   });
 
-  test("decodes every terminal mutation from the Rust protobuf boundary", async () => {
-    const provider = new SimulatedMachines();
-    const created = await provider.create(request("wire-mutations"));
-    if (created.kind !== "created") throw new Error("wrong create outcome");
-    const id = created.machine.id;
-    expect(await provider.suspend(id, "wire-suspend" as never)).toEqual({ kind: "suspended", machineId: id });
-    expect(await provider.wake(id, "wire-wake" as never)).toEqual({ kind: "woken", machineId: id });
-    expect(await provider.setSuspensionPolicy(id, { kind: "manual" }, "wire-policy" as never)).toEqual({
-      kind: "suspension-policy-set", machineId: id, policy: { kind: "manual" },
-    });
-    expect(await provider.recover("wire-policy" as never)).toEqual({
-      kind: "suspension-policy-set", machineId: id, policy: { kind: "manual" },
-    });
-    expect(await provider.destroyMachine(id, "wire-destroy" as never)).toEqual({ kind: "machine-destroyed", machineId: id });
-  });
-
   test("managed images cannot be constructed from mutable OCI tags", async () => {
     const provider = new SimulatedMachines();
     expect(() => managedOci("ghcr.io/acyclic/agent:latest")).toThrow();
+    expect(() => managedOci(`ghcr.io/acyclic/agent@sha256:${"0".repeat(64)}`)).toThrow("zero");
     const image = managedOci(`ghcr.io/acyclic/agent@sha256:${"a".repeat(64)}`);
     expect((await provider.qualifyImage(image)).image).toEqual(image);
   });
@@ -273,6 +300,8 @@ describe("Machines simulation", () => {
     expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", maximumResponseBytes: 0 })).toThrow(RangeError);
     const provider = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ id: "machine", state: "imaginary" })) });
     await expect(provider.inspectMachine("machine" as never)).rejects.toBeInstanceOf(MachinesTransportError);
+    const invalidUtf8 = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new Uint8Array([0xff])) });
+    await expect(invalidUtf8.inspectMachine("machine" as never)).rejects.toThrow("valid UTF-8");
   });
 
   test("managed transport rejects substituted identities and impossible machine evidence", async () => {
@@ -281,11 +310,93 @@ describe("Machines simulation", () => {
     if (created.kind !== "created") throw new Error("wrong create outcome");
     const encode = (value: unknown) => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? { $bigint: item.toString() } : item instanceof Uint8Array ? { $bytes: btoa(String.fromCharCode(...item)) } : item);
     const serve = (value: unknown) => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(encode(value)) });
-    await expect(serve({ ...created.machine, id: "other" }).inspectMachine(created.machine.id)).rejects.toMatchObject({ message: "invalid machines/inspect response", status: 200 });
-    await expect(serve({ ...created.machine, changedAtUnixMs: 0 }).inspectMachine(created.machine.id)).rejects.toMatchObject({ message: "invalid machines/inspect response", status: 200 });
-    await expect(serve({ ...created.machine, endpoints: [{ name: "x", uri: "a" }, { name: "x", uri: "b" }] }).inspectMachine(created.machine.id)).rejects.toMatchObject({ message: "invalid machines/inspect response", status: 200 });
-    await expect(serve({ ...created.machine, contract: { ...created.machine.contract, budgets: { spendMicros: -1n, concurrency: 1 } } }).inspectMachine(created.machine.id)).rejects.toMatchObject({ message: "invalid machines/inspect response", status: 200 });
-    await expect(serve({ events: [{ machine: "other", sequence: 1, observedAtUnixMs: 1, fact: { kind: "capacity-changed" } }], nextSequence: 1 }).events(created.machine.id, null, 8)).rejects.toMatchObject({ message: "invalid machines/events response", status: 200 });
+    const inspected = await serve(created.machine).inspectMachine(created.machine.id);
+    expect(inspected.id).toBe(created.machine.id);
+    expect(Object.getPrototypeOf(inspected)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf(inspected.contract)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf(inspected.contract.image)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf(inspected.contract.budgets)).toBe(Object.prototype);
+    expect(inspected.contract.budgets.spendMicros).toBe(0n);
+    let requestBody: unknown;
+    const capturing = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => { requestBody = JSON.parse(String(init?.body)); return new Response(encode(created)); } });
+    await capturing.create(request("request-encoder"));
+    expect(requestBody).toMatchObject({ budgets: { spendMicros: { $bigint: "0" } }, image: { digestHex: "07".repeat(32) } });
+    await expect(serve({ image: created.machine.contract.image }).qualifyImage(created.machine.contract.image)).rejects.toThrow("capabilities");
+    await expect(serve({ ...created.machine, lastCheckpoint: undefined }).inspectMachine(created.machine.id)).rejects.toThrow("lastCheckpoint");
+    await expect(serve({ machines: [], next: undefined }).listMachines(null, 8)).rejects.toThrow("next");
+    await expect(serve({ ...created.machine, id: "other" }).inspectMachine(created.machine.id)).rejects.toThrow("substituted");
+    await expect(serve({ ...created.machine, changedAtUnixMs: 0 }).inspectMachine(created.machine.id)).rejects.toThrow("positive");
+    await expect(serve({ ...created.machine, endpoints: [{ name: "x", uri: "a" }, { name: "x", uri: "b" }] }).inspectMachine(created.machine.id)).rejects.toThrow("duplicate");
+    await expect(serve({ ...created.machine, contract: { ...created.machine.contract, budgets: { spendMicros: -1n, concurrency: 1 } } }).inspectMachine(created.machine.id)).rejects.toThrow("negative");
+    await expect(serve({ ...created.machine, contract: { ...created.machine.contract, budgets: { spendMicros: 1, concurrency: 1 } } }).inspectMachine(created.machine.id)).rejects.toThrow("bigint");
+    await expect(serve({ ...created.machine, createdAtUnixMs: Number.MAX_SAFE_INTEGER + 1 }).inspectMachine(created.machine.id)).rejects.toThrow("safe integer");
+    await expect(serve({ events: [{ machine: "other", sequence: 1, observedAtUnixMs: 1, fact: { kind: "capacity-changed" } }], nextSequence: 1 }).events(created.machine.id, null, 8)).rejects.toThrow("identity");
+    const capacityEvent = { machine: created.machine.id, sequence: 1, observedAtUnixMs: 1, fact: { kind: "capacity-changed" } };
+    expect((await serve({ events: [capacityEvent], nextSequence: 1 }).events(created.machine.id, null, 8)).events[0]?.fact.kind).toBe("capacity-changed");
+    await expect(serve({ events: [{ ...capacityEvent, fact: { kind: "capacity" } }], nextSequence: 1 }).events(created.machine.id, null, 8)).rejects.toThrow("event.fact.kind");
+    const usage = { machine: created.machine.id, startUnixMs: 1, endUnixMs: 2, elasticCpuNs: 0n, dedicatedCpuNs: 0n, privateResidentByteSeconds: 0n, durablePrivateBytes: 0n, egressBytes: 0n, lineageReceiptSha256: new Uint8Array(32), receipt: new Uint8Array() };
+    expect((await serve(usage).usage(created.machine.id, 1, 2)).lineageReceiptSha256).toBeInstanceOf(Uint8Array);
+    const maximumU64 = 18_446_744_073_709_551_615n;
+    expect((await serve({ ...usage, elasticCpuNs: maximumU64 }).usage(created.machine.id, 1, 2)).elasticCpuNs).toBe(maximumU64);
+    await expect(serve({ ...usage, startUnixMs: -1 }).usage(created.machine.id, -1, 2)).rejects.toThrow("safe integer");
+    await expect(serve({ ...created.machine, id: " " }).inspectMachine(created.machine.id)).rejects.toThrow("non-empty");
+    await expect(serve({ ...usage, lineageReceiptSha256: [1, 2, 3] }).usage(created.machine.id, 1, 2)).rejects.toThrow("bytes");
+    await expect(serve({ ...usage, lineageReceiptSha256: { $bytes: "AR==" } }).usage(created.machine.id, 1, 2)).rejects.toThrow("bytes");
+  });
+
+  test("binds hosted mutation outcomes to their request identities and policies", async () => {
+    const simulated = new SimulatedMachines();
+    const created = await simulated.create(request("hosted-mutation-bindings"));
+    if (created.kind !== "created") throw new Error("wrong create outcome");
+    const encode = (value: unknown) => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? { $bigint: item.toString() } : item instanceof Uint8Array ? { $bytes: btoa(String.fromCharCode(...item)) } : item);
+    const serve = (value: unknown) => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(encode(value)) });
+    await expect(serve({ ...created, machine: { ...created.machine, contract: { ...created.machine.contract, suspension: { kind: "manual" } } } }).create(request("hosted-mutation-bindings"))).rejects.toThrow("suspension policy");
+
+    const checkpointed = await simulated.checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"));
+    if (checkpointed.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
+    expect(await serve(checkpointed).checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"))).toEqual(checkpointed);
+    await expect(serve({ ...checkpointed, checkpoint: { ...checkpointed.checkpoint, source: machineId("other-source") } }).checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"))).rejects.toThrow("substituted");
+
+    const checkpointForked = await simulated.fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"));
+    if (checkpointForked.kind !== "forked") throw new Error("wrong checkpoint fork outcome");
+    expect(await serve(checkpointForked).fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"))).toEqual(checkpointForked);
+    const substitutedCheckpoint = checkpointId("other-checkpoint");
+    await expect(serve({
+      ...checkpointForked,
+      machines: checkpointForked.machines.map(machine => ({
+        ...machine,
+        lastCheckpoint: substitutedCheckpoint,
+        contract: { ...machine.contract, image: { kind: "checkpoint", checkpointId: substitutedCheckpoint } },
+      })),
+    }).fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"))).rejects.toThrow("checkpoint");
+    await expect(serve({
+      ...checkpointForked,
+      machines: checkpointForked.machines.map(machine => ({
+        ...machine,
+        contract: { ...machine.contract, performance: "dedicated" as const },
+      })),
+    }).fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"))).rejects.toThrow("performance");
+
+    const forked = await simulated.forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"));
+    if (forked.kind !== "machine-forked") throw new Error("wrong machine fork outcome");
+    expect(await serve(forked).forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"))).toEqual(forked);
+    await expect(serve({ ...forked, source: machineId("other-source") }).forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"))).rejects.toThrow("substituted");
+    await expect(serve({
+      ...forked,
+      children: forked.children.map((machine, index) => index === 0 ? { ...machine, id: created.machine.id } : machine),
+    }).forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"))).rejects.toThrow("source");
+    await expect(serve({
+      ...forked,
+      fidelity: "disk-only",
+      children: forked.children.map(machine => ({ ...machine, contract: { ...machine.contract, capabilities: ["live-fork"] as const } })),
+    }).forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"))).rejects.toThrow("capabilities");
+
+    const policy = { kind: "suspension-policy-set" as const, machineId: created.machine.id, policy: { kind: "manual" as const } };
+    expect(await serve(policy).setSuspensionPolicy(created.machine.id, policy.policy, idempotencyKey("hosted-mutation-policy"))).toEqual(policy);
+    await expect(serve({ ...policy, machineId: machineId("other-machine") }).setSuspensionPolicy(created.machine.id, policy.policy, idempotencyKey("hosted-mutation-policy"))).rejects.toThrow("substituted");
+    await expect(serve({ ...policy, policy: { kind: "after-idle", milliseconds: 30_000 } }).setSuspensionPolicy(created.machine.id, policy.policy, idempotencyKey("hosted-mutation-policy"))).rejects.toThrow("policy");
+
+    await expect(serve({ kind: "suspended", machineId: machineId("other-machine") }).suspend(created.machine.id, idempotencyKey("hosted-mutation-suspend"))).rejects.toThrow("substituted");
   });
 
   test("cancels oversized streaming transport responses at the configured bound", async () => {
@@ -297,10 +408,5 @@ describe("Machines simulation", () => {
     const provider = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", maximumResponseBytes: 2, fetcher: async () => new Response(body) });
     await expect(provider.inspectMachine("machine" as never)).rejects.toBeInstanceOf(MachinesTransportError);
     expect(cancelled).toBeTrue();
-  });
-
-  test("does not expose server error bodies in transport errors", async () => {
-    const provider = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response("reflected-secret", { status: 403 }) });
-    await expect(provider.inspectMachine("missing" as never)).rejects.toMatchObject({ message: "HTTP 403", status: 403 });
   });
 });

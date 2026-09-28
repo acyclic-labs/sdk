@@ -34,13 +34,34 @@ import {
 
 const resume = create(ResumeRequestSchema, {});
 const negotiation = create(HandshakeRequestSchema, {
-  protocol: { version: "2", descriptorDigest: "digest" },
+  protocol: {
+    version: "2",
+    // blake3(FILE_DESCRIPTOR_SET) for the checked-in v2 protobuf contract.
+    descriptorDigest: "4fb49936d761bd2d02aabc668176abb34dd07006a239b1f8abf5f27eff8664b5",
+  },
   required: { capabilities: [] },
 });
 const handshake = create(HandshakeResponseSchema, {
   protocol: negotiation.protocol,
   supported: { capabilities: [] },
 });
+
+const validCommand = (operationId = "01010101-0101-0101-0101-010101010101", idempotencyKey = "one") =>
+  create(CommandEnvelopeSchema, {
+    protocol: negotiation.protocol,
+    authority: { kind: 5, id: "owner" },
+    operation: { operationId, idempotencyKey },
+    scope: {
+      id: "command",
+      capabilities: ["lifecycle:manage"],
+      issuer: "runtime",
+      proof: new Uint8Array(32),
+    },
+    actionType: "transition_lifecycle",
+    canonicalActionJson: new TextEncoder().encode(
+      '{"kind":"transition_lifecycle","reason":null,"to":"active"}',
+    ),
+  });
 const delivery = create(DeliverySchema, {
   authority: { kind: 2, id: "conversation-1" },
   generation: "generation-1",
@@ -126,7 +147,8 @@ test("embedded, JSONL, WebSocket and gRPC bridges expose the same wire delivery"
 test("gRPC control validates echoed operation, owner, protocol, error, and retry identity", async () => {
   const operationId = "01010101-0101-0101-0101-010101010101";
   const owner = { kind: 5, id: "owner" };
-  const observe = create(ObserveRequestSchema, { owner, operationId });
+  const scope = { id: "control", capabilities: ["operation:observe", "operation:cancel"], issuer: "runtime", proof: new Uint8Array(32) };
+  const observe = create(ObserveRequestSchema, { owner, operationId, scope });
   let invalidStatus = create(OperationStatusSchema, {
     protocol: negotiation.protocol,
     owner,
@@ -162,6 +184,7 @@ test("gRPC control validates echoed operation, owner, protocol, error, and retry
   await expect(connection.cancel(create(CancelRequestSchema, {
     owner,
     operationId,
+    scope,
     idempotencyKey: "cancel-1",
   }))).rejects.toBeInstanceOf(WireError);
 
@@ -184,6 +207,7 @@ test("gRPC control validates echoed operation, owner, protocol, error, and retry
   expect((await connection.cancel(create(CancelRequestSchema, {
     owner,
     operationId,
+    scope,
     idempotencyKey: "cancel-1",
   }))).operation?.idempotencyKey).toBe("cancel-1");
 });
@@ -205,9 +229,7 @@ test("HTTP rejection is terminal only with an authoritative admission", async ()
   };
   const transport = new HttpSseWireTransport("https://example.test", negotiation, fetcher);
   const connection = await transport.connect(resume);
-  const command = create(CommandEnvelopeSchema, {
-    operation: { operationId: "01010101-0101-0101-0101-010101010101", idempotencyKey: "one" },
-  });
+  const command = validCommand();
   await expect(connection.send(command)).rejects.toBeInstanceOf(TerminalAdmissionError);
 });
 
@@ -227,9 +249,7 @@ test("HTTP admission requires a complete echoed identity", async () => {
     negotiation,
     fetcher,
   ).connect(resume);
-  await expect(connection.send(create(CommandEnvelopeSchema, {
-    operation: { operationId: "01010101-0101-0101-0101-010101010101", idempotencyKey: "one" },
-  }))).rejects.toBeInstanceOf(WireError);
+  await expect(connection.send(validCommand())).rejects.toBeInstanceOf(WireError);
 });
 
 test("HTTP throttling remains indeterminate", async () => {
@@ -246,9 +266,7 @@ test("HTTP throttling remains indeterminate", async () => {
     negotiation,
     fetcher,
   ).connect(resume);
-  await expect(connection.send(create(CommandEnvelopeSchema, {
-    operation: { operationId: "01010101-0101-0101-0101-010101010101", idempotencyKey: "one" },
-  }))).rejects.toBeInstanceOf(WireError);
+  await expect(connection.send(validCommand())).rejects.toBeInstanceOf(WireError);
 });
 
 test("HTTP observe and cancel preserve protocol, owner, and retry identity", async () => {
@@ -391,7 +409,7 @@ test("framed control serializes observe and cancel for the same operation", asyn
     () => new FakeSocket() as unknown as WebSocket,
   ).connect(resume);
   const owner = { kind: 5, id: "owner" };
-  const scope = { id: "control", capabilities: ["operation:observe", "operation:cancel"], issuer: "runtime", proof: new Uint8Array(32) };
+  const scope = { id: "control", capabilities: ["operation:observe", "operation:cancel"], issuer: "runtime", proof: new Uint8Array(32).fill(1) };
   const observed = connection.observe(create(ObserveRequestSchema, { owner, operationId, scope }));
   await expect(connection.cancel(create(CancelRequestSchema, {
     owner,
@@ -503,9 +521,7 @@ test("clean JSONL EOF makes an unanswered command indeterminate", async () => {
     },
   };
   const connection = await new JsonlWireTransport(async () => channel, negotiation).connect(resume);
-  const pending = connection.send(create(CommandEnvelopeSchema, {
-    operation: { operationId: "01010101-0101-0101-0101-010101010101", idempotencyKey: "one" },
-  }));
+  const pending = connection.send(validCommand());
   finish();
   await expect(pending).rejects.toBeInstanceOf(WireError);
 });

@@ -2,11 +2,50 @@ import { expect, test } from "bun:test";
 import type {
   AgentHarness, AgentId, ApprovalBinding, Authority, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeHost, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
   ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectMergeNotice, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, RuntimeTaskId, TaskContext,
-  SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef,
+  SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
+  NativeModelContent, NativeModelContentPart,
 } from "../src/index.js";
 import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool, parseIdentity, resourceRef } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
 import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
+import type {
+  WasmExtensionAdmissionWire, WasmFileRefWire, WasmTaskAdmissionInput,
+  WasmModelContent, WasmModelContentPart, WasmModelEvent, WasmModelRole,
+} from "../generated/wasm/acyclic_harness_wasm.js";
+
+type Assert<Condition extends true> = Condition;
+type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2) ? true : false;
+type AssertNever<Value extends never> = Value;
+type _NativeModelPartUsesGeneratedRustUnion = Assert<Equal<NativeModelContentPart, WasmModelContentPart>>;
+type _NativeModelContentUsesGeneratedRustUnion = Assert<Equal<NativeModelContent, WasmModelContent>>;
+type _ModelRolesHaveNoUntrackedRustVariants = AssertNever<Exclude<WasmModelRole,
+  "system" | "user" | "assistant" | "tool">>;
+type _ModelRolesHaveNoMissingPublicVariants = AssertNever<Exclude<
+  "system" | "user" | "assistant" | "tool", WasmModelRole>>;
+type _ModelPartsHaveNoUntrackedRustVariants = AssertNever<Exclude<WasmModelContentPart["kind"],
+  "text" | "file" | "tool_call" | "tool_result">>;
+type _ModelPartsHaveNoMissingPublicVariants = AssertNever<Exclude<
+  "text" | "file" | "tool_call" | "tool_result", WasmModelContentPart["kind"]>>;
+type _ModelEventsHaveNoUntrackedRustVariants = AssertNever<Exclude<WasmModelEvent["kind"],
+  "content" | "reasoning" | "tool_call" | "completed">>;
+type _ModelEventsHaveNoMissingPublicVariants = AssertNever<Exclude<
+  "content" | "reasoning" | "tool_call" | "completed", WasmModelEvent["kind"]>>;
+
+const generatedModelContent: WasmModelContent = {
+  kind: "tool_call", call_id: "call", name: "lookup", arguments: { value: 1 },
+};
+const generatedModelEvent: WasmModelEvent = {
+  kind: "tool_call", call_id: "call", name: "lookup", arguments: { value: 1 },
+};
+const publicModelContent: ModelContentPart = {
+  kind: "tool_call", callId: "call", name: "lookup", arguments: { value: 1 },
+};
+const publicModelEvent: ModelEvent = {
+  kind: "tool_call", callId: "call", name: "lookup", arguments: { value: 1 },
+};
+const publicModelRole: ModelRole = "assistant";
+void [generatedModelContent, generatedModelEvent, publicModelContent, publicModelEvent, publicModelRole];
 
 const provider = { namespace: "type-test", family: "filesystem", version: "2" } as const;
 const project: VolumeRef<"project"> = {
@@ -60,8 +99,8 @@ const unlinkedToolResult: ConversationMessage<"tool_result">["reply_to"] = null;
 const toolIdOnUser: ConversationMessage<"user">["tool_call_id"] = "call";
 // @ts-expect-error a project merge receipt can only append a merge notice
 const wrongMergeNoticeKind: ProjectMergeNotice["kind"] = "assistant";
-// @ts-expect-error a Filesystem merge proof cannot claim an Objects provider
-const wrongMergeProofProvider: ProviderJoinProof["provider"] = { ...provider, family: "objects" };
+// @ts-expect-error provider identities require a string namespace
+const wrongMergeProofProvider: ProviderJoinProof["provider"] = { ...provider, namespace: 7 };
 // @ts-expect-error a merge proof cannot encode the absence of a provider statement
 const missingMergeProofStatement: ProviderJoinProof["statement"] = null;
 // @ts-expect-error full Rust u64 conversation positions cannot be rounded JavaScript numbers
@@ -142,6 +181,20 @@ function nativeAdmissionIsRequiredAtComposition(native: NativeContracts): void {
   // @ts-expect-error content routing cannot silently skip Rust volume admission
   composeContentBindings([{ volume: project, content }]);
   void [builder, content];
+}
+
+function generatedAdmissionBoundaryRejectsOpaqueRoutes(): void {
+  const input = {} as WasmTaskAdmissionInput;
+  // @ts-expect-error Rust-owned admission inputs reject an arbitrary execution route
+  input.execution = "bad";
+  // @ts-expect-error Rust-owned admission inputs reject an arbitrary policy identity
+  input.policy = "bad";
+  const extension = {} as WasmExtensionAdmissionWire;
+  const content: WasmFileRefWire = extension.configurations[0]!.content;
+  // @ts-expect-error extension configuration content must be a generated FileRef wire
+  const invalidContent: WasmFileRefWire = "bad";
+  void [content, invalidContent];
+  void input;
 }
 
 function cannotConstructRuntimeDirectly(): void {
@@ -292,6 +345,7 @@ test("v2 ownership, revision, and authority contracts remain discriminated", () 
   void canonicalComparisonKeepsItsRecordType;
   void nativeAdmissionDoesNotPromiseOriginalIdentitySpelling;
   void nativeAdmissionIsRequiredAtComposition;
+  void generatedAdmissionBoundaryRejectsOpaqueRoutes;
   void recordedEventCannotExposeBearerProof;
   void admittedContentCannotBeRebound;
   void identityConstructorsKeepDistinctBrands;

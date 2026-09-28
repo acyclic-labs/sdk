@@ -128,6 +128,8 @@ export function piDefaultProvider<Metadata = unknown>(bridge: PiDefaultBridge<Me
   });
 }
 
+export function projectPiEvent<Metadata>(event: PiEvent<Metadata>): ModelEvent;
+export function projectPiEvent(event: unknown): ModelEvent;
 export function projectPiEvent(event: unknown): ModelEvent {
   if (typeof event !== "object" || event === null || !("type" in event) || typeof event.type !== "string") {
     throw new TypeError("Pi bridge returned an invalid event");

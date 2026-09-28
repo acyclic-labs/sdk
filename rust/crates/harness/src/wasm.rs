@@ -4,29 +4,795 @@
     reason = "wasm-bindgen's exported ABI owns JavaScript values and byte buffers"
 )]
 
-use crate::wire_codec::{decode_command, encode_apply_result, protocol_identity};
+use crate::wire_codec::{
+    decode_command, decode_event_payload as decode_payload_wire, encode_apply_result,
+    protocol_identity,
+};
 use crate::{
     AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
     SessionId, TaskId, TurnId,
     conversation::{
-        Attachment, ContentGrant, ConversationMessage, FileDescriptor, FileRef, Limits,
-        ReferencedAttachments, TaskOutcomeRecord, VolumeOperation, VolumeRef,
-        decode_attachment_manifest, encode_attachment_manifest,
+        Attachment, ContentGrant, ConversationMessage, ConversationState, FileDescriptor, FileRef,
+        Limits, ModelContextSelection, ReferencedAttachments, TaskOutcomeRecord, VolumeOperation,
+        VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
-        ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
+        AggregateKind, ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
         ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
         ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
     },
+    executor::{ModelEventAdmission, ModelEventAdmissionState},
     fork::{ForkReport, ForkRequest, ForkSeed, ReferenceGrant, ResourceRevision},
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
     merge::ProjectMergeReceipt,
+    model::{ModelContent, ModelEvent, ModelMessage},
+    projection::{
+        AttachmentListResolver, SelectedModelContext, select_model_context_at_revision,
+        validate_model_context_selection_at_revision,
+    },
     resources::{ProviderRef, ResourceRef},
-    runtime::{DurableBatchRequest, batch_member_operation_id, task_definition_digest},
+    runtime::{
+        BatchGroupPolicy, DurableBatchRequest, TaskAdmissionRecord, TaskChild, TaskChildrenPage,
+        TaskDependencyEnvironment, TaskRunLimits, batch_member_operation_id,
+        task_admission_identities, task_definition_digest, validate_children_page,
+        validate_children_request, validate_task_requirements,
+    },
+    tool::{ToolDefinition, validate_value},
+    turn::prepare_turn,
 };
-use serde::Serialize;
+use prost::Message as _;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use std::collections::BTreeSet;
+use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+#[tsify(large_number_types_as_bigints)]
+struct WasmLimitsInput {
+    file_bytes: u64,
+    path_bytes: u64,
+    attachments: u64,
+    render_bytes: u64,
+    model_steps: u64,
+    model_events_per_step: u64,
+    tool_calls_per_step: u64,
+    context_messages: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WasmPublicModelContextSelection {
+    conversation_revision: u64,
+    message_ids: Vec<uuid::Uuid>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WasmPublicSelectedModelContext {
+    selection: WasmPublicModelContextSelection,
+    messages: Vec<ModelMessage>,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi, large_number_types_as_bigints)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskRunLimitsInput {
+    #[tsify(type = "bigint | null")]
+    concurrency: Option<u64>,
+    #[tsify(type = "bigint | null")]
+    max_steps: Option<u64>,
+    #[tsify(type = "bigint | null")]
+    deadline_epoch_ms: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WasmTaskChild {
+    slot: String,
+    task_id: TaskId,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WasmTaskChildrenPage {
+    revision: u64,
+    entries: Vec<WasmTaskChild>,
+    next_after: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WasmTaskChildrenPageInput {
+    parent: TaskId,
+    expected_revision: Option<u64>,
+    after_slot: Option<String>,
+    maximum: u32,
+    page: WasmTaskChildrenPage,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskIdentityInput {
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "string")]
+    version: String,
+    #[tsify(type = "WasmToolJsonSchema")]
+    input_schema: serde_json::Value,
+    #[tsify(type = "WasmToolJsonSchema")]
+    output_schema: serde_json::Value,
+    #[tsify(type = "readonly string[]")]
+    requirements: BTreeSet<String>,
+    #[tsify(type = "readonly number[]")]
+    machine_digest: Vec<u8>,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskDependencyDefinition {
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "string")]
+    version: String,
+    #[tsify(type = "readonly string[]")]
+    requirements: Vec<String>,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmToolDependencyDefinition {
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "string")]
+    version: String,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmExtensionDependencyDefinition {
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "number")]
+    version: u32,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskDependencyComponents {
+    model: bool,
+    context: bool,
+    interactions: bool,
+    policy: bool,
+    host: bool,
+    state: bool,
+    spawner: bool,
+    content: bool,
+    artifacts: bool,
+    content_write: bool,
+    artifacts_write: bool,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskDependencyInput {
+    #[tsify(type = "readonly WasmTaskDependencyDefinition[]")]
+    tasks: Vec<WasmTaskDependencyDefinition>,
+    #[tsify(type = "readonly WasmToolDependencyDefinition[]")]
+    tools: Vec<WasmToolDependencyDefinition>,
+    components: WasmTaskDependencyComponents,
+    #[tsify(type = "readonly string[]")]
+    grants: Vec<String>,
+    #[tsify(type = "readonly WasmExtensionDependencyDefinition[]")]
+    extensions: Vec<WasmExtensionDependencyDefinition>,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmTaskAdmissionInput {
+    #[tsify(type = "string")]
+    operation_id: OperationId,
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "string")]
+    version: String,
+    #[tsify(type = "WasmToolJsonValue")]
+    input: serde_json::Value,
+    #[tsify(type = "WasmToolJsonSchema")]
+    input_schema: serde_json::Value,
+    #[tsify(type = "WasmToolJsonSchema")]
+    output_schema: serde_json::Value,
+    #[tsify(type = "readonly string[]")]
+    requirements: BTreeSet<String>,
+    #[tsify(type = "readonly number[]")]
+    machine_digest: Vec<u8>,
+    #[tsify(type = "string | null")]
+    parent: Option<TaskId>,
+    #[tsify(type = "readonly string[]")]
+    grants: Vec<String>,
+    limits: WasmLimitsInput,
+    run_limits: WasmTaskRunLimitsInput,
+    #[tsify(type = "WasmMachineIdentityWire | null")]
+    policy: Option<crate::registry::ComponentIdentity>,
+    #[tsify(type = "WasmExtensionAdmissionWire | null")]
+    extensions: Option<ExtensionAdmission>,
+    #[tsify(type = "WasmExecutionPlacementWire | null")]
+    execution: Option<crate::runtime::ExecutionPlacement>,
+}
+
+/// Tsify declarations for the provider-neutral model values.  These wrappers
+/// deliberately mirror the serde model DTOs instead of maintaining a second
+/// TypeScript-owned wire union.
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelWire {
+    provider: String,
+    name: String,
+    revision: String,
+    #[tsify(type = "WasmModelJsonValue")]
+    options: serde_json::Value,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
+#[serde(rename_all = "snake_case")]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+enum WasmModelRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
+#[serde(rename_all = "snake_case")]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+enum WasmFileProjectionPolicy {
+    Reference,
+    BoundedFull,
+    Native,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+enum WasmModelContentPart {
+    Text {
+        text: String,
+    },
+    File {
+        #[tsify(type = "WasmFileRefWire")]
+        file: FileRef,
+        policy: WasmFileProjectionPolicy,
+    },
+    ToolCall {
+        #[serde(rename = "call_id", alias = "callId")]
+        call_id: String,
+        name: String,
+        #[tsify(type = "WasmModelJsonValue")]
+        arguments: serde_json::Value,
+    },
+    ToolResult {
+        #[serde(rename = "call_id", alias = "callId")]
+        call_id: String,
+        name: String,
+        #[tsify(type = "WasmModelJsonValue")]
+        value: serde_json::Value,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(untagged)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+enum WasmModelContent {
+    Text(String),
+    Part(WasmModelContentPart),
+    Parts(Vec<WasmModelContentPart>),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelMessageWire {
+    role: WasmModelRole,
+    content: WasmModelContent,
+}
+
+/// Public model-message input used by the runtime validator.  The content
+/// input intentionally reuses the generated camelCase facade type while the
+/// Rust parser below still consumes the canonical `ModelMessage` DTO.
+#[allow(
+    dead_code,
+    reason = "the struct exists to emit the generated TypeScript input type"
+)]
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+struct WasmModelMessageInput {
+    #[tsify(type = "WasmModelRole")]
+    role: WasmModelRole,
+    #[tsify(type = "WasmModelContentInput")]
+    content: WasmModelContent,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelToolDefinitionWire {
+    name: String,
+    revision: String,
+    description: String,
+    #[tsify(type = "WasmModelJsonSchema")]
+    input_schema: serde_json::Value,
+    #[tsify(type = "WasmModelJsonSchema")]
+    output_schema: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelRequestWire {
+    model: WasmModelWire,
+    messages: Vec<WasmModelMessageWire>,
+    tools: Vec<WasmModelToolDefinitionWire>,
+    max_output_tokens: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+enum WasmModelEvent {
+    Content {
+        delta: String,
+    },
+    Reasoning {
+        delta: String,
+    },
+    ToolCall {
+        #[serde(rename = "call_id", alias = "callId")]
+        call_id: String,
+        name: String,
+        #[tsify(type = "WasmModelJsonValue")]
+        arguments: serde_json::Value,
+    },
+    Completed {
+        #[tsify(type = "WasmModelJsonValue")]
+        metadata: serde_json::Value,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelAttemptWire {
+    #[tsify(type = "string")]
+    operation_id: OperationId,
+    step: u32,
+    #[tsify(type = "readonly number[]")]
+    request_digest: [u8; 32],
+    observed: Vec<WasmModelEvent>,
+}
+
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+#[serde(deny_unknown_fields)]
+struct WasmBatchAdmissionInput {
+    #[tsify(type = "string")]
+    group_id: GroupId,
+    #[tsify(type = "string")]
+    batch_id: BatchId,
+    #[tsify(type = "\"collect-all\" | \"cancel-on-failure\"")]
+    group_policy: BatchGroupPolicy,
+    #[tsify(type = "string")]
+    name: String,
+    #[tsify(type = "string")]
+    version: String,
+    #[tsify(type = "readonly WasmToolJsonValue[]")]
+    inputs: Vec<serde_json::Value>,
+    #[tsify(type = "WasmToolJsonSchema")]
+    input_schema: serde_json::Value,
+    #[tsify(type = "WasmToolJsonSchema")]
+    output_schema: serde_json::Value,
+    #[tsify(type = "readonly string[]")]
+    requirements: BTreeSet<String>,
+    #[tsify(type = "readonly number[]")]
+    machine_digest: Vec<u8>,
+    #[tsify(type = "string | null")]
+    parent: Option<TaskId>,
+    #[tsify(type = "readonly string[]")]
+    grants: Vec<String>,
+    limits: WasmLimitsInput,
+    run_limits: WasmTaskRunLimitsInput,
+    #[tsify(type = "WasmExtensionAdmissionWire | null")]
+    extensions: Option<ExtensionAdmission>,
+    #[tsify(type = "WasmMachineIdentityWire | null")]
+    policy: Option<crate::registry::ComponentIdentity>,
+    #[tsify(type = "WasmExecutionPlacementWire | null")]
+    execution: Option<crate::runtime::ExecutionPlacement>,
+}
+
+/// Complete public durable batch admission returned by the Rust projection.
+/// The outer request uses the SDK's camelCase host shape while `canonical` and
+/// each member retain the exact Rust-owned v2 wire envelopes. Keeping this
+/// projection together prevents TypeScript callers from accidentally changing
+/// the member list, digest, or implementation identity independently.
+#[derive(Serialize)]
+struct WasmBatchAdmissionRequest {
+    contract: &'static str,
+    #[serde(rename = "groupId")]
+    group_id: GroupId,
+    #[serde(rename = "batchId")]
+    batch_id: BatchId,
+    #[serde(rename = "taskName")]
+    task_name: String,
+    revision: String,
+    #[serde(rename = "implementationDigest")]
+    implementation_digest: String,
+    #[serde(rename = "parentTaskId")]
+    parent_task_id: Option<TaskId>,
+    policy: WasmGroupPolicy,
+    members: Vec<serde_json::Value>,
+    canonical: serde_json::Value,
+    #[serde(rename = "inputDigest")]
+    input_digest: Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct WasmGroupPolicy {
+    kind: BatchGroupPolicy,
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output
+}
+
+fn wasm_limits(input: WasmLimitsInput) -> Result<Limits, crate::Error> {
+    Ok(Limits {
+        file_bytes: input.file_bytes,
+        path_bytes: usize::try_from(input.path_bytes)
+            .map_err(|_| crate::Error::Invalid("path_bytes is not representable".into()))?,
+        attachments: usize::try_from(input.attachments)
+            .map_err(|_| crate::Error::Invalid("attachments is not representable".into()))?,
+        render_bytes: input.render_bytes,
+        model_steps: usize::try_from(input.model_steps)
+            .map_err(|_| crate::Error::Invalid("model_steps is not representable".into()))?,
+        model_events_per_step: usize::try_from(input.model_events_per_step).map_err(|_| {
+            crate::Error::Invalid("model_events_per_step is not representable".into())
+        })?,
+        tool_calls_per_step: usize::try_from(input.tool_calls_per_step).map_err(|_| {
+            crate::Error::Invalid("tool_calls_per_step is not representable".into())
+        })?,
+        context_messages: usize::try_from(input.context_messages)
+            .map_err(|_| crate::Error::Invalid("context_messages is not representable".into()))?,
+    })
+}
+
+fn wasm_run_limits(input: WasmTaskRunLimitsInput) -> Result<TaskRunLimits, crate::Error> {
+    Ok(TaskRunLimits {
+        concurrency: input
+            .concurrency
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| crate::Error::Invalid("concurrency is not representable".into()))?,
+        max_steps: input
+            .max_steps
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| crate::Error::Invalid("max_steps is not representable".into()))?,
+        deadline_epoch_ms: input.deadline_epoch_ms,
+    })
+}
+
+// These wire declarations are emitted from the same Rust WASM module as the
+// admission constructors.  The input declarations above are Tsify-derived;
+// these output declarations keep the canonical serde projection typed without
+// reintroducing a second TypeScript-owned contract.
+#[wasm_bindgen(typescript_custom_section)]
+const ADMISSION_WIRE_TYPES: &'static str = r#"
+export interface WasmMachineIdentityWire {
+    readonly name: string;
+    readonly version: string;
+    readonly digest: readonly number[];
+}
+export type WasmToolJsonValue = null | string | number | boolean | readonly WasmToolJsonValue[] | Readonly<{ [key: string]: WasmToolJsonValue }>;
+export type WasmToolJsonSchema = boolean | Readonly<{ [key: string]: WasmToolJsonValue }>;
+export type WasmGroupPolicy =
+    | Readonly<{ kind: "collect-all" }>
+    | Readonly<{ kind: "cancel-on-failure" }>;
+export interface WasmNativeLimitsWire {
+    readonly file_bytes: bigint;
+    readonly path_bytes: bigint;
+    readonly attachments: bigint;
+    readonly render_bytes: bigint;
+    readonly model_steps: bigint;
+    readonly model_events_per_step: bigint;
+    readonly tool_calls_per_step: bigint;
+    readonly context_messages: bigint;
+}
+export interface WasmTaskRunLimitsWire {
+    readonly concurrency: bigint | null;
+    readonly max_steps: bigint | null;
+    readonly deadline_epoch_ms: bigint | null;
+}
+export interface WasmProviderRefWire {
+    readonly namespace: string;
+    readonly family: string;
+    readonly version: string;
+}
+export interface WasmProjectVolumeOwnerWire {
+    readonly kind: "project";
+    readonly id: string;
+}
+export interface WasmAgentVolumeOwnerWire {
+    readonly kind: "agent";
+    readonly id: string;
+}
+export interface WasmSessionVolumeOwnerWire {
+    readonly kind: "session";
+    readonly id: string;
+}
+export type WasmVolumeOwnerWire =
+    | WasmProjectVolumeOwnerWire
+    | WasmAgentVolumeOwnerWire
+    | WasmSessionVolumeOwnerWire;
+export interface WasmVolumeRefWire {
+    readonly provider: WasmProviderRefWire;
+    readonly id: string;
+    readonly class: "project" | "agent_private" | "session_shared";
+    readonly owner: WasmVolumeOwnerWire;
+}
+export interface WasmFileDescriptorWire {
+    readonly sha256: readonly number[];
+    readonly byte_length: number;
+    readonly media_type: string;
+}
+export interface WasmFileRefWire {
+    readonly volume: WasmVolumeRefWire;
+    readonly path: string;
+    readonly version: string;
+    readonly descriptor: WasmFileDescriptorWire;
+    readonly display_name: string;
+}
+export interface WasmAuthorityWire {
+    readonly kind: "agent";
+    readonly id: string;
+}
+export interface WasmEventReferenceWire {
+    readonly authority: WasmAuthorityWire;
+    readonly revision: bigint;
+}
+export interface WasmExtensionDependencyWire {
+    readonly name: string;
+    readonly version: number;
+}
+export interface WasmExtensionConfigurationWire {
+    readonly extension: WasmExtensionDependencyWire;
+    readonly schema_digest: readonly number[];
+    readonly content: WasmFileRefWire;
+}
+export interface WasmResourceRefWire {
+    readonly kind: "workspace" | "generation" | "artifact" | "sandbox" | "checkpoint" | "stream" | "context" | "run";
+    readonly provider: WasmProviderRefWire;
+    readonly key: readonly number[];
+    readonly version: string | null;
+}
+export interface WasmExecutionPlacementWire {
+    readonly provider: WasmMachineIdentityWire;
+    readonly build: WasmResourceRefWire & Readonly<{ kind: "artifact" }>;
+    readonly environment: (WasmResourceRefWire & Readonly<{ kind: "sandbox" }>) | null;
+    readonly readiness_revision: readonly number[];
+}
+export interface WasmExtensionAdmissionWire {
+    readonly source: WasmEventReferenceWire;
+    readonly selected: readonly WasmExtensionDependencyWire[];
+    readonly configurations: readonly WasmExtensionConfigurationWire[];
+}
+export interface WasmTaskAdmissionWire {
+    readonly contract: "harness.task-admission.v2";
+    readonly operation_id: string;
+    readonly task: WasmMachineIdentityWire;
+    readonly machine: WasmMachineIdentityWire;
+    readonly input: unknown;
+    readonly input_schema: WasmToolJsonSchema;
+    readonly output_schema: WasmToolJsonSchema;
+    readonly parent: string | null;
+    readonly grants: readonly string[];
+    readonly limits: WasmNativeLimitsWire;
+    readonly run_limits: WasmTaskRunLimitsWire;
+    readonly policy: WasmMachineIdentityWire | null;
+    readonly extensions: WasmExtensionAdmissionWire | null;
+    readonly execution: WasmExecutionPlacementWire | null;
+}
+export interface WasmDurableBatchWire {
+    readonly contract: "harness.batch.v2";
+    readonly group_id: string;
+    readonly batch_id: string;
+    readonly group_policy: "collect-all" | "cancel-on-failure";
+    readonly task: WasmMachineIdentityWire;
+    readonly machine: WasmMachineIdentityWire;
+    readonly inputs: readonly unknown[];
+    readonly input_schema: WasmToolJsonSchema;
+    readonly output_schema: WasmToolJsonSchema;
+    readonly parent: string | null;
+    readonly grants: readonly string[];
+    readonly limits: WasmNativeLimitsWire;
+    readonly run_limits: WasmTaskRunLimitsWire;
+    readonly extensions: WasmExtensionAdmissionWire | null;
+    readonly policy: WasmMachineIdentityWire | null;
+    readonly execution: WasmExecutionPlacementWire | null;
+}
+export interface WasmBatchAdmissionRequest {
+    readonly contract: "harness.batch.v2";
+    readonly groupId: string;
+    readonly batchId: string;
+    readonly taskName: string;
+    readonly revision: string;
+    readonly implementationDigest: string;
+    readonly parentTaskId: string | null;
+    readonly policy: WasmGroupPolicy;
+    readonly members: readonly WasmTaskAdmissionWire[];
+    readonly canonical: WasmDurableBatchWire;
+    readonly inputDigest: readonly number[];
+}
+export interface WasmTaskAdmissionIdentities {
+    readonly task: WasmMachineIdentityWire;
+    readonly machine: WasmMachineIdentityWire;
+}
+export interface WasmTaskChildrenPage {
+    readonly revision: bigint;
+    readonly entries: readonly Readonly<{ readonly slot: string; readonly taskId: string }>[];
+    readonly nextAfter: string | null;
+}
+export interface WasmTaskChildrenPageInput {
+    readonly parent: string;
+    readonly expectedRevision: bigint | null;
+    readonly afterSlot: string | null;
+    readonly maximum: number;
+    readonly page: WasmTaskChildrenPage;
+}
+"#;
+
+#[wasm_bindgen(typescript_custom_section)]
+const TURN_PREPARATION_TYPES: &'static str = r#"
+export type WasmTurnDisposition = "dispatch" | "reconcile" | "indeterminate" | "completed";
+export interface WasmTurnPreparation {
+    readonly user_id: string;
+    readonly append_user: boolean;
+    readonly selection: Readonly<{
+        readonly conversation_revision: bigint;
+        readonly message_ids: readonly string[];
+    }>;
+    readonly selection_is_new: boolean;
+    readonly disposition: WasmTurnDisposition;
+}
+"#;
+
+// JSON aliases and validator limits are the only model declarations that are
+// not emitted directly by Tsify. The DTOs above own the generated Rust wire
+// types; these aliases describe the public camelCase input view.
+#[wasm_bindgen(typescript_custom_section)]
+const MODEL_TYPES: &'static str = r#"
+export type WasmModelJsonValue =
+    | null
+    | string
+    | number
+    | boolean
+    | bigint
+    | readonly WasmModelJsonValue[]
+    | Readonly<{ readonly [key: string]: WasmModelJsonValue }>;
+export type WasmModelJsonSchema =
+    | boolean
+    | Readonly<{ readonly [key: string]: WasmModelJsonValue }>;
+export interface WasmModelLimitsInput {
+    readonly file_bytes: number | bigint;
+    readonly path_bytes: number | bigint;
+    readonly attachments: number | bigint;
+    readonly render_bytes: number | bigint;
+    readonly model_steps: number | bigint;
+    readonly model_events_per_step: number | bigint;
+    readonly tool_calls_per_step: number | bigint;
+    readonly context_messages: number | bigint;
+}
+type WasmModelCamelContentPart<Part extends WasmModelContentPart> =
+    Part extends { readonly kind: "tool_call"; readonly call_id: string }
+        ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
+        : Part extends { readonly kind: "tool_result"; readonly call_id: string }
+            ? Omit<Part, "call_id" | "value"> & Readonly<{ callId: string; value: unknown }>
+            : Part;
+export type WasmModelContentPartInput = WasmModelCamelContentPart<WasmModelContentPart>;
+export type WasmModelContentInput = string | WasmModelContentPartInput | readonly WasmModelContentPartInput[];
+type WasmModelCamelEvent<Event extends WasmModelEvent> =
+    Event extends { readonly kind: "tool_call"; readonly call_id: string }
+        ? Omit<Event, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
+        : Event extends { readonly kind: "completed" }
+            ? Omit<Event, "metadata"> & Readonly<{ metadata: unknown }>
+        : Event;
+export type WasmModelEventInput = WasmModelCamelEvent<WasmModelEvent>;
+"#;
+
+/// Exact bytes captured by the owner-facing TypeScript adapter before Rust
+/// performs the canonical projection.  The map key is the canonical JSON
+/// spelling of a `FileRef`; bytes are never resolved by path or display name.
+struct WasmProjectionResolver {
+    files: std::collections::HashMap<String, Vec<u8>>,
+}
+
+impl WasmProjectionResolver {
+    fn from_js(value: JsValue) -> Result<Self, JsValue> {
+        let map = value
+            .dyn_into::<js_sys::Map>()
+            .map_err(|_| JsValue::from_str("projection files must be a Map"))?;
+        let mut files = std::collections::HashMap::new();
+        let mut failure = None;
+        map.for_each(&mut |bytes, key| {
+            if failure.is_some() {
+                return;
+            }
+            let Some(key) = key.as_string() else {
+                failure = Some(JsValue::from_str(
+                    "projection file map keys must be canonical JSON strings",
+                ));
+                return;
+            };
+            if !js_sys::Uint8Array::is_type_of(&bytes) {
+                failure = Some(JsValue::from_str(
+                    "projection file map values must be Uint8Array",
+                ));
+                return;
+            }
+            files.insert(key, js_sys::Uint8Array::new(&bytes).to_vec());
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        Ok(Self { files })
+    }
+
+    fn key(file: &FileRef) -> Result<String, crate::Error> {
+        String::from_utf8(crate::contract::canonical_json_bytes(file)?)
+            .map_err(|error| crate::Error::Invalid(format!("file reference is not UTF-8: {error}")))
+    }
+
+    fn bytes(&self, file: &FileRef) -> Result<Vec<u8>, crate::Error> {
+        let key = Self::key(file)?;
+        self.files.get(&key).cloned().ok_or_else(|| {
+            crate::Error::Unsupported("projection file bytes were not captured".into())
+        })
+    }
+}
+
+impl AttachmentListResolver for WasmProjectionResolver {
+    fn resolve<'a>(
+        &'a self,
+        manifest: &'a FileRef,
+        item_count: u32,
+    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<Attachment>>> {
+        Box::pin(async move {
+            let bytes = self.bytes(manifest)?;
+            decode_attachment_manifest(manifest, &bytes, item_count)
+        })
+    }
+
+    fn read<'a>(
+        &'a self,
+        file: &'a FileRef,
+    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<u8>>> {
+        Box::pin(async move { self.bytes(file) })
+    }
+}
 
 /// Derives the same immutable per-slot operation as Rust durable admission.
 #[wasm_bindgen(js_name = batchMemberOperationId)]
@@ -71,6 +837,193 @@ pub fn task_identity_digest_wasm(
     )
     .map(|digest| digest.to_vec())
     .map_err(js_error)
+}
+
+/// Derives the exact task and machine identities retained by durable
+/// admission. The digest envelope and resumable machine pin are shared with
+/// native Rust registration.
+#[wasm_bindgen(
+    js_name = taskAdmissionIdentities,
+    unchecked_return_type = "WasmTaskAdmissionIdentities"
+)]
+pub fn task_admission_identities_wasm(
+    #[wasm_bindgen(unchecked_param_type = "WasmTaskIdentityInput")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    let input: WasmTaskIdentityInput = from_js(value)?;
+    let (task, machine) = task_admission_identities(
+        &input.name,
+        &input.version,
+        &input.input_schema,
+        &input.output_schema,
+        &input.requirements,
+        &input.machine_digest,
+    )
+    .map_err(js_error)?;
+    to_js_admitted(&serde_json::json!({ "task": task, "machine": machine }))
+}
+
+/// Validates the exact task dependency graph used by the TypeScript builder.
+/// The input is a contract projection only; no executable task handlers cross
+/// the WASM boundary and Rust owns graph traversal, revision matching, grants,
+/// and extension requirement admission.
+#[wasm_bindgen(js_name = validateTaskRequirements)]
+pub fn validate_task_requirements_wasm(
+    #[wasm_bindgen(unchecked_param_type = "WasmTaskDependencyInput")] value: JsValue,
+) -> Result<(), JsValue> {
+    let input: WasmTaskDependencyInput = from_js(value)?;
+    let mut tasks = std::collections::BTreeMap::new();
+    for definition in input.tasks {
+        let key = (definition.name, definition.version);
+        if tasks
+            .insert(key.clone(), definition.requirements.into_iter().collect())
+            .is_some()
+        {
+            return Err(js_error(crate::Error::Conflict(format!(
+                "conflicting task registration for {}@{}",
+                key.0, key.1
+            ))));
+        }
+    }
+    let tools = input
+        .tools
+        .into_iter()
+        .map(|definition| (definition.name, definition.version))
+        .collect();
+    let extensions = input
+        .extensions
+        .into_iter()
+        .map(|definition| (definition.name, definition.version))
+        .collect();
+    let environment = TaskDependencyEnvironment {
+        model: input.components.model,
+        context: input.components.context,
+        interactions: input.components.interactions,
+        policy: input.components.policy,
+        host: input.components.host,
+        state: input.components.state,
+        spawner: input.components.spawner,
+        content: input.components.content,
+        artifacts: input.components.artifacts,
+        content_write: input.components.content_write,
+        artifacts_write: input.components.artifacts_write,
+        extensions,
+    };
+    validate_task_requirements(
+        &tasks,
+        &tools,
+        &environment,
+        &input.grants.into_iter().collect(),
+    )
+    .map_err(js_error)
+}
+
+/// Builds and validates the complete owner-retained task admission envelope.
+/// TypeScript supplies public values, while Rust owns identity derivation,
+/// schema/value validation, limits, authority, and execution binding.
+#[wasm_bindgen(js_name = admitTask, unchecked_return_type = "WasmTaskAdmissionWire")]
+pub fn admit_task_wasm(
+    #[wasm_bindgen(unchecked_param_type = "WasmTaskAdmissionInput")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    let input: WasmTaskAdmissionInput = from_js(value)?;
+    let record = TaskAdmissionRecord::from_parts(
+        input.operation_id,
+        &input.name,
+        &input.version,
+        input.input,
+        input.input_schema,
+        input.output_schema,
+        &input.requirements,
+        &input.machine_digest,
+        input.parent,
+        Capabilities::new(input.grants),
+        wasm_limits(input.limits).map_err(js_error)?,
+        wasm_run_limits(input.run_limits).map_err(js_error)?,
+        input.policy,
+        input.extensions,
+        input.execution,
+    )
+    .map_err(js_error)?;
+    to_js_admitted(&record.canonical_value())
+}
+
+fn durable_batch_request_from_input(
+    input: WasmBatchAdmissionInput,
+) -> Result<DurableBatchRequest, JsValue> {
+    DurableBatchRequest::from_parts(
+        input.group_id,
+        input.batch_id,
+        input.group_policy,
+        &input.name,
+        &input.version,
+        input.inputs,
+        input.input_schema,
+        input.output_schema,
+        &input.requirements,
+        &input.machine_digest,
+        input.parent,
+        Capabilities::new(input.grants),
+        wasm_limits(input.limits).map_err(js_error)?,
+        wasm_run_limits(input.run_limits).map_err(js_error)?,
+        input.extensions,
+        input.policy,
+        input.execution,
+    )
+    .map_err(js_error)
+}
+
+/// Builds and validates the complete immutable batch request before any
+/// member admission. Inputs, task identity, limits, policy, and route are
+/// projected by the same Rust constructor used by native hosts.
+#[wasm_bindgen(js_name = admitBatch, unchecked_return_type = "WasmDurableBatchWire")]
+pub fn admit_batch_wasm(
+    #[wasm_bindgen(unchecked_param_type = "WasmBatchAdmissionInput")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    let input: WasmBatchAdmissionInput = from_js(value)?;
+    let request = durable_batch_request_from_input(input)?;
+    to_js_admitted(&request.canonical_value())
+}
+
+/// Builds the complete SDK-facing durable batch request in one Rust-owned
+/// projection. Member envelopes, policy, implementation digest, canonical
+/// manifest, and request digest all derive from the same validated request.
+#[wasm_bindgen(
+    js_name = admitBatchRequest,
+    unchecked_return_type = "WasmBatchAdmissionRequest"
+)]
+pub fn admit_batch_request_wasm(
+    #[wasm_bindgen(unchecked_param_type = "WasmBatchAdmissionInput")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    let input: WasmBatchAdmissionInput = from_js(value)?;
+    let implementation_digest = hex_bytes(&input.machine_digest);
+    let request = durable_batch_request_from_input(input)?;
+    let canonical = request.canonical_value();
+    let members = (0..request.inputs.len())
+        .map(|index| {
+            request
+                .member_admission(index)
+                .map(|member| member.canonical_value())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(js_error)?;
+    let input_digest = crate::contract::canonical_json_digest(&canonical)
+        .map_err(js_error)?
+        .to_vec();
+    let projection = WasmBatchAdmissionRequest {
+        contract: "harness.batch.v2",
+        group_id: request.group_id,
+        batch_id: request.batch_id,
+        task_name: request.task.name.clone(),
+        revision: request.task.version.clone(),
+        implementation_digest,
+        parent_task_id: request.parent,
+        policy: WasmGroupPolicy {
+            kind: request.group_policy,
+        },
+        members,
+        canonical,
+        input_digest,
+    };
+    to_js_admitted(&projection)
 }
 
 /// Derives a stable child operation/message identity from one admitted operation
@@ -428,7 +1381,7 @@ fn conversation_page_data(
     after_sequence: u64,
     limit: u32,
 ) -> Result<ConversationPage<'_>, JsValue> {
-    if limit == 0 || limit > 1_024 {
+    if limit == 0 || limit as usize > crate::conversation::MAX_CONVERSATION_PAGE_MESSAGES {
         return Err(JsValue::from_str("conversation page limit is invalid"));
     }
     let conversation = reducer
@@ -656,6 +1609,43 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
     }
 }
 
+/// Validates and reprojects one owner-retained direct-child page using the
+/// same bounds and bytewise slot ordering as native Harness hosts.
+#[wasm_bindgen(
+    js_name = validateTaskChildrenPage,
+    unchecked_return_type = "WasmTaskChildrenPage"
+)]
+pub fn validate_task_children_page(
+    #[wasm_bindgen(unchecked_param_type = "WasmTaskChildrenPageInput")] value: JsValue,
+) -> Result<JsValue, JsValue> {
+    let input: WasmTaskChildrenPageInput = from_js(value)?;
+    let maximum = usize::try_from(input.maximum)
+        .map_err(|_| JsValue::from_str("task child page maximum is not representable"))?;
+    validate_children_request(input.parent, input.after_slot.as_deref(), maximum)
+        .map_err(js_error)?;
+    let page = TaskChildrenPage {
+        revision: input.page.revision,
+        entries: input
+            .page
+            .entries
+            .iter()
+            .map(|entry| TaskChild {
+                slot: entry.slot.clone(),
+                task_id: entry.task_id,
+            })
+            .collect(),
+        next_after: input.page.next_after.clone(),
+    };
+    validate_children_page(
+        &page,
+        input.expected_revision,
+        input.after_slot.as_deref(),
+        maximum,
+    )
+    .map_err(js_error)?;
+    to_js(&input.page)
+}
+
 /// Applies the same JSON Schema admission used by Rust tool execution before
 /// a TypeScript facade turns an untrusted model value into a typed argument.
 #[wasm_bindgen(js_name = validateToolValue)]
@@ -698,6 +1688,112 @@ pub fn decode_attachment_manifest_bytes(
 ) -> Result<JsValue, JsValue> {
     let manifest: FileRef = from_js(manifest)?;
     to_js_admitted(&decode_attachment_manifest(&manifest, &bytes, item_count).map_err(js_error)?)
+}
+
+/// Runs the canonical Rust conversation projection over bytes captured by the
+/// owner.  TypeScript supplies a map rather than a callback so authorization
+/// and async reads finish before this deterministic core is entered.
+#[wasm_bindgen(js_name = selectModelContext)]
+pub async fn select_model_context_wasm(
+    conversation: JsValue,
+    selection: JsValue,
+    files: JsValue,
+    maximum_messages: u32,
+    maximum_attachments: u32,
+    maximum_render_bytes: f64,
+    maximum_projected_attachments: u32,
+) -> Result<JsValue, JsValue> {
+    let conversation: ConversationState = from_js(conversation)?;
+    let selection: ModelContextSelection = from_js(selection)?;
+    let resolver = WasmProjectionResolver::from_js(files)?;
+    if !maximum_render_bytes.is_finite()
+        || maximum_render_bytes < 0.0
+        || maximum_render_bytes.fract() != 0.0
+        || maximum_render_bytes > 9_007_199_254_740_991.0
+    {
+        return Err(JsValue::from_str(
+            "maximum render bytes must be a safe non-negative integer",
+        ));
+    }
+    let maximum_render_bytes = maximum_render_bytes
+        .to_string()
+        .parse::<u64>()
+        .map_err(|_| JsValue::from_str("maximum render bytes are out of range"))?;
+    let selected = select_model_context_at_revision(
+        &conversation,
+        selection.clone(),
+        &resolver,
+        maximum_messages as usize,
+        maximum_attachments as usize,
+        maximum_render_bytes,
+        maximum_projected_attachments as usize,
+    )
+    .await
+    .map_err(js_error)?;
+    to_js(&selected)
+}
+
+/// Plans one deterministic conversation turn before any model or content
+/// callback runs.  The reducer state and payload checks are shared with the
+/// native filesystem memory host; JavaScript retains ownership of asynchronous
+/// reads and model dispatch after this plan is committed.
+#[wasm_bindgen(
+    js_name = prepareConversationTurn,
+    unchecked_return_type = "WasmTurnPreparation"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keep the generated WASM signature aligned with the native turn contract"
+)]
+pub fn prepare_conversation_turn_wasm(
+    conversation: JsValue,
+    operation_id: String,
+    content: JsValue,
+    attachments: JsValue,
+    limits: JsValue,
+    existing_selection: JsValue,
+    has_completed_output: bool,
+    can_reconcile: bool,
+) -> Result<JsValue, JsValue> {
+    let conversation: ConversationState = from_js(conversation)?;
+    let operation_id = OperationId::parse(&operation_id).map_err(js_error)?;
+    let content: FileRef = from_js(content)?;
+    let attachments: ReferencedAttachments = from_js(attachments)?;
+    let limits: Limits = from_js(limits)?;
+    let existing_selection = if existing_selection.is_null() || existing_selection.is_undefined() {
+        None
+    } else {
+        Some(from_js::<ModelContextSelection>(existing_selection)?)
+    };
+    let preparation = prepare_turn(
+        &conversation,
+        operation_id,
+        content,
+        attachments,
+        limits,
+        existing_selection,
+        has_completed_output,
+        can_reconcile,
+    )
+    .map_err(js_error)?;
+    to_js(&preparation)
+}
+
+/// Validates selection order and tool linkage before the host resolves any
+/// owner-mediated file bytes.
+#[wasm_bindgen(js_name = validateModelContextSelection)]
+pub fn validate_model_context_selection_wasm(
+    conversation: JsValue,
+    selection: JsValue,
+) -> Result<(), JsValue> {
+    let conversation: ConversationState = from_js(conversation)?;
+    let selection: ModelContextSelection = from_js(selection)?;
+    validate_model_context_selection_at_revision(
+        &conversation,
+        &selection,
+        selection.conversation_revision,
+    )
+    .map_err(js_error)
 }
 
 /// Converts a fully captured report into its canonical publishable child seed.
@@ -1229,4 +2325,525 @@ fn normalize_descriptor_lengths(js: &JsValue, value: &serde_json::Value) -> Resu
 
 fn js_error(error: crate::Error) -> JsValue {
     JsValue::from_str(&error.to_string())
+}
+
+/// Decodes one canonical event payload using the native event union.
+#[wasm_bindgen(js_name = decodeEventPayload)]
+pub fn decode_event_payload(
+    event_type: String,
+    canonical_payload_json: Vec<u8>,
+) -> Result<JsValue, JsValue> {
+    let payload = decode_payload_wire(&event_type, &canonical_payload_json).map_err(js_error)?;
+    to_js(&payload)
+}
+
+/// Decodes and validates a canonical Protobuf apply response using Rust-owned
+/// event, authority, scope, digest, and payload rules.
+#[wasm_bindgen(js_name = decodeApplyResponse)]
+pub fn decode_apply_response(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
+    let response = crate::wire::ApplyResponse::decode(bytes.as_slice())
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    let envelope = response
+        .event
+        .ok_or_else(|| JsValue::from_str("apply response event is missing"))?;
+    let (_, event) =
+        crate::wire_codec::decode_event(&envelope.encode_to_vec()).map_err(js_error)?;
+    let result = match crate::wire::ApplyState::try_from(response.state)
+        .map_err(|_| JsValue::from_str("apply response state is invalid"))?
+    {
+        crate::wire::ApplyState::Applied => ApplyResult::Applied { event },
+        crate::wire::ApplyState::Replayed => ApplyResult::Replayed { event },
+        crate::wire::ApplyState::Unspecified => {
+            return Err(JsValue::from_str("apply response state is unspecified"));
+        }
+    };
+    to_js(&result)
+}
+
+/// Decodes a generated aggregate kind using the native enum mapping.
+#[wasm_bindgen(js_name = decodeAggregateKind)]
+pub fn decode_aggregate_kind_wasm(value: i32) -> Result<JsValue, JsValue> {
+    let kind = match crate::wire::AggregateKind::try_from(value)
+        .map_err(|_| JsValue::from_str("aggregate kind is invalid"))?
+    {
+        crate::wire::AggregateKind::Agent => AggregateKind::Agent,
+        crate::wire::AggregateKind::Conversation => AggregateKind::Conversation,
+        crate::wire::AggregateKind::Session => AggregateKind::Session,
+        crate::wire::AggregateKind::Turn => AggregateKind::Turn,
+        crate::wire::AggregateKind::Task => AggregateKind::Task,
+        crate::wire::AggregateKind::Unspecified => {
+            return Err(JsValue::from_str("aggregate kind is unspecified"));
+        }
+    };
+    to_js(&kind)
+}
+
+/// JavaScript-facing tool definition shape. The public TypeScript facade uses
+/// camelCase names while the native definition remains `snake_case`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WasmToolDefinitionInput {
+    name: String,
+    revision: String,
+    description: String,
+    input_schema: serde_json::Value,
+    output_schema: serde_json::Value,
+}
+
+impl From<WasmToolDefinitionInput> for ToolDefinition {
+    fn from(value: WasmToolDefinitionInput) -> Self {
+        Self {
+            name: value.name,
+            revision: value.revision,
+            description: value.description,
+            input_schema: value.input_schema,
+            output_schema: value.output_schema,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WasmToolInvocationInput {
+    call_id: String,
+    name: String,
+    arguments: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct WasmToolResultInput {
+    value: serde_json::Value,
+}
+
+/// Validates a model-visible tool definition using the native contract.
+#[wasm_bindgen(js_name = validateToolDefinition)]
+pub fn validate_tool_definition(definition: JsValue) -> Result<(), JsValue> {
+    let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
+    definition.validate().map_err(js_error)
+}
+
+/// Validates one tool invocation against its registered definition.
+#[wasm_bindgen(js_name = validateToolInvocation)]
+pub fn validate_tool_invocation(definition: JsValue, invocation: JsValue) -> Result<(), JsValue> {
+    let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
+    definition.validate().map_err(js_error)?;
+    let invocation: WasmToolInvocationInput = from_js(invocation)?;
+    if invocation.call_id.is_empty() || invocation.name != definition.name {
+        return Err(JsValue::from_str(
+            "tool invocation identity does not match definition",
+        ));
+    }
+    validate_value(
+        &definition.input_schema,
+        &invocation.arguments,
+        "tool input",
+    )
+    .map_err(js_error)
+}
+
+/// Validates one successful tool result against its registered definition.
+#[wasm_bindgen(js_name = validateToolResult)]
+pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), JsValue> {
+    let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
+    definition.validate().map_err(js_error)?;
+    let result: WasmToolResultInput = from_js(result)?;
+    validate_value(&definition.output_schema, &result.value, "tool output").map_err(js_error)
+}
+
+/// Validates provider-neutral model content under the exact native limits.
+#[wasm_bindgen(
+    js_name = validateModelContent,
+)]
+pub fn validate_model_content(
+    #[wasm_bindgen(unchecked_param_type = "WasmModelContentInput")] content: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<(), JsValue> {
+    let content: ModelContent = from_js(content)?;
+    let limits: Limits = from_js(limits)?;
+    content.validate_limits(limits).map_err(js_error)
+}
+
+/// Validates a complete provider-neutral model message list with the native
+/// role, message-count, and content bounds.  Context builders and the stock
+/// TypeScript loop therefore share the same closed role set and limits as
+/// native durable execution.
+#[wasm_bindgen(
+    js_name = validateModelMessages,
+)]
+pub fn validate_model_messages(
+    #[wasm_bindgen(unchecked_param_type = "readonly WasmModelMessageInput[]")] messages: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<(), JsValue> {
+    let messages: Vec<ModelMessage> = from_js(messages)?;
+    let limits: Limits = from_js(limits)?;
+    limits.validate().map_err(js_error)?;
+    if messages.is_empty() || messages.len() > limits.context_messages {
+        return Err(JsValue::from_str("model context count is invalid"));
+    }
+    for message in messages {
+        message.content.validate_limits(limits).map_err(js_error)?;
+    }
+    Ok(())
+}
+
+/// Validates one human-authored model input using the native content rules.
+#[wasm_bindgen(
+    js_name = validateUserInput,
+)]
+pub fn validate_user_input(
+    #[wasm_bindgen(unchecked_param_type = "WasmModelContentInput")] content: JsValue,
+) -> Result<(), JsValue> {
+    let content: ModelContent = from_js(content)?;
+    content.validate_user_input().map_err(js_error)
+}
+
+/// Admits an already projected, provider-proven context with native model bounds.
+#[wasm_bindgen(js_name = validateSelectedModelContext)]
+pub fn validate_selected_model_context(selected: JsValue, limits: JsValue) -> Result<(), JsValue> {
+    let selected: WasmPublicSelectedModelContext = from_js(selected)?;
+    let limits: Limits = from_js(limits)?;
+    SelectedModelContext {
+        selection: ModelContextSelection {
+            conversation_revision: selected.selection.conversation_revision,
+            message_ids: selected.selection.message_ids,
+        },
+        messages: selected.messages,
+    }
+    .validate_for_dispatch(limits)
+    .map_err(js_error)
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Tsify)]
+#[serde(deny_unknown_fields)]
+#[tsify(from_wasm_abi, into_wasm_abi)]
+struct WasmModelEventAdmissionState {
+    #[tsify(type = "number")]
+    count: usize,
+    calls: Vec<String>,
+    completed: bool,
+    #[tsify(type = "number")]
+    text_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+struct WasmModelEventAdmission {
+    event: WasmModelEvent,
+    state: WasmModelEventAdmissionState,
+}
+
+/// Admits one provider model event with the native stream rules and returns
+/// the detached state needed for the next event. Text accounting is cumulative
+/// across model steps while event and tool-call bounds reset at each step.
+#[wasm_bindgen(
+    js_name = admitModelEvent,
+    unchecked_return_type = "WasmModelEventAdmission",
+)]
+pub fn admit_model_event(
+    #[wasm_bindgen(unchecked_param_type = "WasmModelEventInput")] event: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelEventAdmissionState | null")] state: JsValue,
+) -> Result<JsValue, JsValue> {
+    let event: ModelEvent = from_js(event)?;
+    let limits: Limits = from_js(limits)?;
+    limits.validate().map_err(js_error)?;
+    let state: WasmModelEventAdmissionState = if state.is_null() || state.is_undefined() {
+        WasmModelEventAdmissionState::default()
+    } else {
+        from_js(state)?
+    };
+    if state.text_bytes > limits.file_bytes {
+        return Err(JsValue::from_str(
+            "model output admission state exceeds file limit",
+        ));
+    }
+    let prior_text_bytes = state.text_bytes;
+    let admission_state = ModelEventAdmissionState {
+        count: state.count,
+        calls: state.calls,
+        completed: state.completed,
+    };
+    let mut admission =
+        ModelEventAdmission::from_state(admission_state, limits).map_err(js_error)?;
+    admission.observe(&event, limits).map_err(js_error)?;
+    let text_bytes = match &event {
+        ModelEvent::Content { delta } => prior_text_bytes
+            .checked_add(delta.len() as u64)
+            .ok_or_else(|| JsValue::from_str("model output size overflow"))?,
+        ModelEvent::Reasoning { .. }
+        | ModelEvent::ToolCall { .. }
+        | ModelEvent::Completed { .. } => prior_text_bytes,
+    };
+    if text_bytes > limits.file_bytes {
+        return Err(JsValue::from_str("assistant output exceeds file limit"));
+    }
+    let state = WasmModelEventAdmissionState {
+        count: admission.state().count,
+        calls: admission.state().calls,
+        completed: admission.state().completed,
+        text_bytes,
+    };
+    let output = WasmModelEventAdmission {
+        event: match event {
+            ModelEvent::Content { delta } => WasmModelEvent::Content { delta },
+            ModelEvent::Reasoning { delta } => WasmModelEvent::Reasoning { delta },
+            ModelEvent::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } => WasmModelEvent::ToolCall {
+                call_id,
+                name,
+                arguments,
+            },
+            ModelEvent::Completed { metadata } => WasmModelEvent::Completed { metadata },
+        },
+        state,
+    };
+    let js = to_js(&output)?;
+    let js_state = js_sys::Reflect::get(&js, &JsValue::from_str("state"))?;
+    set_js_field(
+        &js_state,
+        "count",
+        &exact_js_number(output.state.count as u64)?,
+    )?;
+    set_js_field(
+        &js_state,
+        "text_bytes",
+        &exact_js_number(output.state.text_bytes)?,
+    )?;
+    Ok(js)
+}
+
+/// Validates a protobuf handshake; returns encoded `Error` bytes, or empty on success.
+#[wasm_bindgen(js_name = validateWireHandshake)]
+pub fn validate_wire_handshake(request: Vec<u8>, response: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| crate::wire_validation::validate_wire_handshake(&request, &response))
+}
+
+/// Validates one complete protobuf command before it crosses a wire adapter.
+#[wasm_bindgen(js_name = validateWireCommand)]
+pub fn validate_wire_command(command: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| crate::wire_codec::decode_command(&command).map(|_| ()))
+}
+
+/// Validates only the protocol identity of a command envelope.
+#[wasm_bindgen(js_name = validateWireCommandProtocol)]
+pub fn validate_wire_command_protocol(command: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| {
+        let command = crate::wire::CommandEnvelope::decode(command.as_slice())
+            .map_err(|error| crate::Error::Invalid(format!("invalid command envelope: {error}")))?;
+        crate::wire_api::validate_command_protocol(&command)
+    })
+}
+
+/// Validates a protobuf replay request against the compiled protocol identity.
+#[wasm_bindgen(js_name = validateWireResume)]
+pub fn validate_wire_resume(request: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| {
+        let request = crate::wire::ResumeRequest::decode(request.as_slice())
+            .map_err(|error| crate::Error::Invalid(format!("invalid resume request: {error}")))?;
+        crate::wire_api::validate_resume_protocol(&request)
+    })
+}
+
+/// Validates a protobuf observe request using the canonical Rust scope rules.
+#[wasm_bindgen(js_name = validateWireObserve)]
+pub fn validate_wire_observe(request: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| {
+        let request = crate::wire::ObserveRequest::decode(request.as_slice())
+            .map_err(|error| crate::Error::Invalid(format!("invalid observe request: {error}")))?;
+        crate::wire_api::validate_observe_request(&request).map(|_| ())
+    })
+}
+
+/// Validates a protobuf cancel request using the canonical Rust scope rules.
+#[wasm_bindgen(js_name = validateWireCancel)]
+pub fn validate_wire_cancel(request: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| {
+        let request = crate::wire::CancelRequest::decode(request.as_slice())
+            .map_err(|error| crate::Error::Invalid(format!("invalid cancel request: {error}")))?;
+        crate::wire_api::validate_cancel_request(&request).map(|_| ())
+    })
+}
+
+/// Validates a protobuf admission identity; returns encoded `Error` bytes, or empty on success.
+#[wasm_bindgen(js_name = validateWireAdmission)]
+pub fn validate_wire_admission(command: Vec<u8>, admission: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| crate::wire_validation::validate_wire_admission(&command, &admission))
+}
+
+/// Validates a protobuf operation status identity; returns encoded `Error` bytes, or empty on success.
+#[wasm_bindgen(js_name = validateWireStatus)]
+pub fn validate_wire_status(request: Vec<u8>, status: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| crate::wire_validation::validate_wire_status(&request, &status))
+}
+
+/// Validates a protobuf cancellation identity; returns encoded `Error` bytes, or empty on success.
+#[wasm_bindgen(js_name = validateWireCancellation)]
+pub fn validate_wire_cancellation(request: Vec<u8>, response: Vec<u8>) -> Vec<u8> {
+    validate_wire(|| crate::wire_validation::validate_wire_cancellation(&request, &response))
+}
+
+fn validate_wire(validate: impl FnOnce() -> crate::Result<()>) -> Vec<u8> {
+    validate().map_or_else(
+        |error| crate::encode_error(&error).encode_to_vec(),
+        |_| Vec::new(),
+    )
+}
+
+fn exact_nonnegative_u64(value: f64, field: &str) -> Result<u64, JsValue> {
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > 9_007_199_254_740_991.0
+    {
+        return Err(JsValue::from_str(&format!(
+            "{field} must be a safe non-negative integer"
+        )));
+    }
+    value
+        .to_string()
+        .parse::<u64>()
+        .map_err(|_| JsValue::from_str(&format!("{field} is outside the supported range")))
+}
+
+#[derive(Serialize)]
+struct WasmContentEntry {
+    name: String,
+    kind: &'static str,
+}
+
+#[derive(Serialize)]
+struct WasmContentPage {
+    generation: u64,
+    entries: Vec<WasmContentEntry>,
+    #[serde(rename = "hasMore")]
+    has_more: bool,
+}
+
+/// Bounded Rust-owned content state for the WASM `MemoryConversation` adapter.
+/// The native filesystem provider uses the same crate-level core while
+/// retaining its signed provider-generation proof around delegated reads.
+#[wasm_bindgen]
+pub struct WasmContentStore {
+    store: crate::memory_store::MemoryStore,
+}
+
+#[wasm_bindgen]
+impl WasmContentStore {
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        volume: JsValue,
+        maximum_file_bytes: f64,
+        maximum_path_bytes: f64,
+        maximum_resident_bytes: f64,
+        maximum_resident_files: f64,
+    ) -> Result<Self, JsValue> {
+        let volume: VolumeRef = from_js(volume)?;
+        let store = crate::memory_store::MemoryStore::new(
+            volume,
+            exact_nonnegative_u64(maximum_file_bytes, "maximum_file_bytes")?,
+            exact_nonnegative_u64(maximum_path_bytes, "maximum_path_bytes")?,
+            exact_nonnegative_u64(maximum_resident_bytes, "maximum_resident_bytes")?,
+            exact_nonnegative_u64(maximum_resident_files, "maximum_resident_files")?,
+        )
+        .map_err(js_error)?;
+        Ok(Self { store })
+    }
+
+    /// Stores one immutable file and optionally advances its path head.
+    pub fn stage(
+        &mut self,
+        path: String,
+        bytes: Vec<u8>,
+        media_type: String,
+        display_name: String,
+        update_path: bool,
+    ) -> Result<JsValue, JsValue> {
+        let reference = self
+            .store
+            .stage(&path, &bytes, &media_type, &display_name, update_path)
+            .map_err(js_error)?;
+        to_js_admitted(&reference)
+    }
+
+    /// Reads only an exact, resident immutable reference owned by this store.
+    pub fn read(&self, file: JsValue) -> Result<Vec<u8>, JsValue> {
+        let file: FileRef = from_js(file)?;
+        self.store.read(&file).map_err(js_error)
+    }
+
+    /// Tests local residency without exposing mutable storage maps.
+    pub fn has(&self, file: JsValue) -> Result<bool, JsValue> {
+        let file: FileRef = from_js(file)?;
+        self.store.has(&file).map_err(js_error)
+    }
+
+    /// Reports whether a new file at `path` would conflict with a file or
+    /// directory already retained by this provider.
+    #[wasm_bindgen(js_name = pathConflicts)]
+    pub fn path_conflicts(&self, path: String) -> bool {
+        self.store.path_conflicts(&path)
+    }
+
+    /// Returns a generation-pinned directory page from Rust-owned path state.
+    pub fn list(
+        &self,
+        path: String,
+        generation: JsValue,
+        after: Option<String>,
+        maximum: f64,
+    ) -> Result<JsValue, JsValue> {
+        let generation = self.requested_generation(generation)?;
+        let maximum = usize::try_from(exact_nonnegative_u64(maximum, "maximum")?)
+            .map_err(|_| JsValue::from_str("maximum is outside the supported range"))?;
+        let page = self
+            .store
+            .list(&path, Some(generation), after.as_deref(), maximum)
+            .map_err(js_error)?;
+        let page = WasmContentPage {
+            generation: page.generation,
+            entries: page
+                .entries
+                .into_iter()
+                .map(|entry| WasmContentEntry {
+                    name: entry.name,
+                    kind: match entry.kind {
+                        crate::memory_store::MemoryStoreEntryKind::File => "file",
+                        crate::memory_store::MemoryStoreEntryKind::Directory => "directory",
+                    },
+                })
+                .collect(),
+            has_more: page.has_more,
+        };
+        to_js_admitted(&page)
+    }
+
+    /// Resolves a path at or before an explicit generation.
+    pub fn read_path(&self, path: String, generation: JsValue) -> Result<JsValue, JsValue> {
+        let generation = self.requested_generation(generation)?;
+        let file = self
+            .store
+            .read_path(&path, Some(generation))
+            .map_err(js_error)?;
+        to_js_admitted(&file)
+    }
+
+    /// Returns the current path generation as an exact JavaScript bigint.
+    pub fn generation(&self) -> Result<JsValue, JsValue> {
+        to_js(&self.store.generation())
+    }
+
+    fn requested_generation(&self, value: JsValue) -> Result<u64, JsValue> {
+        let requested = if value.is_null() || value.is_undefined() {
+            None
+        } else {
+            Some(from_js::<u64>(value)?)
+        };
+        let generation = requested.unwrap_or_else(|| self.store.generation());
+        if generation > self.store.generation() {
+            return Err(JsValue::from_str(
+                "private directory generation is unavailable",
+            ));
+        }
+        Ok(generation)
+    }
 }

@@ -34,7 +34,8 @@ pub mod wire {
 mod wire_service;
 #[cfg(not(target_arch = "wasm32"))]
 pub use wire_service::{
-    CredentialGrant, CredentialGrantRequest, CredentialKind, FilesystemCredentialIssuer,
+    CredentialGrant, CredentialGrantRequest, CredentialKind, DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS,
+    DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES, FILESYSTEM_PROTOCOL_VERSION, FilesystemCredentialIssuer,
     FilesystemSourceProvider, FilesystemWireLimits, FilesystemWireService,
     HostedSourceInvalidation, HostedSourceOperation, HostedSourceResult, HostedSourceScope,
     HostedSourceState,
@@ -84,6 +85,8 @@ pub mod git_compat;
 mod heap_future;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted;
+#[doc(hidden)]
+pub mod hosted_contract;
 pub mod kernel;
 pub mod lazy_workspace;
 pub mod lineage;
@@ -194,14 +197,16 @@ pub use git_compat::{
     GitObjectName, GitPatchError, GitPendingMutation, GitPendingTransition, GitPublicationRecord,
     GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, IntoGitTreeRef,
     MemoryGitCompatStore, apply_git_patch, apply_git_patch_with_permit, blame_git_generations,
+    canonicalize_git_output_json, canonicalize_git_pending_transition_json,
     capture_git_compatible_generation, capture_git_compatible_generation_at,
     capture_git_compatible_generation_incremental, git_compatible_diff_counts, grep_git_generation,
-    walk_git_tree,
+    parse_git_public_command, walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{
     HostedFs, HostedFsError, HostedFsOptions, HostedGeneration, HostedS3Access,
-    HostedS3AccessOptions, HostedTransaction, HostedWorkspace,
+    HostedS3AccessOptions, HostedTransaction, HostedWorkspace, MAX_BYTE_RESPONSE_ENVELOPE_BYTES,
+    MINIMUM_HANDSHAKE_RESPONSE_BYTES,
 };
 pub use kernel::{
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,

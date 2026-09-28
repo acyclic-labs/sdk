@@ -2301,6 +2301,11 @@ impl ObjectsProvider for MemoryObjects {
         };
         let fresh = continuation.is_none();
         let (view_id, offset, cursor) = if let Some(token) = continuation {
+            // Resolve the complete target identity before decoding a cursor. A
+            // continuation is bound to the snapshot (or bucket) that created
+            // it, so a forged target must report not-found even when the
+            // cursor itself is malformed for that target.
+            Self::target_ref(&state, &target)?;
             Self::parse_listing_token(&token)?
         } else {
             let objects = Self::target_ref(&state, &target)?.listing.clone();
@@ -2413,12 +2418,12 @@ impl ObjectsProvider for MemoryObjects {
             },
             MutationOutcome::Boolean,
             |state| {
-                let exists = state
-                    .snapshots
-                    .get(&snapshot.snapshot_id)
-                    .is_some_and(|value| value.reference == snapshot);
-                if !exists {
+                let Some(retained) = state.snapshots.get(&snapshot.snapshot_id) else {
+                    // Destroying an already removed snapshot is an idempotent no-op.
                     return Ok(false);
+                };
+                if retained.reference != snapshot {
+                    return Err(ObjectsError::NotFound);
                 }
                 let removed = state
                     .snapshots
@@ -2625,11 +2630,12 @@ impl ObjectsProvider for MemoryObjects {
             },
             MutationOutcome::Boolean,
             |state| {
-                let matches = state.multiparts.get(&upload_id).is_some_and(|upload| {
-                    upload.bucket == bucket && upload.object_key == object_key
-                });
-                if !matches {
+                let Some(retained) = state.multiparts.get(&upload_id) else {
+                    // Aborting an already removed upload is an idempotent no-op.
                     return Ok(false);
+                };
+                if retained.bucket != bucket || retained.object_key != object_key {
+                    return Err(ObjectsError::NotFound);
                 }
                 if let Some(upload) = state.multiparts.remove(&upload_id) {
                     for (_, body) in upload.parts.values() {
