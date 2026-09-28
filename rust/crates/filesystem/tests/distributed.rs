@@ -17,6 +17,111 @@ use acyclic_stream::{
 use bytes::Bytes;
 use futures::StreamExt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::Notify;
+
+struct PausingStream {
+    inner: MemoryStream,
+    pause_record_commit: AtomicBool,
+    entered: Notify,
+    resume: Notify,
+    record_path: StreamPath,
+}
+
+#[async_trait::async_trait]
+impl StreamProvider for PausingStream {
+    async fn inspect_idempotency(
+        &self,
+        key: acyclic_stream::IdempotencyKey,
+    ) -> Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
+        self.inner.inspect_idempotency(key).await
+    }
+
+    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+        self.inner.tail(path).await
+    }
+
+    async fn bounds(&self, path: StreamPath) -> Result<acyclic_stream::StreamBounds, StreamError> {
+        self.inner.bounds(path).await
+    }
+
+    async fn append(
+        &self,
+        request: AppendRequest,
+    ) -> Result<acyclic_stream::AppendOutcome, StreamError> {
+        self.inner.append(request).await
+    }
+
+    async fn fork(
+        &self,
+        request: acyclic_stream::ForkRequest,
+    ) -> Result<acyclic_stream::ForkReceipt, StreamError> {
+        self.inner.fork(request).await
+    }
+
+    async fn read(
+        &self,
+        request: ReadRequest,
+    ) -> Result<acyclic_stream::RecordStream, StreamError> {
+        self.inner.read(request).await
+    }
+
+    async fn follow(
+        &self,
+        path: StreamPath,
+        from: u64,
+    ) -> Result<acyclic_stream::RecordStream, StreamError> {
+        self.inner.follow(path, from).await
+    }
+
+    async fn children(
+        &self,
+        request: ChildrenRequest,
+    ) -> Result<acyclic_stream::ChildStream, StreamError> {
+        self.inner.children(request).await
+    }
+
+    async fn children_page(
+        &self,
+        request: acyclic_stream::ChildrenPageRequest,
+    ) -> Result<acyclic_stream::ChildrenPage, StreamError> {
+        self.inner.children_page(request).await
+    }
+
+    async fn commit(
+        &self,
+        request: acyclic_stream::CommitRequest,
+    ) -> Result<acyclic_stream::CommitOutcome, StreamError> {
+        if request.mutations.iter().any(|mutation| {
+            matches!(
+                mutation,
+                acyclic_stream::CommitMutation::Append { path, .. } if path == &self.record_path
+            )
+        }) && self.pause_record_commit.swap(false, Ordering::SeqCst)
+        {
+            self.entered.notify_one();
+            self.resume.notified().await;
+        }
+        self.inner.commit(request).await
+    }
+
+    async fn commit_before(
+        &self,
+        request: acyclic_stream::CommitRequest,
+        deadline_unix_millis: u64,
+    ) -> Result<acyclic_stream::CommitOutcome, StreamError> {
+        self.inner
+            .commit_before(request, deadline_unix_millis)
+            .await
+    }
+
+    async fn read_commit(
+        &self,
+        commit_id: acyclic_stream::CommitId,
+    ) -> Result<acyclic_stream::CommittedEnvelope, StreamError> {
+        self.inner.read_commit(commit_id).await
+    }
+}
 
 #[tokio::test]
 #[allow(
@@ -286,6 +391,67 @@ async fn deleting_workspace_preserves_committed_stream_history()
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(retained.len(), usize::try_from(after)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn retirement_fences_an_inflight_authority_append() -> Result<(), Box<dyn std::error::Error>>
+{
+    let authority = AuthorityId::from_bytes([39; 16]);
+    let records = StreamPath::new(format!(
+        "fs/authorities/{}/records",
+        hex::encode(authority.into_bytes())
+    ))?;
+    let provider = Arc::new(PausingStream {
+        inner: MemoryStream::default(),
+        pause_record_commit: AtomicBool::new(false),
+        entered: Notify::new(),
+        resume: Notify::new(),
+        record_path: records.clone(),
+    });
+    let store = StreamAuthorityStore::new(Arc::clone(&provider));
+    let cancellation = CancellationToken::new();
+    store
+        .create_authority(
+            authority,
+            Epoch::GENESIS,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    let before = provider.tail(records.clone()).await?;
+    provider.pause_record_commit.store(true, Ordering::SeqCst);
+    let writer_store = StreamAuthorityStore::new(Arc::clone(&provider));
+    let writer = tokio::spawn(async move {
+        writer_store
+            .compare_and_append(
+                authority,
+                Epoch::GENESIS,
+                Head::genesis(Epoch::GENESIS),
+                ProposedCommit {
+                    operation_id: OperationId::from_bytes([40; 16]),
+                    fingerprint: Digest::from_bytes([41; 32]),
+                    payload: Bytes::from_static(b"inflight"),
+                },
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+    });
+    provider.entered.notified().await;
+    store
+        .retire_authority(authority, WorkBudget::UNBOUNDED, &cancellation)
+        .await?;
+    provider.resume.notify_one();
+    assert!(matches!(
+        writer.await?,
+        Err(OperationFailure {
+            error: AuthorityStoreError::Retired,
+            ..
+        })
+    ));
+    assert_eq!(provider.tail(records).await?, before);
+    assert!(!store.authorities(4).await?.contains(&authority));
     Ok(())
 }
 

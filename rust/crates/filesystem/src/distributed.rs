@@ -1093,6 +1093,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
         let gate = publication_gate_path(authority_id).map_err(OperationFailure::before_work)?;
         let mut conditions = vec![
+            acyclic_stream::CommitCondition::Absent {
+                path: retirement_path(authority_id).map_err(OperationFailure::before_work)?,
+            },
             acyclic_stream::CommitCondition::Tail {
                 path: records.clone(),
                 expected: snapshot.record_tail,
@@ -1358,6 +1361,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
         let request = acyclic_stream::CommitRequest {
             conditions: vec![
+                acyclic_stream::CommitCondition::Absent {
+                    path: retirement_path(authority_id).map_err(OperationFailure::before_work)?,
+                },
                 acyclic_stream::CommitCondition::Tail {
                     path: records,
                     expected: snapshot.record_tail,
@@ -1475,10 +1481,16 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             ));
         }
         let request = acyclic_stream::CommitRequest {
-            conditions: vec![acyclic_stream::CommitCondition::Tail {
-                path: gate.clone(),
-                expected: reservation.gate_tail,
-            }],
+            conditions: vec![
+                acyclic_stream::CommitCondition::Absent {
+                    path: retirement_path(reservation.authority_id)
+                        .map_err(OperationFailure::before_work)?,
+                },
+                acyclic_stream::CommitCondition::Tail {
+                    path: gate.clone(),
+                    expected: reservation.gate_tail,
+                },
+            ],
             mutations: vec![acyclic_stream::CommitMutation::Append {
                 path: gate,
                 records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
@@ -1608,6 +1620,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         fence_identity.extend_from_slice(expected.digest.as_bytes());
         let request = acyclic_stream::CommitRequest {
             conditions: vec![
+                acyclic_stream::CommitCondition::Absent {
+                    path: retirement_path(authority_id).map_err(OperationFailure::before_work)?,
+                },
                 acyclic_stream::CommitCondition::Tail {
                     path: records,
                     expected: snapshot.record_tail,
