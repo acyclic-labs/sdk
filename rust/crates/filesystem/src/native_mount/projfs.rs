@@ -120,6 +120,12 @@ struct Runtime {
     /// changes.
     placeholders: Arc<Placeholders>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
+    /// Held for a file while one handle's metadata edits are read from the
+    /// source and written back. `ProjFS` names each handle apart, so handles
+    /// to one file close concurrently; each applies only what it changed, on
+    /// what the one before it left. Keyed by the file's host identity, which
+    /// every spelling of its name shares.
+    metadata_edits: Arc<FileLocks>,
     post_operation_failure: Arc<Mutex<PostOperationFailures>>,
     callbacks: CallbackGate,
 }
@@ -707,6 +713,9 @@ struct PlaceholderState {
     /// Pending paths a listing waits on: when one is settled, its parent is
     /// listed again.
     relist: HashSet<MountPath>,
+    /// Whether the worker's pass in progress took stale directories it has
+    /// not listed yet.
+    relisting: bool,
     /// Where each path renames through the mount moved is now, by the path
     /// it had: `ProjFS` asks for a placeholder's content by the path it was
     /// written at, also after a rename of a directory above it moved it.
@@ -1237,6 +1246,7 @@ impl Placeholders {
                 }
             }
             state.retry = false;
+            state.relisting = !state.stale.is_empty();
             let through = state.notified;
             // Directories whose listing may have changed, parents first.
             let mut listings = state
@@ -1302,6 +1312,7 @@ impl Placeholders {
                 }
             }
             state = lock_recover(&self.state);
+            state.relisting = false;
             state.record_attempts(settled, kept);
             state.processed = state.processed.max(through);
             if let Some(failure) = failure {
@@ -1361,9 +1372,12 @@ impl Placeholders {
         let target = state.notified;
         let mut deadline = None;
         while !state.stopping
-            && (state.processed < target || !state.stale.is_empty() || !state.pending.is_empty())
+            && (state.processed < target
+                || state.relisting
+                || !state.stale.is_empty()
+                || !state.pending.is_empty())
         {
-            if state.processed < target || !state.stale.is_empty() {
+            if state.processed < target || state.relisting || !state.stale.is_empty() {
                 state = self
                     .changed
                     .wait(state)
@@ -1924,6 +1938,7 @@ impl ProjFsSession {
             projection: Arc::new(Mutex::new(ProjectionCache::default())),
             placeholders: Arc::new(Placeholders::new()),
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
+            metadata_edits: Arc::new(FileLocks::default()),
             post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
             callbacks: callback_gate,
         });
@@ -2471,7 +2486,8 @@ fn remove_projection_tree(
     directory: &std::path::Path,
     before_removal: &dyn Fn() -> Result<(), NativeMountError>,
 ) -> Result<(), TreeRemovalError> {
-    const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
+    // A scanner opening the root can keep the filter draining for a while.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
     let refused = |error: &std::io::Error| matches!(error.raw_os_error(), Some(145 | 369));
     before_removal().map_err(TreeRemovalError::Root)?;
     match std::fs::remove_dir_all(directory) {
@@ -2493,7 +2509,7 @@ fn remove_projection_tree(
             Err(error) if refused(&error) && std::time::Instant::now() < deadline => {
                 // The filter admits a refused directory's next delete; only
                 // a filter still draining needs a moment.
-                std::thread::yield_now();
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
             Err(error) => return Err(error.into()),
         }
@@ -2580,6 +2596,27 @@ fn reparse_data(file: &std::fs::File) -> std::io::Result<Option<Vec<u8>>> {
 
 fn driver_error(error: &windows::core::Error) -> NativeMountError {
     NativeMountError::Driver(error.to_string())
+}
+
+/// One lock per file, apart from every other file's.
+#[derive(Default)]
+struct FileLocks(Mutex<HashMap<crate::NativeRootIdentity, Arc<Mutex<()>>>>);
+
+impl FileLocks {
+    /// Runs `edit` while no other edit of `file` runs.
+    fn with<T>(&self, file: crate::NativeRootIdentity, edit: impl FnOnce() -> T) -> T {
+        let lock = Arc::clone(lock_recover(&self.0).entry(file).or_default());
+        let result = {
+            let _held = lock_recover(&lock);
+            edit()
+        };
+        let mut locks = lock_recover(&self.0);
+        // Kept only while another edit holds or waits for it.
+        if Arc::strong_count(&lock) == 2 {
+            locks.remove(&file);
+        }
+        result
+    }
 }
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -3468,6 +3505,7 @@ unsafe fn notification(
     let metadata_baselines = Arc::clone(&runtime.metadata_baselines);
     let projection = Arc::clone(&runtime.projection);
     let metadata_probes = Arc::clone(&runtime.metadata_probes);
+    let metadata_edits = Arc::clone(&runtime.metadata_edits);
     let metadata_root = Arc::clone(&runtime.metadata_root);
     let post_operation_failure = Arc::clone(&runtime.post_operation_failure);
     let operation_failures = Arc::clone(&post_operation_failure);
@@ -3591,14 +3629,20 @@ unsafe fn notification(
             let basis = ReadBasis::sample(source.as_ref());
             let lookup = source.lookup(&capture_path);
             match lookup {
-                Ok(Some(lookup)) if metadata_changed_since_open(baseline, host) => {
-                    capture_changed_windows_metadata(
-                        source.as_ref(),
-                        &capture_path,
-                        lookup.metadata,
-                        baseline,
-                        host,
-                    )
+                Ok(Some(_)) if metadata_changed_since_open(baseline, host) => {
+                    metadata_edits.with(host.identity, || {
+                        let Some(lookup) = source.lookup(&capture_path)? else {
+                            defer_host_capture(operation_failures.as_ref(), capture_path);
+                            return Ok(());
+                        };
+                        capture_changed_windows_metadata(
+                            source.as_ref(),
+                            &capture_path,
+                            lookup.metadata,
+                            baseline,
+                            host,
+                        )
+                    })
                 }
                 Ok(Some(lookup)) => {
                     if let Some(basis) = basis
@@ -3630,6 +3674,9 @@ unsafe fn notification(
                 .renames
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // No listing is reconciled while the source has the rename and
+            // the projection's records do not yet.
+            let _tree = lock_recover(&placeholders.tree);
             let current = placeholders.current_beneath(source.as_ref(), &path);
             let result = handle_rename_source(
                 source.as_ref(),
@@ -4437,6 +4484,37 @@ mod tests {
     /// Revalidation waits while a superseded placeholder is pending, which
     /// it is until its outcome is recorded, even once every change has been
     /// served, and returns as soon as it is settled.
+    #[test]
+    fn edits_of_one_file_run_one_at_a_time() {
+        use super::{FileLocks, lock_recover};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let locks = FileLocks::default();
+        let file = crate::NativeRootIdentity {
+            device: 1,
+            object: 2,
+        };
+        let running = AtomicUsize::new(0);
+        let most = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..50 {
+                        locks.with(file, || {
+                            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                            most.fetch_max(now, Ordering::SeqCst);
+                            std::thread::yield_now();
+                            running.fetch_sub(1, Ordering::SeqCst);
+                        });
+                    }
+                });
+            }
+        });
+        assert_eq!(most.load(Ordering::SeqCst), 1);
+        // No lock outlives the edits that used it.
+        assert!(lock_recover(&locks.0).is_empty());
+    }
+
     #[test]
     fn renames_compose_into_where_each_written_path_is_now() {
         use super::{Carried, Placeholders, lock_recover};
