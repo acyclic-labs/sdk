@@ -29,6 +29,7 @@ const EPOCH_DOMAIN: &[u8] = b"acyclic-fs-stream-epoch-v1\0";
 const LINEAGE_DOMAIN: &[u8] = b"acyclic-fs-stream-lineage-v1\0";
 const LINEAGE_TAIL_DOMAIN: &[u8] = b"acyclic-fs-stream-lineage-tail-v1\0";
 const AUTHORITY_MARKER: &[u8] = b"acyclic-fs-authority-v1\0";
+const AUTHORITY_RETIRED: &[u8] = b"acyclic-fs-authority-retired-v1\0";
 const PUBLICATION_GATE_FREE: &[u8] = b"acyclic-fs-publication-gate-v1\0free";
 const PUBLICATION_GATE_ACTIVE: &[u8] = b"acyclic-fs-publication-gate-v1\0active\0";
 
@@ -97,7 +98,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     Err(error) => return Err(map_stream_error(error)),
                 };
                 for child in &listed.children {
-                    authorities.push(authority_child(&child.path)?);
+                    let authority = authority_child(&child.path)?;
+                    if !self.is_retired(authority).await? {
+                        authorities.push(authority);
+                    }
                 }
                 if authorities.len() > maximum as usize {
                     return Err(AuthorityStoreError::Rejected(
@@ -120,6 +124,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         &self,
         authority_id: AuthorityId,
     ) -> Result<AuthoritySnapshot, AuthorityStoreError> {
+        if self.is_retired(authority_id).await? {
+            return Err(AuthorityStoreError::Retired);
+        }
         let records = records_path(authority_id)?;
         let epochs = epochs_path(authority_id)?;
         let record_tail = self
@@ -162,6 +169,26 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             record_tail,
             epoch_tail,
         })
+    }
+
+    async fn is_retired(&self, authority_id: AuthorityId) -> Result<bool, AuthorityStoreError> {
+        let path = retirement_path(authority_id)?;
+        match self.provider.tail(path.clone()).await {
+            Err(acyclic_stream::StreamError::NotFound) => Ok(false),
+            Ok(1) => {
+                let marker = read_one(self.provider.as_ref(), path, 0).await?;
+                if marker.value.as_ref() != AUTHORITY_RETIRED {
+                    return Err(AuthorityStoreError::Corrupt(
+                        "filesystem retirement marker is invalid".to_owned(),
+                    ));
+                }
+                Ok(true)
+            }
+            Ok(_) => Err(AuthorityStoreError::Corrupt(
+                "filesystem retirement marker has an invalid tail".to_owned(),
+            )),
+            Err(error) => Err(map_stream_error(error)),
+        }
     }
 
     async fn publication_gate(
@@ -364,54 +391,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             ))
             .map_err(|error| OperationFailure::before_work(error.into()))?;
         Ok((request, work))
-    }
-}
-
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
-    /// Deletes `path` and every path beneath it, deepest first.
-    fn retire_subtree<'a>(
-        &'a self,
-        path: acyclic_stream::StreamPath,
-        work: &'a mut WorkCounters,
-        cancellation: &'a CancellationToken,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), AuthorityStoreError>> + Send + 'a>> {
-        Box::pin(async move {
-            loop {
-                cancellation
-                    .check()
-                    .map_err(|_| AuthorityStoreError::Cancelled)?;
-                let children = self
-                    .provider
-                    .children(acyclic_stream::ChildrenRequest {
-                        parent: Some(path.clone()),
-                        limit: u32::try_from(acyclic_stream::MAX_ITEMS).unwrap_or(u32::MAX),
-                    })
-                    .await
-                    .map_err(map_stream_error)?
-                    .map(|child| child.map(|child| child.path))
-                    .collect::<Vec<_>>()
-                    .await
-                    .into_iter()
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(map_stream_error)?;
-                *work = work.checked_add(authority_read_work(1))?;
-                if children.is_empty() {
-                    break;
-                }
-                for child in children {
-                    self.retire_subtree(child, work, cancellation).await?;
-                }
-            }
-            let key = stream_key(b"retire-path", path.as_str().as_bytes())?;
-            *work = work.checked_add(authority_write_work(0, 0))?;
-            match self.provider.delete(path, key).await {
-                Ok(_)
-                | Err(
-                    acyclic_stream::StreamError::NotFound | acyclic_stream::StreamError::Retired,
-                ) => Ok(()),
-                Err(error) => Err(map_stream_error(error)),
-            }
-        })
     }
 }
 
@@ -907,10 +886,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         authority_success(snapshot.head, authority_read_work(2), budget)
     }
 
-    /// Deletes the authority's whole subtree of Stream paths, each once
-    /// nothing lives beneath it; Stream then answers every path in it as
-    /// retired. Each deletion has its own retry identity, so an interrupted
-    /// retirement resumes where it stopped.
+    /// Retires filesystem authority metadata without removing its Stream
+    /// records. The marker is stable across retries and can be replayed after
+    /// an interrupted workspace deletion.
     async fn retire_authority(
         &self,
         authority_id: AuthorityId,
@@ -921,11 +899,53 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             .check()
             .map_err(|_| OperationFailure::before_work(AuthorityStoreError::Cancelled))?;
         let root = authority_path(authority_id).map_err(OperationFailure::before_work)?;
-        let mut work = WorkCounters::default();
-        self.retire_subtree(root, &mut work, cancellation)
-            .await
-            .map_err(|error| OperationFailure::new(error, work))?;
-        authority_success((), work, budget)
+        let path = retirement_path(authority_id).map_err(OperationFailure::before_work)?;
+        let mut work = authority_read_work(1);
+        admit_authority(work, budget)?;
+        match self.provider.tail(root).await {
+            Err(acyclic_stream::StreamError::NotFound) => {
+                return authority_success((), work, budget);
+            }
+            Ok(_) => {}
+            Err(error) => return Err(OperationFailure::new(map_stream_error(error), work)),
+        }
+        work = work
+            .checked_add(authority_write_work(1, AUTHORITY_RETIRED.len() as u64))
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        admit_authority(work, budget)?;
+        let request = acyclic_stream::AppendRequest {
+            path,
+            records: vec![Bytes::from_static(AUTHORITY_RETIRED)],
+            if_tail: Some(0),
+            idempotency_key: Some(
+                stream_key(b"retire-authority", &authority_id.into_bytes())
+                    .map_err(OperationFailure::before_work)?,
+            ),
+        };
+        match self.provider.append(request).await {
+            Ok(acyclic_stream::AppendOutcome::Committed(_)) => authority_success((), work, budget),
+            Ok(acyclic_stream::AppendOutcome::TailConflict { .. }) => {
+                work = work
+                    .checked_add(authority_read_work(2))
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
+                admit_authority(work, budget)?;
+                if self
+                    .is_retired(authority_id)
+                    .await
+                    .map_err(|error| OperationFailure::new(error, work))?
+                {
+                    authority_success((), work, budget)
+                } else {
+                    Err(OperationFailure::new(
+                        AuthorityStoreError::Corrupt(
+                            "filesystem retirement marker conflicted without retirement".to_owned(),
+                        ),
+                        work,
+                    ))
+                }
+            }
+            Err(error) => Err(OperationFailure::new(map_stream_error(error), work)),
+        }
     }
 
     async fn compare_and_append(
@@ -1073,6 +1093,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
         let gate = publication_gate_path(authority_id).map_err(OperationFailure::before_work)?;
         let mut conditions = vec![
+            acyclic_stream::CommitCondition::Absent {
+                path: retirement_path(authority_id).map_err(OperationFailure::before_work)?,
+            },
             acyclic_stream::CommitCondition::Tail {
                 path: records.clone(),
                 expected: snapshot.record_tail,
@@ -1230,17 +1253,13 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                     .head;
                 let gate_rejected = conflicts.iter().any(|conflict| match conflict {
                     acyclic_stream::CommitConflict::Tail { path, .. }
-                    | acyclic_stream::CommitConflict::Exists { path }
-                    | acyclic_stream::CommitConflict::Retired { path } => path == &gate,
+                    | acyclic_stream::CommitConflict::Exists { path } => path == &gate,
                 });
                 let permit_rejected = gate_rejected
                     || lease_path.as_ref().is_some_and(|lease_path| {
                         conflicts.iter().any(|conflict| match conflict {
                             acyclic_stream::CommitConflict::Tail { path, .. }
-                            | acyclic_stream::CommitConflict::Exists { path }
-                            | acyclic_stream::CommitConflict::Retired { path } => {
-                                path == lease_path
-                            }
+                            | acyclic_stream::CommitConflict::Exists { path } => path == lease_path,
                         })
                     });
                 let value = if permit_rejected {
@@ -1342,6 +1361,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
         let request = acyclic_stream::CommitRequest {
             conditions: vec![
+                acyclic_stream::CommitCondition::Absent {
+                    path: retirement_path(authority_id).map_err(OperationFailure::before_work)?,
+                },
                 acyclic_stream::CommitCondition::Tail {
                     path: records,
                     expected: snapshot.record_tail,
@@ -1459,10 +1481,16 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             ));
         }
         let request = acyclic_stream::CommitRequest {
-            conditions: vec![acyclic_stream::CommitCondition::Tail {
-                path: gate.clone(),
-                expected: reservation.gate_tail,
-            }],
+            conditions: vec![
+                acyclic_stream::CommitCondition::Absent {
+                    path: retirement_path(reservation.authority_id)
+                        .map_err(OperationFailure::before_work)?,
+                },
+                acyclic_stream::CommitCondition::Tail {
+                    path: gate.clone(),
+                    expected: reservation.gate_tail,
+                },
+            ],
             mutations: vec![acyclic_stream::CommitMutation::Append {
                 path: gate,
                 records: vec![Bytes::from_static(PUBLICATION_GATE_FREE)],
@@ -1592,6 +1620,9 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         fence_identity.extend_from_slice(expected.digest.as_bytes());
         let request = acyclic_stream::CommitRequest {
             conditions: vec![
+                acyclic_stream::CommitCondition::Absent {
+                    path: retirement_path(authority_id).map_err(OperationFailure::before_work)?,
+                },
                 acyclic_stream::CommitCondition::Tail {
                     path: records,
                     expected: snapshot.record_tail,
@@ -2062,6 +2093,13 @@ fn records_path(
         .map_err(map_stream_error)
 }
 
+fn retirement_path(
+    authority_id: AuthorityId,
+) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
+    acyclic_stream::StreamPath::new(format!("{}/retirement", authority_prefix(authority_id)))
+        .map_err(map_stream_error)
+}
+
 fn epochs_path(
     authority_id: AuthorityId,
 ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
@@ -2422,7 +2460,6 @@ fn decode_durable(
 fn map_stream_error(error: acyclic_stream::StreamError) -> AuthorityStoreError {
     match error {
         acyclic_stream::StreamError::NotFound => AuthorityStoreError::Missing,
-        acyclic_stream::StreamError::Retired => AuthorityStoreError::Retired,
         acyclic_stream::StreamError::Capacity => {
             AuthorityStoreError::Rejected("Stream capacity exhausted".to_owned())
         }

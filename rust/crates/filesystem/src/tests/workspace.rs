@@ -1932,29 +1932,6 @@ impl acyclic_stream::StreamProvider for CutStream {
         self.inner.fork(request).await
     }
 
-    async fn trim(
-        &self,
-        path: acyclic_stream::StreamPath,
-        before: u64,
-        key: acyclic_stream::IdempotencyKey,
-    ) -> Result<acyclic_stream::TrimReceipt, acyclic_stream::StreamError> {
-        if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
-        }
-        self.inner.trim(path, before, key).await
-    }
-
-    async fn delete(
-        &self,
-        path: acyclic_stream::StreamPath,
-        key: acyclic_stream::IdempotencyKey,
-    ) -> Result<acyclic_stream::DeleteReceipt, acyclic_stream::StreamError> {
-        if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
-        }
-        self.inner.delete(path, key).await
-    }
-
     async fn read(
         &self,
         request: acyclic_stream::ReadRequest,

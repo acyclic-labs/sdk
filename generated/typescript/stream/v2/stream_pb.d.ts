@@ -168,11 +168,6 @@ export declare type TailResponse = Message<"acyclic.stream.v2.TailResponse"> & {
    * @generated from field: uint64 tail = 1;
    */
   tail: bigint;
-
-  /**
-   * @generated from field: optional uint64 trim_point = 2;
-   */
-  trimPoint?: bigint | undefined;
 };
 
 /**
@@ -247,100 +242,6 @@ export declare type ForkReceipt = Message<"acyclic.stream.v2.ForkReceipt"> & {
  * Use `create(ForkReceiptSchema)` to create a new message.
  */
 export declare const ForkReceiptSchema: GenMessage<ForkReceipt>;
-
-/**
- * @generated from message acyclic.stream.v2.TrimRequest
- */
-export declare type TrimRequest = Message<"acyclic.stream.v2.TrimRequest"> & {
-  /**
-   * @generated from field: string path = 1;
-   */
-  path: string;
-
-  /**
-   * @generated from field: uint64 before = 2;
-   */
-  before: bigint;
-
-  /**
-   * @generated from field: optional bytes idempotency_key = 3;
-   */
-  idempotencyKey?: Uint8Array | undefined;
-};
-
-/**
- * Describes the message acyclic.stream.v2.TrimRequest.
- * Use `create(TrimRequestSchema)` to create a new message.
- */
-export declare const TrimRequestSchema: GenMessage<TrimRequest>;
-
-/**
- * @generated from message acyclic.stream.v2.TrimReceipt
- */
-export declare type TrimReceipt = Message<"acyclic.stream.v2.TrimReceipt"> & {
-  /**
-   * @generated from field: string path = 1;
-   */
-  path: string;
-
-  /**
-   * @generated from field: uint64 trim_point = 2;
-   */
-  trimPoint: bigint;
-
-  /**
-   * @generated from field: bytes commit_id = 3;
-   */
-  commitId: Uint8Array;
-};
-
-/**
- * Describes the message acyclic.stream.v2.TrimReceipt.
- * Use `create(TrimReceiptSchema)` to create a new message.
- */
-export declare const TrimReceiptSchema: GenMessage<TrimReceipt>;
-
-/**
- * @generated from message acyclic.stream.v2.DeleteRequest
- */
-export declare type DeleteRequest = Message<"acyclic.stream.v2.DeleteRequest"> & {
-  /**
-   * @generated from field: string path = 1;
-   */
-  path: string;
-
-  /**
-   * @generated from field: optional bytes idempotency_key = 2;
-   */
-  idempotencyKey?: Uint8Array | undefined;
-};
-
-/**
- * Describes the message acyclic.stream.v2.DeleteRequest.
- * Use `create(DeleteRequestSchema)` to create a new message.
- */
-export declare const DeleteRequestSchema: GenMessage<DeleteRequest>;
-
-/**
- * @generated from message acyclic.stream.v2.DeleteReceipt
- */
-export declare type DeleteReceipt = Message<"acyclic.stream.v2.DeleteReceipt"> & {
-  /**
-   * @generated from field: string path = 1;
-   */
-  path: string;
-
-  /**
-   * @generated from field: bytes commit_id = 2;
-   */
-  commitId: Uint8Array;
-};
-
-/**
- * Describes the message acyclic.stream.v2.DeleteReceipt.
- * Use `create(DeleteReceiptSchema)` to create a new message.
- */
-export declare const DeleteReceiptSchema: GenMessage<DeleteReceipt>;
 
 /**
  * @generated from message acyclic.stream.v2.ReadRequest
@@ -636,43 +537,6 @@ export declare type ForkMutation = Message<"acyclic.stream.v2.ForkMutation"> & {
 export declare const ForkMutationSchema: GenMessage<ForkMutation>;
 
 /**
- * @generated from message acyclic.stream.v2.TrimMutation
- */
-export declare type TrimMutation = Message<"acyclic.stream.v2.TrimMutation"> & {
-  /**
-   * @generated from field: string path = 1;
-   */
-  path: string;
-
-  /**
-   * @generated from field: uint64 before = 2;
-   */
-  before: bigint;
-};
-
-/**
- * Describes the message acyclic.stream.v2.TrimMutation.
- * Use `create(TrimMutationSchema)` to create a new message.
- */
-export declare const TrimMutationSchema: GenMessage<TrimMutation>;
-
-/**
- * @generated from message acyclic.stream.v2.DeleteMutation
- */
-export declare type DeleteMutation = Message<"acyclic.stream.v2.DeleteMutation"> & {
-  /**
-   * @generated from field: string path = 1;
-   */
-  path: string;
-};
-
-/**
- * Describes the message acyclic.stream.v2.DeleteMutation.
- * Use `create(DeleteMutationSchema)` to create a new message.
- */
-export declare const DeleteMutationSchema: GenMessage<DeleteMutation>;
-
-/**
  * @generated from message acyclic.stream.v2.CommitMutation
  */
 export declare type CommitMutation = Message<"acyclic.stream.v2.CommitMutation"> & {
@@ -691,18 +555,6 @@ export declare type CommitMutation = Message<"acyclic.stream.v2.CommitMutation">
      */
     value: ForkMutation;
     case: "fork";
-  } | {
-    /**
-     * @generated from field: acyclic.stream.v2.TrimMutation trim = 3;
-     */
-    value: TrimMutation;
-    case: "trim";
-  } | {
-    /**
-     * @generated from field: acyclic.stream.v2.DeleteMutation delete = 4;
-     */
-    value: DeleteMutation;
-    case: "delete";
   } | { case: undefined; value?: undefined };
 };
 
@@ -816,43 +668,6 @@ export declare type CommittedFork = Message<"acyclic.stream.v2.CommittedFork"> &
 export declare const CommittedForkSchema: GenMessage<CommittedFork>;
 
 /**
- * @generated from message acyclic.stream.v2.CommittedTrim
- */
-export declare type CommittedTrim = Message<"acyclic.stream.v2.CommittedTrim"> & {
-  /**
-   * @generated from field: string path = 1;
-   */
-  path: string;
-
-  /**
-   * @generated from field: uint64 trim_point = 2;
-   */
-  trimPoint: bigint;
-};
-
-/**
- * Describes the message acyclic.stream.v2.CommittedTrim.
- * Use `create(CommittedTrimSchema)` to create a new message.
- */
-export declare const CommittedTrimSchema: GenMessage<CommittedTrim>;
-
-/**
- * @generated from message acyclic.stream.v2.CommittedDelete
- */
-export declare type CommittedDelete = Message<"acyclic.stream.v2.CommittedDelete"> & {
-  /**
-   * @generated from field: string path = 1;
-   */
-  path: string;
-};
-
-/**
- * Describes the message acyclic.stream.v2.CommittedDelete.
- * Use `create(CommittedDeleteSchema)` to create a new message.
- */
-export declare const CommittedDeleteSchema: GenMessage<CommittedDelete>;
-
-/**
  * @generated from message acyclic.stream.v2.CommittedMutation
  */
 export declare type CommittedMutation = Message<"acyclic.stream.v2.CommittedMutation"> & {
@@ -871,18 +686,6 @@ export declare type CommittedMutation = Message<"acyclic.stream.v2.CommittedMuta
      */
     value: CommittedFork;
     case: "fork";
-  } | {
-    /**
-     * @generated from field: acyclic.stream.v2.CommittedTrim trim = 3;
-     */
-    value: CommittedTrim;
-    case: "trim";
-  } | {
-    /**
-     * @generated from field: acyclic.stream.v2.CommittedDelete delete = 4;
-     */
-    value: CommittedDelete;
-    case: "delete";
   } | { case: undefined; value?: undefined };
 };
 
@@ -956,22 +759,6 @@ export declare type ExistsCommitConflict = Message<"acyclic.stream.v2.ExistsComm
 export declare const ExistsCommitConflictSchema: GenMessage<ExistsCommitConflict>;
 
 /**
- * @generated from message acyclic.stream.v2.RetiredCommitConflict
- */
-export declare type RetiredCommitConflict = Message<"acyclic.stream.v2.RetiredCommitConflict"> & {
-  /**
-   * @generated from field: string path = 1;
-   */
-  path: string;
-};
-
-/**
- * Describes the message acyclic.stream.v2.RetiredCommitConflict.
- * Use `create(RetiredCommitConflictSchema)` to create a new message.
- */
-export declare const RetiredCommitConflictSchema: GenMessage<RetiredCommitConflict>;
-
-/**
  * @generated from message acyclic.stream.v2.CommitConflict
  */
 export declare type CommitConflict = Message<"acyclic.stream.v2.CommitConflict"> & {
@@ -990,12 +777,6 @@ export declare type CommitConflict = Message<"acyclic.stream.v2.CommitConflict">
      */
     value: ExistsCommitConflict;
     case: "exists";
-  } | {
-    /**
-     * @generated from field: acyclic.stream.v2.RetiredCommitConflict retired = 3;
-     */
-    value: RetiredCommitConflict;
-    case: "retired";
   } | { case: undefined; value?: undefined };
 };
 
@@ -1110,18 +891,6 @@ export declare type IdempotencyObservation = Message<"acyclic.stream.v2.Idempote
      */
     value: ForkReceipt;
     case: "fork";
-  } | {
-    /**
-     * @generated from field: acyclic.stream.v2.TrimReceipt trim = 5;
-     */
-    value: TrimReceipt;
-    case: "trim";
-  } | {
-    /**
-     * @generated from field: acyclic.stream.v2.DeleteReceipt delete = 6;
-     */
-    value: DeleteReceipt;
-    case: "delete";
   } | {
     /**
      * @generated from field: acyclic.stream.v2.CommitResponse commit = 7;
@@ -1281,22 +1050,6 @@ export declare const StreamService: GenService<{
     methodKind: "unary";
     input: typeof ForkRequestSchema;
     output: typeof ForkReceiptSchema;
-  },
-  /**
-   * @generated from rpc acyclic.stream.v2.StreamService.Trim
-   */
-  trim: {
-    methodKind: "unary";
-    input: typeof TrimRequestSchema;
-    output: typeof TrimReceiptSchema;
-  },
-  /**
-   * @generated from rpc acyclic.stream.v2.StreamService.Delete
-   */
-  delete: {
-    methodKind: "unary";
-    input: typeof DeleteRequestSchema;
-    output: typeof DeleteReceiptSchema;
   },
   /**
    * @generated from rpc acyclic.stream.v2.StreamService.Read

@@ -1,7 +1,7 @@
 //! The whole state machine as one self-contained encoding, from which a durable provider
 //! restarts instead of replaying every command it ever ran.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -96,11 +96,6 @@ fn encode(state: &State) -> Vec<u8> {
         put_bytes(&mut out, path.as_str().as_bytes());
         put_len(&mut out, reference(&stream.history));
         put_u64(&mut out, stream.tail);
-        put_u64(&mut out, stream.trim_point);
-    }
-    put_len(&mut out, state.retired.len());
-    for path in &state.retired {
-        put_bytes(&mut out, path.as_str().as_bytes());
     }
     put_len(&mut out, state.retained.len());
     for retained in &state.retained {
@@ -139,13 +134,8 @@ fn decode(encoded: &[u8]) -> Option<State> {
     let hierarchy_version = CommitId::from_bytes(input.array()?);
     let nodes = decode_nodes(&mut input)?;
     let (paths, path_bytes) = decode_paths(&mut input, &nodes)?;
-    let mut retired = BTreeSet::new();
-    for _ in 0..input.len()? {
-        retired.insert(input.path()?);
-    }
     let mut state = State::default();
     state.paths = paths;
-    state.retired = retired;
     state.path_bytes = path_bytes;
     state.decision = decision;
     state.hierarchy_version = hierarchy_version;
@@ -209,10 +199,6 @@ fn decode_paths(
         let path = input.path()?;
         let history = reference(nodes, input.len()?)?;
         let tail = input.u64()?;
-        let trim_point = input.u64()?;
-        if trim_point > tail {
-            return None;
-        }
         let (changed, _) = watch::channel(tail);
         path_bytes = path_bytes.checked_add(path.as_str().len())?;
         paths.insert(
@@ -220,7 +206,6 @@ fn decode_paths(
             PathState {
                 history,
                 tail,
-                trim_point,
                 changed,
             },
         );

@@ -2,9 +2,9 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import initStreamWasm, { encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   AbsentConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
-  CommitMutationSchema, CommitRequestSchema, DeleteMutationSchema, DeleteRequestSchema,
+  CommitMutationSchema, CommitRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
-  TrimMutationSchema, TrimRequestSchema, ReadRequestSchema, FollowRequestSchema,
+  ReadRequestSchema, FollowRequestSchema,
   ChildrenRequestSchema, ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema,
 } from "../generated/proto/stream/v2/stream_pb.js";
@@ -82,10 +82,7 @@ function validationError(error: unknown, operation: "append" | "commit" | "reque
 
 type WireRequest =
   | { readonly kind: "tail"; readonly path: string }
-  | { readonly kind: "bounds"; readonly path: string }
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
-  | { readonly kind: "trim"; readonly path: string; readonly before: bigint; readonly key?: IdempotencyKey }
-  | { readonly kind: "delete"; readonly path: string; readonly key?: IdempotencyKey }
   | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number }
   | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
   | { readonly kind: "children"; readonly parent?: string; readonly limit: number }
@@ -123,9 +120,6 @@ export function wireRequest(request: WireRequest): Uint8Array {
       case "tail":
         requirePathType(request.path);
         return toBinary(TailRequestSchema, create(TailRequestSchema, { path: request.path }));
-      case "bounds":
-        requirePathType(request.path);
-        return toBinary(TailRequestSchema, create(TailRequestSchema, { path: request.path }));
       case "fork":
         requirePathType(request.source);
         requirePathType(request.destination);
@@ -135,20 +129,6 @@ export function wireRequest(request: WireRequest): Uint8Array {
           source: request.source, destination: request.destination,
           ...(request.options?.atTail === undefined ? {} : { atTail: request.options.atTail }),
           ...(request.options?.idempotencyKey === undefined ? {} : { idempotencyKey: request.options.idempotencyKey }),
-        }));
-      case "trim":
-        requirePathType(request.path);
-        requireSequenceType(request.before);
-        if (request.key !== undefined) requireBytesType(request.key);
-        return toBinary(TrimRequestSchema, create(TrimRequestSchema, {
-          path: request.path, before: request.before,
-          ...(request.key === undefined ? {} : { idempotencyKey: request.key }),
-        }));
-      case "delete":
-        requirePathType(request.path);
-        if (request.key !== undefined) requireBytesType(request.key);
-        return toBinary(DeleteRequestSchema, create(DeleteRequestSchema, {
-          path: request.path, ...(request.key === undefined ? {} : { idempotencyKey: request.key }),
         }));
       case "read":
         requirePathType(request.path);
@@ -264,12 +244,7 @@ export async function normalizeWireCommitBytes(request: ProviderCommitRequest, o
           records: mutation.fork.values.map((value: Uint8Array) => value.slice()),
         }) },
       });
-      if ("trim" in mutation) return create(CommitMutationSchema, {
-        mutation: { case: "trim", value: create(TrimMutationSchema, mutation.trim) },
-      });
-      return create(CommitMutationSchema, {
-        mutation: { case: "delete", value: create(DeleteMutationSchema, mutation.delete) },
-      });
+      throw new StreamError("invalid_argument", "commit mutation is invalid");
     });
     const wire = create(CommitRequestSchema, { conditions, mutations, idempotencyKey: options.idempotencyKey, ...(options.deadlineUnixMillis === undefined ? {} : { deadlineUnixMillis: options.deadlineUnixMillis }) });
     input = toBinary(CommitRequestSchema, wire);
@@ -307,11 +282,6 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
           const value = mutation.mutation.value;
           return { fork: { source: value.source, destination: value.destination, atTail: value.atTail, values: value.records.map(record => record.slice()) } };
         }
-        case "trim": {
-          const value = mutation.mutation.value;
-          return { trim: { path: value.path, before: value.before } };
-        }
-        case "delete": return { delete: { path: mutation.mutation.value.path } };
         default: throw new StreamError("invalid_argument", "normalized mutation is missing its kind");
       }
     }),
