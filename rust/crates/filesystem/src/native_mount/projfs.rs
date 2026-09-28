@@ -43,8 +43,8 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_FILE_OVERWRITTEN, PRJ_NOTIFY_FILE_RENAMED, PRJ_NOTIFY_HARDLINK_CREATED,
     PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK,
     PRJ_NOTIFY_TYPES, PRJ_PLACEHOLDER_INFO, PRJ_PLACEHOLDER_VERSION_INFO,
-    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_DIRTY_DATA, PRJ_UPDATE_ALLOW_DIRTY_METADATA,
-    PRJ_UPDATE_ALLOW_READ_ONLY, PrjAllocateAlignedBuffer, PrjDeleteFile, PrjFileNameCompare,
+    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_READ_ONLY, PRJ_UPDATE_ALLOW_TOMBSTONE,
+    PRJ_UPDATE_TYPES, PrjAllocateAlignedBuffer, PrjDeleteFile, PrjFileNameCompare,
     PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
     PrjUpdateFileIfNeeded, PrjWriteFileData, PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
 };
@@ -105,6 +105,8 @@ struct ProjectedEntry {
     /// written for this entry.
     info: PRJ_FILE_BASIC_INFO,
     symlink_target: Option<bytes::Bytes>,
+    /// Whether a link names a directory: a Windows link says so when made.
+    directory_link: bool,
 }
 
 struct Runtime {
@@ -1388,8 +1390,12 @@ fn write_entry(
             Err(error) => Err(format!("creating directory {path:?}: {error}")),
         };
     }
-    let placeholder = pinned_placeholder(entry.info, entry.facts.pin)
+    let mut placeholder = pinned_placeholder(entry.info, entry.facts.pin)
         .ok_or_else(|| format!("placeholder for {path:?} is unrepresentable"))?;
+    if entry.directory_link {
+        placeholder.FileBasicInfo.IsDirectory = true;
+        placeholder.FileBasicInfo.FileAttributes |= FILE_ATTRIBUTE_DIRECTORY.0;
+    }
     let symlink = match entry.symlink_target.as_deref().map(symlink_extended) {
         Some(Some(target)) => Some(target),
         Some(None) => return Err(format!("link at {path:?} is unrepresentable")),
@@ -1433,7 +1439,7 @@ fn write_entry(
         // `ReFS` refuses link placeholders: an ordinary link stands in.
         Err(error) if error.code() == HR_NOT_SUPPORTED && symlink.is_some() => {
             let target = symlink.as_ref().map(|(target, _)| target);
-            write_link(projection, path, &host, target, entry.info.IsDirectory)
+            write_link(projection, path, &host, target, entry.directory_link)
         }
         Err(error) => Err(format!(
             "writing placeholder {path:?}: {}",
@@ -1492,60 +1498,143 @@ fn link_digest(target: impl IntoIterator<Item = u16>) -> u64 {
 /// Deletes what the projection wrote at `path` unless the user made it
 /// their own: a placeholder, or the link to the target with digest `link`.
 fn release(projection: Projection<'_>, path: &MountPath, link: Option<u64>) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt as _;
-
     let Some(digest) = link else {
         return delete_placeholder(projection, path);
     };
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
-    let target = projection.root.join(&host);
-    match std::fs::symlink_metadata(&target) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {}
-        // Replaced since by something else: the user's.
-        Ok(_) => return Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("reading link {path:?}: {error}")),
-    }
-    match std::fs::read_link(&target) {
-        Ok(current) if link_digest(current.as_os_str().encode_wide()) == digest => {}
-        // Pointed elsewhere since: the user's.
-        Ok(_) => return Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("reading link {path:?}: {error}")),
-    }
-    // A link placeholder turns full once it is read. `ProjFS` deletes it
-    // all the same when told the data may be dirty, and leaves no tombstone
-    // to hide what is written there next, as deleting it directly would.
     let relative = HSTRING::from(host.as_os_str());
-    // SAFETY: the name outlives this synchronous call on a live context.
-    match unsafe {
-        PrjDeleteFile(
-            projection.context,
-            &relative,
-            Some(
-                PRJ_UPDATE_ALLOW_DIRTY_DATA
-                    | PRJ_UPDATE_ALLOW_DIRTY_METADATA
-                    | PRJ_UPDATE_ALLOW_READ_ONLY,
-            ),
-            None,
-        )
-    } {
+    // An untouched link placeholder is the projection's own.
+    match prj_delete(projection, &relative, PRJ_UPDATE_ALLOW_READ_ONLY) {
         Ok(()) => return Ok(()),
-        // An ordinary link (`ReFS`), which `ProjFS` does not manage.
-        Err(error) if error.code() == HR_VIRTUALIZATION_INVALID_OPERATION => {}
         Err(error) if [HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND].contains(&error.code()) => {
             return Ok(());
         }
+        // Read since, it is a full file, as one the user made would be; or
+        // an ordinary link (`ReFS`), which `ProjFS` does not manage.
+        Err(error) if error.code() == HR_VIRTUALIZATION_INVALID_OPERATION => {}
         Err(error) => {
             return Err(format!("deleting link {path:?}: {}", driver_error(&error)));
         }
     }
-    // A directory link is removed as a directory, without its target.
-    match std::fs::remove_file(&target).or_else(|_| std::fs::remove_dir(&target)) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("removing link {path:?}: {error}")),
+    match delete_link(&projection.root.join(&host), digest) {
+        Ok(true) => {}
+        // Replaced, or pointed elsewhere: the user's.
+        Ok(false) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("removing link {path:?}: {error}")),
     }
+    // Deleted directly, it leaves a tombstone that would hide what is written
+    // there next. Only a tombstone goes here: whatever the user made since
+    // stays.
+    match prj_delete(projection, &relative, PRJ_UPDATE_ALLOW_TOMBSTONE) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if [
+                HR_FILE_NOT_FOUND,
+                HR_PATH_NOT_FOUND,
+                HR_VIRTUALIZATION_INVALID_OPERATION,
+            ]
+            .contains(&error.code()) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "clearing link tombstone {path:?}: {}",
+            driver_error(&error)
+        )),
+    }
+}
+
+/// `PrjDeleteFile` at `relative`, allowed what `update` allows.
+fn prj_delete(
+    projection: Projection<'_>,
+    relative: &HSTRING,
+    update: PRJ_UPDATE_TYPES,
+) -> windows::core::Result<()> {
+    // SAFETY: the name outlives this synchronous call on a live context.
+    unsafe { PrjDeleteFile(projection.context, relative, Some(update), None) }
+}
+
+/// Deletes the symbolic link at `path` if it points to the target with
+/// `digest`. The link itself is opened, not followed, and the object checked
+/// is the one deleted, whatever takes its name meanwhile. `false` when
+/// something else is there.
+fn delete_link(path: &std::path::Path, digest: u64) -> std::io::Result<bool> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        DELETE, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+        FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_DISPOSITION_INFO_EX_FLAGS,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
+        FileDispositionInfoEx, SetFileInformationByHandle,
+    };
+
+    let link = std::fs::OpenOptions::new()
+        .access_mode(DELETE.0 | FILE_READ_ATTRIBUTES.0)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+        .open(path)?;
+    let target = reparse_data(&link)?.and_then(|data| symbolic_link_target(&data));
+    if target.is_none_or(|target| link_digest(target) != digest) {
+        return Ok(false);
+    }
+    let handle = HANDLE(link.as_raw_handle());
+    // A POSIX delete takes the name at once, also while another process
+    // holds the link; delete-on-close serves where that is refused.
+    let posix = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
+            FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0,
+        ),
+    };
+    let on_close = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: a live handle opened with delete access, and correctly sized
+    // dispositions that outlive these synchronous calls.
+    unsafe {
+        SetFileInformationByHandle(
+            handle,
+            FileDispositionInfoEx,
+            (&raw const posix).cast(),
+            u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>()).unwrap_or(u32::MAX),
+        )
+        .or_else(|_| {
+            SetFileInformationByHandle(
+                handle,
+                FileDispositionInfo,
+                (&raw const on_close).cast(),
+                u32::try_from(size_of::<FILE_DISPOSITION_INFO>()).unwrap_or(u32::MAX),
+            )
+        })
+    }?;
+    Ok(true)
+}
+
+/// The target a symbolic link's reparse `data` names, as `read_link` reads
+/// it; `None` for any other reparse point.
+fn symbolic_link_target(data: &[u8]) -> Option<Vec<u16>> {
+    const SYMLINK: u32 = 0xA000_000C;
+    const PATH_BUFFER: usize = 20;
+    let field = |at: usize| {
+        data.get(at..)
+            .and_then(<[u8]>::first_chunk)
+            .map(|bytes| usize::from(u16::from_le_bytes(*bytes)))
+    };
+    if u32::from_le_bytes(*data.first_chunk()?) != SYMLINK {
+        return None;
+    }
+    let (offset, length) = (field(8)?, field(10)?);
+    let name = data.get(PATH_BUFFER + offset..PATH_BUFFER + offset + length)?;
+    let mut units = decode_utf16_name(name)?;
+    // An absolute target is stored as an NT path.
+    let unc = r"\??\UNC\".encode_utf16().collect::<Vec<_>>();
+    let nt = r"\??\".encode_utf16().collect::<Vec<_>>();
+    if units.starts_with(&unc) {
+        units.splice(..unc.len(), r"\\".encode_utf16());
+    } else if units.starts_with(&nt) {
+        units.drain(..nt.len());
+    }
+    Some(units)
 }
 
 /// Deletes the placeholder at `path` unless the user modified it.
@@ -2371,16 +2460,11 @@ fn reparse_tag(
     path: &std::path::Path,
 ) -> Result<(Option<u32>, crate::NativeRootIdentity), NativeMountError> {
     use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::{
-        ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE, ERROR_NOT_A_REPARSE_POINT, HANDLE,
-    };
+    use windows::Win32::Foundation::ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE;
     use windows::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
-    use windows::Win32::System::IO::DeviceIoControl;
-    use windows::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT;
 
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -2390,9 +2474,40 @@ fn reparse_tag(
         .map_err(|error| NativeMountError::Driver(error.to_string()))?;
     let identity = crate::NativeRootIdentity::from_file(&file)
         .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-    let output_len = usize::try_from(MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
-        .map_err(|_| NativeMountError::Driver("reparse buffer size overflow".to_owned()))?;
-    let mut output = vec![0_u8; output_len];
+    match reparse_data(&file) {
+        Ok(None) => Ok((None, identity)),
+        Ok(Some(data)) => {
+            let tag = data.first_chunk().copied().ok_or_else(|| {
+                NativeMountError::Driver("reparse response omitted its tag".to_owned())
+            })?;
+            Ok((Some(u32::from_le_bytes(tag)), identity))
+        }
+        // A stopped ProjFS provider can leave an authenticated placeholder
+        // root even when the filter declines to return its reparse payload.
+        Err(error)
+            if error.raw_os_error()
+                == i32::try_from(ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0).ok() =>
+        {
+            Ok((
+                Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS),
+                identity,
+            ))
+        }
+        Err(error) => Err(NativeMountError::Driver(error.to_string())),
+    }
+}
+
+/// The reparse data `file` carries; `None` when it is no reparse point.
+fn reparse_data(file: &std::fs::File) -> std::io::Result<Option<Vec<u8>>> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Win32::Foundation::{ERROR_NOT_A_REPARSE_POINT, HANDLE};
+    use windows::Win32::Storage::FileSystem::MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
+    use windows::Win32::System::IO::DeviceIoControl;
+    use windows::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT;
+
+    let capacity = usize::try_from(MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
+        .map_err(|_| std::io::Error::other("reparse buffer size overflow"))?;
+    let mut output = vec![0_u8; capacity];
     let mut returned = 0_u32;
     // SAFETY: the handle and output buffer remain valid for the synchronous
     // control call; the output length exactly matches the allocated buffer.
@@ -2408,31 +2523,14 @@ fn reparse_tag(
             None,
         )
     };
-    if let Err(error) = result {
-        let code = error.code().0.cast_unsigned();
-        if code == 0x8007_0000_u32 | ERROR_NOT_A_REPARSE_POINT.0 {
-            return Ok((None, identity));
+    match result {
+        Ok(()) => {
+            output.truncate(usize::try_from(returned).unwrap_or(capacity));
+            Ok(Some(output))
         }
-        // A stopped ProjFS provider can leave an authenticated placeholder
-        // root even when the filter declines to return its reparse payload.
-        if code == 0x8007_0000_u32 | ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0 {
-            return Ok((
-                Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS),
-                identity,
-            ));
-        }
-        return Err(NativeMountError::Driver(error.to_string()));
+        Err(error) if error.code() == ERROR_NOT_A_REPARSE_POINT.to_hresult() => Ok(None),
+        Err(error) => Err(error.into()),
     }
-    if returned < 4 {
-        return Err(NativeMountError::Driver(
-            "reparse response omitted its tag".to_owned(),
-        ));
-    }
-    let tag = output
-        .get(..4)
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| NativeMountError::Driver("reparse response omitted its tag".to_owned()))?;
-    Ok((Some(u32::from_le_bytes(tag)), identity))
 }
 
 fn driver_error(error: &windows::core::Error) -> NativeMountError {
@@ -2903,13 +3001,75 @@ fn projected_entry(
     } else {
         None
     };
+    let directory_link = symlink_target.as_deref().is_some_and(|target| {
+        links_to_directory(
+            source,
+            directory,
+            lookup.metadata.windows_attributes,
+            target,
+        )
+    });
     Ok(Some(ProjectedEntry {
         name,
         component,
         facts: PlaceholderFacts { lookup, pin },
         info,
         symlink_target,
+        directory_link,
     }))
+}
+
+/// Whether the link in `directory` to `target` names a directory, which a
+/// Windows link must say when it is made: as its own attributes recorded,
+/// else as its target resolves, in the source or, outside it, on the host.
+fn links_to_directory(
+    source: &dyn MountFilesystem,
+    directory: &MountPath,
+    attributes: MetadataField<u32>,
+    target: &[u8],
+) -> bool {
+    if let MetadataField::Value(attributes) = attributes {
+        return attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
+    }
+    decode_utf16_name(target)
+        .is_some_and(|target| resolves_to_directory(source, directory, &target, 0))
+}
+
+/// Whether `target`, read from a link in `directory`, names a directory,
+/// following at most a few links further.
+fn resolves_to_directory(
+    source: &dyn MountFilesystem,
+    directory: &MountPath,
+    target: &[u16],
+    hops: u8,
+) -> bool {
+    const MOST_HOPS: u8 = 8;
+    let text = String::from_utf16_lossy(target);
+    if text.starts_with(['/', '\\']) || text.get(1..2) == Some(":") {
+        return std::path::Path::new(&text).is_dir();
+    }
+    let mut path = directory.clone();
+    for part in text.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => match path.parent() {
+                Some(parent) => path = parent,
+                None => return false,
+            },
+            name => path = path.child(name.encode_utf16().flat_map(u16::to_le_bytes).collect()),
+        }
+    }
+    match source.lookup(&path) {
+        Ok(Some(lookup)) if lookup.node.kind == MountNodeKind::Directory => true,
+        Ok(Some(lookup)) if lookup.node.kind == MountNodeKind::SymbolicLink && hops < MOST_HOPS => {
+            let (Some(parent), Ok(next)) = (path.parent(), source.read_link(&path)) else {
+                return false;
+            };
+            decode_utf16_name(&next)
+                .is_some_and(|next| resolves_to_directory(source, &parent, &next, hops + 1))
+        }
+        _ => false,
+    }
 }
 
 fn source_listing(
@@ -3995,6 +4155,62 @@ mod tests {
         source.remove(&link, None)?;
         session.revalidate()?;
         assert!(sorted_names(&destination)?.is_empty());
+        session.stop()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn a_projected_directory_link_leads_into_its_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::FileTypeExt as _;
+
+        let source = windows_checkout_source().await?;
+        let folder = windows_path("folder");
+        source.create_directory(&folder, FileMetadata::default())?;
+        let inner = folder.child(windows_name("inner.txt"));
+        source.create_file(&inner, FileMetadata::default())?;
+        source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+        source.create_symbolic_link(
+            &windows_path("folder-link"),
+            Bytes::from(windows_name("folder")),
+            FileMetadata::default(),
+        )?;
+        let (_root, destination, mut session) = mount_source(&source)?;
+        let link = destination.join("folder-link");
+        assert!(
+            std::fs::symlink_metadata(&link)?
+                .file_type()
+                .is_symlink_dir()
+        );
+        assert_eq!(std::fs::read(link.join("inner.txt"))?, b"inner");
+        session.stop()?;
+        Ok(())
+    }
+
+    /// What the user put in place of a projected link stays when the source
+    /// removes the link.
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let link = windows_path("link");
+        source.create_symbolic_link(
+            &link,
+            Bytes::from(windows_name("target.txt")),
+            FileMetadata::default(),
+        )?;
+        let (_root, destination, mut session) = mount_source(&source)?;
+        let projected = destination.join("link");
+        assert_eq!(
+            std::fs::read_link(&projected)?,
+            std::path::Path::new("target.txt")
+        );
+        std::fs::remove_file(&projected)?;
+        std::fs::create_dir(&projected)?;
+        source.remove(&link, None)?;
+        session.revalidate()?;
+        assert!(std::fs::symlink_metadata(&projected)?.is_dir());
         session.stop()?;
         Ok(())
     }
