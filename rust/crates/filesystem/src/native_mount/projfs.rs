@@ -43,10 +43,10 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_FILE_OVERWRITTEN, PRJ_NOTIFY_FILE_RENAMED, PRJ_NOTIFY_HARDLINK_CREATED,
     PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK,
     PRJ_NOTIFY_TYPES, PRJ_PLACEHOLDER_INFO, PRJ_PLACEHOLDER_VERSION_INFO,
-    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_READ_ONLY, PrjAllocateAlignedBuffer,
-    PrjDeleteFile, PrjFileNameCompare, PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder,
-    PrjStartVirtualizing, PrjStopVirtualizing, PrjUpdateFileIfNeeded, PrjWriteFileData,
-    PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
+    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_DIRTY_DATA, PRJ_UPDATE_ALLOW_DIRTY_METADATA,
+    PRJ_UPDATE_ALLOW_READ_ONLY, PrjAllocateAlignedBuffer, PrjDeleteFile, PrjFileNameCompare,
+    PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
+    PrjUpdateFileIfNeeded, PrjWriteFileData, PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
 };
 use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
 
@@ -410,6 +410,27 @@ impl ReadBasis {
     }
 }
 
+/// What writing one entry into the projection placed there.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Placed {
+    /// Nothing: something is there already, or its directory is gone.
+    Nothing,
+    /// A placeholder, or an ordinary directory.
+    Placeholder,
+    /// A symbolic link with this host file index: a link placeholder, or an
+    /// ordinary link where the volume refuses those (`ReFS`).
+    Link(u64),
+}
+
+impl Placed {
+    const fn link(self) -> Option<u64> {
+        match self {
+            Self::Link(index) => Some(index),
+            Self::Nothing | Self::Placeholder => None,
+        }
+    }
+}
+
 /// What one placeholder was written from: the node, its metadata, and the
 /// content its hydration returns.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -457,6 +478,10 @@ impl ProjectionCache {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct WrittenPlaceholder {
     file_id: FileId,
+    /// The host file index of the link written here: a link placeholder
+    /// becomes an ordinary link once read, which `ProjFS` no longer manages,
+    /// so the provider removes it itself, only while it is still that file.
+    link: Option<u64>,
     /// What it was written from; `None` for one known only to be gone.
     facts: Option<PlaceholderFacts>,
     /// The view it was read in; `None` when the source cannot version it
@@ -711,11 +736,18 @@ impl Placeholders {
     }
 
     /// Keeps the placeholder written at `path` in view `basis`.
-    fn written(&self, path: MountPath, facts: PlaceholderFacts, basis: Option<ReadBasis>) {
+    fn written(
+        &self,
+        path: MountPath,
+        facts: PlaceholderFacts,
+        link: Option<u64>,
+        basis: Option<ReadBasis>,
+    ) {
         lock_recover(&self.state).written.insert(
             path,
             WrittenPlaceholder {
                 file_id: facts.lookup.node.file_id,
+                link,
                 facts: Some(facts),
                 basis,
             },
@@ -798,17 +830,18 @@ impl Placeholders {
             let placed = write_entry(projection, &child, entry)?;
             if is_directory {
                 found.push(child);
-            } else if placed {
-                written.push((child, entry.facts));
+            } else if placed != Placed::Nothing {
+                written.push((child, entry.facts, placed.link()));
             }
             names.insert(entry.component.clone(), is_directory);
         }
         let mut state = lock_recover(&self.state);
-        for (path, facts) in written {
+        for (path, facts, link) in written {
             state.written.insert(
                 path,
                 WrittenPlaceholder {
                     file_id: facts.lookup.node.file_id,
+                    link,
                     facts: Some(facts),
                     basis,
                 },
@@ -856,14 +889,20 @@ impl Placeholders {
                 Some(&was_directory) if was_directory == is_directory => continue,
                 // Now another kind: what was written for the old one goes.
                 Some(&true) => self.remove_tree(projection, &child),
-                Some(&false) => delete_placeholder(projection, &child)?,
+                Some(&false) => {
+                    let link = lock_recover(&self.state)
+                        .written
+                        .get(&child)
+                        .and_then(|written| written.link);
+                    release(projection, &child, link)?;
+                }
                 None => {}
             }
-            let written = write_entry(projection, &child, entry)?;
+            let placed = write_entry(projection, &child, entry)?;
             if is_directory {
                 created.push(child);
-            } else if written {
-                self.written(child, entry.facts, basis);
+            } else if placed != Placed::Nothing {
+                self.written(child, entry.facts, placed.link(), basis);
             }
         }
         for (name, was_directory) in &known {
@@ -877,12 +916,16 @@ impl Placeholders {
                 // Replaced like any superseded placeholder: deleted unless
                 // modified, and tried again while held open.
                 let mut state = lock_recover(&self.state);
-                let placeholder = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
-                    file_id: FileId::from_bytes([0; 16]),
-                    facts: None,
-                    basis: None,
-                });
-                state.pending.insert(child, placeholder);
+                // Already pending, it is replaced as what it was written as.
+                if !state.pending.contains_key(&child) {
+                    let placeholder = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
+                        file_id: FileId::from_bytes([0; 16]),
+                        link: None,
+                        facts: None,
+                        basis: None,
+                    });
+                    state.pending.insert(child, placeholder);
+                }
             }
         }
         lock_recover(&self.state)
@@ -894,18 +937,26 @@ impl Placeholders {
     /// Deletes what was written beneath `directory` that `ProjFS` still
     /// holds untouched, and each directory left empty; forgets all of it.
     fn remove_tree(&self, projection: Projection<'_>, directory: &MountPath) {
-        let mut removed = {
+        let (mut removed, links) = {
             let mut state = lock_recover(&self.state);
+            let links = state
+                .written
+                .iter()
+                .chain(&state.pending)
+                .filter(|(path, _)| projfs_path_suffix(path, directory).is_some())
+                .filter_map(|(path, written)| written.link.map(|link| (path.clone(), link)))
+                .collect::<HashMap<_, _>>();
             let beneath = state
                 .directories
                 .keys()
                 .filter(|path| projfs_path_suffix(path, directory).is_some())
                 .cloned()
                 .collect::<Vec<_>>();
-            beneath
+            let removed = beneath
                 .into_iter()
                 .filter_map(|path| state.directories.remove(&path).map(|entry| (path, entry)))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (removed, links)
         };
         // Deepest first, so each directory holds nothing written by the time
         // it is removed.
@@ -913,7 +964,8 @@ impl Placeholders {
         for (path, materialized) in removed {
             for (name, is_directory) in materialized.names {
                 if !is_directory {
-                    let _ = delete_placeholder(projection, &path.child(name));
+                    let child = path.child(name);
+                    let _ = release(projection, &child, links.get(&child).copied());
                 }
             }
             if let Ok(host) = host_relative_path(&path)
@@ -1128,7 +1180,7 @@ impl Placeholders {
             attempted.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().len()));
             let (mut settled, mut kept) = (Vec::new(), Vec::new());
             for (path, written) in attempted {
-                match replace_placeholder(projection, &path) {
+                match replace_placeholder(projection, &path, &written) {
                     Ok(Replaced::Rewritten(current)) => {
                         let current = *current;
                         kept.push((path.clone(), current));
@@ -1251,11 +1303,11 @@ fn write_entry(
     projection: Projection<'_>,
     path: &MountPath,
     entry: &ProjectedEntry,
-) -> Result<bool, String> {
+) -> Result<Placed, String> {
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
     if entry.info.IsDirectory {
         return match std::fs::create_dir(projection.root.join(&host)) {
-            Ok(()) => Ok(true),
+            Ok(()) => Ok(Placed::Placeholder),
             Err(error)
                 if matches!(
                     error.kind(),
@@ -1264,7 +1316,7 @@ fn write_entry(
                         | std::io::ErrorKind::NotADirectory
                 ) =>
             {
-                Ok(false)
+                Ok(Placed::Nothing)
             }
             Err(error) => Err(format!("creating directory {path:?}: {error}")),
         };
@@ -1294,7 +1346,8 @@ fn write_entry(
         }
     };
     match result {
-        Ok(()) => Ok(true),
+        Ok(()) if symlink.is_some() => linked(projection, path, &host),
+        Ok(()) => Ok(Placed::Placeholder),
         // Something is there already, or its directory is no directory:
         // what the user made stays.
         Err(error)
@@ -1307,12 +1360,144 @@ fn write_entry(
             ]
             .contains(&error.code()) =>
         {
-            Ok(false)
+            Ok(Placed::Nothing)
+        }
+        // `ReFS` refuses link placeholders: an ordinary link stands in.
+        Err(error) if error.code() == HR_NOT_SUPPORTED && symlink.is_some() => {
+            let target = symlink.as_ref().map(|(target, _)| target);
+            write_link(projection, path, &host, target, entry.info.IsDirectory)
         }
         Err(error) => Err(format!(
             "writing placeholder {path:?}: {}",
             driver_error(&error)
         )),
+    }
+}
+
+/// Writes an ordinary symbolic link to `target` at `path`, for a volume that
+/// refuses link placeholders. Windows lets an unprivileged process create
+/// links only in Developer Mode; elsewhere the projection cannot hold one.
+fn write_link(
+    projection: Projection<'_>,
+    path: &MountPath,
+    host: &std::path::Path,
+    target: Option<&HSTRING>,
+    directory: bool,
+) -> Result<Placed, String> {
+    use windows::Win32::Storage::FileSystem::{
+        CreateSymbolicLinkW, SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE,
+        SYMBOLIC_LINK_FLAG_DIRECTORY, SYMBOLIC_LINK_FLAGS,
+    };
+
+    let target = target.ok_or_else(|| format!("link at {path:?} has no target"))?;
+    let name = HSTRING::from(projection.root.join(host).as_os_str());
+    let mut flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE.0;
+    if directory {
+        flags |= SYMBOLIC_LINK_FLAG_DIRECTORY.0;
+    }
+    // SAFETY: both names outlive this synchronous call.
+    let created = unsafe { CreateSymbolicLinkW(&name, target, SYMBOLIC_LINK_FLAGS(flags)) };
+    if !created {
+        let error = std::io::Error::last_os_error();
+        return match error.kind() {
+            // Something is there already, or its directory is gone.
+            std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound => Ok(Placed::Nothing),
+            _ => Err(format!(
+                "writing link {path:?}: {error} (this volume has no link placeholders, so \
+                 projecting a link needs the right to create one: Developer Mode)"
+            )),
+        };
+    }
+    linked(projection, path, host)
+}
+
+/// The link just written at `path`, by its host file index.
+fn linked(
+    projection: Projection<'_>,
+    path: &MountPath,
+    host: &std::path::Path,
+) -> Result<Placed, String> {
+    link_index(&projection.root.join(host))
+        .map(Placed::Link)
+        .map_err(|error| format!("reading link {path:?}: {error}"))
+}
+
+/// The host file index of the link at `path`, read from the link itself
+/// through a handle that asks for its attributes only, which neither
+/// follows it nor reads its target.
+fn link_index(path: &std::path::Path) -> std::io::Result<u64> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        GetFileInformationByHandle,
+    };
+
+    let link = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES.0)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+        .open(path)?;
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: a live handle and an output structure that outlives the call.
+    unsafe {
+        GetFileInformationByHandle(
+            windows::Win32::Foundation::HANDLE(link.as_raw_handle()),
+            &raw mut information,
+        )
+    }
+    .map_err(std::io::Error::from)?;
+    Ok(u64::from(information.nFileIndexHigh) << 32 | u64::from(information.nFileIndexLow))
+}
+
+/// Deletes what the projection wrote at `path` unless the user made it
+/// their own: a placeholder, or the link with host file index `link`.
+fn release(projection: Projection<'_>, path: &MountPath, link: Option<u64>) -> Result<(), String> {
+    let Some(index) = link else {
+        return delete_placeholder(projection, path);
+    };
+    let host = host_relative_path(path).map_err(|error| error.to_string())?;
+    let target = projection.root.join(&host);
+    match link_index(&target) {
+        Ok(current) if current == index => {}
+        // Replaced since: what is there is the user's.
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("reading link {path:?}: {error}")),
+    }
+    // A link placeholder turns full once it is read. `ProjFS` deletes it
+    // all the same when told the data may be dirty, and leaves no tombstone
+    // to hide what is written there next, as deleting it directly would.
+    let relative = HSTRING::from(host.as_os_str());
+    // SAFETY: the name outlives this synchronous call on a live context.
+    match unsafe {
+        PrjDeleteFile(
+            projection.context,
+            &relative,
+            Some(
+                PRJ_UPDATE_ALLOW_DIRTY_DATA
+                    | PRJ_UPDATE_ALLOW_DIRTY_METADATA
+                    | PRJ_UPDATE_ALLOW_READ_ONLY,
+            ),
+            None,
+        )
+    } {
+        Ok(()) => return Ok(()),
+        // An ordinary link (`ReFS`), which `ProjFS` does not manage.
+        Err(error) if error.code() == HR_VIRTUALIZATION_INVALID_OPERATION => {}
+        Err(error) if [HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND].contains(&error.code()) => {
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(format!("deleting link {path:?}: {}", driver_error(&error)));
+        }
+    }
+    // A directory link is removed as a directory, without its target.
+    match std::fs::remove_file(&target).or_else(|_| std::fs::remove_dir(&target)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("removing link {path:?}: {error}")),
     }
 }
 
@@ -1351,7 +1536,11 @@ fn delete_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<()
 /// Writes the placeholder at `path` again from the source, or deletes it
 /// where the source names nothing there any more (or a directory, which the
 /// directory's reconcile writes).
-fn replace_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<Replaced, String> {
+fn replace_placeholder(
+    projection: Projection<'_>,
+    path: &MountPath,
+    written: &WrittenPlaceholder,
+) -> Result<Replaced, String> {
     let source = projection.source;
     let relative = HSTRING::from(
         host_relative_path(path)
@@ -1364,10 +1553,16 @@ fn replace_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<R
         Err(MountSourceError::NotFound) => None,
         Err(error) => return Err(error.to_string()),
     };
+    // A link's target is part of the link itself, which no update carries:
+    // what was written goes and the link is written anew, as is whatever
+    // takes the place of an ordinary link written for one.
+    if written.link.is_some()
+        || current.is_some_and(|(lookup, _)| lookup.node.kind == MountNodeKind::SymbolicLink)
+    {
+        return rewrite(projection, path, &relative, written.link, current, basis);
+    }
     let result = match current {
-        // A link's target travels in extended information, which only a
-        // new placeholder can carry; a directory is written by its parent's
-        // reconcile.
+        // A directory is written by its parent's reconcile.
         Some((lookup, pin))
             if !matches!(
                 lookup.node.kind,
@@ -1392,6 +1587,7 @@ fn replace_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<R
             .map(|()| {
                 Replaced::Rewritten(Box::new(WrittenPlaceholder {
                     file_id: lookup.node.file_id,
+                    link: None,
                     facts: Some(PlaceholderFacts { lookup, pin }),
                     basis,
                 }))
@@ -1427,6 +1623,65 @@ fn replace_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<R
         Err(error) if error.code() == HR_SHARING_VIOLATION => Ok(Replaced::Busy),
         Err(error) => Err(driver_error(&error).to_string()),
     }
+}
+
+/// Deletes what was written at `path` and writes what the source holds
+/// there now, for what no update can change in place: links.
+fn rewrite(
+    projection: Projection<'_>,
+    path: &MountPath,
+    relative: &HSTRING,
+    link: Option<u64>,
+    current: Option<(MountLookup, Option<MountContentPin>)>,
+    basis: Option<ReadBasis>,
+) -> Result<Replaced, String> {
+    if link.is_some() {
+        release(projection, path, link)?;
+    } else {
+        // SAFETY: the name outlives this synchronous call on a live context.
+        match unsafe {
+            PrjDeleteFile(
+                projection.context,
+                relative,
+                Some(PRJ_UPDATE_ALLOW_READ_ONLY),
+                None,
+            )
+        } {
+            Ok(()) => {}
+            Err(error) if [HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND].contains(&error.code()) => {}
+            Err(error) if error.code() == HR_SHARING_VIOLATION => return Ok(Replaced::Busy),
+            // Authored since: the user's.
+            Err(error)
+                if [HR_VIRTUALIZATION_INVALID_OPERATION, HR_DIRECTORY_NOT_EMPTY]
+                    .contains(&error.code()) =>
+            {
+                return Ok(Replaced::Released);
+            }
+            Err(error) => return Err(driver_error(&error).to_string()),
+        }
+    }
+    let Some((lookup, pin)) =
+        current.filter(|(lookup, _)| lookup.node.kind != MountNodeKind::Directory)
+    else {
+        return Ok(Replaced::Released);
+    };
+    let (Some(parent), Some(component)) = (path.parent(), path.components().last()) else {
+        return Ok(Replaced::Released);
+    };
+    let Some(entry) = projected_entry(projection.source, &parent, component.clone(), lookup, pin)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(Replaced::Released);
+    };
+    Ok(match write_entry(projection, path, &entry)? {
+        Placed::Nothing => Replaced::Released,
+        placed => Replaced::Rewritten(Box::new(WrittenPlaceholder {
+            file_id: lookup.node.file_id,
+            link: placed.link(),
+            facts: Some(entry.facts),
+            basis,
+        })),
+    })
 }
 
 /// A virtualization context moved to the placeholder worker. The handle is
@@ -2584,6 +2839,40 @@ unsafe fn placeholder(_callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
 /// The source's listing of `path`, as this provider writes it. An entry no
 /// placeholder can represent (a socket, say) is left out, as is a name that
 /// case-folds to one listed before it: Windows can hold only one of them.
+/// What the projection writes for the source's entry `component` in
+/// `directory`; `None` for one Windows cannot represent.
+fn projected_entry(
+    source: &dyn MountFilesystem,
+    directory: &MountPath,
+    component: Vec<u8>,
+    lookup: MountLookup,
+    pin: Option<MountContentPin>,
+) -> Result<Option<ProjectedEntry>, MountSourceError> {
+    let Some(info) = basic(lookup.node, Some(lookup.metadata)) else {
+        return Ok(None);
+    };
+    let Some(mut name) = decode_utf16_name(&component).filter(|name| !name.contains(&0)) else {
+        return Ok(None);
+    };
+    name.push(0);
+    let symlink_target = if lookup.node.kind == MountNodeKind::SymbolicLink {
+        let target = source.read_link(&directory.child(component.clone()))?;
+        if symlink_extended(&target).is_none() {
+            return Ok(None);
+        }
+        Some(target)
+    } else {
+        None
+    };
+    Ok(Some(ProjectedEntry {
+        name,
+        component,
+        facts: PlaceholderFacts { lookup, pin },
+        info,
+        symlink_target,
+    }))
+}
+
 fn source_listing(
     source: &dyn MountFilesystem,
     path: &MountPath,
@@ -2599,36 +2888,13 @@ fn source_listing(
             .try_reserve(page.entries.len())
             .map_err(|_| MountSourceError::Engine("listing exceeds memory".to_owned()))?;
         for entry in page.entries {
-            let Some(info) = basic(entry.node, Some(entry.metadata)) else {
-                continue;
+            let lookup = MountLookup {
+                node: entry.node,
+                metadata: entry.metadata,
             };
-            let Some(mut name) = decode_utf16_name(&entry.name).filter(|name| !name.contains(&0))
-            else {
-                continue;
-            };
-            name.push(0);
-            let symlink_target = if entry.node.kind == MountNodeKind::SymbolicLink {
-                let target = source.read_link(&path.child(entry.name.clone()))?;
-                if symlink_extended(&target).is_none() {
-                    continue;
-                }
-                Some(target)
-            } else {
-                None
-            };
-            entries.push(ProjectedEntry {
-                name,
-                component: entry.name,
-                facts: PlaceholderFacts {
-                    lookup: MountLookup {
-                        node: entry.node,
-                        metadata: entry.metadata,
-                    },
-                    pin: entry.pin,
-                },
-                info,
-                symlink_target,
-            });
+            if let Some(projected) = projected_entry(source, path, entry.name, lookup, entry.pin)? {
+                entries.push(projected);
+            }
         }
         match page.next_cursor {
             Some(next) if !seen_cursors.insert(next.clone()) => {
@@ -3634,6 +3900,37 @@ mod tests {
         Ok(())
     }
 
+    /// A link is projected with its target, as a placeholder or, where the
+    /// volume refuses link placeholders, as an ordinary link, and follows a
+    /// source that points it elsewhere.
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn a_projected_link_follows_its_source_target() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = windows_checkout_source().await?;
+        let target = |name: &str| Bytes::from(windows_name(name));
+        let link = windows_path("link");
+        source.create_symbolic_link(&link, target("first.txt"), FileMetadata::default())?;
+        let (_root, destination, mut session) = mount_source(&source)?;
+        assert_eq!(
+            std::fs::read_link(destination.join("link"))?,
+            std::path::Path::new("first.txt")
+        );
+        source.remove(&link, None)?;
+        source.create_symbolic_link(&link, target("second.txt"), FileMetadata::default())?;
+        session.revalidate()?;
+        assert_eq!(sorted_names(&destination)?, ["link"]);
+        assert_eq!(
+            std::fs::read_link(destination.join("link"))?,
+            std::path::Path::new("second.txt")
+        );
+        source.remove(&link, None)?;
+        session.revalidate()?;
+        assert!(sorted_names(&destination)?.is_empty());
+        session.stop()?;
+        Ok(())
+    }
+
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn paths_the_source_gains_appear_once_revalidated()
@@ -3764,6 +4061,7 @@ mod tests {
                 path.clone(),
                 WrittenPlaceholder {
                     file_id: FileId::new(),
+                    link: None,
                     facts: None,
                     basis: Some(ReadBasis {
                         stamp: ViewStamp::current(),
