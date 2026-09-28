@@ -2351,6 +2351,49 @@ struct StagedWindowsFile {
 }
 
 #[cfg(windows)]
+impl Drop for StagedWindowsFile {
+    /// Unlinks the staged name at once. Delete-on-close removes a name only
+    /// once every handle to the file closes, and another process (a virus
+    /// scanner) may hold one for a while; a POSIX delete takes the name away
+    /// now. Where the file system cannot, delete-on-close still removes it.
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_ON_CLOSE,
+            FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX,
+            FILE_DISPOSITION_INFO_EX_FLAGS, FileDispositionInfoEx, SetFileInformationByHandle,
+        };
+
+        let set = |flags: u32| {
+            let disposition = FILE_DISPOSITION_INFO_EX {
+                Flags: FILE_DISPOSITION_INFO_EX_FLAGS(flags),
+            };
+            // SAFETY: the guard's live handle, opened with delete access,
+            // and a correctly sized disposition that outlives the call.
+            unsafe {
+                SetFileInformationByHandle(
+                    HANDLE(self.guard.as_raw_handle()),
+                    FileDispositionInfoEx,
+                    (&raw const disposition).cast(),
+                    u32::try_from(size_of::<FILE_DISPOSITION_INFO_EX>()).unwrap_or(u32::MAX),
+                )
+            }
+        };
+        // Delete-on-close would apply the ordinary delete at close, which
+        // keeps the name while other handles last: it gives way to a POSIX
+        // delete, and stays where that cannot be set.
+        if set(FILE_DISPOSITION_FLAG_ON_CLOSE.0).is_ok()
+            && set(FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0)
+                .is_err()
+        {
+            let _ = set(FILE_DISPOSITION_FLAG_ON_CLOSE.0 | FILE_DISPOSITION_FLAG_DELETE.0);
+        }
+    }
+}
+
+#[cfg(windows)]
 impl StagedWindowsFile {
     /// Creates an empty staged file under a name no other writer uses.
     fn create(parent: Dir) -> io::Result<Self> {
@@ -4099,6 +4142,29 @@ mod windows_clone_tests {
             std::fs::read(temporary.path().join("copy"))?,
             b"complete copy"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_staged_name_goes_while_another_process_holds_the_file() -> std::io::Result<()> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        let temporary = tempfile::tempdir()?;
+        let parent =
+            cap_std::fs::Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
+        let staged = super::StagedWindowsFile::create(parent)?;
+        // A scanner opening the staged file shares everything, as this does.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+            .open(temporary.path().join(&staged.name))?;
+        drop(staged);
+        let names = std::fs::read_dir(temporary.path())?.count();
+        drop(held);
+        assert_eq!(names, 0, "the staged name outlived its guard");
         Ok(())
     }
 
