@@ -976,7 +976,7 @@ mod http {
         })
     }
 
-    fn envelope_value(value: wire::CommittedEnvelope) -> Result<Value> {
+    fn envelope_value(value: &wire::CommittedEnvelope) -> Result<Value> {
         let mutations = value
             .mutations
             .iter()
@@ -1040,7 +1040,7 @@ mod http {
                 // request that produced them. Validate the complete envelope
                 // before deriving its compact public result so nested records
                 // cannot bypass identity and width checks.
-                let envelope_json = envelope_value(envelope.clone())?;
+                let envelope_json = envelope_value(&envelope)?;
                 validate("commits/read", &envelope_json)?;
                 let mut tails = serde_json::Map::new();
                 let mut forks = Vec::new();
@@ -1054,7 +1054,7 @@ mod http {
                             forks.push(json_object(vec![
                                 ("path", json_string(value.destination.clone())),
                                 ("tail", json_u64(value.tail)),
-                            ]))
+                            ]));
                         }
                     }
                 }
@@ -1139,7 +1139,7 @@ mod http {
             "read_commit" => (
                 "commits/read",
                 envelope_value(
-                    wire::CommittedEnvelope::decode(input).map_err(|_| "invalid_response")?,
+                    &wire::CommittedEnvelope::decode(input).map_err(|_| "invalid_response")?,
                 )?,
             ),
             "children_page" => (
@@ -1594,10 +1594,8 @@ mod http {
         }
         let mut output = Vec::with_capacity(value.len() / 4 * 3);
         let bytes = value.as_bytes();
-        for (index, chunk) in bytes.chunks_exact(4).enumerate() {
-            let &[a_byte, b_byte, c_byte, d_byte] = chunk else {
-                return None;
-            };
+        for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+            let &[a_byte, b_byte, c_byte, d_byte] = chunk;
             let a = sextet(a_byte)?;
             let b = sextet(b_byte)?;
             let c = if c_byte == b'=' { 0 } else { sextet(c_byte)? };
