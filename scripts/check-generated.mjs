@@ -58,7 +58,12 @@ const wasmSmoke = {
   inference: module => typeof module.validate_customer_wire === "function",
   machines: module => module.httpRoutes(),
   objects: module => [module.objects_list_page_entries(), module.objects_multipart_parts()],
-  stream: module => [module.validatePath("/check-generated"), module.validateSequence("0")],
+  stream: module => {
+    if (module.is_stream_error_code("retired")) {
+      throw new Error("Stream WASM still accepts a retired-path error");
+    }
+    return [module.validatePath("/check-generated"), module.validateSequence("0")];
+  },
 };
 const wasmPackages = [
   ["filesystem", "build-filesystem-wasm.mjs", "acyclic_fs_wasm"],
