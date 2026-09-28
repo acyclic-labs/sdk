@@ -19,12 +19,11 @@ mod snapshot;
 use crate::{
     AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenPage,
     ChildrenPageRequest, ChildrenRequest, CommitCondition, CommitConflict, CommitId,
-    CommitMutation, CommitOutcome, CommitRequest, CommittedAppend, CommittedDelete,
-    CommittedEnvelope, CommittedFork, CommittedMutation, CommittedTrim, DeleteReceipt, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MAX_COMMAND_BYTES,
-    MAX_ITEMS, MAX_RECORD_BYTES, MIN_IDEMPOTENCY_RETENTION_SECS, ReadRequest, Record, RecordStream,
-    StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, TrimReceipt,
-    UnixMillisClock,
+    CommitMutation, CommitOutcome, CommitRequest, CommittedAppend, CommittedEnvelope,
+    CommittedFork, CommittedMutation, ForkReceipt, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, IdempotencyOutcome, MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES,
+    MIN_IDEMPOTENCY_RETENTION_SECS, ReadRequest, Record, RecordStream, StreamBounds, StreamError,
+    StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 
 /// Explicit fail-closed process-memory ceilings.
@@ -178,15 +177,11 @@ impl MemoryStream {
             .mutations
             .iter()
             .filter_map(|mutation| match mutation {
-                CommitMutation::Fork { source, .. } => state.paths.get(source).map(|stream| {
-                    (
-                        source.clone(),
-                        (stream.history.clone(), stream.tail, stream.trim_point),
-                    )
-                }),
-                CommitMutation::Append { .. }
-                | CommitMutation::Trim { .. }
-                | CommitMutation::Delete { .. } => None,
+                CommitMutation::Fork { source, .. } => state
+                    .paths
+                    .get(source)
+                    .map(|stream| (source.clone(), (stream.history.clone(), stream.tail))),
+                CommitMutation::Append { .. } => None,
             })
             .collect::<BTreeMap<_, _>>();
         let mutations = apply_coordinated(&mut state, request.mutations, &before, commit_id)?;
@@ -210,9 +205,6 @@ impl MemoryStream {
 #[derive(Default)]
 struct State {
     paths: BTreeMap<StreamPath, PathState>,
-    /// Deleted paths, none beneath another: retiring a path retires all
-    /// beneath it.
-    retired: BTreeSet<StreamPath>,
     commits: BTreeMap<CommitId, CommittedEnvelope>,
     replays: BTreeMap<Bytes, Replay>,
     /// Every retained result and envelope, in the order its retention ends.
@@ -257,7 +249,6 @@ struct Retained {
 struct PathState {
     history: Option<Arc<History>>,
     tail: u64,
-    trim_point: u64,
     changed: watch::Sender<u64>,
 }
 
@@ -297,7 +288,6 @@ impl StreamProvider for MemoryStream {
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let state = self.state.read().await;
-        reject_retired(&state, &path)?;
         state
             .paths
             .get(&path)
@@ -307,12 +297,8 @@ impl StreamProvider for MemoryStream {
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
         let state = self.state.read().await;
-        reject_retired(&state, &path)?;
         let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
-        Ok(StreamBounds {
-            trim_point: stream.trim_point,
-            tail: stream.tail,
-        })
+        Ok(StreamBounds { tail: stream.tail })
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -324,7 +310,6 @@ impl StreamProvider for MemoryStream {
             return Ok(result);
         }
         admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
-        reject_retired(&state, &request.path)?;
         let actual_tail = state.paths.get(&request.path).map_or(0, |path| path.tail);
         if request
             .if_tail
@@ -407,7 +392,6 @@ impl StreamProvider for MemoryStream {
             return Ok(result);
         }
         admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
-        reject_retired(&state, &request.destination)?;
         if state.paths.contains_key(&request.destination) {
             return Err(StreamError::AlreadyExists);
         }
@@ -416,11 +400,10 @@ impl StreamProvider for MemoryStream {
             .get(&request.source)
             .ok_or(StreamError::NotFound)?;
         let forked_at = request.at_tail.unwrap_or(source.tail);
-        if forked_at < source.trim_point || forked_at > source.tail {
+        if forked_at > source.tail {
             return Err(StreamError::PrefixNotRetained);
         }
         let source_history = source.history.clone();
-        let source_trim_point = source.trim_point;
         reserve_paths(&state, &request.destination, self.limits)?;
         reserve_commit(&state, self.limits)?;
         let commit_id = next_commit_id(&mut state, digest)?;
@@ -434,7 +417,6 @@ impl StreamProvider for MemoryStream {
             tail: forked_at,
         }));
         destination.tail = forked_at;
-        destination.trim_point = source_trim_point;
         destination.changed.send_replace(forked_at);
         let receipt = ForkReceipt {
             source: request.source,
@@ -464,108 +446,14 @@ impl StreamProvider for MemoryStream {
         Ok(receipt)
     }
 
-    async fn trim(
-        &self,
-        path: StreamPath,
-        before: u64,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<TrimReceipt, StreamError> {
-        let digest = trim_digest(&path, before);
-        let (mut state, now) = self.mutate().await;
-        if let Some(result) = replay_trim(&state, &idempotency_key, digest)? {
-            return Ok(result);
-        }
-        admit_replay(&state, Some(&idempotency_key), self.limits)?;
-        reserve_commit(&state, self.limits)?;
-        let current = state.paths.get(&path).ok_or(StreamError::NotFound)?;
-        if before > current.tail {
-            return Err(StreamError::OutOfRange);
-        }
-        let trim_point = current.trim_point.max(before);
-        let commit_id = next_commit_id(&mut state, digest)?;
-        let stream = state.paths.get_mut(&path).ok_or(StreamError::Unavailable)?;
-        stream.trim_point = trim_point;
-        stream.changed.send_replace(stream.tail);
-        let receipt = TrimReceipt {
-            path: path.clone(),
-            trim_point,
-            commit_id,
-        };
-        let envelope = CommittedEnvelope {
-            commit_id,
-            mutations: vec![CommittedMutation::Trim(CommittedTrim { path, trim_point })],
-        };
-        retain(
-            &mut state,
-            now,
-            Some(envelope),
-            Some(idempotency_key),
-            digest,
-            IdempotencyOutcome::Trim(receipt.clone()),
-        );
-        Ok(receipt)
-    }
-
-    async fn delete(
-        &self,
-        path: StreamPath,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<DeleteReceipt, StreamError> {
-        let digest = delete_digest(&path);
-        let (mut state, now) = self.mutate().await;
-        if let Some(result) = replay_delete(&state, &idempotency_key, digest)? {
-            return Ok(result);
-        }
-        admit_replay(&state, Some(&idempotency_key), self.limits)?;
-        reserve_commit(&state, self.limits)?;
-        if !state.paths.contains_key(&path) {
-            return Err(StreamError::NotFound);
-        }
-        if beneath(
-            state
-                .paths
-                .range(path.clone()..)
-                .map(|(candidate, _)| candidate),
-            &path,
-        )
-        .next()
-        .is_some()
-        {
-            return Err(StreamError::InvalidArgument);
-        }
-        let commit_id = next_commit_id(&mut state, digest)?;
-        retire_path(&mut state, &path, commit_id);
-        let receipt = DeleteReceipt {
-            path: path.clone(),
-            commit_id,
-        };
-        let envelope = CommittedEnvelope {
-            commit_id,
-            mutations: vec![CommittedMutation::Delete(CommittedDelete { path })],
-        };
-        retain(
-            &mut state,
-            now,
-            Some(envelope),
-            Some(idempotency_key),
-            digest,
-            IdempotencyOutcome::Delete(receipt.clone()),
-        );
-        Ok(receipt)
-    }
-
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         validate_limit(request.limit)?;
         let state = self.state.read().await;
-        reject_retired(&state, &request.path)?;
         let path = state
             .paths
             .get(&request.path)
             .ok_or(StreamError::NotFound)?;
         if request.from > path.tail {
-            return Err(StreamError::OutOfRange);
-        }
-        if request.from < path.trim_point {
             return Err(StreamError::OutOfRange);
         }
         let records = read_history(
@@ -580,12 +468,8 @@ impl StreamProvider for MemoryStream {
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
         let (receiver, cursor) = {
             let state = self.state.read().await;
-            reject_retired(&state, &path)?;
             let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
             if from > stream.tail {
-                return Err(StreamError::OutOfRange);
-            }
-            if from < stream.trim_point {
                 return Err(StreamError::OutOfRange);
             }
             (
@@ -600,15 +484,9 @@ impl StreamProvider for MemoryStream {
                 loop {
                     let record = {
                         let guard = state.read().await;
-                        if reject_retired(&guard, &path).is_err() {
-                            Err(StreamError::Retired)
-                        } else if let Some(current) = guard.paths.get(&path) {
-                            if cursor.next < current.trim_point {
-                                Err(StreamError::OutOfRange)
-                            } else {
-                                cursor.sync(current.history.as_ref(), current.tail);
-                                Ok(cursor.next_record())
-                            }
+                        if let Some(current) = guard.paths.get(&path) {
+                            cursor.sync(current.history.as_ref(), current.tail);
+                            Ok(cursor.next_record())
                         } else {
                             Err(StreamError::NotFound)
                         }
@@ -793,17 +671,6 @@ pub(crate) fn validate_fork_size(request: &ForkRequest) -> Result<(), StreamErro
         .ok_or(StreamError::LimitExceeded)
 }
 
-fn reject_retired(state: &State, path: &StreamPath) -> Result<(), StreamError> {
-    let mut current = Some(path.clone());
-    while let Some(path) = current {
-        if state.retired.contains(&path) {
-            return Err(StreamError::Retired);
-        }
-        current = path.parent();
-    }
-    Ok(())
-}
-
 fn missing_paths(state: &State, path: &StreamPath) -> usize {
     let mut count = 0;
     let mut current = Some(path.clone());
@@ -884,7 +751,6 @@ fn ensure_path(state: &mut State, path: &StreamPath, commit_id: CommitId) {
             PathState {
                 history: None,
                 tail: 0,
-                trim_point: 0,
                 changed,
             },
         );
@@ -1146,31 +1012,6 @@ fn is_direct_child(parent: &StreamPath, candidate: &StreamPath) -> bool {
     candidate.parent().as_ref() == Some(parent)
 }
 
-/// The paths beneath `path` among `ordered`, which lists paths in order
-/// from `path` on. They follow it at once but for siblings that extend its
-/// last name with a byte sorting before `/`, so the walk ends at the first
-/// path past them.
-fn beneath<'a>(
-    ordered: impl Iterator<Item = &'a StreamPath>,
-    path: &'a StreamPath,
-) -> impl Iterator<Item = &'a StreamPath> {
-    let prefix = path.as_str().as_bytes();
-    ordered
-        .take_while(move |candidate| {
-            let candidate = candidate.as_str().as_bytes();
-            candidate.starts_with(prefix)
-                && candidate.get(prefix.len()).is_none_or(|next| *next <= b'/')
-        })
-        .filter(move |candidate| is_descendant(path, candidate))
-}
-
-fn is_descendant(parent: &StreamPath, candidate: &StreamPath) -> bool {
-    candidate
-        .as_str()
-        .strip_prefix(parent.as_str())
-        .is_some_and(|suffix| suffix.starts_with('/'))
-}
-
 /// Forgets every result and envelope whose retention ended by `now`.
 fn expire(state: &mut State, now: u64) {
     while state
@@ -1188,23 +1029,6 @@ fn expire(state: &mut State, now: u64) {
             state.commits.remove(&commit);
         }
     }
-}
-
-/// Deletes `path`, which has no live descendants, for good, as part of
-/// `commit_id`, which changes the hierarchy.
-fn retire_path(state: &mut State, path: &StreamPath, commit_id: CommitId) {
-    state.hierarchy_version = commit_id;
-    if state.paths.remove(path).is_some() {
-        state.path_bytes = state.path_bytes.saturating_sub(path.as_str().len());
-    }
-    // Retiring the path retires everything beneath it, retired or not.
-    let retired = beneath(state.retired.range(path.clone()..), path)
-        .cloned()
-        .collect::<Vec<_>>();
-    for candidate in retired {
-        state.retired.remove(&candidate);
-    }
-    state.retired.insert(path.clone());
 }
 
 /// Counts exactly the records and payload bytes the live paths retain,
@@ -1286,30 +1110,6 @@ fn replay_fork(
     }
 }
 
-fn replay_trim(
-    state: &State,
-    key: &IdempotencyKey,
-    digest: [u8; 32],
-) -> Result<Option<TrimReceipt>, StreamError> {
-    match replay(state, Some(key), digest)? {
-        Some(IdempotencyOutcome::Trim(result)) => Ok(Some(result)),
-        Some(_) => Err(StreamError::IdempotencyMismatch),
-        None => Ok(None),
-    }
-}
-
-fn replay_delete(
-    state: &State,
-    key: &IdempotencyKey,
-    digest: [u8; 32],
-) -> Result<Option<DeleteReceipt>, StreamError> {
-    match replay(state, Some(key), digest)? {
-        Some(IdempotencyOutcome::Delete(result)) => Ok(Some(result)),
-        Some(_) => Err(StreamError::IdempotencyMismatch),
-        None => Ok(None),
-    }
-}
-
 fn replay_commit(
     state: &State,
     key: &crate::IdempotencyKey,
@@ -1379,19 +1179,6 @@ fn fork_digest(request: &ForkRequest) -> [u8; 32] {
     hash.finalize().into()
 }
 
-fn trim_digest(path: &StreamPath, before: u64) -> [u8; 32] {
-    let mut hash = request_hasher(b"trim");
-    hash_path(&mut hash, path);
-    hash.update(before.to_le_bytes());
-    hash.finalize().into()
-}
-
-fn delete_digest(path: &StreamPath) -> [u8; 32] {
-    let mut hash = request_hasher(b"delete");
-    hash_path(&mut hash, path);
-    hash.finalize().into()
-}
-
 fn commit_digest(request: &CommitRequest) -> [u8; 32] {
     let mut hash = request_hasher(b"commit");
     for condition in &request.conditions {
@@ -1425,15 +1212,6 @@ fn commit_digest(request: &CommitRequest) -> [u8; 32] {
                 hash_path(&mut hash, destination);
                 hash.update(at_tail.to_le_bytes());
                 hash_records(&mut hash, records);
-            }
-            CommitMutation::Trim { path, before } => {
-                hash.update([3]);
-                hash_path(&mut hash, path);
-                hash.update(before.to_le_bytes());
-            }
-            CommitMutation::Delete { path } => {
-                hash.update([4]);
-                hash_path(&mut hash, path);
             }
         }
     }
@@ -1469,9 +1247,7 @@ fn condition_path(condition: &CommitCondition) -> &StreamPath {
 fn mutation_path(mutation: &CommitMutation) -> &StreamPath {
     match mutation {
         CommitMutation::Fork { destination, .. } => destination,
-        CommitMutation::Append { path, .. }
-        | CommitMutation::Trim { path, .. }
-        | CommitMutation::Delete { path } => path,
+        CommitMutation::Append { path, .. } => path,
     }
 }
 
@@ -1489,9 +1265,7 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), Stream
             CommitMutation::Fork { records, .. } if !records.is_empty() => {
                 validate_records(records)?;
             }
-            CommitMutation::Fork { .. }
-            | CommitMutation::Trim { .. }
-            | CommitMutation::Delete { .. } => {}
+            CommitMutation::Fork { .. } => {}
         }
     }
     validate_commit_size(request)?;
@@ -1546,11 +1320,6 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
                     return Err(StreamError::InvalidArgument);
                 }
             }
-            CommitMutation::Trim { path, before: _ } | CommitMutation::Delete { path } => {
-                if !matches!(conditions.get(path), Some(CommitCondition::Tail { .. })) {
-                    return Err(StreamError::InvalidArgument);
-                }
-            }
         }
     }
     Ok(())
@@ -1566,31 +1335,8 @@ fn validate_commit_authority(state: &State, request: &CommitRequest) -> Result<(
                 let Some(source_state) = state.paths.get(source) else {
                     return Err(StreamError::NotFound);
                 };
-                if *at_tail < source_state.trim_point || *at_tail > source_state.tail {
+                if *at_tail > source_state.tail {
                     return Err(StreamError::PrefixNotRetained);
-                }
-            }
-            CommitMutation::Trim { path, before } => {
-                let Some(stream) = state.paths.get(path) else {
-                    return Err(StreamError::NotFound);
-                };
-                if *before > stream.tail {
-                    return Err(StreamError::InvalidArgument);
-                }
-            }
-            CommitMutation::Delete { path } => {
-                if !state.paths.contains_key(path)
-                    || beneath(
-                        state
-                            .paths
-                            .range(path.clone()..)
-                            .map(|(candidate, _)| candidate),
-                        path,
-                    )
-                    .next()
-                    .is_some()
-                {
-                    return Err(StreamError::InvalidArgument);
                 }
             }
         }
@@ -1618,8 +1364,6 @@ fn commit_conflicts(state: &State, conditions: &[CommitCondition]) -> Vec<Commit
             CommitCondition::Absent { path } => {
                 if state.paths.contains_key(path) {
                     Some(CommitConflict::Exists { path: path.clone() })
-                } else if reject_retired(state, path).is_err() {
-                    Some(CommitConflict::Retired { path: path.clone() })
                 } else {
                     None
                 }
@@ -1646,12 +1390,13 @@ fn reserve_coordinated(
             }
             current = path.parent();
         }
-        if let CommitMutation::Append { records: batch, .. }
-        | CommitMutation::Fork { records: batch, .. } = mutation
-        {
-            records = records.saturating_add(batch.len());
-            bytes = bytes.saturating_add(batch.iter().map(Bytes::len).sum::<usize>());
-        }
+        let batch = match mutation {
+            CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
+                records
+            }
+        };
+        records = records.saturating_add(batch.len());
+        bytes = bytes.saturating_add(batch.iter().map(Bytes::len).sum::<usize>());
     }
     if state.paths.len().saturating_add(new_paths.len()) > limits.paths
         || state
@@ -1669,7 +1414,7 @@ fn reserve_coordinated(
 fn apply_coordinated(
     state: &mut State,
     mutations: Vec<CommitMutation>,
-    before: &BTreeMap<StreamPath, (Option<Arc<History>>, u64, u64)>,
+    before: &BTreeMap<StreamPath, (Option<Arc<History>>, u64)>,
     commit_id: CommitId,
 ) -> Result<Vec<CommittedMutation>, StreamError> {
     let mut committed = Vec::with_capacity(mutations.len());
@@ -1708,8 +1453,7 @@ fn apply_coordinated(
                 at_tail,
                 records,
             } => {
-                let (history, source_tail, source_trim_point) =
-                    before.get(&source).ok_or(StreamError::NotFound)?;
+                let (history, source_tail) = before.get(&source).ok_or(StreamError::NotFound)?;
                 if at_tail > *source_tail {
                     return Err(StreamError::InvalidArgument);
                 }
@@ -1733,7 +1477,6 @@ fn apply_coordinated(
                         })
                     });
                     stream.tail = records.last().map_or(at_tail, |record| record.sequence + 1);
-                    stream.trim_point = *source_trim_point;
                     stream.changed.send_replace(stream.tail);
                     stream.tail
                 };
@@ -1749,22 +1492,6 @@ fn apply_coordinated(
                     tail,
                     records,
                 }));
-            }
-            CommitMutation::Trim { path, before } => {
-                let stream = state.paths.get_mut(&path).ok_or(StreamError::NotFound)?;
-                stream.trim_point = stream.trim_point.max(before);
-                stream.changed.send_replace(stream.tail);
-                committed.push(CommittedMutation::Trim(CommittedTrim {
-                    path,
-                    trim_point: stream.trim_point,
-                }));
-            }
-            CommitMutation::Delete { path } => {
-                if !state.paths.contains_key(&path) {
-                    return Err(StreamError::NotFound);
-                }
-                retire_path(state, &path, commit_id);
-                committed.push(CommittedMutation::Delete(CommittedDelete { path }));
             }
         }
     }
@@ -1868,119 +1595,6 @@ mod tests {
             found
                 .windows(2)
                 .all(|pair| matches!(pair, [left, right] if left < right))
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn bounds_expose_the_exact_retained_replay_window() -> Result<(), StreamError> {
-        let provider = MemoryStream::default();
-        let stream = path("retained/window")?;
-        provider
-            .append(AppendRequest {
-                path: stream.clone(),
-                records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
-                if_tail: None,
-                idempotency_key: None,
-            })
-            .await?;
-        assert_eq!(
-            provider.bounds(stream.clone()).await?,
-            StreamBounds {
-                trim_point: 0,
-                tail: 2
-            }
-        );
-        provider
-            .trim(stream.clone(), 1, key(b"trim-window")?)
-            .await?;
-        assert_eq!(
-            provider.bounds(stream).await?,
-            StreamBounds {
-                trim_point: 1,
-                tail: 2
-            }
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn forks_preserve_the_source_replay_window() -> Result<(), StreamError> {
-        let provider = MemoryStream::default();
-        let source = path("source")?;
-        provider
-            .append(AppendRequest {
-                path: source.clone(),
-                records: vec![
-                    Bytes::from_static(b"one"),
-                    Bytes::from_static(b"two"),
-                    Bytes::from_static(b"three"),
-                ],
-                if_tail: None,
-                idempotency_key: None,
-            })
-            .await?;
-        provider
-            .trim(source.clone(), 2, key(b"trim-source")?)
-            .await?;
-        assert_eq!(
-            provider
-                .fork(ForkRequest {
-                    source: source.clone(),
-                    destination: path("too-old")?,
-                    at_tail: Some(1),
-                    idempotency_key: None
-                })
-                .await,
-            Err(StreamError::PrefixNotRetained)
-        );
-        provider
-            .fork(ForkRequest {
-                source: source.clone(),
-                destination: path("direct")?,
-                at_tail: Some(2),
-                idempotency_key: None,
-            })
-            .await?;
-        assert_eq!(
-            provider.bounds(path("direct")?).await?,
-            StreamBounds {
-                trim_point: 2,
-                tail: 2
-            }
-        );
-        let coordinated = |destination: &str, at_tail| -> Result<CommitRequest, StreamError> {
-            Ok(CommitRequest {
-                conditions: vec![CommitCondition::Absent {
-                    path: path(destination)?,
-                }],
-                mutations: vec![CommitMutation::Fork {
-                    source: source.clone(),
-                    destination: path(destination)?,
-                    at_tail,
-                    records: Vec::new(),
-                }],
-                idempotency_key: key(if at_tail == 1 {
-                    b"old-coordinated"
-                } else {
-                    b"new-coordinated"
-                })?,
-            })
-        };
-        assert_eq!(
-            provider.commit(coordinated("too-old", 1)?).await,
-            Err(StreamError::PrefixNotRetained)
-        );
-        assert!(matches!(
-            provider.commit(coordinated("coordinated", 2)?).await?,
-            CommitOutcome::Committed(_)
-        ));
-        assert_eq!(
-            provider.bounds(path("coordinated")?).await?,
-            StreamBounds {
-                trim_point: 2,
-                tail: 2
-            }
         );
         Ok(())
     }
@@ -2411,46 +2025,6 @@ mod tests {
             Err(StreamError::NotFound)
         );
         assert_eq!(provider.tail(path("retained")?).await?, 2, "records stay");
-        Ok(())
-    }
-
-    /// Deleting a path frees what it held and folds the retirements beneath
-    /// it into its own.
-    #[tokio::test]
-    async fn deleting_a_path_frees_it_and_folds_retirements_beneath() -> Result<(), StreamError> {
-        let provider = MemoryStream::default();
-        for name in ["tree/a", "tree/b", "tree-x"] {
-            provider
-                .append(AppendRequest {
-                    path: path(name)?,
-                    records: vec![Bytes::from_static(b"record")],
-                    if_tail: None,
-                    idempotency_key: None,
-                })
-                .await?;
-        }
-        provider.delete(path("tree-x")?, key(b"delete-x")?).await?;
-        assert_eq!(
-            provider.delete(path("tree")?, key(b"early")?).await,
-            Err(StreamError::InvalidArgument),
-            "the tree still has live paths"
-        );
-        provider.delete(path("tree/a")?, key(b"delete-a")?).await?;
-        provider.delete(path("tree/b")?, key(b"delete-b")?).await?;
-        provider.delete(path("tree")?, key(b"delete-tree")?).await?;
-        let state = provider.state.read().await;
-        assert!(state.paths.is_empty());
-        assert_eq!(state.path_bytes, 0);
-        assert_eq!(
-            state.retired.iter().collect::<Vec<_>>(),
-            vec![&path("tree")?, &path("tree-x")?],
-            "a sibling sorting before the subtree stays"
-        );
-        drop(state);
-        assert_eq!(
-            provider.tail(path("tree/a")?).await,
-            Err(StreamError::Retired)
-        );
         Ok(())
     }
 }

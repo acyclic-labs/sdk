@@ -27,7 +27,6 @@ pub enum StreamErrorCode {
     LimitExceeded,
     NotFound,
     AlreadyExists,
-    Retired,
     PrefixNotRetained,
     OutOfRange,
     IdempotencyMismatch,
@@ -41,13 +40,12 @@ pub enum StreamErrorCode {
 
 impl StreamErrorCode {
     #[cfg(test)]
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 14] = [
         Self::InvalidPath,
         Self::InvalidArgument,
         Self::LimitExceeded,
         Self::NotFound,
         Self::AlreadyExists,
-        Self::Retired,
         Self::PrefixNotRetained,
         Self::OutOfRange,
         Self::IdempotencyMismatch,
@@ -66,7 +64,6 @@ impl StreamErrorCode {
             Self::LimitExceeded => "limit_exceeded",
             Self::NotFound => "not_found",
             Self::AlreadyExists => "already_exists",
-            Self::Retired => "retired",
             Self::PrefixNotRetained => "prefix_not_retained",
             Self::OutOfRange => "out_of_range",
             Self::IdempotencyMismatch => "idempotency_mismatch",
@@ -86,7 +83,6 @@ impl StreamErrorCode {
             "limit_exceeded" => Self::LimitExceeded,
             "not_found" => Self::NotFound,
             "already_exists" => Self::AlreadyExists,
-            "retired" => Self::Retired,
             "prefix_not_retained" => Self::PrefixNotRetained,
             "out_of_range" => Self::OutOfRange,
             "idempotency_mismatch" => Self::IdempotencyMismatch,
@@ -108,7 +104,6 @@ fn error_code(error: &StreamError) -> StreamErrorCode {
         StreamError::LimitExceeded => StreamErrorCode::LimitExceeded,
         StreamError::NotFound => StreamErrorCode::NotFound,
         StreamError::AlreadyExists => StreamErrorCode::AlreadyExists,
-        StreamError::Retired => StreamErrorCode::Retired,
         StreamError::PrefixNotRetained => StreamErrorCode::PrefixNotRetained,
         StreamError::OutOfRange => StreamErrorCode::OutOfRange,
         StreamError::IdempotencyMismatch => StreamErrorCode::IdempotencyMismatch,
@@ -154,8 +149,6 @@ pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
     let code = match raw {
         "stream_not_found" => "stream_not_found",
         "destination_exists" => "destination_exists",
-        "stream_retired" => "stream_retired",
-        "cursor_trimmed" => "cursor_trimmed",
         "capacity_exhausted" => "capacity_exhausted",
         "commit_not_found" => "commit_not_found",
         _ => match StreamErrorCode::from_str(raw)? {
@@ -170,9 +163,8 @@ pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
                 }
             }
             StreamErrorCode::AlreadyExists => "destination_exists",
-            StreamErrorCode::Retired => "stream_retired",
             StreamErrorCode::PrefixNotRetained => "prefix_not_retained",
-            StreamErrorCode::OutOfRange => "cursor_trimmed",
+            StreamErrorCode::OutOfRange => "out_of_range",
             StreamErrorCode::IdempotencyMismatch => "idempotency_mismatch",
             StreamErrorCode::Capacity => "capacity_exhausted",
             StreamErrorCode::AccessDenied => "access_denied",
@@ -277,21 +269,7 @@ impl WasmMemoryStream {
                 let request = decode::<wire::TailRequest>(input)?;
                 let path = wire_codec::path(request.path).map_err(js_error)?;
                 let tail = self.provider.tail(path).await.map_err(js_error)?;
-                wire::TailResponse {
-                    tail,
-                    trim_point: None,
-                }
-                .encode_to_vec()
-            }
-            "bounds" => {
-                let request = decode::<wire::TailRequest>(input)?;
-                let path = wire_codec::path(request.path).map_err(js_error)?;
-                let bounds = self.provider.bounds(path).await.map_err(js_error)?;
-                wire::TailResponse {
-                    tail: bounds.tail,
-                    trim_point: Some(bounds.trim_point),
-                }
-                .encode_to_vec()
+                wire::TailResponse { tail }.encode_to_vec()
             }
             "children_page" => {
                 let request = decode::<wire::ChildrenPageRequest>(input)?;
@@ -314,24 +292,6 @@ impl WasmMemoryStream {
                 let request = wire_codec::fork_from_wire(request).map_err(js_error)?;
                 let response = self.provider.fork(request).await.map_err(js_error)?;
                 wire_codec::fork_receipt_to_wire(&response).encode_to_vec()
-            }
-            "trim" => {
-                let request = decode::<wire::TrimRequest>(input)?;
-                let (path, before, key) = wire_codec::trim_from_wire(request).map_err(js_error)?;
-                let key = key.ok_or_else(|| js_error(StreamError::InvalidArgument))?;
-                let response = self
-                    .provider
-                    .trim(path, before, key)
-                    .await
-                    .map_err(js_error)?;
-                wire_codec::trim_receipt_to_wire(&response).encode_to_vec()
-            }
-            "delete" => {
-                let request = decode::<wire::DeleteRequest>(input)?;
-                let (path, key) = wire_codec::delete_from_wire(request).map_err(js_error)?;
-                let key = key.ok_or_else(|| js_error(StreamError::InvalidArgument))?;
-                let response = self.provider.delete(path, key).await.map_err(js_error)?;
-                wire_codec::delete_receipt_to_wire(&response).encode_to_vec()
             }
             "commit" => dispatch_commit(&self.provider, input).await?,
             "read_commit" => {
@@ -555,7 +515,7 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
     let result = check_command_size(input)
         .map_err(|_| StreamError::LimitExceeded)
         .and_then(|_| match kind {
-            "tail" | "bounds" => wire::TailRequest::decode(input)
+            "tail" => wire::TailRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(|request| wire_codec::path(request.path).map(|_| ())),
             "fork" => wire::ForkRequest::decode(input)
@@ -567,14 +527,6 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
                     }
                     memory::validate_fork_size(&request)
                 }),
-            "trim" => wire::TrimRequest::decode(input)
-                .map_err(|_| StreamError::InvalidArgument)
-                .and_then(wire_codec::trim_from_wire)
-                .map(|_| ()),
-            "delete" => wire::DeleteRequest::decode(input)
-                .map_err(|_| StreamError::InvalidArgument)
-                .and_then(wire_codec::delete_from_wire)
-                .map(|_| ()),
             "read" => wire::ReadRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::read_from_wire)
@@ -820,17 +772,6 @@ mod http {
                         ),
                     ]),
                 )]),
-                crate::CommitMutation::Trim { path, before } => json_object(vec![(
-                    "trim",
-                    json_object(vec![
-                        ("path", json_string(path.to_string())),
-                        ("before", json_u64(*before)),
-                    ]),
-                )]),
-                crate::CommitMutation::Delete { path } => json_object(vec![(
-                    "delete",
-                    json_object(vec![("path", json_string(path.to_string()))]),
-                )]),
             })
             .collect();
         Ok(json_object(vec![
@@ -903,36 +844,13 @@ mod http {
                     json_bytes(key.as_bytes()),
                 )]))
             }
-            "tail" | "bounds" => {
+            "tail" => {
                 let request = wire::TailRequest::decode(input).map_err(|_| "invalid_argument")?;
                 let path = wire_codec::path(request.path).map_err(|_| "invalid_path")?;
                 Ok(json_object(vec![("path", json_string(path.to_string()))]))
             }
             "append" => request_json_append(input),
             "fork" => request_json_fork(input),
-            "trim" => {
-                let request = wire::TrimRequest::decode(input).map_err(|_| "invalid_argument")?;
-                let (path, before, key) =
-                    wire_codec::trim_from_wire(request).map_err(|error| error_code_str(&error))?;
-                let mut entries = vec![
-                    ("path", json_string(path.to_string())),
-                    ("before", json_u64(before)),
-                ];
-                if let Some(key) = key {
-                    entries.push(("idempotencyKey", json_bytes(key.as_bytes())));
-                }
-                Ok(json_object(entries))
-            }
-            "delete" => {
-                let request = wire::DeleteRequest::decode(input).map_err(|_| "invalid_argument")?;
-                let (path, key) = wire_codec::delete_from_wire(request)
-                    .map_err(|error| error_code_str(&error))?;
-                let mut entries = vec![("path", json_string(path.to_string()))];
-                if let Some(key) = key {
-                    entries.push(("idempotencyKey", json_bytes(key.as_bytes())));
-                }
-                Ok(json_object(entries))
-            }
             "read" => {
                 let request = wire::ReadRequest::decode(input).map_err(|_| "invalid_argument")?;
                 let request =
@@ -1030,21 +948,6 @@ mod http {
         ])
     }
 
-    fn trim_value(value: wire::TrimReceipt) -> Value {
-        json_object(vec![
-            ("path", json_string(value.path)),
-            ("trimPoint", json_u64(value.trim_point)),
-            ("commitId", json_bytes(value.commit_id.as_ref())),
-        ])
-    }
-
-    fn delete_value(value: wire::DeleteReceipt) -> Value {
-        json_object(vec![
-            ("path", json_string(value.path)),
-            ("commitId", json_bytes(value.commit_id.as_ref())),
-        ])
-    }
-
     fn mutation_value(value: &wire::CommittedMutation) -> Result<Value> {
         let mutation = value.mutation.as_ref().ok_or("invalid_response")?;
         Ok(match mutation {
@@ -1069,15 +972,6 @@ mod http {
                     "records",
                     Value::Array(value.records.iter().map(record_json).collect()),
                 ),
-            ]),
-            wire::committed_mutation::Mutation::Trim(value) => json_object(vec![
-                ("type", json_string("trim")),
-                ("path", json_string(value.path.clone())),
-                ("trimPoint", json_u64(value.trim_point)),
-            ]),
-            wire::committed_mutation::Mutation::Delete(value) => json_object(vec![
-                ("type", json_string("delete")),
-                ("path", json_string(value.path.clone())),
             ]),
         })
     }
@@ -1135,11 +1029,6 @@ mod http {
                 ("expectedAbsent", Value::Bool(true)),
                 ("actual", json_string("exists")),
             ]),
-            wire::commit_conflict::Conflict::Retired(value) => json_object(vec![
-                ("path", json_string(value.path.clone())),
-                ("expectedAbsent", Value::Bool(true)),
-                ("actual", json_string("retired")),
-            ]),
         })
     }
 
@@ -1167,8 +1056,6 @@ mod http {
                                 ("tail", json_u64(value.tail)),
                             ]))
                         }
-                        wire::committed_mutation::Mutation::Trim(_)
-                        | wire::committed_mutation::Mutation::Delete(_) => {}
                     }
                 }
                 json_object(vec![
@@ -1209,14 +1096,6 @@ mod http {
                 ("type", json_string("fork")),
                 ("receipt", fork_value(value)),
             ]),
-            wire::idempotency_observation::Outcome::Trim(value) => json_object(vec![
-                ("type", json_string("trim")),
-                ("receipt", trim_value(value)),
-            ]),
-            wire::idempotency_observation::Outcome::Delete(value) => json_object(vec![
-                ("type", json_string("delete")),
-                ("receipt", delete_value(value)),
-            ]),
             wire::idempotency_observation::Outcome::Commit(value) => json_object(vec![
                 ("type", json_string("commit")),
                 ("outcome", commit_value(value)?),
@@ -1252,14 +1131,6 @@ mod http {
             "fork" => (
                 "fork",
                 fork_value(wire::ForkReceipt::decode(input).map_err(|_| "invalid_response")?),
-            ),
-            "trim" => (
-                "trim",
-                trim_value(wire::TrimReceipt::decode(input).map_err(|_| "invalid_response")?),
-            ),
-            "delete" => (
-                "delete",
-                delete_value(wire::DeleteReceipt::decode(input).map_err(|_| "invalid_response")?),
             ),
             "commit" => (
                 "commit",
@@ -1452,41 +1323,6 @@ mod http {
         Ok(result.into())
     }
 
-    fn trim_receipt_js(value: &Value) -> Result<JsValue> {
-        let item = object(value)?;
-        path(field(item, "path")?)?;
-        u64_string(field(item, "trimPoint")?)?;
-        id(field(item, "commitId")?)?;
-        let result = Object::new();
-        set(&result, "path", &string_js(field(item, "path")?)?)?;
-        set(&result, "trimPoint", &bigint_js(field(item, "trimPoint")?)?)?;
-        set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
-        Ok(result.into())
-    }
-
-    fn bounds_js(value: &Value) -> Result<JsValue> {
-        let item = object(value)?;
-        let trim_point = u64_string(field(item, "trimPoint")?)?;
-        let tail = u64_string(field(item, "tail")?)?;
-        if trim_point > tail {
-            return Err("stream replay bounds are invalid");
-        }
-        let result = Object::new();
-        set(&result, "trimPoint", &bigint_js(field(item, "trimPoint")?)?)?;
-        set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
-        Ok(result.into())
-    }
-
-    fn delete_receipt_js(value: &Value) -> Result<JsValue> {
-        let item = object(value)?;
-        path(field(item, "path")?)?;
-        id(field(item, "commitId")?)?;
-        let result = Object::new();
-        set(&result, "path", &string_js(field(item, "path")?)?)?;
-        set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
-        Ok(result.into())
-    }
-
     fn conflict_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
         path(field(item, "path")?)?;
@@ -1494,7 +1330,7 @@ mod http {
         set(&result, "path", &string_js(field(item, "path")?)?)?;
         if item.get("expectedAbsent") == Some(&Value::Bool(true)) {
             match string(field(item, "actual")?)? {
-                "exists" | "retired" => {}
+                "exists" => {}
                 _ => return Err("invalid conflict state"),
             }
             set(&result, "expectedAbsent", &JsValue::TRUE)?;
@@ -1611,16 +1447,6 @@ mod http {
                     )?;
                 }
             }
-            "trim" => {
-                path(field(item, "path")?)?;
-                u64_string(field(item, "trimPoint")?)?;
-                set(&result, "path", &string_js(field(item, "path")?)?)?;
-                set(&result, "trimPoint", &bigint_js(field(item, "trimPoint")?)?)?;
-            }
-            "delete" => {
-                path(field(item, "path")?)?;
-                set(&result, "path", &string_js(field(item, "path")?)?)?;
-            }
             _ => return Err("invalid mutation type"),
         }
         Ok(result.into())
@@ -1671,16 +1497,6 @@ mod http {
                 "receipt",
                 &fork_receipt_js(field(outcome, "receipt")?)?,
             )?,
-            "trim" => set(
-                &outcome_result,
-                "receipt",
-                &trim_receipt_js(field(outcome, "receipt")?)?,
-            )?,
-            "delete" => set(
-                &outcome_result,
-                "receipt",
-                &delete_receipt_js(field(outcome, "receipt")?)?,
-            )?,
             "commit" => set(
                 &outcome_result,
                 "outcome",
@@ -1712,11 +1528,8 @@ mod http {
             .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
         {
             Some("sequence") => bigint_js(value),
-            Some("bounds") => bounds_js(value),
             Some("append") => append_result_js(value),
             Some("fork") => fork_receipt_js(value),
-            Some("trim") => trim_receipt_js(value),
-            Some("delete") => delete_receipt_js(value),
             Some("records") => array_js(value, record_js),
             Some("children") => array_js(value, |value| {
                 let item = object(value)?;
@@ -1832,7 +1645,6 @@ mod tests {
         }
         assert!(!is_stream_error_code("stream_not_found"));
         assert!(!is_stream_error_code("unknown"));
-        assert_eq!(error_code(&StreamError::Retired).as_str(), "retired");
     }
 
     #[test]
@@ -1847,7 +1659,7 @@ mod tests {
         );
         assert_eq!(
             public_http_error_code("out_of_range", "read").as_deref(),
-            Some("cursor_trimmed")
+            Some("out_of_range")
         );
         assert_eq!(
             public_http_error_code("capacity", "append").as_deref(),

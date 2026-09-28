@@ -58,11 +58,8 @@ pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("idempotency/inspect", "observation"),
     ("tail", "sequence"),
-    ("bounds", "bounds"),
     ("append", "append"),
     ("fork", "fork"),
-    ("trim", "trim"),
-    ("delete", "delete"),
     ("read", "records"),
     ("children", "children"),
     ("children/page", "children_page"),
@@ -77,7 +74,7 @@ pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
 /// ordered inventory. Keep entries stable because the order is part of the
 /// generated artifact and makes additions visible in code review.
 pub const TOKEN_OPERATIONS: &[&str] = &[
-    "list", "read", "follow", "append", "fork", "create", "trim", "delete", "commit",
+    "list", "read", "follow", "append", "fork", "create", "commit",
 ];
 
 /// Permanent account-relative slash-separated ASCII path.
@@ -252,30 +249,10 @@ pub struct ForkRequest {
     pub source: StreamPath,
     /// Absent destination.
     pub destination: StreamPath,
-    /// Optional exact retained prefix.
+    /// Optional exact prefix.
     pub at_tail: Option<u64>,
     /// Optional stable recovery identity.
     pub idempotency_key: Option<IdempotencyKey>,
-}
-
-/// Successful monotonic logical trim.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TrimReceipt {
-    /// Trimmed path.
-    pub path: StreamPath,
-    /// New earliest readable sequence.
-    pub trim_point: u64,
-    /// Immutable envelope identity.
-    pub commit_id: CommitId,
-}
-
-/// Successful permanent logical deletion.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DeleteReceipt {
-    /// Retired permanent path.
-    pub path: StreamPath,
-    /// Immutable envelope identity.
-    pub commit_id: CommitId,
 }
 
 /// Required-bounds finite read.
@@ -289,12 +266,10 @@ pub struct ReadRequest {
     pub limit: u32,
 }
 
-/// One atomic replay window. A cursor below `trim_point` is irrecoverable;
-/// `tail` is the next sequence and may advance immediately after observation.
+/// One atomic replay boundary. `tail` is the next sequence and may advance
+/// immediately after observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamBounds {
-    /// Earliest sequence still readable through this path.
-    pub trim_point: u64,
     /// Exclusive end of the currently committed history.
     pub tail: u64,
 }
@@ -332,7 +307,7 @@ pub struct ChildrenPageRequest {
 /// One coherent hierarchy page and its continuation boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildrenPage {
-    /// Changes only when a path is created or permanently deleted.
+    /// Changes only when a path is created.
     pub hierarchy_version: CommitId,
     /// Ordered direct children, at most the requested limit.
     pub children: Vec<Child>,
@@ -370,22 +345,6 @@ pub struct CommittedFork {
     pub records: Vec<Record>,
 }
 
-/// Logical trim fact retained in a committed envelope.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CommittedTrim {
-    /// Trimmed path.
-    pub path: StreamPath,
-    /// New earliest readable sequence.
-    pub trim_point: u64,
-}
-
-/// Permanent deletion fact retained in a committed envelope.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CommittedDelete {
-    /// Retired path.
-    pub path: StreamPath,
-}
-
 /// Mutation in a successful immutable envelope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommittedMutation {
@@ -393,10 +352,6 @@ pub enum CommittedMutation {
     Append(CommittedAppend),
     /// Immutable-prefix fork.
     Fork(CommittedFork),
-    /// Logical prefix trim.
-    Trim(CommittedTrim),
-    /// Permanent path retirement.
-    Delete(CommittedDelete),
 }
 
 /// Complete immutable successful mutation envelope.
@@ -418,7 +373,7 @@ pub enum CommitCondition {
         /// Required exact tail.
         expected: u64,
     },
-    /// Path must never have existed or been retired.
+    /// Path must not exist.
     Absent {
         /// Permanently named path that must be unused.
         path: StreamPath,
@@ -448,18 +403,6 @@ pub enum CommitMutation {
         at_tail: u64,
         /// Opaque records appended after the prefix; may be empty.
         records: Vec<Bytes>,
-    },
-    /// Advance one path's logical trim point.
-    Trim {
-        /// Existing path.
-        path: StreamPath,
-        /// New earliest readable sequence.
-        before: u64,
-    },
-    /// Permanently retire one path.
-    Delete {
-        /// Existing path without live descendants.
-        path: StreamPath,
     },
 }
 
@@ -526,11 +469,6 @@ pub enum CommitConflict {
         /// Path that already exists.
         path: StreamPath,
     },
-    /// Requested absent path or ancestor is retired.
-    Retired {
-        /// Retired path or descendant of a retired path.
-        path: StreamPath,
-    },
 }
 
 /// Coordinated commit outcome.
@@ -549,10 +487,6 @@ pub enum IdempotencyOutcome {
     Append(AppendOutcome),
     /// Successful immutable-prefix fork.
     Fork(ForkReceipt),
-    /// Successful logical trim.
-    Trim(TrimReceipt),
-    /// Successful permanent deletion.
-    Delete(DeleteReceipt),
     /// Coordinated commit success or exact conflict.
     Commit(CommitOutcome),
 }
@@ -589,19 +523,6 @@ pub trait StreamProvider: Send + Sync + 'static {
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError>;
     /// Atomic immutable-prefix fork.
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError>;
-    /// Monotonically advances a path's logical trim point.
-    async fn trim(
-        &self,
-        path: StreamPath,
-        before: u64,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<TrimReceipt, StreamError>;
-    /// Permanently retires a path with no live descendants.
-    async fn delete(
-        &self,
-        path: StreamPath,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<DeleteReceipt, StreamError>;
     /// Opens a bounded finite read.
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError>;
     /// Replays and then remains live without a handoff gap.
@@ -839,36 +760,6 @@ impl<P: StreamProvider> Stream<P> {
             .await
     }
 
-    /// Monotonically advances the earliest readable sequence.
-    pub async fn trim(
-        &self,
-        before: u64,
-        idempotency_key: Option<IdempotencyKey>,
-    ) -> Result<TrimReceipt, StreamError> {
-        self.client
-            .provider
-            .trim(
-                self.path.clone(),
-                before,
-                idempotency_key.unwrap_or_else(new_idempotency_key),
-            )
-            .await
-    }
-
-    /// Permanently retires this path.
-    pub async fn delete(
-        &self,
-        idempotency_key: Option<IdempotencyKey>,
-    ) -> Result<DeleteReceipt, StreamError> {
-        self.client
-            .provider
-            .delete(
-                self.path.clone(),
-                idempotency_key.unwrap_or_else(new_idempotency_key),
-            )
-            .await
-    }
-
     /// Reads at most `limit` records from `from`.
     pub async fn read(&self, from: u64, limit: u32) -> Result<RecordStream, StreamError> {
         self.client
@@ -960,9 +851,6 @@ pub enum StreamError {
     /// Destination already exists.
     #[error("stream already exists")]
     AlreadyExists,
-    /// Path or ancestor is permanently retired.
-    #[error("stream path retired")]
-    Retired,
     /// Requested source prefix is not retained.
     #[error("stream prefix not retained")]
     PrefixNotRetained,
@@ -1001,7 +889,7 @@ mod token_operation_tests {
         assert_eq!(
             TOKEN_OPERATIONS,
             &[
-                "list", "read", "follow", "append", "fork", "create", "trim", "delete", "commit",
+                "list", "read", "follow", "append", "fork", "create", "commit",
             ]
         );
         let mut sorted = TOKEN_OPERATIONS.to_vec();
@@ -1043,21 +931,6 @@ mod replay_tests {
         }
         async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
             self.inner.fork(request).await
-        }
-        async fn trim(
-            &self,
-            path: StreamPath,
-            before: u64,
-            key: IdempotencyKey,
-        ) -> Result<TrimReceipt, StreamError> {
-            self.inner.trim(path, before, key).await
-        }
-        async fn delete(
-            &self,
-            path: StreamPath,
-            key: IdempotencyKey,
-        ) -> Result<DeleteReceipt, StreamError> {
-            self.inner.delete(path, key).await
         }
         async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
             let missing = self.missing;
