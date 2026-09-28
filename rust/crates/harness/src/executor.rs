@@ -611,6 +611,17 @@ impl StockExecutor {
             .tools
             .get(&invocation.name)
             .ok_or_else(|| Error::NotFound(format!("tool {}", invocation.name)))?;
+        // Authorization precedes argument validation, and must stay that way. A validation error
+        // describes the tool's pinned input schema, so answering one for a tool the caller was
+        // never granted would let a model probe the contract of an ungranted tool by naming it
+        // with deliberately malformed arguments. An ungranted call is refused on its own terms,
+        // whatever its arguments look like.
+        let capability = format!("tool:call:{}", tool.definition.name);
+        if !self.tool_scope.grants().contains(&capability) {
+            return Err(Error::Unauthorized(format!("scope lacks {capability}")));
+        }
+        tool.executor
+            .authorize(Some(&self.tool_scope), &invocation)?;
         // Malformed arguments are the model's mistake to correct, not a reason to end the turn:
         // hand the validation message back as this call's own result so the next step can fix
         // them. Ending the turn instead makes the most recoverable failure in the loop fatal, and
@@ -638,12 +649,6 @@ impl StockExecutor {
             prior_messages.push(message);
             return Ok(());
         }
-        let capability = format!("tool:call:{}", tool.definition.name);
-        if !self.tool_scope.grants().contains(&capability) {
-            return Err(Error::Unauthorized(format!("scope lacks {capability}")));
-        }
-        tool.executor
-            .authorize(Some(&self.tool_scope), &invocation)?;
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolStarted {
                 step: event_step,
@@ -1898,6 +1903,68 @@ mod tests {
             text.contains("tool input failed validation"),
             "expected the validation message, got {text:?}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Result<()> {
+        // Malformed arguments against a registered but ungranted tool must not be answered with a
+        // validation message: that message describes the tool's pinned input schema, so answering
+        // it would let a model map the contract of a tool it may not call.
+        let model = Arc::new(SlippingModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "additionalProperties": false,
+                }),
+                output_schema: json!({"type": "object"}),
+            },
+            executor: tool_executor.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model,
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            // Registered, but this scope grants a different tool.
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.other"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([80; 16]),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
+            max_steps: 4,
+        };
+        let outcome = executor.execute(input, &journal).await;
+        assert!(
+            matches!(&outcome, Err(Error::Unauthorized(message)) if message.contains("example.echo")),
+            "expected an unauthorized refusal, got {outcome:?}"
+        );
+        // Nothing about the input contract leaked on the way out.
+        let rendered = format!("{outcome:?}");
+        assert!(
+            !rendered.contains("additionalProperties") && !rendered.contains("failed validation"),
+            "schema detail leaked through the refusal: {rendered}"
+        );
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
         Ok(())
     }
 
