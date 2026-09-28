@@ -713,6 +713,9 @@ struct PlaceholderState {
     /// Pending paths a listing waits on: when one is settled, its parent is
     /// listed again.
     relist: HashSet<MountPath>,
+    /// Whether the worker is between taking work and recording it: stale
+    /// directories it drained are not listed yet.
+    working: bool,
     /// Where each path renames through the mount moved is now, by the path
     /// it had: `ProjFS` asks for a placeholder's content by the path it was
     /// written at, also after a rename of a directory above it moved it.
@@ -1243,6 +1246,7 @@ impl Placeholders {
                 }
             }
             state.retry = false;
+            state.working = true;
             let through = state.notified;
             // Directories whose listing may have changed, parents first.
             let mut listings = state
@@ -1308,6 +1312,7 @@ impl Placeholders {
                 }
             }
             state = lock_recover(&self.state);
+            state.working = false;
             state.record_attempts(settled, kept);
             state.processed = state.processed.max(through);
             if let Some(failure) = failure {
@@ -1367,9 +1372,12 @@ impl Placeholders {
         let target = state.notified;
         let mut deadline = None;
         while !state.stopping
-            && (state.processed < target || !state.stale.is_empty() || !state.pending.is_empty())
+            && (state.processed < target
+                || state.working
+                || !state.stale.is_empty()
+                || !state.pending.is_empty())
         {
-            if state.processed < target || !state.stale.is_empty() {
+            if state.processed < target || state.working || !state.stale.is_empty() {
                 state = self
                     .changed
                     .wait(state)
