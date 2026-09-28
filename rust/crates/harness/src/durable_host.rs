@@ -1615,6 +1615,12 @@ mod tests {
                 .tail,
             1
         );
+        let mut changed = request.clone();
+        changed.inputs.swap(0, 1);
+        assert!(matches!(
+            reopened.reconcile_batch(changed).await,
+            Err(Error::Conflict(_))
+        ));
         // A retained control path must still contain exactly one record.
         // Full Stream history remains readable even when that invariant fails.
         manifest
@@ -1633,12 +1639,6 @@ mod tests {
                 .len(),
             2
         );
-        let mut changed = request;
-        changed.inputs.swap(0, 1);
-        assert!(matches!(
-            reopened.reconcile_batch(changed).await,
-            Err(Error::Conflict(_))
-        ));
         Ok(())
     }
 }
