@@ -6,7 +6,7 @@
     "harness": {
       "version": "0.1.5",
       "schemaDigest": "sha256:392131d024fafd9e947343fee2fbbdaaef868afaf82ac8e42ecb180af741b1e5",
-      "conformanceDigest": "sha256:3fa20cd043367744afcfaccd947bfa2b26aae6623bd55ff0209902c288ab521c"
+      "conformanceDigest": "sha256:9895d0e696258b9094af22d96f236a3a410dbf7683b27585e5c615e55b272b1d"
     },
     "filesystem": {
       "version": "0.1.5",
