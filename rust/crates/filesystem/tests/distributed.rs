@@ -246,8 +246,9 @@ async fn deleting_workspace_preserves_committed_stream_history()
         .await?
         .bucket
         .ok_or("bucket identity missing")?;
+    let authority_store = StreamAuthorityStore::new(Arc::clone(&streams));
     let fs = Fs::new(
-        StreamAuthorityStore::new(Arc::clone(&streams)),
+        authority_store.clone(),
         ProviderObjectStore::new(objects, bucket),
         EmbeddedCapabilities::MEMORY,
     );
@@ -266,6 +267,7 @@ async fn deleting_workspace_preserves_committed_stream_history()
         WorkspaceDelete::AlreadyDeleted
     );
     assert!(fs.open_workspace("history").await.is_err());
+    assert!(!authority_store.authorities(16).await?.contains(&authority));
 
     let after = streams.tail(records.clone()).await?;
     assert!(
