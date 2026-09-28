@@ -777,6 +777,14 @@ impl Placeholders {
                 }
             }
         }
+        // Paths an earlier rename moved to within `from` had other names
+        // before: those follow this rename too.
+        let earlier = state
+            .moves
+            .iter()
+            .filter_map(|(origin, current)| rebased(from, current, origin))
+            .filter(|origin| origin != from)
+            .collect::<Vec<_>>();
         // What earlier renames moved beneath `from` moves on; a path back
         // where it started needs no entry.
         for current in state.moves.values_mut() {
@@ -784,10 +792,9 @@ impl Placeholders {
                 *current = moved;
             }
         }
-        state
-            .moves
-            .entry(from.clone())
-            .or_insert_with(|| to.clone());
+        for origin in earlier.into_iter().chain(std::iter::once(from.clone())) {
+            state.moves.entry(origin).or_insert_with(|| to.clone());
+        }
         state.moves.retain(|origin, current| origin != current);
         let is_directory = state.directories.contains_key(to);
         if let (Some(parent), Some(name)) = (from.parent(), from.components().last())
@@ -3487,6 +3494,45 @@ mod tests {
     /// Revalidation waits while a superseded placeholder is pending, which
     /// it is until its outcome is recorded, even once every change has been
     /// served, and returns as soon as it is settled.
+    #[test]
+    fn renames_compose_into_where_each_written_path_is_now() {
+        use super::{Placeholders, lock_recover};
+
+        let path = |parts: &[&str]| {
+            parts.iter().fold(MountPath::root(), |path, part| {
+                path.child(windows_name(part))
+            })
+        };
+        let placeholders = Placeholders::new();
+        placeholders.renamed(&path(&["a"]), &path(&["b"]));
+        placeholders.renamed(&path(&["b", "child"]), &path(&["c"]));
+        // Written before either rename, or between them.
+        assert_eq!(
+            placeholders.moved_path(&path(&["a", "child", "file"])),
+            path(&["c", "file"])
+        );
+        assert_eq!(
+            placeholders.moved_path(&path(&["b", "child", "file"])),
+            path(&["c", "file"])
+        );
+        assert_eq!(
+            placeholders.moved_path(&path(&["a", "other"])),
+            path(&["b", "other"])
+        );
+        // Moving a directory back and forth keeps one entry, for what was
+        // written while it was away.
+        let placeholders = Placeholders::new();
+        for _ in 0..3 {
+            placeholders.renamed(&path(&["x"]), &path(&["y"]));
+            placeholders.renamed(&path(&["y"]), &path(&["x"]));
+        }
+        assert_eq!(lock_recover(&placeholders.state).moves.len(), 1);
+        assert_eq!(
+            placeholders.moved_path(&path(&["y", "file"])),
+            path(&["x", "file"])
+        );
+    }
+
     #[test]
     fn settling_waits_for_every_pending_placeholder() -> Result<(), Box<dyn std::error::Error>> {
         use super::{Placeholders, WrittenPlaceholder};
