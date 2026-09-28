@@ -22,16 +22,16 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
 };
 use windows::Win32::Storage::ProjectedFileSystem::{
-    PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_CB_DATA_FLAG_ENUM_RESTART_SCAN,
-    PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_EXT_INFO_TYPE_SYMLINK, PRJ_EXTENDED_INFO, PRJ_EXTENDED_INFO_0,
-    PRJ_EXTENDED_INFO_0_0, PRJ_FILE_BASIC_INFO, PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
-    PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION,
+    PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_EXT_INFO_TYPE_SYMLINK,
+    PRJ_EXTENDED_INFO, PRJ_EXTENDED_INFO_0, PRJ_EXTENDED_INFO_0_0, PRJ_FILE_BASIC_INFO,
+    PRJ_FLAG_USE_NEGATIVE_PATH_CACHE, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, PRJ_NOTIFICATION,
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED,
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFICATION_FILE_OPENED,
@@ -44,10 +44,9 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK,
     PRJ_NOTIFY_TYPES, PRJ_PLACEHOLDER_INFO, PRJ_PLACEHOLDER_VERSION_INFO,
     PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_READ_ONLY, PrjAllocateAlignedBuffer,
-    PrjClearNegativePathCache, PrjCompleteCommand, PrjDeleteFile, PrjFileNameCompare,
-    PrjFileNameMatch, PrjFillDirEntryBuffer, PrjFillDirEntryBuffer2, PrjFreeAlignedBuffer,
-    PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
-    PrjUpdateFileIfNeeded, PrjWriteFileData, PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
+    PrjDeleteFile, PrjFileNameCompare, PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder,
+    PrjStartVirtualizing, PrjStopVirtualizing, PrjUpdateFileIfNeeded, PrjWriteFileData,
+    PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
 };
 use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
 
@@ -55,13 +54,13 @@ const HR_OK: HRESULT = HRESULT(0);
 const HR_FILE_NOT_FOUND: HRESULT = HRESULT(0x8007_0002_u32.cast_signed());
 const HR_PATH_NOT_FOUND: HRESULT = HRESULT(0x8007_0003_u32.cast_signed());
 const HR_ALREADY_EXISTS: HRESULT = HRESULT(0x8007_00b7_u32.cast_signed());
+const HR_FILE_EXISTS: HRESULT = HRESULT(0x8007_0050_u32.cast_signed());
+const HR_DIRECTORY: HRESULT = HRESULT(0x8007_010b_u32.cast_signed());
 const HR_NOT_SAME_DEVICE: HRESULT = HRESULT(0x8007_0011_u32.cast_signed());
 const HR_INVALID_DATA: HRESULT = HRESULT(0x8007_000d_u32.cast_signed());
 const HR_NOT_SUPPORTED: HRESULT = HRESULT(0x8007_0032_u32.cast_signed());
 const HR_OUT_OF_MEMORY: HRESULT = HRESULT(0x8007_000e_u32.cast_signed());
 const HR_UNEXPECTED: HRESULT = HRESULT(0x8000_ffff_u32.cast_signed());
-const HR_INSUFFICIENT_BUFFER: HRESULT = HRESULT(0x8007_007a_u32.cast_signed());
-const HR_IO_PENDING: HRESULT = HRESULT(0x8007_03e5_u32.cast_signed());
 const HR_FILE_INVALID: HRESULT = HRESULT(0x8007_03ee_u32.cast_signed());
 const HR_IO_DEVICE: HRESULT = HRESULT(0x8007_045d_u32.cast_signed());
 const HR_VIRTUALIZATION_INVALID_OPERATION: HRESULT = HRESULT(0x8007_0181_u32.cast_signed());
@@ -91,31 +90,18 @@ const NOTIFICATION_ROOT: [u16; 1] = [0];
 const HYDRATION_CHUNK_BYTES: u32 = 1 << 20;
 /// Bounds the provider's memo of read-only close bindings.
 const MAXIMUM_CACHED_BINDINGS: usize = 16_384;
-/// Bounds the absences `ProjFS` may cache before all are forgotten.
-const MAXIMUM_CACHED_ABSENCES: usize = 1_024;
-/// Bounds the directory entries memoized across all cached directories.
-const MAXIMUM_CACHED_DIRECTORY_ENTRIES: usize = 65_536;
 /// Marks a placeholder whose `ContentID` carries a [`MountContentPin`].
 const CONTENT_PIN_PROVIDER: &[u8; 16] = b"acyclic-fs-pin-1";
 
-struct EnumState {
-    path: MountPath,
-    ended: bool,
-    snapshot: Option<Arc<[ProjectedEntry]>>,
-    next: usize,
-    search_expression: Option<HSTRING>,
-    search_expression_captured: bool,
-}
-
+/// One entry of a source listing, as this provider writes it.
 struct ProjectedEntry {
     // ProjFS compares NUL-terminated UTF-16 names, not SDK byte cursors.
     name: Vec<u16>,
-    /// The entry's exact path component and node, which a cached listing
-    /// stays current only as long as the source proves unchanged.
+    /// The entry's exact path component.
     component: Vec<u8>,
     file_id: FileId,
-    /// The basic information enumeration reports, and with the pin exactly
-    /// the placeholder a lookup of this entry would write.
+    /// The basic information, and with the pin exactly the placeholder
+    /// written for this entry.
     info: PRJ_FILE_BASIC_INFO,
     pin: Option<MountContentPin>,
     symlink_target: Option<bytes::Bytes>,
@@ -126,16 +112,11 @@ struct Runtime {
     root: PathBuf,
     metadata_root: Arc<HostRoot>,
     writable: bool,
-    enumerations: Mutex<HashMap<u128, Arc<Mutex<EnumState>>>>,
     metadata_baselines: Arc<Mutex<HashMap<u128, OpenMetadataState>>>,
     projection: Arc<Mutex<ProjectionCache>>,
-    /// Every absence `ProjFS` holds in its negative path cache, with the
-    /// basis its lookup began in; `None` when this source cannot version an
-    /// absence, so none is cached.
-    negative_paths: Option<Absences>,
-    /// Every placeholder written from a source lookup; `None` when this
-    /// source cannot version a lookup, so none is kept current.
-    placeholders: Option<Arc<Placeholders>>,
+    /// Everything written into the projection, kept current as the source
+    /// changes.
+    placeholders: Arc<Placeholders>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
     post_operation_failure: Arc<Mutex<PostOperationFailures>>,
     callbacks: CallbackGate,
@@ -417,132 +398,18 @@ impl ReadBasis {
     }
 }
 
-/// A placeholder a cached listing projected, with what it was projected
-/// from.
-struct ListedPlaceholder {
-    placeholder: PRJ_PLACEHOLDER_INFO,
-    symlink_target: Option<bytes::Bytes>,
-    file_id: FileId,
-    /// The basis the listing was read in.
-    basis: ReadBasis,
-}
-
-struct CachedDirectory {
-    basis: ReadBasis,
-    entries: Arc<[ProjectedEntry]>,
-}
-
 /// Source facts the provider memoizes between callbacks.
 ///
 /// Each fact keeps the basis it was read in and is reused only while the
-/// source proves that nothing it depended on has changed since. A change the
-/// provider itself makes is a source change like any other, so no fact needs
-/// to be dropped by hand.
+/// source proves that nothing it depended on has changed since.
 #[derive(Default)]
 struct ProjectionCache {
     bindings: HashMap<MountPath, ReadOnlyBinding>,
-    directories: HashMap<MountPath, CachedDirectory>,
-    directory_entries: usize,
 }
 
 impl ProjectionCache {
     fn clear(&mut self) {
         self.bindings.clear();
-        self.directories.clear();
-        self.directory_entries = 0;
-    }
-
-    /// A cached listing of `path` that still describes the source: its
-    /// membership and attributes, and every listed node, are unchanged.
-    fn directory(
-        &mut self,
-        source: &dyn MountFilesystem,
-        path: &MountPath,
-    ) -> Option<Arc<[ProjectedEntry]>> {
-        let cached = self.directories.get(path)?;
-        let current = cached.basis.still_describes(source, path, None)
-            && cached.entries.iter().all(|entry| {
-                cached.basis.still_describes(
-                    source,
-                    &path.child(entry.component.clone()),
-                    Some(entry.file_id),
-                )
-            });
-        if current {
-            return Some(Arc::clone(&cached.entries));
-        }
-        if let Some(stale) = self.directories.remove(path) {
-            self.directory_entries -= stale.entries.len();
-        }
-        None
-    }
-
-    fn remember_directory(
-        &mut self,
-        basis: ReadBasis,
-        path: MountPath,
-        entries: Arc<[ProjectedEntry]>,
-    ) {
-        if entries.len() > MAXIMUM_CACHED_DIRECTORY_ENTRIES {
-            return;
-        }
-        if self.directory_entries + entries.len() > MAXIMUM_CACHED_DIRECTORY_ENTRIES {
-            self.directories.clear();
-            self.directory_entries = 0;
-        }
-        self.directory_entries += entries.len();
-        if let Some(replaced) = self
-            .directories
-            .insert(path, CachedDirectory { basis, entries })
-        {
-            self.directory_entries -= replaced.entries.len();
-        }
-    }
-
-    /// The placeholder a cached listing of `path`'s parent projected for
-    /// `path`, with its link target, while the source proves the listing
-    /// still describes both the parent and that entry. It is exactly what a
-    /// lookup of `path` would issue, so the lookup is not repeated.
-    fn listed_placeholder(
-        &self,
-        source: &dyn MountFilesystem,
-        path: &MountPath,
-    ) -> Option<ListedPlaceholder> {
-        let parent = path.parent()?;
-        let mut name = decode_utf16_name(path.components().last()?)?;
-        name.push(0);
-        let cached = self.directories.get(&parent)?;
-        // Listings are sorted in `ProjFS` name order, which also decides
-        // which listed name a differently cased request names.
-        let index = cached
-            .entries
-            .binary_search_by(|entry| {
-                // SAFETY: both NUL-terminated name buffers remain live for this call.
-                unsafe {
-                    PrjFileNameCompare(
-                        PCWSTR::from_raw(entry.name.as_ptr()),
-                        PCWSTR::from_raw(name.as_ptr()),
-                    )
-                }
-                .cmp(&0)
-            })
-            .ok()?;
-        let entry = cached.entries.get(index)?;
-        if !(cached.basis.still_describes(source, &parent, None)
-            && cached.basis.still_describes(
-                source,
-                &parent.child(entry.component.clone()),
-                Some(entry.file_id),
-            ))
-        {
-            return None;
-        }
-        Some(ListedPlaceholder {
-            placeholder: pinned_placeholder(entry.info, entry.pin)?,
-            symlink_target: entry.symlink_target.clone(),
-            file_id: entry.file_id,
-            basis: cached.basis,
-        })
     }
 
     fn remember_binding(&mut self, path: MountPath, binding: ReadOnlyBinding) {
@@ -553,84 +420,63 @@ impl ProjectionCache {
     }
 }
 
-/// The absences `ProjFS` caches for this provider. `ProjFS` can only forget
-/// all of them at once, so the set is cleared as soon as any member may no
-/// longer be absent.
-#[derive(Default)]
-struct NegativePaths {
-    absent: Vec<(MountPath, ReadBasis)>,
-    /// A stamp at which every member was proven still absent.
-    proven: Option<ViewStamp>,
-}
-
-impl NegativePaths {
-    /// Forgets every absence once any may have been filled, through
-    /// `clear`, which clears `ProjFS`'s cache. Nothing is checked while the
-    /// source records no change at all.
-    fn prune(
-        &mut self,
-        source: &dyn MountFilesystem,
-        clear: impl FnOnce() -> Result<(), HRESULT>,
-    ) -> Result<(), HRESULT> {
-        let now = source.view_stamp();
-        if now.is_some() && now == self.proven {
-            return Ok(());
-        }
-        if !self
-            .absent
-            .iter()
-            .all(|(path, basis)| basis.still_describes(source, path, None))
-        {
-            clear()?;
-            self.absent.clear();
-        }
-        self.proven = now;
-        Ok(())
-    }
-
-    /// Decides how one lookup's absence completes. `ProjFS` caches
-    /// `FILE_NOT_FOUND` as a negative path, so that is reported only for an
-    /// absence proven to hold now, and it is recorded for pruning; any other
-    /// absence is the equally absent but uncached `PATH_NOT_FOUND`.
-    fn admit(
-        &mut self,
-        source: &dyn MountFilesystem,
-        path: MountPath,
-        basis: Option<ReadBasis>,
-        clear: impl FnOnce() -> Result<(), HRESULT>,
-    ) -> HRESULT {
-        let Some(basis) = basis.filter(|basis| basis.still_describes(source, &path, None)) else {
-            return HR_PATH_NOT_FOUND;
-        };
-        if self.absent.len() >= MAXIMUM_CACHED_ABSENCES {
-            if clear().is_err() {
-                return HR_PATH_NOT_FOUND;
-            }
-            self.absent.clear();
-        }
-        self.absent.push((path, basis));
-        HR_FILE_NOT_FOUND
-    }
-}
-
-/// One placeholder `ProjFS` keeps on disk, as a source lookup wrote it.
+/// One placeholder `ProjFS` keeps on disk, as a source read wrote it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct WrittenPlaceholder {
     file_id: FileId,
-    basis: ReadBasis,
+    /// The view it was read in; `None` when the source cannot version it
+    /// or was moving, which no later change is needed to supersede.
+    basis: Option<ReadBasis>,
 }
 
-/// The placeholders `ProjFS` keeps on disk and the worker that keeps them
+impl WrittenPlaceholder {
+    /// Whether a change since it was written may have made it wrong.
+    fn superseded(&self, source: &dyn MountFilesystem, path: &MountPath) -> bool {
+        self.basis
+            .is_none_or(|basis| !basis.still_describes(source, path, Some(self.file_id)))
+    }
+}
+
+/// A directory this provider created as an ordinary directory, and what it
+/// wrote into it.
+struct Materialized {
+    /// The view its listing was read in; `None` when the source cannot
+    /// version it or was moving.
+    basis: Option<ReadBasis>,
+    /// Every name written or found here, and whether it is a directory: the
+    /// base a changed listing is reconciled against.
+    names: HashMap<Vec<u8>, bool>,
+}
+
+/// Where this provider writes: the source it projects, its live context,
+/// and the projection's root on the host.
+#[derive(Clone, Copy)]
+struct Projection<'a> {
+    source: &'a dyn MountFilesystem,
+    context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+    root: &'a std::path::Path,
+}
+
+/// The projection this provider writes, and the worker that keeps it
 /// current.
 ///
+/// `ProjFS` never lets a directory it projected be renamed, so nothing is
+/// projected on demand: every directory is created as an ordinary directory,
+/// and a placeholder is written for every file in it before anything can
+/// list it (`ProjFS` asks the provider nothing about an ordinary directory).
+/// A placeholder's content is still read only when it is first opened.
+///
 /// `ProjFS` answers a placeholder from disk, attributes and all, until its
-/// provider updates or deletes it: nothing it caches expires. So every
-/// placeholder a source lookup writes is kept with the basis the lookup
-/// began in, and once a change around the mount (such as one the source
-/// reported) supersedes that lookup, the worker writes the placeholder
-/// again from the source, or deletes it where the source names nothing. A
-/// placeholder the user has since modified is authored state, which
-/// `ProjFS` refuses to update, and is left alone.
+/// provider updates or deletes it. So every placeholder is kept with the
+/// basis it was written in, and once a change supersedes it the worker
+/// writes it again from the source, or deletes it where the source names
+/// nothing. Every directory is kept with the names it holds, and once its
+/// source listing changes the worker reconciles three ways: a name the
+/// source gained is written unless something is there already, and a
+/// directory the source lost is emptied of the placeholders written into it
+/// and removed if nothing else is left. What the user creates, changes or
+/// deletes through the mount is authored state and stays: `ProjFS` refuses
+/// to update or delete a placeholder once it is modified.
 ///
 /// A superseded placeholder is pending from the moment the worker finds it
 /// until it is replaced, released, or fails, including while the worker is
@@ -642,6 +488,9 @@ struct WrittenPlaceholder {
 /// fails naming it.
 struct Placeholders {
     state: Mutex<PlaceholderState>,
+    /// Held by whatever writes directories into the projection, so a
+    /// listing is written and recorded as one step.
+    tree: Mutex<()>,
     changed: Condvar,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -657,6 +506,16 @@ struct PlaceholderState {
     written: HashMap<MountPath, WrittenPlaceholder>,
     /// Superseded placeholders not yet replaced, released, or failed.
     pending: HashMap<MountPath, WrittenPlaceholder>,
+    /// Every directory created in the projection.
+    directories: HashMap<MountPath, Materialized>,
+    /// Directories to list again whatever their basis says.
+    stale: HashSet<MountPath>,
+    /// Where each path renames through the mount moved is now, by the path
+    /// it had: `ProjFS` asks for a placeholder's content by the path it was
+    /// written at, also after a rename of a directory above it moved it.
+    /// One entry per path renamed away, composed with later renames, so
+    /// moving a directory back and forth leaves one.
+    moves: HashMap<MountPath, MountPath>,
     /// Whether a handle closed since pending placeholders were last tried.
     retry: bool,
     /// Latest change around the mount the source reported.
@@ -669,6 +528,29 @@ struct PlaceholderState {
     stopping: bool,
 }
 
+impl PlaceholderState {
+    /// Records what one round of replacing pending placeholders came to.
+    fn record_attempts(
+        &mut self,
+        settled: Vec<(MountPath, WrittenPlaceholder)>,
+        kept: Vec<(MountPath, WrittenPlaceholder)>,
+    ) {
+        for (path, written) in settled {
+            // Superseded again meanwhile, it stays pending as that.
+            if self.pending.get(&path) == Some(&written) {
+                self.pending.remove(&path);
+            }
+        }
+        for (path, placeholder) in kept {
+            // Written again meanwhile, from a later basis.
+            let entry = self.written.entry(path).or_insert(placeholder);
+            if entry.basis.map(|basis| basis.stamp) < placeholder.basis.map(|basis| basis.stamp) {
+                *entry = placeholder;
+            }
+        }
+    }
+}
+
 impl ViewObserver for Placeholders {
     fn view_changed(&self, position: ViewStamp, _origin: ViewOrigin) {
         let mut state = lock_recover(&self.state);
@@ -679,40 +561,300 @@ impl ViewObserver for Placeholders {
 
 /// What replacing one superseded placeholder came to.
 enum Replaced {
-    /// Written again from the source, as of this basis when one exists.
-    Rewritten(Option<WrittenPlaceholder>),
+    /// Written again from the source.
+    Rewritten(WrittenPlaceholder),
     /// Deleted, or no longer a placeholder the provider owns.
     Released,
     /// Open elsewhere; pending until it can be replaced.
     Busy,
 }
 
+/// `path` moved from beneath `from` to beneath `to`, when it was there.
+fn rebased(path: &MountPath, from: &MountPath, to: &MountPath) -> Option<MountPath> {
+    projfs_path_suffix(path, from).map(|suffix| {
+        suffix
+            .iter()
+            .fold(to.clone(), |path, component| path.child(component.clone()))
+    })
+}
+
 impl Placeholders {
     fn new() -> Self {
         Self {
             state: Mutex::new(PlaceholderState::default()),
+            tree: Mutex::new(()),
             changed: Condvar::new(),
             worker: Mutex::new(None),
         }
     }
 
-    /// Keeps the placeholder a lookup at `basis` just wrote at `path`.
+    /// Keeps the placeholder written at `path` in view `basis`.
     fn written(&self, path: MountPath, file_id: FileId, basis: Option<ReadBasis>) {
-        let Some(basis) = basis else {
-            return;
-        };
         lock_recover(&self.state)
             .written
             .insert(path, WrittenPlaceholder { file_id, basis });
     }
 
-    /// Starts the worker that keeps `context`'s placeholders current, and
-    /// prunes the absences it caches as it does.
+    /// Writes everything the source holds beneath `path`, the root or a
+    /// directory already created, before anything can list it.
+    fn materialize(&self, projection: Projection<'_>, path: MountPath) -> Result<(), String> {
+        let _tree = lock_recover(&self.tree);
+        self.materialize_locked(projection, vec![path])
+    }
+
+    fn materialize_locked(
+        &self,
+        projection: Projection<'_>,
+        mut directories: Vec<MountPath>,
+    ) -> Result<(), String> {
+        while let Some(directory) = directories.pop() {
+            let basis = ReadBasis::sample(projection.source);
+            let entries = match source_listing(projection.source, &directory) {
+                Ok(entries) => entries,
+                // Gone from the source since its parent was listed.
+                Err(MountSourceError::NotFound) => continue,
+                // The source changed while it was listed: written with
+                // nothing known in it, it is listed again.
+                Err(MountSourceError::Stale) => {
+                    let mut state = lock_recover(&self.state);
+                    state.directories.insert(
+                        directory.clone(),
+                        Materialized {
+                            basis: None,
+                            names: HashMap::new(),
+                        },
+                    );
+                    state.stale.insert(directory);
+                    continue;
+                }
+                Err(error) => return Err(format!("listing {directory:?}: {error}")),
+            };
+            let mut names = HashMap::with_capacity(entries.len());
+            for entry in &entries {
+                let child = directory.child(entry.component.clone());
+                let is_directory = entry.info.IsDirectory;
+                let written = write_entry(projection, &child, entry)?;
+                if is_directory {
+                    directories.push(child);
+                } else if written {
+                    self.written(child, entry.file_id, basis);
+                }
+                names.insert(entry.component.clone(), is_directory);
+            }
+            lock_recover(&self.state)
+                .directories
+                .insert(directory, Materialized { basis, names });
+        }
+        Ok(())
+    }
+
+    /// Lists `directory` again and reconciles what it holds with the names
+    /// it was last written with (see [`Placeholders`]). A file the source
+    /// lost is replaced, so deleted unless modified.
+    fn reconcile(&self, projection: Projection<'_>, directory: &MountPath) -> Result<(), String> {
+        let _tree = lock_recover(&self.tree);
+        let Some(known) = lock_recover(&self.state)
+            .directories
+            .get(directory)
+            .map(|materialized| materialized.names.clone())
+        else {
+            return Ok(());
+        };
+        let basis = ReadBasis::sample(projection.source);
+        let entries = match source_listing(projection.source, directory) {
+            Ok(entries) => entries,
+            Err(MountSourceError::NotFound) => {
+                self.remove_tree(projection, directory);
+                return Ok(());
+            }
+            // The source changed while it was listed: listed again.
+            Err(MountSourceError::Stale) => {
+                lock_recover(&self.state).stale.insert(directory.clone());
+                return Ok(());
+            }
+            Err(error) => return Err(format!("listing {directory:?}: {error}")),
+        };
+        let mut names = HashMap::with_capacity(entries.len());
+        let mut created = Vec::new();
+        for entry in &entries {
+            let is_directory = entry.info.IsDirectory;
+            let child = directory.child(entry.component.clone());
+            names.insert(entry.component.clone(), is_directory);
+            match known.get(&entry.component) {
+                Some(&was_directory) if was_directory == is_directory => continue,
+                // Now another kind: what was written for the old one goes.
+                Some(&true) => self.remove_tree(projection, &child),
+                Some(&false) => delete_placeholder(projection, &child)?,
+                None => {}
+            }
+            let written = write_entry(projection, &child, entry)?;
+            if is_directory {
+                created.push(child);
+            } else if written {
+                self.written(child, entry.file_id, basis);
+            }
+        }
+        for (name, was_directory) in &known {
+            if names.contains_key(name) {
+                continue;
+            }
+            let child = directory.child(name.clone());
+            if *was_directory {
+                self.remove_tree(projection, &child);
+            } else {
+                // Replaced like any superseded placeholder: deleted unless
+                // modified, and tried again while held open.
+                let mut state = lock_recover(&self.state);
+                let placeholder = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
+                    file_id: FileId::from_bytes([0; 16]),
+                    basis: None,
+                });
+                state.pending.insert(child, placeholder);
+            }
+        }
+        lock_recover(&self.state)
+            .directories
+            .insert(directory.clone(), Materialized { basis, names });
+        self.materialize_locked(projection, created)
+    }
+
+    /// Deletes what was written beneath `directory` that `ProjFS` still
+    /// holds untouched, and each directory left empty; forgets all of it.
+    fn remove_tree(&self, projection: Projection<'_>, directory: &MountPath) {
+        let mut removed = {
+            let mut state = lock_recover(&self.state);
+            let beneath = state
+                .directories
+                .keys()
+                .filter(|path| projfs_path_suffix(path, directory).is_some())
+                .cloned()
+                .collect::<Vec<_>>();
+            beneath
+                .into_iter()
+                .filter_map(|path| state.directories.remove(&path).map(|entry| (path, entry)))
+                .collect::<Vec<_>>()
+        };
+        // Deepest first, so each directory holds nothing written by the time
+        // it is removed.
+        removed.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().len()));
+        for (path, materialized) in removed {
+            for (name, is_directory) in materialized.names {
+                if !is_directory {
+                    let _ = delete_placeholder(projection, &path.child(name));
+                }
+            }
+            if let Ok(host) = host_relative_path(&path)
+                && !host.as_os_str().is_empty()
+            {
+                // What the user left in it keeps it.
+                let _ = std::fs::remove_dir(projection.root.join(host));
+            }
+        }
+    }
+
+    /// Follows a rename through the mount: what was written moves with it.
+    fn renamed(&self, from: &MountPath, to: &MountPath) {
+        let mut state = lock_recover(&self.state);
+        let state = &mut *state;
+        let moved = state
+            .directories
+            .keys()
+            .filter_map(|path| rebased(path, from, to).map(|moved| (path.clone(), moved)))
+            .collect::<Vec<_>>();
+        for (old, new) in moved {
+            if let Some(materialized) = state.directories.remove(&old) {
+                state.directories.insert(new, materialized);
+            }
+        }
+        for placeholders in [&mut state.written, &mut state.pending] {
+            let moved = placeholders
+                .keys()
+                .filter_map(|path| rebased(path, from, to).map(|moved| (path.clone(), moved)))
+                .collect::<Vec<_>>();
+            for (old, new) in moved {
+                if let Some(written) = placeholders.remove(&old) {
+                    placeholders.insert(new, written);
+                }
+            }
+        }
+        // Paths an earlier rename moved to within `from` had other names
+        // before: those follow this rename too.
+        let earlier = state
+            .moves
+            .iter()
+            .filter_map(|(origin, current)| rebased(from, current, origin))
+            .filter(|origin| origin != from)
+            .collect::<Vec<_>>();
+        // What earlier renames moved beneath `from` moves on; a path back
+        // where it started needs no entry.
+        for current in state.moves.values_mut() {
+            if let Some(moved) = rebased(current, from, to) {
+                *current = moved;
+            }
+        }
+        for origin in earlier.into_iter().chain(std::iter::once(from.clone())) {
+            state.moves.entry(origin).or_insert_with(|| to.clone());
+        }
+        state.moves.retain(|origin, current| origin != current);
+        let is_directory = state.directories.contains_key(to);
+        if let (Some(parent), Some(name)) = (from.parent(), from.components().last())
+            && let Some(materialized) = state.directories.get_mut(&parent)
+        {
+            materialized.names.remove(name.as_slice());
+        }
+        if let (Some(parent), Some(name)) = (to.parent(), to.components().last())
+            && let Some(materialized) = state.directories.get_mut(&parent)
+        {
+            materialized.names.insert(name.clone(), is_directory);
+        }
+    }
+
+    /// Where the placeholder written at `path` is now, following every
+    /// rename through the mount since.
+    fn moved_path(&self, path: &MountPath) -> MountPath {
+        // The deepest path renamed away that holds `path` says where it is.
+        let state = lock_recover(&self.state);
+        state
+            .moves
+            .iter()
+            .filter(|(origin, _)| projfs_path_suffix(path, origin).is_some())
+            .max_by_key(|(origin, _)| origin.components().len())
+            .and_then(|(origin, current)| rebased(path, origin, current))
+            .unwrap_or_else(|| path.clone())
+    }
+
+    /// Has the worker list `path`'s directory again and write `path` anew
+    /// unless something is there.
+    fn invalidate(&self, path: &MountPath) {
+        let mut state = lock_recover(&self.state);
+        state.written.remove(path);
+        if let (Some(parent), Some(name)) = (path.parent(), path.components().last()) {
+            if let Some(materialized) = state.directories.get_mut(&parent) {
+                materialized.names.remove(name.as_slice());
+            }
+            state.stale.insert(parent);
+        }
+        self.changed.notify_all();
+    }
+
+    /// Has the worker check everything written against the source: what a
+    /// source that reports none of its changes needs before anyone looks.
+    fn invalidate_all(&self) {
+        let mut state = lock_recover(&self.state);
+        let state = &mut *state;
+        state.stale.extend(state.directories.keys().cloned());
+        let written = std::mem::take(&mut state.written);
+        state.pending.extend(written);
+        self.changed.notify_all();
+    }
+
+    /// Starts the worker that keeps the projection at `root` in `context`
+    /// current.
     fn attach(
         self: &Arc<Self>,
         source: Arc<dyn MountFilesystem>,
-        absences: Option<Arc<Mutex<NegativePaths>>>,
         context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+        root: PathBuf,
     ) -> Result<(), NativeMountError> {
         let placeholders = Arc::clone(self);
         let observed = Arc::clone(&source);
@@ -721,7 +863,11 @@ impl Placeholders {
             .name("acyclic-projfs-placeholders".to_owned())
             .spawn(move || {
                 let context = context;
-                placeholders.run(source.as_ref(), absences.as_deref(), context.0);
+                placeholders.run(Projection {
+                    source: source.as_ref(),
+                    context: context.0,
+                    root: &root,
+                });
             })
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
         *lock_recover(&self.worker) = Some(worker);
@@ -731,12 +877,8 @@ impl Placeholders {
         Ok(())
     }
 
-    fn run(
-        &self,
-        source: &dyn MountFilesystem,
-        absences: Option<&Mutex<NegativePaths>>,
-        context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
-    ) {
+    fn run(&self, projection: Projection<'_>) {
+        let source = projection.source;
         let mut state = lock_recover(&self.state);
         loop {
             // Waits for a change, or, while placeholders are pending, for a
@@ -745,7 +887,7 @@ impl Placeholders {
                 if state.stopping {
                     return;
                 }
-                if state.processed < state.notified || state.retry {
+                if state.processed < state.notified || state.retry || !state.stale.is_empty() {
                     break;
                 }
                 if state.pending.is_empty() {
@@ -766,44 +908,53 @@ impl Placeholders {
             }
             state.retry = false;
             let through = state.notified;
+            // Directories whose listing may have changed, parents first.
+            let mut listings = state
+                .directories
+                .iter()
+                .filter(|(path, directory)| {
+                    directory
+                        .basis
+                        .is_none_or(|basis| !basis.still_describes(source, path, None))
+                })
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>();
+            listings.extend(state.stale.drain());
+            listings.sort_by_key(|path| path.components().len());
+            listings.dedup();
             let superseded = state
                 .written
                 .iter()
-                .filter(|(path, written)| {
-                    !written
-                        .basis
-                        .still_describes(source, path, Some(written.file_id))
-                })
+                .filter(|(path, written)| written.superseded(source, path))
                 .map(|(path, written)| (path.clone(), *written))
                 .collect::<Vec<_>>();
             for (path, written) in superseded {
                 state.written.remove(&path);
                 state.pending.insert(path, written);
             }
+            drop(state);
+            let mut failure = None;
+            for directory in listings {
+                if let Err(error) = self.reconcile(projection, &directory) {
+                    failure.get_or_insert(error);
+                }
+            }
             // Attempted as a snapshot: each stays pending until its outcome
             // is recorded.
-            let mut attempted = state
+            let mut attempted = lock_recover(&self.state)
                 .pending
                 .iter()
                 .map(|(path, written)| (path.clone(), *written))
                 .collect::<Vec<_>>();
-            drop(state);
-            let mut failure = absences.and_then(|absences| {
-                lock_recover(absences)
-                    .prune(source, || clear_negative_path_cache(context))
-                    .err()
-                    .map(|code| format!("clearing absences failed: {code}"))
-            });
-            // A directory can be deleted only once what it holds is.
             attempted.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().len()));
             let (mut settled, mut kept) = (Vec::new(), Vec::new());
             for (path, written) in attempted {
-                match replace_placeholder(source, context, &path) {
-                    Ok(Replaced::Rewritten(Some(current))) => {
+                match replace_placeholder(projection, &path) {
+                    Ok(Replaced::Rewritten(current)) => {
                         kept.push((path.clone(), current));
                         settled.push((path, written));
                     }
-                    Ok(Replaced::Rewritten(None) | Replaced::Released) => {
+                    Ok(Replaced::Released) => {
                         settled.push((path, written));
                     }
                     Ok(Replaced::Busy) => {}
@@ -814,20 +965,7 @@ impl Placeholders {
                 }
             }
             state = lock_recover(&self.state);
-            for (path, written) in settled {
-                // Superseded again meanwhile, it stays pending as that.
-                if state.pending.get(&path) == Some(&written) {
-                    state.pending.remove(&path);
-                }
-            }
-            for (path, placeholder) in kept {
-                // A lookup may have written it again meanwhile, from a later
-                // basis.
-                let entry = state.written.entry(path).or_insert(placeholder);
-                if entry.basis.stamp < placeholder.basis.stamp {
-                    *entry = placeholder;
-                }
-            }
+            state.record_attempts(settled, kept);
             state.processed = state.processed.max(through);
             if let Some(failure) = failure {
                 state.failure.get_or_insert(failure);
@@ -847,14 +985,17 @@ impl Placeholders {
     }
 
     /// Waits until every change reported so far has been served and no
-    /// superseded placeholder remains; fails, naming one, when one is still
-    /// held open [`PLACEHOLDER_SETTLE_LIMIT`] after every change was served.
+    /// superseded placeholder or invalidated directory remains; fails,
+    /// naming one, when one is still held open [`PLACEHOLDER_SETTLE_LIMIT`]
+    /// after every change was served.
     fn settle(&self) -> Result<(), NativeMountError> {
         let mut state = lock_recover(&self.state);
         let target = state.notified;
         let mut deadline = None;
-        while !state.stopping && (state.processed < target || !state.pending.is_empty()) {
-            if state.processed < target {
+        while !state.stopping
+            && (state.processed < target || !state.stale.is_empty() || !state.pending.is_empty())
+        {
+            if state.processed < target || !state.stale.is_empty() {
                 state = self
                     .changed
                     .wait(state)
@@ -892,13 +1033,115 @@ impl Placeholders {
     }
 }
 
-/// Writes the placeholder at `path` again from the source, or deletes it
-/// where the source names nothing there any more.
-fn replace_placeholder(
-    source: &dyn MountFilesystem,
-    context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
+/// Writes `entry` at `path`: an ordinary directory for a directory, a
+/// placeholder for anything else. Whatever is already there (the user's, or
+/// written before) stays, and is reported as not written.
+fn write_entry(
+    projection: Projection<'_>,
     path: &MountPath,
-) -> Result<Replaced, String> {
+    entry: &ProjectedEntry,
+) -> Result<bool, String> {
+    let host = host_relative_path(path).map_err(|error| error.to_string())?;
+    if entry.info.IsDirectory {
+        return match std::fs::create_dir(projection.root.join(&host)) {
+            Ok(()) => Ok(true),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AlreadyExists
+                        | std::io::ErrorKind::NotFound
+                        | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(format!("creating directory {path:?}: {error}")),
+        };
+    }
+    let placeholder = pinned_placeholder(entry.info, entry.pin)
+        .ok_or_else(|| format!("placeholder for {path:?} is unrepresentable"))?;
+    let symlink = match entry.symlink_target.as_deref().map(symlink_extended) {
+        Some(Some(target)) => Some(target),
+        Some(None) => return Err(format!("link at {path:?} is unrepresentable")),
+        None => None,
+    };
+    let relative = HSTRING::from(host.as_os_str());
+    let size = u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX);
+    // SAFETY: the name, placeholder and link target outlive these
+    // synchronous calls on a live context.
+    let result = unsafe {
+        if let Some((_target, extended)) = symlink.as_ref() {
+            PrjWritePlaceholderInfo2(
+                projection.context,
+                &relative,
+                &raw const placeholder,
+                size,
+                Some(extended),
+            )
+        } else {
+            PrjWritePlaceholderInfo(projection.context, &relative, &raw const placeholder, size)
+        }
+    };
+    match result {
+        Ok(()) => Ok(true),
+        // Something is there already, or its directory is no directory:
+        // what the user made stays.
+        Err(error)
+            if [
+                HR_ALREADY_EXISTS,
+                HR_FILE_EXISTS,
+                HR_FILE_NOT_FOUND,
+                HR_PATH_NOT_FOUND,
+                HR_DIRECTORY,
+            ]
+            .contains(&error.code()) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(format!(
+            "writing placeholder {path:?}: {}",
+            driver_error(&error)
+        )),
+    }
+}
+
+/// Deletes the placeholder at `path` unless the user modified it.
+fn delete_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<(), String> {
+    let host = host_relative_path(path).map_err(|error| error.to_string())?;
+    let relative = HSTRING::from(host.as_os_str());
+    // SAFETY: the name outlives this synchronous call on a live context.
+    match unsafe {
+        PrjDeleteFile(
+            projection.context,
+            &relative,
+            Some(PRJ_UPDATE_ALLOW_READ_ONLY),
+            None,
+        )
+    } {
+        Ok(()) => Ok(()),
+        Err(error)
+            if [
+                HR_FILE_NOT_FOUND,
+                HR_PATH_NOT_FOUND,
+                HR_VIRTUALIZATION_INVALID_OPERATION,
+                HR_DIRECTORY_NOT_EMPTY,
+            ]
+            .contains(&error.code()) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "deleting placeholder {path:?}: {}",
+            driver_error(&error)
+        )),
+    }
+}
+
+/// Writes the placeholder at `path` again from the source, or deletes it
+/// where the source names nothing there any more (or a directory, which the
+/// directory's reconcile writes).
+fn replace_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<Replaced, String> {
+    let source = projection.source;
     let relative = HSTRING::from(
         host_relative_path(path)
             .map_err(|error| error.to_string())?
@@ -912,8 +1155,14 @@ fn replace_placeholder(
     };
     let result = match current {
         // A link's target travels in extended information, which only a
-        // new placeholder can carry.
-        Some((lookup, pin)) if lookup.node.kind != MountNodeKind::SymbolicLink => {
+        // new placeholder can carry; a directory is written by its parent's
+        // reconcile.
+        Some((lookup, pin))
+            if !matches!(
+                lookup.node.kind,
+                MountNodeKind::SymbolicLink | MountNodeKind::Directory
+            ) =>
+        {
             let Some(placeholder) = placeholder_info(&lookup, pin) else {
                 return Err("placeholder attributes are unrepresentable".to_owned());
             };
@@ -921,7 +1170,7 @@ fn replace_placeholder(
             // call on a live context.
             unsafe {
                 PrjUpdateFileIfNeeded(
-                    context,
+                    projection.context,
                     &relative,
                     &raw const placeholder,
                     u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX),
@@ -930,15 +1179,22 @@ fn replace_placeholder(
                 )
             }
             .map(|()| {
-                Replaced::Rewritten(basis.map(|basis| WrittenPlaceholder {
+                Replaced::Rewritten(WrittenPlaceholder {
                     file_id: lookup.node.file_id,
                     basis,
-                }))
+                })
             })
         }
         // SAFETY: as above.
-        _ => unsafe { PrjDeleteFile(context, &relative, Some(PRJ_UPDATE_ALLOW_READ_ONLY), None) }
-            .map(|()| Replaced::Released),
+        _ => unsafe {
+            PrjDeleteFile(
+                projection.context,
+                &relative,
+                Some(PRJ_UPDATE_ALLOW_READ_ONLY),
+                None,
+            )
+        }
+        .map(|()| Replaced::Released),
     };
     match result {
         Ok(replaced) => Ok(replaced),
@@ -961,111 +1217,12 @@ fn replace_placeholder(
     }
 }
 
-/// One placeholder lookup whose absence is completed asynchronously.
-struct AbsenceReport {
-    command_id: i32,
-    path: MountPath,
-    basis: Option<ReadBasis>,
-}
-
-/// `ProjFS`'s cached absences and the one worker that completes absence
-/// lookups.
-///
-/// `ProjFS` records a negative path only when the lookup completes. The
-/// worker decides and completes each absence while holding `paths`, the
-/// lock every clear also takes, so a clear either precedes a completion,
-/// which then re-proves its absence against the changed view, or follows
-/// it and removes what it recorded. A callback could not do that itself:
-/// it can only return, and `ProjFS` records the result after the return.
-struct Absences {
-    paths: Arc<Mutex<NegativePaths>>,
-    reports: Mutex<Option<std::sync::mpsc::Sender<AbsenceReport>>>,
-    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
-}
-
-impl Absences {
-    /// Starts the worker that completes absences for `context`.
-    fn attach(
-        &self,
-        source: Arc<dyn MountFilesystem>,
-        context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
-    ) -> Result<(), NativeMountError> {
-        let (sender, receiver) = std::sync::mpsc::channel::<AbsenceReport>();
-        let paths = Arc::clone(&self.paths);
-        let context = SendContext(context);
-        let worker = std::thread::Builder::new()
-            .name("acyclic-projfs-absences".to_owned())
-            .spawn(move || {
-                let context = context;
-                complete_absences(
-                    receiver,
-                    source.as_ref(),
-                    &paths,
-                    || clear_negative_path_cache(context.0),
-                    |command_id, result| {
-                        // A cancelled command has nothing left to complete.
-                        // SAFETY: the context outlives this worker, which
-                        // `stop` joins before it stops virtualizing.
-                        let _ = unsafe { PrjCompleteCommand(context.0, command_id, result, None) };
-                    },
-                );
-            })
-            .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-        *lock_recover(&self.reports) = Some(sender);
-        *lock_recover(&self.worker) = Some(worker);
-        Ok(())
-    }
-
-    /// Completes `report` asynchronously, or reports the absence uncached
-    /// once the worker has stopped.
-    fn report(&self, report: AbsenceReport) -> HRESULT {
-        let sent = lock_recover(&self.reports)
-            .as_ref()
-            .is_some_and(|reports| reports.send(report).is_ok());
-        if sent {
-            HR_IO_PENDING
-        } else {
-            HR_PATH_NOT_FOUND
-        }
-    }
-
-    /// Stops accepting reports and completes every one already queued.
-    fn finish(&self) {
-        lock_recover(&self.reports).take();
-        if let Some(worker) = lock_recover(&self.worker).take() {
-            let _ = worker.join();
-        }
-    }
-}
-
-/// Decides and completes each queued absence while holding `paths`, so no
-/// clear can fall between an absence's proof and its completion.
-fn complete_absences(
-    reports: std::sync::mpsc::Receiver<AbsenceReport>,
-    source: &dyn MountFilesystem,
-    paths: &Mutex<NegativePaths>,
-    clear: impl Fn() -> Result<(), HRESULT>,
-    complete: impl Fn(i32, HRESULT),
-) {
-    for report in reports {
-        let mut negative = lock_recover(paths);
-        let result = negative.admit(source, report.path, report.basis, &clear);
-        complete(report.command_id, result);
-        drop(negative);
-    }
-}
-
-/// A virtualization context moved to the absence worker. The handle is an
-/// opaque token `ProjFS` accepts from any thread.
+/// A virtualization context moved to the placeholder worker. The handle is
+/// an opaque token `ProjFS` accepts from any thread.
 struct SendContext(PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT);
 
-// SAFETY: see `SendContext`; its lifetime is bounded by `Absences::finish`.
+// SAFETY: see `SendContext`; its lifetime is bounded by `Placeholders::finish`.
 unsafe impl Send for SendContext {}
-
-fn clear_negative_path_cache(context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT) -> Result<(), HRESULT> {
-    // SAFETY: callers hold a context of a live mounted runtime.
-    unsafe { PrjClearNegativePathCache(context, None) }.map_err(|error| error.code())
-}
 
 fn has_pending_capture(failure: &Mutex<PostOperationFailures>, path: &MountPath) -> bool {
     let failure = lock_recover(failure);
@@ -1110,25 +1267,14 @@ impl ProjFsSession {
             ))
         })?;
 
-        // An absence can be cached only by a source that versions its view;
-        // any later change of that view clears the cache before new lookups.
-        let negative_paths = source.view_stamp().map(|_| Absences {
-            paths: Arc::new(Mutex::new(NegativePaths::default())),
-            reports: Mutex::new(None),
-            worker: Mutex::new(None),
-        });
-        // Likewise a placeholder is kept current only for such a source.
-        let placeholders = source.view_stamp().map(|_| Arc::new(Placeholders::new()));
         let mut runtime = Box::new(Runtime {
             source,
             root: request.destination.clone(),
             metadata_root,
             writable: request.writable,
-            enumerations: Mutex::new(HashMap::new()),
             metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
             projection: Arc::new(Mutex::new(ProjectionCache::default())),
-            negative_paths,
-            placeholders,
+            placeholders: Arc::new(Placeholders::new()),
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
             post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
             callbacks: callback_gate,
@@ -1144,10 +1290,12 @@ impl ProjFsSession {
             // null handle, which is not the same contract as `L""`.
             NotificationRoot: PCWSTR::from_raw(NOTIFICATION_ROOT.as_ptr()),
         };
-        let mut options = PRJ_STARTVIRTUALIZING_OPTIONS::default();
-        if runtime.negative_paths.is_some() {
-            options.Flags = PRJ_FLAG_USE_NEGATIVE_PATH_CACHE;
-        }
+        // Nothing is ever projected on demand (see `Placeholders`), so every
+        // absence `ProjFS` caches is one it may.
+        let mut options = PRJ_STARTVIRTUALIZING_OPTIONS {
+            Flags: PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
+            ..PRJ_STARTVIRTUALIZING_OPTIONS::default()
+        };
         if request.writable {
             options.NotificationMappings = &raw mut notification_mapping;
             options.NotificationMappingsCount = 1;
@@ -1172,26 +1320,35 @@ impl ProjFsSession {
                 ));
                 let root_identity = runtime.metadata_root.identity();
                 drop(runtime);
-                let cleanup = remove_authenticated_destination(&request.destination, root_identity)
-                    .and_then(|()| {
-                        std::fs::create_dir(&request.destination)
-                            .map_err(|error| NativeMountError::Driver(error.to_string()))
-                    });
-                if let Err(cleanup) = cleanup {
-                    return Err(DriverStartFailure::preserving_destination_fence(
-                        NativeMountError::Driver(format!(
-                            "{start_error}; ProjFS startup rollback failed: {cleanup}"
-                        )),
-                    ));
-                }
-                return Err(start_error.into());
+                return Err(roll_back_start(
+                    &request.destination,
+                    root_identity,
+                    start_error,
+                ));
             }
         };
-        if let Err(error) = runtime.attach_workers(context) {
+        let written = runtime.attach_workers(context).and_then(|()| {
+            runtime
+                .placeholders
+                .materialize(
+                    Projection {
+                        source: runtime.source.as_ref(),
+                        context,
+                        root: &runtime.root,
+                    },
+                    MountPath::root(),
+                )
+                .map_err(|error| {
+                    NativeMountError::Driver(format!("projecting the source failed: {error}"))
+                })
+        });
+        if let Err(error) = written {
             runtime.finish_workers();
             // SAFETY: the sole owner stops the context it just started.
             unsafe { PrjStopVirtualizing(context) };
-            return Err(error.into());
+            let root_identity = runtime.metadata_root.identity();
+            drop(runtime);
+            return Err(roll_back_start(&request.destination, root_identity, error));
         }
         Ok(Self {
             context: Some(context),
@@ -1302,10 +1459,10 @@ impl ProjFsSession {
     }
 
     /// Makes a source-side change at one mount-relative path (leading `/`
-    /// optional) visible now: the provider forgets memoized source facts,
-    /// `ProjFS` forgets cached absences, and an unmodified projected
-    /// placeholder at `path` is dropped so its next access re-reads the
-    /// source. Locally modified state at `path` is authored and stays.
+    /// optional) visible: the provider forgets memoized source facts, and an
+    /// unmodified placeholder at `path` is deleted and written again from
+    /// the source (settled by [`Self::revalidate`]). Locally modified state
+    /// at `path` is authored and stays.
     pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
         let (runtime, context) = self.live()?;
         let text = std::str::from_utf8(path)
@@ -1317,11 +1474,13 @@ impl ProjFsSession {
         // The change is outside the source's own record of changes, so no
         // memoized fact can prove itself current.
         lock_recover(runtime.projection.as_ref()).clear();
-        forget_negative_paths(runtime, context)?;
         if relative.as_os_str().is_empty() {
             return Ok(());
         }
         let relative = HSTRING::from(relative.as_os_str());
+        let mount_path = path_from(PCWSTR::from_raw(relative.as_ptr())).ok_or_else(|| {
+            NativeMountError::Driver("invalidation path is not a mount path".to_owned())
+        })?;
         // SAFETY: the relative UTF-16 name remains live for this synchronous
         // call and the context belongs to this mounted runtime.
         match unsafe { PrjDeleteFile(context, &relative, Some(PRJ_UPDATE_ALLOW_READ_ONLY), None) } {
@@ -1335,27 +1494,29 @@ impl ProjFsSession {
             {
                 Err(driver_error(&error))
             }
-            _ => Ok(()),
+            _ => {
+                runtime.placeholders.invalidate(&mount_path);
+                Ok(())
+            }
         }
     }
 
-    /// Forgets every absence `ProjFS` caches that the advanced source view
-    /// may have filled, so paths the new view adds become visible, and waits
-    /// until every placeholder a change so far superseded is written again.
+    /// Waits until every change made to the source so far is written into
+    /// the projection: each superseded placeholder written again, each
+    /// changed directory reconciled. A source that reports none of its
+    /// changes has everything checked.
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
-        let (runtime, context) = self.live()?;
+        let (runtime, _context) = self.live()?;
+        if runtime.source.view_stamp().is_none() {
+            runtime.placeholders.invalidate_all();
+        }
         // Every change made to the source before this call is recorded, and
         // so notified, before the placeholders settle.
         runtime
             .source
             .fence_changes()
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-        prune_negative_paths(runtime, context)
-            .map_err(|code| driver_error(&windows::core::Error::from_hresult(code)))?;
-        runtime
-            .placeholders
-            .as_ref()
-            .map_or(Ok(()), |placeholders| placeholders.settle())
+        runtime.placeholders.settle()
     }
 
     fn live(&self) -> Result<(&Runtime, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT), NativeMountError> {
@@ -1367,81 +1528,19 @@ impl ProjFsSession {
 }
 
 impl Runtime {
-    /// Starts the workers that complete absences and keep placeholders
-    /// current for `context`.
+    /// Starts the worker that keeps the projection current in `context`.
     fn attach_workers(
         &self,
         context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
     ) -> Result<(), NativeMountError> {
-        if let Some(absences) = self.negative_paths.as_ref() {
-            absences.attach(Arc::clone(&self.source), context)?;
-        }
-        if let Some(placeholders) = self.placeholders.as_ref() {
-            let absences = self
-                .negative_paths
-                .as_ref()
-                .map(|absences| Arc::clone(&absences.paths));
-            placeholders.attach(Arc::clone(&self.source), absences, context)?;
-        }
-        Ok(())
+        self.placeholders
+            .attach(Arc::clone(&self.source), context, self.root.clone())
     }
 
-    /// Stops both workers; absences arriving from here on complete uncached,
-    /// and queued ones complete before the context they need is stopped.
+    /// Stops the worker; nothing is kept current from here on.
     fn finish_workers(&self) {
-        if let Some(absences) = self.negative_paths.as_ref() {
-            absences.finish();
-        }
-        if let Some(placeholders) = self.placeholders.as_ref() {
-            placeholders.finish();
-        }
+        self.placeholders.finish();
     }
-}
-
-/// Clears `ProjFS`'s negative path cache and every recorded absence.
-fn forget_negative_paths(
-    runtime: &Runtime,
-    context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
-) -> Result<(), NativeMountError> {
-    let Some(absences) = runtime.negative_paths.as_ref() else {
-        return Ok(());
-    };
-    let mut negative = lock_recover(&absences.paths);
-    clear_negative_path_cache(context)
-        .map_err(|code| driver_error(&windows::core::Error::from_hresult(code)))?;
-    *negative = NegativePaths::default();
-    Ok(())
-}
-
-/// Keeps `ProjFS`'s cached absences exact after a source change.
-fn prune_negative_paths(
-    runtime: &Runtime,
-    context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
-) -> Result<(), HRESULT> {
-    let Some(absences) = runtime.negative_paths.as_ref() else {
-        return Ok(());
-    };
-    lock_recover(&absences.paths).prune(runtime.source.as_ref(), || {
-        clear_negative_path_cache(context)
-    })
-}
-
-/// Reports one placeholder lookup's absence: through the absence worker
-/// where `ProjFS` caches absences, and uncached otherwise.
-fn report_absence(
-    runtime: &Runtime,
-    data: &PRJ_CALLBACK_DATA,
-    path: MountPath,
-    basis: Option<ReadBasis>,
-) -> HRESULT {
-    let Some(absences) = runtime.negative_paths.as_ref() else {
-        return HR_FILE_NOT_FOUND;
-    };
-    absences.report(AbsenceReport {
-        command_id: data.CommandId,
-        path,
-        basis,
-    })
 }
 
 /// Reports one typed source failure as its distinct Win32 status. Only the
@@ -1467,15 +1566,22 @@ fn placeholder_info(
 }
 
 /// The placeholder for `info` that carries exactly `pin`.
+///
+/// `ProjFS` updates a placeholder only when its version differs, so each
+/// placeholder written also carries a version of its own after the pin:
+/// a rewrite with new attributes or unpinned content is never skipped.
 fn pinned_placeholder(
     info: PRJ_FILE_BASIC_INFO,
     pin: Option<MountContentPin>,
 ) -> Option<PRJ_PLACEHOLDER_INFO> {
+    static WRITTEN: AtomicU64 = AtomicU64::new(0);
     let mut version = PRJ_PLACEHOLDER_VERSION_INFO::default();
+    let (pinned, written) = version.ContentID.split_at_mut(size_of::<MountContentPin>());
     if let Some(pin) = pin {
         *version.ProviderID.first_chunk_mut()? = *CONTENT_PIN_PROVIDER;
-        *version.ContentID.first_chunk_mut()? = pin.0;
+        *pinned.first_chunk_mut()? = pin.0;
     }
+    *written.first_chunk_mut()? = WRITTEN.fetch_add(1, Ordering::Relaxed).to_le_bytes();
     Some(PRJ_PLACEHOLDER_INFO {
         FileBasicInfo: info,
         VersionInfo: version,
@@ -1616,6 +1722,25 @@ pub(super) fn quarantine_crashed_destination(
         )));
     }
     Ok(Some(preserved))
+}
+
+/// Returns `destination` to the empty directory a failed start found,
+/// reporting `error`; a destination that cannot be returned stays fenced.
+fn roll_back_start(
+    destination: &std::path::Path,
+    root_identity: crate::NativeRootIdentity,
+    error: NativeMountError,
+) -> DriverStartFailure {
+    let cleanup = remove_authenticated_destination(destination, root_identity).and_then(|()| {
+        std::fs::create_dir(destination)
+            .map_err(|error| NativeMountError::Driver(error.to_string()))
+    });
+    match cleanup {
+        Ok(()) => error.into(),
+        Err(cleanup) => DriverStartFailure::preserving_destination_fence(NativeMountError::Driver(
+            format!("{error}; ProjFS startup rollback failed: {cleanup}"),
+        )),
+    }
 }
 
 fn remove_authenticated_destination(
@@ -2123,11 +2248,6 @@ fn guid_from_key(key: u128) -> GUID {
     )
 }
 
-fn enum_id(pointer: *const GUID) -> Option<u128> {
-    // SAFETY: callback ABI supplies a GUID pointer for the callback duration.
-    unsafe { pointer.as_ref() }.map(guid_key)
-}
-
 fn file_id(data: &PRJ_CALLBACK_DATA) -> u128 {
     guid_key(&data.FileId)
 }
@@ -2219,91 +2339,67 @@ fn windows_time(field: MetadataField<i64>) -> Option<i64> {
     i64::try_from(ticks).ok()
 }
 
+// Every directory beneath the root is an ordinary one, and the root holds
+// on disk everything the source lists: `ProjFS` merges an enumeration with
+// what is on disk, so the provider enumerates nothing and names nothing.
 unsafe fn start_directory(
-    callback_data: *const PRJ_CALLBACK_DATA,
-    enumeration_id: *const GUID,
+    _callback_data: *const PRJ_CALLBACK_DATA,
+    _enumeration_id: *const GUID,
 ) -> HRESULT {
-    let Some((data, runtime)) = runtime(callback_data) else {
-        return HR_UNEXPECTED;
-    };
-    let Some(path) = path_from(data.FilePathName) else {
-        return HR_INVALID_DATA;
-    };
-    let Some(id) = enum_id(enumeration_id) else {
-        return HR_INVALID_DATA;
-    };
-    // A listing of a newer view must not coexist with absences cached under
-    // an older one, or a listed name could fail to open.
-    if let Err(error) = prune_negative_paths(runtime, data.NamespaceVirtualizationContext) {
-        return error;
-    }
-    lock_recover(&runtime.enumerations).insert(
-        id,
-        Arc::new(Mutex::new(EnumState {
-            path,
-            ended: false,
-            snapshot: None,
-            next: 0,
-            search_expression: None,
-            search_expression_captured: false,
-        })),
-    );
     HR_OK
 }
 
-/// Returns one directory's projected entries, sharing a snapshot across
-/// enumerations for as long as the source proves it current.
-fn directory_entries(
-    runtime: &Runtime,
-    path: &MountPath,
-) -> Result<Arc<[ProjectedEntry]>, HRESULT> {
-    let source = runtime.source.as_ref();
-    if let Some(entries) = lock_recover(runtime.projection.as_ref()).directory(source, path) {
-        return Ok(entries);
-    }
-    let basis = ReadBasis::sample(source);
-    let entries = Arc::<[ProjectedEntry]>::from(directory_snapshot(source, path)?);
-    if let Some(basis) = basis {
-        lock_recover(runtime.projection.as_ref()).remember_directory(
-            basis,
-            path.clone(),
-            Arc::clone(&entries),
-        );
-    }
-    Ok(entries)
+unsafe fn end_directory(
+    _callback_data: *const PRJ_CALLBACK_DATA,
+    _enumeration_id: *const GUID,
+) -> HRESULT {
+    HR_OK
 }
 
-fn directory_snapshot(
+unsafe fn get_directory(
+    _callback_data: *const PRJ_CALLBACK_DATA,
+    _enumeration_id: *const GUID,
+    _search_expression: PCWSTR,
+    _buffer: PRJ_DIR_ENTRY_BUFFER_HANDLE,
+) -> HRESULT {
+    HR_OK
+}
+
+unsafe fn placeholder(_callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
+    HR_FILE_NOT_FOUND
+}
+
+/// The source's listing of `path`, as this provider writes it. An entry no
+/// placeholder can represent (a socket, say) is left out, as is a name that
+/// case-folds to one listed before it: Windows can hold only one of them.
+fn source_listing(
     source: &dyn MountFilesystem,
     path: &MountPath,
-) -> Result<Vec<ProjectedEntry>, HRESULT> {
-    // Pin only while building the snapshot. Holding this lease for the native
-    // directory handle's lifetime would block unrelated authored writes.
-    let lease = source
-        .acquire_view_lease()
-        .map_err(|error| source_hresult(&error))?;
+) -> Result<Vec<ProjectedEntry>, MountSourceError> {
+    // Pinned only while the listing is read, so it is one view's.
+    let lease = source.acquire_view_lease()?;
     let mut cursor = None;
     let mut seen_cursors = HashSet::new();
     let mut entries = Vec::new();
     loop {
-        let page = source
-            .read_directory(path, cursor.as_deref(), DIRECTORY_PAGE_SIZE)
-            .map_err(|error| source_hresult(&error))?;
+        let page = source.read_directory(path, cursor.as_deref(), DIRECTORY_PAGE_SIZE)?;
         entries
             .try_reserve(page.entries.len())
-            .map_err(|_| HR_OUT_OF_MEMORY)?;
+            .map_err(|_| MountSourceError::Engine("listing exceeds memory".to_owned()))?;
         for entry in page.entries {
-            let info = basic(entry.node, Some(entry.metadata)).ok_or(HR_NOT_SUPPORTED)?;
-            let mut name = decode_utf16_name(&entry.name).ok_or(HR_INVALID_DATA)?;
-            if name.contains(&0) {
-                return Err(HR_INVALID_DATA);
-            }
+            let Some(info) = basic(entry.node, Some(entry.metadata)) else {
+                continue;
+            };
+            let Some(mut name) = decode_utf16_name(&entry.name).filter(|name| !name.contains(&0))
+            else {
+                continue;
+            };
             name.push(0);
             let symlink_target = if entry.node.kind == MountNodeKind::SymbolicLink {
-                let target = source
-                    .read_link(&path.child(entry.name.clone()))
-                    .map_err(|error| source_hresult(&error))?;
-                symlink_extended(&target).ok_or(HR_INVALID_DATA)?;
+                let target = source.read_link(&path.child(entry.name.clone()))?;
+                if symlink_extended(&target).is_none() {
+                    continue;
+                }
                 Some(target)
             } else {
                 None
@@ -2318,13 +2414,17 @@ fn directory_snapshot(
             });
         }
         match page.next_cursor {
-            Some(next) if !seen_cursors.insert(next.clone()) => return Err(HR_INVALID_DATA),
+            Some(next) if !seen_cursors.insert(next.clone()) => {
+                return Err(MountSourceError::Invalid(
+                    "directory listing repeated a cursor".to_owned(),
+                ));
+            }
             Some(next) => cursor = Some(next),
             None => break,
         }
     }
     drop(lease);
-    entries.sort_unstable_by(|left, right| {
+    entries.sort_by(|left, right| {
         // SAFETY: both NUL-terminated name buffers remain live for this call.
         unsafe {
             PrjFileNameCompare(
@@ -2334,209 +2434,16 @@ fn directory_snapshot(
         }
         .cmp(&0)
     });
-    if entries.windows(2).any(|pair| {
-        let [first, second] = pair else {
-            return false;
-        };
-        // SAFETY: both NUL-terminated name buffers remain live for this call.
+    entries.dedup_by(|later, earlier| {
+        // SAFETY: as above.
         unsafe {
             PrjFileNameCompare(
-                PCWSTR::from_raw(first.name.as_ptr()),
-                PCWSTR::from_raw(second.name.as_ptr()),
+                PCWSTR::from_raw(later.name.as_ptr()),
+                PCWSTR::from_raw(earlier.name.as_ptr()),
             ) == 0
         }
-    }) {
-        // A case-fold collision cannot be projected as two distinct names.
-        return Err(HR_INVALID_DATA);
-    }
+    });
     Ok(entries)
-}
-
-unsafe fn end_directory(
-    callback_data: *const PRJ_CALLBACK_DATA,
-    enumeration_id: *const GUID,
-) -> HRESULT {
-    let Some((_data, runtime)) = runtime(callback_data) else {
-        return HR_UNEXPECTED;
-    };
-    let Some(id) = enum_id(enumeration_id) else {
-        return HR_INVALID_DATA;
-    };
-    let state = lock_recover(&runtime.enumerations).get(&id).cloned();
-    if let Some(state) = state {
-        // Wait for any in-flight page fill before ending this enumeration.
-        lock_recover(&state).ended = true;
-        lock_recover(&runtime.enumerations).remove(&id);
-    }
-    HR_OK
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "paged ProjFS enumeration and buffer filling share one callback boundary"
-)]
-unsafe fn get_directory(
-    callback_data: *const PRJ_CALLBACK_DATA,
-    enumeration_id: *const GUID,
-    search_expression: PCWSTR,
-    buffer: PRJ_DIR_ENTRY_BUFFER_HANDLE,
-) -> HRESULT {
-    let Some((data, runtime)) = runtime(callback_data) else {
-        return HR_UNEXPECTED;
-    };
-    let Some(id) = enum_id(enumeration_id) else {
-        return HR_INVALID_DATA;
-    };
-    let Some(state) = lock_recover(&runtime.enumerations).get(&id).cloned() else {
-        return HR_INVALID_DATA;
-    };
-    // Serialize the complete cursor/read/fill transition for this enumeration.
-    // The map lock is not held while waiting for this state lock.
-    let mut state = lock_recover(&state);
-    if state.ended {
-        return HR_INVALID_DATA;
-    }
-    let restart = data.Flags.0 & PRJ_CB_DATA_FLAG_ENUM_RESTART_SCAN.0 != 0;
-    if !state.search_expression_captured || restart {
-        let Some(expression) = copy_optional_wide(search_expression) else {
-            return HR_INVALID_DATA;
-        };
-        state.search_expression = expression;
-        state.search_expression_captured = true;
-    }
-    let entries = match state.snapshot.as_ref() {
-        Some(entries) if !restart => Arc::clone(entries),
-        _ => {
-            let entries = match directory_entries(runtime, &state.path) {
-                Ok(entries) => entries,
-                Err(error) => return error,
-            };
-            state.snapshot = Some(Arc::clone(&entries));
-            state.next = 0;
-            entries
-        }
-    };
-    let mut emitted = false;
-    while let Some(entry) = entries.get(state.next) {
-        let Some((&0, name)) = entry.name.split_last() else {
-            return HR_INVALID_DATA;
-        };
-        let entry_name = HSTRING::from_wide(name);
-        let matches = state.search_expression.as_ref().is_none_or(|expression| {
-            // SAFETY: both owned UTF-16 strings remain live for this synchronous comparison.
-            unsafe { PrjFileNameMatch(&entry_name, expression) }
-        });
-        if !matches {
-            state.next += 1;
-            continue;
-        }
-        let symlink = entry.symlink_target.as_deref().and_then(symlink_extended);
-        let result = if let Some((_target, extended)) = symlink.as_ref() {
-            PrjFillDirEntryBuffer2(
-                buffer,
-                PCWSTR::from_raw(entry_name.as_ptr()),
-                Some(&raw const entry.info),
-                Some(extended),
-            )
-        } else {
-            PrjFillDirEntryBuffer(
-                PCWSTR::from_raw(entry_name.as_ptr()),
-                Some(&raw const entry.info),
-                buffer,
-            )
-        };
-        match result {
-            Ok(()) => {
-                state.next += 1;
-                emitted = true;
-            }
-            Err(error) if error.code() == HR_INSUFFICIENT_BUFFER => {
-                return if emitted {
-                    HR_OK
-                } else {
-                    HR_INSUFFICIENT_BUFFER
-                };
-            }
-            Err(error) => return error.code(),
-        }
-    }
-    HR_OK
-}
-
-unsafe fn placeholder(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
-    let Some((data, runtime)) = runtime(callback_data) else {
-        return HR_UNEXPECTED;
-    };
-    let Some(path) = path_from(data.FilePathName) else {
-        return HR_INVALID_DATA;
-    };
-    let context = data.NamespaceVirtualizationContext;
-    if let Err(error) = prune_negative_paths(runtime, context) {
-        return error;
-    }
-    let listed = lock_recover(runtime.projection.as_ref())
-        .listed_placeholder(runtime.source.as_ref(), &path);
-    // Written either way, the placeholder is kept current from the basis
-    // and node it was projected with.
-    let (placeholder, symlink_target, file_id, basis) = if let Some(listed) = listed {
-        (
-            listed.placeholder,
-            listed.symlink_target,
-            listed.file_id,
-            Some(listed.basis),
-        )
-    } else {
-        let basis = ReadBasis::sample(runtime.source.as_ref());
-        let (node, pin) = match runtime.source.lookup_pinned(&path) {
-            Ok(Some(found)) => found,
-            Ok(None) | Err(MountSourceError::NotFound) => {
-                return report_absence(runtime, data, path, basis);
-            }
-            Err(error) => return source_hresult(&error),
-        };
-        let Some(placeholder) = placeholder_info(&node, pin) else {
-            return HR_NOT_SUPPORTED;
-        };
-        let symlink_target = if node.node.kind == MountNodeKind::SymbolicLink {
-            match runtime.source.read_link(&path) {
-                Ok(target) => Some(target),
-                Err(error) => return source_hresult(&error),
-            }
-        } else {
-            None
-        };
-        (placeholder, symlink_target, node.node.file_id, basis)
-    };
-    let symlink = match symlink_target.as_deref().map(symlink_extended) {
-        Some(Some(target)) => Some(target),
-        Some(None) => return HR_INVALID_DATA,
-        None => None,
-    };
-    let result = if let Some((_target, extended)) = symlink.as_ref() {
-        PrjWritePlaceholderInfo2(
-            data.NamespaceVirtualizationContext,
-            data.FilePathName,
-            &raw const placeholder,
-            u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX),
-            Some(extended),
-        )
-    } else {
-        PrjWritePlaceholderInfo(
-            data.NamespaceVirtualizationContext,
-            data.FilePathName,
-            &raw const placeholder,
-            u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX),
-        )
-    };
-    match result {
-        Ok(()) => {
-            if let Some(placeholders) = runtime.placeholders.as_ref() {
-                placeholders.written(path, file_id, basis);
-            }
-            HR_OK
-        }
-        Err(error) => error.code(),
-    }
 }
 
 unsafe fn file_data(
@@ -2591,17 +2498,36 @@ unsafe fn file_data(
     };
     // Immutable hydration reads take the source's own read gate. Keeping them
     // off the mutation callback queue lets concurrent compiler reads proceed.
-    // A placeholder is hydrated before any rename or link, so its projected
-    // path always names the content it promised.
+    // A file is hydrated before its own rename or link, but `ProjFS` names a
+    // placeholder by the path it was written at also after a directory
+    // above it was renamed: that one is read where the renames took it.
     let read = if let Some(pin) = pin {
-        runtime.source.read_pinned(
+        let mut read = runtime.source.read_pinned(
             &path,
             pin,
             byte_offset,
             u64::from(length),
             chunk,
             &mut write,
-        )
+        );
+        let moved = runtime.placeholders.moved_path(&path);
+        if written.get() == 0
+            && moved != path
+            && matches!(
+                read,
+                Err(MountSourceError::NotFound | MountSourceError::Stale)
+            )
+        {
+            read = runtime.source.read_pinned(
+                &moved,
+                pin,
+                byte_offset,
+                u64::from(length),
+                chunk,
+                &mut write,
+            );
+        }
+        read
     } else {
         let mut result = Ok(());
         // A short read ends the content; the length check below rejects it.
@@ -2706,9 +2632,8 @@ unsafe fn notification(
         PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
             | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
             | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
-    ) && let Some(placeholders) = runtime.placeholders.as_ref()
-    {
-        placeholders.retry();
+    ) {
+        runtime.placeholders.retry();
     }
     if unsafe { (*callback_data).TriggeringProcessId } == std::process::id()
         && matches!(
@@ -2796,6 +2721,7 @@ unsafe fn notification(
     let metadata_root = Arc::clone(&runtime.metadata_root);
     let post_operation_failure = Arc::clone(&runtime.post_operation_failure);
     let operation_failures = Arc::clone(&post_operation_failure);
+    let placeholders = Arc::clone(&runtime.placeholders);
     let failure_path = path.clone();
     let retry_path = Arc::new(Mutex::new(None));
     let operation_retry_path = Arc::clone(&retry_path);
@@ -2966,6 +2892,7 @@ unsafe fn notification(
             {
                 lock_recover(operation_failures.as_ref())
                     .rename_pending_captures(&path, destination);
+                placeholders.renamed(&path, destination);
             }
             result
         } else {
@@ -3093,19 +3020,6 @@ fn handle_rename_source(
     source_fs.flush()
 }
 
-unsafe fn copy_optional_wide(pointer: PCWSTR) -> Option<Option<HSTRING>> {
-    if pointer.is_null() {
-        return Some(None);
-    }
-    let mut length = 0_usize;
-    while *pointer.0.add(length) != 0 {
-        length = length.checked_add(1)?;
-    }
-    Some(Some(HSTRING::from_wide(std::slice::from_raw_parts(
-        pointer.0, length,
-    ))))
-}
-
 unsafe extern "system" fn cancel(_callback_data: *const PRJ_CALLBACK_DATA) {}
 
 /// The `ProjFS` entry point for `callback`: it runs the callback on the
@@ -3164,11 +3078,9 @@ fn callbacks() -> PRJ_CALLBACKS {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::{
-        AbsenceReport, CONTENT_PIN_PROVIDER, CallbackGate, HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND,
-        NegativePaths, PostOperationFailures, ProjectionCache, ReadBasis, complete_absences,
-        finish_cleanup, flush_callback_gate, placeholder_info, placeholder_pin,
-        record_post_operation_failure, recover_cache_only_destination,
-        remove_authenticated_destination, source_hresult,
+        CONTENT_PIN_PROVIDER, CallbackGate, PostOperationFailures, ReadBasis, finish_cleanup,
+        flush_callback_gate, placeholder_info, placeholder_pin, record_post_operation_failure,
+        recover_cache_only_destination, remove_authenticated_destination, source_hresult,
     };
     use crate::kernel::FileMetadata;
     use crate::model::{
@@ -3472,17 +3384,17 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn cached_enumeration_follows_source_and_mount_changes()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source().await?;
         source.create_file(&windows_path("a.txt"), FileMetadata::default())?;
         let (_root, destination, mut session) = mount_source(&source)?;
         assert_eq!(sorted_names(&destination)?, ["a.txt"]);
         assert_eq!(sorted_names(&destination)?, ["a.txt"]);
 
-        // A source-side create advances the source view; the listing cached
-        // for the earlier view must not answer for the new one.
+        // A source-side create advances the source view, which the
+        // projection follows once revalidated.
         source.create_file(&windows_path("b.txt"), FileMetadata::default())?;
+        session.revalidate()?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "b.txt"]);
 
         // Creates and removals through the mount stay exact before and after
@@ -3507,7 +3419,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn cached_absence_clears_when_the_source_view_changes()
+    async fn paths_the_source_gains_appear_once_revalidated()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source().await?;
         let (_root, destination, mut session) = mount_source(&source)?;
@@ -3524,8 +3436,8 @@ mod tests {
             0,
             Bytes::from_static(b"listed"),
         )?;
-        // Listing the newer view clears absences cached under the older one,
-        // so a listed name also opens.
+        // A path absent before appears, listed and opened alike.
+        session.revalidate()?;
         assert_eq!(sorted_names(&destination)?, ["listed.txt"]);
         assert_eq!(std::fs::read(destination.join("listed.txt"))?, b"listed");
 
@@ -3535,6 +3447,7 @@ mod tests {
         );
         source.create_file(&windows_path("invalidated.txt"), FileMetadata::default())?;
         session.invalidate(b"/invalidated.txt")?;
+        session.revalidate()?;
         assert_eq!(
             std::fs::metadata(destination.join("invalidated.txt"))?.len(),
             0
@@ -3582,6 +3495,45 @@ mod tests {
     /// it is until its outcome is recorded, even once every change has been
     /// served, and returns as soon as it is settled.
     #[test]
+    fn renames_compose_into_where_each_written_path_is_now() {
+        use super::{Placeholders, lock_recover};
+
+        let path = |parts: &[&str]| {
+            parts.iter().fold(MountPath::root(), |path, part| {
+                path.child(windows_name(part))
+            })
+        };
+        let placeholders = Placeholders::new();
+        placeholders.renamed(&path(&["a"]), &path(&["b"]));
+        placeholders.renamed(&path(&["b", "child"]), &path(&["c"]));
+        // Written before either rename, or between them.
+        assert_eq!(
+            placeholders.moved_path(&path(&["a", "child", "file"])),
+            path(&["c", "file"])
+        );
+        assert_eq!(
+            placeholders.moved_path(&path(&["b", "child", "file"])),
+            path(&["c", "file"])
+        );
+        assert_eq!(
+            placeholders.moved_path(&path(&["a", "other"])),
+            path(&["b", "other"])
+        );
+        // Moving a directory back and forth keeps one entry, for what was
+        // written while it was away.
+        let placeholders = Placeholders::new();
+        for _ in 0..3 {
+            placeholders.renamed(&path(&["x"]), &path(&["y"]));
+            placeholders.renamed(&path(&["y"]), &path(&["x"]));
+        }
+        assert_eq!(lock_recover(&placeholders.state).moves.len(), 1);
+        assert_eq!(
+            placeholders.moved_path(&path(&["y", "file"])),
+            path(&["x", "file"])
+        );
+    }
+
+    #[test]
     fn settling_waits_for_every_pending_placeholder() -> Result<(), Box<dyn std::error::Error>> {
         use super::{Placeholders, WrittenPlaceholder};
         use crate::FileId;
@@ -3595,10 +3547,10 @@ mod tests {
                 path.clone(),
                 WrittenPlaceholder {
                     file_id: FileId::new(),
-                    basis: ReadBasis {
+                    basis: Some(ReadBasis {
                         stamp: ViewStamp::current(),
                         binding: 0,
-                    },
+                    }),
                 },
             );
         }
@@ -3815,6 +3767,70 @@ mod tests {
         Ok(())
     }
 
+    /// A directory projected from the source renames like any other (a
+    /// directory `ProjFS` projected on demand never could), and a file moved
+    /// with it, never opened before, still reads its content: `ProjFS` asks
+    /// for it by the path it was written at.
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn projected_directories_rename_and_what_moved_with_them_reads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::demand::native::NativeDemandSource;
+
+        let root = tempfile::tempdir()?;
+        let source_root = root.path().join("source");
+        std::fs::create_dir_all(source_root.join("pkg").join("sub"))?;
+        std::fs::write(source_root.join("pkg").join("shared.rs"), b"shared")?;
+        std::fs::write(source_root.join("pkg").join("sub").join("deep.rs"), b"deep")?;
+        let demand = NativeDemandSource::open(
+            &source_root,
+            crate::model::FilesystemProfile::Windows,
+            crate::model::VolumeLimits::default(),
+        )
+        .await?;
+        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+        let lazy = crate::LazyWorkspace::attach_with_config(
+            &engine,
+            "renamed-projfs",
+            Arc::new(demand),
+            crate::LocalCoreStateStore::open_owned(root.path().join("core"))?,
+            VolumeConfig::native(Lifecycle::Ephemeral),
+        )
+        .await?;
+        let destination = root.path().join("mount");
+        std::fs::create_dir(&destination)?;
+        let mount = lazy
+            .mount(
+                &destination,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        assert_eq!(
+            sorted_names(&destination.join("pkg"))?,
+            ["shared.rs", "sub"]
+        );
+        // ProjFS reports only other processes' I/O to its provider.
+        let moved = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "move pkg lib"])
+            .current_dir(&destination)
+            .output()?;
+        assert!(moved.status.success(), "move failed: {moved:?}");
+        assert_eq!(sorted_names(&destination)?, ["lib"]);
+        assert_eq!(
+            std::fs::read(destination.join("lib").join("shared.rs"))?,
+            b"shared"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("lib").join("sub").join("deep.rs"))?,
+            b"deep"
+        );
+        mount.sync().await?;
+        assert!(lazy.lookup("/lib/sub/deep.rs").await.is_ok());
+        assert!(lazy.lookup("/pkg").await.is_err());
+        mount.unmount().await?;
+        Ok(())
+    }
+
     /// A live projection lists a lazy workspace's unauthored source entries.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
@@ -3855,199 +3871,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn an_absence_completes_cached_only_if_it_still_holds_when_completing()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let absent = windows_path("absent.txt");
-        let clears = std::cell::Cell::new(0);
-        let clear = || {
-            clears.set(clears.get() + 1);
-            Ok(())
-        };
-        let mut negative = NegativePaths::default();
-
-        // Completed in the view it was looked up in, the absence is cached.
-        let basis = ReadBasis::sample(source.as_ref());
-        assert_eq!(
-            negative.admit(source.as_ref(), absent.clone(), basis, clear),
-            HR_FILE_NOT_FOUND
-        );
-        // A later creation makes the next prune forget it.
-        source.create_file(&absent, FileMetadata::default())?;
-        negative
-            .prune(source.as_ref(), clear)
-            .map_err(windows::core::Error::from_hresult)?;
-        assert_eq!(clears.get(), 1);
-        assert!(negative.absent.is_empty());
-
-        // The race: a lookup finds the name absent, a prune runs and proves
-        // the (still empty) cache, and the name is created before the lookup
-        // completes. Completion re-proves the absence and must not let
-        // `ProjFS` cache it, since no later prune would find it to clear.
-        let late = windows_path("late.txt");
-        let basis = ReadBasis::sample(source.as_ref());
-        negative
-            .prune(source.as_ref(), clear)
-            .map_err(windows::core::Error::from_hresult)?;
-        source.create_file(&late, FileMetadata::default())?;
-        assert_eq!(
-            negative.admit(source.as_ref(), late, basis, clear),
-            HR_PATH_NOT_FOUND
-        );
-        assert!(negative.absent.is_empty());
-        // A view that cannot be versioned is never cached.
-        assert_eq!(
-            negative.admit(source.as_ref(), windows_path("unversioned"), None, clear),
-            HR_PATH_NOT_FOUND
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn absences_complete_while_every_clear_is_excluded()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let paths = Mutex::new(NegativePaths::default());
-        let (reports, queue) = std::sync::mpsc::channel();
-        let basis = ReadBasis::sample(source.as_ref());
-        for (command_id, name) in [(1, "first"), (2, "second")] {
-            reports.send(AbsenceReport {
-                command_id,
-                path: windows_path(name),
-                basis,
-            })?;
-        }
-        drop(reports);
-        let completed = Mutex::new(Vec::new());
-        complete_absences(
-            queue,
-            source.as_ref(),
-            &paths,
-            || Ok(()),
-            |command_id, result| {
-                // A clear, which takes this lock, cannot run until the
-                // completion `ProjFS` records has been delivered.
-                assert!(
-                    matches!(paths.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
-                    "completed without excluding clears"
-                );
-                completed
-                    .lock()
-                    .expect("completions")
-                    .push((command_id, result));
-            },
-        );
-        assert_eq!(
-            *completed.lock().expect("completions"),
-            [(1, HR_FILE_NOT_FOUND), (2, HR_FILE_NOT_FOUND)]
-        );
-        assert_eq!(paths.lock().expect("absences").absent.len(), 2);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cached_listing_is_reused_until_a_change_it_depends_on()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let directory = windows_path("directory");
-        let listed = directory.child(windows_name("listed.txt"));
-        let elsewhere = windows_path("elsewhere.txt");
-        source.create_directory(&directory, FileMetadata::default())?;
-        source.create_file(&listed, FileMetadata::default())?;
-        source.create_file(&elsewhere, FileMetadata::default())?;
-        let snapshot = |cache: &mut ProjectionCache| -> Result<(), Box<dyn std::error::Error>> {
-            let basis = ReadBasis::sample(source.as_ref()).ok_or("unversioned source")?;
-            let entries = super::directory_snapshot(source.as_ref(), &directory)
-                .map_err(|code| format!("snapshot failed: {code:?}"))?;
-            cache.remember_directory(basis, directory.clone(), Arc::from(entries));
-            Ok(())
-        };
-        let mut cache = ProjectionCache::default();
-        snapshot(&mut cache)?;
-        assert!(cache.directory(source.as_ref(), &directory).is_some());
-
-        // A change the listing does not depend on keeps it.
-        source.write_range(&elsewhere, 0, Bytes::from_static(b"other"))?;
-        assert!(cache.directory(source.as_ref(), &directory).is_some());
-
-        // A listed node's change drops it: its size is projected.
-        source.write_range(&listed, 0, Bytes::from_static(b"grown"))?;
-        assert!(cache.directory(source.as_ref(), &directory).is_none());
-
-        // So does a change of membership.
-        snapshot(&mut cache)?;
-        source.create_file(
-            &directory.child(windows_name("added.txt")),
-            FileMetadata::default(),
-        )?;
-        assert!(cache.directory(source.as_ref(), &directory).is_none());
-        assert_eq!(cache.directory_entries, 0);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_listing_answers_placeholders_exactly_as_a_lookup_would()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let directory = windows_path("directory");
-        let listed = directory.child(windows_name("Listed.txt"));
-        source.create_directory(&directory, FileMetadata::default())?;
-        source.create_file(&listed, FileMetadata::default())?;
-        source.write_range(&listed, 0, Bytes::from_static(b"listed"))?;
-        let mut cache = ProjectionCache::default();
-        let basis = ReadBasis::sample(source.as_ref()).ok_or("unversioned source")?;
-        let entries = super::directory_snapshot(source.as_ref(), &directory)
-            .map_err(|code| format!("snapshot failed: {code:?}"))?;
-        cache.remember_directory(basis, directory.clone(), Arc::from(entries));
-
-        let (lookup, pin) = source.lookup_pinned(&listed)?.ok_or("listed file absent")?;
-        let issued = placeholder_info(&lookup, pin).ok_or("no placeholder")?;
-        // Any spelling ProjFS matches to the listed name finds it.
-        for spelling in ["Listed.txt", "LISTED.TXT", "listed.txt"] {
-            let listed = cache
-                .listed_placeholder(source.as_ref(), &directory.child(windows_name(spelling)))
-                .ok_or("a listed name is answered from its listing")?;
-            let (placeholder, target) = (listed.placeholder, listed.symlink_target);
-            assert_eq!(listed.file_id, lookup.node.file_id);
-            assert_eq!(placeholder.FileBasicInfo.FileSize, 6);
-            assert_eq!(
-                (
-                    placeholder.FileBasicInfo.IsDirectory,
-                    placeholder.FileBasicInfo.FileSize,
-                    placeholder.FileBasicInfo.CreationTime,
-                    placeholder.FileBasicInfo.LastWriteTime,
-                    placeholder.FileBasicInfo.ChangeTime,
-                    placeholder.FileBasicInfo.FileAttributes,
-                    placeholder.VersionInfo.ProviderID,
-                    placeholder.VersionInfo.ContentID,
-                ),
-                (
-                    issued.FileBasicInfo.IsDirectory,
-                    issued.FileBasicInfo.FileSize,
-                    issued.FileBasicInfo.CreationTime,
-                    issued.FileBasicInfo.LastWriteTime,
-                    issued.FileBasicInfo.ChangeTime,
-                    issued.FileBasicInfo.FileAttributes,
-                    issued.VersionInfo.ProviderID,
-                    issued.VersionInfo.ContentID,
-                ),
-                "{spelling}"
-            );
-            assert!(target.is_none());
-        }
-        // An unlisted name is left to a lookup.
-        assert!(
-            cache
-                .listed_placeholder(source.as_ref(), &directory.child(windows_name("other")))
-                .is_none()
-        );
-        // A change to the listed node ends the listing's answer for it.
-        source.write_range(&listed, 0, Bytes::from_static(b"grown!!"))?;
-        assert!(cache.listed_placeholder(source.as_ref(), &listed).is_none());
-        Ok(())
-    }
-
     #[test]
     fn placeholder_version_carries_exactly_the_issued_pin() {
         let lookup = MountLookup {
@@ -4075,6 +3898,11 @@ mod tests {
             .VersionInfo;
         callback.VersionInfo = &raw mut unpinned;
         assert_eq!(placeholder_pin(&callback), None);
+        // Every write is a new version, so `ProjFS` never skips a rewrite.
+        let again = placeholder_info(&lookup, None)
+            .expect("regular file placeholder")
+            .VersionInfo;
+        assert_ne!(again.ContentID, unpinned.ContentID);
 
         // Another provider's version information is never read as a pin.
         let mut foreign = pinned;

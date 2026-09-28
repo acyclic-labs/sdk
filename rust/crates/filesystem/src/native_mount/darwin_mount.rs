@@ -31,6 +31,9 @@ const ROOT_INODE: u64 = 1;
 const DIRECTORY_PAGE_SIZE: u32 = 256;
 const ATTRIBUTE_PAGE_SIZE: u32 = 256;
 const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
+/// Most times a listing that has delivered no entry starts over in a view
+/// that keeps moving before it fails.
+const MAXIMUM_LISTING_RESTARTS: usize = 8;
 /// Most labelled objects a revalidation verifies against the source after
 /// an unconfirmed fence; with more, waiting out the attribute timeout costs
 /// less.
@@ -212,6 +215,29 @@ impl DirectoryHandle {
 
     const fn can_reuse_pages(&self) -> bool {
         self.epochs.is_some()
+    }
+
+    /// Keeps the listing in the current view, or fails it with `ESTALE`. A
+    /// listing that has delivered nothing but `.` and `..` (which no view
+    /// changes) starts over in the view current now, as if just opened: a
+    /// change to the source while a directory is being opened or first read
+    /// never fails the listing. Only one already delivering entries from an
+    /// older view fails, rather than mixing two views in one listing.
+    fn keep_current(&mut self, context: &DarwinMountContext) -> Result<(), i32> {
+        for _ in 0..MAXIMUM_LISTING_RESTARTS {
+            if !self.can_reuse_pages() || self.is_current(context) {
+                return Ok(());
+            }
+            if self.emitted > 2 || context.source.binding_epoch() != self.binding_epoch {
+                return Err(libc::ESTALE);
+            }
+            self.epochs = context.cache_epochs();
+            self.cursor = None;
+            self.entries.clear();
+            self.exhausted = false;
+            self.revision = None;
+        }
+        Err(libc::ESTALE)
     }
 }
 
@@ -1883,10 +1909,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
         if context.lookup(&path)?.node.kind != MountNodeKind::Directory {
             return Err(libc::ENOTDIR);
         }
-        let directory = DirectoryHandle::new(path, binding_epoch, epochs);
-        if directory.can_reuse_pages() && !directory.is_current(context) {
-            return Err(libc::ESTALE);
-        }
+        let mut directory = DirectoryHandle::new(path, binding_epoch, epochs);
+        directory.keep_current(context)?;
         let allocated = context.allocate_handle()?;
         let mut directories = context.directories.lock().map_err(|_| libc::EIO)?;
         directories.try_reserve(1).map_err(|_| libc::ENOMEM)?;
@@ -1918,9 +1942,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             .source
             .acquire_binding_lease(directory.binding_epoch)
             .map_err(|error| errno(&error))?;
-        if !directory.is_current(context) {
-            return Err(libc::ESTALE);
-        }
+        directory.keep_current(context)?;
         if offset < 0 {
             return Err(libc::EINVAL);
         }
@@ -2026,7 +2048,7 @@ fn finish_directory_page(
     // A mutation can happen after the last page read, while the native filler
     // copies entries into its buffer. Returning ESTALE discards that buffer
     // rather than exposing a listing assembled from different view epochs.
-    if directory.can_reuse_pages() && !directory.is_current(context) {
+    if directory.emitted > 2 && directory.can_reuse_pages() && !directory.is_current(context) {
         return Err(libc::ESTALE);
     }
     if checkpoint {
@@ -2058,10 +2080,12 @@ fn ensure_directory_page(
     context: &DarwinMountContext,
     directory: &mut DirectoryHandle,
 ) -> Result<(), i32> {
-    if directory.can_reuse_pages() && !directory.is_current(context) {
-        return Err(libc::ESTALE);
-    }
-    if directory.entries.is_empty() && !directory.exhausted {
+    directory.keep_current(context)?;
+    for _ in 0..MAXIMUM_LISTING_RESTARTS {
+        if !directory.entries.is_empty() || directory.exhausted {
+            return Ok(());
+        }
+        let read_in = directory.epochs;
         directory
             .revision
             .get_or_insert_with(|| context.namespace_revision.load(Ordering::Acquire));
@@ -2073,8 +2097,10 @@ fn ensure_directory_page(
                 DIRECTORY_PAGE_SIZE,
             )
             .map_err(|error| errno(&error))?;
-        if directory.can_reuse_pages() && !directory.is_current(context) {
-            return Err(libc::ESTALE);
+        directory.keep_current(context)?;
+        if directory.epochs != read_in {
+            // Started over in a newer view; this page is from the older one.
+            continue;
         }
         if page.entries.is_empty() && page.next_cursor.is_some() {
             return Err(libc::EIO);
@@ -2082,8 +2108,9 @@ fn ensure_directory_page(
         directory.cursor = page.next_cursor;
         directory.exhausted = directory.cursor.is_none();
         directory.entries = page.entries.into();
+        return Ok(());
     }
-    Ok(())
+    Err(libc::ESTALE)
 }
 
 fn checkpoint_directory(
@@ -3610,10 +3637,16 @@ mod tests {
     #[test]
     fn directory_page_rejects_a_native_mutation_between_reads() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
+        source.create_file(
+            &MountPath::root().child(b"in-page".to_vec()),
+            FileMetadata::default(),
+        )?;
         let root = MountPath::root();
         let mut directory =
             DirectoryHandle::new(root, source.binding_epoch(), context.cache_epochs());
-        ensure_directory_page(&context, &mut directory)
+        // `.`, `..`, and one entry delivered: a listing that handed out an
+        // entry cannot continue in a later view.
+        advance_directory_to_offset(&context, &mut directory, 3)
             .map_err(std::io::Error::from_raw_os_error)?;
         source.create_file(
             &MountPath::root().child(b"after-page".to_vec()),
@@ -3627,6 +3660,24 @@ mod tests {
             ensure_directory_page(&context, &mut directory),
             Err(libc::ESTALE)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_listing_that_delivered_nothing_restarts_in_the_new_view() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let root = MountPath::root();
+        let mut directory =
+            DirectoryHandle::new(root, source.binding_epoch(), context.cache_epochs());
+        ensure_directory_page(&context, &mut directory)
+            .map_err(std::io::Error::from_raw_os_error)?;
+        source.create_file(
+            &MountPath::root().child(b"after-page".to_vec()),
+            FileMetadata::default(),
+        )?;
+        // Only `.` and `..` were delivered: the listing starts again.
+        assert_eq!(finish_directory_page(&context, &directory, false), Ok(()));
+        assert_eq!(ensure_directory_page(&context, &mut directory), Ok(()));
         Ok(())
     }
 

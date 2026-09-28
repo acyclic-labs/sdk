@@ -718,6 +718,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         .await
     }
 
+    /// Whether a path holds the same thing in two states: the same record,
+    /// or one file state under another identity or timestamps (see
+    /// `Fs::same_file_state`), as when a capture records afresh a file a
+    /// publication wrote. A hard link's identity is its other names, so it
+    /// must match exactly.
+    async fn same_path_state(
+        &self,
+        left: Option<crate::kernel::FileRecord>,
+        right: Option<crate::kernel::FileRecord>,
+    ) -> Result<bool, WorkspaceError> {
+        match (left, right) {
+            (Some(left), Some(right)) if left != right => {
+                self.volume
+                    .fs
+                    .same_file_state(&self.volume, left, right)
+                    .await
+            }
+            (left, right) => Ok(left == right),
+        }
+    }
+
     /// Applies an exact three-way path delta under one writer permit.
     #[allow(
         clippy::too_many_lines,
@@ -836,10 +857,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             let current_record = current_records
                 .next()
                 .ok_or_else(|| WorkspaceError::engine("missing batch lookup result"))?;
-            if current_record == source_record {
+            if self.same_path_state(current_record, source_record).await? {
                 continue;
             }
-            if current_record != base_record {
+            if !self.same_path_state(current_record, base_record).await? {
                 conflicts.push(WorkspacePathConflict {
                     path: relative.to_owned(),
                     kind: path_conflict_kind(base_record, current_record, source_record),
@@ -871,6 +892,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         if operations.is_empty() {
             return Ok(WorkspacePathApply::NoChanges(current));
         }
+        // Parents are restored before their children, and children removed
+        // before their parents.
+        operations.sort_by_key(|operation| match operation {
+            crate::kernel::Mutation::Remove { path, .. } => {
+                (1, std::cmp::Reverse(path.components().len()))
+            }
+            _ => (0, std::cmp::Reverse(0)),
+        });
         transaction
             .checkout
             .mutate(operations, crate::WorkBudget::UNBOUNDED, &cancellation)
