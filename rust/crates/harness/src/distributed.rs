@@ -17,14 +17,19 @@ use acyclic_stream::{
     StreamClient, StreamError, StreamProvider,
 };
 use bytes::Bytes;
-use futures::future::BoxFuture;
+use futures::{TryStreamExt as _, future::BoxFuture};
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";
 const COORDINATOR_WIRE_VERSION: &str = "2";
 const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v2";
+const READ_PAGE_SIZE: u32 = 1_024;
 fn validate_child_page_request(
     parent: OperationId,
     after_slot: Option<&str>,
@@ -216,6 +221,8 @@ pub struct CommittedSchedulerEvent {
     pub operation_id: OperationId,
     /// Digest of the exact canonical event bytes retained by the coordinator.
     pub event_digest: [u8; 32],
+    /// Monotonic UTC time fixed by the coordinator at durable append.
+    pub committed_at_ms: u64,
     /// Decoded scheduler transition.
     pub event: SchedulerEvent,
 }
@@ -257,7 +264,8 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
                 "coordinator event page has a cursor gap".into(),
             ));
         }
-        let (revision, operation_id, _, event_digest, event) = decode(&record.value)?;
+        let (revision, operation_id, _, event_digest, committed_at_ms, event) =
+            decode(&record.value)?;
         if revision != expected.saturating_add(1)
             || scheduler_event_operation(&event) != operation_id
         {
@@ -269,6 +277,7 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
             revision,
             operation_id,
             event_digest,
+            committed_at_ms,
             event,
         });
         expected = revision;
@@ -282,6 +291,7 @@ pub struct DistributedCoordinator<P> {
     stream: Stream<P>,
     scheduler: Scheduler,
     revision: u64,
+    last_committed_at_ms: u64,
     intents: BTreeMap<String, ([u8; 32], SchedulerEvent)>,
     content_verifier: Arc<dyn ContentResidencyVerifier>,
     payload_store: Option<Arc<dyn SchedulerPayloadStore>>,
@@ -299,6 +309,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             stream,
             scheduler: Scheduler::new(),
             revision: 0,
+            last_committed_at_ms: 0,
             intents: BTreeMap::new(),
             content_verifier,
             payload_store: None,
@@ -314,7 +325,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let mut replay = self.stream.replay(self.revision);
         while let Some(page) = replay.next_page().await? {
             for record in page {
-                let (revision, operation_id, key, digest, event) = decode(&record.value)?;
+                let (revision, operation_id, key, digest, committed_at_ms, event) =
+                    decode(&record.value)?;
                 if revision != record.sequence + 1 {
                     return Err(Error::Storage("coordinator revision is not gapless".into()));
                 }
@@ -322,7 +334,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     self.content_verifier.verify(&spec.state).await?;
                 }
                 self.verify_published_result(&event).await?;
-                self.apply_committed(revision, operation_id, key, digest, event)?;
+                self.apply_committed(revision, operation_id, key, digest, committed_at_ms, event)?;
             }
         }
         Ok(())
@@ -596,6 +608,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<CoordinatorApply> {
         self.refresh().await?;
         IdempotencyKey::new(idempotency_key.0.clone())?;
+        let key = idempotency_key.as_str();
         if scheduler_event_operation(&event) != operation_id {
             return Err(Error::Invalid(
                 "scheduler event belongs to another operation".into(),
@@ -603,7 +616,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         let canonical = crate::contract::canonical_json_bytes(&event)?;
         let digest = *blake3::hash(&canonical).as_bytes();
-        if let Some((existing_digest, existing)) = self.intents.get(idempotency_key.as_str()) {
+        if let Some((existing_digest, existing)) = self.intents.get(key) {
             return if existing_digest == &digest && existing == &event {
                 Ok(CoordinatorApply::Replayed)
             } else {
@@ -616,18 +629,17 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.verify_published_result(&event).await?;
         let mut projected = self.scheduler.clone();
         projected.apply(event.clone())?;
-        let revision = self
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("coordinator revision exhausted".into()))?;
+        let revision = self.next_revision()?;
+        let committed_at_ms = self.next_committed_at_ms()?;
         let bytes = encode(
             revision,
             operation_id,
-            idempotency_key.as_str(),
+            key,
             digest,
             canonical,
+            committed_at_ms,
         );
-        let stream_key = stream_key(idempotency_key.as_str())?;
+        let stream_key = stream_key(key)?;
         let outcome = match self
             .stream
             .append_batch(
@@ -662,7 +674,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     return Err(Error::Storage("invalid coordinator append receipt".into()));
                 }
                 self.refresh().await?;
-                match self.intents.get(idempotency_key.as_str()) {
+                match self.intents.get(key) {
                     Some((committed_digest, committed))
                         if committed_digest == &digest && committed == &event =>
                     {
@@ -679,7 +691,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             AppendOutcome::TailConflict { actual_tail } => {
                 self.refresh().await?;
-                match self.intents.get(idempotency_key.as_str()) {
+                match self.intents.get(key) {
                     Some((committed_digest, committed))
                         if committed_digest == &digest && committed == &event =>
                     {
@@ -692,6 +704,20 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 }
             }
         }
+    }
+
+    fn next_revision(&self) -> Result<u64> {
+        self.revision
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("coordinator revision exhausted".into()))
+    }
+
+    fn next_committed_at_ms(&self) -> Result<u64> {
+        let after_previous = self
+            .last_committed_at_ms
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("coordinator commit time exhausted".into()))?;
+        Ok(current_time_millis()?.max(after_previous))
     }
 
     /// Pulls and atomically admits one dependency- and resource-ready operation.
@@ -963,11 +989,17 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         operation_id: OperationId,
         key: String,
         digest: [u8; 32],
+        committed_at_ms: u64,
         event: SchedulerEvent,
     ) -> Result<()> {
         if revision != self.revision + 1 || scheduler_event_operation(&event) != operation_id {
             return Err(Error::Conflict(
                 "invalid committed coordinator event".into(),
+            ));
+        }
+        if committed_at_ms <= self.last_committed_at_ms {
+            return Err(Error::Storage(
+                "coordinator commit time is not increasing".into(),
             ));
         }
         IdempotencyKey::new(key.clone())?;
@@ -978,6 +1010,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         self.scheduler.apply(event.clone())?;
         self.revision = revision;
+        self.last_committed_at_ms = committed_at_ms;
         self.intents.insert(key, (digest, event));
         Ok(())
     }
@@ -1006,6 +1039,7 @@ fn encode(
     key: &str,
     digest: [u8; 32],
     canonical: Vec<u8>,
+    committed_at_ms: u64,
 ) -> Vec<u8> {
     wire::SchedulerEventEnvelope {
         protocol: Some(coordinator_protocol_identity()),
@@ -1014,11 +1048,12 @@ fn encode(
         idempotency_key: key.into(),
         canonical_event_json: canonical,
         event_digest: digest.to_vec(),
+        committed_at_ms: Some(committed_at_ms),
     }
     .encode_to_vec()
 }
 
-fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], SchedulerEvent)> {
+fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], u64, SchedulerEvent)> {
     let envelope = wire::SchedulerEventEnvelope::decode(bytes)
         .map_err(|error| Error::Storage(error.to_string()))?;
     validate_coordinator_protocol(envelope.protocol.as_ref())?;
@@ -1031,13 +1066,27 @@ fn decode(bytes: &[u8]) -> Result<(u64, OperationId, String, [u8; 32], Scheduler
     }
     let event = serde_json::from_slice(&envelope.canonical_event_json)
         .map_err(|error| Error::Storage(error.to_string()))?;
+    let committed_at_ms = envelope
+        .committed_at_ms
+        .filter(|time| *time > 0)
+        .ok_or_else(|| Error::Storage("coordinator event lacks commit time".into()))?;
     Ok((
         envelope.revision,
         OperationId::parse(&envelope.operation_id)?,
         envelope.idempotency_key,
         digest,
+        committed_at_ms,
         event,
     ))
+}
+
+fn current_time_millis() -> Result<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Error::Invalid("coordinator clock predates Unix epoch".into()))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| Error::Invalid("coordinator clock exceeds supported range".into()))
 }
 
 fn coordinator_protocol_identity() -> wire::ProtocolIdentity {
@@ -1487,20 +1536,33 @@ mod tests {
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
         assert!(read_coordinator_event_page(&client, 0, 1).await?.is_empty());
         let operation_id = OperationId::from_bytes([41; 16]);
-        let mut coordinator = DistributedCoordinator::open(&client).await?;
-        coordinator
-            .apply(
-                operation_id,
-                IdempotencyKey::new("projector-declare")?,
-                coordinator.scheduler().declare(spec(operation_id, 1))?,
-            )
-            .await?;
+        let mut coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        declare(
+            &mut coordinator,
+            spec(operation_id, 1)?,
+            "projector-declare",
+        )
+        .await?;
         let page = read_coordinator_event_page(&client, 0, 1).await?;
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].revision, 1);
         assert_eq!(page[0].operation_id, operation_id);
+        assert!(page[0].committed_at_ms > 0);
         assert!(matches!(page[0].event, SchedulerEvent::Declared { .. }));
-        assert!(read_coordinator_event_page(&client, 1, 1).await?.is_empty());
+        let second = OperationId::from_bytes([42; 16]);
+        declare(&mut coordinator, spec(second, 1)?, "projector-second").await?;
+        let next = read_coordinator_event_page(&client, 1, 1).await?;
+        assert_eq!(next.len(), 1);
+        assert!(next[0].committed_at_ms > page[0].committed_at_ms);
+        let mut reopened =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let third = OperationId::from_bytes([43; 16]);
+        declare(&mut reopened, spec(third, 1)?, "projector-third").await?;
+        let last = read_coordinator_event_page(&client, 2, 1).await?;
+        assert_eq!(last.len(), 1);
+        assert!(last[0].committed_at_ms > next[0].committed_at_ms);
+        assert!(read_coordinator_event_page(&client, 3, 1).await?.is_empty());
         assert!(read_coordinator_event_page(&client, 0, 0).await.is_err());
         Ok(())
     }
