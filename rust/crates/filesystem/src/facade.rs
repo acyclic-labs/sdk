@@ -3787,6 +3787,47 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(Some(read.bytes))
     }
 
+    /// Whether two single-link records hold one file state: the same kind,
+    /// bytes, and metadata but for timestamps, whatever their identities, as
+    /// when a capture records a file a publication wrote.
+    pub(crate) async fn same_file_state(
+        &self,
+        workspace: &Volume<A, O>,
+        left: FileRecord,
+        right: FileRecord,
+    ) -> Result<bool, crate::workspace::WorkspaceError> {
+        if left.kind != right.kind
+            || left.payload != right.payload
+            || left.link_count != 1
+            || right.link_count != 1
+        {
+            return Ok(false);
+        }
+        if left.metadata == right.metadata {
+            return Ok(true);
+        }
+        let mut metadata = Vec::with_capacity(2);
+        for object in [left.metadata, right.metadata] {
+            let read = self
+                .inner
+                .objects
+                .read(
+                    object,
+                    workspace.config.limits.maximum_object_bytes,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(crate::workspace::WorkspaceError::engine)?;
+            metadata.push(
+                decode_file_metadata(&read.value.bytes, decode_limits(workspace.config))
+                    .map_err(crate::workspace::WorkspaceError::engine)?
+                    .without_timestamps(),
+            );
+        }
+        Ok(metadata.first() == metadata.get(1))
+    }
+
     pub(crate) async fn workspace_conflict_metadata(
         &self,
         workspace: &Volume<A, O>,
@@ -4343,6 +4384,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
+        // The source is exactly what the target already is: there is
+        // nothing to join, and a merge of a generation with itself has no
+        // second parent.
+        if normalized_source_object == target_object && current_target == expected_target {
+            return Ok(WorkspaceJoinOutcome::NoChanges(current_target));
+        }
         let merged = merge_generation_async(
             &self.inner.objects,
             MergeGenerationRequest {

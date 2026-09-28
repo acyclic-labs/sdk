@@ -68,6 +68,19 @@ impl Default for FileMetadata {
 }
 
 impl FileMetadata {
+    /// This metadata without the timestamps that reads, writes, and captures
+    /// move on their own.
+    #[must_use]
+    pub(crate) const fn without_timestamps(self) -> Self {
+        Self {
+            created_ns: MetadataField::Unavailable,
+            modified_ns: MetadataField::Unavailable,
+            accessed_ns: MetadataField::Unavailable,
+            changed_ns: MetadataField::Unavailable,
+            ..self
+        }
+    }
+
     /// Records a content change made at `at_ns`, in signed Unix-epoch
     /// nanoseconds: every represented modification and status-change time
     /// takes that instant. Returns whether any such time is represented.

@@ -34,6 +34,8 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 const MAXIMUM_PROMOTION_BYTES: u64 = u64::MAX;
 const MAXIMUM_LAZY_DIRECTORY_CURSORS: usize = 1_024;
+/// Entries listed per page while promoting a subtree.
+const DIRECTORY_PROMOTION_PAGE: u32 = 256;
 const MAXIMUM_REMEMBERED_RESOLUTIONS: usize = 65_536;
 const MAXIMUM_PROMOTION_RETRIES: usize = 3;
 /// First-page listings of one directory before an interrupting change is
@@ -1239,6 +1241,54 @@ where
                     held.clear();
                 }
                 held.insert(parent.clone(), stamp);
+            }
+        }
+        Ok(())
+    }
+
+    /// Promotes the source directory at `path` and everything beneath it
+    /// that the view still reads from the source, directories before what
+    /// they hold.
+    fn promote_subtree_locked(&self, path: &MountPath) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+        D: DemandSource + 'static,
+        S: LazyWorkspaceStore,
+    {
+        let mut directories = vec![path.clone()];
+        while let Some(directory) = directories.pop() {
+            // Listed whole first: promoting what it holds changes the
+            // listing, which no cursor outlives.
+            let text = self.path(&directory)?;
+            let mut unresolved = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = self.wait(|| async {
+                    self.lazy
+                        .list_directory(&text, cursor.clone(), DIRECTORY_PROMOTION_PAGE)
+                        .await
+                        .map_err(lazy_error)
+                })?;
+                for entry in page.entries {
+                    if !entry.authored {
+                        let child =
+                            directory.child(super::adapter::native_mount_name(&entry.name)?);
+                        unresolved.push((child, entry.kind == SourceNodeKind::Directory));
+                    }
+                }
+                match page.next {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
+            }
+            self.promote_locked(&directory)?;
+            for (child, is_directory) in unresolved {
+                if is_directory {
+                    directories.push(child);
+                } else {
+                    self.promote_locked(&child)?;
+                }
             }
         }
         Ok(())
@@ -2603,9 +2653,10 @@ where
                     ..
                 })
             ) {
-                return Err(MountSourceError::Unsupported(
-                    "renaming an unresolved lazy directory requires a subtree remap".to_owned(),
-                ));
+                // Its entries resolve through the source by their paths, which
+                // the rename changes: the subtree becomes authored first and
+                // moves as one directory.
+                self.promote_subtree_locked(source)?;
             }
         }
         self.promote_locked(source)?;
@@ -2726,6 +2777,23 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    /// Records that another handle on the workspace changed each of
+    /// `paths` (workspace paths): every name at or beneath one reads afresh.
+    pub(crate) fn changed_outside(&self, paths: &[String]) -> Result<(), MountSourceError> {
+        let mut effect = ViewEffect::default();
+        for path in paths {
+            effect
+                .subtrees
+                .push(self.lazy.namespace_path(path).map_err(lazy_error)?);
+        }
+        if !effect.is_empty() {
+            self.cursors.clear();
+            self.authored
+                .record_projection_change(&ViewChange::Effect(&effect));
+        }
+        Ok(())
+    }
+
     pub(crate) fn capture_host_paths_with_identity(
         &self,
         source_root: &Path,

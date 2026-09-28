@@ -543,6 +543,53 @@ impl NativeWatch {
         Ok(())
     }
 
+    /// Adds every directory beneath the root, except the root names in
+    /// `excluded`, to a non-recursive native watcher: what a baseline that
+    /// captures the whole tree needs before it starts, so a change to
+    /// anything it captured is reported. Recursive backends already cover
+    /// the tree. A directory removed during the walk is skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a listing or backend registration failure.
+    pub fn watch_tree(&mut self, excluded: &[&str]) -> Result<(), NativeWatchError> {
+        if self.recursive {
+            return Ok(());
+        }
+        let mut pending = vec![self.root.clone()];
+        while let Some(directory) = pending.pop() {
+            let entries = match std::fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(NativeWatchError::Io(error.to_string())),
+            };
+            for entry in entries {
+                let entry = entry.map_err(|error| NativeWatchError::Io(error.to_string()))?;
+                let is_directory = entry
+                    .file_type()
+                    .is_ok_and(|file_type| file_type.is_dir() && !file_type.is_symlink());
+                if !is_directory
+                    || (directory == self.root
+                        && excluded.iter().any(|name| entry.file_name() == *name))
+                {
+                    continue;
+                }
+                let path = entry.path();
+                if !self.watched_directories.contains(&path) {
+                    match self.watcher.watch(&path, RecursiveMode::NonRecursive) {
+                        Ok(()) => {
+                            self.watched_directories.insert(path.clone());
+                        }
+                        Err(_) if !path.is_dir() => continue,
+                        Err(error) => return Err(NativeWatchError::Backend(error.to_string())),
+                    }
+                }
+                pending.push(path);
+            }
+        }
+        Ok(())
+    }
+
     fn forget_removed_directories(&mut self, changes: &[WatchChange]) {
         if self.recursive {
             return;

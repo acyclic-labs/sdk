@@ -2982,9 +2982,40 @@ where
                         .await
                         .map_err(|failure| failure.error)?;
                     *work = account_work(*work, source.work, budget)?;
-                    source
-                        .value
-                        .is_none_or(|node| self.source_file_id(&node) != record.file_id)
+                    match source.value {
+                        None => true,
+                        Some(node) if self.source_file_id(&node) == record.file_id => false,
+                        // A directory the workspace already held merges with
+                        // the source's: once published, only a tombstone
+                        // replaces a source directory. One the checkout made
+                        // since replaces an unrelated one at its path.
+                        Some(_) => {
+                            let head = self
+                                .workspace
+                                .head_measured(remaining_work(*work, budget)?, cancellation)
+                                .await
+                                .map_err(workspace_error)?;
+                            *work = account_work(*work, head.work, budget)?;
+                            let committed = head
+                                .value
+                                .lookup_paths(
+                                    std::slice::from_ref(directory),
+                                    remaining_work(*work, budget)?,
+                                    cancellation,
+                                )
+                                .await
+                                .map_err(|failure| {
+                                    LazyWorkspaceError::Workspace(failure.error.to_string())
+                                })?;
+                            *work = account_work(*work, committed.work, budget)?;
+                            committed
+                                .value
+                                .first()
+                                .copied()
+                                .flatten()
+                                .is_none_or(|committed| committed.file_id != record.file_id)
+                        }
+                    }
                 }
                 None => false,
             };

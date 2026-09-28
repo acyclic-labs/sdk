@@ -387,6 +387,60 @@ mod capture_policy_tests {
     }
 
     #[tokio::test]
+    async fn a_modified_directory_keeps_what_it_holds() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::create_dir(temporary.path().join("pkg"))?;
+        std::fs::write(temporary.path().join("pkg/shared.rs"), b"VALUE = 1")?;
+        let workspace = crate::Fs::memory()
+            .create_workspace("watch-directory")
+            .await?;
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+            )
+            .await?;
+        let options = CaptureOptions {
+            source_root: temporary.path().to_path_buf(),
+            expected_root_identity: capture_root_identity(temporary.path())?,
+            maximum_paths: 8,
+            maximum_extent_spans: 8,
+        };
+        capture_baseline(
+            &mut checkout,
+            &options,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        capture_watch_batch(
+            &mut checkout,
+            WatchBatch::Changes {
+                epoch: WatchEpoch::from_u64(1),
+                first_sequence: WatchSequence::from_u64(1),
+                next_sequence: WatchSequence::from_u64(2),
+                changes: vec![WatchChange::Modified(path("/pkg")?)],
+            },
+            &options,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+        let file = checkout
+            .lookup_no_follow(
+                &path("/pkg/shared.rs")?,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await?;
+        assert_eq!(
+            file.value.record.map(|record| record.kind),
+            Some(FileKind::Regular)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn watch_rename_creates_an_unobserved_destination_parent_first()
     -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
@@ -2915,6 +2969,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             } else {
                 snapshot.metadata
             };
+            let mut prior_metadata = None;
             if let Some(record) = current.filter(|record| {
                 exists_with_kind
                     && record.kind == host_kind
@@ -2928,6 +2983,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     .await
                     .map_err(|failure| map_engine_failure(failure, receipt.work))?;
                 receipt.work = add_work(receipt.work, prior.work)?;
+                prior_metadata = Some(prior.value);
                 canonical_metadata = preserve_unobserved_metadata(canonical_metadata, prior.value);
                 #[cfg(unix)]
                 if let Some(baseline) = baseline {
@@ -2939,6 +2995,17 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         &mut canonical_metadata,
                     );
                 }
+            }
+            // A directory's timestamps follow what happens to its entries,
+            // each captured through its own path, and to reads of it: a
+            // change to them alone is no change of the directory's.
+            if host_kind == FileKind::Directory
+                && prior_metadata.is_some_and(|prior| {
+                    prior.without_timestamps() == canonical_metadata.without_timestamps()
+                })
+            {
+                receipt.examined_paths = checked_increment(receipt.examined_paths, receipt.work)?;
+                return Ok(None);
             }
             let linked_path = path.clone();
             let prepared = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
