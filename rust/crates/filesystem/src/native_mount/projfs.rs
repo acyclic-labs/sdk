@@ -2486,7 +2486,8 @@ fn remove_projection_tree(
     directory: &std::path::Path,
     before_removal: &dyn Fn() -> Result<(), NativeMountError>,
 ) -> Result<(), TreeRemovalError> {
-    const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
+    // A scanner opening the root can keep the filter draining for a while.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
     let refused = |error: &std::io::Error| matches!(error.raw_os_error(), Some(145 | 369));
     before_removal().map_err(TreeRemovalError::Root)?;
     match std::fs::remove_dir_all(directory) {
@@ -2508,7 +2509,7 @@ fn remove_projection_tree(
             Err(error) if refused(&error) && std::time::Instant::now() < deadline => {
                 // The filter admits a refused directory's next delete; only
                 // a filter still draining needs a moment.
-                std::thread::yield_now();
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
             Err(error) => return Err(error.into()),
         }
