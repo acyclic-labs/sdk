@@ -713,9 +713,9 @@ struct PlaceholderState {
     /// Pending paths a listing waits on: when one is settled, its parent is
     /// listed again.
     relist: HashSet<MountPath>,
-    /// Whether the worker is between taking work and recording it: stale
-    /// directories it drained are not listed yet.
-    working: bool,
+    /// Whether the worker's pass in progress took stale directories it has
+    /// not listed yet.
+    relisting: bool,
     /// Where each path renames through the mount moved is now, by the path
     /// it had: `ProjFS` asks for a placeholder's content by the path it was
     /// written at, also after a rename of a directory above it moved it.
@@ -1246,7 +1246,7 @@ impl Placeholders {
                 }
             }
             state.retry = false;
-            state.working = true;
+            state.relisting = !state.stale.is_empty();
             let through = state.notified;
             // Directories whose listing may have changed, parents first.
             let mut listings = state
@@ -1312,7 +1312,7 @@ impl Placeholders {
                 }
             }
             state = lock_recover(&self.state);
-            state.working = false;
+            state.relisting = false;
             state.record_attempts(settled, kept);
             state.processed = state.processed.max(through);
             if let Some(failure) = failure {
@@ -1373,11 +1373,11 @@ impl Placeholders {
         let mut deadline = None;
         while !state.stopping
             && (state.processed < target
-                || state.working
+                || state.relisting
                 || !state.stale.is_empty()
                 || !state.pending.is_empty())
         {
-            if state.processed < target || state.working || !state.stale.is_empty() {
+            if state.processed < target || state.relisting || !state.stale.is_empty() {
                 state = self
                     .changed
                     .wait(state)
@@ -3674,6 +3674,9 @@ unsafe fn notification(
                 .renames
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // No listing is reconciled while the source has the rename and
+            // the projection's records do not yet.
+            let _tree = lock_recover(&placeholders.tree);
             let current = placeholders.current_beneath(source.as_ref(), &path);
             let result = handle_rename_source(
                 source.as_ref(),
