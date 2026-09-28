@@ -41,9 +41,9 @@ impl Recorded {
     /// Whether a fence reported that changes may be undelivered, which it
     /// does on macOS instead of proving their delivery.
     fn unconfirmed(changes: &[HostChange]) -> bool {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         return changes.contains(&HostChange::Unconfirmed);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             let _ = changes;
             false

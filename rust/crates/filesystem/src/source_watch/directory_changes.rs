@@ -21,6 +21,13 @@
 //! entry in it changes, only once the directory is next read. The entry's
 //! own report came first and already covered the directory's listing and
 //! attributes, so the late one only repeats it.
+//!
+//! Only some file systems report every change or say that they lost some
+//! (see [`crate::native_host::reports_every_change`]); `ReFS` dropped a
+//! file's removal without a trace about once in six runs of a create, write,
+//! remove sequence. On the others a fence also reports that changes may be
+//! undelivered ([`HostChange::Unconfirmed`]): every remembered fact is
+//! verified against the source at its next use.
 
 #![allow(unsafe_code)]
 
@@ -68,6 +75,8 @@ struct Shared {
     /// Whether reads report each entry's file identity too, which the file
     /// system decides once.
     extended: AtomicBool,
+    /// Whether the file system reports every change or its loss (NTFS).
+    complete: bool,
     reads: Mutex<Reads>,
     /// Fences the reader thread has completed.
     fenced: Mutex<u64>,
@@ -95,6 +104,7 @@ impl PlatformWatch {
         delivery: Arc<Delivery>,
     ) -> io::Result<Self> {
         let directory = open_for_changes(directory)?;
+        let complete = crate::native_host::reports_every_change(&directory)?;
         // SAFETY: an unnamed manual-reset event.
         let completed =
             unsafe { CreateEventW(None, true, false, None) }.map_err(io::Error::from)?;
@@ -105,6 +115,7 @@ impl PlatformWatch {
             completed,
             delivery,
             extended: AtomicBool::new(true),
+            complete,
             reads: Mutex::new(Reads {
                 overlapped: Box::default(),
                 buffer: Box::new([0; BUFFER_WORDS]),
@@ -167,6 +178,8 @@ impl PlatformWatch {
         if timeout.timed_out() {
             // Unproven delivery: assume everything changed instead.
             shared.delivery.deliver(&[HostChange::Everything]);
+        } else if !shared.complete {
+            shared.delivery.deliver(&[HostChange::Unconfirmed]);
         }
         Ok(())
     }

@@ -4583,3 +4583,37 @@ mod windows_clone_tests {
         Ok(())
     }
 }
+
+/// Whether the file system holding the open file or directory reports every
+/// change to a change notification, or that it lost some: NTFS does. `ReFS`
+/// (a Dev Drive) was seen to drop a removal without a trace, and other file
+/// systems, network shares among them, promise less.
+///
+/// # Errors
+///
+/// Returns the host failure to name the volume's file system.
+#[cfg(windows)]
+pub(crate) fn reports_every_change(
+    file: &impl std::os::windows::io::AsRawHandle,
+) -> io::Result<bool> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
+    let mut name = [0_u16; 64];
+    // SAFETY: a live handle and an output buffer that outlives the call.
+    unsafe {
+        GetVolumeInformationByHandleW(
+            HANDLE(file.as_raw_handle()),
+            None,
+            None,
+            None,
+            None,
+            Some(&mut name),
+        )
+    }
+    .map_err(io::Error::from)?;
+    let length = name
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(name.len());
+    Ok(name.get(..length) == Some("NTFS".encode_utf16().collect::<Vec<_>>().as_slice()))
+}

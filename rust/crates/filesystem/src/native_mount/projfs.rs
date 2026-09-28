@@ -99,11 +99,11 @@ struct ProjectedEntry {
     name: Vec<u16>,
     /// The entry's exact path component.
     component: Vec<u8>,
-    file_id: FileId,
+    /// What the placeholder is written from.
+    facts: PlaceholderFacts,
     /// The basic information, and with the pin exactly the placeholder
     /// written for this entry.
     info: PRJ_FILE_BASIC_INFO,
-    pin: Option<MountContentPin>,
     symlink_target: Option<bytes::Bytes>,
 }
 
@@ -396,6 +396,39 @@ impl ReadBasis {
         source.binding_epoch() == Some(self.binding)
             && source.unchanged_since(path, file_id, self.stamp)
     }
+
+    /// As [`Self::still_describes`], except across changes the source could
+    /// not confirm it reported: then only a read again can tell.
+    fn reported_still_describes(
+        self,
+        source: &dyn MountFilesystem,
+        path: &MountPath,
+        file_id: Option<FileId>,
+    ) -> bool {
+        source.binding_epoch() == Some(self.binding)
+            && source.reported_unchanged_since(path, file_id, self.stamp)
+    }
+}
+
+/// What one placeholder was written from: the node, its metadata, and the
+/// content its hydration returns.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PlaceholderFacts {
+    lookup: MountLookup,
+    pin: Option<MountContentPin>,
+}
+
+impl PlaceholderFacts {
+    /// Whether a placeholder written from `self` is also the one `current`
+    /// would write. Access times move with every read and are not written.
+    fn describe(&self, current: &Self) -> bool {
+        let unaccessed = |facts: &Self| {
+            let mut lookup = facts.lookup;
+            lookup.metadata.accessed_ns = MetadataField::Unavailable;
+            (lookup, facts.pin)
+        };
+        unaccessed(self) == unaccessed(current)
+    }
 }
 
 /// Source facts the provider memoizes between callbacks.
@@ -424,6 +457,8 @@ impl ProjectionCache {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct WrittenPlaceholder {
     file_id: FileId,
+    /// What it was written from; `None` for one known only to be gone.
+    facts: Option<PlaceholderFacts>,
     /// The view it was read in; `None` when the source cannot version it
     /// or was moving, which no later change is needed to supersede.
     basis: Option<ReadBasis>,
@@ -434,6 +469,15 @@ impl WrittenPlaceholder {
     fn superseded(&self, source: &dyn MountFilesystem, path: &MountPath) -> bool {
         self.basis
             .is_none_or(|basis| !basis.still_describes(source, path, Some(self.file_id)))
+    }
+
+    /// Whether only changes the source could not confirm it reported
+    /// superseded it, so reading it again tells whether it still holds.
+    fn unconfirmed(&self, source: &dyn MountFilesystem, path: &MountPath) -> bool {
+        self.facts.is_some()
+            && self.basis.is_some_and(|basis| {
+                basis.reported_still_describes(source, path, Some(self.file_id))
+            })
     }
 }
 
@@ -589,10 +633,15 @@ impl Placeholders {
     }
 
     /// Keeps the placeholder written at `path` in view `basis`.
-    fn written(&self, path: MountPath, file_id: FileId, basis: Option<ReadBasis>) {
-        lock_recover(&self.state)
-            .written
-            .insert(path, WrittenPlaceholder { file_id, basis });
+    fn written(&self, path: MountPath, facts: PlaceholderFacts, basis: Option<ReadBasis>) {
+        lock_recover(&self.state).written.insert(
+            path,
+            WrittenPlaceholder {
+                file_id: facts.lookup.node.file_id,
+                facts: Some(facts),
+                basis,
+            },
+        );
     }
 
     /// Writes everything the source holds beneath `path`, the root or a
@@ -637,7 +686,7 @@ impl Placeholders {
                 if is_directory {
                     directories.push(child);
                 } else if written {
-                    self.written(child, entry.file_id, basis);
+                    self.written(child, entry.facts, basis);
                 }
                 names.insert(entry.component.clone(), is_directory);
             }
@@ -691,7 +740,7 @@ impl Placeholders {
             if is_directory {
                 created.push(child);
             } else if written {
-                self.written(child, entry.file_id, basis);
+                self.written(child, entry.facts, basis);
             }
         }
         for (name, was_directory) in &known {
@@ -707,6 +756,7 @@ impl Placeholders {
                 let mut state = lock_recover(&self.state);
                 let placeholder = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
                     file_id: FileId::from_bytes([0; 16]),
+                    facts: None,
                     basis: None,
                 });
                 state.pending.insert(child, placeholder);
@@ -928,11 +978,17 @@ impl Placeholders {
                 .filter(|(path, written)| written.superseded(source, path))
                 .map(|(path, written)| (path.clone(), *written))
                 .collect::<Vec<_>>();
+            let mut unconfirmed = Vec::new();
             for (path, written) in superseded {
                 state.written.remove(&path);
-                state.pending.insert(path, written);
+                if written.unconfirmed(source, &path) {
+                    unconfirmed.push((path, written));
+                } else {
+                    state.pending.insert(path, written);
+                }
             }
             drop(state);
+            self.confirm(source, unconfirmed);
             let mut failure = None;
             for directory in listings {
                 if let Err(error) = self.reconcile(projection, &directory) {
@@ -971,6 +1027,37 @@ impl Placeholders {
                 state.failure.get_or_insert(failure);
             }
             self.changed.notify_all();
+        }
+    }
+
+    /// Reads each placeholder only unconfirmed changes superseded again:
+    /// one the source would still write as it is holds from now on, and
+    /// any other is replaced.
+    fn confirm(
+        &self,
+        source: &dyn MountFilesystem,
+        unconfirmed: Vec<(MountPath, WrittenPlaceholder)>,
+    ) {
+        for (path, written) in unconfirmed {
+            let basis = ReadBasis::sample(source);
+            let current = source.lookup_pinned(&path);
+            let mut state = lock_recover(&self.state);
+            match current {
+                Ok(Some((lookup, pin)))
+                    if written
+                        .facts
+                        .is_some_and(|facts| facts.describe(&PlaceholderFacts { lookup, pin })) =>
+                {
+                    // Written again meanwhile, from a later read.
+                    state
+                        .written
+                        .entry(path)
+                        .or_insert(WrittenPlaceholder { basis, ..written });
+                }
+                _ => {
+                    state.pending.insert(path, written);
+                }
+            }
         }
     }
 
@@ -1058,7 +1145,7 @@ fn write_entry(
             Err(error) => Err(format!("creating directory {path:?}: {error}")),
         };
     }
-    let placeholder = pinned_placeholder(entry.info, entry.pin)
+    let placeholder = pinned_placeholder(entry.info, entry.facts.pin)
         .ok_or_else(|| format!("placeholder for {path:?} is unrepresentable"))?;
     let symlink = match entry.symlink_target.as_deref().map(symlink_extended) {
         Some(Some(target)) => Some(target),
@@ -1181,6 +1268,7 @@ fn replace_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<R
             .map(|()| {
                 Replaced::Rewritten(WrittenPlaceholder {
                     file_id: lookup.node.file_id,
+                    facts: Some(PlaceholderFacts { lookup, pin }),
                     basis,
                 })
             })
@@ -2407,9 +2495,14 @@ fn source_listing(
             entries.push(ProjectedEntry {
                 name,
                 component: entry.name,
-                file_id: entry.node.file_id,
+                facts: PlaceholderFacts {
+                    lookup: MountLookup {
+                        node: entry.node,
+                        metadata: entry.metadata,
+                    },
+                    pin: entry.pin,
+                },
                 info,
-                pin: entry.pin,
                 symlink_target,
             });
         }
@@ -3547,6 +3640,7 @@ mod tests {
                 path.clone(),
                 WrittenPlaceholder {
                     file_id: FileId::new(),
+                    facts: None,
                     basis: Some(ReadBasis {
                         stamp: ViewStamp::current(),
                         binding: 0,
