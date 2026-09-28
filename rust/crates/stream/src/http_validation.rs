@@ -156,16 +156,6 @@ fn validate_append_result(value: &Value) -> Result {
     Ok(())
 }
 
-fn validate_bounds(value: &Value) -> Result {
-    let item = object(value)?;
-    let trim_point = u64_string(field(item, "trimPoint")?)?;
-    let tail = u64_string(field(item, "tail")?)?;
-    if trim_point > tail {
-        return Err("stream replay bounds are invalid");
-    }
-    Ok(())
-}
-
 fn validate_fork_receipt(value: &Value) -> Result {
     let item = object(value)?;
     path(field(item, "source")?)?;
@@ -178,25 +168,12 @@ fn validate_fork_receipt(value: &Value) -> Result {
     id(field(item, "commitId")?)
 }
 
-fn validate_trim_receipt(value: &Value) -> Result {
-    let item = object(value)?;
-    path(field(item, "path")?)?;
-    u64_string(field(item, "trimPoint")?)?;
-    id(field(item, "commitId")?)
-}
-
-fn validate_delete_receipt(value: &Value) -> Result {
-    let item = object(value)?;
-    path(field(item, "path")?)?;
-    id(field(item, "commitId")?)
-}
-
 fn validate_conflict(value: &Value) -> Result {
     let item = object(value)?;
     path(field(item, "path")?)?;
     if item.get("expectedAbsent") == Some(&Value::Bool(true)) {
         match string(field(item, "actual")?)? {
-            "exists" | "retired" => Ok(()),
+            "exists" => Ok(()),
             _ => Err("invalid conflict state"),
         }
     } else {
@@ -261,11 +238,6 @@ fn validate_mutation(value: &Value) -> Result {
                 }
             }
         }
-        "trim" => {
-            path(field(item, "path")?)?;
-            u64_string(field(item, "trimPoint")?)?;
-        }
-        "delete" => path(field(item, "path")?)?,
         _ => return Err("invalid mutation type"),
     }
     Ok(())
@@ -290,8 +262,6 @@ fn validate_idempotency(value: &Value) -> Result {
     match string(field(outcome, "type")?)? {
         "append" => validate_append_result(field(outcome, "outcome")?),
         "fork" => validate_fork_receipt(field(outcome, "receipt")?),
-        "trim" => validate_trim_receipt(field(outcome, "receipt")?),
-        "delete" => validate_delete_receipt(field(outcome, "receipt")?),
         "commit" => validate_commit_result(field(outcome, "outcome")?),
         _ => Err("invalid idempotency outcome type"),
     }
@@ -306,11 +276,8 @@ pub fn validate(route: &str, value: &Value) -> Result {
             u64_string(value)?;
             Ok(())
         }
-        Some("bounds") => validate_bounds(value),
         Some("append") => validate_append_result(value),
         Some("fork") => validate_fork_receipt(value),
-        Some("trim") => validate_trim_receipt(value),
-        Some("delete") => validate_delete_receipt(value),
         Some("records") => {
             for item in array(value)? {
                 validate_record(item)?;
@@ -371,34 +338,11 @@ mod tests {
 
     #[test]
     fn hosted_http_validation_rejects_bad_ids_paths_and_decimal_widths() -> serde_json::Result<()> {
-        let bad_id = r#"{"path":"events","trimPoint":"01","commitId":"AAAA"}"#;
-        assert!(super::validate("trim", &json_fixture(bad_id)?).is_err());
+        let bad_id = r#"{"source":"events","destination":"copy","forkedAt":"0","tail":"0","commitId":"AAAA"}"#;
+        assert!(super::validate("fork", &json_fixture(bad_id)?).is_err());
         let bad_path = r#"[{"path":"events//child"}]"#;
         assert!(super::validate("children", &json_fixture(bad_path)?).is_err());
         assert!(super::validate("tail", &json_fixture("1")?).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn hosted_http_validation_checks_bounds_order_and_decimal_u64s() -> serde_json::Result<()> {
-        assert!(
-            super::validate("bounds", &json_fixture(r#"{"trimPoint":"2","tail":"3"}"#)?).is_ok()
-        );
-        assert!(
-            super::validate("bounds", &json_fixture(r#"{"trimPoint":"4","tail":"3"}"#)?).is_err()
-        );
-        assert!(
-            super::validate("bounds", &json_fixture(r#"{"trimPoint":"01","tail":"3"}"#)?).is_err()
-        );
-        assert!(
-            super::validate(
-                "bounds",
-                &json_fixture(
-                    r#"{"trimPoint":"18446744073709551616","tail":"18446744073709551616"}"#
-                )?
-            )
-            .is_err()
-        );
         Ok(())
     }
 

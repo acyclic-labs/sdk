@@ -18,13 +18,13 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc, watch};
 
-use crate::wire_codec::{condition_from_wire, mutation_from_wire, optional_key, required_key};
+use crate::wire_codec::{condition_from_wire, mutation_from_wire, optional_key};
 use crate::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
-    CommitOutcome, CommitRequest, CommittedEnvelope, DeleteReceipt, ForkReceipt, ForkRequest,
-    IdempotencyKey, IdempotencyObservation, MAX_COMMAND_BYTES, MAX_ITEMS, MemoryLimits,
-    MemoryStream, ReadRequest, RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider,
-    SystemUnixMillisClock, TrimReceipt, UnixMillisClock,
+    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, MAX_COMMAND_BYTES, MAX_ITEMS, MemoryLimits, MemoryStream, ReadRequest,
+    RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock,
+    UnixMillisClock,
 };
 
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V2\0";
@@ -586,46 +586,6 @@ impl StreamProvider for LocalStream {
         self.exclusive(|stream| async move {
             let frame = stream.prepare(&Command::Fork(request.clone()))?;
             let outcome = stream.inner.provider.fork(request).await?;
-            stream.persist(frame).await?;
-            Ok(outcome)
-        })
-        .await
-    }
-
-    async fn trim(
-        &self,
-        path: StreamPath,
-        before: u64,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<TrimReceipt, StreamError> {
-        self.exclusive(move |stream| async move {
-            let frame = stream.prepare(&Command::Trim {
-                path: path.clone(),
-                before,
-                idempotency_key: idempotency_key.clone(),
-            })?;
-            let outcome = stream
-                .inner
-                .provider
-                .trim(path, before, idempotency_key)
-                .await?;
-            stream.persist(frame).await?;
-            Ok(outcome)
-        })
-        .await
-    }
-
-    async fn delete(
-        &self,
-        path: StreamPath,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<DeleteReceipt, StreamError> {
-        self.exclusive(move |stream| async move {
-            let frame = stream.prepare(&Command::Delete {
-                path: path.clone(),
-                idempotency_key: idempotency_key.clone(),
-            })?;
-            let outcome = stream.inner.provider.delete(path, idempotency_key).await?;
             stream.persist(frame).await?;
             Ok(outcome)
         })
@@ -1253,15 +1213,6 @@ fn frame_checksum(length: &[u8; 4], command: &[u8]) -> [u8; 32] {
 enum Command {
     Append(AppendRequest),
     Fork(ForkRequest),
-    Trim {
-        path: StreamPath,
-        before: u64,
-        idempotency_key: IdempotencyKey,
-    },
-    Delete {
-        path: StreamPath,
-        idempotency_key: IdempotencyKey,
-    },
     Commit(CommitRequest),
 }
 
@@ -1269,18 +1220,6 @@ async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamE
     match command {
         Command::Append(request) => provider.append(request).await.map(|_| ()),
         Command::Fork(request) => provider.fork(request).await.map(|_| ()),
-        Command::Trim {
-            path,
-            before,
-            idempotency_key,
-        } => provider
-            .trim(path, before, idempotency_key)
-            .await
-            .map(|_| ()),
-        Command::Delete {
-            path,
-            idempotency_key,
-        } => provider.delete(path, idempotency_key).await.map(|_| ()),
         Command::Commit(request) => provider.commit(request).await.map(|_| ()),
     }
 }
@@ -1289,22 +1228,6 @@ fn journal_command(command: &Command) -> JournalCommand {
     let operation = match command {
         Command::Append(request) => journal_command::Operation::Append(wire_append(request)),
         Command::Fork(request) => journal_command::Operation::Fork(wire_fork(request)),
-        Command::Trim {
-            path,
-            before,
-            idempotency_key,
-        } => journal_command::Operation::Trim(crate::wire::TrimRequest {
-            path: path.to_string(),
-            before: *before,
-            idempotency_key: Some(Bytes::copy_from_slice(idempotency_key.as_bytes())),
-        }),
-        Command::Delete {
-            path,
-            idempotency_key,
-        } => journal_command::Operation::Delete(crate::wire::DeleteRequest {
-            path: path.to_string(),
-            idempotency_key: Some(Bytes::copy_from_slice(idempotency_key.as_bytes())),
-        }),
         Command::Commit(request) => journal_command::Operation::Commit(wire_commit(request)),
     };
     JournalCommand {
@@ -1317,22 +1240,13 @@ fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
     match journal.operation.ok_or(StreamError::InvalidArgument)? {
         journal_command::Operation::Append(request) => domain_append(request).map(Command::Append),
         journal_command::Operation::Fork(request) => domain_fork(request).map(Command::Fork),
-        journal_command::Operation::Trim(request) => Ok(Command::Trim {
-            path: StreamPath::new(request.path)?,
-            before: request.before,
-            idempotency_key: required_key(request.idempotency_key)?,
-        }),
-        journal_command::Operation::Delete(request) => Ok(Command::Delete {
-            path: StreamPath::new(request.path)?,
-            idempotency_key: required_key(request.idempotency_key)?,
-        }),
         journal_command::Operation::Commit(request) => domain_commit(request).map(Command::Commit),
     }
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct JournalCommand {
-    #[prost(oneof = "journal_command::Operation", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "journal_command::Operation", tags = "1, 2, 5")]
     operation: Option<journal_command::Operation>,
 }
 
@@ -1343,10 +1257,6 @@ mod journal_command {
         Append(crate::wire::AppendRequest),
         #[prost(message, tag = "2")]
         Fork(crate::wire::ForkRequest),
-        #[prost(message, tag = "3")]
-        Trim(crate::wire::TrimRequest),
-        #[prost(message, tag = "4")]
-        Delete(crate::wire::DeleteRequest),
         #[prost(message, tag = "5")]
         Commit(crate::wire::CommitRequest),
     }
@@ -1854,11 +1764,12 @@ mod tests {
 
         let path = StreamPath::new("failed-replay")?;
         let invalid = PreparedFrame::encode(
-            &Command::Trim {
-                path: path.clone(),
-                before: 1,
-                idempotency_key: IdempotencyKey::new(Bytes::from_static(b"invalid-trim"))?,
-            },
+            &Command::Fork(ForkRequest {
+                source: StreamPath::new("missing-source")?,
+                destination: path.clone(),
+                at_tail: None,
+                idempotency_key: None,
+            }),
             0,
         )?;
         let valid = PreparedFrame::encode(
@@ -2063,6 +1974,42 @@ mod tests {
 
         let reopened = LocalStream::open(directory.path(), limits).await?;
         assert_eq!(reopened.tail(StreamPath::new("compacted")?).await?, 21);
+        let history = reopened
+            .read(ReadRequest {
+                path: StreamPath::new("compacted")?,
+                from: 0,
+                limit: 21,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(history.len(), 21);
+        for (index, record) in (0_u64..21).zip(&history) {
+            assert_eq!(record.sequence, index);
+            assert_eq!(record.value.as_ref(), index.to_le_bytes());
+        }
+        reopened
+            .fork(ForkRequest {
+                source: StreamPath::new("compacted")?,
+                destination: StreamPath::new("compacted-fork")?,
+                at_tail: Some(21),
+                idempotency_key: None,
+            })
+            .await?;
+        let fork_history = reopened
+            .read(ReadRequest {
+                path: StreamPath::new("compacted-fork")?,
+                from: 0,
+                limit: 21,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(fork_history, history);
         for (index, outcome) in (0..).zip(&outcomes) {
             assert_eq!(&append_keyed(&reopened, index).await?, outcome, "{index}");
         }

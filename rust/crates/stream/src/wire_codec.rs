@@ -4,9 +4,9 @@ use bytes::Bytes;
 
 use crate::{
     AppendOutcome, AppendReceipt, CommitCondition, CommitConflict, CommitId, CommitMutation,
-    CommitOutcome, CommittedAppend, CommittedDelete, CommittedEnvelope, CommittedFork,
-    CommittedMutation, CommittedTrim, DeleteReceipt, ForkReceipt, IdempotencyKey,
-    IdempotencyObservation, IdempotencyOutcome, Record, StreamError, StreamPath, TrimReceipt, wire,
+    CommitOutcome, CommittedAppend, CommittedEnvelope, CommittedFork, CommittedMutation,
+    ForkReceipt, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, Record, StreamError,
+    StreamPath, wire,
 };
 
 pub(crate) fn path(value: String) -> Result<StreamPath, StreamError> {
@@ -74,17 +74,6 @@ pub(crate) fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
             at_tail,
             records,
         }),
-        CommitMutation::Trim { path, before } => {
-            wire::commit_mutation::Mutation::Trim(wire::TrimMutation {
-                path: path.to_string(),
-                before,
-            })
-        }
-        CommitMutation::Delete { path } => {
-            wire::commit_mutation::Mutation::Delete(wire::DeleteMutation {
-                path: path.to_string(),
-            })
-        }
     };
     wire::CommitMutation {
         mutation: Some(mutation),
@@ -104,13 +93,6 @@ pub(crate) fn mutation_from_wire(
             destination: path(value.destination)?,
             at_tail: value.at_tail,
             records: value.records,
-        }),
-        wire::commit_mutation::Mutation::Trim(value) => Ok(CommitMutation::Trim {
-            path: path(value.path)?,
-            before: value.before,
-        }),
-        wire::commit_mutation::Mutation::Delete(value) => Ok(CommitMutation::Delete {
-            path: path(value.path)?,
         }),
     }
 }
@@ -133,19 +115,6 @@ pub(crate) fn observation_from_wire(
                 commit_id: commit_id(&value.commit_id)?,
             })
         }
-        wire::idempotency_observation::Outcome::Trim(value) => {
-            IdempotencyOutcome::Trim(TrimReceipt {
-                path: path(value.path)?,
-                trim_point: value.trim_point,
-                commit_id: commit_id(&value.commit_id)?,
-            })
-        }
-        wire::idempotency_observation::Outcome::Delete(value) => {
-            IdempotencyOutcome::Delete(DeleteReceipt {
-                path: path(value.path)?,
-                commit_id: commit_id(&value.commit_id)?,
-            })
-        }
         wire::idempotency_observation::Outcome::Commit(value) => {
             IdempotencyOutcome::Commit(commit_outcome_from_wire(value)?)
         }
@@ -164,12 +133,6 @@ pub(crate) fn observation_wire(value: IdempotencyObservation) -> wire::Idempoten
         }
         IdempotencyOutcome::Fork(value) => {
             wire::idempotency_observation::Outcome::Fork(fork_receipt_wire(&value))
-        }
-        IdempotencyOutcome::Trim(value) => {
-            wire::idempotency_observation::Outcome::Trim(trim_receipt_wire(&value))
-        }
-        IdempotencyOutcome::Delete(value) => {
-            wire::idempotency_observation::Outcome::Delete(delete_receipt_wire(&value))
         }
         IdempotencyOutcome::Commit(value) => {
             wire::idempotency_observation::Outcome::Commit(commit_outcome_wire(value))
@@ -314,24 +277,6 @@ pub(crate) fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequ
 }
 
 #[cfg(feature = "wasm")]
-pub(crate) fn trim_from_wire(
-    value: wire::TrimRequest,
-) -> Result<(StreamPath, u64, Option<IdempotencyKey>), StreamError> {
-    Ok((
-        path(value.path)?,
-        value.before,
-        optional_key(value.idempotency_key)?,
-    ))
-}
-
-#[cfg(feature = "wasm")]
-pub(crate) fn delete_from_wire(
-    value: wire::DeleteRequest,
-) -> Result<(StreamPath, Option<IdempotencyKey>), StreamError> {
-    Ok((path(value.path)?, optional_key(value.idempotency_key)?))
-}
-
-#[cfg(feature = "wasm")]
 pub(crate) fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
         path: path(value.path)?,
@@ -455,38 +400,6 @@ pub(crate) fn fork_receipt_to_wire(value: &crate::ForkReceipt) -> wire::ForkRece
     }
 }
 
-pub(crate) fn trim_receipt_wire(value: &TrimReceipt) -> wire::TrimReceipt {
-    wire::TrimReceipt {
-        path: value.path.to_string(),
-        trim_point: value.trim_point,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-#[cfg(feature = "wasm")]
-pub(crate) fn trim_receipt_to_wire(value: &crate::TrimReceipt) -> wire::TrimReceipt {
-    wire::TrimReceipt {
-        path: value.path.to_string(),
-        trim_point: value.trim_point,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-pub(crate) fn delete_receipt_wire(value: &DeleteReceipt) -> wire::DeleteReceipt {
-    wire::DeleteReceipt {
-        path: value.path.to_string(),
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-#[cfg(feature = "wasm")]
-pub(crate) fn delete_receipt_to_wire(value: &crate::DeleteReceipt) -> wire::DeleteReceipt {
-    wire::DeleteReceipt {
-        path: value.path.to_string(),
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
 pub(crate) fn envelope_from_wire(
     value: wire::CommittedEnvelope,
 ) -> Result<CommittedEnvelope, StreamError> {
@@ -570,17 +483,6 @@ pub(crate) fn committed_mutation(
                     .collect::<Result<_, _>>()?,
             }))
         }
-        wire::committed_mutation::Mutation::Trim(value) => {
-            Ok(CommittedMutation::Trim(CommittedTrim {
-                path: path(value.path)?,
-                trim_point: value.trim_point,
-            }))
-        }
-        wire::committed_mutation::Mutation::Delete(value) => {
-            Ok(CommittedMutation::Delete(CommittedDelete {
-                path: path(value.path)?,
-            }))
-        }
     }
 }
 
@@ -602,17 +504,6 @@ pub(crate) fn committed_mutation_wire(value: CommittedMutation) -> wire::Committ
                 forked_at: value.forked_at,
                 tail: value.tail,
                 records: value.records.into_iter().map(record_wire).collect(),
-            })
-        }
-        CommittedMutation::Trim(value) => {
-            wire::committed_mutation::Mutation::Trim(wire::CommittedTrim {
-                path: value.path.to_string(),
-                trim_point: value.trim_point,
-            })
-        }
-        CommittedMutation::Delete(value) => {
-            wire::committed_mutation::Mutation::Delete(wire::CommittedDelete {
-                path: value.path.to_string(),
             })
         }
     };
@@ -651,17 +542,6 @@ fn committed_mutation_to_wire(value: crate::CommittedMutation) -> wire::Committe
                 records: value.records.into_iter().map(record_to_wire).collect(),
             })
         }
-        crate::CommittedMutation::Trim(value) => {
-            wire::committed_mutation::Mutation::Trim(wire::CommittedTrim {
-                path: value.path.to_string(),
-                trim_point: value.trim_point,
-            })
-        }
-        crate::CommittedMutation::Delete(value) => {
-            wire::committed_mutation::Mutation::Delete(wire::CommittedDelete {
-                path: value.path.to_string(),
-            })
-        }
     };
     wire::CommittedMutation {
         mutation: Some(mutation),
@@ -680,9 +560,6 @@ pub(crate) fn conflict_from_wire(
         wire::commit_conflict::Conflict::Exists(value) => Ok(CommitConflict::Exists {
             path: path(value.path)?,
         }),
-        wire::commit_conflict::Conflict::Retired(value) => Ok(CommitConflict::Retired {
-            path: path(value.path)?,
-        }),
     }
 }
 
@@ -699,11 +576,6 @@ pub(crate) fn conflict_wire(value: CommitConflict) -> wire::CommitConflict {
         }),
         CommitConflict::Exists { path } => {
             wire::commit_conflict::Conflict::Exists(wire::ExistsCommitConflict {
-                path: path.to_string(),
-            })
-        }
-        CommitConflict::Retired { path } => {
-            wire::commit_conflict::Conflict::Retired(wire::RetiredCommitConflict {
                 path: path.to_string(),
             })
         }
@@ -730,11 +602,6 @@ fn conflict_to_wire(value: crate::CommitConflict) -> wire::CommitConflict {
                 path: path.to_string(),
             })
         }
-        crate::CommitConflict::Retired { path } => {
-            wire::commit_conflict::Conflict::Retired(wire::RetiredCommitConflict {
-                path: path.to_string(),
-            })
-        }
     };
     wire::CommitConflict {
         conflict: Some(conflict),
@@ -751,12 +618,6 @@ pub(crate) fn observation_to_wire(
         }
         crate::IdempotencyOutcome::Fork(value) => {
             wire::idempotency_observation::Outcome::Fork(fork_receipt_to_wire(&value))
-        }
-        crate::IdempotencyOutcome::Trim(value) => {
-            wire::idempotency_observation::Outcome::Trim(trim_receipt_to_wire(&value))
-        }
-        crate::IdempotencyOutcome::Delete(value) => {
-            wire::idempotency_observation::Outcome::Delete(delete_receipt_to_wire(&value))
         }
         crate::IdempotencyOutcome::Commit(value) => {
             wire::idempotency_observation::Outcome::Commit(commit_outcome_to_wire(value))
