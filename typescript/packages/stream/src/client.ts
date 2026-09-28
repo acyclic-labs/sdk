@@ -3,9 +3,9 @@ import { MemoryStreamProvider } from "./memory.js";
 import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
 import type {
   AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions,
-  CommitRequest, CommitResult, CreateTokenRequest, DeleteReceipt, FollowOptions, ForkOptions,
+  CommitRequest, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions,
   IdempotencyKey, IdempotencyObservation, ReadOptions, Record, Sequence, StreamEnvironment,
-  StreamBounds, StreamProvider, TrimReceipt,
+  StreamProvider,
 } from "./types.js";
 import { StreamError, compareStreamPaths } from "./types.js";
 import { ensureStreamWasm, normalizeWireCommit, validatePathValue, validateSequenceValue, validateWireAppend } from "./contract.js";
@@ -130,12 +130,7 @@ export class StreamClient {
         const source = mutation.fork.source;
         return { fork: { source: source.path, destination: mutation.fork.destination, atTail: sequence(mutation.fork.atTail), values: (mutation.fork.values ?? []).map(value => source.encode(value)) } };
       }
-      if ("trim" in mutation) {
-        sameProvider(this.provider, mutation.trim.stream);
-        return { trim: { path: mutation.trim.stream.path, before: sequence(mutation.trim.before) } };
-      }
-      sameProvider(this.provider, mutation.delete.stream);
-      return { delete: { path: mutation.delete.stream.path } };
+      throw new StreamError("invalid_argument", "commit mutation is invalid");
     });
     return this.provider.commit(await normalizeWireCommit({ conditions, mutations }, options), options);
   }
@@ -155,7 +150,6 @@ export class Stream<Value = Uint8Array> {
   }
   encode(value: Value): Uint8Array { return this.codec.encode(value); }
   tail(): Promise<Sequence> { return this.provider.tail(this.path); }
-  bounds(): Promise<StreamBounds> { return this.provider.bounds(this.path); }
   append(value: Value, options?: AppendOptions): Promise<AppendResult> { return this.appendBatch([value], options); }
   appendBatch(values: readonly Value[], options?: AppendOptions): Promise<AppendResult> {
     if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) {
@@ -170,8 +164,6 @@ export class Stream<Value = Uint8Array> {
     const value = await this.provider.fork(this.path, destination, options);
     return { stream: new Stream(this.provider, destination, this.codec), tail: value.tail, forkedAt: value.forkedAt, commitId: value.commitId };
   }
-  trim(before: Sequence, idempotencyKey?: IdempotencyKey): Promise<TrimReceipt> { return this.provider.trim(this.path, sequence(before), idempotencyKey); }
-  delete(idempotencyKey?: IdempotencyKey): Promise<DeleteReceipt> { return this.provider.delete(this.path, idempotencyKey); }
   async *read(options: ReadOptions): AsyncIterable<Record<Value>> {
     sequence(options.from);
     positiveInteger(options.limit, "limit");

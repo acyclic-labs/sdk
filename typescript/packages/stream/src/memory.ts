@@ -9,9 +9,9 @@ import { ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireAp
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
-  DeleteReceipt, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey,
+  EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey,
   IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence,
-  StreamBounds, StreamProvider, TrimReceipt, ChildrenPage, ChildrenPageRequest,
+  StreamProvider, ChildrenPage, ChildrenPageRequest,
 } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 
@@ -57,12 +57,6 @@ export class MemoryStreamProvider implements StreamProvider {
     const request = await this.#request("tail", path);
     return fromBinary(TailResponseSchema, await this.#dispatch("tail", request)).tail;
   }
-  async bounds(path: string): Promise<StreamBounds> {
-    const response = fromBinary(TailResponseSchema, await this.#dispatch("bounds", await this.#request("bounds", path)));
-    if (response.trimPoint === undefined) throw new StreamError("invalid_response", "Rust bounds response omitted trim point");
-    return { trimPoint: response.trimPoint, tail: response.tail };
-  }
-
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions = {}): Promise<AppendResult> {
     const records = values.map(value => value.slice());
     const authored = structuredClone(options);
@@ -76,20 +70,6 @@ export class MemoryStreamProvider implements StreamProvider {
     await validateWireRequest({ kind: "fork", source, destination, options: authored });
     const request = wireRequest({ kind: "fork", source, destination, options: authored });
     return this.#project<ForkReceipt>("fork", request);
-  }
-
-  async trim(path: string, before: Sequence, key?: IdempotencyKey): Promise<TrimReceipt> {
-    const retainedKey = key === undefined ? randomKey() : idempotencyKey(key);
-    await validateWireRequest({ kind: "trim", path, before, key: retainedKey });
-    const request = wireRequest({ kind: "trim", path, before, key: retainedKey });
-    return this.#project<TrimReceipt>("trim", request);
-  }
-
-  async delete(path: string, key?: IdempotencyKey): Promise<DeleteReceipt> {
-    const retainedKey = key === undefined ? randomKey() : idempotencyKey(key);
-    await validateWireRequest({ kind: "delete", path, key: retainedKey });
-    const request = wireRequest({ kind: "delete", path, key: retainedKey });
-    return this.#project<DeleteReceipt>("delete", request);
   }
 
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
@@ -166,14 +146,13 @@ export class MemoryStreamProvider implements StreamProvider {
     return this.#project<CommittedEnvelope>("read_commit", request);
   }
 
-  async #request(kind: "tail" | "bounds", path: string): Promise<Uint8Array> {
+  async #request(kind: "tail", path: string): Promise<Uint8Array> {
     await validateWireRequest({ kind, path });
     return wireRequest({ kind, path });
   }
 
 }
 
-function randomKey(): IdempotencyKey { return idempotencyKey(crypto.getRandomValues(new Uint8Array(16))); }
 export type StreamErrorCode = WasmStreamErrorCode;
 
 const isKnownStreamErrorCode = (value: string): value is StreamErrorCode => is_stream_error_code(value);
@@ -198,7 +177,6 @@ function streamError(error: unknown, operation: string): Error {
   let code: string = rawCode;
   if (rawCode === "not_found") code = operation === "read_commit" ? "commit_not_found" : "stream_not_found";
   else if (rawCode === "already_exists") code = "destination_exists";
-  else if (rawCode === "retired") code = "stream_retired";
   else if (rawCode === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
   return new StreamError(code, message);
 }
