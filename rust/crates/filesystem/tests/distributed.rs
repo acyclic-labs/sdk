@@ -6,7 +6,7 @@ use acyclic_fs::{
     CancellationToken, CreateAuthorityOutcome, Digest, DistributedFs, EmbeddedCapabilities, Epoch,
     FenceOutcome, ForkOptions, Fs, GenerationFork, GenerationForkSource, GenerationId, Head,
     IdempotencyKey, ObjectId, ObjectKind, OperationFailure, OperationId, ProposedCommit,
-    ReplayLimit, Sequence, WorkBudget, object_digest,
+    ReplayLimit, Sequence, WorkBudget, WorkspaceDelete, object_digest,
 };
 use acyclic_fs::{ProviderObjectStore, StreamAuthorityStore};
 use acyclic_objects::{MemoryObjects, ObjectsProvider};
@@ -230,6 +230,60 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
         )
         .await?;
     assert!(store.authorities(1).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn deleting_workspace_preserves_committed_stream_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    let streams = Arc::new(MemoryStream::default());
+    let objects = Arc::new(MemoryObjects::default());
+    let bucket = objects
+        .create_bucket(
+            "delete-history".to_owned(),
+            Some("delete-history".to_owned()),
+        )
+        .await?
+        .bucket
+        .ok_or("bucket identity missing")?;
+    let fs = Fs::new(
+        StreamAuthorityStore::new(Arc::clone(&streams)),
+        ProviderObjectStore::new(objects, bucket),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let workspace = fs.create_workspace("history").await?;
+    workspace.write_text("/kept.txt", "committed").await?;
+    let authority = AuthorityId::from_bytes(workspace.id().into_bytes());
+    let records = StreamPath::new(format!(
+        "fs/authorities/{}/records",
+        hex::encode(authority.into_bytes())
+    ))?;
+    let before = streams.tail(records.clone()).await?;
+    let key = IdempotencyKey::new();
+    assert_eq!(workspace.delete(key).await?, WorkspaceDelete::Deleted);
+    assert_eq!(
+        workspace.delete(key).await?,
+        WorkspaceDelete::AlreadyDeleted
+    );
+    assert!(fs.open_workspace("history").await.is_err());
+
+    let after = streams.tail(records.clone()).await?;
+    assert!(
+        after > before,
+        "workspace deletion must append its tombstone"
+    );
+    let retained = streams
+        .read(ReadRequest {
+            path: records,
+            from: 0,
+            limit: u32::try_from(after)?,
+        })
+        .await?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(retained.len(), usize::try_from(after)?);
     Ok(())
 }
 
