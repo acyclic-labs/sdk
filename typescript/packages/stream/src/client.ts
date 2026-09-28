@@ -161,6 +161,7 @@ export class Stream<Value = Uint8Array> {
     if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) {
       return Promise.reject(new StreamError("limit_exceeded", `append requires 1..${StreamLimit.MAX_ITEMS} records`));
     }
+    if (options?.ifTail !== undefined) sequence(options.ifTail);
     return this.provider.append(this.path, values.map(value => this.codec.encode(value)), options);
   }
   async fork(destination: string, options?: ForkOptions): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {

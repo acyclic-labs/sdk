@@ -487,8 +487,7 @@ describe("typed agent runtime", () => {
     const spawnerTask = TaskDefinition.live("spawner-task", "1", () => 1, { requirements: ["spawner"] });
     const state = { policyIdentity: () => null } as unknown as HarnessRuntimeState;
     const spawner = { policyIdentity: () => null } as unknown as HarnessRuntimeSpawner;
-    expect(() => Harness.builder(contracts).state(state).task(stateTask).build())
-      .toThrow("unsatisfied task requirement");
+    expect(Harness.builder(contracts).state(state).task(stateTask).build().state).toBe(state);
     expect(() => Harness.builder(contracts).spawner(spawner).task(spawnerTask).build()).toThrow();
     expect(() => Harness.builder(contracts).state(state).spawner(spawner)
       .task(stateTask).task(spawnerTask).build()).not.toThrow();

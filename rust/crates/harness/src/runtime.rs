@@ -2056,7 +2056,10 @@ impl Bindings {
         let spawner = self
             .spawner
             .or_else(|| execution.as_ref().map(|route| route.spawner()));
-        let durable_ready = self.durable_host.is_some() || (state.is_some() && spawner.is_some());
+        let host_available = self.durable_host.is_some();
+        let state_available = host_available || state.is_some();
+        let spawner_available = host_available || spawner.is_some();
+        let durable_ready = host_available || (state_available && spawner_available);
         let runtime = AgentHarness::with_policy_internal(
             self.tasks,
             self.tools,
@@ -2069,6 +2072,8 @@ impl Bindings {
             self.artifacts,
             self.policy,
             durable_ready,
+            state_available,
+            spawner_available,
         )?;
         let runtime = match state {
             Some(state) => runtime.bind_state(state)?,
@@ -2624,6 +2629,7 @@ impl AgentHarness {
         policy: Option<Arc<dyn ToolPolicy>>,
     ) -> Result<Arc<Self>> {
         let durable_ready = host.is_some();
+        let host_available = host.is_some();
         Self::with_policy_internal(
             tasks,
             tools,
@@ -2636,6 +2642,8 @@ impl AgentHarness {
             artifacts,
             policy,
             durable_ready,
+            host_available,
+            host_available,
         )
     }
 
@@ -2655,6 +2663,8 @@ impl AgentHarness {
         artifacts: Option<ArtifactBindings>,
         policy: Option<Arc<dyn ToolPolicy>>,
         durable_ready: bool,
+        state_available: bool,
+        spawner_available: bool,
     ) -> Result<Arc<Self>> {
         if concurrency == 0 {
             return Err(Error::Invalid(
@@ -2695,6 +2705,8 @@ impl AgentHarness {
             &resumable_tools,
             &scope,
             durable_ready,
+            state_available,
+            spawner_available,
             interactions.is_some(),
             content.as_ref(),
             artifacts.as_ref(),
@@ -3263,6 +3275,8 @@ fn validate_task_dependencies(
     resumable_tools: &ResumableToolRegistry,
     scope: &RuntimeScope,
     has_host: bool,
+    has_state: bool,
+    has_spawner: bool,
     has_interactions: bool,
     content: Option<&ContentBindings>,
     artifacts: Option<&ArtifactBindings>,
@@ -3320,8 +3334,8 @@ fn validate_task_dependencies(
         interactions: (has_interactions || has_host) && scope.grants.contains("interaction:route"),
         policy: has_policy,
         host: has_host,
-        state: has_host,
-        spawner: has_host,
+        state: has_state,
+        spawner: has_spawner,
         content: content.is_some(),
         artifacts: artifacts.is_some(),
         content_write,
@@ -5658,6 +5672,8 @@ mod tests {
                 &ResumableToolRegistry::default(),
                 &complete_scope,
                 false,
+                false,
+                false,
                 true,
                 None,
                 None,
@@ -5683,6 +5699,8 @@ mod tests {
                     &ResumableToolRegistry::default(),
                     &scope,
                     false,
+                    false,
+                    false,
                     true,
                     None,
                     None,
@@ -5691,6 +5709,19 @@ mod tests {
                 .is_err()
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn native_task_requirements_accept_state_without_spawner() -> Result<()> {
+        let state_task = TaskDefinition::live("state-only", "1", |_context, _input: ()| async {
+            Ok::<(), Error>(())
+        })?
+        .requires("state")?;
+        let mut bindings = Bindings::local();
+        bindings.tasks.register(state_task)?;
+        bindings.state = Some(Arc::new(StateOnlyProvider));
+        assert!(bindings.build().is_ok());
         Ok(())
     }
 
@@ -6358,6 +6389,36 @@ mod tests {
                 commands: Vec::new(),
                 status: crate::workflow::MachineStatus::Suspended,
             })
+        }
+    }
+
+    struct StateOnlyProvider;
+
+    impl TaskStateProvider for StateOnlyProvider {
+        fn policy_identity(&self) -> Option<ComponentIdentity> {
+            None
+        }
+        fn observe_admission<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
+            Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
+        }
+        fn resume_scope<'a>(
+            &'a self,
+            _task_id: TaskId,
+            _operation_id: OperationId,
+        ) -> BoxFuture<'a, Result<RuntimeScope>> {
+            Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
+        }
+        fn outcome<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+            Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
+        }
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Err(Error::Unsupported("state-only test provider".into())) })
         }
     }
 

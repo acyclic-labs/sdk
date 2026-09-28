@@ -2544,8 +2544,8 @@ function validateTaskRequirements(
       interactions: (components.interactions !== undefined || durable) && grants.includes("interaction:route"),
       policy: components.policy !== undefined,
       host: durable,
-      state: durable,
-      spawner: durable,
+      state: components.state !== undefined || components.host !== undefined,
+      spawner: components.spawner !== undefined || components.host !== undefined,
       content: components.content !== undefined,
       artifacts: components.artifacts !== undefined,
       content_write: components.content?.writer !== undefined

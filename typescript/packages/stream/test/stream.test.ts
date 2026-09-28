@@ -93,6 +93,12 @@ describe("website Stream contract", () => {
     customProvider.append = (...args) => { customCalls += 1; return originalAppend(...args); };
     await expect(new StreamClient(customProvider).bytes("custom").appendBatch(Array(1_025).fill(new Uint8Array()))).rejects.toMatchObject({ code: "limit_exceeded" });
     expect(customCalls).toBe(0);
+    const customStream = new StreamClient({
+      append: () => { customCalls += 1; throw new Error("custom provider called"); },
+    } as never).bytes("custom");
+    expect(() => customStream.append(new Uint8Array(), { ifTail: -1n })).toThrow(RangeError);
+    expect(() => customStream.appendBatch([new Uint8Array()], { ifTail: 0x1_0000_0000_0000_0000n })).toThrow(RangeError);
+    expect(customCalls).toBe(0);
     await expect(customProvider.append("bad path", [new Uint8Array()], { ifTail: -1n })).rejects.toMatchObject({ code: "invalid_path" });
     await expect(customProvider.childrenPage(null as never)).rejects.toMatchObject({ code: "invalid_argument" });
     let hostedCalls = 0;
