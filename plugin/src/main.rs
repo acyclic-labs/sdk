@@ -42,13 +42,14 @@ use acyclic_fs::{
     MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationCoordinator,
     MultiRootPublicationError, MultiRootPublicationPhase, NativeWatch, NativeWatchOptions,
     OperationId, OperationReconcileLimits, OperationWindowLease, Publication, PublicationPermit,
-    TransactionCommit, WatchBatch, WorkBudget, Workspace, WorkspaceContextId, WorkspaceContextRoot,
-    WorkspaceContextState, WorkspaceDelete, WorkspaceError, WorkspaceMultiRootPublisherError,
-    WorkspaceOperationFinish, WorkspacePathApply, WorkspaceRestore, WorkspaceRootId,
-    apply_git_patch_with_permit, blame_git_generations, capture_baseline_with_policy,
-    capture_git_compatible_generation, capture_git_compatible_generation_at,
-    capture_git_compatible_generation_incremental, capture_watch_batch_with_policy,
-    git_compatible_diff_counts, grep_git_generation, resolve_merge_plan, walk_git_tree,
+    TransactionCommit, WatchBatch, WatchChange, WatchEpoch, WatchSequence, WorkBudget, Workspace,
+    WorkspaceContextId, WorkspaceContextRoot, WorkspaceContextState, WorkspaceDelete,
+    WorkspaceError, WorkspaceMultiRootPublisherError, WorkspaceOperationFinish, WorkspacePathApply,
+    WorkspaceRestore, WorkspaceRootId, apply_git_patch_with_permit, blame_git_generations,
+    capture_baseline_with_policy, capture_git_compatible_generation,
+    capture_git_compatible_generation_at, capture_git_compatible_generation_incremental,
+    capture_watch_batch_with_policy, git_compatible_diff_counts, grep_git_generation,
+    resolve_merge_plan, walk_git_tree,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};

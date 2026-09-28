@@ -360,6 +360,24 @@ fn a_parent_edit_keeps_its_directory_whole_in_later_forks() {
 
 #[test]
 #[ignore = "requires live native mounts"]
+fn root_edits_to_merged_files_reach_later_forks() {
+    let session = Session::open("root-edits");
+    let writer = session.spawn(&session.root(), "writer");
+    fs::write(writer.path.join("pkg/merged.rs"), "merged\n").expect("write");
+    fs::write(writer.path.join("kept.rs"), "kept\n").expect("write");
+    session.merge(&writer).expect("merge writer");
+    fs::remove_file(session.repo.join("pkg/merged.rs")).expect("root unlink");
+    fs::write(session.repo.join("kept.rs"), "edited in the root\n").expect("root edit");
+    let reader = session.spawn(&session.root(), "reader");
+    assert_eq!(
+        files(&reader.path),
+        ["README.md", "kept.rs", "pkg/shared.rs"]
+    );
+    assert_eq!(read(&reader.path.join("kept.rs")), "edited in the root\n");
+}
+
+#[test]
+#[ignore = "requires live native mounts"]
 fn a_deletion_travels_up_one_parent_at_a_time() {
     let session = Session::open("deletion");
     let child = session.spawn(&session.root(), "child");

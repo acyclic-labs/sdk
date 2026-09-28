@@ -451,15 +451,18 @@ pub(crate) async fn open_lazy_source(
 pub(crate) const RESERVED_ROOT_NAMES: [&str; 2] = [".acyclic-sdk", ".git"];
 
 pub(crate) fn reserved_root_paths() -> Result<Vec<NamespacePath>, String> {
-    let limits = VolumeLimits::default();
     RESERVED_ROOT_NAMES
         .iter()
-        .map(|name| {
-            let path = PortablePath::parse(&format!("/{name}"), limits).map_err(display)?;
-            NamespacePath::from_portable_in_profile(&path, native_filesystem_profile(), limits)
-                .map_err(display)
-        })
+        .map(|name| native_namespace_path(&format!("/{name}")))
         .collect()
+}
+
+/// The host's namespace path for the portable absolute `path`.
+pub(crate) fn native_namespace_path(path: &str) -> Result<NamespacePath, String> {
+    let limits = VolumeLimits::default();
+    let path = PortablePath::parse(path, limits).map_err(display)?;
+    NamespacePath::from_portable_in_profile(&path, native_filesystem_profile(), limits)
+        .map_err(display)
 }
 
 pub(crate) fn reserved_ignore_rules() -> String {

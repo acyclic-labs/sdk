@@ -965,7 +965,10 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
             .is_none_or(|attributes| attributes & 1 == 0)
             || defaulted.modified_ns != Some(QUALIFICATION_MODIFIED_NS)
         {
-            return Err("metadata on a default-metadata projection was not published".into());
+            return Err(format!(
+                "metadata on a default-metadata projection was not published: {defaulted:?}"
+            )
+            .into());
         }
         let observed = workspace
             .stat("/seed/nested/default-read.txt")

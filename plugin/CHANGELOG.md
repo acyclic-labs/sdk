@@ -31,6 +31,18 @@
   handle" when the parent's checkout changes while the listing starts (it
   did on first use of a fresh mount about one run in ten).
 - Windows runs the same fork/join conformance suite as Linux and macOS.
+- On a Windows Dev Drive (ReFS), which drops some change notifications,
+  edits and deletions in the root checkout still reach subagents started
+  afterwards: every refresh checks recorded files against the disk.
+- On Windows, subagents start faster: a subagent's checkout is written by
+  several threads at once.
+- On Windows, subagents see symbolic links from the parent's checkout,
+  also on a Dev Drive (which needs Developer Mode there).
+- On Windows, a file renamed before anything reads it can be read at once
+  under its new name; it was briefly missing about one time in thirty.
+- On Windows, antivirus scans no longer break subagents: a file deleted
+  while a scanner holds it open no longer fails listings with "Access is
+  denied", and staged copies no longer linger after a scan.
 - A crashed installer's lock is reclaimed at once even when the OS has given
   its process ID to another process.
 - The Codex hook server keeps answering after a request too large to isolate

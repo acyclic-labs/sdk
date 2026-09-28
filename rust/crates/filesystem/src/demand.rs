@@ -1778,7 +1778,7 @@ pub mod native {
             for change in changes {
                 match change {
                     HostChange::Everything => reported.push(SourceChange::Everything),
-                    #[cfg(target_os = "macos")]
+                    #[cfg(any(target_os = "macos", windows))]
                     HostChange::Unconfirmed => reported.push(SourceChange::Unconfirmed),
                     #[cfg(windows)]
                     HostChange::File(index) => reported.push(SourceChange::Node(

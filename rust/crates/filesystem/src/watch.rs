@@ -356,6 +356,7 @@ pub struct NativeWatch {
     next_sequence: WatchSequence,
     rescan_in_progress: bool,
     root_identity: NativeRootIdentity,
+    complete: bool,
 }
 
 impl NativeWatch {
@@ -417,6 +418,11 @@ impl NativeWatch {
         }
         let root_identity = NativeRootIdentity::from_file(&root_file)
             .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+        #[cfg(windows)]
+        let complete = crate::native_host::reports_every_change(&root_file)
+            .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+        #[cfg(not(windows))]
+        let complete = true;
         let capacity = usize::try_from(options.maximum_queued_changes)
             .map_err(|_| NativeWatchError::InvalidOptions)?;
         let (sender, receiver) = sync_channel(capacity);
@@ -485,7 +491,16 @@ impl NativeWatch {
             next_sequence: WatchSequence(0),
             rescan_in_progress: false,
             root_identity,
+            complete,
         })
+    }
+
+    /// Whether the root's file system reports every change, or that it lost
+    /// some. Where it does not (`ReFS`, network shares), a batch without a
+    /// change proves nothing, and only a baseline scan finds what changed.
+    #[must_use]
+    pub const fn reports_every_change(&self) -> bool {
+        self.complete
     }
 
     /// Adds one exact directory to a non-recursive native watcher.
