@@ -510,10 +510,12 @@ struct PlaceholderState {
     directories: HashMap<MountPath, Materialized>,
     /// Directories to list again whatever their basis says.
     stale: HashSet<MountPath>,
-    /// Renames through the mount, oldest first. `ProjFS` asks for a
-    /// placeholder's content by the path it was written at, also after a
-    /// rename of a directory above it moved it.
-    moves: Vec<(MountPath, MountPath)>,
+    /// Where each path renames through the mount moved is now, by the path
+    /// it had: `ProjFS` asks for a placeholder's content by the path it was
+    /// written at, also after a rename of a directory above it moved it.
+    /// One entry per path renamed away, composed with later renames, so
+    /// moving a directory back and forth leaves one.
+    moves: HashMap<MountPath, MountPath>,
     /// Whether a handle closed since pending placeholders were last tried.
     retry: bool,
     /// Latest change around the mount the source reported.
@@ -524,6 +526,29 @@ struct PlaceholderState {
     /// revalidation.
     failure: Option<String>,
     stopping: bool,
+}
+
+impl PlaceholderState {
+    /// Records what one round of replacing pending placeholders came to.
+    fn record_attempts(
+        &mut self,
+        settled: Vec<(MountPath, WrittenPlaceholder)>,
+        kept: Vec<(MountPath, WrittenPlaceholder)>,
+    ) {
+        for (path, written) in settled {
+            // Superseded again meanwhile, it stays pending as that.
+            if self.pending.get(&path) == Some(&written) {
+                self.pending.remove(&path);
+            }
+        }
+        for (path, placeholder) in kept {
+            // Written again meanwhile, from a later basis.
+            let entry = self.written.entry(path).or_insert(placeholder);
+            if entry.basis.map(|basis| basis.stamp) < placeholder.basis.map(|basis| basis.stamp) {
+                *entry = placeholder;
+            }
+        }
+    }
 }
 
 impl ViewObserver for Placeholders {
@@ -752,6 +777,18 @@ impl Placeholders {
                 }
             }
         }
+        // What earlier renames moved beneath `from` moves on; a path back
+        // where it started needs no entry.
+        for current in state.moves.values_mut() {
+            if let Some(moved) = rebased(current, from, to) {
+                *current = moved;
+            }
+        }
+        state
+            .moves
+            .entry(from.clone())
+            .or_insert_with(|| to.clone());
+        state.moves.retain(|origin, current| origin != current);
         let is_directory = state.directories.contains_key(to);
         if let (Some(parent), Some(name)) = (from.parent(), from.components().last())
             && let Some(materialized) = state.directories.get_mut(&parent)
@@ -763,18 +800,20 @@ impl Placeholders {
         {
             materialized.names.insert(name.clone(), is_directory);
         }
-        state.moves.push((from.clone(), to.clone()));
     }
 
     /// Where the placeholder written at `path` is now, following every
     /// rename through the mount since.
     fn moved_path(&self, path: &MountPath) -> MountPath {
-        lock_recover(&self.state)
+        // The deepest path renamed away that holds `path` says where it is.
+        let state = lock_recover(&self.state);
+        state
             .moves
             .iter()
-            .fold(path.clone(), |path, (from, to)| {
-                rebased(&path, from, to).unwrap_or(path)
-            })
+            .filter(|(origin, _)| projfs_path_suffix(path, origin).is_some())
+            .max_by_key(|(origin, _)| origin.components().len())
+            .and_then(|(origin, current)| rebased(path, origin, current))
+            .unwrap_or_else(|| path.clone())
     }
 
     /// Has the worker list `path`'s directory again and write `path` anew
@@ -919,20 +958,7 @@ impl Placeholders {
                 }
             }
             state = lock_recover(&self.state);
-            for (path, written) in settled {
-                // Superseded again meanwhile, it stays pending as that.
-                if state.pending.get(&path) == Some(&written) {
-                    state.pending.remove(&path);
-                }
-            }
-            for (path, placeholder) in kept {
-                // Written again meanwhile, from a later basis.
-                let entry = state.written.entry(path).or_insert(placeholder);
-                if entry.basis.map(|basis| basis.stamp) < placeholder.basis.map(|basis| basis.stamp)
-                {
-                    *entry = placeholder;
-                }
-            }
+            state.record_attempts(settled, kept);
             state.processed = state.processed.max(through);
             if let Some(failure) = failure {
                 state.failure.get_or_insert(failure);

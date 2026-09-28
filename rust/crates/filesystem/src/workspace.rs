@@ -892,6 +892,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         if operations.is_empty() {
             return Ok(WorkspacePathApply::NoChanges(current));
         }
+        // Parents are restored before their children, and children removed
+        // before their parents.
+        operations.sort_by_key(|operation| match operation {
+            crate::kernel::Mutation::Remove { path, .. } => {
+                (1, std::cmp::Reverse(path.components().len()))
+            }
+            _ => (0, std::cmp::Reverse(0)),
+        });
         transaction
             .checkout
             .mutate(operations, crate::WorkBudget::UNBOUNDED, &cancellation)

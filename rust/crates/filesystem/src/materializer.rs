@@ -1656,6 +1656,16 @@ where
             && after_directory
             && std::fs::symlink_metadata(root.join(&path))
                 .is_ok_and(|metadata| metadata.file_type().is_dir());
+        // Symmetrically, a directory the target drops that still holds host
+        // entries the source generation never held is a source directory
+        // read through the source: removing it would take those along, so
+        // it stays and only what the generation held beneath it goes.
+        if before_directory
+            && change.after.is_none()
+            && host_directory_holds_unknown_entries(&root, &path, from_generation).await?
+        {
+            continue;
+        }
         if (before_directory || promoted_directory) && after_directory {
             let stat = to_generation.stat(&format!("/{path}")).await?;
             metadata_edits.push(MaterializationEdit::SetMetadata {
@@ -1761,6 +1771,44 @@ const MAXIMUM_PROMOTION_COMPARISON_BYTES: u64 = 64 * 1024 * 1024;
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]
+/// Whether the host directory at `path` holds an entry `generation` does
+/// not have there.
+async fn host_directory_holds_unknown_entries<A, O>(
+    root: &Path,
+    path: &str,
+    generation: &crate::Generation<A, O>,
+) -> Result<bool, NativeWorkspacePublicationError>
+where
+    A: crate::AsyncAuthorityStore,
+    O: crate::AsyncObjectStore,
+{
+    let Ok(entries) = std::fs::read_dir(root.join(path)) else {
+        return Ok(false);
+    };
+    let mut host = std::collections::BTreeSet::new();
+    for entry in entries {
+        let entry = entry.map_err(NativeTreeMaterializationError::from)?;
+        host.insert(entry.file_name().to_string_lossy().into_owned());
+    }
+    let directory = format!("/{path}");
+    let mut after = None;
+    loop {
+        let page = generation
+            .list_directory(&directory, after.as_ref(), 1_024)
+            .await?;
+        for entry in &page.entries {
+            if let Some(name) = entry.name.unicode_text() {
+                host.remove(name.as_ref());
+            }
+        }
+        after = page.entries.last().map(|entry| entry.name.clone());
+        if !page.has_more || after.is_none() {
+            break;
+        }
+    }
+    Ok(!host.is_empty())
+}
+
 async fn host_holds_generation_file<A, O>(
     root: &Path,
     path: &str,
