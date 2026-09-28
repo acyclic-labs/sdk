@@ -412,6 +412,15 @@ impl ReadBasis {
     }
 }
 
+/// Whether what the projection wrote at a path is gone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Release {
+    /// Gone, or the user's and kept.
+    Done,
+    /// Held open by another process: tried again later.
+    Busy,
+}
+
 /// What writing one entry into the projection placed there.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Placed {
@@ -933,7 +942,19 @@ impl Placeholders {
                         .written
                         .get(&child)
                         .and_then(|written| written.link);
-                    release(projection, &child, link)?;
+                    if release(projection, &child, link)? == Release::Busy {
+                        // Tried again as pending, at the retry interval; this
+                        // listing stays unrecorded, so it is reconciled again.
+                        let mut state = lock_recover(&self.state);
+                        let written = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
+                            file_id: FileId::from_bytes([0; 16]),
+                            link,
+                            facts: None,
+                            basis: None,
+                        });
+                        state.pending.entry(child).or_insert(written);
+                        return Ok(());
+                    }
                 }
                 None => {}
             }
@@ -1497,7 +1518,11 @@ fn link_digest(target: impl IntoIterator<Item = u16>) -> u64 {
 
 /// Deletes what the projection wrote at `path` unless the user made it
 /// their own: a placeholder, or the link to the target with digest `link`.
-fn release(projection: Projection<'_>, path: &MountPath, link: Option<u64>) -> Result<(), String> {
+fn release(
+    projection: Projection<'_>,
+    path: &MountPath,
+    link: Option<u64>,
+) -> Result<Release, String> {
     let Some(digest) = link else {
         return delete_placeholder(projection, path);
     };
@@ -1505,29 +1530,36 @@ fn release(projection: Projection<'_>, path: &MountPath, link: Option<u64>) -> R
     let relative = HSTRING::from(host.as_os_str());
     // An untouched link placeholder is the projection's own.
     match prj_delete(projection, &relative, PRJ_UPDATE_ALLOW_READ_ONLY) {
-        Ok(()) => return Ok(()),
-        Err(error) if [HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND].contains(&error.code()) => {
-            return Ok(());
-        }
+        Ok(()) => return Ok(Release::Done),
+        Err(error) if error.code() == HR_SHARING_VIOLATION => return Ok(Release::Busy),
+        // Gone: at most a tombstone of an earlier try is left, cleared below.
+        Err(error) if [HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND].contains(&error.code()) => {}
         // Read since, it is a full file, as one the user made would be; or
         // an ordinary link (`ReFS`), which `ProjFS` does not manage.
-        Err(error) if error.code() == HR_VIRTUALIZATION_INVALID_OPERATION => {}
+        Err(error) if error.code() == HR_VIRTUALIZATION_INVALID_OPERATION => {
+            match delete_link(&projection.root.join(&host), digest) {
+                Ok(true) => {}
+                // Replaced, or pointed elsewhere: the user's.
+                Ok(false) => return Ok(Release::Done),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Release::Done);
+                }
+                Err(error) if error.raw_os_error() == Some(SHARING_VIOLATION) => {
+                    return Ok(Release::Busy);
+                }
+                Err(error) => return Err(format!("removing link {path:?}: {error}")),
+            }
+        }
         Err(error) => {
             return Err(format!("deleting link {path:?}: {}", driver_error(&error)));
         }
-    }
-    match delete_link(&projection.root.join(&host), digest) {
-        Ok(true) => {}
-        // Replaced, or pointed elsewhere: the user's.
-        Ok(false) => return Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("removing link {path:?}: {error}")),
     }
     // Deleted directly, it leaves a tombstone that would hide what is written
     // there next. Only a tombstone goes here: whatever the user made since
     // stays.
     match prj_delete(projection, &relative, PRJ_UPDATE_ALLOW_TOMBSTONE) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(Release::Done),
+        Err(error) if error.code() == HR_SHARING_VIOLATION => Ok(Release::Busy),
         Err(error)
             if [
                 HR_FILE_NOT_FOUND,
@@ -1536,7 +1568,7 @@ fn release(projection: Projection<'_>, path: &MountPath, link: Option<u64>) -> R
             ]
             .contains(&error.code()) =>
         {
-            Ok(())
+            Ok(Release::Done)
         }
         Err(error) => Err(format!(
             "clearing link tombstone {path:?}: {}",
@@ -1544,6 +1576,9 @@ fn release(projection: Projection<'_>, path: &MountPath, link: Option<u64>) -> R
         )),
     }
 }
+
+/// `ERROR_SHARING_VIOLATION`, as an I/O error reports it.
+const SHARING_VIOLATION: i32 = 32;
 
 /// `PrjDeleteFile` at `relative`, allowed what `update` allows.
 fn prj_delete(
@@ -1638,19 +1673,12 @@ fn symbolic_link_target(data: &[u8]) -> Option<Vec<u16>> {
 }
 
 /// Deletes the placeholder at `path` unless the user modified it.
-fn delete_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<(), String> {
+fn delete_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<Release, String> {
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
     let relative = HSTRING::from(host.as_os_str());
-    // SAFETY: the name outlives this synchronous call on a live context.
-    match unsafe {
-        PrjDeleteFile(
-            projection.context,
-            &relative,
-            Some(PRJ_UPDATE_ALLOW_READ_ONLY),
-            None,
-        )
-    } {
-        Ok(()) => Ok(()),
+    match prj_delete(projection, &relative, PRJ_UPDATE_ALLOW_READ_ONLY) {
+        Ok(()) => Ok(Release::Done),
+        Err(error) if error.code() == HR_SHARING_VIOLATION => Ok(Release::Busy),
         Err(error)
             if [
                 HR_FILE_NOT_FOUND,
@@ -1660,7 +1688,7 @@ fn delete_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<()
             ]
             .contains(&error.code()) =>
         {
-            Ok(())
+            Ok(Release::Done)
         }
         Err(error) => Err(format!(
             "deleting placeholder {path:?}: {}",
@@ -1772,7 +1800,9 @@ fn rewrite(
     basis: Option<ReadBasis>,
 ) -> Result<Replaced, String> {
     if link.is_some() {
-        release(projection, path, link)?;
+        if release(projection, path, link)? == Release::Busy {
+            return Ok(Replaced::Busy);
+        }
     } else {
         // SAFETY: the name outlives this synchronous call on a live context.
         match unsafe {
@@ -4184,6 +4214,43 @@ mod tests {
                 .is_symlink_dir()
         );
         assert_eq!(std::fs::read(link.join("inner.txt"))?, b"inner");
+        session.stop()?;
+        Ok(())
+    }
+
+    /// A link another process holds open goes once it is closed: its
+    /// removal is tried again, not given up.
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn a_link_held_open_goes_once_closed() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        };
+
+        let source = windows_checkout_source().await?;
+        let link = windows_path("link");
+        source.create_symbolic_link(
+            &link,
+            Bytes::from(windows_name("target.txt")),
+            FileMetadata::default(),
+        )?;
+        let (_root, destination, mut session) = mount_source(&source)?;
+        let projected = destination.join("link");
+        // Shares no delete access, so nothing can delete it while held.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+            .open(&projected)?;
+        source.remove(&link, None)?;
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(held);
+        });
+        session.revalidate()?;
+        closer.join().map_err(|_| "closer panicked")?;
+        assert!(sorted_names(&destination)?.is_empty());
         session.stop()?;
         Ok(())
     }

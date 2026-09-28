@@ -391,7 +391,11 @@ async function runActor() {
       post(channel, { event: "failed", error: errorText(error) });
     }
   });
-  post(channel, { event: "ready", reloaded: query.get("reload") === "1" });
+  post(channel, {
+    event: "ready",
+    reloaded: query.get("reload") === "1",
+    opening: query.get("opening"),
+  });
 }
 
 async function closeActor(channel, nextMessage, actorWindow, actor) {
@@ -558,10 +562,18 @@ const ACTOR_OPENINGS = 3;
 
 async function openActor(nextMessage, actorUrl, windowName, actor) {
   for (let opening = 1; ; opening += 1) {
-    const actorWindow = window.open(actorUrl, windowName);
+    // Each opening is told apart, so a page that starts late is not taken
+    // for the one opened after it.
+    const openingUrl = new URL(actorUrl);
+    openingUrl.searchParams.set("opening", String(opening));
+    const actorWindow = window.open(openingUrl, windowName);
     assert(actorWindow !== null, `browser blocked the ${actor} actor window`);
     const ready = await nextMessage(
-      (message) => message.actor === actor && message.event === "ready" && !message.reloaded,
+      (message) =>
+        message.actor === actor &&
+        message.event === "ready" &&
+        !message.reloaded &&
+        message.opening === String(opening),
       `${actor} ready`,
       ACTOR_READY_MS,
     );
