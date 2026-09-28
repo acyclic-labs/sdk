@@ -5447,7 +5447,10 @@ mod tests {
         // Read once so the kernel holds its pages: the next read-only open
         // stands on them and opens the source file only when a read needs it.
         assert_eq!(std::fs::read(&shared)?, b"before");
-        let mut writer = std::fs::OpenOptions::new().read(true).write(true).open(&shared)?;
+        let mut writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&shared)?;
         let mut reader = std::fs::File::open(&shared)?;
         writer.seek(std::io::SeekFrom::End(0))?;
         writer.write_all(b"-after")?;
