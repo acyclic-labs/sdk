@@ -434,17 +434,23 @@ impl Iterator for HostStatReader {
 }
 
 /// Whether Windows attributes `before` and `after` describe the same file.
-/// Hydrating a projected placeholder clears its recall-on-data-access bit
-/// and sets its archive bit; its content and metadata stay what they were.
+/// `ProjFS` marks a file it manages (reparse point, sparse, recall bits)
+/// and drops the marks when it stops managing it; hydrating a placeholder
+/// also sets its archive bit. Its content and metadata stay what they were.
 #[cfg(windows)]
 pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
+    const SPARSE: u32 = 0x0000_0200;
+    const REPARSE_POINT: u32 = 0x0000_0400;
+    const RECALL_ON_OPEN: u32 = 0x0004_0000;
     const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
-    const HYDRATION: u32 = RECALL_ON_DATA_ACCESS | 0x0000_0020; // archive
-    if before & RECALL_ON_DATA_ACCESS == 0 {
-        before == after
+    const ARCHIVE: u32 = 0x0000_0020;
+    const PROJFS_MARKS: u32 = SPARSE | REPARSE_POINT | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS;
+    let ignored = if before & PROJFS_MARKS == 0 {
+        0
     } else {
-        before & !HYDRATION == after & !HYDRATION
-    }
+        PROJFS_MARKS | ARCHIVE
+    };
+    before & !ignored == after & !ignored
 }
 
 /// The error a failed `NTSTATUS` reports. A name deleted while another
@@ -4192,6 +4198,11 @@ mod windows_clone_tests {
         assert!(!same_windows_attributes(0x0040_0000, 0x0000_0021));
         // Archive alone changing on a hydrated file is a change.
         assert!(!same_windows_attributes(0x0000_0000, 0x0000_0020));
+        // Made ordinary: reparse point and sparse (ReFS) marks drop.
+        assert!(same_windows_attributes(0x0000_0420, 0x0000_0020));
+        assert!(same_windows_attributes(0x0000_0220, 0x0000_0020));
+        // Read-only set meanwhile is still a change.
+        assert!(!same_windows_attributes(0x0000_0420, 0x0000_0021));
     }
 
     #[test]
