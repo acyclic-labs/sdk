@@ -43,6 +43,11 @@
 - On Windows, antivirus scans no longer break subagents: a file deleted
   while a scanner holds it open no longer fails listings with "Access is
   denied", and staged copies no longer linger after a scan.
+- On Windows, a file's modified time set through a handle open for writing
+  now sticks. It reverted for up to one edit in five when another process
+  had the file open, and for many empty files even when none did; a
+  subagent's files become ordinary files when first opened. The first open
+  of a file costs about 1 ms more on a Dev Drive.
 - A crashed installer's lock is reclaimed at once even when the OS has given
   its process ID to another process.
 - The Codex hook server keeps answering after a request too large to isolate
