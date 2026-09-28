@@ -1764,15 +1764,13 @@ where
 ))]
 const MAXIMUM_PROMOTION_COMPARISON_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Whether the host already holds `path` as a regular file with exactly the
-/// generation's bytes (and, on Unix, its permission bits).
+/// Whether the host directory at `path` holds an entry `generation` does
+/// not have there.
 #[cfg(all(
     feature = "local",
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]
-/// Whether the host directory at `path` holds an entry `generation` does
-/// not have there.
 async fn host_directory_holds_unknown_entries<A, O>(
     root: &Path,
     path: &str,
@@ -1809,6 +1807,13 @@ where
     Ok(!host.is_empty())
 }
 
+/// Whether the host already holds `path` as a regular file with exactly the
+/// generation's bytes (and, on Unix, its permission bits).
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
 async fn host_holds_generation_file<A, O>(
     root: &Path,
     path: &str,
