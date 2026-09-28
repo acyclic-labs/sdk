@@ -492,6 +492,84 @@ struct Materialized {
     names: HashMap<Vec<u8>, bool>,
 }
 
+/// Most threads that write one tree of placeholders at once.
+const MATERIALIZE_WORKERS: usize = 8;
+
+/// A [`Projection`] several workers write through at once.
+struct SharedProjection<'a>(Projection<'a>);
+
+// SAFETY: the source is `Sync`, the root a shared path, and the context an
+// opaque token `ProjFS` accepts from any thread for the projection's life,
+// which the scoped workers do not outlive.
+unsafe impl Sync for SharedProjection<'_> {}
+
+/// Directories waiting to be written, and how many are being written.
+struct MaterializeQueue {
+    state: Mutex<MaterializeProgress>,
+    changed: Condvar,
+}
+
+struct MaterializeProgress {
+    pending: Vec<MountPath>,
+    writing: usize,
+    failure: Option<String>,
+}
+
+impl MaterializeQueue {
+    fn new(pending: Vec<MountPath>) -> Self {
+        Self {
+            state: Mutex::new(MaterializeProgress {
+                pending,
+                writing: 0,
+                failure: None,
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
+    /// The next directory to write; `None` once none is left or one failed.
+    fn next(&self) -> Option<MountPath> {
+        let mut state = lock_recover(&self.state);
+        loop {
+            if state.failure.is_some() {
+                return None;
+            }
+            if let Some(directory) = state.pending.pop() {
+                state.writing += 1;
+                return Some(directory);
+            }
+            if state.writing == 0 {
+                return None;
+            }
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Records how writing one directory went, and what it found.
+    fn done(&self, written: Result<Vec<MountPath>, String>) {
+        let mut state = lock_recover(&self.state);
+        state.writing -= 1;
+        match written {
+            Ok(found) => state.pending.extend(found),
+            Err(error) => {
+                state.failure.get_or_insert(error);
+            }
+        }
+        self.changed.notify_all();
+    }
+
+    fn finish(self) -> Result<(), String> {
+        self.state
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failure
+            .map_or(Ok(()), Err)
+    }
+}
+
 /// Where this provider writes: the source it projects, its live context,
 /// and the projection's root on the host.
 #[derive(Clone, Copy)]
@@ -606,7 +684,7 @@ impl ViewObserver for Placeholders {
 /// What replacing one superseded placeholder came to.
 enum Replaced {
     /// Written again from the source.
-    Rewritten(WrittenPlaceholder),
+    Rewritten(Box<WrittenPlaceholder>),
     /// Deleted, or no longer a placeholder the provider owns.
     Released,
     /// Open elsewhere; pending until it can be replaced.
@@ -654,47 +732,92 @@ impl Placeholders {
     fn materialize_locked(
         &self,
         projection: Projection<'_>,
-        mut directories: Vec<MountPath>,
+        directories: Vec<MountPath>,
     ) -> Result<(), String> {
-        while let Some(directory) = directories.pop() {
-            let basis = ReadBasis::sample(projection.source);
-            let entries = match source_listing(projection.source, &directory) {
-                Ok(entries) => entries,
-                // Gone from the source since its parent was listed.
-                Err(MountSourceError::NotFound) => continue,
-                // The source changed while it was listed: written with
-                // nothing known in it, it is listed again.
-                Err(MountSourceError::Stale) => {
-                    let mut state = lock_recover(&self.state);
-                    state.directories.insert(
-                        directory.clone(),
-                        Materialized {
-                            basis: None,
-                            names: HashMap::new(),
-                        },
-                    );
-                    state.stale.insert(directory);
-                    continue;
-                }
-                Err(error) => return Err(format!("listing {directory:?}: {error}")),
-            };
-            let mut names = HashMap::with_capacity(entries.len());
-            for entry in &entries {
-                let child = directory.child(entry.component.clone());
-                let is_directory = entry.info.IsDirectory;
-                let written = write_entry(projection, &child, entry)?;
-                if is_directory {
-                    directories.push(child);
-                } else if written {
-                    self.written(child, entry.facts, basis);
-                }
-                names.insert(entry.component.clone(), is_directory);
-            }
-            lock_recover(&self.state)
-                .directories
-                .insert(directory, Materialized { basis, names });
+        if directories.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        // Each placeholder is one kernel call, independent of the others:
+        // several workers write a tree in a fraction of the time one does.
+        let workers = std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(MATERIALIZE_WORKERS);
+        let queue = MaterializeQueue::new(directories);
+        let shared = SharedProjection(projection);
+        std::thread::scope(|scope| {
+            for _ in 1..workers {
+                scope.spawn(|| self.materialize_from(&shared, &queue));
+            }
+            self.materialize_from(&shared, &queue);
+        });
+        queue.finish()
+    }
+
+    /// Writes directories from `queue` until it is drained or failed.
+    fn materialize_from(&self, projection: &SharedProjection<'_>, queue: &MaterializeQueue) {
+        while let Some(directory) = queue.next() {
+            let written = self.materialize_directory(projection.0, directory);
+            queue.done(written);
+        }
+    }
+
+    /// Writes what the source holds in `directory` and records it; returns
+    /// the directories found there, which are written next.
+    fn materialize_directory(
+        &self,
+        projection: Projection<'_>,
+        directory: MountPath,
+    ) -> Result<Vec<MountPath>, String> {
+        let basis = ReadBasis::sample(projection.source);
+        let entries = match source_listing(projection.source, &directory) {
+            Ok(entries) => entries,
+            // Gone from the source since its parent was listed.
+            Err(MountSourceError::NotFound) => return Ok(Vec::new()),
+            // The source changed while it was listed: written with nothing
+            // known in it, it is listed again.
+            Err(MountSourceError::Stale) => {
+                let mut state = lock_recover(&self.state);
+                state.directories.insert(
+                    directory.clone(),
+                    Materialized {
+                        basis: None,
+                        names: HashMap::new(),
+                    },
+                );
+                state.stale.insert(directory);
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(format!("listing {directory:?}: {error}")),
+        };
+        let mut names = HashMap::with_capacity(entries.len());
+        let mut found = Vec::new();
+        let mut written = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let child = directory.child(entry.component.clone());
+            let is_directory = entry.info.IsDirectory;
+            let placed = write_entry(projection, &child, entry)?;
+            if is_directory {
+                found.push(child);
+            } else if placed {
+                written.push((child, entry.facts));
+            }
+            names.insert(entry.component.clone(), is_directory);
+        }
+        let mut state = lock_recover(&self.state);
+        for (path, facts) in written {
+            state.written.insert(
+                path,
+                WrittenPlaceholder {
+                    file_id: facts.lookup.node.file_id,
+                    facts: Some(facts),
+                    basis,
+                },
+            );
+        }
+        state
+            .directories
+            .insert(directory, Materialized { basis, names });
+        Ok(found)
     }
 
     /// Lists `directory` again and reconciles what it holds with the names
@@ -1007,6 +1130,7 @@ impl Placeholders {
             for (path, written) in attempted {
                 match replace_placeholder(projection, &path) {
                     Ok(Replaced::Rewritten(current)) => {
+                        let current = *current;
                         kept.push((path.clone(), current));
                         settled.push((path, written));
                     }
@@ -1266,11 +1390,11 @@ fn replace_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<R
                 )
             }
             .map(|()| {
-                Replaced::Rewritten(WrittenPlaceholder {
+                Replaced::Rewritten(Box::new(WrittenPlaceholder {
                     file_id: lookup.node.file_id,
                     facts: Some(PlaceholderFacts { lookup, pin }),
                     basis,
-                })
+                }))
             })
         }
         // SAFETY: as above.
