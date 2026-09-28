@@ -3626,6 +3626,15 @@ fn ensure_same_host_node(
     // Reading the file can legitimately update its access time.
     expected_metadata.accessed_ns = MetadataField::Unavailable;
     observed_metadata.accessed_ns = MetadataField::Unavailable;
+    // Reading a projected placeholder hydrates it.
+    #[cfg(windows)]
+    if let (MetadataField::Value(before), MetadataField::Value(after)) = (
+        expected_metadata.windows_attributes,
+        observed_metadata.windows_attributes,
+    ) && crate::native_host::same_windows_attributes(before, after)
+    {
+        observed_metadata.windows_attributes = expected_metadata.windows_attributes;
+    }
     if expected.identity != observed_identity
         || expected.length != observed.len()
         || expected_metadata != observed_metadata

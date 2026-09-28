@@ -433,6 +433,38 @@ impl Iterator for HostStatReader {
     }
 }
 
+/// Whether Windows attributes `before` and `after` describe the same file.
+/// Hydrating a projected placeholder clears its recall-on-data-access bit
+/// and sets its archive bit; its content and metadata stay what they were.
+#[cfg(windows)]
+pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
+    const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+    const HYDRATION: u32 = RECALL_ON_DATA_ACCESS | 0x0000_0020; // archive
+    if before & RECALL_ON_DATA_ACCESS == 0 {
+        before == after
+    } else {
+        before & !HYDRATION == after & !HYDRATION
+    }
+}
+
+/// The error a failed `NTSTATUS` reports. A name deleted while another
+/// handle holds its file stays listed until that handle closes, yet nothing
+/// can open it again: it is gone, where Win32 would report denied access.
+#[cfg(windows)]
+fn status_error(status: windows::Win32::Foundation::NTSTATUS) -> io::Error {
+    const DELETE_PENDING: windows::Win32::Foundation::NTSTATUS =
+        windows::Win32::Foundation::NTSTATUS(0xC000_0056_u32.cast_signed());
+    if status == DELETE_PENDING {
+        return io::ErrorKind::NotFound.into();
+    }
+    // SAFETY: a pure status-code translation.
+    let code = unsafe { windows::Win32::Foundation::RtlNtStatusToDosError(status) };
+    i32::try_from(code).map_or_else(
+        |_| io::Error::other(format!("{status:?}")),
+        io::Error::from_raw_os_error,
+    )
+}
+
 /// One `FileStatInformation` query naming `path` relative to `directory`,
 /// which no reparse point may redirect; its object's own reparse tag is
 /// reported, not resolved. `None` when the path names the directory itself
@@ -449,8 +481,7 @@ fn stat_information_at(
         FILE_STAT_INFORMATION, FileStatInformation, NtQueryInformationByName,
     };
     use windows::Win32::Foundation::{
-        HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError,
-        UNICODE_STRING,
+        HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, UNICODE_STRING,
     };
     use windows::Win32::System::IO::IO_STATUS_BLOCK;
     const REPARSE_POINT_ENCOUNTERED: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
@@ -491,11 +522,7 @@ fn stat_information_at(
         return Ok(None);
     }
     if status.is_err() {
-        // SAFETY: a pure status-code translation.
-        let code = unsafe { RtlNtStatusToDosError(status) };
-        return Err(io::Error::from_raw_os_error(
-            i32::try_from(code).map_err(|_| io::Error::other("unmapped stat status"))?,
-        ));
+        return Err(status_error(status));
     }
     Ok(Some(information))
 }
@@ -1175,7 +1202,7 @@ impl HostRoot {
         use windows::Wdk::Storage::FileSystem::{
             FILE_STAT_INFORMATION, FileStatInformation, NtQueryInformationFile,
         };
-        use windows::Win32::Foundation::{HANDLE, RtlNtStatusToDosError};
+        use windows::Win32::Foundation::HANDLE;
         use windows::Win32::System::IO::IO_STATUS_BLOCK;
 
         let mut status_block = IO_STATUS_BLOCK::default();
@@ -1193,11 +1220,7 @@ impl HostRoot {
             )
         };
         if status.is_err() {
-            // SAFETY: a pure status-code translation.
-            let code = unsafe { RtlNtStatusToDosError(status) };
-            return Err(io::Error::from_raw_os_error(
-                i32::try_from(code).map_err(|_| io::Error::other("unmapped stat status"))?,
-            ));
+            return Err(status_error(status));
         }
         if information.ReparseTag != 0 {
             return Metadata::from_file(file)
@@ -1338,8 +1361,7 @@ impl HostRoot {
         use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
         use windows::Wdk::Storage::FileSystem::{FILE_OPEN, NtCreateFile};
         use windows::Win32::Foundation::{
-            HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError,
-            UNICODE_STRING,
+            HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, UNICODE_STRING,
         };
         use windows::Win32::Storage::FileSystem::{
             FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -1386,11 +1408,7 @@ impl HostRoot {
             return Ok(None);
         }
         if status.is_err() {
-            // SAFETY: a pure status-code translation.
-            let code = unsafe { RtlNtStatusToDosError(status) };
-            return Err(io::Error::from_raw_os_error(
-                i32::try_from(code).map_err(|_| io::Error::other("unmapped open status"))?,
-            ));
+            return Err(status_error(status));
         }
         // SAFETY: the call succeeded, so `handle` is a new handle this
         // function exclusively owns.
@@ -2450,7 +2468,7 @@ impl StagedWindowsFile {
         use windows::Wdk::Storage::FileSystem::{
             FILE_LINK_INFORMATION, FileLinkInformation, NtSetInformationFile,
         };
-        use windows::Win32::Foundation::{HANDLE, RtlNtStatusToDosError};
+        use windows::Win32::Foundation::HANDLE;
         use windows::Win32::System::IO::IO_STATUS_BLOCK;
 
         let name = name.encode_wide().collect::<Vec<_>>();
@@ -2494,11 +2512,7 @@ impl StagedWindowsFile {
         if status.is_ok() {
             return Ok(());
         }
-        // SAFETY: a pure status-code translation.
-        let code = unsafe { RtlNtStatusToDosError(status) };
-        Err(io::Error::from_raw_os_error(
-            i32::try_from(code).map_err(|_| io::Error::other("unmapped link status"))?,
-        ))
+        Err(status_error(status))
     }
 }
 
@@ -4165,6 +4179,62 @@ mod windows_clone_tests {
         let names = std::fs::read_dir(temporary.path())?.count();
         drop(held);
         assert_eq!(names, 0, "the staged name outlived its guard");
+        Ok(())
+    }
+
+    #[test]
+    fn hydrating_a_placeholder_leaves_its_attributes_the_same() {
+        use super::same_windows_attributes;
+        // Recall on data access, then archive once hydrated.
+        assert!(same_windows_attributes(0x0040_0000, 0x0000_0020));
+        assert!(same_windows_attributes(0x0040_0001, 0x0000_0021));
+        // Read-only set meanwhile is a change.
+        assert!(!same_windows_attributes(0x0040_0000, 0x0000_0021));
+        // Archive alone changing on a hydrated file is a change.
+        assert!(!same_windows_attributes(0x0000_0000, 0x0000_0020));
+    }
+
+    #[test]
+    fn a_name_deleted_while_held_open_is_not_found() -> std::io::Result<()> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use std::os::windows::io::AsRawHandle as _;
+        use windows::Win32::Storage::FileSystem::{
+            DELETE, FILE_DISPOSITION_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            FileDispositionInfo, SetFileInformationByHandle,
+        };
+
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("pending");
+        std::fs::write(&path, b"held")?;
+        let share = (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0;
+        // A scanner holding the file keeps its deleted name listed.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(share)
+            .open(&path)?;
+        let deleting = std::fs::OpenOptions::new()
+            .access_mode(DELETE.0)
+            .share_mode(share)
+            .open(&path)?;
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        // SAFETY: a live handle and a correctly sized input structure.
+        unsafe {
+            SetFileInformationByHandle(
+                windows::Win32::Foundation::HANDLE(deleting.as_raw_handle()),
+                FileDispositionInfo,
+                (&raw const disposition).cast(),
+                u32::try_from(std::mem::size_of::<FILE_DISPOSITION_INFO>()).unwrap_or(u32::MAX),
+            )
+        }?;
+        drop(deleting);
+        assert_eq!(std::fs::read_dir(temporary.path())?.count(), 1);
+        let root = HostRoot::open(temporary.path())?;
+        let stat = root.stat(Path::new("pending"));
+        drop(held);
+        assert_eq!(
+            stat.map(|_| ()).map_err(|error| error.kind()),
+            Err(std::io::ErrorKind::NotFound)
+        );
         Ok(())
     }
 

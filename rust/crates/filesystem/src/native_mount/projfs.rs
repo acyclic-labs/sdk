@@ -9,9 +9,9 @@
 
 use super::provider_stack;
 use super::{
-    DriverStartFailure, MountContentPin, MountFilesystem, MountLookup, MountNode, MountNodeKind,
-    MountPath, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin,
-    ViewStamp,
+    ContentSink, DriverStartFailure, MountContentPin, MountFilesystem, MountLookup, MountNode,
+    MountNodeKind, MountPath, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver,
+    ViewOrigin, ViewStamp,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
@@ -23,10 +23,10 @@ use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use windows::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
-    FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
+    FILE_ATTRIBUTE_REPARSE_POINT,
 };
 use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_EXT_INFO_TYPE_SYMLINK,
@@ -417,8 +417,8 @@ enum Placed {
     Nothing,
     /// A placeholder, or an ordinary directory.
     Placeholder,
-    /// A symbolic link with this host file index: a link placeholder, or an
-    /// ordinary link where the volume refuses those (`ReFS`).
+    /// A symbolic link to the target with this digest: a link placeholder,
+    /// or an ordinary link where the volume refuses those (`ReFS`).
     Link(u64),
 }
 
@@ -478,9 +478,10 @@ impl ProjectionCache {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct WrittenPlaceholder {
     file_id: FileId,
-    /// The host file index of the link written here: a link placeholder
-    /// becomes an ordinary link once read, which `ProjFS` no longer manages,
-    /// so the provider removes it itself, only while it is still that file.
+    /// The digest of the target of the link written here: a link
+    /// placeholder turns full once read, which `ProjFS` deletes only when
+    /// told its data may be dirty, so the provider deletes it only while it
+    /// still points where it was written to.
     link: Option<u64>,
     /// What it was written from; `None` for one known only to be gone.
     facts: Option<PlaceholderFacts>,
@@ -638,6 +639,10 @@ struct Placeholders {
     /// Held by whatever writes directories into the projection, so a
     /// listing is written and recorded as one step.
     tree: Mutex<()>,
+    /// Held exclusively while a rename moves a file in the source and in
+    /// [`PlaceholderState::moves`], and shared by each content read, which
+    /// so finds a file at its old path or where `moves` says it went.
+    renames: RwLock<()>,
     changed: Condvar,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -730,6 +735,7 @@ impl Placeholders {
         Self {
             state: Mutex::new(PlaceholderState::default()),
             tree: Mutex::new(()),
+            renames: RwLock::new(()),
             changed: Condvar::new(),
             worker: Mutex::new(None),
         }
@@ -1346,8 +1352,9 @@ fn write_entry(
         }
     };
     match result {
-        Ok(()) if symlink.is_some() => linked(projection, path, &host),
-        Ok(()) => Ok(Placed::Placeholder),
+        Ok(()) => Ok(symlink.map_or(Placed::Placeholder, |(target, _)| {
+            Placed::Link(link_digest(target.iter().copied()))
+        })),
         // Something is there already, or its directory is no directory:
         // what the user made stays.
         Err(error)
@@ -1408,60 +1415,39 @@ fn write_link(
             )),
         };
     }
-    linked(projection, path, host)
+    Ok(Placed::Link(link_digest(target.iter().copied())))
 }
 
-/// The link just written at `path`, by its host file index.
-fn linked(
-    projection: Projection<'_>,
-    path: &MountPath,
-    host: &std::path::Path,
-) -> Result<Placed, String> {
-    link_index(&projection.root.join(host))
-        .map(Placed::Link)
-        .map_err(|error| format!("reading link {path:?}: {error}"))
-}
+/// A digest of a link's target, which says whether a link is still the
+/// one written.
+fn link_digest(target: impl IntoIterator<Item = u16>) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
 
-/// The host file index of the link at `path`, read from the link itself
-/// through a handle that asks for its attributes only, which neither
-/// follows it nor reads its target.
-fn link_index(path: &std::path::Path) -> std::io::Result<u64> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use std::os::windows::io::AsRawHandle as _;
-    use windows::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        GetFileInformationByHandle,
-    };
-
-    let link = std::fs::OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES.0)
-        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
-        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-        .open(path)?;
-    let mut information = BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: a live handle and an output structure that outlives the call.
-    unsafe {
-        GetFileInformationByHandle(
-            windows::Win32::Foundation::HANDLE(link.as_raw_handle()),
-            &raw mut information,
-        )
-    }
-    .map_err(std::io::Error::from)?;
-    Ok(u64::from(information.nFileIndexHigh) << 32 | u64::from(information.nFileIndexLow))
+    let mut hasher = std::hash::DefaultHasher::new();
+    target.into_iter().for_each(|unit| unit.hash(&mut hasher));
+    hasher.finish()
 }
 
 /// Deletes what the projection wrote at `path` unless the user made it
-/// their own: a placeholder, or the link with host file index `link`.
+/// their own: a placeholder, or the link to the target with digest `link`.
 fn release(projection: Projection<'_>, path: &MountPath, link: Option<u64>) -> Result<(), String> {
-    let Some(index) = link else {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let Some(digest) = link else {
         return delete_placeholder(projection, path);
     };
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
     let target = projection.root.join(&host);
-    match link_index(&target) {
-        Ok(current) if current == index => {}
-        // Replaced since: what is there is the user's.
+    match std::fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {}
+        // Replaced since by something else: the user's.
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("reading link {path:?}: {error}")),
+    }
+    match std::fs::read_link(&target) {
+        Ok(current) if link_digest(current.as_os_str().encode_wide()) == digest => {}
+        // Pointed elsewhere since: the user's.
         Ok(_) => return Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(format!("reading link {path:?}: {error}")),
@@ -2653,12 +2639,8 @@ fn metadata_changed_since_open(
     baseline: HostWindowsMetadata,
     current: HostWindowsMetadata,
 ) -> bool {
-    let hydration_mask = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 | FILE_ATTRIBUTE_ARCHIVE.0;
-    let attributes_changed = if baseline.attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 != 0 {
-        baseline.attributes & !hydration_mask != current.attributes & !hydration_mask
-    } else {
-        baseline.attributes != current.attributes
-    };
+    let attributes_changed =
+        !crate::native_host::same_windows_attributes(baseline.attributes, current.attributes);
     attributes_changed
         || baseline.identity != current.identity
         || baseline.created != current.created
@@ -2672,12 +2654,8 @@ fn capture_changed_windows_metadata(
     baseline: HostWindowsMetadata,
     current: HostWindowsMetadata,
 ) -> Result<(), MountSourceError> {
-    let hydration_mask = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 | FILE_ATTRIBUTE_ARCHIVE.0;
-    let attributes_changed = if baseline.attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 != 0 {
-        baseline.attributes & !hydration_mask != current.attributes & !hydration_mask
-    } else {
-        baseline.attributes != current.attributes
-    };
+    let attributes_changed =
+        !crate::native_host::same_windows_attributes(baseline.attributes, current.attributes);
     if attributes_changed {
         metadata.windows_attributes = MetadataField::Value(current.attributes);
     }
@@ -2984,53 +2962,28 @@ unsafe fn file_data(
     // A file is hydrated before its own rename or link, but `ProjFS` names a
     // placeholder by the path it was written at also after a directory
     // above it was renamed: that one is read where the renames took it.
-    let read = if let Some(pin) = pin {
-        let mut read = runtime.source.read_pinned(
-            &path,
-            pin,
-            byte_offset,
-            u64::from(length),
-            chunk,
-            &mut write,
-        );
-        let moved = runtime.placeholders.moved_path(&path);
-        if written.get() == 0
-            && moved != path
-            && matches!(
-                read,
-                Err(MountSourceError::NotFound | MountSourceError::Stale)
-            )
-        {
-            read = runtime.source.read_pinned(
-                &moved,
-                pin,
-                byte_offset,
-                u64::from(length),
-                chunk,
-                &mut write,
-            );
-        }
-        read
-    } else {
-        let mut result = Ok(());
-        // A short read ends the content; the length check below rejects it.
-        while let Some(remaining) = u64::from(length)
-            .checked_sub(written.get())
-            .filter(|remaining| *remaining > 0 && result.is_ok())
-        {
-            let before = written.get();
-            let count = u32::try_from(remaining).unwrap_or(u32::MAX).min(chunk);
-            let offset = byte_offset + before;
-            result = runtime
-                .source
-                .read_range(&path, offset, count)
-                .and_then(|bytes| write(offset, bytes));
-            if written.get() - before < u64::from(count) {
-                break;
-            }
-        }
-        result
+    let renames = runtime
+        .placeholders
+        .renames
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let range = ContentRange {
+        offset: byte_offset,
+        length,
+        chunk,
     };
+    let mut read = read_content(runtime, &path, pin, range, &written, &mut write);
+    let moved = runtime.placeholders.moved_path(&path);
+    if written.get() == 0
+        && moved != path
+        && matches!(
+            read,
+            Err(MountSourceError::NotFound | MountSourceError::Stale)
+        )
+    {
+        read = read_content(runtime, &moved, pin, range, &written, &mut write);
+    }
+    drop(renames);
     PrjFreeAlignedBuffer(buffer);
     match (read, write_failure.get()) {
         (_, Some(failure)) => failure,
@@ -3038,6 +2991,54 @@ unsafe fn file_data(
         (Ok(()), None) if written.get() == u64::from(length) => HR_OK,
         (Ok(()), None) => HR_INVALID_DATA,
     }
+}
+
+/// The bytes one `GetFileData` asks for, in pieces of at most `chunk`.
+#[derive(Clone, Copy)]
+struct ContentRange {
+    offset: u64,
+    length: u32,
+    chunk: u32,
+}
+
+/// Streams `range` of `path` into `write`, which counts what it took in
+/// `written`: at the pinned version when the placeholder carries one, else
+/// as the source holds it now.
+fn read_content(
+    runtime: &Runtime,
+    path: &MountPath,
+    pin: Option<MountContentPin>,
+    ContentRange {
+        offset: byte_offset,
+        length,
+        chunk,
+    }: ContentRange,
+    written: &std::cell::Cell<u64>,
+    write: &mut ContentSink<'_>,
+) -> Result<(), MountSourceError> {
+    if let Some(pin) = pin {
+        return runtime
+            .source
+            .read_pinned(path, pin, byte_offset, u64::from(length), chunk, write);
+    }
+    let mut result = Ok(());
+    // A short read ends the content; the length check below rejects it.
+    while let Some(remaining) = u64::from(length)
+        .checked_sub(written.get())
+        .filter(|remaining| *remaining > 0 && result.is_ok())
+    {
+        let before = written.get();
+        let count = u32::try_from(remaining).unwrap_or(u32::MAX).min(chunk);
+        let offset = byte_offset + before;
+        result = runtime
+            .source
+            .read_range(path, offset, count)
+            .and_then(|bytes| write(offset, bytes));
+        if written.get() - before < u64::from(count) {
+            break;
+        }
+    }
+    result
 }
 
 unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
@@ -3359,6 +3360,10 @@ unsafe fn notification(
                 Err(error) => Err(error),
             }
         } else if notification == PRJ_NOTIFICATION_FILE_RENAMED {
+            let _renaming = placeholders
+                .renames
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let result = handle_rename_source(
                 source.as_ref(),
                 &path,
