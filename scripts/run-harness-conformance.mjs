@@ -74,7 +74,7 @@ const markers = new Map([
   ["native-wasm-replay-is-byte-equivalent", [["rust", "wire_codec::tests::native_event_bytes_match_cross_language_fixture"], ["typescript", "WASM event bytes match the native cross-language fixture"]]],
   ["authority-scopes-cannot-cross-aggregate-audiences", [["rust", "core::tests::mutated_or_foreign_scopes_are_rejected"]]],
   ["stream-append-uncertainty-is-queryable", [["rust", "store::tests::reconciliation_observes_a_commit_without_redispatch"]]],
-  ["trimmed-history-restores-from-checked-snapshot", [["rust", "store::tests::snapshot_reopens_a_trimmed_stream_suffix"]]],
+  ["full-history-restores-from-checked-snapshot", [["rust", "store::tests::snapshot_reopens_with_full_stream_history"]]],
   ["fork-publication-is-atomic", [["rust", "core::tests::fork_is_invisible_until_one_seed_event_commits"]]],
   ["effect-attempts-respect-provider-guarantees", [["rust", "core::tests::at_most_once_effect_is_never_redispatched_after_uncertainty"]]],
   ["typed-approvals-bind-the-exact-action", [["rust", "interaction::tests::approval_binding_cannot_change_with_display_json"], ["rust", "runtime::tests::tool_approval_keeps_terminal_outcomes_distinct"]]],
