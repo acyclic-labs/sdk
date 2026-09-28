@@ -360,8 +360,8 @@ pub trait AsyncAuthorityStore: StorageProvider {
     /// Retires `authority_id` after its workspace deletion record is durable.
     /// Backends that support metadata reclamation may release authority state
     /// and answer [`crate::storage::AuthorityStoreError::Retired`] afterward.
-    /// Stream-backed authorities retain their committed history and keep
-    /// answering from the last record. Retiring an authority twice succeeds.
+    /// Stream-backed authorities retain every committed Stream record and use
+    /// a separate filesystem marker to answer as retired. Retiring twice succeeds.
     fn retire_authority(
         &self,
         authority_id: AuthorityId,
