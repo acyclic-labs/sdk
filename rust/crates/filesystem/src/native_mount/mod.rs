@@ -3016,6 +3016,24 @@ mod tests {
         Ok(())
     }
 
+    /// Renames `from` to `to`, trying again for a moment while another
+    /// process (a scanner reading a file just written) holds it without
+    /// sharing delete access, as any Windows program must.
+    fn rename_as_a_user_would(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match std::fs::rename(from, to) {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+    }
+
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
     async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
@@ -3155,7 +3173,8 @@ mod tests {
                 .any(|span| matches!(span.kind, crate::kernel::ExtentKind::Hole))
         );
 
-        std::fs::write(&host_file, b"captured")?;
+        std::fs::write(&host_file, b"captured")
+            .map_err(|error| std::io::Error::other(format!("host rewrite: {error}")))?;
         let captured = capture_paths(
             &mut checkout,
             std::slice::from_ref(&file),
@@ -3197,7 +3216,8 @@ mod tests {
             )?],
             limits,
         )?;
-        std::fs::rename(&host_file, destination.join("renamed.bin"))?;
+        rename_as_a_user_would(&host_file, &destination.join("renamed.bin"))
+            .map_err(|error| std::io::Error::other(format!("host rename: {error}")))?;
         let watch = capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
