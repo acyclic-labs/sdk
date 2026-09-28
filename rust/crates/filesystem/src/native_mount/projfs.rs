@@ -120,11 +120,11 @@ struct Runtime {
     /// changes.
     placeholders: Arc<Placeholders>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
-    /// Held while one handle's metadata edits are read from the source and
-    /// written back. `ProjFS` names each handle apart, so handles to one file
-    /// close concurrently; each applies only what it changed, on what the
-    /// one before it left.
-    metadata_edits: Arc<Mutex<()>>,
+    /// Held for a path while one handle's metadata edits are read from the
+    /// source and written back. `ProjFS` names each handle apart, so handles
+    /// to one file close concurrently; each applies only what it changed, on
+    /// what the one before it left.
+    metadata_edits: Arc<PathLocks>,
     post_operation_failure: Arc<Mutex<PostOperationFailures>>,
     callbacks: CallbackGate,
 }
@@ -1929,7 +1929,7 @@ impl ProjFsSession {
             projection: Arc::new(Mutex::new(ProjectionCache::default())),
             placeholders: Arc::new(Placeholders::new()),
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
-            metadata_edits: Arc::new(Mutex::new(())),
+            metadata_edits: Arc::new(PathLocks::default()),
             post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
             callbacks: callback_gate,
         });
@@ -2586,6 +2586,27 @@ fn reparse_data(file: &std::fs::File) -> std::io::Result<Option<Vec<u8>>> {
 
 fn driver_error(error: &windows::core::Error) -> NativeMountError {
     NativeMountError::Driver(error.to_string())
+}
+
+/// One lock per path, apart from every other path's.
+#[derive(Default)]
+struct PathLocks(Mutex<HashMap<MountPath, Arc<Mutex<()>>>>);
+
+impl PathLocks {
+    /// Runs `edit` while no other edit of `path` runs.
+    fn with<T>(&self, path: &MountPath, edit: impl FnOnce() -> T) -> T {
+        let lock = Arc::clone(lock_recover(&self.0).entry(path.clone()).or_default());
+        let result = {
+            let _held = lock_recover(&lock);
+            edit()
+        };
+        let mut locks = lock_recover(&self.0);
+        // Kept only while another edit holds or waits for it.
+        if Arc::strong_count(&lock) == 2 {
+            locks.remove(path);
+        }
+        result
+    }
 }
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -3599,18 +3620,20 @@ unsafe fn notification(
             let lookup = source.lookup(&capture_path);
             match lookup {
                 Ok(Some(_)) if metadata_changed_since_open(baseline, host) => {
-                    let _edit = lock_recover(metadata_edits.as_ref());
-                    let Some(lookup) = source.lookup(&capture_path)? else {
-                        defer_host_capture(operation_failures.as_ref(), capture_path);
-                        return Ok(());
-                    };
-                    capture_changed_windows_metadata(
-                        source.as_ref(),
-                        &capture_path,
-                        lookup.metadata,
-                        baseline,
-                        host,
-                    )
+                    let edited = capture_path.clone();
+                    metadata_edits.with(&edited, || {
+                        let Some(lookup) = source.lookup(&capture_path)? else {
+                            defer_host_capture(operation_failures.as_ref(), capture_path);
+                            return Ok(());
+                        };
+                        capture_changed_windows_metadata(
+                            source.as_ref(),
+                            &capture_path,
+                            lookup.metadata,
+                            baseline,
+                            host,
+                        )
+                    })
                 }
                 Ok(Some(lookup)) => {
                     if let Some(basis) = basis
@@ -4449,6 +4472,34 @@ mod tests {
     /// Revalidation waits while a superseded placeholder is pending, which
     /// it is until its outcome is recorded, even once every change has been
     /// served, and returns as soon as it is settled.
+    #[test]
+    fn edits_of_one_path_run_one_at_a_time() {
+        use super::{PathLocks, lock_recover};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let locks = PathLocks::default();
+        let path = MountPath::root().child(windows_name("file"));
+        let running = AtomicUsize::new(0);
+        let most = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..50 {
+                        locks.with(&path, || {
+                            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                            most.fetch_max(now, Ordering::SeqCst);
+                            std::thread::yield_now();
+                            running.fetch_sub(1, Ordering::SeqCst);
+                        });
+                    }
+                });
+            }
+        });
+        assert_eq!(most.load(Ordering::SeqCst), 1);
+        // No lock outlives the edits that used it.
+        assert!(lock_recover(&locks.0).is_empty());
+    }
+
     #[test]
     fn renames_compose_into_where_each_written_path_is_now() {
         use super::{Carried, Placeholders, lock_recover};
