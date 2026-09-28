@@ -507,6 +507,37 @@ impl WrittenPlaceholder {
     }
 }
 
+/// The files a rename through the mount carried unchanged, as the source
+/// holds them at their new paths, read in `basis`.
+#[derive(Default)]
+struct Carried {
+    basis: Option<ReadBasis>,
+    files: Vec<(MountPath, PlaceholderFacts)>,
+}
+
+impl Carried {
+    /// Reads each of `current`, the files written beneath `from` that held
+    /// what the source did before it renamed `from` to `to`, at its new path.
+    fn read(
+        source: &dyn MountFilesystem,
+        from: &MountPath,
+        to: &MountPath,
+        current: &[MountPath],
+    ) -> Self {
+        let basis = ReadBasis::sample(source);
+        let files = current
+            .iter()
+            .filter_map(|path| {
+                let moved = rebased(path, from, to)?;
+                let (lookup, pin) = source.lookup_pinned(&moved).ok().flatten()?;
+                (lookup.node.kind != MountNodeKind::Directory)
+                    .then_some((moved, PlaceholderFacts { lookup, pin }))
+            })
+            .collect();
+        Self { basis, files }
+    }
+}
+
 /// A directory this provider created as an ordinary directory, and what it
 /// wrote into it.
 struct Materialized {
@@ -983,8 +1014,25 @@ impl Placeholders {
         }
     }
 
-    /// Follows a rename through the mount: what was written moves with it.
-    fn renamed(&self, from: &MountPath, to: &MountPath) {
+    /// The files written at or beneath `from` that still hold what the
+    /// source does: a rename of `from` carries them unchanged.
+    fn current_beneath(&self, source: &dyn MountFilesystem, from: &MountPath) -> Vec<MountPath> {
+        lock_recover(&self.state)
+            .written
+            .iter()
+            .filter(|(path, written)| {
+                projfs_path_suffix(path, from).is_some()
+                    && written.facts.is_some()
+                    && !written.superseded(source, path)
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
+    /// Follows a rename through the mount: what was written moves with it,
+    /// and what it `carried` unchanged is recorded as the source now holds
+    /// it, so the rename alone never has it written again.
+    fn renamed(&self, from: &MountPath, to: &MountPath, carried: Carried) {
         let mut state = lock_recover(&self.state);
         let state = &mut *state;
         let moved = state
@@ -1037,6 +1085,19 @@ impl Placeholders {
             && let Some(materialized) = state.directories.get_mut(&parent)
         {
             materialized.names.insert(name.clone(), is_directory);
+        }
+        for (path, facts) in carried.files {
+            let written = state.written.remove(&path);
+            let pending = state.pending.remove(&path);
+            state.written.insert(
+                path,
+                WrittenPlaceholder {
+                    file_id: facts.lookup.node.file_id,
+                    link: written.or(pending).and_then(|written| written.link),
+                    facts: Some(facts),
+                    basis: carried.basis,
+                },
+            );
         }
     }
 
@@ -3364,6 +3425,7 @@ unsafe fn notification(
                 .renames
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let current = placeholders.current_beneath(source.as_ref(), &path);
             let result = handle_rename_source(
                 source.as_ref(),
                 &path,
@@ -3380,7 +3442,8 @@ unsafe fn notification(
             {
                 lock_recover(operation_failures.as_ref())
                     .rename_pending_captures(&path, destination);
-                placeholders.renamed(&path, destination);
+                let carried = Carried::read(source.as_ref(), &path, destination, &current);
+                placeholders.renamed(&path, destination, carried);
             }
             result
         } else {
@@ -4015,7 +4078,7 @@ mod tests {
     /// served, and returns as soon as it is settled.
     #[test]
     fn renames_compose_into_where_each_written_path_is_now() {
-        use super::{Placeholders, lock_recover};
+        use super::{Carried, Placeholders, lock_recover};
 
         let path = |parts: &[&str]| {
             parts.iter().fold(MountPath::root(), |path, part| {
@@ -4023,8 +4086,8 @@ mod tests {
             })
         };
         let placeholders = Placeholders::new();
-        placeholders.renamed(&path(&["a"]), &path(&["b"]));
-        placeholders.renamed(&path(&["b", "child"]), &path(&["c"]));
+        placeholders.renamed(&path(&["a"]), &path(&["b"]), Carried::default());
+        placeholders.renamed(&path(&["b", "child"]), &path(&["c"]), Carried::default());
         // Written before either rename, or between them.
         assert_eq!(
             placeholders.moved_path(&path(&["a", "child", "file"])),
@@ -4042,8 +4105,8 @@ mod tests {
         // written while it was away.
         let placeholders = Placeholders::new();
         for _ in 0..3 {
-            placeholders.renamed(&path(&["x"]), &path(&["y"]));
-            placeholders.renamed(&path(&["y"]), &path(&["x"]));
+            placeholders.renamed(&path(&["x"]), &path(&["y"]), Carried::default());
+            placeholders.renamed(&path(&["y"]), &path(&["x"]), Carried::default());
         }
         assert_eq!(lock_recover(&placeholders.state).moves.len(), 1);
         assert_eq!(
@@ -4612,6 +4675,52 @@ mod tests {
             "metadata-only edits must survive synchronization and remount"
         );
         remount.unmount().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn a_file_renamed_before_it_is_read_stays_as_renamed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::MetadataExt as _;
+
+        let root = tempfile::tempdir()?;
+        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+        let workspace = engine.create_workspace("rename-unread-projfs").await?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        transaction
+            .create_file(
+                "/before.txt",
+                Bytes::from_static(b"unread"),
+                crate::kernel::FileMetadata::default(),
+            )
+            .await?;
+        transaction.commit().await?;
+        let destination = root.path().join("mount");
+        std::fs::create_dir(&destination)?;
+        let mount = workspace
+            .mount(
+                &destination,
+                MountOptions::read_write().publication(MountPublication::Manual),
+            )
+            .await?;
+        // ProjFS notifies the provider only of other processes' I/O.
+        let external = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "ren before.txt after.txt"])
+            .current_dir(&destination)
+            .output()?;
+        assert!(external.status.success(), "rename failed: {external:?}");
+        mount.sync().await?;
+        // The rename hydrated the file and moved it; nothing writes it again,
+        // which would take it away from under a reader for a moment.
+        let renamed = destination.join("after.txt");
+        assert_eq!(
+            std::fs::metadata(&renamed)?.file_attributes()
+                & super::FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0,
+            0
+        );
+        assert_eq!(std::fs::read(&renamed)?, b"unread");
+        mount.unmount().await?;
         Ok(())
     }
 
