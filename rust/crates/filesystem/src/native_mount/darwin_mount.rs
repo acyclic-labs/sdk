@@ -3637,10 +3637,16 @@ mod tests {
     #[test]
     fn directory_page_rejects_a_native_mutation_between_reads() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
+        source.create_file(
+            &MountPath::root().child(b"in-page".to_vec()),
+            FileMetadata::default(),
+        )?;
         let root = MountPath::root();
         let mut directory =
             DirectoryHandle::new(root, source.binding_epoch(), context.cache_epochs());
-        ensure_directory_page(&context, &mut directory)
+        // `.`, `..`, and one entry delivered: a listing that handed out an
+        // entry cannot continue in a later view.
+        advance_directory_to_offset(&context, &mut directory, 3)
             .map_err(std::io::Error::from_raw_os_error)?;
         source.create_file(
             &MountPath::root().child(b"after-page".to_vec()),
@@ -3654,6 +3660,24 @@ mod tests {
             ensure_directory_page(&context, &mut directory),
             Err(libc::ESTALE)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_listing_that_delivered_nothing_restarts_in_the_new_view() -> TestResult {
+        let (source, context) = checkout_context(MountPublication::Manual)?;
+        let root = MountPath::root();
+        let mut directory =
+            DirectoryHandle::new(root, source.binding_epoch(), context.cache_epochs());
+        ensure_directory_page(&context, &mut directory)
+            .map_err(std::io::Error::from_raw_os_error)?;
+        source.create_file(
+            &MountPath::root().child(b"after-page".to_vec()),
+            FileMetadata::default(),
+        )?;
+        // Only `.` and `..` were delivered: the listing starts again.
+        assert_eq!(finish_directory_page(&context, &directory, false), Ok(()));
+        assert_eq!(ensure_directory_page(&context, &mut directory), Ok(()));
         Ok(())
     }
 
