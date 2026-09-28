@@ -96,11 +96,7 @@ fn encode(state: &State) -> Vec<u8> {
         put_bytes(&mut out, path.as_str().as_bytes());
         put_len(&mut out, reference(&stream.history));
         put_u64(&mut out, stream.tail);
-        // Keep the legacy slot so zero-trim snapshots remain readable.
-        put_u64(&mut out, 0);
     }
-    // Keep the legacy retired-path count at zero.
-    put_len(&mut out, 0);
     put_len(&mut out, state.retained.len());
     for retained in &state.retained {
         put_u64(&mut out, retained.until);
@@ -138,9 +134,6 @@ fn decode(encoded: &[u8]) -> Option<State> {
     let hierarchy_version = CommitId::from_bytes(input.array()?);
     let nodes = decode_nodes(&mut input)?;
     let (paths, path_bytes) = decode_paths(&mut input, &nodes)?;
-    if input.len()? != 0 {
-        return None;
-    }
     let mut state = State::default();
     state.paths = paths;
     state.path_bytes = path_bytes;
@@ -206,10 +199,6 @@ fn decode_paths(
         let path = input.path()?;
         let history = reference(nodes, input.len()?)?;
         let tail = input.u64()?;
-        let trim_point = input.u64()?;
-        if trim_point != 0 {
-            return None;
-        }
         let (changed, _) = watch::channel(tail);
         path_bytes = path_bytes.checked_add(path.as_str().len())?;
         paths.insert(

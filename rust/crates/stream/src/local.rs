@@ -27,11 +27,13 @@ use crate::{
     UnixMillisClock,
 };
 
-const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V2\0";
+const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V3\0";
+const LEGACY_HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V2\0";
 /// The magic, the limits, then the journal's epoch.
 const HEADER_BYTES: usize = HEADER_MAGIC.len() + LIMITS_BYTES + 8;
 const LIMITS_BYTES: usize = 8 * 8;
-const SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAPSHOT\0";
+const SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAP-V03\0";
+const LEGACY_SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAPSHOT\0";
 /// The magic, the limits, the epoch of the journal that follows, and the
 /// store time; the state and a checksum follow.
 const SNAPSHOT_HEADER_BYTES: usize = SNAPSHOT_MAGIC.len() + LIMITS_BYTES + 8 + 8;
@@ -140,6 +142,9 @@ pub enum LocalStreamError {
     /// Stored bytes or configuration do not match the canonical local format.
     #[error("local Stream journal is corrupt or incompatible")]
     Corrupt,
+    /// An earlier local format cannot provide the current full-history guarantee.
+    #[error("local Stream V2 store is unsupported; create a new local root")]
+    UnsupportedFormat,
     /// Configured bounds are zero or cannot represent the canonical format.
     #[error("local Stream limits are invalid")]
     InvalidLimits,
@@ -816,6 +821,9 @@ impl Journal {
                 .file
                 .read_exact(&mut header)
                 .map_err(|_| LocalStreamError::Corrupt)?;
+            if header.starts_with(LEGACY_HEADER_MAGIC) {
+                return Err(LocalStreamError::UnsupportedFormat);
+            }
             Some(decode_header(&header, limits))
         };
         match found {
@@ -1178,6 +1186,9 @@ fn read_snapshot(
         .ok_or(LocalStreamError::Corrupt)?;
     if snapshot_checksum(body) != *checksum {
         return Err(LocalStreamError::Corrupt);
+    }
+    if body.starts_with(LEGACY_SNAPSHOT_MAGIC) {
+        return Err(LocalStreamError::UnsupportedFormat);
     }
     let rest = body
         .strip_prefix(SNAPSHOT_MAGIC)
@@ -2048,6 +2059,52 @@ mod tests {
             std::fs::metadata(&journal)?.len(),
             u64::try_from(HEADER_BYTES)?
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_v2_journal_is_rejected_without_rewriting_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits::default();
+        let mut legacy = encode_header(limits, 0)?;
+        legacy
+            .get_mut(..HEADER_MAGIC.len())
+            .ok_or("journal header is too short")?
+            .copy_from_slice(LEGACY_HEADER_MAGIC);
+        let journal = directory.path().join(JOURNAL_FILE);
+        std::fs::write(&journal, &legacy)?;
+
+        assert!(matches!(
+            LocalStream::open(directory.path(), limits).await,
+            Err(LocalStreamError::UnsupportedFormat)
+        ));
+        assert_eq!(std::fs::read(journal)?, legacy);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_v2_snapshot_is_rejected_without_rewriting_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits::default();
+        let mut legacy = encode_snapshot(limits, 0, 0, &[])?;
+        legacy
+            .get_mut(..SNAPSHOT_MAGIC.len())
+            .ok_or("snapshot header is too short")?
+            .copy_from_slice(LEGACY_SNAPSHOT_MAGIC);
+        let (body, checksum) = legacy
+            .split_last_chunk_mut::<FRAME_CHECKSUM_BYTES>()
+            .ok_or("snapshot checksum is missing")?;
+        *checksum = snapshot_checksum(body);
+        let snapshot = directory.path().join(SNAPSHOT_FILE);
+        std::fs::write(&snapshot, &legacy)?;
+
+        assert!(matches!(
+            LocalStream::open(directory.path(), limits).await,
+            Err(LocalStreamError::UnsupportedFormat)
+        ));
+        assert_eq!(std::fs::read(snapshot)?, legacy);
         Ok(())
     }
 
