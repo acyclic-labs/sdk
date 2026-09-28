@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { create, toBinary } from "@bufbuild/protobuf";
-import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, DeleteRequestSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema, TrimRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
+import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
 import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validateRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, wireAppendRequest, wireRequest } from "../src/contract.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
@@ -52,8 +52,18 @@ describe("website Stream contract", () => {
   });
 
   test("exports the Rust-owned token operation vocabulary in canonical order", () => {
-    expect(TOKEN_OPERATIONS).toEqual(["list", "read", "follow", "append", "fork", "create", "trim", "delete", "commit"]);
+    expect(TOKEN_OPERATIONS).toEqual(["list", "read", "follow", "append", "fork", "create", "commit"]);
     expect(new Set(TOKEN_OPERATIONS).size).toBe(TOKEN_OPERATIONS.length);
+  });
+
+  test("does not expose history removal on stream handles or providers", () => {
+    const provider = new MemoryStreamProvider();
+    const stream = new StreamClient(provider).bytes("history/permanent");
+    for (const object of [provider, stream]) {
+      expect("trim" in object).toBeFalse();
+      expect("delete" in object).toBeFalse();
+      expect("bounds" in object).toBeFalse();
+    }
   });
 
   test("JSON streams reject values that cannot satisfy their declared recursive type", () => {
@@ -214,7 +224,7 @@ describe("website Stream contract", () => {
       .rejects.toMatchObject({ code: "invalid_argument" });
   });
 
-  test("distinguishes a missing tail from zero and retires paths hierarchically", async () => {
+  test("distinguishes a missing tail from zero and materializes ancestor paths", async () => {
     const client = StreamClient.memory();
     const missing = client.bytes("missing");
     const outcome = await client.commit({
@@ -223,21 +233,6 @@ describe("website Stream contract", () => {
     }, { idempotencyKey: key("missing-zero") });
     expect(outcome).toEqual({ ok: false, code: "conflict", conflicts: [{ path: "missing", expectedTail: 0n }] });
     await expect(missing.tail()).rejects.toMatchObject({ code: "stream_not_found" });
-
-    const parent = client.bytes("retired-parent");
-    const child = client.bytes("retired-parent/child");
-    await parent.append(new Uint8Array([1]));
-    await child.append(new Uint8Array([2]));
-    await expect(parent.delete()).rejects.toMatchObject({ code: "invalid_argument" });
-    await child.delete();
-    await parent.delete();
-    await expect(child.append(new Uint8Array([3]))).rejects.toMatchObject({ code: "stream_retired" });
-    await expect(child.tail()).rejects.toMatchObject({ code: "stream_retired" });
-    const retiredConflict = await client.commit({
-      conditions: [{ path: "retired-parent/new", ifAbsent: true }],
-      mutations: [{ append: { stream: client.bytes("retired-parent/new"), values: [new Uint8Array([4])] } }],
-    }, { idempotencyKey: key("retired-child") });
-    expect(retiredConflict).toEqual({ ok: false, code: "conflict", conflicts: [{ path: "retired-parent/new", expectedAbsent: true, actual: "retired" }] });
 
     await client.bytes("implicit/child").append(new Uint8Array([1]));
     expect(await client.bytes("implicit").tail()).toBe(0n);
@@ -264,6 +259,25 @@ describe("website Stream contract", () => {
       followed.push(record); controller.abort();
     }
     expect(followed).toEqual([{ sequence: 1n, value: { type: "strategy.changed" }, commitId: expect.any(Uint8Array) }]);
+  });
+
+  test("keeps the complete committed prefix readable after later appends and a fork", async () => {
+    const client = StreamClient.memory();
+    const source = client.bytes("history/source");
+    const first = await source.append(new Uint8Array([1]));
+    if (!first.ok) throw new Error("first append unexpectedly conflicted");
+    const { stream: fork } = await source.fork("history/fork", { atTail: 1n });
+    await source.append(new Uint8Array([2]));
+    await fork.append(new Uint8Array([3]));
+
+    const readAll = async (stream: typeof source) => {
+      const records = [];
+      for await (const record of stream.read({ from: 0n, limit: 10 })) records.push(record);
+      return records.map(record => [record.sequence, [...record.value]]);
+    };
+    expect(await readAll(source)).toEqual([[0n, [1]], [1n, [2]]]);
+    expect(await readAll(fork)).toEqual([[0n, [1]], [1n, [3]]]);
+    expect((await client.readCommit(first.commitId)).mutations[0]?.type).toBe("append");
   });
 
   test("uses exact uint64 positions, opaque identities, flattened receipts, and typed commit inputs", async () => {
@@ -310,12 +324,6 @@ describe("website Stream contract", () => {
     const forkKey = key("projection-fork");
     const fork = await provider.fork("projection/events", "projection/copy", { idempotencyKey: forkKey });
     expect(fork).toMatchObject({ source: "projection/events", destination: "projection/copy", forkedAt: 1n, tail: 1n });
-    const trimKey = key("projection-trim");
-    const trim = await provider.trim("projection/events", 1n, trimKey);
-    expect(trim).toMatchObject({ path: "projection/events", trimPoint: 1n });
-    const deleteKey = key("projection-delete");
-    const deletion = await provider.delete("projection/copy", deleteKey);
-    expect(deletion).toMatchObject({ path: "projection/copy", commitId: expect.any(Uint8Array) });
 
     const commitKey = key("projection-commit");
     const committed = await provider.commit({
@@ -332,8 +340,6 @@ describe("website Stream contract", () => {
     for (const [idempotencyKeyValue, type] of [
       [appendKey, "append"],
       [forkKey, "fork"],
-      [trimKey, "trim"],
-      [deleteKey, "delete"],
       [commitKey, "commit"],
     ] as const) {
       expect((await provider.inspectIdempotency(idempotencyKeyValue))?.outcome.type).toBe(type);
@@ -549,11 +555,8 @@ describe("website Stream contract", () => {
     const encoded = (route: Parameters<typeof encodeHttpRequest>[0], input: Uint8Array) => JSON.parse(encodeHttpRequest(route, input));
     expect(encoded("idempotency/inspect", toBinary(InspectIdempotencyRequestSchema, create(InspectIdempotencyRequestSchema, { idempotencyKey: retry })))).toEqual({ idempotencyKey: retryWire });
     expect(encoded("tail", toBinary(TailRequestSchema, create(TailRequestSchema, { path: "events" })))).toEqual({ path: "events" });
-    expect(encoded("bounds", toBinary(TailRequestSchema, create(TailRequestSchema, { path: "events" })))).toEqual({ path: "events" });
     expect(encoded("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [new Uint8Array([1, 2])], ifTail: 0xffff_ffff_ffff_ffffn, idempotencyKey: retry })))).toEqual({ path: "events", values: ["AQI="], options: { ifTail: "18446744073709551615", idempotencyKey: retryWire } });
     expect(encoded("fork", toBinary(ForkRequestSchema, create(ForkRequestSchema, { source: "events", destination: "copy", atTail: 3n, idempotencyKey: retry })))).toEqual({ source: "events", destination: "copy", options: { atTail: "3", idempotencyKey: retryWire } });
-    expect(encoded("trim", toBinary(TrimRequestSchema, create(TrimRequestSchema, { path: "events", before: 4n, idempotencyKey: retry })))).toEqual({ path: "events", before: "4", idempotencyKey: retryWire });
-    expect(encoded("delete", toBinary(DeleteRequestSchema, create(DeleteRequestSchema, { path: "events", idempotencyKey: retry })))).toEqual({ path: "events", idempotencyKey: retryWire });
     expect(encoded("read", toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "events", from: 5n, limit: 6 })))).toEqual({ path: "events", from: "5", limit: 6 });
     expect(encoded("children", toBinary(ChildrenRequestSchema, create(ChildrenRequestSchema, { parent: "runs", limit: 7 })))).toEqual({ parent: "runs", limit: 7 });
     expect(encoded("children/page", toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, { parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 7 })))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: 7 });
@@ -572,10 +575,7 @@ describe("website Stream contract", () => {
     const path = "adapter/events";
     const requests = [
       ["tail", wireRequest({ kind: "tail", path })],
-      ["bounds", wireRequest({ kind: "bounds", path })],
       ["fork", wireRequest({ kind: "fork", source: path, destination: "adapter/copy" })],
-      ["trim", wireRequest({ kind: "trim", path, before: 0n })],
-      ["delete", wireRequest({ kind: "delete", path })],
       ["read", wireRequest({ kind: "read", path, from: 0n, limit: 1 })],
       ["follow", wireRequest({ kind: "follow", path, from: 0n })],
       ["children", wireRequest({ kind: "children", parent: "adapter", limit: 1 })],
@@ -664,7 +664,6 @@ describe("website Stream contract", () => {
   test("hosted non-success responses preserve canonical Stream error codes", async () => {
     for (const failure of [
       { wireCode: "not_found", code: "stream_not_found", status: 404 },
-      { wireCode: "out_of_range", code: "cursor_trimmed", status: 409 },
       { wireCode: "access_denied", code: "access_denied", status: 403 },
       { wireCode: "stream_not_found", code: "stream_not_found", status: 404 },
     ]) {
@@ -693,33 +692,14 @@ describe("website Stream contract", () => {
     await expect(provider.read("events", { from: 2n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "out_of_range" });
   });
 
-  test("hosted bounds use the Rust response contract and preserve uint64 values", async () => {
-    const maximum = 0xffff_ffff_ffff_ffffn;
-    let requestBody: unknown;
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
-      requestBody = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({ trimPoint: maximum.toString(), tail: maximum.toString() }));
-    } });
-    await expect(provider.bounds("events")).resolves.toEqual({ trimPoint: maximum, tail: maximum });
-    expect(requestBody).toEqual({ path: "events" });
-
-    const invalid = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ trimPoint: "2", tail: "1" })) });
-    await expect(invalid.bounds("events")).rejects.toMatchObject({ code: "invalid_response" });
-  });
-
   test("HTTP provider rejects invalid paths and commit shapes before fetching", async () => {
     let calls = 0;
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => { calls += 1; return new Response("null"); } });
     for (const operation of [
       () => provider.tail("bad path"),
-      () => provider.bounds("bad path"),
       () => provider.tail(123 as never),
       () => provider.fork("source", "bad\\path"),
       () => provider.fork("same", "same"),
-      () => provider.trim("bad path", 0n),
-      () => provider.trim("valid", 0n, new Uint8Array() as never),
-      () => provider.delete("bad path"),
-      () => provider.delete("valid", new Uint8Array() as never),
       () => provider.append("bad path", [new Uint8Array([1])]),
       () => provider.commit({ conditions: [{ path: "valid", ifAbsent: true }], mutations: [{ append: { path: "unconditioned", values: [new Uint8Array([1])] } }] }, { idempotencyKey: key("invalid-commit") }),
       () => provider.commit({ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [{ append: { path: "forged", values: [new Uint8Array([1])] } }] }, { idempotencyKey: key("forged") }),
@@ -761,7 +741,7 @@ describe("website Stream contract", () => {
       },
       operations: ["read" as const],
       toJSON() {
-        return { path: "bad path", operations: ["delete"] };
+        return { path: "bad path", operations: ["read"] };
       },
     };
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
@@ -820,9 +800,6 @@ describe("website Stream contract", () => {
     expect(record[0]?.value).toEqual(new Uint8Array([1, 2]));
     expect(record[0]?.commitId).toEqual(new Uint8Array(32).fill(7));
     expect(record[1]?.value).toEqual(new Uint8Array());
-
-    const bounds = decodeHttpResponse("bounds", JSON.stringify({ trimPoint: maximum.toString(), tail: maximum.toString() })) as { readonly trimPoint: bigint; readonly tail: bigint };
-    expect(bounds).toEqual({ trimPoint: maximum, tail: maximum });
 
     const token = decodeHttpResponse("tokens/create", JSON.stringify({ token: "secret", expiresAt: "2030-01-02T03:04:05.000Z" })) as { readonly token: string; readonly expiresAt: Date };
     expect(token.token).toBe("secret");

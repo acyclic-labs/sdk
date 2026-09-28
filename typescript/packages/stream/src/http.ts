@@ -1,7 +1,7 @@
 import { pathValue, validateAppend } from "./client.js";
 import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
 import { publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
-import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, DeleteReceipt, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamBounds, StreamProvider, TrimReceipt } from "./types.js";
+import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 import { StreamError } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
@@ -27,16 +27,8 @@ export class HttpStreamProvider implements StreamProvider {
   }
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> { const input = wireInspectIdempotencyRequest(key); return this.#request("idempotency/inspect", await encodeHttpRequest("idempotency/inspect", input)); }
   async tail(path: string): Promise<Sequence> { return this.#tail(path); }
-  async bounds(path: string): Promise<StreamBounds> {
-    pathValue(path);
-    await validateWireRequest({ kind: "bounds", path });
-    const input = wireRequest({ kind: "bounds", path });
-    return this.#request("bounds", await encodeHttpRequest("bounds", input));
-  }
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); await validateAppend(path, records, authored); const input = wireAppendRequest(path, records, authored); return this.#request("append", await encodeHttpRequest("append", input)); }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const input = wireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); return this.#request("fork", await encodeHttpRequest("fork", input)); }
-  async trim(path: string, before: Sequence, key?: IdempotencyKey): Promise<TrimReceipt> { const authored = key?.slice() as IdempotencyKey | undefined; await validateWireRequest({ kind: "trim", path, before, ...(authored === undefined ? {} : { key: authored }) }); const input = wireRequest({ kind: "trim", path, before, ...(authored === undefined ? {} : { key: authored }) }); return this.#request("trim", await encodeHttpRequest("trim", input)); }
-  async delete(path: string, key?: IdempotencyKey): Promise<DeleteReceipt> { const authored = key?.slice() as IdempotencyKey | undefined; await validateWireRequest({ kind: "delete", path, ...(authored === undefined ? {} : { key: authored }) }); const input = wireRequest({ kind: "delete", path, ...(authored === undefined ? {} : { key: authored }) }); return this.#request("delete", await encodeHttpRequest("delete", input)); }
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> { for (const item of await this.#read(path, options)) yield item; }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     const { from, signal } = options;

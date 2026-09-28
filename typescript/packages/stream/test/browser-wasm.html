@@ -32,8 +32,6 @@ try {
   }, { idempotencyKey: new Uint8Array([3]) });
   if (!committed.ok || committed.tails["browser/next"] !== 1n) throw new Error("browser commit failed");
   await validateWireRequest({ kind: "fork", source: "browser/events", destination: "browser/copy", options: { atTail: 0n, idempotencyKey: new Uint8Array([4]) } });
-  await validateWireRequest({ kind: "trim", path: "browser/events", before: 0n, key: new Uint8Array([5]) });
-  await validateWireRequest({ kind: "delete", path: "browser/events", key: new Uint8Array([6]) });
   await validateWireRequest({ kind: "read", path: "browser/events", from: 0n, limit: 1 });
   await validateWireRequest({ kind: "follow", path: "browser/events", from: 0n });
   await validateWireRequest({ kind: "children", parent: "browser", limit: 1 });
