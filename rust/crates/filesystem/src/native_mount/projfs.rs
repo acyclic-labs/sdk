@@ -704,6 +704,9 @@ struct PlaceholderState {
     directories: HashMap<MountPath, Materialized>,
     /// Directories to list again whatever their basis says.
     stale: HashSet<MountPath>,
+    /// Pending paths a listing waits on: when one is settled, its parent is
+    /// listed again.
+    relist: HashSet<MountPath>,
     /// Where each path renames through the mount moved is now, by the path
     /// it had: `ProjFS` asks for a placeholder's content by the path it was
     /// written at, also after a rename of a directory above it moved it.
@@ -733,6 +736,11 @@ impl PlaceholderState {
             // Superseded again meanwhile, it stays pending as that.
             if self.pending.get(&path) == Some(&written) {
                 self.pending.remove(&path);
+                if self.relist.remove(&path)
+                    && let Some(parent) = path.parent()
+                {
+                    self.stale.insert(parent);
+                }
             }
         }
         for (path, placeholder) in kept {
@@ -938,13 +946,19 @@ impl Placeholders {
                 // Now another kind: what was written for the old one goes.
                 Some(&true) => self.remove_tree(projection, &child),
                 Some(&false) => {
-                    let link = lock_recover(&self.state)
-                        .written
-                        .get(&child)
-                        .and_then(|written| written.link);
+                    // Written, or superseded and pending since.
+                    let link = {
+                        let state = lock_recover(&self.state);
+                        state
+                            .written
+                            .get(&child)
+                            .or_else(|| state.pending.get(&child))
+                            .and_then(|written| written.link)
+                    };
                     if release(projection, &child, link)? == Release::Busy {
                         // Tried again as pending, at the retry interval; this
-                        // listing stays unrecorded, so it is reconciled again.
+                        // listing stays unrecorded, and is listed again once
+                        // the old entry is gone.
                         let mut state = lock_recover(&self.state);
                         let written = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
                             file_id: FileId::from_bytes([0; 16]),
@@ -952,6 +966,7 @@ impl Placeholders {
                             facts: None,
                             basis: None,
                         });
+                        state.relist.insert(child.clone());
                         state.pending.entry(child).or_insert(written);
                         return Ok(());
                     }
@@ -4214,6 +4229,69 @@ mod tests {
                 .is_symlink_dir()
         );
         assert_eq!(std::fs::read(link.join("inner.txt"))?, b"inner");
+        session.stop()?;
+        Ok(())
+    }
+
+    /// A directory the source puts in place of a projected link replaces it.
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn a_directory_replaces_a_projected_link() -> Result<(), Box<dyn std::error::Error>> {
+        let source = windows_checkout_source().await?;
+        let name = windows_path("name");
+        source.create_symbolic_link(
+            &name,
+            Bytes::from(windows_name("target.txt")),
+            FileMetadata::default(),
+        )?;
+        let (_root, destination, mut session) = mount_source(&source)?;
+        source.remove(&name, None)?;
+        source.create_directory(&name, FileMetadata::default())?;
+        session.revalidate()?;
+        assert!(std::fs::symlink_metadata(destination.join("name"))?.is_dir());
+        session.stop()?;
+        Ok(())
+    }
+
+    /// A link another process holds open while the source puts a directory
+    /// in its place gives way to that directory once it is closed.
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn a_directory_replaces_a_link_held_open_once_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        };
+
+        let source = windows_checkout_source().await?;
+        let name = windows_path("name");
+        source.create_symbolic_link(
+            &name,
+            Bytes::from(windows_name("target.txt")),
+            FileMetadata::default(),
+        )?;
+        let (_root, destination, mut session) = mount_source(&source)?;
+        let projected = destination.join("name");
+        // Shares no delete access, so nothing can delete it while held.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+            .open(&projected)?;
+        source.remove(&name, None)?;
+        source.create_directory(&name, FileMetadata::default())?;
+        let inner = name.child(windows_name("inner.txt"));
+        source.create_file(&inner, FileMetadata::default())?;
+        source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(held);
+        });
+        session.revalidate()?;
+        closer.join().map_err(|_| "closer panicked")?;
+        assert!(std::fs::symlink_metadata(&projected)?.is_dir());
+        assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
         session.stop()?;
         Ok(())
     }
