@@ -473,8 +473,10 @@ struct FileHandle {
 
 /// A read-only handle to a file whose pages the kernel already holds at the
 /// version this handle opens. Reads come from those pages, so the source file
-/// opens only when a use reaches it, and serves that use only while it is
-/// still the file and version the handle opened.
+/// opens only when a use reaches it: when the file changed since, through
+/// another handle, the kernel dropped its pages and this one reads what the
+/// file holds now, as any open handle does. It serves that use only while
+/// the path still names the file the handle opened.
 struct DeferredOpenFile {
     source: Arc<dyn MountFilesystem>,
     path: MountPath,
@@ -489,10 +491,7 @@ impl DeferredOpenFile {
             return Ok(Arc::clone(file));
         }
         let opened = self.source.open_file(&self.path)?;
-        let current = opened.lookup()?;
-        if current.node.file_id != self.opened.node.file_id
-            || ContentVersion::of(&current) != ContentVersion::of(&self.opened)
-        {
+        if opened.lookup()?.node.file_id != self.opened.node.file_id {
             return Err(MountSourceError::Stale);
         }
         *file = Some(Arc::clone(&opened));
@@ -5424,6 +5423,42 @@ mod tests {
         // A file past the store limit is read on demand, exactly.
         assert_eq!(std::fs::read(temporary.path().join("large"))?, large_bytes);
         assert!(requests(&session).contains(&"read"));
+        assert!(session.stop()?);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a live Linux FUSE mount"]
+    fn linux_an_open_reader_sees_a_write_through_another_handle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::{Read as _, Seek as _, Write as _};
+
+        let (inner, _) = shared_sources()?;
+        let volume_id = inner.volume_id()?;
+        let source = Arc::new(inner);
+        let temporary = tempfile::tempdir()?;
+        let mut session = mount(
+            Arc::clone(&source) as Arc<dyn MountFilesystem>,
+            volume_id,
+            temporary.path(),
+        )?;
+        let shared = temporary.path().join("shared");
+        std::fs::write(&shared, b"before")?;
+        // Read once so the kernel holds its pages: the next read-only open
+        // stands on them and opens the source file only when a read needs it.
+        assert_eq!(std::fs::read(&shared)?, b"before");
+        let mut writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&shared)?;
+        let mut reader = std::fs::File::open(&shared)?;
+        writer.seek(std::io::SeekFrom::End(0))?;
+        writer.write_all(b"-after")?;
+        writer.sync_all()?;
+        let mut observed = Vec::new();
+        reader.read_to_end(&mut observed)?;
+        assert_eq!(observed, b"before-after");
+        drop((writer, reader));
         assert!(session.stop()?);
         Ok(())
     }

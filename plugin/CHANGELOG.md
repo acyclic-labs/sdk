@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- On Linux, a file opened for reading keeps working after another handle
+  writes to it and syncs: it reads the new contents instead of failing with
+  "Stale file handle".
 - Merging a subagent carries everything it did to its parent: edits,
   creations, deletions and renames of files it only read from the shared
   checkout, and extended attributes on Linux. A deletion survives
