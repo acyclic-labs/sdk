@@ -3,7 +3,19 @@ import initialize, { openBrowserFs } from "../generated/wasm/acyclic_fs_wasm.js"
 import { openBrowserFs as openWorkspaceFs } from "../dist/browser.js";
 import { exerciseWorkspace } from "./workspace-composition.mjs";
 
-await initialize();
+// Headless Chrome running many windows at once was seen to fail an actor's
+// module fetch before the request reached the file server ("Failed to
+// fetch", nothing served incomplete). The fetch is the page's own setup, not
+// the SDK under test, so it is tried again a bounded number of times.
+for (let attempt = 1; ; attempt += 1) {
+  try {
+    await initialize();
+    break;
+  } catch (error) {
+    if (attempt === 3 || !(error instanceof TypeError)) throw error;
+    console.error(`wasm fetch attempt ${attempt} failed: ${error}`);
+  }
+}
 
 const result = document.querySelector("#result");
 const query = new URLSearchParams(location.search);

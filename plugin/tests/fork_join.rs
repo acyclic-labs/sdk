@@ -369,7 +369,10 @@ fn root_edits_to_merged_files_reach_later_forks() {
     fs::remove_file(session.repo.join("pkg/merged.rs")).expect("root unlink");
     fs::write(session.repo.join("kept.rs"), "edited in the root\n").expect("root edit");
     let reader = session.spawn(&session.root(), "reader");
-    assert_eq!(files(&reader.path), ["README.md", "kept.rs", "pkg/shared.rs"]);
+    assert_eq!(
+        files(&reader.path),
+        ["README.md", "kept.rs", "pkg/shared.rs"]
+    );
     assert_eq!(read(&reader.path.join("kept.rs")), "edited in the root\n");
 }
 
