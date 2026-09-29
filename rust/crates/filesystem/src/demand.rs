@@ -2604,6 +2604,21 @@ mod tests {
                 .write(true)
                 .open(path)?,
         );
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            let reads = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        file.read_range(0, 6, &CancellationToken::new())
+                            .is_ok_and(|read| read.value == Bytes::from_static(b"before"))
+                    })
+                })
+                .collect::<Vec<_>>();
+            for read in reads {
+                assert!(read.join().unwrap_or(false));
+            }
+        });
         assert_eq!(
             file.read_range(0, 6, &CancellationToken::new())?.value,
             Bytes::from_static(b"before")
