@@ -25,19 +25,19 @@ jobs:
     name: ${{ matrix.backend }}
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - backend: linux-fuse
-            runner: blacksmith-16vcpu-ubuntu-2404
+            runner: blacksmith-4vcpu-ubuntu-2404
             shell: bash
           - backend: macos-nfs
-            runner: blacksmith-12vcpu-macos-15
+            runner: blacksmith-6vcpu-macos-15
             shell: bash
           - backend: windows-projfs
-            runner: blacksmith-16vcpu-windows-2025
+            runner: blacksmith-4vcpu-windows-2025
             shell: pwsh
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6

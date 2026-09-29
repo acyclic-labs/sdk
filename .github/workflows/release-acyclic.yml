@@ -14,39 +14,40 @@ jobs:
     name: Build ${{ matrix.target }}
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - target: linux-x64-gnu
             rust_target: x86_64-unknown-linux-gnu
-            runner: blacksmith-16vcpu-ubuntu-2404
+            runner: blacksmith-4vcpu-ubuntu-2404
             executable: acyclic
           - target: linux-x64-musl
             rust_target: x86_64-unknown-linux-musl
-            runner: blacksmith-16vcpu-ubuntu-2404
+            runner: blacksmith-4vcpu-ubuntu-2404
             executable: acyclic
           - target: linux-arm64-gnu
             rust_target: aarch64-unknown-linux-gnu
-            runner: blacksmith-16vcpu-ubuntu-2404-arm
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
             executable: acyclic
           - target: linux-arm64-musl
             rust_target: aarch64-unknown-linux-musl
-            runner: blacksmith-16vcpu-ubuntu-2404-arm
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
             executable: acyclic
           - target: darwin-x64
             rust_target: x86_64-apple-darwin
-            runner: blacksmith-12vcpu-macos-15
+            runner: blacksmith-6vcpu-macos-15
             executable: acyclic
           - target: darwin-arm64
             rust_target: aarch64-apple-darwin
-            runner: blacksmith-12vcpu-macos-15
+            runner: blacksmith-6vcpu-macos-15
             executable: acyclic
           - target: win32-x64
             rust_target: x86_64-pc-windows-msvc
-            runner: blacksmith-16vcpu-windows-2025
+            runner: blacksmith-4vcpu-windows-2025
             executable: acyclic.exe
           - target: win32-arm64
             rust_target: aarch64-pc-windows-msvc
-            runner: blacksmith-16vcpu-windows-2025
+            runner: blacksmith-4vcpu-windows-2025
             executable: acyclic.exe
     runs-on: ${{ matrix.runner }}
     steps:
@@ -145,6 +146,7 @@ jobs:
     needs: build
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - backend: linux-fuse
@@ -156,7 +158,7 @@ jobs:
             target: darwin-arm64
             executable: darwin-arm64/acyclic
             qualifier: darwin-arm64/native-mount-qualify
-            runner: blacksmith-12vcpu-macos-15
+            runner: blacksmith-6vcpu-macos-15
           - backend: windows-projfs
             target: win32-x64
             executable: win32-x64/acyclic.exe
