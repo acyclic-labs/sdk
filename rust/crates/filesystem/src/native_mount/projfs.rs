@@ -1962,16 +1962,45 @@ fn write_directly(
 }
 
 /// The directory beside the projection at `root` where its files are
-/// written before they take their names in it; made on first use.
+/// written before they take their names in it; made on first use. Only a
+/// plain directory on the projection's volume serves, checked on the handle
+/// it is then used through: a reparse point would lead elsewhere, and hard
+/// links cross no other volume.
 fn staging_directory(root: &std::path::Path) -> Result<cap_std::fs::Dir, String> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
     let staging = staging_path(root);
     match std::fs::create_dir(&staging) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(format!("making {}: {error}", staging.display())),
     }
-    cap_std::fs::Dir::open_ambient_dir(&staging, cap_std::ambient_authority())
-        .map_err(|error| format!("opening {}: {error}", staging.display()))
+    let open = |path: &std::path::Path| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags((FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).0)
+            .open(path)
+    };
+    let failed = |error: std::io::Error| format!("opening {}: {error}", staging.display());
+    let directory = open(&staging).map_err(failed)?;
+    let metadata = directory.metadata().map_err(failed)?;
+    let volume =
+        |file: &std::fs::File| crate::NativeRootIdentity::from_file(file).map(|id| id.device);
+    let same_volume = volume(&directory).map_err(failed)?
+        == volume(&open(root).map_err(failed)?).map_err(failed)?;
+    if !metadata.is_dir()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        || !same_volume
+    {
+        return Err(format!(
+            "{} is not a directory this projection can stage in",
+            staging.display()
+        ));
+    }
+    Ok(cap_std::fs::Dir::from_std_file(directory))
 }
 
 /// Where the projection at `root` stages its files: a hidden sibling on
@@ -1996,7 +2025,9 @@ fn write_listed_content(
 
     let size = u64::try_from(entry.info.FileSize).unwrap_or(0);
     let mut failure = None;
+    let mut delivered = 0_u64;
     let mut sink = |_offset: u64, bytes: bytes::Bytes| {
+        delivered += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         file.write_all(&bytes).map_err(|error| {
             failure = Some(error);
             MountSourceError::Engine("writing the projected file failed".to_owned())
@@ -2026,7 +2057,8 @@ fn write_listed_content(
     };
     match (read, failure) {
         (_, Some(error)) => Err(format!("writing {path:?}: {error}")),
-        (Ok(()), None) => Ok(true),
+        // Shorter or longer than listed: not the content the listing named.
+        (Ok(()), None) => Ok(delivered == size),
         (Err(MountSourceError::Stale | MountSourceError::NotFound), None) => Ok(false),
         (Err(error), None) => Err(format!("reading {path:?}: {error}")),
     }
@@ -4223,6 +4255,22 @@ mod tests {
         PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
     };
     use windows::core::{GUID, HSTRING, PCWSTR};
+
+    /// Files are staged only in a plain directory beside the projection:
+    /// a link in its place, which would lead elsewhere, is refused.
+    #[test]
+    fn staging_refuses_a_link_in_place_of_its_directory() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let parent = tempfile::tempdir()?;
+        let root = parent.path().join("mount");
+        std::fs::create_dir(&root)?;
+        assert!(super::staging_directory(&root).is_ok());
+        std::fs::remove_dir(super::staging_path(&root))?;
+        let elsewhere = tempfile::tempdir()?;
+        std::os::windows::fs::symlink_dir(elsewhere.path(), super::staging_path(&root))?;
+        assert!(super::staging_directory(&root).is_err());
+        Ok(())
+    }
 
     #[test]
     fn projfs_name_order_differs_from_sdk_cursor_order() {
