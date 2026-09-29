@@ -727,6 +727,9 @@ struct PlaceholderState {
     /// Pending paths a listing waits on: when one is settled, its parent is
     /// listed again.
     relist: HashSet<MountPath>,
+    /// Directories the source removed that still held a file another
+    /// process had open: removed once nothing beneath them is pending.
+    vacated: HashSet<MountPath>,
     /// Whether the worker's pass in progress took stale directories it has
     /// not listed yet.
     relisting: bool,
@@ -748,28 +751,30 @@ struct PlaceholderState {
     stopping: bool,
 }
 
-/// Placeholders, each at its path.
-type Attempts = Vec<(MountPath, WrittenPlaceholder)>;
-
 impl PlaceholderState {
     /// Records what one round of replacing pending placeholders came to.
-    fn record_attempts(&mut self, settled: Attempts, kept: Attempts) {
-        for (path, written) in settled {
-            // Superseded again meanwhile, it stays pending as that.
-            if self.pending.get(&path) == Some(&written) {
-                self.pending.remove(&path);
-                if self.relist.remove(&path)
-                    && let Some(parent) = path.parent()
-                {
-                    self.stale.insert(parent);
-                }
+    /// Records what replacing `attempted` at `path` came to: settled, and
+    /// `current` written in its place.
+    fn record_attempt(
+        &mut self,
+        path: &MountPath,
+        attempted: &WrittenPlaceholder,
+        current: Option<WrittenPlaceholder>,
+    ) {
+        // Superseded again meanwhile, it stays pending as that.
+        if self.pending.get(path) == Some(attempted) {
+            self.pending.remove(path);
+            if self.relist.remove(path)
+                && let Some(parent) = path.parent()
+            {
+                self.stale.insert(parent);
             }
         }
-        for (path, placeholder) in kept {
+        if let Some(current) = current {
             // Written again meanwhile, from a later basis.
-            let entry = self.written.entry(path).or_insert(placeholder);
-            if entry.basis.map(|basis| basis.stamp) < placeholder.basis.map(|basis| basis.stamp) {
-                *entry = placeholder;
+            let entry = self.written.entry(path.clone()).or_insert(current);
+            if entry.basis.map(|basis| basis.stamp) < current.basis.map(|basis| basis.stamp) {
+                *entry = current;
             }
         }
     }
@@ -1062,19 +1067,58 @@ impl Placeholders {
         // Deepest first, so each directory holds nothing written by the time
         // it is removed.
         removed.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().len()));
+        let mut held = false;
         for (path, materialized) in removed {
             for (name, is_directory) in materialized.names {
                 if !is_directory {
                     let child = path.child(name);
-                    let _ = release(projection, &child, owned.get(&child).copied());
+                    let owned = owned.get(&child).copied();
+                    if release(projection, &child, owned) == Ok(Release::Busy) {
+                        // Held open: tried again as pending.
+                        held = true;
+                        let mut state = lock_recover(&self.state);
+                        let written = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
+                            file_id: FileId::from_bytes([0; 16]),
+                            owned,
+                            facts: None,
+                            basis: None,
+                        });
+                        state.pending.entry(child).or_insert(written);
+                    }
                 }
             }
-            if let Ok(host) = host_relative_path(&path)
-                && !host.as_os_str().is_empty()
-            {
-                // What the user left in it keeps it.
-                let _ = std::fs::remove_dir(projection.root.join(host));
+            if held {
+                lock_recover(&self.state).vacated.insert(path);
+            } else {
+                remove_vacated(projection, &path);
             }
+        }
+    }
+
+    /// Removes each vacated directory nothing pending is beneath any more.
+    fn clear_vacated(&self, projection: Projection<'_>) {
+        let mut cleared = {
+            let mut state = lock_recover(&self.state);
+            let state = &mut *state;
+            let cleared = state
+                .vacated
+                .iter()
+                .filter(|directory| {
+                    !state
+                        .pending
+                        .keys()
+                        .any(|path| projfs_path_suffix(path, directory).is_some())
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for directory in &cleared {
+                state.vacated.remove(directory);
+            }
+            cleared
+        };
+        cleared.sort_by_key(|path| std::cmp::Reverse(path.components().len()));
+        for directory in cleared {
+            remove_vacated(projection, &directory);
         }
     }
 
@@ -1352,10 +1396,10 @@ impl Placeholders {
                     failure.get_or_insert(error);
                 }
             }
-            let (settled, kept) = self.replace_pending(projection, &mut failure);
+            self.replace_pending(projection, &mut failure);
+            self.clear_vacated(projection);
             state = lock_recover(&self.state);
             state.relisting = false;
-            state.record_attempts(settled, kept);
             state.processed = state.processed.max(through);
             if let Some(failure) = failure {
                 state.failure.get_or_insert(failure);
@@ -1365,46 +1409,46 @@ impl Placeholders {
     }
 
     /// Replaces every pending placeholder, each under its path's lock with
-    /// the record current there; returns those settled, and what was written
-    /// in their place.
-    fn replace_pending(
-        &self,
-        projection: Projection<'_>,
-        failure: &mut Option<String>,
-    ) -> (Attempts, Attempts) {
+    /// the record current there, and records the outcome.
+    fn replace_pending(&self, projection: Projection<'_>, failure: &mut Option<String>) {
         // Attempted as a snapshot: each stays pending until its outcome is
         // recorded.
         let mut attempted = lock_recover(&self.state)
             .pending
-            .iter()
-            .map(|(path, written)| (path.clone(), *written))
+            .keys()
+            .cloned()
             .collect::<Vec<_>>();
-        attempted.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().len()));
-        let (mut settled, mut kept) = (Vec::new(), Vec::new());
-        for (path, snapshot) in attempted {
-            let (written, replaced) = self.paths.with(&path, || {
-                // Made an ordinary file since, it is replaced as that.
-                let written = lock_recover(&self.state)
-                    .pending
-                    .get(&path)
-                    .copied()
-                    .unwrap_or(snapshot);
-                (written, replace_placeholder(projection, &path, &written))
+        attempted.sort_by_key(|path| std::cmp::Reverse(path.components().len()));
+        for path in attempted {
+            // Replaced and recorded under the path's lock, so no conversion
+            // comes between: made an ordinary file since, it is replaced as
+            // that.
+            let outcome = self.paths.with(&path, || {
+                let Some(written) = lock_recover(&self.state).pending.get(&path).copied() else {
+                    return Ok(());
+                };
+                let replaced = replace_placeholder(projection, &path, &written);
+                let mut state = lock_recover(&self.state);
+                match replaced {
+                    Ok(Replaced::Rewritten(current)) => {
+                        state.record_attempt(&path, &written, Some(*current));
+                        Ok(())
+                    }
+                    Ok(Replaced::Released) => {
+                        state.record_attempt(&path, &written, None);
+                        Ok(())
+                    }
+                    Ok(Replaced::Busy) => Ok(()),
+                    Err(error) => {
+                        state.record_attempt(&path, &written, None);
+                        Err(error)
+                    }
+                }
             });
-            match replaced {
-                Ok(Replaced::Rewritten(current)) => {
-                    kept.push((path.clone(), *current));
-                    settled.push((path, written));
-                }
-                Ok(Replaced::Released) => settled.push((path, written)),
-                Ok(Replaced::Busy) => {}
-                Err(error) => {
-                    failure.get_or_insert(error);
-                    settled.push((path, written));
-                }
+            if let Err(error) = outcome {
+                failure.get_or_insert(error);
             }
         }
-        (settled, kept)
     }
 
     /// Reads each placeholder only unconfirmed changes superseded again:
@@ -1460,7 +1504,8 @@ impl Placeholders {
             && (state.processed < target
                 || state.relisting
                 || !state.stale.is_empty()
-                || !state.pending.is_empty())
+                || !state.pending.is_empty()
+                || !state.vacated.is_empty())
         {
             if state.processed < target || state.relisting || !state.stale.is_empty() {
                 state = self
@@ -1817,6 +1862,16 @@ fn basic_information(
     Ok(information)
 }
 
+/// Removes the directory the projection made at `path` if nothing is left
+/// in it: what the user left in it keeps it.
+fn remove_vacated(projection: Projection<'_>, path: &MountPath) {
+    if let Ok(host) = host_relative_path(path)
+        && !host.as_os_str().is_empty()
+    {
+        let _ = std::fs::remove_dir(projection.root.join(host));
+    }
+}
+
 /// Makes the placeholder at `root`/`host` an ordinary file with the same
 /// content, times and attributes, and returns it as left; `None` when it is
 /// no placeholder. One byte of the content is written back as it was, which
@@ -1878,6 +1933,15 @@ fn convert_to_full(
             .write(true)
             .share_mode(share)
             .open(&path)?;
+        // Opened by name again: what was checked is what is written.
+        if crate::NativeRootIdentity::from_file(&file)?
+            != crate::NativeRootIdentity::from_file(&attributes)?
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "replaced while made ordinary",
+            ));
+        }
         let mut first = [0_u8; 1];
         if file.read(&mut first)? == 1 {
             file.seek(std::io::SeekFrom::Start(0))?;
@@ -4591,7 +4655,9 @@ mod tests {
     }
 
     /// A time set through a writable handle stays, on disk and in the
-    /// source, for empty files and others: the handle opens an ordinary file.
+    /// source, for empty files and others, also on files another handle
+    /// read first without sharing write access: the handle opens an ordinary
+    /// file.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn a_time_set_through_a_writable_handle_stays() -> Result<(), Box<dyn std::error::Error>>
@@ -4609,7 +4675,9 @@ mod tests {
         let editor = powershell(&format!(
             r#"Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles; public static class T {{ [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetFileTime(SafeFileHandle h, IntPtr c, IntPtr a, ref long w); }}'
 0..{last} | % {{
-  $file = [IO.File]::Open('{directory}\f' + $_ + '.txt', 'Open', 'ReadWrite', 'ReadWrite')
+  $path = '{directory}\f' + $_ + '.txt'
+  if ($_ % 3 -eq 0) {{ [void][IO.File]::ReadAllBytes($path) }}
+  $file = [IO.File]::Open($path, 'Open', 'ReadWrite', 'ReadWrite')
   $time = [long]{TICKS}
   if (-not [T]::SetFileTime($file.SafeFileHandle, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$time)) {{ exit 1 }}
   $file.Close()

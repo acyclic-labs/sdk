@@ -445,12 +445,15 @@ pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
     const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
     const ARCHIVE: u32 = 0x0000_0020;
     const PROJFS_MARKS: u32 = SPARSE | REPARSE_POINT | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS;
-    let ignored = if before & PROJFS_MARKS == 0 {
+    // Marks are ignored only as they leave: a mark gained is a change.
+    let marks = before & PROJFS_MARKS;
+    let hydration = if before & RECALL_ON_DATA_ACCESS == 0 {
         0
     } else {
-        PROJFS_MARKS | ARCHIVE
+        ARCHIVE
     };
-    before & !ignored == after & !ignored
+    let ignored = marks | hydration;
+    before & !ignored == after & !ignored && after & PROJFS_MARKS & !marks == 0
 }
 
 /// The error a failed `NTSTATUS` reports. A name deleted while another
@@ -4203,6 +4206,10 @@ mod windows_clone_tests {
         assert!(same_windows_attributes(0x0000_0220, 0x0000_0020));
         // Read-only set meanwhile is still a change.
         assert!(!same_windows_attributes(0x0000_0420, 0x0000_0021));
+        // An ordinary sparse file's archive bit is its own.
+        assert!(!same_windows_attributes(0x0000_0220, 0x0000_0200));
+        // Becoming sparse is a change.
+        assert!(!same_windows_attributes(0x0000_0020, 0x0000_0220));
     }
 
     #[test]
