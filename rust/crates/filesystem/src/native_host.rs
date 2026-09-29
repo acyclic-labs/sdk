@@ -1306,10 +1306,10 @@ impl HostRoot {
         // handle before it can give way; where an oplock another holds
         // refuses that, opened plainly and granted one after.
         let file = match opened(FILE_OPEN_REQUIRING_OPLOCK) {
-            Err(error) if error.raw_os_error() == Some(CANNOT_BREAK_OPLOCK) => {
-                opened(NTCREATEFILE_CREATE_OPTIONS(0))?
-            }
-            opened => opened?,
+            Ok(file) => file,
+            // Requiring an oplock is an optimization. Any filesystem that
+            // rejects it must still be usable as an ordinary source.
+            Err(_) => opened(NTCREATEFILE_CREATE_OPTIONS(0))?,
         };
         match file {
             Some(file) => YieldingFile::new(file.into_std()),
@@ -3138,11 +3138,6 @@ fn clone_windows_file(
     Ok(())
 }
 
-/// `ERROR_CANNOT_BREAK_OPLOCK`: an open requiring an oplock met one it
-/// would have to break.
-#[cfg(windows)]
-const CANNOT_BREAK_OPLOCK: i32 = 802;
-
 /// Why a read of a [`YieldingFile`] failed: its handle gave way to a rename
 /// or delete of the file, so what it named is gone or replaced.
 #[cfg(windows)]
@@ -3175,7 +3170,9 @@ pub struct YieldingFile {
 
 #[cfg(windows)]
 struct YieldingHeld {
-    file: std::sync::RwLock<Option<File>>,
+    // ReadFile starts under this lock, but its completion is waited for
+    // outside it. The break callback can therefore cancel stalled reads.
+    file: std::sync::Mutex<Option<std::sync::Arc<File>>>,
     /// The oplock request, alive until the kernel completes it; null for a
     /// plain handle.
     request: *mut OplockRequest,
@@ -3254,7 +3251,7 @@ impl YieldingFile {
         };
         let mut yielding = Self {
             held: std::sync::Arc::new(YieldingHeld {
-                file: std::sync::RwLock::new(Some(file)),
+                file: std::sync::Mutex::new(Some(std::sync::Arc::new(file))),
                 request,
             }),
             wait: None,
@@ -3263,7 +3260,20 @@ impl YieldingFile {
             // Granted: the request completes once the oplock breaks.
             Err(error) if error.code() == ERROR_IO_PENDING.to_hresult() => {}
             // Not granted, or broken already: it reads plainly.
-            _ => return Ok(yielding),
+            _ => {
+                // Nothing is pending, so the event will never be signaled.
+                // Free the request now rather than waiting for it in Drop.
+                std::sync::Arc::get_mut(&mut yielding.held)
+                    .ok_or_else(|| io::Error::other("oplock state was unexpectedly shared"))?
+                    .request = std::ptr::null_mut();
+                // SAFETY: DeviceIoControl completed synchronously and no
+                // callback was registered.
+                unsafe {
+                    let _ = windows::Win32::Foundation::CloseHandle(event);
+                    drop(Box::from_raw(request));
+                }
+                return Ok(yielding);
+            }
         }
         let mut wait = HANDLE::default();
         // SAFETY: the context is the held state, which outlives the wait:
@@ -3288,7 +3298,7 @@ impl YieldingFile {
     fn plain(file: File) -> Self {
         Self {
             held: std::sync::Arc::new(YieldingHeld {
-                file: std::sync::RwLock::new(Some(file)),
+                file: std::sync::Mutex::new(Some(std::sync::Arc::new(file))),
                 request: std::ptr::null_mut(),
             }),
             wait: None,
@@ -3300,7 +3310,7 @@ impl YieldingFile {
         let file = self
             .held
             .file
-            .read()
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match file.as_ref() {
             Some(file) => operation(file),
@@ -3318,7 +3328,13 @@ impl YieldingFile {
         use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
         use windows::Win32::System::Threading::CreateEventW;
 
-        self.with(|file| {
+        {
+            let held = self
+                .held
+                .file
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let file = held.as_ref().ok_or_else(|| io::Error::other(Yielded))?;
             let handle = HANDLE(file.as_raw_handle());
             // SAFETY: no pointers are passed.
             let event =
@@ -3335,33 +3351,50 @@ impl YieldingFile {
             let mut transferred = 0;
             // SAFETY: the buffer and `overlapped` outlive the request, which
             // is waited for before either goes.
-            let read = unsafe { ReadFile(handle, Some(buffer), None, Some(&raw mut overlapped)) }
-                .or_else(|error| {
-                    if error.code() == ERROR_IO_PENDING.to_hresult() {
-                        Ok(())
-                    } else {
-                        Err(error)
-                    }
-                })
-                .and_then(|()| {
-                    // SAFETY: as above; waits on the request's own event.
-                    unsafe {
-                        GetOverlappedResult(
-                            handle,
-                            &raw const overlapped,
-                            &raw mut transferred,
-                            true,
-                        )
-                    }
-                });
+            let started =
+                unsafe { ReadFile(handle, Some(buffer), None, Some(&raw mut overlapped)) }.or_else(
+                    |error| {
+                        if error.code() == ERROR_IO_PENDING.to_hresult() {
+                            Ok(())
+                        } else {
+                            Err(error)
+                        }
+                    },
+                );
+            // Keep the file alive after releasing the lock. A break cancels
+            // this request; its completion is still awaited before freeing
+            // the buffer and OVERLAPPED.
+            let file = std::sync::Arc::clone(file);
+            drop(held);
+            let read = started.and_then(|()| {
+                // SAFETY: as above; waits on the request's own event.
+                unsafe {
+                    GetOverlappedResult(
+                        HANDLE(file.as_raw_handle()),
+                        &raw const overlapped,
+                        &raw mut transferred,
+                        true,
+                    )
+                }
+            });
             // SAFETY: the request is complete; nothing waits on the event.
             let _ = unsafe { CloseHandle(event) };
             match read {
                 Ok(()) => Ok(transferred as usize),
                 Err(error) if error.code() == ERROR_HANDLE_EOF.to_hresult() => Ok(0),
+                Err(_)
+                    if self
+                        .held
+                        .file
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_none() =>
+                {
+                    Err(io::Error::other(Yielded))
+                }
                 Err(error) => Err(io::Error::from_raw_os_error(error.code().0 & 0xFFFF)),
             }
-        })
+        }
     }
 }
 
@@ -3373,12 +3406,19 @@ unsafe extern "system" fn yield_on_break(context: *mut std::ffi::c_void, _timed_
     // SAFETY: the context is the held state, alive until this wait is
     // unregistered, which waits for this callback.
     let held = unsafe { &*context.cast::<YieldingHeld>() };
-    drop(
-        held.file
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take(),
-    );
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::IO::CancelIoEx;
+    let file = held
+        .file
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(file) = file {
+        // SAFETY: the handle is live; reads were started before this lock
+        // was acquired, and their waiters keep the handle alive.
+        let _ = unsafe { CancelIoEx(HANDLE(file.as_raw_handle()), None) };
+    }
 }
 
 #[cfg(windows)]
@@ -3397,7 +3437,7 @@ impl Drop for YieldingFile {
         drop(
             self.held
                 .file
-                .write()
+                .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take(),
         );
@@ -3908,6 +3948,20 @@ mod macos_metadata_tests {
                 .file_type()
                 .is_socket()
         );
+        Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod yielding_tests {
+    #[test]
+    fn a_rejected_oplock_request_drops_without_waiting() -> std::io::Result<()> {
+        // NUL accepts a file handle but rejects FSCTL_REQUEST_OPLOCK. Its
+        // request event remains unsignaled, exposing accidental waits on a
+        // request that was never pending.
+        let file = super::YieldingFile::new(std::fs::File::open("NUL")?)?;
+        assert!(file.held.request.is_null());
+        drop(file);
         Ok(())
     }
 }
