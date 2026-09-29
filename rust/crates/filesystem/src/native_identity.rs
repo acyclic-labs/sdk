@@ -1,7 +1,7 @@
 //! Stable identities for already-open native filesystem roots.
 
 /// Stable native identity of one held filesystem root.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct NativeRootIdentity {
     pub(crate) device: u64,
     pub(crate) object: u64,

@@ -37,6 +37,10 @@ mod browser {
     fn decode<M: Message + Default>(value: &[u8]) -> Result<M, JsValue> {
         M::decode(value).map_err(|_| error(StreamError::InvalidArgument))
     }
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "used directly by Result::map_err"
+    )]
     fn error(value: StreamError) -> JsValue {
         let code = match value {
             StreamError::InvalidPath => "invalid_path",
@@ -44,9 +48,8 @@ mod browser {
             StreamError::LimitExceeded => "limit_exceeded",
             StreamError::NotFound => "stream_not_found",
             StreamError::AlreadyExists => "destination_exists",
-            StreamError::Retired => "stream_retired",
             StreamError::PrefixNotRetained => "prefix_not_retained",
-            StreamError::OutOfRange => "cursor_trimmed",
+            StreamError::OutOfRange => "out_of_range",
             StreamError::HierarchyChanged => "hierarchy_changed",
             StreamError::IdempotencyMismatch => "idempotency_mismatch",
             StreamError::Capacity => "capacity_exhausted",
@@ -55,9 +58,9 @@ mod browser {
             StreamError::DeadlineElapsed => "deadline_elapsed",
             StreamError::Unsupported => "unsupported",
         };
-        error_code(value, code)
+        error_code(&value, code)
     }
-    fn error_code(value: StreamError, code: &str) -> JsValue {
+    fn error_code(value: &StreamError, code: &str) -> JsValue {
         let message = js_sys::Error::new(&value.to_string());
         let _ = js_sys::Reflect::set(
             &message,
@@ -98,15 +101,6 @@ mod browser {
                             tail: value.tail,
                             records: value.records.into_iter().map(record).collect(),
                         }),
-                        CommittedMutation::Trim(value) => Mutation::Trim(wire::CommittedTrim {
-                            path: value.path.to_string(),
-                            trim_point: value.trim_point,
-                        }),
-                        CommittedMutation::Delete(value) => {
-                            Mutation::Delete(wire::CommittedDelete {
-                                path: value.path.to_string(),
-                            })
-                        }
                     };
                     wire::CommittedMutation {
                         mutation: Some(mutation),
@@ -156,11 +150,6 @@ mod browser {
                                     path: path.to_string(),
                                 })
                             }
-                            CommitConflict::Retired { path } => {
-                                Conflict::Retired(wire::RetiredCommitConflict {
-                                    path: path.to_string(),
-                                })
-                            }
                         };
                         wire::CommitConflict {
                             conflict: Some(conflict),
@@ -182,15 +171,6 @@ mod browser {
                 destination: value.destination.to_string(),
                 forked_at: value.forked_at,
                 tail: value.tail,
-                commit_id: bytes(value.commit_id),
-            }),
-            IdempotencyOutcome::Trim(value) => Outcome::Trim(wire::TrimReceipt {
-                path: value.path.to_string(),
-                trim_point: value.trim_point,
-                commit_id: bytes(value.commit_id),
-            }),
-            IdempotencyOutcome::Delete(value) => Outcome::Delete(wire::DeleteReceipt {
-                path: value.path.to_string(),
                 commit_id: bytes(value.commit_id),
             }),
             IdempotencyOutcome::Commit(value) => Outcome::Commit(commit_outcome(value)),
@@ -223,13 +203,6 @@ mod browser {
                 destination: path(value.destination)?,
                 at_tail: value.at_tail,
                 records: value.records,
-            }),
-            wire::commit_mutation::Mutation::Trim(value) => Ok(CommitMutation::Trim {
-                path: path(value.path)?,
-                before: value.before,
-            }),
-            wire::commit_mutation::Mutation::Delete(value) => Ok(CommitMutation::Delete {
-                path: path(value.path)?,
             }),
         }
     }
@@ -300,16 +273,12 @@ mod browser {
         }
         pub async fn tail(&self, request: Vec<u8>) -> Result<Vec<u8>, JsValue> {
             let request: wire::TailRequest = decode(&request)?;
-            let bounds = self
+            let tail = self
                 .inner
-                .bounds(path(request.path).map_err(error)?)
+                .tail(path(request.path).map_err(error)?)
                 .await
                 .map_err(error)?;
-            Ok(wire::TailResponse {
-                tail: bounds.tail,
-                trim_point: Some(bounds.trim_point),
-            }
-            .encode_to_vec())
+            Ok(wire::TailResponse { tail }.encode_to_vec())
         }
         pub async fn append(&self, request: Vec<u8>) -> Result<Vec<u8>, JsValue> {
             let request: wire::AppendRequest = decode(&request)?;
@@ -342,48 +311,6 @@ mod browser {
                 destination: value.destination.to_string(),
                 forked_at: value.forked_at,
                 tail: value.tail,
-                commit_id: bytes(value.commit_id),
-            }
-            .encode_to_vec())
-        }
-        pub async fn trim(&self, request: Vec<u8>) -> Result<Vec<u8>, JsValue> {
-            let request: wire::TrimRequest = decode(&request)?;
-            let value = self
-                .inner
-                .trim(
-                    path(request.path).map_err(error)?,
-                    request.before,
-                    key(request
-                        .idempotency_key
-                        .ok_or(StreamError::InvalidArgument)
-                        .map_err(error)?)
-                    .map_err(error)?,
-                )
-                .await
-                .map_err(error)?;
-            Ok(wire::TrimReceipt {
-                path: value.path.to_string(),
-                trim_point: value.trim_point,
-                commit_id: bytes(value.commit_id),
-            }
-            .encode_to_vec())
-        }
-        pub async fn delete(&self, request: Vec<u8>) -> Result<Vec<u8>, JsValue> {
-            let request: wire::DeleteRequest = decode(&request)?;
-            let value = self
-                .inner
-                .delete(
-                    path(request.path).map_err(error)?,
-                    key(request
-                        .idempotency_key
-                        .ok_or(StreamError::InvalidArgument)
-                        .map_err(error)?)
-                    .map_err(error)?,
-                )
-                .await
-                .map_err(error)?;
-            Ok(wire::DeleteReceipt {
-                path: value.path.to_string(),
                 commit_id: bytes(value.commit_id),
             }
             .encode_to_vec())
@@ -485,7 +412,7 @@ mod browser {
                 .await
                 .map_err(|value| {
                     if value == StreamError::NotFound {
-                        error_code(value, "commit_not_found")
+                        error_code(&value, "commit_not_found")
                     } else {
                         error(value)
                     }

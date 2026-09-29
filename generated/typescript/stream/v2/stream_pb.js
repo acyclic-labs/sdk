@@ -10,7 +10,7 @@ import { enumDesc, fileDesc, messageDesc, serviceDesc, tsEnum } from "@bufbuild/
  * Describes the file stream/v2/stream.proto.
  */
 export const file_stream_v2_stream = /*@__PURE__*/
-  fileDesc("ChZzdHJlYW0vdjIvc3RyZWFtLnByb3RvEhFhY3ljbGljLnN0cmVhbS52MiI8CgZSZWNvcmQSEAoIc2VxdWVuY2UYASABKAQSDQoFdmFsdWUYAiABKAwSEQoJY29tbWl0X2lkGAMgASgMIoIBCg1BcHBlbmRSZXF1ZXN0EgwKBHBhdGgYASABKAkSDwoHcmVjb3JkcxgCIAMoDBIUCgdpZl90YWlsGAMgASgESACIAQESHAoPaWRlbXBvdGVuY3lfa2V5GAQgASgMSAGIAQFCCgoIX2lmX3RhaWxCEgoQX2lkZW1wb3RlbmN5X2tleSJMCg1BcHBlbmRSZWNlaXB0Eg0KBXN0YXJ0GAEgASgEEgsKA2VuZBgCIAEoBBIMCgR0YWlsGAMgASgEEhEKCWNvbW1pdF9pZBgEIAEoDCIjCgxUYWlsQ29uZmxpY3QSEwoLYWN0dWFsX3RhaWwYASABKAQihwEKDkFwcGVuZFJlc3BvbnNlEjUKCWNvbW1pdHRlZBgBIAEoCzIgLmFjeWNsaWMuc3RyZWFtLnYyLkFwcGVuZFJlY2VpcHRIABIzCghjb25mbGljdBgCIAEoCzIfLmFjeWNsaWMuc3RyZWFtLnYyLlRhaWxDb25mbGljdEgAQgkKB291dGNvbWUiGwoLVGFpbFJlcXVlc3QSDAoEcGF0aBgBIAEoCSJECgxUYWlsUmVzcG9uc2USDAoEdGFpbBgBIAEoBBIXCgp0cmltX3BvaW50GAIgASgESACIAQFCDQoLX3RyaW1fcG9pbnQihgEKC0ZvcmtSZXF1ZXN0Eg4KBnNvdXJjZRgBIAEoCRITCgtkZXN0aW5hdGlvbhgCIAEoCRIUCgdhdF90YWlsGAMgASgESACIAQESHAoPaWRlbXBvdGVuY3lfa2V5GAQgASgMSAGIAQFCCgoIX2F0X3RhaWxCEgoQX2lkZW1wb3RlbmN5X2tleSJmCgtGb3JrUmVjZWlwdBIOCgZzb3VyY2UYASABKAkSEwoLZGVzdGluYXRpb24YAiABKAkSEQoJZm9ya2VkX2F0GAMgASgEEgwKBHRhaWwYBCABKAQSEQoJY29tbWl0X2lkGAUgASgMIl0KC1RyaW1SZXF1ZXN0EgwKBHBhdGgYASABKAkSDgoGYmVmb3JlGAIgASgEEhwKD2lkZW1wb3RlbmN5X2tleRgDIAEoDEgAiAEBQhIKEF9pZGVtcG90ZW5jeV9rZXkiQgoLVHJpbVJlY2VpcHQSDAoEcGF0aBgBIAEoCRISCgp0cmltX3BvaW50GAIgASgEEhEKCWNvbW1pdF9pZBgDIAEoDCJPCg1EZWxldGVSZXF1ZXN0EgwKBHBhdGgYASABKAkSHAoPaWRlbXBvdGVuY3lfa2V5GAIgASgMSACIAQFCEgoQX2lkZW1wb3RlbmN5X2tleSIwCg1EZWxldGVSZWNlaXB0EgwKBHBhdGgYASABKAkSEQoJY29tbWl0X2lkGAIgASgMIjgKC1JlYWRSZXF1ZXN0EgwKBHBhdGgYASABKAkSDAoEZnJvbRgCIAEoBBINCgVsaW1pdBgDIAEoDSIrCg1Gb2xsb3dSZXF1ZXN0EgwKBHBhdGgYASABKAkSDAoEZnJvbRgCIAEoBCI5CgxSZWFkUmVzcG9uc2USKQoGcmVjb3JkGAEgASgLMhkuYWN5Y2xpYy5zdHJlYW0udjIuUmVjb3JkIkAKD0NoaWxkcmVuUmVxdWVzdBITCgZwYXJlbnQYASABKAlIAIgBARINCgVsaW1pdBgCIAEoDUIJCgdfcGFyZW50IhUKBUNoaWxkEgwKBHBhdGgYASABKAkiOwoQQ2hpbGRyZW5SZXNwb25zZRInCgVjaGlsZBgBIAEoCzIYLmFjeWNsaWMuc3RyZWFtLnYyLkNoaWxkIpgBChNDaGlsZHJlblBhZ2VSZXF1ZXN0EhMKBnBhcmVudBgBIAEoCUgAiAEBEhIKBWFmdGVyGAIgASgJSAGIAQESHgoRaGllcmFyY2h5X3ZlcnNpb24YAyABKAxIAogBARINCgVsaW1pdBgEIAEoDUIJCgdfcGFyZW50QggKBl9hZnRlckIUChJfaGllcmFyY2h5X3ZlcnNpb24ihQEKFENoaWxkcmVuUGFnZVJlc3BvbnNlEhkKEWhpZXJhcmNoeV92ZXJzaW9uGAEgASgMEioKCGNoaWxkcmVuGAIgAygLMhguYWN5Y2xpYy5zdHJlYW0udjIuQ2hpbGQSFwoKbmV4dF9hZnRlchgDIAEoCUgAiAEBQg0KC19uZXh0X2FmdGVyIi8KDVRhaWxDb25kaXRpb24SDAoEcGF0aBgBIAEoCRIQCghleHBlY3RlZBgCIAEoBCIfCg9BYnNlbnRDb25kaXRpb24SDAoEcGF0aBgBIAEoCSKGAQoPQ29tbWl0Q29uZGl0aW9uEjAKBHRhaWwYASABKAsyIC5hY3ljbGljLnN0cmVhbS52Mi5UYWlsQ29uZGl0aW9uSAASNAoGYWJzZW50GAIgASgLMiIuYWN5Y2xpYy5zdHJlYW0udjIuQWJzZW50Q29uZGl0aW9uSABCCwoJY29uZGl0aW9uIi8KDkFwcGVuZE11dGF0aW9uEgwKBHBhdGgYASABKAkSDwoHcmVjb3JkcxgCIAMoDCJVCgxGb3JrTXV0YXRpb24SDgoGc291cmNlGAEgASgJEhMKC2Rlc3RpbmF0aW9uGAIgASgJEg8KB2F0X3RhaWwYAyABKAQSDwoHcmVjb3JkcxgEIAMoDCIsCgxUcmltTXV0YXRpb24SDAoEcGF0aBgBIAEoCRIOCgZiZWZvcmUYAiABKAQiHgoORGVsZXRlTXV0YXRpb24SDAoEcGF0aBgBIAEoCSLoAQoOQ29tbWl0TXV0YXRpb24SMwoGYXBwZW5kGAEgASgLMiEuYWN5Y2xpYy5zdHJlYW0udjIuQXBwZW5kTXV0YXRpb25IABIvCgRmb3JrGAIgASgLMh8uYWN5Y2xpYy5zdHJlYW0udjIuRm9ya011dGF0aW9uSAASLwoEdHJpbRgDIAEoCzIfLmFjeWNsaWMuc3RyZWFtLnYyLlRyaW1NdXRhdGlvbkgAEjMKBmRlbGV0ZRgEIAEoCzIhLmFjeWNsaWMuc3RyZWFtLnYyLkRlbGV0ZU11dGF0aW9uSABCCgoIbXV0YXRpb24i0gEKDUNvbW1pdFJlcXVlc3QSNgoKY29uZGl0aW9ucxgBIAMoCzIiLmFjeWNsaWMuc3RyZWFtLnYyLkNvbW1pdENvbmRpdGlvbhI0CgltdXRhdGlvbnMYAiADKAsyIS5hY3ljbGljLnN0cmVhbS52Mi5Db21taXRNdXRhdGlvbhIXCg9pZGVtcG90ZW5jeV9rZXkYAyABKAwSIQoUZGVhZGxpbmVfdW5peF9taWxsaXMYBCABKARIAIgBAUIXChVfZGVhZGxpbmVfdW5peF9taWxsaXMidQoPQ29tbWl0dGVkQXBwZW5kEgwKBHBhdGgYASABKAkSDQoFc3RhcnQYAiABKAQSCwoDZW5kGAMgASgEEgwKBHRhaWwYBCABKAQSKgoHcmVjb3JkcxgFIAMoCzIZLmFjeWNsaWMuc3RyZWFtLnYyLlJlY29yZCKBAQoNQ29tbWl0dGVkRm9yaxIOCgZzb3VyY2UYASABKAkSEwoLZGVzdGluYXRpb24YAiABKAkSEQoJZm9ya2VkX2F0GAMgASgEEgwKBHRhaWwYBCABKAQSKgoHcmVjb3JkcxgFIAMoCzIZLmFjeWNsaWMuc3RyZWFtLnYyLlJlY29yZCIxCg1Db21taXR0ZWRUcmltEgwKBHBhdGgYASABKAkSEgoKdHJpbV9wb2ludBgCIAEoBCIfCg9Db21taXR0ZWREZWxldGUSDAoEcGF0aBgBIAEoCSLvAQoRQ29tbWl0dGVkTXV0YXRpb24SNAoGYXBwZW5kGAEgASgLMiIuYWN5Y2xpYy5zdHJlYW0udjIuQ29tbWl0dGVkQXBwZW5kSAASMAoEZm9yaxgCIAEoCzIgLmFjeWNsaWMuc3RyZWFtLnYyLkNvbW1pdHRlZEZvcmtIABIwCgR0cmltGAMgASgLMiAuYWN5Y2xpYy5zdHJlYW0udjIuQ29tbWl0dGVkVHJpbUgAEjQKBmRlbGV0ZRgEIAEoCzIiLmFjeWNsaWMuc3RyZWFtLnYyLkNvbW1pdHRlZERlbGV0ZUgAQgoKCG11dGF0aW9uIl8KEUNvbW1pdHRlZEVudmVsb3BlEhEKCWNvbW1pdF9pZBgBIAEoDBI3CgltdXRhdGlvbnMYAiADKAsyJC5hY3ljbGljLnN0cmVhbS52Mi5Db21taXR0ZWRNdXRhdGlvbiJUChJUYWlsQ29tbWl0Q29uZmxpY3QSDAoEcGF0aBgBIAEoCRIQCghleHBlY3RlZBgCIAEoBBITCgZhY3R1YWwYAyABKARIAIgBAUIJCgdfYWN0dWFsIiQKFEV4aXN0c0NvbW1pdENvbmZsaWN0EgwKBHBhdGgYASABKAkiJQoVUmV0aXJlZENvbW1pdENvbmZsaWN0EgwKBHBhdGgYASABKAkiywEKDkNvbW1pdENvbmZsaWN0EjUKBHRhaWwYASABKAsyJS5hY3ljbGljLnN0cmVhbS52Mi5UYWlsQ29tbWl0Q29uZmxpY3RIABI5CgZleGlzdHMYAiABKAsyJy5hY3ljbGljLnN0cmVhbS52Mi5FeGlzdHNDb21taXRDb25mbGljdEgAEjsKB3JldGlyZWQYAyABKAsyKC5hY3ljbGljLnN0cmVhbS52Mi5SZXRpcmVkQ29tbWl0Q29uZmxpY3RIAEIKCghjb25mbGljdCJHCg9Db21taXRDb25mbGljdHMSNAoJY29uZmxpY3RzGAEgAygLMiEuYWN5Y2xpYy5zdHJlYW0udjIuQ29tbWl0Q29uZmxpY3QijgEKDkNvbW1pdFJlc3BvbnNlEjkKCWNvbW1pdHRlZBgBIAEoCzIkLmFjeWNsaWMuc3RyZWFtLnYyLkNvbW1pdHRlZEVudmVsb3BlSAASNgoIY29uZmxpY3QYAiABKAsyIi5hY3ljbGljLnN0cmVhbS52Mi5Db21taXRDb25mbGljdHNIAEIJCgdvdXRjb21lIiYKEVJlYWRDb21taXRSZXF1ZXN0EhEKCWNvbW1pdF9pZBgBIAEoDCI0ChlJbnNwZWN0SWRlbXBvdGVuY3lSZXF1ZXN0EhcKD2lkZW1wb3RlbmN5X2tleRgBIAEoDCLSAgoWSWRlbXBvdGVuY3lPYnNlcnZhdGlvbhIXCg9pZGVtcG90ZW5jeV9rZXkYASABKAwSFgoOcmVxdWVzdF9kaWdlc3QYAiABKAwSMwoGYXBwZW5kGAMgASgLMiEuYWN5Y2xpYy5zdHJlYW0udjIuQXBwZW5kUmVzcG9uc2VIABIuCgRmb3JrGAQgASgLMh4uYWN5Y2xpYy5zdHJlYW0udjIuRm9ya1JlY2VpcHRIABIuCgR0cmltGAUgASgLMh4uYWN5Y2xpYy5zdHJlYW0udjIuVHJpbVJlY2VpcHRIABIyCgZkZWxldGUYBiABKAsyIC5hY3ljbGljLnN0cmVhbS52Mi5EZWxldGVSZWNlaXB0SAASMwoGY29tbWl0GAcgASgLMiEuYWN5Y2xpYy5zdHJlYW0udjIuQ29tbWl0UmVzcG9uc2VIAEIJCgdvdXRjb21lInEKGkluc3BlY3RJZGVtcG90ZW5jeVJlc3BvbnNlEkMKC29ic2VydmF0aW9uGAEgASgLMikuYWN5Y2xpYy5zdHJlYW0udjIuSWRlbXBvdGVuY3lPYnNlcnZhdGlvbkgAiAEBQg4KDF9vYnNlcnZhdGlvbiJQCgpUb2tlbkdyYW50EgwKBHBhdGgYASABKAkSFAoHc3VidHJlZRgCIAEoCEgAiAEBEhIKCm9wZXJhdGlvbnMYAyADKAlCCgoIX3N1YnRyZWUiVgoSQ3JlYXRlVG9rZW5SZXF1ZXN0EhIKCmV4cGlyZXNfaW4YASABKAkSLAoFYWxsb3cYAiADKAsyHS5hY3ljbGljLnN0cmVhbS52Mi5Ub2tlbkdyYW50KuMBCgtTdHJlYW1MaW1pdBIcChhTVFJFQU1fTElNSVRfVU5TUEVDSUZJRUQQABIjCh1TVFJFQU1fTElNSVRfTUFYX1JFQ09SRF9CWVRFUxCAgAQSGwoWU1RSRUFNX0xJTUlUX01BWF9JVEVNUxCACBIkCh5TVFJFQU1fTElNSVRfTUFYX0NPTU1BTkRfQllURVMQgMBAEisKJlNUUkVBTV9MSU1JVF9NQVhfSURFTVBPVEVOQ1lfS0VZX0JZVEVTEIACEiEKG1NUUkVBTV9MSU1JVF9NQVhfUEFUSF9CWVRFUxD//wMy8wcKDVN0cmVhbVNlcnZpY2UScQoSSW5zcGVjdElkZW1wb3RlbmN5EiwuYWN5Y2xpYy5zdHJlYW0udjIuSW5zcGVjdElkZW1wb3RlbmN5UmVxdWVzdBotLmFjeWNsaWMuc3RyZWFtLnYyLkluc3BlY3RJZGVtcG90ZW5jeVJlc3BvbnNlEk0KBkFwcGVuZBIgLmFjeWNsaWMuc3RyZWFtLnYyLkFwcGVuZFJlcXVlc3QaIS5hY3ljbGljLnN0cmVhbS52Mi5BcHBlbmRSZXNwb25zZRJHCgRUYWlsEh4uYWN5Y2xpYy5zdHJlYW0udjIuVGFpbFJlcXVlc3QaHy5hY3ljbGljLnN0cmVhbS52Mi5UYWlsUmVzcG9uc2USRgoERm9yaxIeLmFjeWNsaWMuc3RyZWFtLnYyLkZvcmtSZXF1ZXN0Gh4uYWN5Y2xpYy5zdHJlYW0udjIuRm9ya1JlY2VpcHQSRgoEVHJpbRIeLmFjeWNsaWMuc3RyZWFtLnYyLlRyaW1SZXF1ZXN0Gh4uYWN5Y2xpYy5zdHJlYW0udjIuVHJpbVJlY2VpcHQSTAoGRGVsZXRlEiAuYWN5Y2xpYy5zdHJlYW0udjIuRGVsZXRlUmVxdWVzdBogLmFjeWNsaWMuc3RyZWFtLnYyLkRlbGV0ZVJlY2VpcHQSSQoEUmVhZBIeLmFjeWNsaWMuc3RyZWFtLnYyLlJlYWRSZXF1ZXN0Gh8uYWN5Y2xpYy5zdHJlYW0udjIuUmVhZFJlc3BvbnNlMAESTQoGRm9sbG93EiAuYWN5Y2xpYy5zdHJlYW0udjIuRm9sbG93UmVxdWVzdBofLmFjeWNsaWMuc3RyZWFtLnYyLlJlYWRSZXNwb25zZTABElUKCENoaWxkcmVuEiIuYWN5Y2xpYy5zdHJlYW0udjIuQ2hpbGRyZW5SZXF1ZXN0GiMuYWN5Y2xpYy5zdHJlYW0udjIuQ2hpbGRyZW5SZXNwb25zZTABEl8KDENoaWxkcmVuUGFnZRImLmFjeWNsaWMuc3RyZWFtLnYyLkNoaWxkcmVuUGFnZVJlcXVlc3QaJy5hY3ljbGljLnN0cmVhbS52Mi5DaGlsZHJlblBhZ2VSZXNwb25zZRJNCgZDb21taXQSIC5hY3ljbGljLnN0cmVhbS52Mi5Db21taXRSZXF1ZXN0GiEuYWN5Y2xpYy5zdHJlYW0udjIuQ29tbWl0UmVzcG9uc2USWAoKUmVhZENvbW1pdBIkLmFjeWNsaWMuc3RyZWFtLnYyLlJlYWRDb21taXRSZXF1ZXN0GiQuYWN5Y2xpYy5zdHJlYW0udjIuQ29tbWl0dGVkRW52ZWxvcGVCN1o1Z2l0aHViLmNvbS9hY3ljbGljLWxhYnMvc2RrL2dvL2dlbi9zdHJlYW0vdjI7c3RyZWFtdjJiBnByb3RvMw");
+  fileDesc("ChZzdHJlYW0vdjIvc3RyZWFtLnByb3RvEhFhY3ljbGljLnN0cmVhbS52MiI8CgZSZWNvcmQSEAoIc2VxdWVuY2UYASABKAQSDQoFdmFsdWUYAiABKAwSEQoJY29tbWl0X2lkGAMgASgMIoIBCg1BcHBlbmRSZXF1ZXN0EgwKBHBhdGgYASABKAkSDwoHcmVjb3JkcxgCIAMoDBIUCgdpZl90YWlsGAMgASgESACIAQESHAoPaWRlbXBvdGVuY3lfa2V5GAQgASgMSAGIAQFCCgoIX2lmX3RhaWxCEgoQX2lkZW1wb3RlbmN5X2tleSJMCg1BcHBlbmRSZWNlaXB0Eg0KBXN0YXJ0GAEgASgEEgsKA2VuZBgCIAEoBBIMCgR0YWlsGAMgASgEEhEKCWNvbW1pdF9pZBgEIAEoDCIjCgxUYWlsQ29uZmxpY3QSEwoLYWN0dWFsX3RhaWwYASABKAQihwEKDkFwcGVuZFJlc3BvbnNlEjUKCWNvbW1pdHRlZBgBIAEoCzIgLmFjeWNsaWMuc3RyZWFtLnYyLkFwcGVuZFJlY2VpcHRIABIzCghjb25mbGljdBgCIAEoCzIfLmFjeWNsaWMuc3RyZWFtLnYyLlRhaWxDb25mbGljdEgAQgkKB291dGNvbWUiGwoLVGFpbFJlcXVlc3QSDAoEcGF0aBgBIAEoCSIuCgxUYWlsUmVzcG9uc2USDAoEdGFpbBgBIAEoBEoECAIQA1IKdHJpbV9wb2ludCKGAQoLRm9ya1JlcXVlc3QSDgoGc291cmNlGAEgASgJEhMKC2Rlc3RpbmF0aW9uGAIgASgJEhQKB2F0X3RhaWwYAyABKARIAIgBARIcCg9pZGVtcG90ZW5jeV9rZXkYBCABKAxIAYgBAUIKCghfYXRfdGFpbEISChBfaWRlbXBvdGVuY3lfa2V5ImYKC0ZvcmtSZWNlaXB0Eg4KBnNvdXJjZRgBIAEoCRITCgtkZXN0aW5hdGlvbhgCIAEoCRIRCglmb3JrZWRfYXQYAyABKAQSDAoEdGFpbBgEIAEoBBIRCgljb21taXRfaWQYBSABKAwiOAoLUmVhZFJlcXVlc3QSDAoEcGF0aBgBIAEoCRIMCgRmcm9tGAIgASgEEg0KBWxpbWl0GAMgASgNIisKDUZvbGxvd1JlcXVlc3QSDAoEcGF0aBgBIAEoCRIMCgRmcm9tGAIgASgEIjkKDFJlYWRSZXNwb25zZRIpCgZyZWNvcmQYASABKAsyGS5hY3ljbGljLnN0cmVhbS52Mi5SZWNvcmQiQAoPQ2hpbGRyZW5SZXF1ZXN0EhMKBnBhcmVudBgBIAEoCUgAiAEBEg0KBWxpbWl0GAIgASgNQgkKB19wYXJlbnQiFQoFQ2hpbGQSDAoEcGF0aBgBIAEoCSI7ChBDaGlsZHJlblJlc3BvbnNlEicKBWNoaWxkGAEgASgLMhguYWN5Y2xpYy5zdHJlYW0udjIuQ2hpbGQimAEKE0NoaWxkcmVuUGFnZVJlcXVlc3QSEwoGcGFyZW50GAEgASgJSACIAQESEgoFYWZ0ZXIYAiABKAlIAYgBARIeChFoaWVyYXJjaHlfdmVyc2lvbhgDIAEoDEgCiAEBEg0KBWxpbWl0GAQgASgNQgkKB19wYXJlbnRCCAoGX2FmdGVyQhQKEl9oaWVyYXJjaHlfdmVyc2lvbiKFAQoUQ2hpbGRyZW5QYWdlUmVzcG9uc2USGQoRaGllcmFyY2h5X3ZlcnNpb24YASABKAwSKgoIY2hpbGRyZW4YAiADKAsyGC5hY3ljbGljLnN0cmVhbS52Mi5DaGlsZBIXCgpuZXh0X2FmdGVyGAMgASgJSACIAQFCDQoLX25leHRfYWZ0ZXIiLwoNVGFpbENvbmRpdGlvbhIMCgRwYXRoGAEgASgJEhAKCGV4cGVjdGVkGAIgASgEIh8KD0Fic2VudENvbmRpdGlvbhIMCgRwYXRoGAEgASgJIoYBCg9Db21taXRDb25kaXRpb24SMAoEdGFpbBgBIAEoCzIgLmFjeWNsaWMuc3RyZWFtLnYyLlRhaWxDb25kaXRpb25IABI0CgZhYnNlbnQYAiABKAsyIi5hY3ljbGljLnN0cmVhbS52Mi5BYnNlbnRDb25kaXRpb25IAEILCgljb25kaXRpb24iLwoOQXBwZW5kTXV0YXRpb24SDAoEcGF0aBgBIAEoCRIPCgdyZWNvcmRzGAIgAygMIlUKDEZvcmtNdXRhdGlvbhIOCgZzb3VyY2UYASABKAkSEwoLZGVzdGluYXRpb24YAiABKAkSDwoHYXRfdGFpbBgDIAEoBBIPCgdyZWNvcmRzGAQgAygMIpwBCg5Db21taXRNdXRhdGlvbhIzCgZhcHBlbmQYASABKAsyIS5hY3ljbGljLnN0cmVhbS52Mi5BcHBlbmRNdXRhdGlvbkgAEi8KBGZvcmsYAiABKAsyHy5hY3ljbGljLnN0cmVhbS52Mi5Gb3JrTXV0YXRpb25IAEIKCghtdXRhdGlvbkoECAMQBEoECAQQBVIEdHJpbVIGZGVsZXRlItIBCg1Db21taXRSZXF1ZXN0EjYKCmNvbmRpdGlvbnMYASADKAsyIi5hY3ljbGljLnN0cmVhbS52Mi5Db21taXRDb25kaXRpb24SNAoJbXV0YXRpb25zGAIgAygLMiEuYWN5Y2xpYy5zdHJlYW0udjIuQ29tbWl0TXV0YXRpb24SFwoPaWRlbXBvdGVuY3lfa2V5GAMgASgMEiEKFGRlYWRsaW5lX3VuaXhfbWlsbGlzGAQgASgESACIAQFCFwoVX2RlYWRsaW5lX3VuaXhfbWlsbGlzInUKD0NvbW1pdHRlZEFwcGVuZBIMCgRwYXRoGAEgASgJEg0KBXN0YXJ0GAIgASgEEgsKA2VuZBgDIAEoBBIMCgR0YWlsGAQgASgEEioKB3JlY29yZHMYBSADKAsyGS5hY3ljbGljLnN0cmVhbS52Mi5SZWNvcmQigQEKDUNvbW1pdHRlZEZvcmsSDgoGc291cmNlGAEgASgJEhMKC2Rlc3RpbmF0aW9uGAIgASgJEhEKCWZvcmtlZF9hdBgDIAEoBBIMCgR0YWlsGAQgASgEEioKB3JlY29yZHMYBSADKAsyGS5hY3ljbGljLnN0cmVhbS52Mi5SZWNvcmQioQEKEUNvbW1pdHRlZE11dGF0aW9uEjQKBmFwcGVuZBgBIAEoCzIiLmFjeWNsaWMuc3RyZWFtLnYyLkNvbW1pdHRlZEFwcGVuZEgAEjAKBGZvcmsYAiABKAsyIC5hY3ljbGljLnN0cmVhbS52Mi5Db21taXR0ZWRGb3JrSABCCgoIbXV0YXRpb25KBAgDEARKBAgEEAVSBHRyaW1SBmRlbGV0ZSJfChFDb21taXR0ZWRFbnZlbG9wZRIRCgljb21taXRfaWQYASABKAwSNwoJbXV0YXRpb25zGAIgAygLMiQuYWN5Y2xpYy5zdHJlYW0udjIuQ29tbWl0dGVkTXV0YXRpb24iVAoSVGFpbENvbW1pdENvbmZsaWN0EgwKBHBhdGgYASABKAkSEAoIZXhwZWN0ZWQYAiABKAQSEwoGYWN0dWFsGAMgASgESACIAQFCCQoHX2FjdHVhbCIkChRFeGlzdHNDb21taXRDb25mbGljdBIMCgRwYXRoGAEgASgJIp0BCg5Db21taXRDb25mbGljdBI1CgR0YWlsGAEgASgLMiUuYWN5Y2xpYy5zdHJlYW0udjIuVGFpbENvbW1pdENvbmZsaWN0SAASOQoGZXhpc3RzGAIgASgLMicuYWN5Y2xpYy5zdHJlYW0udjIuRXhpc3RzQ29tbWl0Q29uZmxpY3RIAEIKCghjb25mbGljdEoECAMQBFIHcmV0aXJlZCJHCg9Db21taXRDb25mbGljdHMSNAoJY29uZmxpY3RzGAEgAygLMiEuYWN5Y2xpYy5zdHJlYW0udjIuQ29tbWl0Q29uZmxpY3QijgEKDkNvbW1pdFJlc3BvbnNlEjkKCWNvbW1pdHRlZBgBIAEoCzIkLmFjeWNsaWMuc3RyZWFtLnYyLkNvbW1pdHRlZEVudmVsb3BlSAASNgoIY29uZmxpY3QYAiABKAsyIi5hY3ljbGljLnN0cmVhbS52Mi5Db21taXRDb25mbGljdHNIAEIJCgdvdXRjb21lIiYKEVJlYWRDb21taXRSZXF1ZXN0EhEKCWNvbW1pdF9pZBgBIAEoDCI0ChlJbnNwZWN0SWRlbXBvdGVuY3lSZXF1ZXN0EhcKD2lkZW1wb3RlbmN5X2tleRgBIAEoDCKIAgoWSWRlbXBvdGVuY3lPYnNlcnZhdGlvbhIXCg9pZGVtcG90ZW5jeV9rZXkYASABKAwSFgoOcmVxdWVzdF9kaWdlc3QYAiABKAwSMwoGYXBwZW5kGAMgASgLMiEuYWN5Y2xpYy5zdHJlYW0udjIuQXBwZW5kUmVzcG9uc2VIABIuCgRmb3JrGAQgASgLMh4uYWN5Y2xpYy5zdHJlYW0udjIuRm9ya1JlY2VpcHRIABIzCgZjb21taXQYByABKAsyIS5hY3ljbGljLnN0cmVhbS52Mi5Db21taXRSZXNwb25zZUgAQgkKB291dGNvbWVKBAgFEAZKBAgGEAdSBHRyaW1SBmRlbGV0ZSJxChpJbnNwZWN0SWRlbXBvdGVuY3lSZXNwb25zZRJDCgtvYnNlcnZhdGlvbhgBIAEoCzIpLmFjeWNsaWMuc3RyZWFtLnYyLklkZW1wb3RlbmN5T2JzZXJ2YXRpb25IAIgBAUIOCgxfb2JzZXJ2YXRpb24iUAoKVG9rZW5HcmFudBIMCgRwYXRoGAEgASgJEhQKB3N1YnRyZWUYAiABKAhIAIgBARISCgpvcGVyYXRpb25zGAMgAygJQgoKCF9zdWJ0cmVlIlYKEkNyZWF0ZVRva2VuUmVxdWVzdBISCgpleHBpcmVzX2luGAEgASgJEiwKBWFsbG93GAIgAygLMh0uYWN5Y2xpYy5zdHJlYW0udjIuVG9rZW5HcmFudCrjAQoLU3RyZWFtTGltaXQSHAoYU1RSRUFNX0xJTUlUX1VOU1BFQ0lGSUVEEAASIwodU1RSRUFNX0xJTUlUX01BWF9SRUNPUkRfQllURVMQgIAEEhsKFlNUUkVBTV9MSU1JVF9NQVhfSVRFTVMQgAgSJAoeU1RSRUFNX0xJTUlUX01BWF9DT01NQU5EX0JZVEVTEIDAQBIrCiZTVFJFQU1fTElNSVRfTUFYX0lERU1QT1RFTkNZX0tFWV9CWVRFUxCAAhIhChtTVFJFQU1fTElNSVRfTUFYX1BBVEhfQllURVMQ//8DMt0GCg1TdHJlYW1TZXJ2aWNlEnEKEkluc3BlY3RJZGVtcG90ZW5jeRIsLmFjeWNsaWMuc3RyZWFtLnYyLkluc3BlY3RJZGVtcG90ZW5jeVJlcXVlc3QaLS5hY3ljbGljLnN0cmVhbS52Mi5JbnNwZWN0SWRlbXBvdGVuY3lSZXNwb25zZRJNCgZBcHBlbmQSIC5hY3ljbGljLnN0cmVhbS52Mi5BcHBlbmRSZXF1ZXN0GiEuYWN5Y2xpYy5zdHJlYW0udjIuQXBwZW5kUmVzcG9uc2USRwoEVGFpbBIeLmFjeWNsaWMuc3RyZWFtLnYyLlRhaWxSZXF1ZXN0Gh8uYWN5Y2xpYy5zdHJlYW0udjIuVGFpbFJlc3BvbnNlEkYKBEZvcmsSHi5hY3ljbGljLnN0cmVhbS52Mi5Gb3JrUmVxdWVzdBoeLmFjeWNsaWMuc3RyZWFtLnYyLkZvcmtSZWNlaXB0EkkKBFJlYWQSHi5hY3ljbGljLnN0cmVhbS52Mi5SZWFkUmVxdWVzdBofLmFjeWNsaWMuc3RyZWFtLnYyLlJlYWRSZXNwb25zZTABEk0KBkZvbGxvdxIgLmFjeWNsaWMuc3RyZWFtLnYyLkZvbGxvd1JlcXVlc3QaHy5hY3ljbGljLnN0cmVhbS52Mi5SZWFkUmVzcG9uc2UwARJVCghDaGlsZHJlbhIiLmFjeWNsaWMuc3RyZWFtLnYyLkNoaWxkcmVuUmVxdWVzdBojLmFjeWNsaWMuc3RyZWFtLnYyLkNoaWxkcmVuUmVzcG9uc2UwARJfCgxDaGlsZHJlblBhZ2USJi5hY3ljbGljLnN0cmVhbS52Mi5DaGlsZHJlblBhZ2VSZXF1ZXN0GicuYWN5Y2xpYy5zdHJlYW0udjIuQ2hpbGRyZW5QYWdlUmVzcG9uc2USTQoGQ29tbWl0EiAuYWN5Y2xpYy5zdHJlYW0udjIuQ29tbWl0UmVxdWVzdBohLmFjeWNsaWMuc3RyZWFtLnYyLkNvbW1pdFJlc3BvbnNlElgKClJlYWRDb21taXQSJC5hY3ljbGljLnN0cmVhbS52Mi5SZWFkQ29tbWl0UmVxdWVzdBokLmFjeWNsaWMuc3RyZWFtLnYyLkNvbW1pdHRlZEVudmVsb3BlQjdaNWdpdGh1Yi5jb20vYWN5Y2xpYy1sYWJzL3Nkay9nby9nZW4vc3RyZWFtL3YyO3N0cmVhbXYyYgZwcm90bzM");
 
 /**
  * Describes the message acyclic.stream.v2.Record.
@@ -76,277 +76,214 @@ export const ForkReceiptSchema = /*@__PURE__*/
   messageDesc(file_stream_v2_stream, 8);
 
 /**
- * Describes the message acyclic.stream.v2.TrimRequest.
- * Use `create(TrimRequestSchema)` to create a new message.
- */
-export const TrimRequestSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 9);
-
-/**
- * Describes the message acyclic.stream.v2.TrimReceipt.
- * Use `create(TrimReceiptSchema)` to create a new message.
- */
-export const TrimReceiptSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 10);
-
-/**
- * Describes the message acyclic.stream.v2.DeleteRequest.
- * Use `create(DeleteRequestSchema)` to create a new message.
- */
-export const DeleteRequestSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 11);
-
-/**
- * Describes the message acyclic.stream.v2.DeleteReceipt.
- * Use `create(DeleteReceiptSchema)` to create a new message.
- */
-export const DeleteReceiptSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 12);
-
-/**
  * Describes the message acyclic.stream.v2.ReadRequest.
  * Use `create(ReadRequestSchema)` to create a new message.
  */
 export const ReadRequestSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 13);
+  messageDesc(file_stream_v2_stream, 9);
 
 /**
  * Describes the message acyclic.stream.v2.FollowRequest.
  * Use `create(FollowRequestSchema)` to create a new message.
  */
 export const FollowRequestSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 14);
+  messageDesc(file_stream_v2_stream, 10);
 
 /**
  * Describes the message acyclic.stream.v2.ReadResponse.
  * Use `create(ReadResponseSchema)` to create a new message.
  */
 export const ReadResponseSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 15);
+  messageDesc(file_stream_v2_stream, 11);
 
 /**
  * Describes the message acyclic.stream.v2.ChildrenRequest.
  * Use `create(ChildrenRequestSchema)` to create a new message.
  */
 export const ChildrenRequestSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 16);
+  messageDesc(file_stream_v2_stream, 12);
 
 /**
  * Describes the message acyclic.stream.v2.Child.
  * Use `create(ChildSchema)` to create a new message.
  */
 export const ChildSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 17);
+  messageDesc(file_stream_v2_stream, 13);
 
 /**
  * Describes the message acyclic.stream.v2.ChildrenResponse.
  * Use `create(ChildrenResponseSchema)` to create a new message.
  */
 export const ChildrenResponseSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 18);
+  messageDesc(file_stream_v2_stream, 14);
 
 /**
  * Describes the message acyclic.stream.v2.ChildrenPageRequest.
  * Use `create(ChildrenPageRequestSchema)` to create a new message.
  */
 export const ChildrenPageRequestSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 19);
+  messageDesc(file_stream_v2_stream, 15);
 
 /**
  * Describes the message acyclic.stream.v2.ChildrenPageResponse.
  * Use `create(ChildrenPageResponseSchema)` to create a new message.
  */
 export const ChildrenPageResponseSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 20);
+  messageDesc(file_stream_v2_stream, 16);
 
 /**
  * Describes the message acyclic.stream.v2.TailCondition.
  * Use `create(TailConditionSchema)` to create a new message.
  */
 export const TailConditionSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 21);
+  messageDesc(file_stream_v2_stream, 17);
 
 /**
  * Describes the message acyclic.stream.v2.AbsentCondition.
  * Use `create(AbsentConditionSchema)` to create a new message.
  */
 export const AbsentConditionSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 22);
+  messageDesc(file_stream_v2_stream, 18);
 
 /**
  * Describes the message acyclic.stream.v2.CommitCondition.
  * Use `create(CommitConditionSchema)` to create a new message.
  */
 export const CommitConditionSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 23);
+  messageDesc(file_stream_v2_stream, 19);
 
 /**
  * Describes the message acyclic.stream.v2.AppendMutation.
  * Use `create(AppendMutationSchema)` to create a new message.
  */
 export const AppendMutationSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 24);
+  messageDesc(file_stream_v2_stream, 20);
 
 /**
  * Describes the message acyclic.stream.v2.ForkMutation.
  * Use `create(ForkMutationSchema)` to create a new message.
  */
 export const ForkMutationSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 25);
-
-/**
- * Describes the message acyclic.stream.v2.TrimMutation.
- * Use `create(TrimMutationSchema)` to create a new message.
- */
-export const TrimMutationSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 26);
-
-/**
- * Describes the message acyclic.stream.v2.DeleteMutation.
- * Use `create(DeleteMutationSchema)` to create a new message.
- */
-export const DeleteMutationSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 27);
+  messageDesc(file_stream_v2_stream, 21);
 
 /**
  * Describes the message acyclic.stream.v2.CommitMutation.
  * Use `create(CommitMutationSchema)` to create a new message.
  */
 export const CommitMutationSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 28);
+  messageDesc(file_stream_v2_stream, 22);
 
 /**
  * Describes the message acyclic.stream.v2.CommitRequest.
  * Use `create(CommitRequestSchema)` to create a new message.
  */
 export const CommitRequestSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 29);
+  messageDesc(file_stream_v2_stream, 23);
 
 /**
  * Describes the message acyclic.stream.v2.CommittedAppend.
  * Use `create(CommittedAppendSchema)` to create a new message.
  */
 export const CommittedAppendSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 30);
+  messageDesc(file_stream_v2_stream, 24);
 
 /**
  * Describes the message acyclic.stream.v2.CommittedFork.
  * Use `create(CommittedForkSchema)` to create a new message.
  */
 export const CommittedForkSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 31);
-
-/**
- * Describes the message acyclic.stream.v2.CommittedTrim.
- * Use `create(CommittedTrimSchema)` to create a new message.
- */
-export const CommittedTrimSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 32);
-
-/**
- * Describes the message acyclic.stream.v2.CommittedDelete.
- * Use `create(CommittedDeleteSchema)` to create a new message.
- */
-export const CommittedDeleteSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 33);
+  messageDesc(file_stream_v2_stream, 25);
 
 /**
  * Describes the message acyclic.stream.v2.CommittedMutation.
  * Use `create(CommittedMutationSchema)` to create a new message.
  */
 export const CommittedMutationSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 34);
+  messageDesc(file_stream_v2_stream, 26);
 
 /**
  * Describes the message acyclic.stream.v2.CommittedEnvelope.
  * Use `create(CommittedEnvelopeSchema)` to create a new message.
  */
 export const CommittedEnvelopeSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 35);
+  messageDesc(file_stream_v2_stream, 27);
 
 /**
  * Describes the message acyclic.stream.v2.TailCommitConflict.
  * Use `create(TailCommitConflictSchema)` to create a new message.
  */
 export const TailCommitConflictSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 36);
+  messageDesc(file_stream_v2_stream, 28);
 
 /**
  * Describes the message acyclic.stream.v2.ExistsCommitConflict.
  * Use `create(ExistsCommitConflictSchema)` to create a new message.
  */
 export const ExistsCommitConflictSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 37);
-
-/**
- * Describes the message acyclic.stream.v2.RetiredCommitConflict.
- * Use `create(RetiredCommitConflictSchema)` to create a new message.
- */
-export const RetiredCommitConflictSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 38);
+  messageDesc(file_stream_v2_stream, 29);
 
 /**
  * Describes the message acyclic.stream.v2.CommitConflict.
  * Use `create(CommitConflictSchema)` to create a new message.
  */
 export const CommitConflictSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 39);
+  messageDesc(file_stream_v2_stream, 30);
 
 /**
  * Describes the message acyclic.stream.v2.CommitConflicts.
  * Use `create(CommitConflictsSchema)` to create a new message.
  */
 export const CommitConflictsSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 40);
+  messageDesc(file_stream_v2_stream, 31);
 
 /**
  * Describes the message acyclic.stream.v2.CommitResponse.
  * Use `create(CommitResponseSchema)` to create a new message.
  */
 export const CommitResponseSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 41);
+  messageDesc(file_stream_v2_stream, 32);
 
 /**
  * Describes the message acyclic.stream.v2.ReadCommitRequest.
  * Use `create(ReadCommitRequestSchema)` to create a new message.
  */
 export const ReadCommitRequestSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 42);
+  messageDesc(file_stream_v2_stream, 33);
 
 /**
  * Describes the message acyclic.stream.v2.InspectIdempotencyRequest.
  * Use `create(InspectIdempotencyRequestSchema)` to create a new message.
  */
 export const InspectIdempotencyRequestSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 43);
+  messageDesc(file_stream_v2_stream, 34);
 
 /**
  * Describes the message acyclic.stream.v2.IdempotencyObservation.
  * Use `create(IdempotencyObservationSchema)` to create a new message.
  */
 export const IdempotencyObservationSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 44);
+  messageDesc(file_stream_v2_stream, 35);
 
 /**
  * Describes the message acyclic.stream.v2.InspectIdempotencyResponse.
  * Use `create(InspectIdempotencyResponseSchema)` to create a new message.
  */
 export const InspectIdempotencyResponseSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 45);
+  messageDesc(file_stream_v2_stream, 36);
 
 /**
  * Describes the message acyclic.stream.v2.TokenGrant.
  * Use `create(TokenGrantSchema)` to create a new message.
  */
 export const TokenGrantSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 46);
+  messageDesc(file_stream_v2_stream, 37);
 
 /**
  * Describes the message acyclic.stream.v2.CreateTokenRequest.
  * Use `create(CreateTokenRequestSchema)` to create a new message.
  */
 export const CreateTokenRequestSchema = /*@__PURE__*/
-  messageDesc(file_stream_v2_stream, 47);
+  messageDesc(file_stream_v2_stream, 38);
 
 /**
  * Describes the enum acyclic.stream.v2.StreamLimit.

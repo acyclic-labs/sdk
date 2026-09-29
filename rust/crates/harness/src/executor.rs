@@ -611,17 +611,44 @@ impl StockExecutor {
             .tools
             .get(&invocation.name)
             .ok_or_else(|| Error::NotFound(format!("tool {}", invocation.name)))?;
-        validate_value(
-            &tool.definition.input_schema,
-            &invocation.arguments,
-            "tool input",
-        )?;
+        // Authorization precedes argument validation, and must stay that way. A validation error
+        // describes the tool's pinned input schema, so answering one for a tool the caller was
+        // never granted would let a model probe the contract of an ungranted tool by naming it
+        // with deliberately malformed arguments. An ungranted call is refused on its own terms,
+        // whatever its arguments look like.
         let capability = format!("tool:call:{}", tool.definition.name);
         if !self.tool_scope.grants().contains(&capability) {
             return Err(Error::Unauthorized(format!("scope lacks {capability}")));
         }
         tool.executor
             .authorize(Some(&self.tool_scope), &invocation)?;
+        // Malformed arguments are the model's mistake to correct, not a reason to end the turn:
+        // hand the validation message back as this call's own result so the next step can fix
+        // them. Ending the turn instead makes the most recoverable failure in the loop fatal, and
+        // the replacement agent — fresh context, same model, same schema — repeats it exactly.
+        //
+        // Nothing is journaled. The call was never admitted: no `ToolStarted`, no executor
+        // dispatch, no side effect to reconcile. Rejection is a pure function of the pinned schema
+        // and the arguments, both already recorded by the model step that produced the call, so a
+        // replay re-derives the identical message. `ToolFailureKind` is deliberately not used —
+        // every one of its variants describes an *admitted* call that then failed.
+        if let Err(error) = validate_value(
+            &tool.definition.input_schema,
+            &invocation.arguments,
+            "tool input",
+        ) {
+            let message = ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: invocation.call_id.clone(),
+                    name: invocation.name.clone(),
+                    value: json!({"error": error.to_string()}),
+                }),
+            };
+            message.content.validate_limits(self.limits)?;
+            prior_messages.push(message);
+            return Ok(());
+        }
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolStarted {
                 step: event_step,
@@ -1231,6 +1258,63 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    /// Emits the slip seen in production — `parameters` where the pinned schema says `arguments`
+    /// — then a well-formed call once it has been told what was wrong.
+    struct SlippingModel {
+        calls: AtomicUsize,
+        requests: Mutex<Vec<ModelRequest>>,
+    }
+
+    impl ModelProvider for SlippingModel {
+        fn generate<'a>(
+            &'a self,
+            request: ModelRequest,
+        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut requests) = self.requests.lock() {
+                requests.push(request);
+            }
+            let events = match call {
+                0 => vec![
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "call-1".into(),
+                        name: "example.echo".into(),
+                        arguments: json!({"parameters": {"value": "hello"}}),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: Value::Null,
+                    }),
+                ],
+                1 => vec![
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "call-2".into(),
+                        name: "example.echo".into(),
+                        arguments: json!({"value": "hello"}),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: Value::Null,
+                    }),
+                ],
+                _ => vec![
+                    Ok(ModelEvent::Content {
+                        delta: "done".into(),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: json!({"finish": "stop"}),
+                    }),
+                ],
+            };
+            Box::pin(stream::iter(events))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            async { Ok(None) }.boxed()
+        }
+    }
+
     struct FakeModel {
         calls: AtomicUsize,
         requests: Mutex<Vec<ModelRequest>>,
@@ -1738,6 +1822,149 @@ mod tests {
         let _ = executor.execute(input, &journal).await?;
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn malformed_tool_arguments_return_to_the_model_instead_of_ending_the_turn() -> Result<()>
+    {
+        let model = Arc::new(SlippingModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "additionalProperties": false,
+                }),
+                output_schema: json!({"type": "object"}),
+            },
+            executor: tool_executor.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([79; 16]),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
+            max_steps: 4,
+        };
+
+        // The turn survives the rejected call and finishes on the corrected one.
+        let output = executor.execute(input, &journal).await?;
+        assert_eq!(output.text, "done");
+
+        // The rejected call was never admitted, so only the corrected one reached the executor.
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+
+        // The model was told what was wrong, as that call's own tool result.
+        let requests = model
+            .requests
+            .lock()
+            .map_err(|_| Error::Storage("model lock poisoned".into()))?;
+        let rejection = requests.get(1).and_then(|request| {
+            request
+                .messages
+                .iter()
+                .find_map(|message| match (&message.role, &message.content) {
+                    (
+                        ModelRole::Tool,
+                        ModelContent::Part(ModelContentPart::ToolResult { call_id, value, .. }),
+                    ) if call_id == "call-1" => Some(value.clone()),
+                    _ => None,
+                })
+        });
+        let rejection = rejection.ok_or_else(|| Error::Storage("no rejection message".into()))?;
+        let text = rejection
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            text.contains("tool input failed validation"),
+            "expected the validation message, got {text:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Result<()> {
+        // Malformed arguments against a registered but ungranted tool must not be answered with a
+        // validation message: that message describes the tool's pinned input schema, so answering
+        // it would let a model map the contract of a tool it may not call.
+        let model = Arc::new(SlippingModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "additionalProperties": false,
+                }),
+                output_schema: json!({"type": "object"}),
+            },
+            executor: tool_executor.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model,
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            // Registered, but this scope grants a different tool.
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.other"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([80; 16]),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
+            max_steps: 4,
+        };
+        let outcome = executor.execute(input, &journal).await;
+        assert!(
+            matches!(&outcome, Err(Error::Unauthorized(message)) if message.contains("example.echo")),
+            "expected an unauthorized refusal, got {outcome:?}"
+        );
+        // Nothing about the input contract leaked on the way out.
+        let rendered = format!("{outcome:?}");
+        assert!(
+            !rendered.contains("additionalProperties") && !rendered.contains("failed validation"),
+            "schema detail leaked through the refusal: {rendered}"
+        );
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
         Ok(())
     }
 

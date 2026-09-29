@@ -3,17 +3,14 @@
 import { decodeHttpResponse as decodeHttpResponseWasm } from "../generated/wasm/acyclic_stream_wasm.js";
 import type {
   AccessToken, AppendResult, ChildrenPage, CommittedEnvelope, EncodedRecord, ForkReceipt,
-  IdempotencyObservation, TrimReceipt, DeleteReceipt, CommitResult, Sequence, StreamBounds,
+  IdempotencyObservation, CommitResult, Sequence,
 } from "./types.js";
 
 export const HTTP_RESPONSE_CONTRACT = Object.freeze({
   "idempotency/inspect": "observation",
   "tail": "sequence",
-  "bounds": "bounds",
   "append": "append",
   "fork": "fork",
-  "trim": "trim",
-  "delete": "delete",
   "read": "records",
   "children": "children",
   "children/page": "children_page",
@@ -27,11 +24,8 @@ export type HttpRoute = keyof typeof HTTP_RESPONSE_CONTRACT;
 type HttpResponseByKind = {
   observation: IdempotencyObservation | undefined;
   sequence: Sequence;
-  bounds: StreamBounds;
   append: AppendResult;
   fork: ForkReceipt;
-  trim: TrimReceipt;
-  delete: DeleteReceipt;
   records: readonly EncodedRecord[];
   children: readonly { readonly path: string }[];
   children_page: ChildrenPage;

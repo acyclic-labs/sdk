@@ -111,9 +111,9 @@ pub(crate) enum HostChange {
     /// Notifications were lost: anything may have changed.
     Everything,
     /// Changes may not all have been delivered yet, though none is known to
-    /// have been lost: a fence that cannot prove delivery (see the macOS
-    /// backend) reports this instead.
-    #[cfg(target_os = "macos")]
+    /// have been lost: a fence that cannot prove delivery (see the macOS and
+    /// Windows backends) reports this instead.
+    #[cfg(any(target_os = "macos", windows))]
     Unconfirmed,
 }
 

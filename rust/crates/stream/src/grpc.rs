@@ -22,16 +22,15 @@ use tonic::{
 
 use crate::wire_codec::{
     append_outcome_from_wire, append_outcome_wire, commit_id, commit_outcome_from_wire,
-    commit_outcome_wire, condition_from_wire, condition_wire, delete_receipt_wire,
-    envelope_from_wire, envelope_wire, fork_receipt_wire, mutation_from_wire, mutation_wire,
-    observation_from_wire, observation_wire, optional_key, path, record, record_wire, required_key,
-    trim_receipt_wire,
+    commit_outcome_wire, condition_from_wire, condition_wire, envelope_from_wire, envelope_wire,
+    fork_receipt_wire, mutation_from_wire, mutation_wire, observation_from_wire, observation_wire,
+    optional_key, path, record, record_wire,
 };
 use crate::{
     AppendOutcome, AppendRequest, Child, ChildStream, ChildrenPage, ChildrenPageRequest,
-    ChildrenRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, DeleteReceipt,
-    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record,
-    RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider, TrimReceipt, wire,
+    ChildrenRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record, RecordStream,
+    StreamBounds, StreamError, StreamPath, StreamProvider, wire,
 };
 
 const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -550,12 +549,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.tail(request).await }),
             )
             .await?;
-        let trim_point = response.trim_point.ok_or(StreamError::Unsupported)?;
-        if trim_point > response.tail {
-            return Err(StreamError::InvalidArgument);
-        }
         Ok(StreamBounds {
-            trim_point,
             tail: response.tail,
         })
     }
@@ -600,49 +594,6 @@ impl StreamProvider for Client {
             destination: path(receipt.destination)?,
             forked_at: receipt.forked_at,
             tail: receipt.tail,
-            commit_id: commit_id(&receipt.commit_id)?,
-        })
-    }
-
-    async fn trim(
-        &self,
-        path: StreamPath,
-        before: u64,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<TrimReceipt, StreamError> {
-        let receipt = self
-            .unary(
-                wire::TrimRequest {
-                    path: path.to_string(),
-                    before,
-                    idempotency_key: Some(Bytes::copy_from_slice(idempotency_key.as_bytes())),
-                },
-                |mut service, request| Box::pin(async move { service.trim(request).await }),
-            )
-            .await?;
-        Ok(TrimReceipt {
-            path: crate::grpc::path(receipt.path)?,
-            trim_point: receipt.trim_point,
-            commit_id: commit_id(&receipt.commit_id)?,
-        })
-    }
-
-    async fn delete(
-        &self,
-        path: StreamPath,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<DeleteReceipt, StreamError> {
-        let receipt = self
-            .unary(
-                wire::DeleteRequest {
-                    path: path.to_string(),
-                    idempotency_key: Some(Bytes::copy_from_slice(idempotency_key.as_bytes())),
-                },
-                |mut service, request| Box::pin(async move { service.delete(request).await }),
-            )
-            .await?;
-        Ok(DeleteReceipt {
-            path: crate::grpc::path(receipt.path)?,
             commit_id: commit_id(&receipt.commit_id)?,
         })
     }
@@ -832,10 +783,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             .bounds(path)
             .await
             .map_err(|error| error_status(&error))?;
-        Ok(Response::new(wire::TailResponse {
-            tail: bounds.tail,
-            trim_point: Some(bounds.trim_point),
-        }))
+        Ok(Response::new(wire::TailResponse { tail: bounds.tail }))
     }
 
     async fn fork(
@@ -856,41 +804,6 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             .await
             .map_err(|error| error_status(&error))?;
         Ok(Response::new(fork_receipt_wire(&receipt)))
-    }
-
-    async fn trim(
-        &self,
-        request: Request<wire::TrimRequest>,
-    ) -> Result<Response<wire::TrimReceipt>, Status> {
-        check_command_size(request.get_ref())?;
-        let request = request.into_inner();
-        let receipt = self
-            .provider
-            .trim(
-                path(request.path).map_err(|error| error_status(&error))?,
-                request.before,
-                required_key(request.idempotency_key).map_err(|error| error_status(&error))?,
-            )
-            .await
-            .map_err(|error| error_status(&error))?;
-        Ok(Response::new(trim_receipt_wire(&receipt)))
-    }
-
-    async fn delete(
-        &self,
-        request: Request<wire::DeleteRequest>,
-    ) -> Result<Response<wire::DeleteReceipt>, Status> {
-        check_command_size(request.get_ref())?;
-        let request = request.into_inner();
-        let receipt = self
-            .provider
-            .delete(
-                path(request.path).map_err(|error| error_status(&error))?,
-                required_key(request.idempotency_key).map_err(|error| error_status(&error))?,
-            )
-            .await
-            .map_err(|error| error_status(&error))?;
-        Ok(Response::new(delete_receipt_wire(&receipt)))
     }
 
     async fn read(
@@ -1098,7 +1011,6 @@ fn error_status(error: &StreamError) -> Status {
         StreamError::AccessDenied => Status::permission_denied(error.to_string()),
         StreamError::Capacity => Status::resource_exhausted(error.to_string()),
         StreamError::IdempotencyMismatch => Status::failed_precondition("idempotency_mismatch"),
-        StreamError::Retired => Status::failed_precondition("retired"),
         StreamError::PrefixNotRetained => Status::failed_precondition("prefix_not_retained"),
         StreamError::Unavailable => Status::unavailable(error.to_string()),
         StreamError::DeadlineElapsed => Status::failed_precondition("deadline_elapsed"),
@@ -1122,7 +1034,6 @@ fn status(error: &tonic::Status) -> StreamError {
         Code::FailedPrecondition if error.message() == "idempotency_mismatch" => {
             StreamError::IdempotencyMismatch
         }
-        Code::FailedPrecondition if error.message() == "retired" => StreamError::Retired,
         Code::FailedPrecondition if error.message() == "prefix_not_retained" => {
             StreamError::PrefixNotRetained
         }
@@ -1180,23 +1091,6 @@ mod tests {
 
         async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
             self.inner.fork(request).await
-        }
-
-        async fn trim(
-            &self,
-            path: StreamPath,
-            before: u64,
-            key: IdempotencyKey,
-        ) -> Result<TrimReceipt, StreamError> {
-            self.inner.trim(path, before, key).await
-        }
-
-        async fn delete(
-            &self,
-            path: StreamPath,
-            key: IdempotencyKey,
-        ) -> Result<DeleteReceipt, StreamError> {
-            self.inner.delete(path, key).await
         }
 
         async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {

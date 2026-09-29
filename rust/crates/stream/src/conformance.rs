@@ -214,49 +214,30 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     if live.sequence != 1 || live.value != Bytes::from_static(b"live") {
         return Err("follow returned a gap or duplicate".into());
     }
-    let trim_key = key(b"stream-trim")?;
-    let trimmed = provider
-        .trim(child.clone(), 1, trim_key.clone())
-        .await
-        .map_err(|err| error(&err))?;
-    if trimmed.trim_point != 1
-        || provider
-            .trim(child.clone(), 1, trim_key.clone())
-            .await
-            .map_err(|err| error(&err))?
-            != trimmed
-        || provider.trim(child.clone(), 2, trim_key).await != Err(StreamError::IdempotencyMismatch)
-    {
-        return Err("logical trim replay or mismatch semantics changed".into());
-    }
-    let trimmed_read = provider
+    let complete_history = provider
         .read(ReadRequest {
             path: child.clone(),
             from: 0,
-            limit: 1,
+            limit: 8,
         })
-        .await;
-    let trimmed = match trimmed_read {
-        Err(StreamError::OutOfRange) => true,
-        Ok(mut records) => matches!(records.next().await, Some(Err(StreamError::OutOfRange))),
-        _ => false,
-    };
-    if !trimmed {
-        return Err("trimmed history remained publicly readable".into());
-    }
-    let delete_key = key(b"stream-delete")?;
-    let deleted = provider
-        .delete(child.clone(), delete_key.clone())
-        .await
-        .map_err(|err| error(&err))?;
-    if provider
-        .delete(child.clone(), delete_key)
         .await
         .map_err(|err| error(&err))?
-        != deleted
-        || provider.tail(child.clone()).await != Err(StreamError::Retired)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| error(&err))?;
+    if !matches!(complete_history.as_slice(), [first, second]
+        if first.value == Bytes::from_static(b"one")
+            && second.value == Bytes::from_static(b"live"))
+        || provider
+            .bounds(child.clone())
+            .await
+            .map_err(|err| error(&err))?
+            .tail
+            != 2
     {
-        return Err("permanent deletion or exact replay changed".into());
+        return Err("committed history was not retained from sequence zero".into());
     }
     let committed_path = path("conformance/committed")?;
     let request = CommitRequest {

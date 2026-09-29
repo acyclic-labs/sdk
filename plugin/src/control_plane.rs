@@ -3711,7 +3711,16 @@ impl ControlPlane {
         .await
         .map_err(|error| format!("physical root observation worker failed: {error}"))??;
         let source_advanced_elsewhere = binding.source_epoch != observation.prior_source.epoch;
-        if !observation.consumed_changes && !source_advanced_elsewhere {
+        // On a file system that may drop a change without a trace (`ReFS`),
+        // no batch proves the root unchanged: every path the root workspace
+        // records is checked against the disk at each refresh. What it does
+        // not record, forks read from the disk itself.
+        let unreported = !physical
+            .watcher
+            .lock()
+            .map_err(|_| "physical root watcher state is poisoned".to_owned())?
+            .reports_every_change();
+        if !observation.consumed_changes && !source_advanced_elsewhere && !unreported {
             return Ok(());
         }
         #[cfg(test)]
@@ -3813,6 +3822,31 @@ impl ControlPlane {
                 )
                 .await
                 .map_err(display)?;
+            }
+        }
+        if unreported {
+            let recorded = recorded_paths(&workspace).await?;
+            capture_watch_batch_with_policy(
+                &mut checkout,
+                WatchBatch::Changes {
+                    epoch: WatchEpoch::from_u64(0),
+                    first_sequence: WatchSequence::from_u64(0),
+                    next_sequence: WatchSequence::from_u64(0),
+                    changes: recorded.into_iter().map(WatchChange::Modified).collect(),
+                },
+                &capture,
+                &policy,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(display)?;
+            if !observation.consumed_changes
+                && !source_advanced_elsewhere
+                && !checkout.has_pending_mutations()
+            {
+                // Every recorded path still holds what the disk does.
+                return Ok(());
             }
         }
         if checkout.has_pending_mutations() {
@@ -4133,6 +4167,45 @@ impl ControlPlane {
         }
         result.map(|()| slots)
     }
+}
+
+/// Every path the workspace's head records, parents before children.
+async fn recorded_paths(workspace: &LocalWorkspace) -> Result<Vec<NamespacePath>, String> {
+    let head = workspace.head().await.map_err(display)?;
+    let mut recorded = Vec::new();
+    let mut directories = vec!["/".to_owned()];
+    while let Some(directory) = directories.pop() {
+        let mut after = None;
+        loop {
+            let page = head
+                .list_directory(&directory, after.as_ref(), 1_024)
+                .await
+                .map_err(display)?;
+            for entry in &page.entries {
+                let name = entry
+                    .name
+                    .unicode_text()
+                    .ok_or_else(|| "recorded name is not Unicode".to_owned())?;
+                let path = if directory == "/" {
+                    format!("/{name}")
+                } else {
+                    format!("{directory}/{name}")
+                };
+                recorded.push(path.clone());
+                if entry.kind == FileKind::Directory {
+                    directories.push(path);
+                }
+            }
+            after = page.entries.last().map(|entry| entry.name.clone());
+            if !page.has_more || after.is_none() {
+                break;
+            }
+        }
+    }
+    recorded
+        .iter()
+        .map(|path| native_namespace_path(path))
+        .collect()
 }
 
 /// Adds every path that differs from `base` to `head` to `changed`.

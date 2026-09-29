@@ -2037,7 +2037,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_reopens_a_trimmed_stream_suffix() -> Result<()> {
+    async fn snapshot_reopens_with_full_stream_history() -> Result<()> {
         let provider = Arc::new(MemoryStream::default());
         let client = StreamClient::new(provider);
         let mut aggregate = with_content(
@@ -2051,10 +2051,17 @@ mod tests {
         let mut third = command(3)?;
         third.expected_revision = 2;
         aggregate.execute(third).await?;
-        client
-            .stream(authority().stream_path()?)?
-            .trim(2, None)
-            .await?;
+        let history = client.stream(authority().stream_path()?)?;
+        assert_eq!(history.bounds().await?.tail, 3);
+        assert_eq!(
+            history
+                .read(0, 3)
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?
+                .len(),
+            3
+        );
 
         let reopened = StreamAggregate::open_from_snapshot(
             &client,

@@ -12,7 +12,7 @@
     },
     { "name": "authority-scopes-cannot-cross-aggregate-audiences", "family": "harness" },
     { "name": "stream-append-uncertainty-is-queryable", "family": "harness" },
-    { "name": "trimmed-history-restores-from-checked-snapshot", "family": "harness" },
+    { "name": "full-history-restores-from-checked-snapshot", "family": "harness" },
     { "name": "fork-publication-is-atomic", "family": "harness" },
     { "name": "effect-attempts-respect-provider-guarantees", "family": "harness" },
     { "name": "typed-approvals-bind-the-exact-action", "family": "harness" },

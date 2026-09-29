@@ -50,7 +50,8 @@ message TailRequest {
 }
 message TailResponse {
   uint64 tail = 1;
-  optional uint64 trim_point = 2;
+  reserved 2;
+  reserved "trim_point";
 }
 
 message ForkRequest {
@@ -66,28 +67,6 @@ message ForkReceipt {
   uint64 forked_at = 3;
   uint64 tail = 4;
   bytes commit_id = 5;
-}
-
-message TrimRequest {
-  string path = 1;
-  uint64 before = 2;
-  optional bytes idempotency_key = 3;
-}
-
-message TrimReceipt {
-  string path = 1;
-  uint64 trim_point = 2;
-  bytes commit_id = 3;
-}
-
-message DeleteRequest {
-  string path = 1;
-  optional bytes idempotency_key = 2;
-}
-
-message DeleteReceipt {
-  string path = 1;
-  bytes commit_id = 2;
 }
 
 message ReadRequest {
@@ -160,21 +139,12 @@ message ForkMutation {
   repeated bytes records = 4;
 }
 
-message TrimMutation {
-  string path = 1;
-  uint64 before = 2;
-}
-
-message DeleteMutation {
-  string path = 1;
-}
-
 message CommitMutation {
+  reserved 3, 4;
+  reserved "trim", "delete";
   oneof mutation {
     AppendMutation append = 1;
     ForkMutation fork = 2;
-    TrimMutation trim = 3;
-    DeleteMutation delete = 4;
   }
 }
 
@@ -201,21 +171,12 @@ message CommittedFork {
   repeated Record records = 5;
 }
 
-message CommittedTrim {
-  string path = 1;
-  uint64 trim_point = 2;
-}
-
-message CommittedDelete {
-  string path = 1;
-}
-
 message CommittedMutation {
+  reserved 3, 4;
+  reserved "trim", "delete";
   oneof mutation {
     CommittedAppend append = 1;
     CommittedFork fork = 2;
-    CommittedTrim trim = 3;
-    CommittedDelete delete = 4;
   }
 }
 
@@ -233,15 +194,12 @@ message TailCommitConflict {
 message ExistsCommitConflict {
   string path = 1;
 }
-message RetiredCommitConflict {
-  string path = 1;
-}
-
 message CommitConflict {
+  reserved 3;
+  reserved "retired";
   oneof conflict {
     TailCommitConflict tail = 1;
     ExistsCommitConflict exists = 2;
-    RetiredCommitConflict retired = 3;
   }
 }
 
@@ -267,11 +225,11 @@ message InspectIdempotencyRequest {
 message IdempotencyObservation {
   bytes idempotency_key = 1;
   bytes request_digest = 2;
+  reserved 5, 6;
+  reserved "trim", "delete";
   oneof outcome {
     AppendResponse append = 3;
     ForkReceipt fork = 4;
-    TrimReceipt trim = 5;
-    DeleteReceipt delete = 6;
     CommitResponse commit = 7;
   }
 }
@@ -299,8 +257,6 @@ service StreamService {
   rpc Append(AppendRequest) returns (AppendResponse);
   rpc Tail(TailRequest) returns (TailResponse);
   rpc Fork(ForkRequest) returns (ForkReceipt);
-  rpc Trim(TrimRequest) returns (TrimReceipt);
-  rpc Delete(DeleteRequest) returns (DeleteReceipt);
   rpc Read(ReadRequest) returns (stream ReadResponse);
   rpc Follow(FollowRequest) returns (stream ReadResponse);
   rpc Children(ChildrenRequest) returns (stream ChildrenResponse);

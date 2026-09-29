@@ -154,8 +154,7 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     const FILES_PER_DIRECTORY: usize = 100;
     const CHANGES: usize = 100;
     let directories = std::env::var("ACYCLIC_APFS_BENCH_DIRECTORIES")
-        .map(|value| value.parse::<usize>())
-        .unwrap_or(Ok(100))?;
+        .map_or(Ok(100), |value| value.parse::<usize>())?;
     assert!(directories > 0);
 
     let source = tempfile::tempdir()?;

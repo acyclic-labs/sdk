@@ -3,7 +3,19 @@ import initialize, { openBrowserFs } from "../generated/wasm/acyclic_fs_wasm.js"
 import { openBrowserFs as openWorkspaceFs } from "../dist/browser.js";
 import { exerciseWorkspace } from "./workspace-composition.mjs";
 
-await initialize();
+// Headless Chrome running many windows at once was seen to fail an actor's
+// module fetch before the request reached the file server ("Failed to
+// fetch", nothing served incomplete). The fetch is the page's own setup, not
+// the SDK under test, so it is tried again a bounded number of times.
+for (let attempt = 1; ; attempt += 1) {
+  try {
+    await initialize();
+    break;
+  } catch (error) {
+    if (attempt === 3 || !(error instanceof TypeError)) throw error;
+    console.error(`wasm fetch attempt ${attempt} failed: ${error}`);
+  }
+}
 
 const result = document.querySelector("#result");
 const query = new URLSearchParams(location.search);
@@ -379,7 +391,11 @@ async function runActor() {
       post(channel, { event: "failed", error: errorText(error) });
     }
   });
-  post(channel, { event: "ready", reloaded: query.get("reload") === "1" });
+  post(channel, {
+    event: "ready",
+    reloaded: query.get("reload") === "1",
+    opening: query.get("opening"),
+  });
 }
 
 async function closeActor(channel, nextMessage, actorWindow, actor) {
@@ -424,9 +440,7 @@ async function runTargetedCase(
   const name = `targeted-${operationSequence}-${consistency}`;
   actorUrl.searchParams.set("actor", name);
   actorUrl.searchParams.set("database", database);
-  const actorWindow = window.open(actorUrl, `acyclic-fs-${name}-${run}`);
-  assert(actorWindow !== null, `browser blocked ${name} actor window`);
-  await nextMessage((message) => message.actor === name && message.event === "ready", `${name} ready`);
+  const actorWindow = await openActor(nextMessage, actorUrl, `acyclic-fs-${name}-${run}`, name);
   channel.postMessage({
     target: name,
     command: "targeted-prepare",
@@ -517,15 +531,56 @@ function messageQueue(channel) {
     publishWaiting();
     waiter.resolve(message);
   });
-  return (predicate, label) => {
+  // With `timeoutMs`, a wait that sees no match by then is withdrawn and
+  // resolves `undefined`, so no later message is taken for it.
+  return (predicate, label, timeoutMs) => {
     if (failure !== undefined) return Promise.reject(failure);
     const index = buffered.findIndex(predicate);
     if (index !== -1) return Promise.resolve(buffered.splice(index, 1)[0]);
     return new Promise((resolve, reject) => {
-      waiters.push({ predicate, label, resolve, reject });
+      const waiter = { predicate, label, resolve, reject };
+      waiters.push(waiter);
       publishWaiting();
+      if (timeoutMs === undefined) return;
+      setTimeout(() => {
+        const pending = waiters.indexOf(waiter);
+        if (pending === -1) return;
+        waiters.splice(pending, 1);
+        publishWaiting();
+        resolve(undefined);
+      }, timeoutMs);
     });
   };
+}
+
+// Headless Chrome with many windows was seen to leave an actor page that
+// never ran: a module or wasm fetch failed before reaching the file server.
+// Nothing of the SDK runs before an actor reports ready, so an actor that
+// does not is opened again, a bounded number of times.
+const ACTOR_READY_MS = 30_000;
+const ACTOR_OPENINGS = 3;
+
+async function openActor(nextMessage, actorUrl, windowName, actor) {
+  for (let opening = 1; ; opening += 1) {
+    // Each opening is told apart, so a page that starts late is not taken
+    // for the one opened after it.
+    const openingUrl = new URL(actorUrl);
+    openingUrl.searchParams.set("opening", String(opening));
+    const actorWindow = window.open(openingUrl, windowName);
+    assert(actorWindow !== null, `browser blocked the ${actor} actor window`);
+    const ready = await nextMessage(
+      (message) =>
+        message.actor === actor &&
+        message.event === "ready" &&
+        !message.reloaded &&
+        message.opening === String(opening),
+      `${actor} ready`,
+      ACTOR_READY_MS,
+    );
+    if (ready !== undefined) return actorWindow;
+    actorWindow.close();
+    assert(opening < ACTOR_OPENINGS, `${actor} actor never became ready`);
+  }
 }
 
 async function runCoordinator() {
@@ -562,15 +617,11 @@ async function runCoordinator() {
   actorUrl.searchParams.set("run", run);
   actorUrl.searchParams.set("database", database);
   actorUrl.searchParams.set("actor", "left");
-  const left = window.open(actorUrl, `acyclic-fs-left-${run}`);
+  const left = await openActor(nextMessage, actorUrl, `acyclic-fs-left-${run}`, "left");
+  channel.postMessage({ target: "left", command: "prepare" });
   actorUrl.searchParams.set("actor", "right");
-  const right = window.open(actorUrl, `acyclic-fs-right-${run}`);
-  assert(left !== null && right !== null, "browser blocked required top-level actor windows");
-
-  for (const name of ["left", "right"]) {
-    await nextMessage((message) => message.actor === name && message.event === "ready", `${name} ready`);
-    channel.postMessage({ target: name, command: "prepare" });
-  }
+  const right = await openActor(nextMessage, actorUrl, `acyclic-fs-right-${run}`, "right");
+  channel.postMessage({ target: "right", command: "prepare" });
   const prepared = await Promise.all(["left", "right"].map((name) =>
     nextMessage((message) => message.actor === name && message.event === "prepared", `${name} prepared`)
   ));
@@ -591,9 +642,7 @@ async function runCoordinator() {
     closeActor(channel, nextMessage, right, "right"),
   ]);
   actorUrl.searchParams.set("actor", "abandoned");
-  const abandoned = window.open(actorUrl, `acyclic-fs-abandoned-${run}`);
-  assert(abandoned !== null, "browser blocked the abrupt-lifecycle actor window");
-  await nextMessage((message) => message.actor === "abandoned" && message.event === "ready", "abandoned ready");
+  const abandoned = await openActor(nextMessage, actorUrl, `acyclic-fs-abandoned-${run}`, "abandoned");
   channel.postMessage({ target: "abandoned", command: "prepare" });
   await nextMessage(
     (message) => message.actor === "abandoned" && message.event === "prepared",
@@ -602,9 +651,7 @@ async function runCoordinator() {
   abandoned.close();
   assert(abandoned.closed, "abrupt-lifecycle actor did not close");
   actorUrl.searchParams.set("actor", "verifier");
-  const verifier = window.open(actorUrl, `acyclic-fs-verifier-${run}`);
-  assert(verifier !== null, "browser blocked the fresh verifier tab");
-  await nextMessage((message) => message.actor === "verifier" && message.event === "ready" && !message.reloaded, "verifier ready");
+  const verifier = await openActor(nextMessage, actorUrl, `acyclic-fs-verifier-${run}`, "verifier");
   const verifyCommand = {
     target: "verifier",
     command: "verify",

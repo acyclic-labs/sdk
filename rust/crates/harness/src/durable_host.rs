@@ -300,7 +300,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Err(StreamError::NotFound) => return Ok(None),
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
-        if bounds.trim_point != 0 || bounds.tail != 1 {
+        if bounds.tail != 1 {
             return Err(Error::Storage(
                 "batch cancellation history is not exactly retained".into(),
             ));
@@ -353,7 +353,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Err(StreamError::NotFound) => return Ok(None),
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
-        if bounds.trim_point != 0 || bounds.tail != 1 {
+        if bounds.tail != 1 {
             return Err(Error::Storage(
                 "batch manifest history is not exactly retained".into(),
             ));
@@ -1031,11 +1031,6 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 Err(StreamError::NotFound) => return Ok(Vec::new()),
                 Err(error) => return Err(Error::Storage(error.to_string())),
             };
-            if after < bounds.trim_point {
-                return Err(Error::Conflict(
-                    "inbox history was trimmed before this cursor".into(),
-                ));
-            }
             if after > bounds.tail {
                 return Err(Error::Invalid("inbox cursor is beyond the tail".into()));
             }
@@ -1044,11 +1039,6 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let page = match mailbox.read(after, page_limit).await {
                 Ok(records) => records.try_collect::<Vec<_>>().await?,
                 Err(StreamError::NotFound) => return Ok(Vec::new()),
-                Err(StreamError::PrefixNotRetained) => {
-                    return Err(Error::Conflict(
-                        "inbox history was trimmed before this cursor".into(),
-                    ));
-                }
                 Err(error) => return Err(Error::Storage(error.to_string())),
             };
             let mut items = Vec::with_capacity(page.len());
@@ -1625,12 +1615,30 @@ mod tests {
                 .tail,
             1
         );
-        let mut changed = request;
+        let mut changed = request.clone();
         changed.inputs.swap(0, 1);
         assert!(matches!(
             reopened.reconcile_batch(changed).await,
             Err(Error::Conflict(_))
         ));
+        // A retained control path must still contain exactly one record.
+        // Full Stream history remains readable even when that invariant fails.
+        manifest
+            .append_at(Bytes::from_static(b"unexpected-second-record"), 1)
+            .await?;
+        assert!(matches!(
+            reopened.retained_batch(request.batch_id).await,
+            Err(Error::Storage(_))
+        ));
+        assert_eq!(
+            manifest
+                .read(0, 2)
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?
+                .len(),
+            2
+        );
         Ok(())
     }
 }
