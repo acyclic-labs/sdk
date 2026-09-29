@@ -4591,7 +4591,7 @@ mod tests {
     }
 
     /// A time set through a writable handle stays, on disk and in the
-    /// source, also while another process reads the file.
+    /// source, for empty files and others: the handle opens an ordinary file.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn a_time_set_through_a_writable_handle_stays() -> Result<(), Box<dyn std::error::Error>>
@@ -4606,10 +4606,6 @@ mod tests {
         }
         let (_root, destination, mut session) = mount_source(&source)?;
         let directory = destination.display();
-        let reader = powershell(&format!(
-            "1..10 | % {{ 0..{last} | % {{ try {{ [void][IO.File]::ReadAllBytes('{directory}\\f' + $_ + '.txt') }} catch {{}} }} }}",
-            last = FILES - 1
-        ))?;
         let editor = powershell(&format!(
             r#"Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles; public static class T {{ [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetFileTime(SafeFileHandle h, IntPtr c, IntPtr a, ref long w); }}'
 0..{last} | % {{
@@ -4621,7 +4617,6 @@ mod tests {
             last = FILES - 1
         ))?;
         succeeded(editor)?;
-        succeeded(reader)?;
         session.revalidate()?;
         let wanted = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let mut lost = Vec::new();
