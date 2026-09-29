@@ -1539,12 +1539,26 @@ mod tests {
         let clock = Arc::new(TestClock::default());
         let stream = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
         let path = StreamPath::new("accounting/authority")?;
-        for (time, body) in [
-            (100, b"first".as_slice()),
-            (90, b"rollback"),
-            (105, b"recovered"),
-        ] {
+        for (time, body) in [(100, b"first".as_slice()), (105, b"recovered")] {
             clock.0.store(time, Ordering::SeqCst);
+            if time == 105 {
+                clock.0.store(90, Ordering::SeqCst);
+                let outcome = stream
+                    .commit(CommitRequest {
+                        conditions: vec![CommitCondition::Tail {
+                            path: path.clone(),
+                            expected: 1,
+                        }],
+                        mutations: vec![CommitMutation::Append {
+                            path: path.clone(),
+                            records: vec![Bytes::from_static(b"rollback")],
+                        }],
+                        idempotency_key: key(b"rollback-commit")?,
+                    })
+                    .await?;
+                assert!(matches!(outcome, CommitOutcome::Committed(_)));
+                clock.0.store(time, Ordering::SeqCst);
+            }
             stream
                 .append(AppendRequest {
                     path: path.clone(),
