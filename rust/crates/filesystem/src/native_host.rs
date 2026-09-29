@@ -1285,6 +1285,42 @@ impl HostRoot {
         self.open_file_for(path, FileReads::Cursor)
     }
 
+    /// Opens `path` for reading so that it gives way to whoever renames or
+    /// deletes it: see [`YieldingFile`].
+    #[cfg(windows)]
+    pub fn open_file_yielding(&self, path: &Path) -> io::Result<YieldingFile> {
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_OPEN_REQUIRING_OPLOCK,
+            NTCREATEFILE_CREATE_OPTIONS,
+        };
+        use windows::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+
+        let opened = |options| {
+            self.open_by_name(
+                path,
+                FILE_GENERIC_READ,
+                FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | options,
+            )
+        };
+        // Opened and granted its oplock in one step, so no rename meets the
+        // handle before it can give way; where an oplock another holds
+        // refuses that, opened plainly and granted one after.
+        let file = match opened(FILE_OPEN_REQUIRING_OPLOCK) {
+            Err(error) if error.raw_os_error() == Some(CANNOT_BREAK_OPLOCK) => {
+                opened(NTCREATEFILE_CREATE_OPTIONS(0))?
+            }
+            opened => opened?,
+        };
+        match file {
+            Some(file) => YieldingFile::new(file.into_std()),
+            // The root itself, or a name only the held walk resolves: read as
+            // it opens, without giving way.
+            None => Ok(YieldingFile::plain(
+                self.open_file_for(path, FileReads::Cursor)?.into_std(),
+            )),
+        }
+    }
+
     /// Opens `path` for positional reads only, as [`Self::open_file`] does
     /// otherwise. On Windows the handle is overlapped: it has no cursor, and
     /// the native runtime serves its positional I/O in place on a thread
@@ -3100,6 +3136,283 @@ fn clone_windows_file(
     }
     // Durability belongs to the enclosing SDK operation, not each copied file.
     Ok(())
+}
+
+/// `ERROR_CANNOT_BREAK_OPLOCK`: an open requiring an oplock met one it
+/// would have to break.
+#[cfg(windows)]
+const CANNOT_BREAK_OPLOCK: i32 = 802;
+
+/// Why a read of a [`YieldingFile`] failed: its handle gave way to a rename
+/// or delete of the file, so what it named is gone or replaced.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct Yielded;
+
+#[cfg(windows)]
+impl std::fmt::Display for Yielded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the file gave way to a rename or delete")
+    }
+}
+
+#[cfg(windows)]
+impl std::error::Error for Yielded {}
+
+/// A file held for reading that gives way to whoever renames or deletes it.
+///
+/// Windows refuses to replace a file by rename, as editors and `git` save,
+/// while any handle to it is open, however shared. So the file holds a
+/// read-handle oplock: a rename or delete breaks it and waits, the handle
+/// closes at once, and the rename proceeds; every read after fails with
+/// [`Yielded`]. Where no oplock is granted it reads as a plain handle.
+#[cfg(windows)]
+pub struct YieldingFile {
+    held: std::sync::Arc<YieldingHeld>,
+    /// The thread-pool wait that closes the handle once the oplock breaks.
+    wait: Option<windows::Win32::Foundation::HANDLE>,
+}
+
+#[cfg(windows)]
+struct YieldingHeld {
+    file: std::sync::RwLock<Option<File>>,
+    /// The oplock request, alive until the kernel completes it; null for a
+    /// plain handle.
+    request: *mut OplockRequest,
+}
+
+// SAFETY: `request` is written only by the kernel while the request is
+// pending, and freed once, after it completes, by the sole owner.
+#[cfg(windows)]
+unsafe impl Send for YieldingHeld {}
+// SAFETY: as for `Send`; the file is behind a lock.
+#[cfg(windows)]
+unsafe impl Sync for YieldingHeld {}
+
+// SAFETY: the wait handle is only unregistered, once, by the owner.
+#[cfg(windows)]
+unsafe impl Send for YieldingFile {}
+// SAFETY: shared access touches only the locked file.
+#[cfg(windows)]
+unsafe impl Sync for YieldingFile {}
+
+#[cfg(windows)]
+#[repr(C)]
+struct OplockRequest {
+    overlapped: windows::Win32::System::IO::OVERLAPPED,
+    input: windows::Win32::System::Ioctl::REQUEST_OPLOCK_INPUT_BUFFER,
+    output: windows::Win32::System::Ioctl::REQUEST_OPLOCK_OUTPUT_BUFFER,
+}
+
+#[cfg(windows)]
+impl YieldingFile {
+    /// Holds `file`, an overlapped handle, under a read-handle oplock.
+    #[allow(unsafe_code)]
+    fn new(file: File) -> io::Result<Self> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows::Win32::Foundation::{ERROR_IO_PENDING, HANDLE};
+        use windows::Win32::System::IO::DeviceIoControl;
+        use windows::Win32::System::Ioctl::{
+            FSCTL_REQUEST_OPLOCK, OPLOCK_LEVEL_CACHE_HANDLE, OPLOCK_LEVEL_CACHE_READ,
+            REQUEST_OPLOCK_CURRENT_VERSION, REQUEST_OPLOCK_INPUT_BUFFER,
+            REQUEST_OPLOCK_INPUT_FLAG_REQUEST, REQUEST_OPLOCK_OUTPUT_BUFFER,
+        };
+        use windows::Win32::System::Threading::{
+            CreateEventW, INFINITE, RegisterWaitForSingleObject, WT_EXECUTEONLYONCE,
+        };
+
+        // SAFETY: no pointers are passed.
+        let event = unsafe { CreateEventW(None, true, false, None) }.map_err(io::Error::other)?;
+        let request = Box::into_raw(Box::new(OplockRequest {
+            overlapped: windows::Win32::System::IO::OVERLAPPED {
+                hEvent: event,
+                ..Default::default()
+            },
+            input: REQUEST_OPLOCK_INPUT_BUFFER {
+                StructureVersion: u16::try_from(REQUEST_OPLOCK_CURRENT_VERSION).unwrap_or(u16::MAX),
+                StructureLength: u16::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>())
+                    .unwrap_or(u16::MAX),
+                RequestedOplockLevel: OPLOCK_LEVEL_CACHE_READ | OPLOCK_LEVEL_CACHE_HANDLE,
+                Flags: REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
+            },
+            output: REQUEST_OPLOCK_OUTPUT_BUFFER::default(),
+        }));
+        let handle = HANDLE(file.as_raw_handle());
+        // SAFETY: `request` stays allocated, unmoved, until the request
+        // completes, which `Drop` waits for; the handle is live.
+        let requested = unsafe {
+            DeviceIoControl(
+                handle,
+                FSCTL_REQUEST_OPLOCK,
+                Some((&raw const (*request).input).cast()),
+                u32::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>()).unwrap_or(u32::MAX),
+                Some((&raw mut (*request).output).cast()),
+                u32::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>()).unwrap_or(u32::MAX),
+                None,
+                Some(&raw mut (*request).overlapped),
+            )
+        };
+        let mut yielding = Self {
+            held: std::sync::Arc::new(YieldingHeld {
+                file: std::sync::RwLock::new(Some(file)),
+                request,
+            }),
+            wait: None,
+        };
+        match requested {
+            // Granted: the request completes once the oplock breaks.
+            Err(error) if error.code() == ERROR_IO_PENDING.to_hresult() => {}
+            // Not granted, or broken already: it reads plainly.
+            _ => return Ok(yielding),
+        }
+        let mut wait = HANDLE::default();
+        // SAFETY: the context is the held state, which outlives the wait:
+        // `Drop` unregisters it, waiting for a running callback, before the
+        // state can go.
+        unsafe {
+            RegisterWaitForSingleObject(
+                &raw mut wait,
+                event,
+                Some(yield_on_break),
+                Some(std::sync::Arc::as_ptr(&yielding.held).cast()),
+                INFINITE,
+                WT_EXECUTEONLYONCE,
+            )
+        }
+        .map_err(io::Error::other)?;
+        yielding.wait = Some(wait);
+        Ok(yielding)
+    }
+
+    /// Holds `file` without an oplock: it reads, and never gives way.
+    fn plain(file: File) -> Self {
+        Self {
+            held: std::sync::Arc::new(YieldingHeld {
+                file: std::sync::RwLock::new(Some(file)),
+                request: std::ptr::null_mut(),
+            }),
+            wait: None,
+        }
+    }
+
+    /// Runs `operation` on the handle unless it gave way.
+    pub fn with<T>(&self, operation: impl FnOnce(&File) -> io::Result<T>) -> io::Result<T> {
+        let file = self
+            .held
+            .file
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match file.as_ref() {
+            Some(file) => operation(file),
+            None => Err(io::Error::other(Yielded)),
+        }
+    }
+
+    /// Reads at `offset` into `destination` through an overlapped request
+    /// of its own, which the oplock's completion never answers for.
+    #[allow(unsafe_code)]
+    pub fn read_at(&self, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows::Win32::Foundation::{CloseHandle, ERROR_HANDLE_EOF, ERROR_IO_PENDING, HANDLE};
+        use windows::Win32::Storage::FileSystem::ReadFile;
+        use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
+        use windows::Win32::System::Threading::CreateEventW;
+
+        self.with(|file| {
+            let handle = HANDLE(file.as_raw_handle());
+            // SAFETY: no pointers are passed.
+            let event =
+                unsafe { CreateEventW(None, true, false, None) }.map_err(io::Error::other)?;
+            let mut overlapped = OVERLAPPED {
+                hEvent: event,
+                ..Default::default()
+            };
+            let (low, high) = (offset & u64::from(u32::MAX), offset >> 32);
+            overlapped.Anonymous.Anonymous.Offset = u32::try_from(low).unwrap_or(u32::MAX);
+            overlapped.Anonymous.Anonymous.OffsetHigh = u32::try_from(high).unwrap_or(u32::MAX);
+            let length = destination.len().min(u32::MAX as usize);
+            let buffer = destination.get_mut(..length).unwrap_or_default();
+            let mut transferred = 0;
+            // SAFETY: the buffer and `overlapped` outlive the request, which
+            // is waited for before either goes.
+            let read = unsafe { ReadFile(handle, Some(buffer), None, Some(&raw mut overlapped)) }
+                .or_else(|error| {
+                    if error.code() == ERROR_IO_PENDING.to_hresult() {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                })
+                .and_then(|()| {
+                    // SAFETY: as above; waits on the request's own event.
+                    unsafe {
+                        GetOverlappedResult(
+                            handle,
+                            &raw const overlapped,
+                            &raw mut transferred,
+                            true,
+                        )
+                    }
+                });
+            // SAFETY: the request is complete; nothing waits on the event.
+            let _ = unsafe { CloseHandle(event) };
+            match read {
+                Ok(()) => Ok(transferred as usize),
+                Err(error) if error.code() == ERROR_HANDLE_EOF.to_hresult() => Ok(0),
+                Err(error) => Err(io::Error::from_raw_os_error(error.code().0 & 0xFFFF)),
+            }
+        })
+    }
+}
+
+/// Closes the handle whose oplock broke, which lets the rename or delete
+/// that broke it proceed.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+unsafe extern "system" fn yield_on_break(context: *mut std::ffi::c_void, _timed_out: bool) {
+    // SAFETY: the context is the held state, alive until this wait is
+    // unregistered, which waits for this callback.
+    let held = unsafe { &*context.cast::<YieldingHeld>() };
+    drop(
+        held.file
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take(),
+    );
+}
+
+#[cfg(windows)]
+impl Drop for YieldingFile {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows::Win32::System::Threading::{INFINITE, UnregisterWaitEx, WaitForSingleObject};
+
+        if let Some(wait) = self.wait.take() {
+            // SAFETY: blocks until a running callback returns; none runs
+            // after.
+            let _ = unsafe { UnregisterWaitEx(wait, Some(INVALID_HANDLE_VALUE)) };
+        }
+        // Closing the handle completes a request still pending.
+        drop(
+            self.held
+                .file
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        );
+        let request = self.held.request;
+        if !request.is_null() {
+            // SAFETY: the request completed, or completes as its handle
+            // closed; its event says when, and nothing writes it after.
+            unsafe {
+                let event = (*request).overlapped.hEvent;
+                WaitForSingleObject(event, INFINITE);
+                let _ = CloseHandle(event);
+                drop(Box::from_raw(request));
+            }
+        }
+    }
 }
 
 pub fn allocated_data_ranges(
