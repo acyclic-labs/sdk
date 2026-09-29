@@ -9,24 +9,22 @@
 
 use super::provider_stack;
 use super::{
-    ContentSink, DriverStartFailure, MountContentPin, MountFilesystem, MountLookup, MountNode,
-    MountNodeKind, MountPath, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver,
-    ViewOrigin, ViewStamp,
+    DriverStartFailure, MountContentPin, MountFilesystem, MountLookup, MountNode, MountNodeKind,
+    MountPath, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin,
+    ViewStamp,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::native_host::HostRoot;
-use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use windows::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
-    FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
 };
 use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_CALLBACK_DATA, PRJ_CALLBACKS, PRJ_DIR_ENTRY_BUFFER_HANDLE, PRJ_EXT_INFO_TYPE_SYMLINK,
@@ -42,11 +40,10 @@ use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFY_FILE_HANDLE_CLOSED_NO_MODIFICATION, PRJ_NOTIFY_FILE_OPENED,
     PRJ_NOTIFY_FILE_OVERWRITTEN, PRJ_NOTIFY_FILE_RENAMED, PRJ_NOTIFY_HARDLINK_CREATED,
     PRJ_NOTIFY_NEW_FILE_CREATED, PRJ_NOTIFY_PRE_RENAME, PRJ_NOTIFY_PRE_SET_HARDLINK,
-    PRJ_NOTIFY_TYPES, PRJ_PLACEHOLDER_INFO, PRJ_PLACEHOLDER_VERSION_INFO,
-    PRJ_STARTVIRTUALIZING_OPTIONS, PRJ_UPDATE_ALLOW_READ_ONLY, PRJ_UPDATE_ALLOW_TOMBSTONE,
-    PRJ_UPDATE_TYPES, PrjAllocateAlignedBuffer, PrjDeleteFile, PrjFileNameCompare,
-    PrjFreeAlignedBuffer, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
-    PrjUpdateFileIfNeeded, PrjWriteFileData, PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
+    PRJ_NOTIFY_TYPES, PRJ_PLACEHOLDER_INFO, PRJ_STARTVIRTUALIZING_OPTIONS,
+    PRJ_UPDATE_ALLOW_READ_ONLY, PRJ_UPDATE_ALLOW_TOMBSTONE, PRJ_UPDATE_TYPES, PrjDeleteFile,
+    PrjFileNameCompare, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
+    PrjWritePlaceholderInfo, PrjWritePlaceholderInfo2,
 };
 use windows::core::{GUID, HRESULT, HSTRING, PCWSTR};
 
@@ -59,7 +56,6 @@ const HR_DIRECTORY: HRESULT = HRESULT(0x8007_010b_u32.cast_signed());
 const HR_NOT_SAME_DEVICE: HRESULT = HRESULT(0x8007_0011_u32.cast_signed());
 const HR_INVALID_DATA: HRESULT = HRESULT(0x8007_000d_u32.cast_signed());
 const HR_NOT_SUPPORTED: HRESULT = HRESULT(0x8007_0032_u32.cast_signed());
-const HR_OUT_OF_MEMORY: HRESULT = HRESULT(0x8007_000e_u32.cast_signed());
 const HR_UNEXPECTED: HRESULT = HRESULT(0x8000_ffff_u32.cast_signed());
 const HR_FILE_INVALID: HRESULT = HRESULT(0x8007_03ee_u32.cast_signed());
 const HR_IO_DEVICE: HRESULT = HRESULT(0x8007_045d_u32.cast_signed());
@@ -85,13 +81,10 @@ const FILE_NOTIFICATIONS: PRJ_NOTIFY_TYPES = PRJ_NOTIFY_TYPES(
         | PRJ_NOTIFY_HARDLINK_CREATED.0,
 );
 const NOTIFICATION_ROOT: [u16; 1] = [0];
-/// Largest hydration unit. A multiple of every sector size, so each chunk
-/// but the last keeps `PrjWriteFileData` aligned; bounds peak memory.
-const HYDRATION_CHUNK_BYTES: u32 = 1 << 20;
+/// Largest read from the source while writing a file; bounds peak memory.
+const WRITE_CHUNK_BYTES: u32 = 1 << 20;
 /// Bounds the provider's memo of read-only close bindings.
 const MAXIMUM_CACHED_BINDINGS: usize = 16_384;
-/// Marks a placeholder whose `ContentID` carries a [`MountContentPin`].
-const CONTENT_PIN_PROVIDER: &[u8; 16] = b"acyclic-fs-pin-1";
 
 /// One entry of a source listing, as this provider writes it.
 struct ProjectedEntry {
@@ -99,10 +92,9 @@ struct ProjectedEntry {
     name: Vec<u16>,
     /// The entry's exact path component.
     component: Vec<u8>,
-    /// What the placeholder is written from.
-    facts: PlaceholderFacts,
-    /// The basic information, and with the pin exactly the placeholder
-    /// written for this entry.
+    /// What the entry is written from.
+    facts: EntryFacts,
+    /// The basic information written for this entry.
     info: PRJ_FILE_BASIC_INFO,
     symlink_target: Option<bytes::Bytes>,
     /// Whether a link names a directory: a Windows link says so when made.
@@ -118,7 +110,7 @@ struct Runtime {
     projection: Arc<Mutex<ProjectionCache>>,
     /// Everything written into the projection, kept current as the source
     /// changes.
-    placeholders: Arc<Placeholders>,
+    projector: Arc<Projector>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
     /// Held for a file while one handle's metadata edits are read from the
     /// source and written back. `ProjFS` names each handle apart, so handles
@@ -435,9 +427,9 @@ enum Owned {
     /// A symbolic link to the target with this digest: a link placeholder
     /// turns full once read, and `ReFS` takes only ordinary links.
     Link(u64),
-    /// An ordinary file the projection made of a placeholder, as it left it.
-    /// `ProjFS` drops a time set through a writable handle to a placeholder
-    /// it still manages, so a file anyone opens is never one.
+    /// An ordinary file the projection wrote, as it left it. `ProjFS` drops
+    /// a time set through a writable handle to a placeholder it manages, so
+    /// no file is one.
     File(HostWindowsMetadata),
 }
 
@@ -446,32 +438,36 @@ enum Owned {
 enum Placed {
     /// Nothing: something is there already, or its directory is gone.
     Nothing,
-    /// A placeholder, or an ordinary directory.
-    Placeholder,
+    /// Written with nothing the projection owns in it: a link placeholder,
+    /// which `ProjFS` manages, or an ordinary directory.
+    Unowned,
     /// What `ProjFS` does not manage for the projection.
     Owned(Owned),
+    /// Nothing yet: the source changed while its content was read. Its
+    /// directory is listed again.
+    Retry,
 }
 
 impl Placed {
     const fn owned(self) -> Option<Owned> {
         match self {
             Self::Owned(owned) => Some(owned),
-            Self::Nothing | Self::Placeholder => None,
+            Self::Nothing | Self::Unowned | Self::Retry => None,
         }
     }
 }
 
-/// What one placeholder was written from: the node, its metadata, and the
-/// content its hydration returns.
+/// What one path was written from: the node, its metadata, and the content
+/// its file holds.
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct PlaceholderFacts {
+struct EntryFacts {
     lookup: MountLookup,
     pin: Option<MountContentPin>,
 }
 
-impl PlaceholderFacts {
-    /// Whether a placeholder written from `self` is also the one `current`
-    /// would write. Access times move with every read and are not written.
+impl EntryFacts {
+    /// Whether what was written from `self` is also what `current` would
+    /// write. Access times move with every read and are not written.
     fn describe(&self, current: &Self) -> bool {
         let unaccessed = |facts: &Self| {
             let mut lookup = facts.lookup;
@@ -504,21 +500,21 @@ impl ProjectionCache {
     }
 }
 
-/// One placeholder `ProjFS` keeps on disk, as a source read wrote it.
+/// What the projection wrote at one path, as a source read wrote it.
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct WrittenPlaceholder {
+struct WrittenEntry {
     file_id: FileId,
-    /// What is held here that `ProjFS` does not manage; `None` for a
-    /// placeholder it does.
+    /// What is held here that `ProjFS` does not manage; `None` for what it
+    /// does.
     owned: Option<Owned>,
     /// What it was written from; `None` for one known only to be gone.
-    facts: Option<PlaceholderFacts>,
+    facts: Option<EntryFacts>,
     /// The view it was read in; `None` when the source cannot version it
     /// or was moving, which no later change is needed to supersede.
     basis: Option<ReadBasis>,
 }
 
-impl WrittenPlaceholder {
+impl WrittenEntry {
     /// Whether a change since it was written may have made it wrong.
     fn superseded(&self, source: &dyn MountFilesystem, path: &MountPath) -> bool {
         self.basis
@@ -540,7 +536,7 @@ impl WrittenPlaceholder {
 #[derive(Default)]
 struct Carried {
     basis: Option<ReadBasis>,
-    files: Vec<(MountPath, PlaceholderFacts)>,
+    files: Vec<(MountPath, EntryFacts)>,
 }
 
 impl Carried {
@@ -559,7 +555,7 @@ impl Carried {
                 let moved = rebased(path, from, to)?;
                 let (lookup, pin) = source.lookup_pinned(&moved).ok().flatten()?;
                 (lookup.node.kind != MountNodeKind::Directory)
-                    .then_some((moved, PlaceholderFacts { lookup, pin }))
+                    .then_some((moved, EntryFacts { lookup, pin }))
             })
             .collect();
         Self { basis, files }
@@ -577,7 +573,7 @@ struct Materialized {
     names: HashMap<Vec<u8>, bool>,
 }
 
-/// Most threads that write one tree of placeholders at once.
+/// Most threads that write one tree at once.
 const MATERIALIZE_WORKERS: usize = 8;
 
 /// A [`Projection`] several workers write through at once.
@@ -665,64 +661,62 @@ struct Projection<'a> {
     /// Host edits not yet captured: a file holding one is the user's until
     /// the source has it.
     captures: &'a Mutex<PostOperationFailures>,
+    /// Whether the mount is still starting, which nothing can read yet: a
+    /// file is written at its name directly, with no staged name first.
+    starting: bool,
 }
 
 /// The projection this provider writes, and the worker that keeps it
 /// current.
 ///
-/// `ProjFS` never lets a directory it projected be renamed, so nothing is
-/// projected on demand: every directory is created as an ordinary directory,
-/// and a placeholder is written for every file in it before anything can
-/// list it (`ProjFS` asks the provider nothing about an ordinary directory).
-/// A placeholder's content is still read only when it is first opened.
+/// `ProjFS` never lets a directory it projected be renamed, and drops a
+/// time set through a writable handle to a placeholder it manages, so
+/// nothing is projected on demand: every directory is created as an
+/// ordinary directory and every file written as an ordinary file before
+/// anything can list it (`ProjFS` asks the provider nothing about an
+/// ordinary directory). Only links are placeholders.
 ///
-/// `ProjFS` answers a placeholder from disk, attributes and all, until its
-/// provider updates or deletes it. So every placeholder is kept with the
-/// basis it was written in, and once a change supersedes it the worker
-/// writes it again from the source, or deletes it where the source names
-/// nothing. Every directory is kept with the names it holds, and once its
-/// source listing changes the worker reconciles three ways: a name the
-/// source gained is written unless something is there already, and a
-/// directory the source lost is emptied of the placeholders written into it
-/// and removed if nothing else is left. What the user creates, changes or
-/// deletes through the mount is authored state and stays: `ProjFS` refuses
-/// to update or delete a placeholder once it is modified.
+/// Every path written is kept with the basis it was written in, and once a
+/// change supersedes it the worker writes it again from the source, or
+/// removes it where the source names nothing. Every directory is kept with
+/// the names it holds, and once its source listing changes the worker
+/// reconciles three ways: a name the source gained is written unless
+/// something is there already, and a directory the source lost is emptied
+/// of what was written into it and removed if nothing else is left. What
+/// the user creates, changes or deletes through the mount is authored state
+/// and stays: a file is replaced or removed only while it is exactly as
+/// written.
 ///
-/// A superseded placeholder is pending from the moment the worker finds it
-/// until it is replaced, released, or fails, including while the worker is
+/// A superseded path is pending from the moment the worker finds it until
+/// it is replaced, released, or fails, including while the worker is
 /// replacing it, so revalidation never returns while one still describes a
 /// superseded source. One another process holds open cannot be replaced
 /// until the handle closes: it stays pending, retried as handles close and
-/// every [`PLACEHOLDER_RETRY`], and revalidation waits for it at most
-/// [`PLACEHOLDER_SETTLE_LIMIT`] once every change has been served, then
-/// fails naming it.
-struct Placeholders {
-    state: Mutex<PlaceholderState>,
+/// every [`HELD_RETRY`], and revalidation waits for it at most
+/// [`HELD_SETTLE_LIMIT`] once every change has been served, then fails
+/// naming it.
+struct Projector {
+    state: Mutex<ProjectorState>,
     /// Held by whatever writes directories into the projection, so a
     /// listing is written and recorded as one step.
     tree: Mutex<()>,
-    /// Held exclusively while a rename moves a file in the source and in
-    /// [`PlaceholderState::moves`], and shared by each content read, which
-    /// so finds a file at its old path or where `moves` says it went.
-    renames: RwLock<()>,
-    /// Held for a path while what is written there changes: a placeholder
-    /// made an ordinary file, or what was written replaced or removed.
+    /// Held for a path while what is written there is replaced or removed.
     paths: KeyedLocks<MountPath>,
     changed: Condvar,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
-/// How often a placeholder held open is tried again.
-const PLACEHOLDER_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
-/// How long revalidation waits for placeholders held open, once every
+/// How often a path held open is tried again.
+const HELD_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
+/// How long revalidation waits for paths held open, once every
 /// change has been served.
-const PLACEHOLDER_SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+const HELD_SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Default)]
-struct PlaceholderState {
-    written: HashMap<MountPath, WrittenPlaceholder>,
-    /// Superseded placeholders not yet replaced, released, or failed.
-    pending: HashMap<MountPath, WrittenPlaceholder>,
+struct ProjectorState {
+    written: HashMap<MountPath, WrittenEntry>,
+    /// Superseded paths not yet replaced, released, or failed.
+    pending: HashMap<MountPath, WrittenEntry>,
     /// Every directory created in the projection.
     directories: HashMap<MountPath, Materialized>,
     /// Directories to list again whatever their basis says.
@@ -736,33 +730,27 @@ struct PlaceholderState {
     /// Whether the worker's pass in progress took stale directories it has
     /// not listed yet.
     relisting: bool,
-    /// Where each path renames through the mount moved is now, by the path
-    /// it had: `ProjFS` asks for a placeholder's content by the path it was
-    /// written at, also after a rename of a directory above it moved it.
-    /// One entry per path renamed away, composed with later renames, so
-    /// moving a directory back and forth leaves one.
-    moves: HashMap<MountPath, MountPath>,
-    /// Whether a handle closed since pending placeholders were last tried.
+    /// Whether a handle closed since pending paths were last tried.
     retry: bool,
     /// Latest change around the mount the source reported.
     notified: Option<ViewStamp>,
-    /// Latest change every placeholder was checked against.
+    /// Latest change everything written was checked against.
     processed: Option<ViewStamp>,
-    /// First placeholder the worker could not replace since the last
+    /// First path the worker could not replace since the last
     /// revalidation.
     failure: Option<String>,
     stopping: bool,
 }
 
-impl PlaceholderState {
-    /// Records what one round of replacing pending placeholders came to.
+impl ProjectorState {
+    /// Records what one round of replacing pending paths came to.
     /// Records what replacing `attempted` at `path` came to: settled, and
     /// `current` written in its place.
     fn record_attempt(
         &mut self,
         path: &MountPath,
-        attempted: &WrittenPlaceholder,
-        current: Option<WrittenPlaceholder>,
+        attempted: &WrittenEntry,
+        current: Option<WrittenEntry>,
     ) {
         // Superseded again meanwhile, it stays pending as that.
         if self.pending.get(path) == Some(attempted) {
@@ -783,7 +771,7 @@ impl PlaceholderState {
     }
 }
 
-impl ViewObserver for Placeholders {
+impl ViewObserver for Projector {
     fn view_changed(&self, position: ViewStamp, _origin: ViewOrigin) {
         let mut state = lock_recover(&self.state);
         state.notified = state.notified.max(Some(position));
@@ -791,11 +779,11 @@ impl ViewObserver for Placeholders {
     }
 }
 
-/// What replacing one superseded placeholder came to.
+/// What replacing one superseded path came to.
 enum Replaced {
     /// Written again from the source.
-    Rewritten(Box<WrittenPlaceholder>),
-    /// Deleted, or no longer a placeholder the provider owns.
+    Rewritten(Box<WrittenEntry>),
+    /// Deleted, or no longer the projection's.
     Released,
     /// Open elsewhere; pending until it can be replaced.
     Busy,
@@ -810,29 +798,28 @@ fn rebased(path: &MountPath, from: &MountPath, to: &MountPath) -> Option<MountPa
     })
 }
 
-impl Placeholders {
+impl Projector {
     fn new() -> Self {
         Self {
-            state: Mutex::new(PlaceholderState::default()),
+            state: Mutex::new(ProjectorState::default()),
             tree: Mutex::new(()),
-            renames: RwLock::new(()),
             paths: KeyedLocks::default(),
             changed: Condvar::new(),
             worker: Mutex::new(None),
         }
     }
 
-    /// Keeps the placeholder written at `path` in view `basis`.
+    /// Keeps what was written at `path` in view `basis`.
     fn written(
         &self,
         path: MountPath,
-        facts: PlaceholderFacts,
+        facts: EntryFacts,
         owned: Option<Owned>,
         basis: Option<ReadBasis>,
     ) {
         lock_recover(&self.state).written.insert(
             path,
-            WrittenPlaceholder {
+            WrittenEntry {
                 file_id: facts.lookup.node.file_id,
                 owned,
                 facts: Some(facts),
@@ -856,8 +843,8 @@ impl Placeholders {
         if directories.is_empty() {
             return Ok(());
         }
-        // Each placeholder is one kernel call, independent of the others:
-        // several workers write a tree in a fraction of the time one does.
+        // Each entry is written independently of the others: several
+        // workers write a tree in a fraction of the time one does.
         let workers = std::thread::available_parallelism()
             .map_or(1, usize::from)
             .min(MATERIALIZE_WORKERS);
@@ -904,6 +891,8 @@ impl Placeholders {
                     },
                 );
                 state.stale.insert(directory);
+                // Written while the mount starts, off the worker's thread.
+                self.changed.notify_all();
                 return Ok(Vec::new());
             }
             Err(error) => return Err(format!("listing {directory:?}: {error}")),
@@ -911,10 +900,16 @@ impl Placeholders {
         let mut names = HashMap::with_capacity(entries.len());
         let mut found = Vec::new();
         let mut written = Vec::with_capacity(entries.len());
+        let mut retry = false;
         for entry in &entries {
             let child = directory.child(entry.component.clone());
             let is_directory = entry.info.IsDirectory;
             let placed = write_entry(projection, &child, entry)?;
+            if placed == Placed::Retry {
+                // Left unknown, so listing again writes it.
+                retry = true;
+                continue;
+            }
             if is_directory {
                 found.push(child);
             } else if placed != Placed::Nothing {
@@ -923,10 +918,14 @@ impl Placeholders {
             names.insert(entry.component.clone(), is_directory);
         }
         let mut state = lock_recover(&self.state);
+        if retry {
+            state.stale.insert(directory.clone());
+            self.changed.notify_all();
+        }
         for (path, facts, owned) in written {
             state.written.insert(
                 path,
-                WrittenPlaceholder {
+                WrittenEntry {
                     file_id: facts.lookup.node.file_id,
                     owned,
                     facts: Some(facts),
@@ -941,7 +940,7 @@ impl Placeholders {
     }
 
     /// Lists `directory` again and reconciles what it holds with the names
-    /// it was last written with (see [`Placeholders`]). A file the source
+    /// it was last written with (see [`Projector`]). A file the source
     /// lost is replaced, so deleted unless modified.
     fn reconcile(&self, projection: Projection<'_>, directory: &MountPath) -> Result<(), String> {
         let _tree = lock_recover(&self.tree);
@@ -972,29 +971,26 @@ impl Placeholders {
             let is_directory = entry.info.IsDirectory;
             let child = directory.child(entry.component.clone());
             names.insert(entry.component.clone(), is_directory);
-            match known.get(&entry.component) {
+            // A name nothing was listed at can still hold what is pending
+            // there: that is released like any file written before.
+            let written_before = known.get(&entry.component).copied().or_else(|| {
+                lock_recover(&self.state)
+                    .pending
+                    .contains_key(&child)
+                    .then_some(false)
+            });
+            match written_before.as_ref() {
                 Some(&was_directory) if was_directory == is_directory => continue,
                 // Now another kind: what was written for the old one goes.
                 Some(&true) => self.remove_tree(projection, &child),
                 Some(&false) => {
-                    let (owned, released) = self.paths.with(&child, || {
-                        // Written, or superseded and pending since.
-                        let owned = {
-                            let state = lock_recover(&self.state);
-                            state
-                                .written
-                                .get(&child)
-                                .or_else(|| state.pending.get(&child))
-                                .and_then(|written| written.owned)
-                        };
-                        (owned, release(projection, &child, owned))
-                    });
+                    let (owned, released) = self.release_recorded(projection, &child);
                     if released? == Release::Busy {
                         // Tried again as pending, at the retry interval; this
                         // listing stays unrecorded, and is listed again once
                         // the old entry is gone.
                         let mut state = lock_recover(&self.state);
-                        let written = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
+                        let written = state.written.remove(&child).unwrap_or(WrittenEntry {
                             file_id: FileId::from_bytes([0; 16]),
                             owned,
                             facts: None,
@@ -1008,6 +1004,12 @@ impl Placeholders {
                 None => {}
             }
             let placed = write_entry(projection, &child, entry)?;
+            if placed == Placed::Retry {
+                // Left unknown, so listing again writes it.
+                names.remove(entry.component.as_slice());
+                lock_recover(&self.state).stale.insert(directory.clone());
+                continue;
+            }
             if is_directory {
                 created.push(child);
             } else if placed != Placed::Nothing {
@@ -1022,12 +1024,12 @@ impl Placeholders {
             if *was_directory {
                 self.remove_tree(projection, &child);
             } else {
-                // Replaced like any superseded placeholder: deleted unless
+                // Replaced like any superseded path: deleted unless
                 // modified, and tried again while held open.
                 let mut state = lock_recover(&self.state);
                 // Already pending, it is replaced as what it was written as.
                 if !state.pending.contains_key(&child) {
-                    let placeholder = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
+                    let placeholder = state.written.remove(&child).unwrap_or(WrittenEntry {
                         file_id: FileId::from_bytes([0; 16]),
                         owned: None,
                         facts: None,
@@ -1041,6 +1043,35 @@ impl Placeholders {
             .directories
             .insert(directory.clone(), Materialized { basis, names });
         self.materialize_locked(projection, created)
+    }
+
+    /// Releases what was written at `path`, or superseded and pending since,
+    /// under the path's lock. Once released, nothing of it is recorded: a
+    /// pending record left behind would release whatever is written there
+    /// next.
+    fn release_recorded(
+        &self,
+        projection: Projection<'_>,
+        path: &MountPath,
+    ) -> (Option<Owned>, Result<Release, String>) {
+        self.paths.with(path, || {
+            let owned = {
+                let state = lock_recover(&self.state);
+                state
+                    .written
+                    .get(path)
+                    .or_else(|| state.pending.get(path))
+                    .and_then(|written| written.owned)
+            };
+            let released = release(projection, path, owned);
+            if released == Ok(Release::Done) {
+                let mut state = lock_recover(&self.state);
+                state.written.remove(path);
+                state.pending.remove(path);
+                state.relist.remove(path);
+            }
+            (owned, released)
+        })
     }
 
     /// Deletes what was written beneath `directory` that `ProjFS` still
@@ -1067,23 +1098,12 @@ impl Placeholders {
             for (name, is_directory) in materialized.names {
                 if !is_directory {
                     let child = path.child(name);
-                    // What is held there now, a conversion included.
-                    let (owned, released) = self.paths.with(&child, || {
-                        let owned = {
-                            let state = lock_recover(&self.state);
-                            state
-                                .written
-                                .get(&child)
-                                .or_else(|| state.pending.get(&child))
-                                .and_then(|written| written.owned)
-                        };
-                        (owned, release(projection, &child, owned))
-                    });
+                    let (owned, released) = self.release_recorded(projection, &child);
                     if released == Ok(Release::Busy) {
                         // Held open: tried again as pending.
                         held = true;
                         let mut state = lock_recover(&self.state);
-                        let written = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
+                        let written = state.written.remove(&child).unwrap_or(WrittenEntry {
                             file_id: FileId::from_bytes([0; 16]),
                             owned,
                             facts: None,
@@ -1135,56 +1155,6 @@ impl Placeholders {
         }
     }
 
-    /// Makes the placeholder a handle just opened at `path` an ordinary file
-    /// before the handle is used, and records it as the projection's own.
-    /// One the opener shares no write access with is made one at a later
-    /// open: nothing can write it meanwhile.
-    fn convert_opened(
-        &self,
-        projection_root: &std::path::Path,
-        path: &MountPath,
-    ) -> Result<(), MountSourceError> {
-        // Only a placeholder the projection wrote and still holds as one.
-        let placeholder = |state: &PlaceholderState| {
-            state
-                .written
-                .get(path)
-                .or_else(|| state.pending.get(path))
-                .is_some_and(|written| written.owned.is_none())
-        };
-        if !placeholder(&lock_recover(&self.state)) {
-            return Ok(());
-        }
-        let host = host_relative_path(path)?;
-        self.paths
-            .with(path, || match convert_to_full(projection_root, &host) {
-                Ok(Some(state)) => {
-                    let mut state_lock = lock_recover(&self.state);
-                    let recorded = &mut *state_lock;
-                    if let Some(written) = recorded.written.get_mut(path) {
-                        written.owned = Some(Owned::File(state));
-                    }
-                    if let Some(pending) = recorded.pending.get_mut(path) {
-                        pending.owned = Some(Owned::File(state));
-                    }
-                    Ok(())
-                }
-                Ok(None) => Ok(()),
-                Err(error)
-                    if error.raw_os_error() == Some(SHARING_VIOLATION)
-                        || matches!(
-                            error.kind(),
-                            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-                        ) =>
-                {
-                    Ok(())
-                }
-                Err(error) => Err(MountSourceError::Engine(format!(
-                    "making {path:?} an ordinary file: {error}"
-                ))),
-            })
-    }
-
     /// The files written at or beneath `from` that still hold what the
     /// source does: a rename of `from` carries them unchanged.
     fn current_beneath(&self, source: &dyn MountFilesystem, from: &MountPath) -> Vec<MountPath> {
@@ -1216,36 +1186,17 @@ impl Placeholders {
                 state.directories.insert(new, materialized);
             }
         }
-        for placeholders in [&mut state.written, &mut state.pending] {
-            let moved = placeholders
+        for projector in [&mut state.written, &mut state.pending] {
+            let moved = projector
                 .keys()
                 .filter_map(|path| rebased(path, from, to).map(|moved| (path.clone(), moved)))
                 .collect::<Vec<_>>();
             for (old, new) in moved {
-                if let Some(written) = placeholders.remove(&old) {
-                    placeholders.insert(new, written);
+                if let Some(written) = projector.remove(&old) {
+                    projector.insert(new, written);
                 }
             }
         }
-        // Paths an earlier rename moved to within `from` had other names
-        // before: those follow this rename too.
-        let earlier = state
-            .moves
-            .iter()
-            .filter_map(|(origin, current)| rebased(from, current, origin))
-            .filter(|origin| origin != from)
-            .collect::<Vec<_>>();
-        // What earlier renames moved beneath `from` moves on; a path back
-        // where it started needs no entry.
-        for current in state.moves.values_mut() {
-            if let Some(moved) = rebased(current, from, to) {
-                *current = moved;
-            }
-        }
-        for origin in earlier.into_iter().chain(std::iter::once(from.clone())) {
-            state.moves.entry(origin).or_insert_with(|| to.clone());
-        }
-        state.moves.retain(|origin, current| origin != current);
         let is_directory = state.directories.contains_key(to);
         if let (Some(parent), Some(name)) = (from.parent(), from.components().last())
             && let Some(materialized) = state.directories.get_mut(&parent)
@@ -1262,7 +1213,7 @@ impl Placeholders {
             let pending = state.pending.remove(&path);
             state.written.insert(
                 path,
-                WrittenPlaceholder {
+                WrittenEntry {
                     file_id: facts.lookup.node.file_id,
                     owned: written.or(pending).and_then(|written| written.owned),
                     facts: Some(facts),
@@ -1270,20 +1221,6 @@ impl Placeholders {
                 },
             );
         }
-    }
-
-    /// Where the placeholder written at `path` is now, following every
-    /// rename through the mount since.
-    fn moved_path(&self, path: &MountPath) -> MountPath {
-        // The deepest path renamed away that holds `path` says where it is.
-        let state = lock_recover(&self.state);
-        state
-            .moves
-            .iter()
-            .filter(|(origin, _)| projfs_path_suffix(path, origin).is_some())
-            .max_by_key(|(origin, _)| origin.components().len())
-            .and_then(|(origin, current)| rebased(path, origin, current))
-            .unwrap_or_else(|| path.clone())
     }
 
     /// Has the worker list `path`'s directory again and write `path` anew
@@ -1320,24 +1257,25 @@ impl Placeholders {
         root: PathBuf,
         captures: Arc<Mutex<PostOperationFailures>>,
     ) -> Result<(), NativeMountError> {
-        let placeholders = Arc::clone(self);
+        let projector = Arc::clone(self);
         let observed = Arc::clone(&source);
         let context = SendContext(context);
         let worker = std::thread::Builder::new()
-            .name("acyclic-projfs-placeholders".to_owned())
+            .name("acyclic-projfs-projector".to_owned())
             .spawn(move || {
                 let context = context;
-                placeholders.run(Projection {
+                projector.run(Projection {
                     source: source.as_ref(),
                     context: context.0,
                     root: &root,
                     captures: &captures,
+                    starting: false,
                 });
             })
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
         *lock_recover(&self.worker) = Some(worker);
-        let placeholders = Arc::downgrade(self);
-        let observer: std::sync::Weak<dyn ViewObserver> = placeholders;
+        let projector = Arc::downgrade(self);
+        let observer: std::sync::Weak<dyn ViewObserver> = projector;
         observed.observe_view(observer);
         Ok(())
     }
@@ -1346,7 +1284,7 @@ impl Placeholders {
         let source = projection.source;
         let mut state = lock_recover(&self.state);
         loop {
-            // Waits for a change, or, while placeholders are pending, for a
+            // Waits for a change, or, while paths are pending, for a
             // handle to close or the retry interval, whichever comes first.
             loop {
                 if state.stopping {
@@ -1363,7 +1301,7 @@ impl Placeholders {
                 } else {
                     let (next, waited) = self
                         .changed
-                        .wait_timeout(state, PLACEHOLDER_RETRY)
+                        .wait_timeout(state, HELD_RETRY)
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     state = next;
                     if waited.timed_out() {
@@ -1423,7 +1361,7 @@ impl Placeholders {
         }
     }
 
-    /// Replaces every pending placeholder, each under its path's lock with
+    /// Replaces every pending path, each under its path's lock with
     /// the record current there, and records the outcome.
     fn replace_pending(&self, projection: Projection<'_>, failure: &mut Option<String>) {
         // Attempted as a snapshot: each stays pending until its outcome is
@@ -1442,7 +1380,7 @@ impl Placeholders {
                 let Some(written) = lock_recover(&self.state).pending.get(&path).copied() else {
                     return Ok(());
                 };
-                let replaced = replace_placeholder(projection, &path, &written);
+                let replaced = replace_written(projection, &path, &written);
                 let mut state = lock_recover(&self.state);
                 match replaced {
                     Ok(Replaced::Rewritten(current)) => {
@@ -1466,14 +1404,10 @@ impl Placeholders {
         }
     }
 
-    /// Reads each placeholder only unconfirmed changes superseded again:
+    /// Reads each path only unconfirmed changes superseded again:
     /// one the source would still write as it is holds from now on, and
     /// any other is replaced.
-    fn confirm(
-        &self,
-        source: &dyn MountFilesystem,
-        unconfirmed: Vec<(MountPath, WrittenPlaceholder)>,
-    ) {
+    fn confirm(&self, source: &dyn MountFilesystem, unconfirmed: Vec<(MountPath, WrittenEntry)>) {
         for (path, written) in unconfirmed {
             let basis = ReadBasis::sample(source);
             let current = source.lookup_pinned(&path);
@@ -1482,13 +1416,13 @@ impl Placeholders {
                 Ok(Some((lookup, pin)))
                     if written
                         .facts
-                        .is_some_and(|facts| facts.describe(&PlaceholderFacts { lookup, pin })) =>
+                        .is_some_and(|facts| facts.describe(&EntryFacts { lookup, pin })) =>
                 {
                     // Written again meanwhile, from a later read.
                     state
                         .written
                         .entry(path)
-                        .or_insert(WrittenPlaceholder { basis, ..written });
+                        .or_insert(WrittenEntry { basis, ..written });
                 }
                 _ => {
                     state.pending.insert(path, written);
@@ -1497,7 +1431,7 @@ impl Placeholders {
         }
     }
 
-    /// Tries the placeholders held open again, as one of their handles
+    /// Tries the paths held open again, as one of their handles
     /// closed.
     fn retry(&self) {
         let mut state = lock_recover(&self.state);
@@ -1508,8 +1442,8 @@ impl Placeholders {
     }
 
     /// Waits until every change reported so far has been served and no
-    /// superseded placeholder or invalidated directory remains; fails,
-    /// naming one, when one is still held open [`PLACEHOLDER_SETTLE_LIMIT`]
+    /// superseded path or invalidated directory remains; fails,
+    /// naming one, when one is still held open [`HELD_SETTLE_LIMIT`]
     /// after every change was served.
     fn settle(&self) -> Result<(), NativeMountError> {
         let mut state = lock_recover(&self.state);
@@ -1529,8 +1463,8 @@ impl Placeholders {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 continue;
             }
-            let deadline = *deadline
-                .get_or_insert_with(|| std::time::Instant::now() + PLACEHOLDER_SETTLE_LIMIT);
+            let deadline =
+                *deadline.get_or_insert_with(|| std::time::Instant::now() + HELD_SETTLE_LIMIT);
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 let held = state.pending.keys().next().cloned();
@@ -1560,9 +1494,10 @@ impl Placeholders {
     }
 }
 
-/// Writes `entry` at `path`: an ordinary directory for a directory, a
-/// placeholder for anything else. Whatever is already there (the user's, or
-/// written before) stays, and is reported as not written.
+/// Writes `entry` at `path`: an ordinary directory for a directory, an
+/// ordinary file for a file, and a placeholder for a link. Whatever is
+/// already there (the user's, or written before) stays, and is reported as
+/// not written.
 fn write_entry(
     projection: Projection<'_>,
     path: &MountPath,
@@ -1571,7 +1506,7 @@ fn write_entry(
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
     if entry.info.IsDirectory {
         return match std::fs::create_dir(projection.root.join(&host)) {
-            Ok(()) => Ok(Placed::Placeholder),
+            Ok(()) => Ok(Placed::Unowned),
             Err(error)
                 if matches!(
                     error.kind(),
@@ -1585,8 +1520,10 @@ fn write_entry(
             Err(error) => Err(format!("creating directory {path:?}: {error}")),
         };
     }
-    let mut placeholder = pinned_placeholder(entry.info, entry.facts.pin)
-        .ok_or_else(|| format!("placeholder for {path:?} is unrepresentable"))?;
+    if entry.symlink_target.is_none() {
+        return write_ordinary(projection, path, &host, entry, None);
+    }
+    let mut placeholder = link_placeholder(entry.info);
     if entry.directory_link {
         placeholder.FileBasicInfo.IsDirectory = true;
         placeholder.FileBasicInfo.FileAttributes |= FILE_ATTRIBUTE_DIRECTORY.0;
@@ -1614,22 +1551,7 @@ fn write_entry(
         }
     };
     match result {
-        // Empty, it has nothing to read lazily: an ordinary file at once.
-        Ok(()) if symlink.is_none() && entry.info.FileSize == 0 => {
-            match convert_to_full(projection.root, &host) {
-                Ok(Some(state)) => Ok(Placed::Owned(Owned::File(state))),
-                Ok(None) => Ok(Placed::Placeholder),
-                // Opened meanwhile by one sharing no write access: made
-                // ordinary at a later open.
-                Err(error) if error.raw_os_error() == Some(SHARING_VIOLATION) => {
-                    Ok(Placed::Placeholder)
-                }
-                // Removed meanwhile: nothing of the projection's is there.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Placed::Nothing),
-                Err(error) => Err(format!("making {path:?} an ordinary file: {error}")),
-            }
-        }
-        Ok(()) => Ok(symlink.map_or(Placed::Placeholder, |(target, _)| {
+        Ok(()) => Ok(symlink.map_or(Placed::Unowned, |(target, _)| {
             Placed::Owned(Owned::Link(link_digest(target.iter().copied())))
         })),
         // Something is there already, or its directory is no directory:
@@ -1687,7 +1609,7 @@ fn write_link(
             // Something is there already, or its directory is gone.
             std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound => Ok(Placed::Nothing),
             _ => Err(format!(
-                "writing link {path:?}: {error} (this volume has no link placeholders, so \
+                "writing link {path:?}: {error} (this volume has no link projector, so \
                  projecting a link needs the right to create one: Developer Mode)"
             )),
         };
@@ -1708,14 +1630,14 @@ fn link_digest(target: impl IntoIterator<Item = u16>) -> u64 {
 }
 
 /// Deletes what the projection wrote at `path` unless the user made it
-/// their own: a placeholder `ProjFS` manages, or what it does not.
+/// their own: what `ProjFS` manages, or what it does not.
 fn release(
     projection: Projection<'_>,
     path: &MountPath,
     owned: Option<Owned>,
 ) -> Result<Release, String> {
     match owned {
-        None => delete_placeholder(projection, path),
+        None => delete_unowned(projection, path),
         Some(Owned::Link(digest)) => release_link(projection, path, digest),
         Some(Owned::File(state)) => release_file(projection, path, state),
     }
@@ -1828,19 +1750,12 @@ fn prj_delete(
 }
 
 /// The ordinary file `file` names as the projection compares it: its
-/// identity, size, attributes and times. `ProjFS` leaves its own marks on a
-/// file it managed until every handle opened meanwhile closes; those are
-/// not the file's.
+/// identity, size, attributes and times. The archive bit is not the file's
+/// own: the file system sets it at every change, the projection's
+/// included, and drops the normal bit as it does. An edit is told by what
+/// it changes, and by the capture it awaits.
 fn handle_state(file: &std::fs::File) -> std::io::Result<HostWindowsMetadata> {
     use std::os::windows::fs::MetadataExt as _;
-    use windows::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SPARSE_FILE,
-    };
-    // A placeholder is sparse on `ReFS` while `ProjFS` manages it.
-    const PROJFS_MARKS: u32 = FILE_ATTRIBUTE_REPARSE_POINT.0
-        | FILE_ATTRIBUTE_SPARSE_FILE.0
-        | FILE_ATTRIBUTE_RECALL_ON_OPEN.0
-        | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0;
 
     let metadata = file.metadata()?;
     let ticks = |value: u64| i64::try_from(value).map_err(std::io::Error::other);
@@ -1848,7 +1763,8 @@ fn handle_state(file: &std::fs::File) -> std::io::Result<HostWindowsMetadata> {
         identity: crate::NativeRootIdentity::from_file(file)?,
         links: None,
         size: metadata.file_size(),
-        attributes: metadata.file_attributes() & !PROJFS_MARKS,
+        attributes: metadata.file_attributes()
+            & !(FILE_ATTRIBUTE_ARCHIVE.0 | FILE_ATTRIBUTE_NORMAL.0),
         created: ticks(metadata.creation_time())?,
         modified: ticks(metadata.last_write_time())?,
     })
@@ -1892,92 +1808,285 @@ fn remove_vacated(projection: Projection<'_>, path: &MountPath) {
     }
 }
 
-/// Makes the placeholder at `root`/`host` an ordinary file with the same
-/// content, times and attributes, and returns it as left; `None` when it is
-/// no placeholder. One byte of the content is written back as it was, which
-/// `ProjFS` takes as the edit that ends its management of the file.
-fn convert_to_full(
-    root: &std::path::Path,
+/// Writes `entry`, a regular file, at `path` as an ordinary file: the
+/// content the listing named, its times and attributes, all under a staged
+/// name, then given its own name at once, so no reader sees it partly
+/// written. With `replacing`, it takes the place of the file the projection
+/// left there in that state, and only while it is still that and holds no
+/// edit the source has not captured; else what is there is the user's
+/// ([`Placed::Nothing`]) or is held open ([`Placed::Retry`]). `ProjFS` drops
+/// a time set through a writable handle to a placeholder it manages, so no
+/// file of the projection is one.
+fn write_ordinary(
+    projection: Projection<'_>,
+    path: &MountPath,
     host: &std::path::Path,
-) -> std::io::Result<Option<HostWindowsMetadata>> {
-    use std::io::{Read as _, Seek as _, Write as _};
-    use std::os::windows::fs::OpenOptionsExt as _;
+    entry: &ProjectedEntry,
+    replacing: Option<HostWindowsMetadata>,
+) -> Result<Placed, String> {
+    let failed = |error: std::io::Error| format!("writing {path:?}: {error}");
+    let (Some(parent), Some(name)) = (host.parent(), host.file_name()) else {
+        return Err(format!("{path:?} names no file"));
+    };
+    let target = projection.root.join(host);
+    // Named already: the user's, or what the source moved there.
+    if replacing.is_none() && std::fs::symlink_metadata(&target).is_ok() {
+        return Ok(Placed::Nothing);
+    }
+    let directory = match cap_std::fs::Dir::open_ambient_dir(
+        projection.root.join(parent),
+        cap_std::ambient_authority(),
+    ) {
+        Ok(directory) => directory,
+        // Its directory is gone, or no directory.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(Placed::Nothing);
+        }
+        Err(error) => return Err(failed(error)),
+    };
+    if projection.starting && replacing.is_none() {
+        return write_directly(projection, path, &target, entry);
+    }
+    // Staged beside the projection, so no listing of it shows a staged name.
+    let staged = crate::native_host::StagedWindowsFile::create(staging_directory(projection.root)?)
+        .map_err(failed)?;
+    let mut file = staged.open_writer(false).map_err(failed)?;
+    if !write_listed_content(projection, path, entry, &mut file)? {
+        return Ok(Placed::Retry);
+    }
+    basic_information(&file, Some(&ordinary_basic_information(entry))).map_err(failed)?;
+    let published = match replacing {
+        None => staged.publish_in(&directory, name),
+        Some(state) => {
+            // What the user made, or edited without its capture yet, stays.
+            if has_pending_capture(projection.captures, path) {
+                return Ok(Placed::Retry);
+            }
+            match held_while(&target, state) {
+                Ok(Some(_held)) => staged.publish_over_in(&directory, name),
+                Ok(None) => return Ok(Placed::Nothing),
+                Err(error) => Err(error),
+            }
+        }
+    };
+    match published {
+        Ok(()) => handle_state(&file)
+            .map(|state| Placed::Owned(Owned::File(state)))
+            .map_err(failed),
+        // Something is there already, or its directory is gone.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            Ok(Placed::Nothing)
+        }
+        Err(error) if error.raw_os_error() == Some(SHARING_VIOLATION) => Ok(Placed::Retry),
+        Err(error) => Err(failed(error)),
+    }
+}
+
+/// The times and attributes `entry` names, for its ordinary file. A time
+/// left zero is not set: the moment of writing stays.
+fn ordinary_basic_information(
+    entry: &ProjectedEntry,
+) -> windows::Win32::Storage::FileSystem::FILE_BASIC_INFO {
     use windows::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_BASIC_INFO,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+        FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
     };
 
-    let path = root.join(host);
-    let share = (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0;
-    // Reading the reparse point takes read access; the link is not followed
-    // and nothing is read that would hydrate it.
-    let attributes = std::fs::OpenOptions::new()
-        .access_mode((FILE_GENERIC_READ | FILE_WRITE_ATTRIBUTES).0)
-        .share_mode(share)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
-        .open(&path)?;
-    let tag = reparse_data(&attributes)?
-        .and_then(|data| data.first_chunk().copied())
-        .map(u32::from_le_bytes);
-    if tag != Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) {
-        return Ok(None);
-    }
-    let before = basic_information(&attributes, None)?;
-    let kept = before.FileAttributes
-        & !(FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 | FILE_ATTRIBUTE_RECALL_ON_OPEN.0);
-    let restored = FILE_BASIC_INFO {
-        FileAttributes: if kept == 0 {
+    let attributes = entry.info.FileAttributes
+        & !(FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0
+            | FILE_ATTRIBUTE_RECALL_ON_OPEN.0
+            | FILE_ATTRIBUTE_REPARSE_POINT.0);
+    FILE_BASIC_INFO {
+        CreationTime: entry.info.CreationTime,
+        LastAccessTime: entry.info.LastAccessTime,
+        LastWriteTime: entry.info.LastWriteTime,
+        ChangeTime: entry.info.ChangeTime,
+        FileAttributes: if attributes == 0 {
             FILE_ATTRIBUTE_NORMAL.0
         } else {
-            kept
+            attributes
         },
-        ..before
-    };
-    // A read-only file takes no write: writable until converted.
-    if kept & FILE_ATTRIBUTE_READONLY.0 != 0 {
-        basic_information(
-            &attributes,
-            Some(&FILE_BASIC_INFO {
-                CreationTime: 0,
-                LastAccessTime: 0,
-                LastWriteTime: 0,
-                ChangeTime: 0,
-                FileAttributes: (kept & !FILE_ATTRIBUTE_READONLY.0).max(FILE_ATTRIBUTE_NORMAL.0),
-            }),
-        )?;
     }
-    let converted = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(share)
-            .open(&path)?;
-        // Opened by name again: what was checked is what is written.
-        if crate::NativeRootIdentity::from_file(&file)?
-            != crate::NativeRootIdentity::from_file(&attributes)?
+}
+
+/// Writes `entry` at `target` directly, while the mount is starting.
+fn write_directly(
+    projection: Projection<'_>,
+    path: &MountPath,
+    target: &std::path::Path,
+    entry: &ProjectedEntry,
+) -> Result<Placed, String> {
+    let failed = |error: std::io::Error| format!("writing {path:?}: {error}");
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(target)
+    {
+        Ok(file) => file,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists
+                    | std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::NotADirectory
+            ) =>
         {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "replaced while made ordinary",
-            ));
+            return Ok(Placed::Nothing);
         }
-        let mut first = [0_u8; 1];
-        if file.read(&mut first)? == 1 {
-            file.seek(std::io::SeekFrom::Start(0))?;
-            file.write_all(&first)?;
-        } else {
-            file.set_len(0)?;
+        Err(error) => return Err(failed(error)),
+    };
+    let written = write_listed_content(projection, path, entry, &mut file).and_then(|complete| {
+        if !complete {
+            return Ok(Placed::Retry);
         }
-        basic_information(&file, Some(&restored))
-    })();
-    if let Err(error) = converted {
-        let _ = basic_information(&attributes, Some(&restored));
-        return Err(error);
+        basic_information(&file, Some(&ordinary_basic_information(entry)))
+            .and_then(|_| handle_state(&file))
+            .map(|state| Placed::Owned(Owned::File(state)))
+            .map_err(failed)
+    });
+    if !matches!(written, Ok(Placed::Owned(_))) {
+        drop(file);
+        let _ = std::fs::remove_file(target);
     }
-    // `ProjFS` ends its management as the writing handle closes: the file
-    // is read as ordinary only after.
-    handle_state(&attributes).map(Some)
+    written
+}
+
+/// The directory beside the projection at `root` where its files are
+/// written before they take their names in it; made on first use. Only a
+/// plain directory on the projection's volume serves, checked on the handle
+/// it is then used through: a reparse point would lead elsewhere, and hard
+/// links cross no other volume.
+fn staging_directory(root: &std::path::Path) -> Result<cap_std::fs::Dir, String> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    let staging = staging_path(root);
+    match std::fs::create_dir(&staging) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(format!("making {}: {error}", staging.display())),
+    }
+    let open = |path: &std::path::Path| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags((FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).0)
+            .open(path)
+    };
+    let failed = |error: std::io::Error| format!("opening {}: {error}", staging.display());
+    let directory = open(&staging).map_err(failed)?;
+    let metadata = directory.metadata().map_err(failed)?;
+    let volume =
+        |file: &std::fs::File| crate::NativeRootIdentity::from_file(file).map(|id| id.device);
+    let same_volume = volume(&directory).map_err(failed)?
+        == volume(&open(root).map_err(failed)?).map_err(failed)?;
+    if !metadata.is_dir()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+        || !same_volume
+    {
+        return Err(format!(
+            "{} is not a directory this projection can stage in",
+            staging.display()
+        ));
+    }
+    Ok(cap_std::fs::Dir::from_std_file(directory))
+}
+
+/// Where the projection at `root` stages its files: a hidden sibling on
+/// the same volume, which hard links can cross.
+fn staging_path(root: &std::path::Path) -> PathBuf {
+    let name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    root.with_file_name(format!(".{name}.acyclic-staging"))
+}
+
+/// Writes the content the listing named for `entry` at `path` to `file`;
+/// `false` when the source changed or lost it since.
+fn write_listed_content(
+    projection: Projection<'_>,
+    path: &MountPath,
+    entry: &ProjectedEntry,
+    file: &mut std::fs::File,
+) -> Result<bool, String> {
+    use std::io::Write as _;
+
+    let size = u64::try_from(entry.info.FileSize).unwrap_or(0);
+    let mut failure = None;
+    let mut delivered = 0_u64;
+    let mut sink = |_offset: u64, bytes: bytes::Bytes| {
+        delivered += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        file.write_all(&bytes).map_err(|error| {
+            failure = Some(error);
+            MountSourceError::Engine("writing the projected file failed".to_owned())
+        })
+    };
+    let read = match entry.facts.pin {
+        Some(pin) => {
+            projection
+                .source
+                .read_pinned(path, pin, 0, size, WRITE_CHUNK_BYTES, &mut sink)
+        }
+        None => (|| {
+            let mut offset = 0;
+            while offset < size {
+                let count = u32::try_from(size - offset)
+                    .unwrap_or(u32::MAX)
+                    .min(WRITE_CHUNK_BYTES);
+                let bytes = projection.source.read_range(path, offset, count)?;
+                if bytes.is_empty() {
+                    return Err(MountSourceError::Stale);
+                }
+                offset += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                sink(offset, bytes)?;
+            }
+            Ok(())
+        })(),
+    };
+    match (read, failure) {
+        (_, Some(error)) => Err(format!("writing {path:?}: {error}")),
+        // Shorter or longer than listed: not the content the listing named.
+        (Ok(()), None) => Ok(delivered == size),
+        (Err(MountSourceError::Stale | MountSourceError::NotFound), None) => Ok(false),
+        (Err(error), None) => Err(format!("reading {path:?}: {error}")),
+    }
+}
+
+/// The ordinary file at `path`, held so no writer can share it, if it is
+/// still `state`; `None` when something else is there.
+fn held_while(
+    path: &std::path::Path,
+    state: HostWindowsMetadata,
+) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ,
+    };
+
+    let file = match std::fs::OpenOptions::new()
+        .access_mode(DELETE.0 | FILE_READ_ATTRIBUTES.0)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_DELETE).0)
+        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok((handle_state(&file)? == state).then_some(file))
 }
 
 /// Deletes the symbolic link at `path` if it points to the target with
@@ -2007,20 +2116,9 @@ fn delete_link(path: &std::path::Path, digest: u64) -> std::io::Result<bool> {
 /// Deletes the ordinary file at `path` if it is still `state`, opened so no
 /// writer can hold it and not followed; `false` when something else is there.
 fn delete_file_while(path: &std::path::Path, state: HostWindowsMetadata) -> std::io::Result<bool> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use windows::Win32::Storage::FileSystem::{
-        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_DELETE, FILE_SHARE_READ,
-    };
-
-    let file = std::fs::OpenOptions::new()
-        .access_mode(DELETE.0 | FILE_READ_ATTRIBUTES.0)
-        .share_mode((FILE_SHARE_READ | FILE_SHARE_DELETE).0)
-        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-        .open(path)?;
-    if handle_state(&file)? != state {
+    let Some(file) = held_while(path, state)? else {
         return Ok(false);
-    }
+    };
     delete_through(&file)?;
     Ok(true)
 }
@@ -2032,9 +2130,10 @@ fn delete_through(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle as _;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
-        FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
-        FILE_DISPOSITION_INFO_EX, FILE_DISPOSITION_INFO_EX_FLAGS, FileDispositionInfo,
-        FileDispositionInfoEx, SetFileInformationByHandle,
+        FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
+        FILE_DISPOSITION_INFO_EX_FLAGS, FileDispositionInfo, FileDispositionInfoEx,
+        SetFileInformationByHandle,
     };
 
     let handle = HANDLE(file.as_raw_handle());
@@ -2042,7 +2141,9 @@ fn delete_through(file: &std::fs::File) -> std::io::Result<()> {
     // holds the link; delete-on-close serves where that is refused.
     let posix = FILE_DISPOSITION_INFO_EX {
         Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
-            FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0,
+            FILE_DISPOSITION_FLAG_DELETE.0
+                | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0
+                | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE.0,
         ),
     };
     let on_close = FILE_DISPOSITION_INFO { DeleteFile: true };
@@ -2094,8 +2195,8 @@ fn symbolic_link_target(data: &[u8]) -> Option<Vec<u16>> {
     Some(units)
 }
 
-/// Deletes the placeholder at `path` unless the user modified it.
-fn delete_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<Release, String> {
+/// Deletes what `ProjFS` manages at `path` unless the user modified it.
+fn delete_unowned(projection: Projection<'_>, path: &MountPath) -> Result<Release, String> {
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
     let relative = HSTRING::from(host.as_os_str());
     match prj_delete(projection, &relative, PRJ_UPDATE_ALLOW_READ_ONLY) {
@@ -2119,13 +2220,13 @@ fn delete_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<Re
     }
 }
 
-/// Writes the placeholder at `path` again from the source, or deletes it
+/// Writes what is at `path` again from the source, or deletes it
 /// where the source names nothing there any more (or a directory, which the
 /// directory's reconcile writes).
-fn replace_placeholder(
+fn replace_written(
     projection: Projection<'_>,
     path: &MountPath,
-    written: &WrittenPlaceholder,
+    written: &WrittenEntry,
 ) -> Result<Replaced, String> {
     let source = projection.source;
     let relative = HSTRING::from(
@@ -2139,81 +2240,12 @@ fn replace_placeholder(
         Err(MountSourceError::NotFound) => None,
         Err(error) => return Err(error.to_string()),
     };
-    // A link's target is part of the link itself, which no update carries:
-    // what was written goes and the link is written anew, as is whatever
-    // takes the place of an ordinary link written for one.
-    if written.owned.is_some()
-        || current.is_some_and(|(lookup, _)| lookup.node.kind == MountNodeKind::SymbolicLink)
-    {
-        return rewrite(projection, path, &relative, written.owned, current, basis);
-    }
-    let result = match current {
-        // A directory is written by its parent's reconcile.
-        Some((lookup, pin))
-            if !matches!(
-                lookup.node.kind,
-                MountNodeKind::SymbolicLink | MountNodeKind::Directory
-            ) =>
-        {
-            let Some(placeholder) = placeholder_info(&lookup, pin) else {
-                return Err("placeholder attributes are unrepresentable".to_owned());
-            };
-            // SAFETY: the name and placeholder outlive this synchronous
-            // call on a live context.
-            unsafe {
-                PrjUpdateFileIfNeeded(
-                    projection.context,
-                    &relative,
-                    &raw const placeholder,
-                    u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX),
-                    Some(PRJ_UPDATE_ALLOW_READ_ONLY),
-                    None,
-                )
-            }
-            .map(|()| {
-                Replaced::Rewritten(Box::new(WrittenPlaceholder {
-                    file_id: lookup.node.file_id,
-                    owned: None,
-                    facts: Some(PlaceholderFacts { lookup, pin }),
-                    basis,
-                }))
-            })
-        }
-        // SAFETY: as above.
-        _ => unsafe {
-            PrjDeleteFile(
-                projection.context,
-                &relative,
-                Some(PRJ_UPDATE_ALLOW_READ_ONLY),
-                None,
-            )
-        }
-        .map(|()| Replaced::Released),
-    };
-    match result {
-        Ok(replaced) => Ok(replaced),
-        // Gone already, authored since, or holding authored state: a
-        // placeholder's read-only attribute, which follows its source, never
-        // refuses an update, so nothing refused here is still projected.
-        Err(error)
-            if [
-                HR_FILE_NOT_FOUND,
-                HR_PATH_NOT_FOUND,
-                HR_VIRTUALIZATION_INVALID_OPERATION,
-                HR_DIRECTORY_NOT_EMPTY,
-            ]
-            .contains(&error.code()) =>
-        {
-            Ok(Replaced::Released)
-        }
-        Err(error) if error.code() == HR_SHARING_VIOLATION => Ok(Replaced::Busy),
-        Err(error) => Err(driver_error(&error).to_string()),
-    }
+    rewrite(projection, path, &relative, written.owned, current, basis)
 }
 
-/// Deletes what was written at `path` and writes what the source holds
-/// there now, for what no update can change in place: links, and what
-/// `ProjFS` does not manage.
+/// Writes what the source holds at `path` now in place of what was written
+/// there: an ordinary file replaced in one step, anything else removed,
+/// unless the user made it their own, and written anew.
 fn rewrite(
     projection: Projection<'_>,
     path: &MountPath,
@@ -2222,6 +2254,12 @@ fn rewrite(
     current: Option<(MountLookup, Option<MountContentPin>)>,
     basis: Option<ReadBasis>,
 ) -> Result<Replaced, String> {
+    if let Some(Owned::File(state)) = owned
+        && let Some((lookup, pin)) = current
+        && lookup.node.kind == MountNodeKind::Regular
+    {
+        return replace_ordinary(projection, path, state, lookup, pin, basis);
+    }
     if owned.is_some() {
         if release(projection, path, owned)? == Release::Busy {
             return Ok(Replaced::Busy);
@@ -2264,7 +2302,8 @@ fn rewrite(
     };
     Ok(match write_entry(projection, path, &entry)? {
         Placed::Nothing => Replaced::Released,
-        placed => Replaced::Rewritten(Box::new(WrittenPlaceholder {
+        Placed::Retry => Replaced::Busy,
+        placed => Replaced::Rewritten(Box::new(WrittenEntry {
             file_id: lookup.node.file_id,
             owned: placed.owned(),
             facts: Some(entry.facts),
@@ -2273,11 +2312,44 @@ fn rewrite(
     })
 }
 
-/// A virtualization context moved to the placeholder worker. The handle is
+/// Puts what the source now holds at `path` in place of the ordinary file
+/// the projection left there in `state`, in one step no reader sees between.
+fn replace_ordinary(
+    projection: Projection<'_>,
+    path: &MountPath,
+    state: HostWindowsMetadata,
+    lookup: MountLookup,
+    pin: Option<MountContentPin>,
+    basis: Option<ReadBasis>,
+) -> Result<Replaced, String> {
+    let (Some(parent), Some(component)) = (path.parent(), path.components().last()) else {
+        return Ok(Replaced::Released);
+    };
+    let Some(entry) = projected_entry(projection.source, &parent, component.clone(), lookup, pin)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(Replaced::Released);
+    };
+    let host = host_relative_path(path).map_err(|error| error.to_string())?;
+    Ok(
+        match write_ordinary(projection, path, &host, &entry, Some(state))? {
+            Placed::Owned(owned) => Replaced::Rewritten(Box::new(WrittenEntry {
+                file_id: lookup.node.file_id,
+                owned: Some(owned),
+                facts: Some(entry.facts),
+                basis,
+            })),
+            Placed::Retry => Replaced::Busy,
+            Placed::Nothing | Placed::Unowned => Replaced::Released,
+        },
+    )
+}
+
+/// A virtualization context moved to the projection worker. The handle is
 /// an opaque token `ProjFS` accepts from any thread.
 struct SendContext(PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT);
 
-// SAFETY: see `SendContext`; its lifetime is bounded by `Placeholders::finish`.
+// SAFETY: see `SendContext`; its lifetime is bounded by `Projector::finish`.
 unsafe impl Send for SendContext {}
 
 fn has_pending_capture(failure: &Mutex<PostOperationFailures>, path: &MountPath) -> bool {
@@ -2330,7 +2402,7 @@ impl ProjFsSession {
             writable: request.writable,
             metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
             projection: Arc::new(Mutex::new(ProjectionCache::default())),
-            placeholders: Arc::new(Placeholders::new()),
+            projector: Arc::new(Projector::new()),
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
             metadata_edits: Arc::new(FileLocks::default()),
             post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
@@ -2347,7 +2419,7 @@ impl ProjFsSession {
             // null handle, which is not the same contract as `L""`.
             NotificationRoot: PCWSTR::from_raw(NOTIFICATION_ROOT.as_ptr()),
         };
-        // Nothing is ever projected on demand (see `Placeholders`), so every
+        // Nothing is ever projected on demand (see `Projector`), so every
         // absence `ProjFS` caches is one it may.
         let mut options = PRJ_STARTVIRTUALIZING_OPTIONS {
             Flags: PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
@@ -2386,19 +2458,23 @@ impl ProjFsSession {
         };
         let written = runtime.attach_workers(context).and_then(|()| {
             runtime
-                .placeholders
+                .projector
                 .materialize(
                     Projection {
                         source: runtime.source.as_ref(),
                         context,
                         root: &runtime.root,
                         captures: &runtime.post_operation_failure,
+                        starting: true,
                     },
                     MountPath::root(),
                 )
                 .map_err(|error| {
                     NativeMountError::Driver(format!("projecting the source failed: {error}"))
                 })
+                // What changed while it was listed is written by the worker:
+                // the mount opens only once all of it is there.
+                .and_then(|()| runtime.projector.settle())
         });
         if let Err(error) = written {
             runtime.finish_workers();
@@ -2518,7 +2594,7 @@ impl ProjFsSession {
 
     /// Makes a source-side change at one mount-relative path (leading `/`
     /// optional) visible: the provider forgets memoized source facts, and an
-    /// unmodified placeholder at `path` is deleted and written again from
+    /// unmodified file at `path` is replaced by what is written again from
     /// the source (settled by [`Self::revalidate`]). Locally modified state
     /// at `path` is authored and stays.
     pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
@@ -2553,28 +2629,28 @@ impl ProjFsSession {
                 Err(driver_error(&error))
             }
             _ => {
-                runtime.placeholders.invalidate(&mount_path);
+                runtime.projector.invalidate(&mount_path);
                 Ok(())
             }
         }
     }
 
     /// Waits until every change made to the source so far is written into
-    /// the projection: each superseded placeholder written again, each
+    /// the projection: each superseded path written again, each
     /// changed directory reconciled. A source that reports none of its
     /// changes has everything checked.
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
         let (runtime, _context) = self.live()?;
         if runtime.source.view_stamp().is_none() {
-            runtime.placeholders.invalidate_all();
+            runtime.projector.invalidate_all();
         }
         // Every change made to the source before this call is recorded, and
-        // so notified, before the placeholders settle.
+        // so notified, before the projection settles.
         runtime
             .source
             .fence_changes()
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-        runtime.placeholders.settle()
+        runtime.projector.settle()
     }
 
     fn live(&self) -> Result<(&Runtime, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT), NativeMountError> {
@@ -2591,7 +2667,7 @@ impl Runtime {
         &self,
         context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
     ) -> Result<(), NativeMountError> {
-        self.placeholders.attach(
+        self.projector.attach(
             Arc::clone(&self.source),
             context,
             self.root.clone(),
@@ -2601,7 +2677,9 @@ impl Runtime {
 
     /// Stops the worker; nothing is kept current from here on.
     fn finish_workers(&self) {
-        self.placeholders.finish();
+        self.projector.finish();
+        // Every staged file went with the handle that held it.
+        let _ = std::fs::remove_dir(staging_path(&self.root));
     }
 }
 
@@ -2618,53 +2696,12 @@ fn source_hresult(error: &MountSourceError) -> HRESULT {
     }
 }
 
-/// Builds the placeholder `ProjFS` persists for one source lookup. A pinned
-/// placeholder records exactly which content its hydration must return.
-fn placeholder_info(
-    lookup: &MountLookup,
-    pin: Option<MountContentPin>,
-) -> Option<PRJ_PLACEHOLDER_INFO> {
-    pinned_placeholder(basic(lookup.node, Some(lookup.metadata))?, pin)
-}
-
-/// The placeholder for `info` that carries exactly `pin`.
-///
-/// `ProjFS` updates a placeholder only when its version differs, so each
-/// placeholder written also carries a version of its own after the pin:
-/// a rewrite with new attributes or unpinned content is never skipped.
-fn pinned_placeholder(
-    info: PRJ_FILE_BASIC_INFO,
-    pin: Option<MountContentPin>,
-) -> Option<PRJ_PLACEHOLDER_INFO> {
-    static WRITTEN: AtomicU64 = AtomicU64::new(0);
-    let mut version = PRJ_PLACEHOLDER_VERSION_INFO::default();
-    let (pinned, written) = version.ContentID.split_at_mut(size_of::<MountContentPin>());
-    if let Some(pin) = pin {
-        *version.ProviderID.first_chunk_mut()? = *CONTENT_PIN_PROVIDER;
-        *pinned.first_chunk_mut()? = pin.0;
-    }
-    *written.first_chunk_mut()? = WRITTEN.fetch_add(1, Ordering::Relaxed).to_le_bytes();
-    Some(PRJ_PLACEHOLDER_INFO {
+/// The placeholder `ProjFS` persists for a link described by `info`.
+fn link_placeholder(info: PRJ_FILE_BASIC_INFO) -> PRJ_PLACEHOLDER_INFO {
+    PRJ_PLACEHOLDER_INFO {
         FileBasicInfo: info,
-        VersionInfo: version,
         ..PRJ_PLACEHOLDER_INFO::default()
-    })
-}
-
-/// Recovers the content pin a placeholder was written with.
-fn placeholder_pin(data: &PRJ_CALLBACK_DATA) -> Option<MountContentPin> {
-    // SAFETY: ProjFS supplies either null or the placeholder's version
-    // information for the duration of this callback.
-    let version = unsafe { data.VersionInfo.as_ref() }?;
-    let (tag, rest) = version.ProviderID.split_first_chunk()?;
-    if tag != CONTENT_PIN_PROVIDER || rest.iter().any(|byte| *byte != 0) {
-        return None;
     }
-    version
-        .ContentID
-        .first_chunk()
-        .copied()
-        .map(MountContentPin)
 }
 
 fn reject_stale_projection(destination: &std::path::Path) -> Result<(), NativeMountError> {
@@ -2852,12 +2889,21 @@ fn remove_authenticated_destination(
         }
         Ok(())
     };
-    remove_projection_tree(destination, &authenticate).map_err(|error| match error {
-        TreeRemovalError::Io(error) => NativeMountError::Driver(format!(
-            "authenticated ProjFS root removal failed for {}: {error}",
-            destination.display()
-        )),
-        TreeRemovalError::Root(error) => error,
+    remove_projection_tree(destination, &authenticate).or_else(|error| {
+        // A refused delete can still complete: gone, the root is removed.
+        if matches!(
+            std::fs::symlink_metadata(destination),
+            Err(gone) if gone.kind() == std::io::ErrorKind::NotFound
+        ) {
+            return Ok(());
+        }
+        Err(match error {
+            TreeRemovalError::Io(error) => NativeMountError::Driver(format!(
+                "authenticated ProjFS root removal failed for {}: {error}",
+                destination.display()
+            )),
+            TreeRemovalError::Root(error) => error,
+        })
     })
 }
 
@@ -2885,34 +2931,91 @@ fn remove_projection_tree(
     directory: &std::path::Path,
     before_removal: &dyn Fn() -> Result<(), NativeMountError>,
 ) -> Result<(), TreeRemovalError> {
-    // A scanner opening the root can keep the filter draining for a while.
+    // A scanner opening the root can keep the filter draining for a while,
+    // and a scanner, or a process that just ran a program from the tree,
+    // can hold a file there a moment longer.
     const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
-    let refused = |error: &std::io::Error| matches!(error.raw_os_error(), Some(145 | 369));
-    before_removal().map_err(TreeRemovalError::Root)?;
-    match std::fs::remove_dir_all(directory) {
-        Ok(()) => return Ok(()),
-        Err(error) if refused(&error) => {}
-        Err(error) => return Err(error.into()),
-    }
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            remove_projection_tree(&entry.path(), &|| Ok(()))?;
-        }
-    }
+    let refused = refused_for_now;
+    let gone = || {
+        matches!(
+            std::fs::symlink_metadata(directory),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    };
     let deadline = std::time::Instant::now() + PATIENCE;
     loop {
         before_removal().map_err(TreeRemovalError::Root)?;
-        match std::fs::remove_dir_all(directory) {
+        let error = match std::fs::remove_dir_all(directory) {
             Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        if gone() {
+            return Ok(());
+        }
+        if !refused(&error) {
+            return Err(error.into());
+        }
+        remove_directories_in(directory)?;
+        // Opened as the reparse point it is, the directory is deleted
+        // without the filter asking a provider that is gone.
+        before_removal().map_err(TreeRemovalError::Root)?;
+        match remove_directory_itself(directory) {
+            Ok(()) => return Ok(()),
+            Err(_) if gone() => return Ok(()),
             Err(error) if refused(&error) && std::time::Instant::now() < deadline => {
                 // The filter admits a refused directory's next delete; only
-                // a filter still draining needs a moment.
+                // a filter still draining, or a holder, needs a moment.
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+/// Whether removing a projection tree was refused only for now: by a
+/// holder (access denied, sharing violation), a directory not yet empty, or
+/// the filter of a root whose provider is gone, which also answers "not
+/// found" for a root still there.
+fn refused_for_now(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(2 | 3 | 5 | 32 | 145 | 369))
+}
+
+/// Removes each directory in `directory` as [`remove_projection_tree`]
+/// does. Unlisted for now, it is left to the delete of `directory` itself,
+/// which is refused while anything is left in it.
+fn remove_directories_in(directory: &std::path::Path) -> Result<(), TreeRemovalError> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if refused_for_now(&error) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => remove_projection_tree(&entry.path(), &|| Ok(()))?,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Deletes the directory `directory` names, opened as itself rather than
+/// through any reparse point it carries; what is left in it keeps it.
+fn remove_directory_itself(directory: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let handle = std::fs::OpenOptions::new()
+        .access_mode(DELETE.0 | FILE_READ_ATTRIBUTES.0)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+        .open(directory)?;
+    delete_through(&handle)
 }
 
 #[allow(unsafe_code)]
@@ -3462,9 +3565,6 @@ unsafe fn placeholder(_callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
     HR_FILE_NOT_FOUND
 }
 
-/// The source's listing of `path`, as this provider writes it. An entry no
-/// placeholder can represent (a socket, say) is left out, as is a name that
-/// case-folds to one listed before it: Windows can hold only one of them.
 /// What the projection writes for the source's entry `component` in
 /// `directory`; `None` for one Windows cannot represent.
 fn projected_entry(
@@ -3501,7 +3601,7 @@ fn projected_entry(
     Ok(Some(ProjectedEntry {
         name,
         component,
-        facts: PlaceholderFacts { lookup, pin },
+        facts: EntryFacts { lookup, pin },
         info,
         symlink_target,
         directory_link,
@@ -3561,6 +3661,9 @@ fn resolves_to_directory(
     }
 }
 
+/// The source's listing of `path`, as this provider writes it. An entry
+/// Windows cannot represent (a socket, say) is left out, as is a name that
+/// case-folds to one listed before it: Windows can hold only one of them.
 fn source_listing(
     source: &dyn MountFilesystem,
     path: &MountPath,
@@ -3617,138 +3720,14 @@ fn source_listing(
     Ok(entries)
 }
 
+/// `ProjFS` asks only a placeholder for its content, and no file of the
+/// projection is one.
 unsafe fn file_data(
-    callback_data: *const PRJ_CALLBACK_DATA,
-    byte_offset: u64,
-    length: u32,
+    _callback_data: *const PRJ_CALLBACK_DATA,
+    _byte_offset: u64,
+    _length: u32,
 ) -> HRESULT {
-    let Some((data, runtime)) = runtime(callback_data) else {
-        return HR_UNEXPECTED;
-    };
-    let Some(path) = path_from(data.FilePathName) else {
-        return HR_INVALID_DATA;
-    };
-    let pin = placeholder_pin(data);
-    let chunk = length.min(HYDRATION_CHUNK_BYTES);
-    let buffer = PrjAllocateAlignedBuffer(data.NamespaceVirtualizationContext, chunk as usize);
-    if buffer.is_null() {
-        return HR_OUT_OF_MEMORY;
-    }
-    // Each piece is written at its offset; the range is complete only when
-    // the pieces cover it exactly.
-    let written = std::cell::Cell::new(0_u64);
-    let write_failure = std::cell::Cell::new(None);
-    let mut write = |offset: u64, bytes: Bytes| -> Result<(), MountSourceError> {
-        let fits = u32::try_from(bytes.len()).ok().filter(|count| {
-            *count <= chunk && byte_offset.checked_add(written.get()) == Some(offset)
-        });
-        let Some(count) = fits else {
-            write_failure.set(Some(HR_INVALID_DATA));
-            return Err(MountSourceError::Invalid(
-                "hydration piece out of order".to_owned(),
-            ));
-        };
-        // SAFETY: ProjFS allocated `chunk >= count` aligned bytes and both
-        // buffers are live and non-overlapping for the synchronous write.
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast::<u8>(), bytes.len());
-            PrjWriteFileData(
-                data.NamespaceVirtualizationContext,
-                &raw const data.DataStreamId,
-                buffer,
-                offset,
-                count,
-            )
-        }
-        .map_err(|error| {
-            write_failure.set(Some(error.code()));
-            MountSourceError::Engine("PrjWriteFileData failed".to_owned())
-        })?;
-        written.set(written.get() + u64::from(count));
-        Ok(())
-    };
-    // Immutable hydration reads take the source's own read gate. Keeping them
-    // off the mutation callback queue lets concurrent compiler reads proceed.
-    // A file is hydrated before its own rename or link, but `ProjFS` names a
-    // placeholder by the path it was written at also after a directory
-    // above it was renamed: that one is read where the renames took it.
-    let renames = runtime
-        .placeholders
-        .renames
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let range = ContentRange {
-        offset: byte_offset,
-        length,
-        chunk,
-    };
-    let mut read = read_content(runtime, &path, pin, range, &written, &mut write);
-    let moved = runtime.placeholders.moved_path(&path);
-    if written.get() == 0
-        && moved != path
-        && matches!(
-            read,
-            Err(MountSourceError::NotFound | MountSourceError::Stale)
-        )
-    {
-        read = read_content(runtime, &moved, pin, range, &written, &mut write);
-    }
-    drop(renames);
-    PrjFreeAlignedBuffer(buffer);
-    match (read, write_failure.get()) {
-        (_, Some(failure)) => failure,
-        (Err(error), None) => source_hresult(&error),
-        (Ok(()), None) if written.get() == u64::from(length) => HR_OK,
-        (Ok(()), None) => HR_INVALID_DATA,
-    }
-}
-
-/// The bytes one `GetFileData` asks for, in pieces of at most `chunk`.
-#[derive(Clone, Copy)]
-struct ContentRange {
-    offset: u64,
-    length: u32,
-    chunk: u32,
-}
-
-/// Streams `range` of `path` into `write`, which counts what it took in
-/// `written`: at the pinned version when the placeholder carries one, else
-/// as the source holds it now.
-fn read_content(
-    runtime: &Runtime,
-    path: &MountPath,
-    pin: Option<MountContentPin>,
-    ContentRange {
-        offset: byte_offset,
-        length,
-        chunk,
-    }: ContentRange,
-    written: &std::cell::Cell<u64>,
-    write: &mut ContentSink<'_>,
-) -> Result<(), MountSourceError> {
-    if let Some(pin) = pin {
-        return runtime
-            .source
-            .read_pinned(path, pin, byte_offset, u64::from(length), chunk, write);
-    }
-    let mut result = Ok(());
-    // A short read ends the content; the length check below rejects it.
-    while let Some(remaining) = u64::from(length)
-        .checked_sub(written.get())
-        .filter(|remaining| *remaining > 0 && result.is_ok())
-    {
-        let before = written.get();
-        let count = u32::try_from(remaining).unwrap_or(u32::MAX).min(chunk);
-        let offset = byte_offset + before;
-        result = runtime
-            .source
-            .read_range(path, offset, count)
-            .and_then(|bytes| write(offset, bytes));
-        if written.get() - before < u64::from(count) {
-            break;
-        }
-    }
-    result
+    HR_UNEXPECTED
 }
 
 unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
@@ -3820,14 +3799,14 @@ unsafe fn notification(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    // A closed handle may have held a superseded placeholder open.
+    // A closed handle may have held a superseded path open.
     if matches!(
         notification,
         PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
             | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
             | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
     ) {
-        runtime.placeholders.retry();
+        runtime.projector.retry();
     }
     if unsafe { (*callback_data).TriggeringProcessId } == std::process::id()
         && matches!(
@@ -3862,13 +3841,7 @@ unsafe fn notification(
     if notification == PRJ_NOTIFICATION_PRE_RENAME
         || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
     {
-        if is_directory || source_is_external {
-            return HR_OK;
-        }
-        return match hydrate_before_rebinding(&runtime.metadata_root, &path) {
-            Ok(()) => HR_OK,
-            Err(error) => source_hresult(&error),
-        };
+        return HR_OK;
     }
     if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED {
         // The physical file is already present. One final-state capture at
@@ -3914,10 +3887,9 @@ unsafe fn notification(
     let metadata_probes = Arc::clone(&runtime.metadata_probes);
     let metadata_edits = Arc::clone(&runtime.metadata_edits);
     let metadata_root = Arc::clone(&runtime.metadata_root);
-    let projection_root = runtime.root.clone();
     let post_operation_failure = Arc::clone(&runtime.post_operation_failure);
     let operation_failures = Arc::clone(&post_operation_failure);
-    let placeholders = Arc::clone(&runtime.placeholders);
+    let projector = Arc::clone(&runtime.projector);
     let failure_path = path.clone();
     let retry_path = Arc::new(Mutex::new(None));
     let operation_retry_path = Arc::clone(&retry_path);
@@ -3931,9 +3903,6 @@ unsafe fn notification(
             return Ok(());
         }
         if notification == PRJ_NOTIFICATION_FILE_OPENED {
-            if !is_directory {
-                placeholders.convert_opened(&projection_root, &path)?;
-            }
             if has_pending_capture(operation_failures.as_ref(), &path) {
                 // A boundary will capture this path's final state; its close
                 // needs no baseline to compare against.
@@ -4081,14 +4050,10 @@ unsafe fn notification(
                 Err(error) => Err(error),
             }
         } else if notification == PRJ_NOTIFICATION_FILE_RENAMED {
-            let _renaming = placeholders
-                .renames
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
             // No listing is reconciled while the source has the rename and
             // the projection's records do not yet.
-            let _tree = lock_recover(&placeholders.tree);
-            let current = placeholders.current_beneath(source.as_ref(), &path);
+            let _tree = lock_recover(&projector.tree);
+            let current = projector.current_beneath(source.as_ref(), &path);
             let result = handle_rename_source(
                 source.as_ref(),
                 &path,
@@ -4106,7 +4071,7 @@ unsafe fn notification(
                 lock_recover(operation_failures.as_ref())
                     .rename_pending_captures(&path, destination);
                 let carried = Carried::read(source.as_ref(), &path, destination, &current);
-                placeholders.renamed(&path, destination, carried);
+                projector.renamed(&path, destination, carried);
             }
             result
         } else {
@@ -4133,32 +4098,6 @@ unsafe fn notification(
         Some(Err(error)) => source_hresult(&error),
         None => HR_UNEXPECTED,
     }
-}
-
-/// Hydrates a still-virtual placeholder before it is renamed or linked.
-///
-/// `ProjFS` hydrates a placeholder by the path it was projected at, whatever
-/// name later reads it through. After a rename, or after a hard link whose
-/// original name is then deleted, that path no longer resolves to this
-/// content. Reading the file now, while its projected path still does,
-/// stores the content in the file itself for every later name.
-fn hydrate_before_rebinding(root: &HostRoot, path: &MountPath) -> Result<(), MountSourceError> {
-    let host_path = host_relative_path(path)?;
-    let engine = |error: std::io::Error| MountSourceError::Engine(error.to_string());
-    let attributes = {
-        use cap_std::fs::MetadataExt as _;
-        root.symlink_metadata_held(&host_path)
-            .map_err(engine)?
-            .file_attributes()
-    };
-    if attributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0 == 0 {
-        return Ok(());
-    }
-    // The provider's own reads raise no notifications; they are served by
-    // GetFileData on another callback thread.
-    let mut file = root.open_file(&host_path).map_err(engine)?;
-    std::io::copy(&mut file, &mut std::io::sink()).map_err(engine)?;
-    Ok(())
 }
 
 /// Keeps [`FILE_NOTIFICATIONS`] for a file whose notification set `ProjFS`
@@ -4292,9 +4231,9 @@ fn callbacks() -> PRJ_CALLBACKS {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::{
-        CONTENT_PIN_PROVIDER, CallbackGate, PostOperationFailures, ReadBasis, finish_cleanup,
-        flush_callback_gate, placeholder_info, placeholder_pin, record_post_operation_failure,
-        recover_cache_only_destination, remove_authenticated_destination, source_hresult,
+        CallbackGate, PostOperationFailures, ReadBasis, finish_cleanup, flush_callback_gate,
+        record_post_operation_failure, recover_cache_only_destination,
+        remove_authenticated_destination, source_hresult,
     };
     use crate::kernel::FileMetadata;
     use crate::model::{
@@ -4302,10 +4241,7 @@ mod tests {
         VolumeConfig,
     };
     use crate::native_mount::adapter::{CheckoutMountSource, SharedCheckout};
-    use crate::native_mount::{
-        MountContentPin, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountPath,
-        MountSourceError,
-    };
+    use crate::native_mount::{MountFilesystem, MountPath, MountSourceError};
     use crate::{
         CancellationToken, Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication,
         WorkBudget,
@@ -4314,12 +4250,27 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::{Arc, Barrier, Mutex};
     use windows::Win32::Storage::ProjectedFileSystem::{
-        PRJ_CALLBACK_DATA, PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
-        PRJ_NOTIFICATION_PRE_DELETE, PRJ_VIRTUALIZATION_INSTANCE_INFO,
-        PrjGetVirtualizationInstanceInfo, PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing,
-        PrjStopVirtualizing,
+        PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED, PRJ_NOTIFICATION_PRE_DELETE,
+        PRJ_VIRTUALIZATION_INSTANCE_INFO, PrjGetVirtualizationInstanceInfo,
+        PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
     };
     use windows::core::{GUID, HSTRING, PCWSTR};
+
+    /// Files are staged only in a plain directory beside the projection:
+    /// a link in its place, which would lead elsewhere, is refused.
+    #[test]
+    fn staging_refuses_a_link_in_place_of_its_directory() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let parent = tempfile::tempdir()?;
+        let root = parent.path().join("mount");
+        std::fs::create_dir(&root)?;
+        assert!(super::staging_directory(&root).is_ok());
+        std::fs::remove_dir(super::staging_path(&root))?;
+        let elsewhere = tempfile::tempdir()?;
+        std::os::windows::fs::symlink_dir(elsewhere.path(), super::staging_path(&root))?;
+        assert!(super::staging_directory(&root).is_err());
+        Ok(())
+    }
 
     #[test]
     fn projfs_name_order_differs_from_sdk_cursor_order() {
@@ -4680,9 +4631,8 @@ mod tests {
     }
 
     /// A time set through a writable handle stays, on disk and in the
-    /// source, for empty files and others, also on files another handle
-    /// read first without sharing write access: the handle opens an ordinary
-    /// file.
+    /// source, for empty files and others, also while another process reads
+    /// the files: every file of the projection is an ordinary file.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn a_time_set_through_a_writable_handle_stays() -> Result<(), Box<dyn std::error::Error>>
@@ -4697,12 +4647,22 @@ mod tests {
         }
         let (_root, destination, mut session) = mount_source(&source)?;
         let directory = destination.display();
+        let reader = powershell(&format!(
+            r"1..10 | % {{ 0..{last} | % {{ try {{ [void][IO.File]::ReadAllBytes('{directory}\f' + $_ + '.txt') }} catch {{}} }} }}",
+            last = FILES - 1
+        ))?;
         let editor = powershell(&format!(
             r#"Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles; public static class T {{ [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetFileTime(SafeFileHandle h, IntPtr c, IntPtr a, ref long w); }}'
 0..{last} | % {{
   $path = '{directory}\f' + $_ + '.txt'
   if ($_ % 3 -eq 0) {{ [void][IO.File]::ReadAllBytes($path) }}
-  $file = [IO.File]::Open($path, 'Open', 'ReadWrite', 'ReadWrite')
+  # Refused while the reader holds the file without sharing writes, as any
+  # editor would be: tried again; failing otherwise.
+  $file = $null
+  for ($try = 0; $file -eq $null; $try++) {{
+    try {{ $file = [IO.File]::Open($path, 'Open', 'ReadWrite', 'ReadWrite') }}
+    catch [IO.IOException] {{ if ($try -ge 500) {{ exit 2 }}; Start-Sleep -Milliseconds 10 }}
+  }}
   $time = [long]{TICKS}
   if (-not [T]::SetFileTime($file.SafeFileHandle, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$time)) {{ exit 1 }}
   $file.Close()
@@ -4710,6 +4670,8 @@ mod tests {
             last = FILES - 1
         ))?;
         succeeded(editor)?;
+        succeeded(reader)?;
+        session.flush_callbacks()?;
         session.revalidate()?;
         let wanted = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let mut lost = Vec::new();
@@ -4732,8 +4694,7 @@ mod tests {
         Ok(())
     }
 
-    /// A file another process opened, which the projection made an ordinary
-    /// file, still follows its source.
+    /// A file another process opened follows its source.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::Error>> {
@@ -4748,11 +4709,7 @@ mod tests {
             "[IO.File]::Open('{}', 'Open', 'Read', 'ReadWrite').Close()",
             projected.display()
         ))?)?;
-        assert_eq!(
-            super::reparse_tag(&projected)?.0,
-            None,
-            "not made an ordinary file"
-        );
+        assert_eq!(super::reparse_tag(&projected)?.0, None, "a placeholder");
         session.flush_callbacks()?;
         source.write_range(&tracked, 0, Bytes::from_static(b"after!"))?;
         session.revalidate()?;
@@ -4761,8 +4718,8 @@ mod tests {
         Ok(())
     }
 
-    /// What another process writes to a file the projection made ordinary
-    /// stays, and reaches the source.
+    /// What another process writes to a projected file stays, and reaches
+    /// the source.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error::Error>> {
@@ -4873,8 +4830,14 @@ mod tests {
         });
         session.revalidate()?;
         closer.join().map_err(|_| "closer panicked")?;
-        assert!(std::fs::symlink_metadata(&projected)?.is_dir());
-        assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
+        let held_by = || format!("the mount holds {:?}", sorted_names(&destination));
+        let kind = std::fs::symlink_metadata(&projected)
+            .map_err(|error| format!("the directory: {error}; {}", held_by()))?;
+        assert!(kind.is_dir(), "not a directory: {kind:?}");
+        let inner = std::fs::read(projected.join("inner.txt")).map_err(|error| {
+            format!("its file: {error}; it holds {:?}", sorted_names(&projected))
+        })?;
+        assert_eq!(inner, b"inner");
         session.stop()?;
         Ok(())
     }
@@ -5017,7 +4980,7 @@ mod tests {
         Ok(())
     }
 
-    /// Revalidation waits while a superseded placeholder is pending, which
+    /// Revalidation waits while a superseded path is pending, which
     /// it is until its outcome is recorded, even once every change has been
     /// served, and returns as soon as it is settled.
     #[test]
@@ -5052,57 +5015,18 @@ mod tests {
     }
 
     #[test]
-    fn renames_compose_into_where_each_written_path_is_now() {
-        use super::{Carried, Placeholders, lock_recover};
-
-        let path = |parts: &[&str]| {
-            parts.iter().fold(MountPath::root(), |path, part| {
-                path.child(windows_name(part))
-            })
-        };
-        let placeholders = Placeholders::new();
-        placeholders.renamed(&path(&["a"]), &path(&["b"]), Carried::default());
-        placeholders.renamed(&path(&["b", "child"]), &path(&["c"]), Carried::default());
-        // Written before either rename, or between them.
-        assert_eq!(
-            placeholders.moved_path(&path(&["a", "child", "file"])),
-            path(&["c", "file"])
-        );
-        assert_eq!(
-            placeholders.moved_path(&path(&["b", "child", "file"])),
-            path(&["c", "file"])
-        );
-        assert_eq!(
-            placeholders.moved_path(&path(&["a", "other"])),
-            path(&["b", "other"])
-        );
-        // Moving a directory back and forth keeps one entry, for what was
-        // written while it was away.
-        let placeholders = Placeholders::new();
-        for _ in 0..3 {
-            placeholders.renamed(&path(&["x"]), &path(&["y"]), Carried::default());
-            placeholders.renamed(&path(&["y"]), &path(&["x"]), Carried::default());
-        }
-        assert_eq!(lock_recover(&placeholders.state).moves.len(), 1);
-        assert_eq!(
-            placeholders.moved_path(&path(&["y", "file"])),
-            path(&["x", "file"])
-        );
-    }
-
-    #[test]
     fn settling_waits_for_every_pending_placeholder() -> Result<(), Box<dyn std::error::Error>> {
-        use super::{Placeholders, WrittenPlaceholder};
+        use super::{Projector, WrittenEntry};
         use crate::FileId;
         use crate::native_mount::ViewStamp;
 
-        let placeholders = Arc::new(Placeholders::new());
+        let projector = Arc::new(Projector::new());
         let path = MountPath::root().child(b"held".to_vec());
         {
-            let mut state = super::lock_recover(&placeholders.state);
+            let mut state = super::lock_recover(&projector.state);
             state.pending.insert(
                 path.clone(),
-                WrittenPlaceholder {
+                WrittenEntry {
                     file_id: FileId::new(),
                     owned: None,
                     facts: None,
@@ -5114,18 +5038,16 @@ mod tests {
             );
         }
         let settled = std::thread::spawn({
-            let placeholders = Arc::clone(&placeholders);
-            move || placeholders.settle()
+            let projector = Arc::clone(&projector);
+            move || projector.settle()
         });
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(
             !settled.is_finished(),
             "settled while a placeholder is pending"
         );
-        super::lock_recover(&placeholders.state)
-            .pending
-            .remove(&path);
-        placeholders.changed.notify_all();
+        super::lock_recover(&projector.state).pending.remove(&path);
+        projector.changed.notify_all();
         // Settling ends once nothing is pending.
         settled
             .join()
@@ -5134,7 +5056,7 @@ mod tests {
         Ok(())
     }
 
-    /// A superseded placeholder another handle holds open is replaced once
+    /// A superseded path another handle holds open is replaced once
     /// that handle closes; revalidation never returns while it still
     /// describes the superseded source.
     #[tokio::test(flavor = "multi_thread")]
@@ -5194,7 +5116,7 @@ mod tests {
         Ok(())
     }
 
-    /// A read-only source file's placeholder is read-only too; a change to
+    /// A read-only source file is written read-only too; a change to
     /// the source still replaces it, so revalidation never leaves it stale.
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
@@ -5252,17 +5174,17 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn placeholder_hydrates_only_the_source_content_it_promised()
+    async fn a_file_holds_only_the_content_its_listing_named()
     -> Result<(), Box<dyn std::error::Error>> {
-        // A placeholder is written from a lookup, or from the listing that
-        // projected its name; either promises exactly the listed content.
+        // A file is written from a lookup, or from the listing that
+        // projected its name; either names exactly the listed content.
         for listed_first in [false, true] {
-            hydrates_only_promised_content(listed_first).await?;
+            writes_only_promised_content(listed_first).await?;
         }
         Ok(())
     }
 
-    async fn hydrates_only_promised_content(
+    async fn writes_only_promised_content(
         listed_first: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::demand::native::NativeDemandSource;
@@ -5298,7 +5220,7 @@ mod tests {
         if listed_first {
             assert_eq!(std::fs::read_dir(&destination)?.count(), 2);
         }
-        // Stat writes both placeholders without hydrating either.
+        // Both are written.
         assert_eq!(std::fs::metadata(destination.join("changed.txt"))?.len(), 6);
         assert_eq!(std::fs::metadata(destination.join("stable.txt"))?.len(), 6);
 
@@ -5310,15 +5232,13 @@ mod tests {
         changed.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1 << 30))?;
         drop(changed);
 
-        // The placeholder either still promises the old version, whose
-        // hydration fails, or was already written again from the new one.
-        match std::fs::read(destination.join("changed.txt")) {
-            Err(_) => {}
-            Ok(read) => assert_eq!(
-                read, b"after!",
-                "a placeholder hydrated content it never promised"
-            ),
-        }
+        // The file holds the version the listing named, or was already
+        // written again from the new one: never a mix.
+        let read = std::fs::read(destination.join("changed.txt"))?;
+        assert!(
+            read == b"before" || read == b"after!",
+            "a file holds content no listing named: {read:?}"
+        );
         assert_eq!(std::fs::read(destination.join("stable.txt"))?, b"stable");
         mount.revalidate()?;
         assert_eq!(std::fs::read(destination.join("changed.txt"))?, b"after!");
@@ -5364,23 +5284,29 @@ mod tests {
                 MountOptions::read_write().publication(MountPublication::Manual),
             )
             .await?;
-        assert_eq!(
-            sorted_names(&destination.join("pkg"))?,
-            ["shared.rs", "sub"]
-        );
+        let listed = |path: &std::path::Path| {
+            sorted_names(path).map_err(|error| {
+                format!(
+                    "listing {}: {error}; the mount holds {:?}",
+                    path.display(),
+                    sorted_names(&destination)
+                )
+            })
+        };
+        assert_eq!(listed(&destination.join("pkg"))?, ["shared.rs", "sub"]);
         // ProjFS reports only other processes' I/O to its provider.
         let moved = std::process::Command::new("cmd.exe")
             .args(["/D", "/C", "move pkg lib"])
             .current_dir(&destination)
             .output()?;
         assert!(moved.status.success(), "move failed: {moved:?}");
-        assert_eq!(sorted_names(&destination)?, ["lib"]);
+        let read = |path: &std::path::Path| {
+            std::fs::read(path).map_err(|error| format!("reading {}: {error}", path.display()))
+        };
+        assert_eq!(listed(&destination)?, ["lib"]);
+        assert_eq!(read(&destination.join("lib").join("shared.rs"))?, b"shared");
         assert_eq!(
-            std::fs::read(destination.join("lib").join("shared.rs"))?,
-            b"shared"
-        );
-        assert_eq!(
-            std::fs::read(destination.join("lib").join("sub").join("deep.rs"))?,
+            read(&destination.join("lib").join("sub").join("deep.rs"))?,
             b"deep"
         );
         mount.sync().await?;
@@ -5428,46 +5354,6 @@ mod tests {
         assert_eq!(sorted_names(&destination)?, ["a.txt", "b.rs"]);
         mount.unmount().await?;
         Ok(())
-    }
-
-    #[test]
-    fn placeholder_version_carries_exactly_the_issued_pin() {
-        let lookup = MountLookup {
-            node: MountNode {
-                file_id: crate::FileId::new(),
-                kind: MountNodeKind::Regular,
-                logical_bytes: 6,
-                link_count: 1,
-                device: None,
-            },
-            metadata: FileMetadata::default(),
-        };
-        let pin = MountContentPin([7; 32]);
-        let mut callback = PRJ_CALLBACK_DATA::default();
-        assert_eq!(placeholder_pin(&callback), None);
-
-        let mut pinned = placeholder_info(&lookup, Some(pin))
-            .expect("regular file placeholder")
-            .VersionInfo;
-        callback.VersionInfo = &raw mut pinned;
-        assert_eq!(placeholder_pin(&callback), Some(pin));
-
-        let mut unpinned = placeholder_info(&lookup, None)
-            .expect("regular file placeholder")
-            .VersionInfo;
-        callback.VersionInfo = &raw mut unpinned;
-        assert_eq!(placeholder_pin(&callback), None);
-        // Every write is a new version, so `ProjFS` never skips a rewrite.
-        let again = placeholder_info(&lookup, None)
-            .expect("regular file placeholder")
-            .VersionInfo;
-        assert_ne!(again.ContentID, unpinned.ContentID);
-
-        // Another provider's version information is never read as a pin.
-        let mut foreign = pinned;
-        foreign.ProviderID[CONTENT_PIN_PROVIDER.len()] = 1;
-        callback.VersionInfo = &raw mut foreign;
-        assert_eq!(placeholder_pin(&callback), None);
     }
 
     #[test]
@@ -5686,7 +5572,7 @@ mod tests {
             .output()?;
         assert!(external.status.success(), "rename failed: {external:?}");
         mount.sync().await?;
-        // The rename hydrated the file and moved it; nothing writes it again,
+        // The rename moved the written file; nothing writes it again,
         // which would take it away from under a reader for a moment.
         let renamed = destination.join("after.txt");
         assert_eq!(

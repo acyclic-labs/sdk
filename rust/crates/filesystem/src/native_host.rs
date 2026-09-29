@@ -2370,7 +2370,7 @@ fn open_windows_parent<'a>(root: &Dir, path: &'a Path) -> io::Result<(Dir, &'a O
 /// dying; no sweep ever looks for leftovers. [`Self::publish`] first links
 /// the complete file to its final name, which then outlives the staged one.
 #[cfg(windows)]
-struct StagedWindowsFile {
+pub(crate) struct StagedWindowsFile {
     parent: Dir,
     name: std::path::PathBuf,
     /// Deletes the staged name when closed.
@@ -2388,9 +2388,10 @@ impl Drop for StagedWindowsFile {
         use std::os::windows::io::AsRawHandle as _;
         use windows::Win32::Foundation::HANDLE;
         use windows::Win32::Storage::FileSystem::{
-            FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_ON_CLOSE,
-            FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX,
-            FILE_DISPOSITION_INFO_EX_FLAGS, FileDispositionInfoEx, SetFileInformationByHandle,
+            FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+            FILE_DISPOSITION_FLAG_ON_CLOSE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+            FILE_DISPOSITION_INFO_EX, FILE_DISPOSITION_INFO_EX_FLAGS, FileDispositionInfoEx,
+            SetFileInformationByHandle,
         };
 
         let set = |flags: u32| {
@@ -2411,9 +2412,12 @@ impl Drop for StagedWindowsFile {
         // Delete-on-close would apply the ordinary delete at close, which
         // keeps the name while other handles last: it gives way to a POSIX
         // delete, and stays where that cannot be set.
+        // A staged file may already carry its final read-only attribute.
         if set(FILE_DISPOSITION_FLAG_ON_CLOSE.0).is_ok()
-            && set(FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0)
-                .is_err()
+            && set(FILE_DISPOSITION_FLAG_DELETE.0
+                | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0
+                | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE.0)
+            .is_err()
         {
             let _ = set(FILE_DISPOSITION_FLAG_ON_CLOSE.0 | FILE_DISPOSITION_FLAG_DELETE.0);
         }
@@ -2423,7 +2427,7 @@ impl Drop for StagedWindowsFile {
 #[cfg(windows)]
 impl StagedWindowsFile {
     /// Creates an empty staged file under a name no other writer uses.
-    fn create(parent: Dir) -> io::Result<Self> {
+    pub(crate) fn create(parent: Dir) -> io::Result<Self> {
         use cap_std::fs::OpenOptionsExt as _;
         use windows::Win32::Storage::FileSystem::{
             DELETE, FILE_FLAG_DELETE_ON_CLOSE, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
@@ -2449,7 +2453,7 @@ impl StagedWindowsFile {
 
     /// Opens the staged file for writing; the staged name still goes when
     /// the guard closes, however long this handle lives.
-    fn open_writer(&self, overlapped: bool) -> io::Result<File> {
+    pub(crate) fn open_writer(&self, overlapped: bool) -> io::Result<File> {
         use cap_std::fs::OpenOptionsExt as _;
         use windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 
@@ -2469,14 +2473,40 @@ impl StagedWindowsFile {
     /// before it is complete, and it is named relative to the held
     /// directory, never re-resolved by path. Closing the guard then removes
     /// only the staged name.
+    pub(crate) fn publish(&self, name: &OsStr) -> io::Result<()> {
+        self.link(&self.parent, name, false)
+    }
+
+    /// As [`Self::publish`], naming the file in `directory`, on the same
+    /// volume, instead of beside the staged name.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn publish_in(&self, directory: &Dir, name: &OsStr) -> io::Result<()> {
+        self.link(directory, name, false)
+    }
+
+    /// Gives the complete file its final `name` in `directory`, in place of
+    /// the file there now, in one step no reader observes between: the
+    /// replaced file goes with POSIX semantics, also while a handle to it
+    /// stays open.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn publish_over_in(&self, directory: &Dir, name: &OsStr) -> io::Result<()> {
+        self.link(directory, name, true)
+    }
+
     #[allow(unsafe_code)]
-    fn publish(&self, name: &OsStr) -> io::Result<()> {
+    fn link(&self, directory: &Dir, name: &OsStr, replace: bool) -> io::Result<()> {
         use std::mem::{offset_of, size_of};
         use std::os::windows::ffi::OsStrExt as _;
         use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
         use windows::Wdk::Storage::FileSystem::{
-            FILE_LINK_INFORMATION, FileLinkInformation, NtSetInformationFile,
+            FILE_INFORMATION_CLASS, FILE_LINK_INFORMATION, FileLinkInformation,
+            NtSetInformationFile,
         };
+        // `FileLinkInformationEx`, whose flags ask for replacement with POSIX
+        // semantics, also of a read-only file: `FILE_LINK_REPLACE_IF_EXISTS |
+        // FILE_LINK_POSIX_SEMANTICS | FILE_LINK_IGNORE_READONLY_ATTRIBUTE`.
+        const FILE_LINK_INFORMATION_EX: FILE_INFORMATION_CLASS = FILE_INFORMATION_CLASS(72);
+        const REPLACE_WITH_POSIX_SEMANTICS: u32 = 0x1 | 0x2 | 0x40;
         use windows::Win32::Foundation::HANDLE;
         use windows::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -2497,8 +2527,12 @@ impl StagedWindowsFile {
         // SAFETY: `storage` spans `total` bytes, aligned for the structure, with
         // `name_bytes` after the name offset; nothing else aliases it.
         unsafe {
-            (*information).Anonymous.ReplaceIfExists = false;
-            (*information).RootDirectory = HANDLE(self.parent.as_handle().as_raw_handle());
+            if replace {
+                (*information).Anonymous.Flags = REPLACE_WITH_POSIX_SEMANTICS;
+            } else {
+                (*information).Anonymous.ReplaceIfExists = false;
+            }
+            (*information).RootDirectory = HANDLE(directory.as_handle().as_raw_handle());
             (*information).FileNameLength = u32::try_from(name_bytes).map_err(|_| overflow())?;
             std::ptr::copy_nonoverlapping(
                 name.as_ptr(),
@@ -2515,7 +2549,11 @@ impl StagedWindowsFile {
                 &raw mut status_block,
                 information.cast(),
                 u32::try_from(total).map_err(|_| overflow())?,
-                FileLinkInformation,
+                if replace {
+                    FILE_LINK_INFORMATION_EX
+                } else {
+                    FileLinkInformation
+                },
             )
         };
         if status.is_ok() {

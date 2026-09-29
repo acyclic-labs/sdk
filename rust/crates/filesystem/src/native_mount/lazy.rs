@@ -5177,7 +5177,10 @@ mod tests {
         let writers = (0..WRITERS)
             .map(|writer| {
                 let source = source.clone();
-                std::thread::spawn(move || -> std::io::Result<()> {
+                std::thread::spawn(move || -> Result<(), String> {
+                    let failed = |step: &str, path: &std::path::Path, error: std::io::Error| {
+                        format!("{step} {}: {error}", path.display())
+                    };
                     for change in 0..CHANGES {
                         let name = (writer + change * WRITERS) % FILES;
                         let path = source.join(format!("f{name}"));
@@ -5185,17 +5188,21 @@ mod tests {
                             // Replaced whole, as an editor saves.
                             0 | 2 => {
                                 let staged = source.join(format!(".f{name}-{writer}"));
-                                std::fs::write(&staged, version(name, change + 1))?;
-                                std::fs::rename(&staged, &path)?;
+                                std::fs::write(&staged, version(name, change + 1))
+                                    .map_err(|error| failed("staging", &staged, error))?;
+                                std::fs::rename(&staged, &path)
+                                    .map_err(|error| failed("renaming onto", &path, error))?;
                             }
                             _ => match std::fs::remove_file(&path) {
                                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                                    return Err(error);
+                                    return Err(failed("removing", &path, error));
                                 }
                                 _ => {}
                             },
                         }
-                        std::fs::write(source.join(format!("g{name}")), version(name, change + 1))?;
+                        let rewritten = source.join(format!("g{name}"));
+                        std::fs::write(&rewritten, version(name, change + 1))
+                            .map_err(|error| failed("rewriting", &rewritten, error))?;
                     }
                     Ok(())
                 })
