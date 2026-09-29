@@ -327,6 +327,7 @@ impl WasmMemoryStream {
                         sequence: record.sequence,
                         value: record.value,
                         commit_id: record.commit_id.as_bytes().to_vec().into(),
+                        committed_at_micros: record.committed_at_micros,
                     }),
                 }
                 .encode_to_vec(),
@@ -418,6 +419,7 @@ impl WasmFollow {
                             sequence: record.sequence,
                             value: record.value,
                             commit_id: record.commit_id.as_bytes().to_vec().into(),
+                            committed_at_micros: record.committed_at_micros,
                         }),
                     }
                     .encode_to_vec()
@@ -917,6 +919,7 @@ mod http {
             ("sequence", json_u64(value.sequence)),
             ("value", json_bytes(value.value.as_ref())),
             ("commitId", json_bytes(value.commit_id.as_ref())),
+            ("committedAtMicros", json_u64(value.committed_at_micros)),
         ])
     }
 
@@ -1240,6 +1243,11 @@ mod http {
         set(&result, "sequence", &bigint_js(field(item, "sequence")?)?)?;
         set(&result, "value", &bytes_js(field(item, "value")?)?)?;
         set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
+        set(
+            &result,
+            "committedAtMicros",
+            &bigint_js(field(item, "committedAtMicros")?)?,
+        )?;
         Ok(result.into())
     }
 

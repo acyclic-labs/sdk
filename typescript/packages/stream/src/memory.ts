@@ -180,6 +180,6 @@ function streamError(error: unknown, operation: string): Error {
   else if (rawCode === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
   return new StreamError(code, message);
 }
-function record(value: { sequence: bigint; value: Uint8Array; commitId: Uint8Array }): EncodedRecord {
-  return { sequence: value.sequence, value: value.value, commitId: commitId(value.commitId) };
+function record(value: { sequence: bigint; value: Uint8Array; commitId: Uint8Array; committedAtMicros: bigint }): EncodedRecord {
+  return { sequence: value.sequence, value: value.value, commitId: commitId(value.commitId), committedAtMicros: value.committedAtMicros };
 }

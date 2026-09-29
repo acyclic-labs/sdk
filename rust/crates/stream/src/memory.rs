@@ -81,6 +81,8 @@ pub struct MemoryStream {
     limits: MemoryLimits,
     /// The trusted clock that deadlines are checked against.
     clock: Arc<dyn UnixMillisClock>,
+    /// Clock whose sampled commit time is recorded in each new record.
+    commit_clock: Arc<dyn UnixMillisClock>,
     /// The clock retention is measured on; see [`MemoryStream::new_with_clocks`].
     retention: Arc<dyn UnixMillisClock>,
 }
@@ -120,10 +122,20 @@ impl MemoryStream {
         clock: Arc<dyn UnixMillisClock>,
         retention: Arc<dyn UnixMillisClock>,
     ) -> Self {
+        Self::new_with_commit_clock(limits, Arc::clone(&clock), retention, clock)
+    }
+
+    pub(crate) fn new_with_commit_clock(
+        limits: MemoryLimits,
+        clock: Arc<dyn UnixMillisClock>,
+        retention: Arc<dyn UnixMillisClock>,
+        commit_clock: Arc<dyn UnixMillisClock>,
+    ) -> Self {
         Self {
             state: Arc::new(RwLock::new(State::default())),
             limits,
             clock,
+            commit_clock,
             retention,
         }
     }
@@ -184,12 +196,22 @@ impl MemoryStream {
                 CommitMutation::Append { .. } => None,
             })
             .collect::<BTreeMap<_, _>>();
-        let mutations = apply_coordinated(&mut state, request.mutations, &before, commit_id)?;
+        let committed_at_micros = state
+            .last_committed_at_micros
+            .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
+        let mutations = apply_coordinated(
+            &mut state,
+            request.mutations,
+            &before,
+            commit_id,
+            committed_at_micros,
+        )?;
         let envelope = CommittedEnvelope {
             commit_id,
             mutations,
         };
         let result = CommitOutcome::Committed(envelope.clone());
+        state.last_committed_at_micros = committed_at_micros;
         retain(
             &mut state,
             now,
@@ -215,6 +237,8 @@ struct State {
     record_count: usize,
     payload_bytes: usize,
     decision: u64,
+    /// High-water mark survives trimming, deletion, and snapshot restoration.
+    last_committed_at_micros: u64,
     hierarchy_version: CommitId,
 }
 
@@ -331,7 +355,10 @@ impl StreamProvider for MemoryStream {
             reserve_append(&state, &request.path, &request.records, self.limits)?;
         }
         let commit_id = next_commit_id(&mut state, digest)?;
-        let records = build_records(actual_tail, request.records, commit_id)?;
+        let committed_at_micros = state
+            .last_committed_at_micros
+            .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
+        let records = build_records(actual_tail, request.records, commit_id, committed_at_micros)?;
         ensure_path(&mut state, &request.path, commit_id);
         let resulting_tail = {
             let stream = state
@@ -370,6 +397,7 @@ impl StreamProvider for MemoryStream {
             })],
         };
         let result = AppendOutcome::Committed(receipt);
+        state.last_committed_at_micros = committed_at_micros;
         retain(
             &mut state,
             now,
@@ -762,6 +790,7 @@ fn build_records(
     start: u64,
     bodies: Vec<Bytes>,
     commit_id: CommitId,
+    committed_at_micros: u64,
 ) -> Result<Vec<Record>, StreamError> {
     bodies
         .into_iter()
@@ -774,6 +803,7 @@ fn build_records(
                 sequence,
                 value,
                 commit_id,
+                committed_at_micros,
             })
         })
         .collect()
@@ -1416,13 +1446,14 @@ fn apply_coordinated(
     mutations: Vec<CommitMutation>,
     before: &BTreeMap<StreamPath, (Option<Arc<History>>, u64)>,
     commit_id: CommitId,
+    committed_at_micros: u64,
 ) -> Result<Vec<CommittedMutation>, StreamError> {
     let mut committed = Vec::with_capacity(mutations.len());
     for mutation in mutations {
         match mutation {
             CommitMutation::Append { path, records } => {
                 let start = state.paths.get(&path).map_or(0, |stream| stream.tail);
-                let records = build_records(start, records, commit_id)?;
+                let records = build_records(start, records, commit_id, committed_at_micros)?;
                 ensure_path(state, &path, commit_id);
                 let resulting_tail = {
                     let stream = state.paths.get_mut(&path).ok_or(StreamError::Unavailable)?;
@@ -1457,7 +1488,7 @@ fn apply_coordinated(
                 if at_tail > *source_tail {
                     return Err(StreamError::InvalidArgument);
                 }
-                let records = build_records(at_tail, records, commit_id)?;
+                let records = build_records(at_tail, records, commit_id, committed_at_micros)?;
                 ensure_path(state, &destination, commit_id);
                 let tail = {
                     let stream = state
@@ -1502,6 +1533,61 @@ fn apply_coordinated(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[tokio::test]
+    async fn committed_record_times_never_regress_with_the_clock() -> Result<(), StreamError> {
+        let clock = Arc::new(TestClock::default());
+        let stream = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
+        let path = StreamPath::new("accounting/authority")?;
+        for (time, body) in [(100, b"first".as_slice()), (105, b"recovered")] {
+            clock.0.store(time, Ordering::SeqCst);
+            if time == 105 {
+                clock.0.store(90, Ordering::SeqCst);
+                let outcome = stream
+                    .commit(CommitRequest {
+                        conditions: vec![CommitCondition::Tail {
+                            path: path.clone(),
+                            expected: 1,
+                        }],
+                        mutations: vec![CommitMutation::Append {
+                            path: path.clone(),
+                            records: vec![Bytes::from_static(b"rollback")],
+                        }],
+                        idempotency_key: key(b"rollback-commit")?,
+                    })
+                    .await?;
+                assert!(matches!(outcome, CommitOutcome::Committed(_)));
+                clock.0.store(time, Ordering::SeqCst);
+            }
+            stream
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![Bytes::copy_from_slice(body)],
+                    if_tail: None,
+                    idempotency_key: None,
+                })
+                .await?;
+        }
+        let records = stream
+            .read(ReadRequest {
+                path,
+                from: 0,
+                limit: 3,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.committed_at_micros)
+                .collect::<Vec<_>>(),
+            vec![100_000, 100_000, 105_000]
+        );
+        Ok(())
+    }
 
     #[derive(Default)]
     struct TestClock(AtomicU64);

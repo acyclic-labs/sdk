@@ -50,6 +50,7 @@ try {
     assert.deepEqual(message.reservedName, names);
   };
   assertFields("TailResponse", [["tail", 1]]);
+  assertFields("Record", [["sequence", 1], ["value", 2], ["commit_id", 3], ["committed_at_micros", 4]]);
   assertReserved("TailResponse", [[2, 3]], ["trim_point"]);
   assertFields("CommitMutation", [["append", 1], ["fork", 2]]);
   assertReserved("CommitMutation", [[3, 4], [4, 5]], ["trim", "delete"]);

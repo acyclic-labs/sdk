@@ -18,6 +18,7 @@ message Record {
   uint64 sequence = 1;
   bytes value = 2;
   bytes commit_id = 3;
+  uint64 committed_at_micros = 4;
 }
 
 message AppendRequest {

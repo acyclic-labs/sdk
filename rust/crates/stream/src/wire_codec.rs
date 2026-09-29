@@ -215,6 +215,7 @@ pub(crate) fn record(value: wire::Record) -> Result<Record, StreamError> {
         sequence: value.sequence,
         value: value.value,
         commit_id: commit_id(&value.commit_id)?,
+        committed_at_micros: value.committed_at_micros,
     })
 }
 
@@ -232,6 +233,7 @@ pub(crate) fn record_wire(value: Record) -> wire::Record {
         sequence: value.sequence,
         value: value.value,
         commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
+        committed_at_micros: value.committed_at_micros,
     }
 }
 
@@ -518,6 +520,7 @@ fn record_to_wire(value: crate::Record) -> wire::Record {
         sequence: value.sequence,
         value: value.value,
         commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
+        committed_at_micros: value.committed_at_micros,
     }
 }
 
