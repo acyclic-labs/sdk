@@ -3523,11 +3523,29 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map(std::sync::Arc::new)
         .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
     #[cfg(windows)]
-    let ranges = settled_sparse_ranges(&native, &metadata, ranges, maximum_extent_spans)
-        .await
-        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
-    let content =
-        stage_host_ranges(stager, &native, &ranges, prior_work, budget, cancellation).await?;
+    let (ranges, scanned) = settled_sparse_ranges(
+        &native,
+        &metadata,
+        ranges,
+        maximum_extent_spans,
+        prior_work,
+        budget,
+        cancellation,
+    )
+    .await?;
+    #[cfg(not(windows))]
+    let scanned = WorkCounters::default();
+    let before_staging = add_work(prior_work, scanned)?;
+    let mut content = stage_host_ranges(
+        stager,
+        &native,
+        &ranges,
+        before_staging,
+        budget,
+        cancellation,
+    )
+    .await?;
+    content.work = add_work(scanned, content.work)?;
     let accumulated = prior_work
         .checked_add(content.work)
         .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
@@ -3816,22 +3834,27 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 /// that hold data. Within what it reports, each block of zeros is taken as
 /// the hole it reads as, so a capture holds the same content whenever it
 /// runs. The report stands where settling it would take more than
-/// `maximum_ranges`.
+/// `maximum_ranges`. Every byte read counts against `budget`, after
+/// `prior_work`, and the scan stops once cancelled; returns the work it did.
 #[cfg(windows)]
 async fn settled_sparse_ranges(
     native: &std::sync::Arc<acyclic_native_runtime::NativeFile>,
     metadata: &cap_std::fs::Metadata,
     reported: Vec<HostDataRange>,
     maximum_ranges: u32,
-) -> std::io::Result<Vec<HostDataRange>> {
+    prior_work: WorkCounters,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<HostDataRange>, WorkCounters), OperationFailure<CaptureError>> {
     use cap_std::fs::MetadataExt as _;
     use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SPARSE_FILE;
 
     const BLOCK: u64 = 4096;
     const CHUNK: u64 = 1 << 20;
 
+    let mut work = WorkCounters::default();
     if metadata.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE.0 == 0 {
-        return Ok(reported);
+        return Ok((reported, work));
     }
     let mut settled: Vec<HostDataRange> = Vec::new();
     let mut keep = |offset: u64, length: u64| match settled.last_mut() {
@@ -3847,10 +3870,21 @@ async fn settled_sparse_ranges(
         let end = range.offset + range.length;
         let mut position = range.offset;
         while position < end {
+            let spent = add_work(prior_work, work)?;
+            cancellation.check().map_err(|error| {
+                OperationFailure::new(CaptureError::Engine(error.to_string()), spent)
+            })?;
             let wanted = (CHUNK - position % CHUNK).min(end - position);
             let bytes = reader
                 .read(usize::try_from(wanted).unwrap_or(usize::MAX))
-                .await?;
+                .await
+                .map_err(|error| OperationFailure::new(error.into(), spent))?;
+            work.source_bytes_read = work
+                .source_bytes_read
+                .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+            add_work(prior_work, work)?
+                .remaining(budget)
+                .map_err(|error| OperationFailure::new(CaptureError::Work(error), spent))?;
             if bytes.is_empty() {
                 // Shorter than reported: staging finds the change.
                 keep(position, end - position);
@@ -3874,13 +3908,12 @@ async fn settled_sparse_ranges(
             position = read_end;
         }
     }
-    Ok(
-        if settled.len() > usize::try_from(maximum_ranges).unwrap_or(usize::MAX) {
-            reported
-        } else {
-            settled
-        },
-    )
+    let ranges = if settled.len() > usize::try_from(maximum_ranges).unwrap_or(usize::MAX) {
+        reported
+    } else {
+        settled
+    };
+    Ok((ranges, work))
 }
 
 /// The native file a handle from [`HostRoot::open_file_positional`] reads
@@ -4124,13 +4157,21 @@ mod windows_sparse_tests {
         let file = root.open_file_positional(Path::new(name))?;
         let metadata = file.metadata()?;
         let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
-        Ok(
-            settled_sparse_ranges(&native, &metadata, reported, maximum_ranges)
-                .await?
-                .into_iter()
-                .map(|range| (range.offset, range.length))
-                .collect(),
+        let (ranges, _) = settled_sparse_ranges(
+            &native,
+            &metadata,
+            reported,
+            maximum_ranges,
+            WorkCounters::default(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
+        .await
+        .map_err(|failure| std::io::Error::other(failure.error.to_string()))?;
+        Ok(ranges
+            .into_iter()
+            .map(|range| (range.offset, range.length))
+            .collect())
     }
 
     #[tokio::test]
@@ -4187,6 +4228,43 @@ mod windows_sparse_tests {
             settle(directory.path(), "sparse.bin", whole(), 2).await?,
             [(0, length)]
         );
+
+        // Every byte read is charged, and the scan stops at the budget or
+        // once cancelled.
+        let root = HostRoot::open(directory.path())?;
+        let file = root.open_file_positional(Path::new("sparse.bin"))?;
+        let metadata = file.metadata()?;
+        let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
+        let scan = |budget: WorkBudget, cancellation: CancellationToken| {
+            let (native, metadata) = (std::sync::Arc::clone(&native), metadata.clone());
+            async move {
+                settled_sparse_ranges(
+                    &native,
+                    &metadata,
+                    whole(),
+                    16,
+                    WorkCounters::default(),
+                    budget,
+                    &cancellation,
+                )
+                .await
+            }
+        };
+        let (_, work) = scan(WorkBudget::UNBOUNDED, CancellationToken::new())
+            .await
+            .map_err(|failure| std::io::Error::other(failure.error.to_string()))?;
+        assert_eq!(work.source_bytes_read, length);
+        let short = WorkBudget {
+            source_bytes_read: 4096,
+            ..WorkBudget::UNBOUNDED
+        };
+        assert!(matches!(
+            scan(short, CancellationToken::new()).await,
+            Err(failure) if matches!(failure.error, CaptureError::Work(_))
+        ));
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(scan(WorkBudget::UNBOUNDED, cancelled).await.is_err());
         Ok(())
     }
 }
