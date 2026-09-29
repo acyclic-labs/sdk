@@ -3514,8 +3514,20 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let logical_bytes = metadata.len();
     let ranges = allocated_data_ranges(&file, logical_bytes, maximum_extent_spans)
         .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
+    // One native file serves every read, through a duplicate of the
+    // positional handle; the original stays for metadata.
+    let native = file
+        .try_clone()
+        .map(cap_std::fs::File::into_std)
+        .and_then(native_positional_file)
+        .map(std::sync::Arc::new)
+        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
+    #[cfg(windows)]
+    let ranges = settled_sparse_ranges(&native, &metadata, ranges, maximum_extent_spans)
+        .await
+        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
     let content =
-        stage_host_ranges(stager, &file, &ranges, prior_work, budget, cancellation).await?;
+        stage_host_ranges(stager, &native, &ranges, prior_work, budget, cancellation).await?;
     let accumulated = prior_work
         .checked_add(content.work)
         .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
@@ -3744,7 +3756,7 @@ struct StagedHostRanges {
 
 async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     stager: &ContentStager<A, O>,
-    file: &cap_std::fs::File,
+    native: &std::sync::Arc<acyclic_native_runtime::NativeFile>,
     ranges: &[HostDataRange],
     prior_work: WorkCounters,
     budget: WorkBudget,
@@ -3756,20 +3768,12 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_err(|_| OperationFailure::new(CaptureError::InvalidOptions, prior_work))?;
     let mut work = WorkCounters::default();
     let mut bytes = 0_u64;
-    // One native file serves every range, reading through a duplicate of
-    // the positional handle; the caller keeps the original for metadata.
-    let native = file
-        .try_clone()
-        .map(cap_std::fs::File::into_std)
-        .and_then(native_positional_file)
-        .map(std::sync::Arc::new)
-        .map_err(|error| OperationFailure::new(error.into(), prior_work))?;
     for range in ranges {
         let accumulated = prior_work
             .checked_add(work)
             .map_err(|error| OperationFailure::new(CaptureError::Work(error), prior_work))?;
         let mut bounded = NativeRangeSource(acyclic_native_runtime::AsyncRangeReader::new(
-            std::sync::Arc::clone(&native),
+            std::sync::Arc::clone(native),
             range.offset,
             range.length,
         ));
@@ -3803,6 +3807,80 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         work,
         bytes,
     })
+}
+
+/// The data ranges of a file marked sparse, settled against its content.
+///
+/// `ReFS` reports what was just written to a sparse file as allocated for a
+/// while, up to the whole file, flushed or not, and only later the ranges
+/// that hold data. Within what it reports, each block of zeros is taken as
+/// the hole it reads as, so a capture holds the same content whenever it
+/// runs. The report stands where settling it would take more than
+/// `maximum_ranges`.
+#[cfg(windows)]
+async fn settled_sparse_ranges(
+    native: &std::sync::Arc<acyclic_native_runtime::NativeFile>,
+    metadata: &cap_std::fs::Metadata,
+    reported: Vec<HostDataRange>,
+    maximum_ranges: u32,
+) -> std::io::Result<Vec<HostDataRange>> {
+    use cap_std::fs::MetadataExt as _;
+    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SPARSE_FILE;
+
+    const BLOCK: u64 = 4096;
+    const CHUNK: u64 = 1 << 20;
+
+    if metadata.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE.0 == 0 {
+        return Ok(reported);
+    }
+    let mut settled: Vec<HostDataRange> = Vec::new();
+    let mut keep = |offset: u64, length: u64| match settled.last_mut() {
+        Some(last) if last.offset + last.length == offset => last.length += length,
+        _ => settled.push(HostDataRange { offset, length }),
+    };
+    for range in &reported {
+        let mut reader = acyclic_native_runtime::AsyncRangeReader::new(
+            std::sync::Arc::clone(native),
+            range.offset,
+            range.length,
+        );
+        let end = range.offset + range.length;
+        let mut position = range.offset;
+        while position < end {
+            let wanted = (CHUNK - position % CHUNK).min(end - position);
+            let bytes = reader
+                .read(usize::try_from(wanted).unwrap_or(usize::MAX))
+                .await?;
+            if bytes.is_empty() {
+                // Shorter than reported: staging finds the change.
+                keep(position, end - position);
+                break;
+            }
+            let read_end = position + u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            let mut start = position;
+            while start < read_end {
+                let block_end = ((start / BLOCK + 1) * BLOCK).min(read_end);
+                let block = bytes
+                    .get(
+                        usize::try_from(start - position).unwrap_or(usize::MAX)
+                            ..usize::try_from(block_end - position).unwrap_or(usize::MAX),
+                    )
+                    .unwrap_or_default();
+                if block.iter().any(|byte| *byte != 0) {
+                    keep(start, block_end - start);
+                }
+                start = block_end;
+            }
+            position = read_end;
+        }
+    }
+    Ok(
+        if settled.len() > usize::try_from(maximum_ranges).unwrap_or(usize::MAX) {
+            reported
+        } else {
+            settled
+        },
+    )
 }
 
 /// The native file a handle from [`HostRoot::open_file_positional`] reads
@@ -4027,6 +4105,88 @@ mod windows_name_tests {
         let host = std::path::Path::new("src/ünïcøde/日本語.rs");
         let namespace = host_path_to_namespace(host, FilesystemProfile::Windows, limits)?;
         assert_eq!(namespace_to_host_path(&namespace)?, host);
+        Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_sparse_tests {
+    use super::*;
+
+    /// Settles `reported` for the file at `name` under `directory`.
+    async fn settle(
+        directory: &Path,
+        name: &str,
+        reported: Vec<HostDataRange>,
+        maximum_ranges: u32,
+    ) -> std::io::Result<Vec<(u64, u64)>> {
+        let root = HostRoot::open(directory)?;
+        let file = root.open_file_positional(Path::new(name))?;
+        let metadata = file.metadata()?;
+        let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
+        Ok(
+            settled_sparse_ranges(&native, &metadata, reported, maximum_ranges)
+                .await?
+                .into_iter()
+                .map(|range| (range.offset, range.length))
+                .collect(),
+        )
+    }
+
+    #[tokio::test]
+    #[allow(unsafe_code)]
+    async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()> {
+        use std::io::{Seek as _, SeekFrom, Write as _};
+        use std::os::windows::io::AsRawHandle as _;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::IO::DeviceIoControl;
+        use windows::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+
+        let directory = tempfile::tempdir()?;
+        let length = 64 * 1024 + 100;
+        let whole = || vec![HostDataRange { offset: 0, length }];
+        let plain = std::fs::File::create(directory.path().join("plain.bin"))?;
+        plain.set_len(length)?;
+        drop(plain);
+        // Not marked sparse: its report stands.
+        assert_eq!(
+            settle(directory.path(), "plain.bin", whole(), 16).await?,
+            [(0, length)]
+        );
+
+        let mut file = std::fs::File::create(directory.path().join("sparse.bin"))?;
+        // SAFETY: no buffers are passed and the handle stays live.
+        unsafe {
+            DeviceIoControl(
+                HANDLE(file.as_raw_handle()),
+                FSCTL_SET_SPARSE,
+                None,
+                0,
+                None,
+                0,
+                None,
+                None,
+            )
+            .map_err(std::io::Error::other)?;
+        }
+        file.set_len(length)?;
+        file.write_all(&[1; 10])?;
+        // Zeros written, so allocated, around the data block at 40 KiB.
+        file.seek(SeekFrom::Start(4096))?;
+        file.write_all(&[0; 36 * 1024])?;
+        file.write_all(&[2; 5])?;
+        file.seek(SeekFrom::Start(length - 3))?;
+        file.write_all(&[3; 3])?;
+        drop(file);
+        assert_eq!(
+            settle(directory.path(), "sparse.bin", whole(), 16).await?,
+            [(0, 4096), (40 * 1024, 4096), (64 * 1024, 100)]
+        );
+        // Settling it would take more ranges than admitted: the report stands.
+        assert_eq!(
+            settle(directory.path(), "sparse.bin", whole(), 2).await?,
+            [(0, length)]
+        );
         Ok(())
     }
 }
