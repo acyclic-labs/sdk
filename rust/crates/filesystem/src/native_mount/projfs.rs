@@ -1095,26 +1095,33 @@ impl Placeholders {
         }
     }
 
-    /// Removes each vacated directory nothing pending is beneath any more.
+    /// Removes each vacated directory nothing pending is beneath any more,
+    /// unless the source made it a directory again, projected once more.
     fn clear_vacated(&self, projection: Projection<'_>) {
         let mut cleared = {
             let mut state = lock_recover(&self.state);
             let state = &mut *state;
+            let beneath = |directory: &MountPath, path: &MountPath| {
+                projfs_path_suffix(path, directory).is_some()
+            };
             let cleared = state
                 .vacated
                 .iter()
-                .filter(|directory| {
-                    !state
-                        .pending
-                        .keys()
-                        .any(|path| projfs_path_suffix(path, directory).is_some())
-                })
+                .filter(|directory| !state.pending.keys().any(|path| beneath(directory, path)))
                 .cloned()
                 .collect::<Vec<_>>();
-            for directory in &cleared {
-                state.vacated.remove(directory);
-            }
+            state
+                .vacated
+                .retain(|directory| !cleared.contains(directory));
             cleared
+                .into_iter()
+                .filter(|directory| {
+                    !state
+                        .directories
+                        .keys()
+                        .any(|path| beneath(directory, path))
+                })
+                .collect::<Vec<_>>()
         };
         cleared.sort_by_key(|path| std::cmp::Reverse(path.components().len()));
         for directory in cleared {
