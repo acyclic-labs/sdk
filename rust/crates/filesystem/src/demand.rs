@@ -1404,7 +1404,10 @@ pub mod native {
                 }
             }
             bytes.truncate(filled);
-            work.source_bytes_read = filled as u64;
+            work.source_bytes_read = work
+                .source_bytes_read
+                .checked_add(filled as u64)
+                .ok_or(DemandError::InvalidRequest)?;
             self.prove_current(cancellation)?;
             work.output_bytes = filled as u64;
             Ok(Bytes::from(bytes))
