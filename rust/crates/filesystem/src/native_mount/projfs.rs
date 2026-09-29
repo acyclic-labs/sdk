@@ -92,10 +92,9 @@ struct ProjectedEntry {
     name: Vec<u16>,
     /// The entry's exact path component.
     component: Vec<u8>,
-    /// What the placeholder is written from.
-    facts: PlaceholderFacts,
-    /// The basic information, and with the pin exactly the placeholder
-    /// written for this entry.
+    /// What the entry is written from.
+    facts: EntryFacts,
+    /// The basic information written for this entry.
     info: PRJ_FILE_BASIC_INFO,
     symlink_target: Option<bytes::Bytes>,
     /// Whether a link names a directory: a Windows link says so when made.
@@ -111,7 +110,7 @@ struct Runtime {
     projection: Arc<Mutex<ProjectionCache>>,
     /// Everything written into the projection, kept current as the source
     /// changes.
-    placeholders: Arc<Placeholders>,
+    projector: Arc<Projector>,
     metadata_probes: Arc<Mutex<HashMap<MountPath, usize>>>,
     /// Held for a file while one handle's metadata edits are read from the
     /// source and written back. `ProjFS` names each handle apart, so handles
@@ -439,8 +438,9 @@ enum Owned {
 enum Placed {
     /// Nothing: something is there already, or its directory is gone.
     Nothing,
-    /// A placeholder, or an ordinary directory.
-    Placeholder,
+    /// Written with nothing the projection owns in it: a link placeholder,
+    /// which `ProjFS` manages, or an ordinary directory.
+    Unowned,
     /// What `ProjFS` does not manage for the projection.
     Owned(Owned),
     /// Nothing yet: the source changed while its content was read. Its
@@ -452,7 +452,7 @@ impl Placed {
     const fn owned(self) -> Option<Owned> {
         match self {
             Self::Owned(owned) => Some(owned),
-            Self::Nothing | Self::Placeholder | Self::Retry => None,
+            Self::Nothing | Self::Unowned | Self::Retry => None,
         }
     }
 }
@@ -460,12 +460,12 @@ impl Placed {
 /// What one path was written from: the node, its metadata, and the content
 /// its file holds.
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct PlaceholderFacts {
+struct EntryFacts {
     lookup: MountLookup,
     pin: Option<MountContentPin>,
 }
 
-impl PlaceholderFacts {
+impl EntryFacts {
     /// Whether what was written from `self` is also what `current` would
     /// write. Access times move with every read and are not written.
     fn describe(&self, current: &Self) -> bool {
@@ -500,21 +500,21 @@ impl ProjectionCache {
     }
 }
 
-/// One placeholder `ProjFS` keeps on disk, as a source read wrote it.
+/// What the projection wrote at one path, as a source read wrote it.
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct WrittenPlaceholder {
+struct WrittenEntry {
     file_id: FileId,
-    /// What is held here that `ProjFS` does not manage; `None` for a
-    /// placeholder it does.
+    /// What is held here that `ProjFS` does not manage; `None` for what it
+    /// does.
     owned: Option<Owned>,
     /// What it was written from; `None` for one known only to be gone.
-    facts: Option<PlaceholderFacts>,
+    facts: Option<EntryFacts>,
     /// The view it was read in; `None` when the source cannot version it
     /// or was moving, which no later change is needed to supersede.
     basis: Option<ReadBasis>,
 }
 
-impl WrittenPlaceholder {
+impl WrittenEntry {
     /// Whether a change since it was written may have made it wrong.
     fn superseded(&self, source: &dyn MountFilesystem, path: &MountPath) -> bool {
         self.basis
@@ -536,7 +536,7 @@ impl WrittenPlaceholder {
 #[derive(Default)]
 struct Carried {
     basis: Option<ReadBasis>,
-    files: Vec<(MountPath, PlaceholderFacts)>,
+    files: Vec<(MountPath, EntryFacts)>,
 }
 
 impl Carried {
@@ -555,7 +555,7 @@ impl Carried {
                 let moved = rebased(path, from, to)?;
                 let (lookup, pin) = source.lookup_pinned(&moved).ok().flatten()?;
                 (lookup.node.kind != MountNodeKind::Directory)
-                    .then_some((moved, PlaceholderFacts { lookup, pin }))
+                    .then_some((moved, EntryFacts { lookup, pin }))
             })
             .collect();
         Self { basis, files }
@@ -573,7 +573,7 @@ struct Materialized {
     names: HashMap<Vec<u8>, bool>,
 }
 
-/// Most threads that write one tree of placeholders at once.
+/// Most threads that write one tree at once.
 const MATERIALIZE_WORKERS: usize = 8;
 
 /// A [`Projection`] several workers write through at once.
@@ -669,55 +669,54 @@ struct Projection<'a> {
 /// The projection this provider writes, and the worker that keeps it
 /// current.
 ///
-/// `ProjFS` never lets a directory it projected be renamed, so nothing is
-/// projected on demand: every directory is created as an ordinary directory,
-/// and a placeholder is written for every file in it before anything can
-/// list it (`ProjFS` asks the provider nothing about an ordinary directory).
-/// A placeholder's content is still read only when it is first opened.
+/// `ProjFS` never lets a directory it projected be renamed, and drops a
+/// time set through a writable handle to a placeholder it manages, so
+/// nothing is projected on demand: every directory is created as an
+/// ordinary directory and every file written as an ordinary file before
+/// anything can list it (`ProjFS` asks the provider nothing about an
+/// ordinary directory). Only links are placeholders.
 ///
-/// `ProjFS` answers a placeholder from disk, attributes and all, until its
-/// provider updates or deletes it. So every placeholder is kept with the
-/// basis it was written in, and once a change supersedes it the worker
-/// writes it again from the source, or deletes it where the source names
-/// nothing. Every directory is kept with the names it holds, and once its
-/// source listing changes the worker reconciles three ways: a name the
-/// source gained is written unless something is there already, and a
-/// directory the source lost is emptied of the placeholders written into it
-/// and removed if nothing else is left. What the user creates, changes or
-/// deletes through the mount is authored state and stays: `ProjFS` refuses
-/// to update or delete a placeholder once it is modified.
+/// Every path written is kept with the basis it was written in, and once a
+/// change supersedes it the worker writes it again from the source, or
+/// removes it where the source names nothing. Every directory is kept with
+/// the names it holds, and once its source listing changes the worker
+/// reconciles three ways: a name the source gained is written unless
+/// something is there already, and a directory the source lost is emptied
+/// of what was written into it and removed if nothing else is left. What
+/// the user creates, changes or deletes through the mount is authored state
+/// and stays: a file is replaced or removed only while it is exactly as
+/// written.
 ///
-/// A superseded placeholder is pending from the moment the worker finds it
-/// until it is replaced, released, or fails, including while the worker is
+/// A superseded path is pending from the moment the worker finds it until
+/// it is replaced, released, or fails, including while the worker is
 /// replacing it, so revalidation never returns while one still describes a
 /// superseded source. One another process holds open cannot be replaced
 /// until the handle closes: it stays pending, retried as handles close and
-/// every [`PLACEHOLDER_RETRY`], and revalidation waits for it at most
-/// [`PLACEHOLDER_SETTLE_LIMIT`] once every change has been served, then
-/// fails naming it.
-struct Placeholders {
-    state: Mutex<PlaceholderState>,
+/// every [`HELD_RETRY`], and revalidation waits for it at most
+/// [`HELD_SETTLE_LIMIT`] once every change has been served, then fails
+/// naming it.
+struct Projector {
+    state: Mutex<ProjectorState>,
     /// Held by whatever writes directories into the projection, so a
     /// listing is written and recorded as one step.
     tree: Mutex<()>,
-    /// Held for a path while what is written there changes: a placeholder
-    /// made an ordinary file, or what was written replaced or removed.
+    /// Held for a path while what is written there is replaced or removed.
     paths: KeyedLocks<MountPath>,
     changed: Condvar,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
-/// How often a placeholder held open is tried again.
-const PLACEHOLDER_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
-/// How long revalidation waits for placeholders held open, once every
+/// How often a path held open is tried again.
+const HELD_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
+/// How long revalidation waits for paths held open, once every
 /// change has been served.
-const PLACEHOLDER_SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+const HELD_SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Default)]
-struct PlaceholderState {
-    written: HashMap<MountPath, WrittenPlaceholder>,
-    /// Superseded placeholders not yet replaced, released, or failed.
-    pending: HashMap<MountPath, WrittenPlaceholder>,
+struct ProjectorState {
+    written: HashMap<MountPath, WrittenEntry>,
+    /// Superseded paths not yet replaced, released, or failed.
+    pending: HashMap<MountPath, WrittenEntry>,
     /// Every directory created in the projection.
     directories: HashMap<MountPath, Materialized>,
     /// Directories to list again whatever their basis says.
@@ -731,27 +730,27 @@ struct PlaceholderState {
     /// Whether the worker's pass in progress took stale directories it has
     /// not listed yet.
     relisting: bool,
-    /// Whether a handle closed since pending placeholders were last tried.
+    /// Whether a handle closed since pending paths were last tried.
     retry: bool,
     /// Latest change around the mount the source reported.
     notified: Option<ViewStamp>,
-    /// Latest change every placeholder was checked against.
+    /// Latest change everything written was checked against.
     processed: Option<ViewStamp>,
-    /// First placeholder the worker could not replace since the last
+    /// First path the worker could not replace since the last
     /// revalidation.
     failure: Option<String>,
     stopping: bool,
 }
 
-impl PlaceholderState {
-    /// Records what one round of replacing pending placeholders came to.
+impl ProjectorState {
+    /// Records what one round of replacing pending paths came to.
     /// Records what replacing `attempted` at `path` came to: settled, and
     /// `current` written in its place.
     fn record_attempt(
         &mut self,
         path: &MountPath,
-        attempted: &WrittenPlaceholder,
-        current: Option<WrittenPlaceholder>,
+        attempted: &WrittenEntry,
+        current: Option<WrittenEntry>,
     ) {
         // Superseded again meanwhile, it stays pending as that.
         if self.pending.get(path) == Some(attempted) {
@@ -772,7 +771,7 @@ impl PlaceholderState {
     }
 }
 
-impl ViewObserver for Placeholders {
+impl ViewObserver for Projector {
     fn view_changed(&self, position: ViewStamp, _origin: ViewOrigin) {
         let mut state = lock_recover(&self.state);
         state.notified = state.notified.max(Some(position));
@@ -780,11 +779,11 @@ impl ViewObserver for Placeholders {
     }
 }
 
-/// What replacing one superseded placeholder came to.
+/// What replacing one superseded path came to.
 enum Replaced {
     /// Written again from the source.
-    Rewritten(Box<WrittenPlaceholder>),
-    /// Deleted, or no longer a placeholder the provider owns.
+    Rewritten(Box<WrittenEntry>),
+    /// Deleted, or no longer the projection's.
     Released,
     /// Open elsewhere; pending until it can be replaced.
     Busy,
@@ -799,10 +798,10 @@ fn rebased(path: &MountPath, from: &MountPath, to: &MountPath) -> Option<MountPa
     })
 }
 
-impl Placeholders {
+impl Projector {
     fn new() -> Self {
         Self {
-            state: Mutex::new(PlaceholderState::default()),
+            state: Mutex::new(ProjectorState::default()),
             tree: Mutex::new(()),
             paths: KeyedLocks::default(),
             changed: Condvar::new(),
@@ -810,17 +809,17 @@ impl Placeholders {
         }
     }
 
-    /// Keeps the placeholder written at `path` in view `basis`.
+    /// Keeps what was written at `path` in view `basis`.
     fn written(
         &self,
         path: MountPath,
-        facts: PlaceholderFacts,
+        facts: EntryFacts,
         owned: Option<Owned>,
         basis: Option<ReadBasis>,
     ) {
         lock_recover(&self.state).written.insert(
             path,
-            WrittenPlaceholder {
+            WrittenEntry {
                 file_id: facts.lookup.node.file_id,
                 owned,
                 facts: Some(facts),
@@ -844,8 +843,8 @@ impl Placeholders {
         if directories.is_empty() {
             return Ok(());
         }
-        // Each placeholder is one kernel call, independent of the others:
-        // several workers write a tree in a fraction of the time one does.
+        // Each entry is written independently of the others: several
+        // workers write a tree in a fraction of the time one does.
         let workers = std::thread::available_parallelism()
             .map_or(1, usize::from)
             .min(MATERIALIZE_WORKERS);
@@ -892,6 +891,8 @@ impl Placeholders {
                     },
                 );
                 state.stale.insert(directory);
+                // Written while the mount starts, off the worker's thread.
+                self.changed.notify_all();
                 return Ok(Vec::new());
             }
             Err(error) => return Err(format!("listing {directory:?}: {error}")),
@@ -919,11 +920,12 @@ impl Placeholders {
         let mut state = lock_recover(&self.state);
         if retry {
             state.stale.insert(directory.clone());
+            self.changed.notify_all();
         }
         for (path, facts, owned) in written {
             state.written.insert(
                 path,
-                WrittenPlaceholder {
+                WrittenEntry {
                     file_id: facts.lookup.node.file_id,
                     owned,
                     facts: Some(facts),
@@ -938,7 +940,7 @@ impl Placeholders {
     }
 
     /// Lists `directory` again and reconciles what it holds with the names
-    /// it was last written with (see [`Placeholders`]). A file the source
+    /// it was last written with (see [`Projector`]). A file the source
     /// lost is replaced, so deleted unless modified.
     fn reconcile(&self, projection: Projection<'_>, directory: &MountPath) -> Result<(), String> {
         let _tree = lock_recover(&self.tree);
@@ -988,7 +990,7 @@ impl Placeholders {
                         // listing stays unrecorded, and is listed again once
                         // the old entry is gone.
                         let mut state = lock_recover(&self.state);
-                        let written = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
+                        let written = state.written.remove(&child).unwrap_or(WrittenEntry {
                             file_id: FileId::from_bytes([0; 16]),
                             owned,
                             facts: None,
@@ -1022,12 +1024,12 @@ impl Placeholders {
             if *was_directory {
                 self.remove_tree(projection, &child);
             } else {
-                // Replaced like any superseded placeholder: deleted unless
+                // Replaced like any superseded path: deleted unless
                 // modified, and tried again while held open.
                 let mut state = lock_recover(&self.state);
                 // Already pending, it is replaced as what it was written as.
                 if !state.pending.contains_key(&child) {
-                    let placeholder = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
+                    let placeholder = state.written.remove(&child).unwrap_or(WrittenEntry {
                         file_id: FileId::from_bytes([0; 16]),
                         owned: None,
                         facts: None,
@@ -1101,7 +1103,7 @@ impl Placeholders {
                         // Held open: tried again as pending.
                         held = true;
                         let mut state = lock_recover(&self.state);
-                        let written = state.written.remove(&child).unwrap_or(WrittenPlaceholder {
+                        let written = state.written.remove(&child).unwrap_or(WrittenEntry {
                             file_id: FileId::from_bytes([0; 16]),
                             owned,
                             facts: None,
@@ -1184,14 +1186,14 @@ impl Placeholders {
                 state.directories.insert(new, materialized);
             }
         }
-        for placeholders in [&mut state.written, &mut state.pending] {
-            let moved = placeholders
+        for projector in [&mut state.written, &mut state.pending] {
+            let moved = projector
                 .keys()
                 .filter_map(|path| rebased(path, from, to).map(|moved| (path.clone(), moved)))
                 .collect::<Vec<_>>();
             for (old, new) in moved {
-                if let Some(written) = placeholders.remove(&old) {
-                    placeholders.insert(new, written);
+                if let Some(written) = projector.remove(&old) {
+                    projector.insert(new, written);
                 }
             }
         }
@@ -1211,7 +1213,7 @@ impl Placeholders {
             let pending = state.pending.remove(&path);
             state.written.insert(
                 path,
-                WrittenPlaceholder {
+                WrittenEntry {
                     file_id: facts.lookup.node.file_id,
                     owned: written.or(pending).and_then(|written| written.owned),
                     facts: Some(facts),
@@ -1255,14 +1257,14 @@ impl Placeholders {
         root: PathBuf,
         captures: Arc<Mutex<PostOperationFailures>>,
     ) -> Result<(), NativeMountError> {
-        let placeholders = Arc::clone(self);
+        let projector = Arc::clone(self);
         let observed = Arc::clone(&source);
         let context = SendContext(context);
         let worker = std::thread::Builder::new()
-            .name("acyclic-projfs-placeholders".to_owned())
+            .name("acyclic-projfs-projector".to_owned())
             .spawn(move || {
                 let context = context;
-                placeholders.run(Projection {
+                projector.run(Projection {
                     source: source.as_ref(),
                     context: context.0,
                     root: &root,
@@ -1272,8 +1274,8 @@ impl Placeholders {
             })
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
         *lock_recover(&self.worker) = Some(worker);
-        let placeholders = Arc::downgrade(self);
-        let observer: std::sync::Weak<dyn ViewObserver> = placeholders;
+        let projector = Arc::downgrade(self);
+        let observer: std::sync::Weak<dyn ViewObserver> = projector;
         observed.observe_view(observer);
         Ok(())
     }
@@ -1282,7 +1284,7 @@ impl Placeholders {
         let source = projection.source;
         let mut state = lock_recover(&self.state);
         loop {
-            // Waits for a change, or, while placeholders are pending, for a
+            // Waits for a change, or, while paths are pending, for a
             // handle to close or the retry interval, whichever comes first.
             loop {
                 if state.stopping {
@@ -1299,7 +1301,7 @@ impl Placeholders {
                 } else {
                     let (next, waited) = self
                         .changed
-                        .wait_timeout(state, PLACEHOLDER_RETRY)
+                        .wait_timeout(state, HELD_RETRY)
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     state = next;
                     if waited.timed_out() {
@@ -1359,7 +1361,7 @@ impl Placeholders {
         }
     }
 
-    /// Replaces every pending placeholder, each under its path's lock with
+    /// Replaces every pending path, each under its path's lock with
     /// the record current there, and records the outcome.
     fn replace_pending(&self, projection: Projection<'_>, failure: &mut Option<String>) {
         // Attempted as a snapshot: each stays pending until its outcome is
@@ -1378,7 +1380,7 @@ impl Placeholders {
                 let Some(written) = lock_recover(&self.state).pending.get(&path).copied() else {
                     return Ok(());
                 };
-                let replaced = replace_placeholder(projection, &path, &written);
+                let replaced = replace_written(projection, &path, &written);
                 let mut state = lock_recover(&self.state);
                 match replaced {
                     Ok(Replaced::Rewritten(current)) => {
@@ -1402,14 +1404,10 @@ impl Placeholders {
         }
     }
 
-    /// Reads each placeholder only unconfirmed changes superseded again:
+    /// Reads each path only unconfirmed changes superseded again:
     /// one the source would still write as it is holds from now on, and
     /// any other is replaced.
-    fn confirm(
-        &self,
-        source: &dyn MountFilesystem,
-        unconfirmed: Vec<(MountPath, WrittenPlaceholder)>,
-    ) {
+    fn confirm(&self, source: &dyn MountFilesystem, unconfirmed: Vec<(MountPath, WrittenEntry)>) {
         for (path, written) in unconfirmed {
             let basis = ReadBasis::sample(source);
             let current = source.lookup_pinned(&path);
@@ -1418,13 +1416,13 @@ impl Placeholders {
                 Ok(Some((lookup, pin)))
                     if written
                         .facts
-                        .is_some_and(|facts| facts.describe(&PlaceholderFacts { lookup, pin })) =>
+                        .is_some_and(|facts| facts.describe(&EntryFacts { lookup, pin })) =>
                 {
                     // Written again meanwhile, from a later read.
                     state
                         .written
                         .entry(path)
-                        .or_insert(WrittenPlaceholder { basis, ..written });
+                        .or_insert(WrittenEntry { basis, ..written });
                 }
                 _ => {
                     state.pending.insert(path, written);
@@ -1433,7 +1431,7 @@ impl Placeholders {
         }
     }
 
-    /// Tries the placeholders held open again, as one of their handles
+    /// Tries the paths held open again, as one of their handles
     /// closed.
     fn retry(&self) {
         let mut state = lock_recover(&self.state);
@@ -1444,8 +1442,8 @@ impl Placeholders {
     }
 
     /// Waits until every change reported so far has been served and no
-    /// superseded placeholder or invalidated directory remains; fails,
-    /// naming one, when one is still held open [`PLACEHOLDER_SETTLE_LIMIT`]
+    /// superseded path or invalidated directory remains; fails,
+    /// naming one, when one is still held open [`HELD_SETTLE_LIMIT`]
     /// after every change was served.
     fn settle(&self) -> Result<(), NativeMountError> {
         let mut state = lock_recover(&self.state);
@@ -1465,8 +1463,8 @@ impl Placeholders {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 continue;
             }
-            let deadline = *deadline
-                .get_or_insert_with(|| std::time::Instant::now() + PLACEHOLDER_SETTLE_LIMIT);
+            let deadline =
+                *deadline.get_or_insert_with(|| std::time::Instant::now() + HELD_SETTLE_LIMIT);
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 let held = state.pending.keys().next().cloned();
@@ -1496,9 +1494,10 @@ impl Placeholders {
     }
 }
 
-/// Writes `entry` at `path`: an ordinary directory for a directory, a
-/// placeholder for anything else. Whatever is already there (the user's, or
-/// written before) stays, and is reported as not written.
+/// Writes `entry` at `path`: an ordinary directory for a directory, an
+/// ordinary file for a file, and a placeholder for a link. Whatever is
+/// already there (the user's, or written before) stays, and is reported as
+/// not written.
 fn write_entry(
     projection: Projection<'_>,
     path: &MountPath,
@@ -1507,7 +1506,7 @@ fn write_entry(
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
     if entry.info.IsDirectory {
         return match std::fs::create_dir(projection.root.join(&host)) {
-            Ok(()) => Ok(Placed::Placeholder),
+            Ok(()) => Ok(Placed::Unowned),
             Err(error)
                 if matches!(
                     error.kind(),
@@ -1552,7 +1551,7 @@ fn write_entry(
         }
     };
     match result {
-        Ok(()) => Ok(symlink.map_or(Placed::Placeholder, |(target, _)| {
+        Ok(()) => Ok(symlink.map_or(Placed::Unowned, |(target, _)| {
             Placed::Owned(Owned::Link(link_digest(target.iter().copied())))
         })),
         // Something is there already, or its directory is no directory:
@@ -1610,7 +1609,7 @@ fn write_link(
             // Something is there already, or its directory is gone.
             std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound => Ok(Placed::Nothing),
             _ => Err(format!(
-                "writing link {path:?}: {error} (this volume has no link placeholders, so \
+                "writing link {path:?}: {error} (this volume has no link projector, so \
                  projecting a link needs the right to create one: Developer Mode)"
             )),
         };
@@ -1631,14 +1630,14 @@ fn link_digest(target: impl IntoIterator<Item = u16>) -> u64 {
 }
 
 /// Deletes what the projection wrote at `path` unless the user made it
-/// their own: a placeholder `ProjFS` manages, or what it does not.
+/// their own: what `ProjFS` manages, or what it does not.
 fn release(
     projection: Projection<'_>,
     path: &MountPath,
     owned: Option<Owned>,
 ) -> Result<Release, String> {
     match owned {
-        None => delete_placeholder(projection, path),
+        None => delete_unowned(projection, path),
         Some(Owned::Link(digest)) => release_link(projection, path, digest),
         Some(Owned::File(state)) => release_file(projection, path, state),
     }
@@ -2164,8 +2163,8 @@ fn symbolic_link_target(data: &[u8]) -> Option<Vec<u16>> {
     Some(units)
 }
 
-/// Deletes the placeholder at `path` unless the user modified it.
-fn delete_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<Release, String> {
+/// Deletes what `ProjFS` manages at `path` unless the user modified it.
+fn delete_unowned(projection: Projection<'_>, path: &MountPath) -> Result<Release, String> {
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
     let relative = HSTRING::from(host.as_os_str());
     match prj_delete(projection, &relative, PRJ_UPDATE_ALLOW_READ_ONLY) {
@@ -2189,13 +2188,13 @@ fn delete_placeholder(projection: Projection<'_>, path: &MountPath) -> Result<Re
     }
 }
 
-/// Writes the placeholder at `path` again from the source, or deletes it
+/// Writes what is at `path` again from the source, or deletes it
 /// where the source names nothing there any more (or a directory, which the
 /// directory's reconcile writes).
-fn replace_placeholder(
+fn replace_written(
     projection: Projection<'_>,
     path: &MountPath,
-    written: &WrittenPlaceholder,
+    written: &WrittenEntry,
 ) -> Result<Replaced, String> {
     let source = projection.source;
     let relative = HSTRING::from(
@@ -2272,7 +2271,7 @@ fn rewrite(
     Ok(match write_entry(projection, path, &entry)? {
         Placed::Nothing => Replaced::Released,
         Placed::Retry => Replaced::Busy,
-        placed => Replaced::Rewritten(Box::new(WrittenPlaceholder {
+        placed => Replaced::Rewritten(Box::new(WrittenEntry {
             file_id: lookup.node.file_id,
             owned: placed.owned(),
             facts: Some(entry.facts),
@@ -2302,23 +2301,23 @@ fn replace_ordinary(
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
     Ok(
         match write_ordinary(projection, path, &host, &entry, Some(state))? {
-            Placed::Owned(owned) => Replaced::Rewritten(Box::new(WrittenPlaceholder {
+            Placed::Owned(owned) => Replaced::Rewritten(Box::new(WrittenEntry {
                 file_id: lookup.node.file_id,
                 owned: Some(owned),
                 facts: Some(entry.facts),
                 basis,
             })),
             Placed::Retry => Replaced::Busy,
-            Placed::Nothing | Placed::Placeholder => Replaced::Released,
+            Placed::Nothing | Placed::Unowned => Replaced::Released,
         },
     )
 }
 
-/// A virtualization context moved to the placeholder worker. The handle is
+/// A virtualization context moved to the projection worker. The handle is
 /// an opaque token `ProjFS` accepts from any thread.
 struct SendContext(PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT);
 
-// SAFETY: see `SendContext`; its lifetime is bounded by `Placeholders::finish`.
+// SAFETY: see `SendContext`; its lifetime is bounded by `Projector::finish`.
 unsafe impl Send for SendContext {}
 
 fn has_pending_capture(failure: &Mutex<PostOperationFailures>, path: &MountPath) -> bool {
@@ -2371,7 +2370,7 @@ impl ProjFsSession {
             writable: request.writable,
             metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
             projection: Arc::new(Mutex::new(ProjectionCache::default())),
-            placeholders: Arc::new(Placeholders::new()),
+            projector: Arc::new(Projector::new()),
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
             metadata_edits: Arc::new(FileLocks::default()),
             post_operation_failure: Arc::new(Mutex::new(PostOperationFailures::default())),
@@ -2388,7 +2387,7 @@ impl ProjFsSession {
             // null handle, which is not the same contract as `L""`.
             NotificationRoot: PCWSTR::from_raw(NOTIFICATION_ROOT.as_ptr()),
         };
-        // Nothing is ever projected on demand (see `Placeholders`), so every
+        // Nothing is ever projected on demand (see `Projector`), so every
         // absence `ProjFS` caches is one it may.
         let mut options = PRJ_STARTVIRTUALIZING_OPTIONS {
             Flags: PRJ_FLAG_USE_NEGATIVE_PATH_CACHE,
@@ -2427,7 +2426,7 @@ impl ProjFsSession {
         };
         let written = runtime.attach_workers(context).and_then(|()| {
             runtime
-                .placeholders
+                .projector
                 .materialize(
                     Projection {
                         source: runtime.source.as_ref(),
@@ -2443,7 +2442,7 @@ impl ProjFsSession {
                 })
                 // What changed while it was listed is written by the worker:
                 // the mount opens only once all of it is there.
-                .and_then(|()| runtime.placeholders.settle())
+                .and_then(|()| runtime.projector.settle())
         });
         if let Err(error) = written {
             runtime.finish_workers();
@@ -2563,7 +2562,7 @@ impl ProjFsSession {
 
     /// Makes a source-side change at one mount-relative path (leading `/`
     /// optional) visible: the provider forgets memoized source facts, and an
-    /// unmodified placeholder at `path` is deleted and written again from
+    /// unmodified file at `path` is replaced by what is written again from
     /// the source (settled by [`Self::revalidate`]). Locally modified state
     /// at `path` is authored and stays.
     pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
@@ -2598,28 +2597,28 @@ impl ProjFsSession {
                 Err(driver_error(&error))
             }
             _ => {
-                runtime.placeholders.invalidate(&mount_path);
+                runtime.projector.invalidate(&mount_path);
                 Ok(())
             }
         }
     }
 
     /// Waits until every change made to the source so far is written into
-    /// the projection: each superseded placeholder written again, each
+    /// the projection: each superseded path written again, each
     /// changed directory reconciled. A source that reports none of its
     /// changes has everything checked.
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
         let (runtime, _context) = self.live()?;
         if runtime.source.view_stamp().is_none() {
-            runtime.placeholders.invalidate_all();
+            runtime.projector.invalidate_all();
         }
         // Every change made to the source before this call is recorded, and
-        // so notified, before the placeholders settle.
+        // so notified, before the projection settles.
         runtime
             .source
             .fence_changes()
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-        runtime.placeholders.settle()
+        runtime.projector.settle()
     }
 
     fn live(&self) -> Result<(&Runtime, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT), NativeMountError> {
@@ -2636,7 +2635,7 @@ impl Runtime {
         &self,
         context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
     ) -> Result<(), NativeMountError> {
-        self.placeholders.attach(
+        self.projector.attach(
             Arc::clone(&self.source),
             context,
             self.root.clone(),
@@ -2646,7 +2645,7 @@ impl Runtime {
 
     /// Stops the worker; nothing is kept current from here on.
     fn finish_workers(&self) {
-        self.placeholders.finish();
+        self.projector.finish();
         // Every staged file went with the handle that held it.
         let _ = std::fs::remove_dir(staging_path(&self.root));
     }
@@ -2904,11 +2903,7 @@ fn remove_projection_tree(
     // and a scanner, or a process that just ran a program from the tree,
     // can hold a file there a moment longer.
     const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
-    // Refused for now: by a holder (access denied, sharing violation), a
-    // directory not yet empty, or the filter of a root whose provider is
-    // gone, which also answers "not found" for a root still there.
-    let refused =
-        |error: &std::io::Error| matches!(error.raw_os_error(), Some(2 | 3 | 5 | 32 | 145 | 369));
+    let refused = refused_for_now;
     let gone = || {
         matches!(
             std::fs::symlink_metadata(directory),
@@ -2945,12 +2940,21 @@ fn remove_projection_tree(
     }
 }
 
+/// Whether removing a projection tree was refused only for now: by a
+/// holder (access denied, sharing violation), a directory not yet empty, or
+/// the filter of a root whose provider is gone, which also answers "not
+/// found" for a root still there.
+fn refused_for_now(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(2 | 3 | 5 | 32 | 145 | 369))
+}
+
 /// Removes each directory in `directory` as [`remove_projection_tree`]
-/// does; what is gone already is removed.
+/// does. Unlisted for now, it is left to the delete of `directory` itself,
+/// which is refused while anything is left in it.
 fn remove_directories_in(directory: &std::path::Path) -> Result<(), TreeRemovalError> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if refused_for_now(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
     };
     for entry in entries {
@@ -3529,9 +3533,6 @@ unsafe fn placeholder(_callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
     HR_FILE_NOT_FOUND
 }
 
-/// The source's listing of `path`, as this provider writes it. An entry no
-/// placeholder can represent (a socket, say) is left out, as is a name that
-/// case-folds to one listed before it: Windows can hold only one of them.
 /// What the projection writes for the source's entry `component` in
 /// `directory`; `None` for one Windows cannot represent.
 fn projected_entry(
@@ -3568,7 +3569,7 @@ fn projected_entry(
     Ok(Some(ProjectedEntry {
         name,
         component,
-        facts: PlaceholderFacts { lookup, pin },
+        facts: EntryFacts { lookup, pin },
         info,
         symlink_target,
         directory_link,
@@ -3628,6 +3629,9 @@ fn resolves_to_directory(
     }
 }
 
+/// The source's listing of `path`, as this provider writes it. An entry
+/// Windows cannot represent (a socket, say) is left out, as is a name that
+/// case-folds to one listed before it: Windows can hold only one of them.
 fn source_listing(
     source: &dyn MountFilesystem,
     path: &MountPath,
@@ -3763,14 +3767,14 @@ unsafe fn notification(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    // A closed handle may have held a superseded placeholder open.
+    // A closed handle may have held a superseded path open.
     if matches!(
         notification,
         PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
             | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
             | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
     ) {
-        runtime.placeholders.retry();
+        runtime.projector.retry();
     }
     if unsafe { (*callback_data).TriggeringProcessId } == std::process::id()
         && matches!(
@@ -3853,7 +3857,7 @@ unsafe fn notification(
     let metadata_root = Arc::clone(&runtime.metadata_root);
     let post_operation_failure = Arc::clone(&runtime.post_operation_failure);
     let operation_failures = Arc::clone(&post_operation_failure);
-    let placeholders = Arc::clone(&runtime.placeholders);
+    let projector = Arc::clone(&runtime.projector);
     let failure_path = path.clone();
     let retry_path = Arc::new(Mutex::new(None));
     let operation_retry_path = Arc::clone(&retry_path);
@@ -4016,8 +4020,8 @@ unsafe fn notification(
         } else if notification == PRJ_NOTIFICATION_FILE_RENAMED {
             // No listing is reconciled while the source has the rename and
             // the projection's records do not yet.
-            let _tree = lock_recover(&placeholders.tree);
-            let current = placeholders.current_beneath(source.as_ref(), &path);
+            let _tree = lock_recover(&projector.tree);
+            let current = projector.current_beneath(source.as_ref(), &path);
             let result = handle_rename_source(
                 source.as_ref(),
                 &path,
@@ -4035,7 +4039,7 @@ unsafe fn notification(
                 lock_recover(operation_failures.as_ref())
                     .rename_pending_captures(&path, destination);
                 let carried = Carried::read(source.as_ref(), &path, destination, &current);
-                placeholders.renamed(&path, destination, carried);
+                projector.renamed(&path, destination, carried);
             }
             result
         } else {
@@ -4928,7 +4932,7 @@ mod tests {
         Ok(())
     }
 
-    /// Revalidation waits while a superseded placeholder is pending, which
+    /// Revalidation waits while a superseded path is pending, which
     /// it is until its outcome is recorded, even once every change has been
     /// served, and returns as soon as it is settled.
     #[test]
@@ -4964,17 +4968,17 @@ mod tests {
 
     #[test]
     fn settling_waits_for_every_pending_placeholder() -> Result<(), Box<dyn std::error::Error>> {
-        use super::{Placeholders, WrittenPlaceholder};
+        use super::{Projector, WrittenEntry};
         use crate::FileId;
         use crate::native_mount::ViewStamp;
 
-        let placeholders = Arc::new(Placeholders::new());
+        let projector = Arc::new(Projector::new());
         let path = MountPath::root().child(b"held".to_vec());
         {
-            let mut state = super::lock_recover(&placeholders.state);
+            let mut state = super::lock_recover(&projector.state);
             state.pending.insert(
                 path.clone(),
-                WrittenPlaceholder {
+                WrittenEntry {
                     file_id: FileId::new(),
                     owned: None,
                     facts: None,
@@ -4986,18 +4990,16 @@ mod tests {
             );
         }
         let settled = std::thread::spawn({
-            let placeholders = Arc::clone(&placeholders);
-            move || placeholders.settle()
+            let projector = Arc::clone(&projector);
+            move || projector.settle()
         });
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(
             !settled.is_finished(),
             "settled while a placeholder is pending"
         );
-        super::lock_recover(&placeholders.state)
-            .pending
-            .remove(&path);
-        placeholders.changed.notify_all();
+        super::lock_recover(&projector.state).pending.remove(&path);
+        projector.changed.notify_all();
         // Settling ends once nothing is pending.
         settled
             .join()
@@ -5006,7 +5008,7 @@ mod tests {
         Ok(())
     }
 
-    /// A superseded placeholder another handle holds open is replaced once
+    /// A superseded path another handle holds open is replaced once
     /// that handle closes; revalidation never returns while it still
     /// describes the superseded source.
     #[tokio::test(flavor = "multi_thread")]
@@ -5066,7 +5068,7 @@ mod tests {
         Ok(())
     }
 
-    /// A read-only source file's placeholder is read-only too; a change to
+    /// A read-only source file is written read-only too; a change to
     /// the source still replaces it, so revalidation never leaves it stale.
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]

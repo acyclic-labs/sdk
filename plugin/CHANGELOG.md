@@ -50,6 +50,17 @@
   subagent over 2,000 small files takes about 0.6 s instead of 0.2–0.3 s.
   A file the parent's checkout changes is replaced in one step: readers see
   the old contents or the new, never an empty or partly written file.
+- On Windows, a subagent started while the parent's checkout is changing
+  sees its whole checkout as soon as it starts; a directory could be
+  missing for a moment.
+- On Windows, a directory the parent's checkout puts in place of a link a
+  subagent's program holds open appears once the program closes it; it
+  could be lost.
+- On Windows, ending a subagent no longer fails with "Access is denied"
+  when a scanner, or a program it just ran, still holds a file for a
+  moment.
+- On a Windows Dev Drive (ReFS), capturing a sparse file right after it is
+  written stores only its data; it could store the whole file.
 - A crashed installer's lock is reclaimed at once even when the OS has given
   its process ID to another process.
 - The Codex hook server keeps answering after a request too large to isolate
