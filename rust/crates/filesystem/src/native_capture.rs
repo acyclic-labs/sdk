@@ -3882,9 +3882,10 @@ async fn settled_sparse_ranges(
             work.source_bytes_read = work
                 .source_bytes_read
                 .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-            add_work(prior_work, work)?
+            let observed = add_work(prior_work, work)?;
+            observed
                 .remaining(budget)
-                .map_err(|error| OperationFailure::new(CaptureError::Work(error), spent))?;
+                .map_err(|error| OperationFailure::new(CaptureError::Work(error), observed))?;
             if bytes.is_empty() {
                 // Shorter than reported: staging finds the change.
                 keep(position, end - position);
