@@ -30,6 +30,10 @@ The dependency graph is one way:
    out of the pure/WASM harness core.
 
 The root `proto/` schemas and Stream's crate-local schema feed Buf.
+Actors and Workers have candidate v1 schemas under `proto/` and Rust contract
+crates. Their generated TypeScript bindings follow the same pipeline; their
+hosted services must qualify against those contracts before availability is
+claimed.
 `buf.gen.yaml` generates Rust bindings in `generated/rust/` and ESM-ready
 JavaScript plus declarations in `generated/typescript/`. `bun run generate`
 builds each family descriptor and copies the bindings needed by published

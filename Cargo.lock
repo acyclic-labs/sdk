@@ -15,6 +15,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-actors"
+version = "0.1.5"
+dependencies = [
+ "prost",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "acyclic-conformance"
 version = "0.1.5"
 dependencies = [
@@ -391,6 +400,16 @@ dependencies = [
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "acyclic-workers"
+version = "0.1.5"
+dependencies = [
+ "prost",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
 ]
 
 [[package]]

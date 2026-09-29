@@ -12,6 +12,8 @@
     "skipLibCheck": true
   },
   "references": [
+    { "path": "../actors" },
+    { "path": "../workers" },
     { "path": "../harness" },
     { "path": "../filesystem" },
     { "path": "../stream" },

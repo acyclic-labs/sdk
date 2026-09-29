@@ -1,0 +1,139 @@
+syntax = "proto3";
+package acyclic.workers.v1;
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/workers/v1;workersv1";
+
+// A digest identifies exact immutable JavaScript module bytes.
+message CodeVersion {
+  bytes sha256 = 1;
+  uint64 size_bytes = 2;
+}
+
+// A deployment alias may change; revision increases on every selection.
+message Deployment {
+  string alias = 1;
+  CodeVersion version = 2;
+  uint64 revision = 3;
+}
+
+message PublishVersionRequest {
+  bytes javascript_module = 1;
+  bytes expected_sha256 = 2;
+  string idempotency_key = 3;
+}
+message PublishVersionResponse { CodeVersion version = 1; }
+
+message SelectDeploymentRequest {
+  string alias = 1;
+  bytes version_sha256 = 2;
+  optional uint64 expected_revision = 3;
+  string idempotency_key = 4;
+}
+message SelectDeploymentResponse { Deployment deployment = 1; }
+
+message ObjectVersionRef {
+  string bucket_id = 1;
+  string object_key = 2;
+  string version_id = 3;
+}
+message Payload {
+  oneof source {
+    bytes inline_bytes = 1;
+    ObjectVersionRef object_version = 2;
+  }
+}
+message JobLimits {
+  uint64 timeout_millis = 1;
+  uint64 memory_bytes = 2;
+  uint64 output_bytes = 3;
+}
+message RetryPolicy {
+  uint32 max_attempts = 1;
+  uint64 backoff_millis = 2;
+}
+message JobTarget {
+  oneof target {
+    string deployment_alias = 1;
+    bytes version_sha256 = 2;
+  }
+}
+// Accepted input is delivered to default.run, never to default.fetch.
+// The same job ID and input recur on retry; attempt numbering starts at one.
+message SubmitJobRequest {
+  JobTarget target = 1;
+  Payload input = 2;
+  JobLimits limits = 3;
+  RetryPolicy retry = 4;
+  string idempotency_key = 5;
+}
+message SubmitJobResponse { JobObservation job = 1; }
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_ACCEPTED = 1;
+  JOB_STATE_RUNNING = 2;
+  JOB_STATE_SUCCEEDED = 3;
+  JOB_STATE_FAILED = 4;
+  JOB_STATE_CANCELLED = 5;
+}
+message JobObservation {
+  string job_id = 1;
+  JobState state = 2;
+  bytes resolved_sha256 = 3;
+  uint32 attempt = 4;
+  Payload result = 5;
+  string failure_code = 6;
+  bool cancellation_requested = 7;
+}
+message InspectJobRequest { string job_id = 1; }
+message InspectJobResponse { JobObservation job = 1; }
+message CancelJobRequest {
+  string job_id = 1;
+  string idempotency_key = 2;
+}
+message CancelJobResponse { JobObservation job = 1; }
+
+message Header {
+  string name = 1;
+  string value = 2;
+}
+// Invocation is ordinary HTTP work, not durable job acceptance.
+message InvokeVersionRequest {
+  bytes version_sha256 = 1;
+  string method = 2;
+  string url = 3;
+  repeated Header headers = 4;
+  bytes body = 5;
+}
+message InvokeDeploymentRequest {
+  string alias = 1;
+  string method = 2;
+  string url = 3;
+  repeated Header headers = 4;
+  bytes body = 5;
+}
+message InvokeResponse {
+  uint32 status = 1;
+  repeated Header headers = 2;
+  bytes body = 3;
+  bytes resolved_sha256 = 4;
+  optional uint64 resolved_revision = 5;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INVALID_ARGUMENT = 1;
+  ERROR_CODE_CAPABILITY_DENIED = 2;
+  ERROR_CODE_CAPABILITY_EXPIRED = 3;
+  ERROR_CODE_VERSION_NOT_FOUND = 4;
+  ERROR_CODE_DEPLOYMENT_NOT_FOUND = 5;
+  ERROR_CODE_JOB_NOT_FOUND = 6;
+  ERROR_CODE_IDEMPOTENCY_MISMATCH = 7;
+  ERROR_CODE_REVISION_CONFLICT = 8;
+  ERROR_CODE_OVERLOADED = 9;
+  ERROR_CODE_TERMINAL_JOB_FAILURE = 10;
+}
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+}

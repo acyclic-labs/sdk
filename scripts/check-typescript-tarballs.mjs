@@ -38,6 +38,7 @@ for (const entry of packageEntries) {
 }
 
 const expectedExports = {
+  "@acyclic-labs/actors": "HttpActorsClient",
   "@acyclic-labs/fs": "openBrowserFs",
   "@acyclic-labs/harness": "Harness",
   "@acyclic-labs/inference": "InferenceClient",
@@ -46,6 +47,7 @@ const expectedExports = {
   "@acyclic-labs/pi": "piProvider",
   "@acyclic-labs/sdk": "harness",
   "@acyclic-labs/stream": "MemoryStreamProvider",
+  "@acyclic-labs/workers": "HttpWorkersClient",
 };
 for (const entry of packageEntries) {
   if (!(entry.name in expectedExports)) {
@@ -97,6 +99,7 @@ for (const [name, exportName] of Object.entries(expected)) {
   }
 }
 const checks = {
+  "@acyclic-labs/actors": (m) => typeof m.HttpActorsClient === "function" && typeof m.CreateActorRequestSchema === "object",
   "@acyclic-labs/fs": (m) => typeof m.openBrowserFs === "function",
   "@acyclic-labs/harness": (m) => typeof m.Harness.builder === "function",
   "@acyclic-labs/inference": (m) => typeof m.InferenceClient === "function",
@@ -114,6 +117,7 @@ const checks = {
   "@acyclic-labs/objects": (m) => m.idempotencyKey("tarball-smoke") === "tarball-smoke",
   "@acyclic-labs/pi": (m) => typeof m.piProvider === "function",
   "@acyclic-labs/sdk": (m) => typeof m.harness === "object" && typeof m.machines === "object",
+  "@acyclic-labs/workers": (m) => typeof m.HttpWorkersClient === "function" && typeof m.SubmitJobRequestSchema === "object",
   "@acyclic-labs/stream": async (m) => {
     const provider = new m.MemoryStreamProvider();
     const appended = await provider.append("tarball/smoke", [new Uint8Array([7])]);

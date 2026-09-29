@@ -2,6 +2,7 @@
 # Publishable SDK families, private qualification/binding crates, and the
 # single product binary are listed explicitly so retired crates cannot return.
 members = [
+  "rust/crates/actors",
   "rust/crates/conformance",
   "rust/crates/filesystem",
   "rust/crates/filesystem-napi",
@@ -19,6 +20,7 @@ members = [
   "rust/crates/proto-codegen",
   "rust/crates/stream",
   "rust/crates/stream-wasm",
+  "rust/crates/workers",
   "plugin",
 ]
 resolver = "2"

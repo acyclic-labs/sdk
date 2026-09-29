@@ -15,6 +15,16 @@
         "typescript": "7.0.2",
       },
     },
+    "typescript/packages/actors": {
+      "name": "@acyclic-labs/actors",
+      "version": "0.1.5",
+      "dependencies": {
+        "@bufbuild/protobuf": "2.15.0",
+      },
+      "devDependencies": {
+        "typescript": "7.0.2",
+      },
+    },
     "typescript/packages/filesystem": {
       "name": "@acyclic-labs/fs",
       "version": "0.1.5",
@@ -98,12 +108,14 @@
       "name": "@acyclic-labs/sdk",
       "version": "0.1.5",
       "dependencies": {
+        "@acyclic-labs/actors": "0.1.5",
         "@acyclic-labs/fs": "0.1.5",
         "@acyclic-labs/harness": "0.1.5",
         "@acyclic-labs/inference": "0.1.5",
         "@acyclic-labs/machines": "0.1.5",
         "@acyclic-labs/objects": "0.1.5",
         "@acyclic-labs/stream": "0.1.5",
+        "@acyclic-labs/workers": "0.1.5",
       },
       "devDependencies": {
         "typescript": "7.0.2",
@@ -120,8 +132,20 @@
         "typescript": "7.0.2",
       },
     },
+    "typescript/packages/workers": {
+      "name": "@acyclic-labs/workers",
+      "version": "0.1.5",
+      "dependencies": {
+        "@bufbuild/protobuf": "2.15.0",
+      },
+      "devDependencies": {
+        "typescript": "7.0.2",
+      },
+    },
   },
   "packages": {
+    "@acyclic-labs/actors": ["@acyclic-labs/actors@workspace:typescript/packages/actors"],
+
     "@acyclic-labs/fs": ["@acyclic-labs/fs@workspace:typescript/packages/filesystem"],
 
     "@acyclic-labs/harness": ["@acyclic-labs/harness@workspace:typescript/packages/harness"],
@@ -137,6 +161,8 @@
     "@acyclic-labs/sdk": ["@acyclic-labs/sdk@workspace:typescript/packages/sdk"],
 
     "@acyclic-labs/stream": ["@acyclic-labs/stream@workspace:typescript/packages/stream"],
+
+    "@acyclic-labs/workers": ["@acyclic-labs/workers@workspace:typescript/packages/workers"],
 
     "@bufbuild/buf": ["@bufbuild/buf@1.73.0", "", { "optionalDependencies": { "@bufbuild/buf-darwin-arm64": "1.73.0", "@bufbuild/buf-darwin-x64": "1.73.0", "@bufbuild/buf-linux-aarch64": "1.73.0", "@bufbuild/buf-linux-armv7": "1.73.0", "@bufbuild/buf-linux-x64": "1.73.0", "@bufbuild/buf-win32-arm64": "1.73.0", "@bufbuild/buf-win32-x64": "1.73.0" }, "bin": { "buf": "bin/buf", "protoc-gen-buf-lint": "bin/protoc-gen-buf-lint", "protoc-gen-buf-breaking": "bin/protoc-gen-buf-breaking" } }, "sha512-W3whb4P1y3Hs9bqwCu9++W1v1ofHZ3dBUCe6JSZq0Ff5OK5UKKZuMN4iunPbgdyXY4+4ujEYf2ESrN/6MbcFSQ=="],
 

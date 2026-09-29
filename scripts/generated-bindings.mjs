@@ -10,6 +10,8 @@ export const packagedTypeScriptBindings = [
   ["machines/v1/machines_pb", ["machines"]],
   ["objects/v1/objects_pb", ["objects"]],
   ["stream/v2/stream_pb", ["stream"]],
+  ["actors/v1/actors_pb", ["actors"]],
+  ["workers/v1/workers_pb", ["workers"]],
 ];
 
 export const compatibilityArtifacts = {
@@ -42,6 +44,14 @@ export const compatibilityArtifacts = {
     descriptorDigest: "rust/crates/inference/inference_descriptor.bin",
     conformanceDigest: "conformance/vectors/inference.json",
   },
+  actors: {
+    schemaDigest: "proto/actors/v1/actors.proto",
+    descriptorDigest: "rust/crates/actors/src/generated/acyclic-actors-v1.bin",
+  },
+  workers: {
+    schemaDigest: "proto/workers/v1/workers.proto",
+    descriptorDigest: "rust/crates/workers/src/generated/acyclic-workers-v1.bin",
+  },
 };
 
 export const generatedDescriptors = [
@@ -51,6 +61,8 @@ export const generatedDescriptors = [
   ["proto/inference", compatibilityArtifacts.inference.descriptorDigest],
   ["proto/inference", "rust/crates/inference-contract/inference_descriptor.bin"],
   ["proto/inference", "rust/crates/inference-wasm/inference_reflection_descriptor.bin"],
+  ["proto/actors", compatibilityArtifacts.actors.descriptorDigest],
+  ["proto/workers", compatibilityArtifacts.workers.descriptorDigest],
   ["rust/crates/stream/proto/stream", compatibilityArtifacts.stream.descriptorDigest],
 ];
 
@@ -59,6 +71,8 @@ export const packagedRustBindings = [
   ["acyclic/objects/v1/acyclic.objects.v1.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.tonic.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.tonic.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.tonic.rs"],
+  ["acyclic/actors/v1/acyclic.actors.v1.rs", "rust/crates/actors/src/generated/acyclic.actors.v1.rs"],
+  ["acyclic/workers/v1/acyclic.workers.v1.rs", "rust/crates/workers/src/generated/acyclic.workers.v1.rs"],
 ];
 
 export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";

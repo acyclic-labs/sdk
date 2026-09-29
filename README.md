@@ -51,6 +51,9 @@ until their family version is published and tagged.
   idempotency, stable listing views, multipart publication, and whole-bucket
   snapshots/forks. Local bodies use authenticated digest-sharded chunks;
   range reads touch only intersecting chunks and shared bodies are never copied.
+- Candidate Actors v1 and Workers v1 public contracts with Rust validation,
+  generated TypeScript message types, and authenticated HTTP clients. Their
+  Cloud service routes require separate qualification before hosted use.
 - An Inference v1 Rust client with immutable item-addressed Context revisions,
   independent forks, exact edit/compact/transfer, recoverable Runs, inclusive
   event replay, cancellation, four work meters, and admitted warm commitments.

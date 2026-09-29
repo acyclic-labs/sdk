@@ -4,6 +4,8 @@
   "acyclic-machines",
   "acyclic-native-runtime",
   "acyclic-objects",
+  "acyclic-actors",
+  "acyclic-workers",
   "acyclic-stream",
   "acyclic-fs",
   "acyclic-harness",

@@ -3,6 +3,18 @@
   "status": "candidate",
   "umbrellaVersion": "0.1.5",
   "families": {
+    "actors": {
+      "version": "0.1.5",
+      "crateVersion": "0.1.5",
+      "schemaDigest": "sha256:e6e27c49190c35bf4d42903414a98c0bd45cff7820ae35c01e22f5b82d9eff2c",
+      "descriptorDigest": "sha256:d7c67b38c89bf71799e16dbfdb89203ce0661a8457f9d7ad0fbdc454fb0cc46b"
+    },
+    "workers": {
+      "version": "0.1.5",
+      "crateVersion": "0.1.5",
+      "schemaDigest": "sha256:5a55258c23eb657a2d46cec72c4deefed345fc88151ace405f60fb3b6e9e5c3f",
+      "descriptorDigest": "sha256:7bf316f0cbc3be99228fdc426ee307377dddd3727c9f48aa0e9a07deab25a373"
+    },
     "harness": {
       "version": "0.1.5",
       "schemaDigest": "sha256:392131d024fafd9e947343fee2fbbdaaef868afaf82ac8e42ecb180af741b1e5",
