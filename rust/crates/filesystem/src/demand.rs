@@ -1266,8 +1266,7 @@ pub mod native {
     /// A regular source file held open after its version was proven against
     /// the opened file itself. The type cannot exist without that proof.
     ///
-    /// Reads never walk to the file or reopen the root: each is served from
-    /// the held file and then proves, exactly as a path-based read does, that
+    /// Reads use the held file and then prove, exactly as a path-based read does, that
     /// the file is unmodified, that its source path still names it, and that
     /// the source root and reference are still current.
     #[derive(Clone)]
@@ -1277,6 +1276,9 @@ pub mod native {
         relative: PathBuf,
         expected: SourceVersion,
         logical_bytes: u64,
+        #[cfg(windows)]
+        file: Arc<std::sync::RwLock<Arc<SourceFile>>>,
+        #[cfg(not(windows))]
         file: Arc<SourceFile>,
     }
 
@@ -1338,6 +1340,9 @@ pub mod native {
                 relative,
                 expected,
                 logical_bytes: opened.len(),
+                #[cfg(windows)]
+                file: Arc::new(std::sync::RwLock::new(Arc::new(file))),
+                #[cfg(not(windows))]
                 file: Arc::new(file),
             })
         }
@@ -1348,21 +1353,38 @@ pub mod native {
             cancellation: &CancellationToken,
             work: &mut WorkCounters,
         ) -> Result<Bytes, DemandError> {
-            let result = self.read_once(range, cancellation, work);
             #[cfg(windows)]
-            if matches!(result, Err(DemandError::StaleVersion)) && self.file.was_yielded() {
+            let file = self
+                .file
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            #[cfg(not(windows))]
+            let file = Arc::clone(&self.file);
+            let result = self.read_once(&file, range, cancellation, work);
+            #[cfg(windows)]
+            if matches!(result, Err(DemandError::StaleVersion)) && file.was_yielded() {
                 // A benign opener can break a handle oplock too. Reopen only
                 // at the exact expected version; a save that replaced the
                 // file still reports stale to the caller.
-                return self
-                    .reopen(cancellation)?
-                    .read_once(range, cancellation, work);
+                let reopened = Arc::new(self.reopen(cancellation)?);
+                let current = {
+                    let mut held = self
+                        .file
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if Arc::ptr_eq(&*held, &file) {
+                        *held = reopened;
+                    }
+                    Arc::clone(&*held)
+                };
+                return self.read_once(&current, range, cancellation, work);
             }
             result
         }
 
         #[cfg(windows)]
-        fn reopen(&self, cancellation: &CancellationToken) -> Result<Self, DemandError> {
+        fn reopen(&self, cancellation: &CancellationToken) -> Result<SourceFile, DemandError> {
             self.provider.check(self.source, cancellation)?;
             let file = match self.provider.inner.root.open_file_yielding(&self.relative) {
                 Ok(file) => file,
@@ -1375,18 +1397,12 @@ pub mod native {
             if version(&opened) != self.expected {
                 return Err(DemandError::StaleVersion);
             }
-            Ok(Self {
-                provider: self.provider.clone(),
-                source: self.source,
-                relative: self.relative.clone(),
-                expected: self.expected,
-                logical_bytes: opened.len(),
-                file: Arc::new(file),
-            })
+            Ok(file)
         }
 
         fn read_once(
             &self,
+            file: &SourceFile,
             ReadRange { offset, length }: ReadRange,
             cancellation: &CancellationToken,
             work: &mut WorkCounters,
@@ -1396,7 +1412,7 @@ pub mod native {
                 vec![0; usize::try_from(length).map_err(|_| DemandError::InvalidRequest)?];
             let mut filled = 0;
             while let Some(unfilled) = bytes.get_mut(filled..).filter(|rest| !rest.is_empty()) {
-                match read_at(&self.file, offset + filled as u64, unfilled) {
+                match read_at(file, offset + filled as u64, unfilled) {
                     Ok(0) => break,
                     Ok(count) => filled += count,
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
@@ -1408,7 +1424,7 @@ pub mod native {
                 .source_bytes_read
                 .checked_add(filled as u64)
                 .ok_or(DemandError::InvalidRequest)?;
-            self.prove_current(cancellation)?;
+            self.prove_current(file, cancellation)?;
             work.output_bytes = filled as u64;
             Ok(Bytes::from(bytes))
         }
@@ -1432,8 +1448,12 @@ pub mod native {
         /// Proves the bytes just read belong to the opened version: the held
         /// file is unmodified (in-place writes), the source path still names
         /// it (replacement by rename), and the root and reference are current.
-        fn prove_current(&self, cancellation: &CancellationToken) -> Result<(), DemandError> {
-            let held = stat_held(&self.provider, &self.file)?;
+        fn prove_current(
+            &self,
+            file: &SourceFile,
+            cancellation: &CancellationToken,
+        ) -> Result<(), DemandError> {
+            let held = stat_held(&self.provider, file)?;
             let named = self.named_stat();
             if version(&held) != self.expected
                 || named.as_ref().map(version).ok() != Some(self.expected)
@@ -2583,6 +2603,10 @@ mod tests {
                 .read(true)
                 .write(true)
                 .open(path)?,
+        );
+        assert_eq!(
+            file.read_range(0, 6, &CancellationToken::new())?.value,
+            Bytes::from_static(b"before")
         );
         assert_eq!(
             file.read_range(0, 6, &CancellationToken::new())?.value,
