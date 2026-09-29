@@ -156,11 +156,25 @@ pub enum DemandError {
     WorkerUnavailable,
     /// Native or remote source failed.
     #[error("source failed: {0}")]
-    Io(#[from] std::io::Error),
+    Io(std::io::Error),
     /// Demand-driven native observation could not be admitted exactly.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     #[error(transparent)]
     Observation(#[from] crate::watch::NativeWatchError),
+}
+
+impl From<std::io::Error> for DemandError {
+    fn from(error: std::io::Error) -> Self {
+        // A file that gave way to a rename or delete changed under the read.
+        #[cfg(all(windows, feature = "native-watch"))]
+        if error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<crate::native_host::Yielded>())
+        {
+            return Self::StaleVersion;
+        }
+        Self::Io(error)
+    }
 }
 
 impl From<NamespacePathError> for DemandError {
@@ -1252,8 +1266,7 @@ pub mod native {
     /// A regular source file held open after its version was proven against
     /// the opened file itself. The type cannot exist without that proof.
     ///
-    /// Reads never walk to the file or reopen the root: each is served from
-    /// the held file and then proves, exactly as a path-based read does, that
+    /// Reads use the held file and then prove, exactly as a path-based read does, that
     /// the file is unmodified, that its source path still names it, and that
     /// the source root and reference are still current.
     #[derive(Clone)]
@@ -1263,8 +1276,19 @@ pub mod native {
         relative: PathBuf,
         expected: SourceVersion,
         logical_bytes: u64,
-        file: Arc<std::fs::File>,
+        #[cfg(windows)]
+        file: Arc<std::sync::RwLock<Arc<SourceFile>>>,
+        #[cfg(not(windows))]
+        file: Arc<SourceFile>,
     }
+
+    /// A source file held for reading. On Windows it gives way to whoever
+    /// renames or deletes it, as an editor saving over it does, instead of
+    /// making that fail while it is read.
+    #[cfg(windows)]
+    type SourceFile = crate::native_host::YieldingFile;
+    #[cfg(not(windows))]
+    type SourceFile = std::fs::File;
 
     /// How long a read of a file under a root that is not local may take
     /// before its caller is answered, well inside a native callback's own
@@ -1288,15 +1312,22 @@ pub mod native {
             provider.check(source, cancellation)?;
             provider.observe_parent(path)?;
             let relative = provider.relative(path)?;
-            let file = match provider.inner.root.open_file(&relative) {
+            #[cfg(windows)]
+            let file = provider.inner.root.open_file_yielding(&relative);
+            #[cfg(not(windows))]
+            let file = provider
+                .inner
+                .root
+                .open_file(&relative)
+                .map(cap_std::fs::File::into_std);
+            let file = match file {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     return Err(DemandError::Absent);
                 }
                 Err(error) => return Err(error.into()),
             };
-            let file = file.into_std();
-            let opened = provider.inner.root.stat_file(&file)?;
+            let opened = stat_held(&provider, &file)?;
             if !opened.file_type().is_file() {
                 return Err(DemandError::NotRegularFile);
             }
@@ -1309,12 +1340,69 @@ pub mod native {
                 relative,
                 expected,
                 logical_bytes: opened.len(),
+                #[cfg(windows)]
+                file: Arc::new(std::sync::RwLock::new(Arc::new(file))),
+                #[cfg(not(windows))]
                 file: Arc::new(file),
             })
         }
 
         fn read(
             &self,
+            range: ReadRange,
+            cancellation: &CancellationToken,
+            work: &mut WorkCounters,
+        ) -> Result<Bytes, DemandError> {
+            #[cfg(windows)]
+            let file = self
+                .file
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            #[cfg(not(windows))]
+            let file = Arc::clone(&self.file);
+            let result = self.read_once(&file, range, cancellation, work);
+            #[cfg(windows)]
+            if matches!(result, Err(DemandError::StaleVersion)) && file.was_yielded() {
+                // A benign opener can break a handle oplock too. Reopen only
+                // at the exact expected version; a save that replaced the
+                // file still reports stale to the caller.
+                let reopened = Arc::new(self.reopen(cancellation)?);
+                let current = {
+                    let mut held = self
+                        .file
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if Arc::ptr_eq(&*held, &file) {
+                        *held = reopened;
+                    }
+                    Arc::clone(&*held)
+                };
+                return self.read_once(&current, range, cancellation, work);
+            }
+            result
+        }
+
+        #[cfg(windows)]
+        fn reopen(&self, cancellation: &CancellationToken) -> Result<SourceFile, DemandError> {
+            self.provider.check(self.source, cancellation)?;
+            let file = match self.provider.inner.root.open_file_yielding(&self.relative) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(DemandError::StaleVersion);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let opened = stat_held(&self.provider, &file)?;
+            if version(&opened) != self.expected {
+                return Err(DemandError::StaleVersion);
+            }
+            Ok(file)
+        }
+
+        fn read_once(
+            &self,
+            file: &SourceFile,
             ReadRange { offset, length }: ReadRange,
             cancellation: &CancellationToken,
             work: &mut WorkCounters,
@@ -1324,7 +1412,7 @@ pub mod native {
                 vec![0; usize::try_from(length).map_err(|_| DemandError::InvalidRequest)?];
             let mut filled = 0;
             while let Some(unfilled) = bytes.get_mut(filled..).filter(|rest| !rest.is_empty()) {
-                match read_at(&self.file, offset + filled as u64, unfilled) {
+                match read_at(file, offset + filled as u64, unfilled) {
                     Ok(0) => break,
                     Ok(count) => filled += count,
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
@@ -1332,8 +1420,11 @@ pub mod native {
                 }
             }
             bytes.truncate(filled);
-            work.source_bytes_read = filled as u64;
-            self.prove_current(cancellation)?;
+            work.source_bytes_read = work
+                .source_bytes_read
+                .checked_add(filled as u64)
+                .ok_or(DemandError::InvalidRequest)?;
+            self.prove_current(file, cancellation)?;
             work.output_bytes = filled as u64;
             Ok(Bytes::from(bytes))
         }
@@ -1357,8 +1448,12 @@ pub mod native {
         /// Proves the bytes just read belong to the opened version: the held
         /// file is unmodified (in-place writes), the source path still names
         /// it (replacement by rename), and the root and reference are current.
-        fn prove_current(&self, cancellation: &CancellationToken) -> Result<(), DemandError> {
-            let held = self.provider.inner.root.stat_file(&self.file)?;
+        fn prove_current(
+            &self,
+            file: &SourceFile,
+            cancellation: &CancellationToken,
+        ) -> Result<(), DemandError> {
+            let held = stat_held(&self.provider, file)?;
             let named = self.named_stat();
             if version(&held) != self.expected
                 || named.as_ref().map(version).ok() != Some(self.expected)
@@ -1430,12 +1525,26 @@ pub mod native {
     }
 
     #[cfg(windows)]
-    fn read_at(
-        file: &std::fs::File,
-        offset: u64,
-        destination: &mut [u8],
-    ) -> std::io::Result<usize> {
-        std::os::windows::fs::FileExt::seek_read(file, destination, offset)
+    fn read_at(file: &SourceFile, offset: u64, destination: &mut [u8]) -> std::io::Result<usize> {
+        file.read_at(offset, destination)
+    }
+
+    /// Stats the held `file` as its source root stats a name.
+    #[cfg(windows)]
+    fn stat_held(
+        provider: &NativeDemandSource,
+        file: &SourceFile,
+    ) -> std::io::Result<crate::native_host::HostStat> {
+        file.with(|file| provider.inner.root.stat_file(file))
+    }
+
+    /// Stats the held `file` as its source root stats a name.
+    #[cfg(not(windows))]
+    fn stat_held(
+        provider: &NativeDemandSource,
+        file: &SourceFile,
+    ) -> std::io::Result<crate::native_host::HostStat> {
+        provider.inner.root.stat_file(file)
     }
 
     fn node_kind(file_type: cap_std::fs::FileType) -> SourceNodeKind {
@@ -2441,6 +2550,84 @@ mod tests {
             .await?
             .value;
         Ok((temporary, source, file))
+    }
+
+    /// A held file gives way to a save over it: replacing it by rename, as
+    /// editors and `git` save with `MoveFileEx`, succeeds while it is held,
+    /// and the held file then reads as changed. (Windows refuses such a
+    /// rename while any handle to the file is open, however shared.)
+    #[cfg(windows)]
+    #[tokio::test]
+    #[allow(unsafe_code)]
+    async fn a_held_file_gives_way_to_a_save_over_it() -> Result<(), Box<dyn Error>> {
+        use std::os::windows::ffi::OsStrExt as _;
+        use windows::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MoveFileExW};
+        use windows::core::PCWSTR;
+
+        let (temporary, _source, file) = held_file(b"before").await?;
+        let root = temporary.path().join("source");
+        std::fs::write(root.join("saved"), b"after!")?;
+        let wide = |path: &std::path::Path| {
+            path.as_os_str()
+                .encode_wide()
+                .chain([0])
+                .collect::<Vec<u16>>()
+        };
+        let (saved, replaced) = (wide(&root.join("saved")), wide(&root.join("file")));
+        // SAFETY: both names are live, NUL-terminated wide strings.
+        unsafe {
+            MoveFileExW(
+                PCWSTR(saved.as_ptr()),
+                PCWSTR(replaced.as_ptr()),
+                MOVEFILE_REPLACE_EXISTING,
+            )
+        }?;
+        assert_eq!(std::fs::read(root.join("file"))?, b"after!");
+        assert!(matches!(
+            read_failure(file.as_ref()),
+            Some(DemandError::StaleVersion)
+        ));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_benign_oplock_break_preserves_the_held_read() -> Result<(), Box<dyn Error>> {
+        let (temporary, _source, file) = held_file(b"before").await?;
+        let path = temporary.path().join("source/file");
+        // A second opener with write access breaks a handle oplock even if
+        // it never changes the file. The held read must reopen at the same
+        // version instead of reporting a change that did not occur.
+        drop(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)?,
+        );
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            let reads = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        file.read_range(0, 6, &CancellationToken::new())
+                            .is_ok_and(|read| read.value == Bytes::from_static(b"before"))
+                    })
+                })
+                .collect::<Vec<_>>();
+            for read in reads {
+                assert!(read.join().unwrap_or(false));
+            }
+        });
+        assert_eq!(
+            file.read_range(0, 6, &CancellationToken::new())?.value,
+            Bytes::from_static(b"before")
+        );
+        assert_eq!(
+            file.read_range(0, 6, &CancellationToken::new())?.value,
+            Bytes::from_static(b"before")
+        );
+        Ok(())
     }
 
     fn read_failure(file: &dyn DemandFile) -> Option<DemandError> {

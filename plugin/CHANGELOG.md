@@ -61,6 +61,10 @@
   moment.
 - On a Windows Dev Drive (ReFS), capturing a sparse file right after it is
   written stores only its data; it could store the whole file.
+- On Windows, saving a file in the root checkout while a subagent reads it
+  no longer fails with "Access is denied": editors and `git` save by
+  replacing the file, which Windows refused while any reader held it. The
+  subagent's read now gives way and reads the saved file instead.
 - A crashed installer's lock is reclaimed at once even when the OS has given
   its process ID to another process.
 - The Codex hook server keeps answering after a request too large to isolate
