@@ -34,7 +34,7 @@ jobs:
           - name: linux-fuse
             runner: blacksmith-4vcpu-ubuntu-2404
           - name: macos-nfs
-            runner: blacksmith-4vcpu-macos-15
+            runner: blacksmith-6vcpu-macos-15
           - name: windows-projfs
             runner: blacksmith-4vcpu-windows-2025
     name: ${{ matrix.platform.name }}

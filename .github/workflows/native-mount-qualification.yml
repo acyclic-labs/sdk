@@ -32,7 +32,7 @@ jobs:
             runner: blacksmith-4vcpu-ubuntu-2404
             shell: bash
           - backend: macos-nfs
-            runner: blacksmith-4vcpu-macos-15
+            runner: blacksmith-6vcpu-macos-15
             shell: bash
           - backend: windows-projfs
             runner: blacksmith-4vcpu-windows-2025

@@ -35,11 +35,11 @@ jobs:
             executable: acyclic
           - target: darwin-x64
             rust_target: x86_64-apple-darwin
-            runner: blacksmith-4vcpu-macos-15
+            runner: blacksmith-6vcpu-macos-15
             executable: acyclic
           - target: darwin-arm64
             rust_target: aarch64-apple-darwin
-            runner: blacksmith-4vcpu-macos-15
+            runner: blacksmith-6vcpu-macos-15
             executable: acyclic
           - target: win32-x64
             rust_target: x86_64-pc-windows-msvc
@@ -158,7 +158,7 @@ jobs:
             target: darwin-arm64
             executable: darwin-arm64/acyclic
             qualifier: darwin-arm64/native-mount-qualify
-            runner: blacksmith-4vcpu-macos-15
+            runner: blacksmith-6vcpu-macos-15
           - backend: windows-projfs
             target: win32-x64
             executable: win32-x64/acyclic.exe
