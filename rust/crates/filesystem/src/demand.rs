@@ -1344,6 +1344,49 @@ pub mod native {
 
         fn read(
             &self,
+            range: ReadRange,
+            cancellation: &CancellationToken,
+            work: &mut WorkCounters,
+        ) -> Result<Bytes, DemandError> {
+            let result = self.read_once(range, cancellation, work);
+            #[cfg(windows)]
+            if matches!(result, Err(DemandError::StaleVersion)) && self.file.was_yielded() {
+                // A benign opener can break a handle oplock too. Reopen only
+                // at the exact expected version; a save that replaced the
+                // file still reports stale to the caller.
+                return self
+                    .reopen(cancellation)?
+                    .read_once(range, cancellation, work);
+            }
+            result
+        }
+
+        #[cfg(windows)]
+        fn reopen(&self, cancellation: &CancellationToken) -> Result<Self, DemandError> {
+            self.provider.check(self.source, cancellation)?;
+            let file = match self.provider.inner.root.open_file_yielding(&self.relative) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(DemandError::StaleVersion);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let opened = stat_held(&self.provider, &file)?;
+            if version(&opened) != self.expected {
+                return Err(DemandError::StaleVersion);
+            }
+            Ok(Self {
+                provider: self.provider.clone(),
+                source: self.source,
+                relative: self.relative.clone(),
+                expected: self.expected,
+                logical_bytes: opened.len(),
+                file: Arc::new(file),
+            })
+        }
+
+        fn read_once(
+            &self,
             ReadRange { offset, length }: ReadRange,
             cancellation: &CancellationToken,
             work: &mut WorkCounters,
@@ -2521,6 +2564,27 @@ mod tests {
             read_failure(file.as_ref()),
             Some(DemandError::StaleVersion)
         ));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_benign_oplock_break_preserves_the_held_read() -> Result<(), Box<dyn Error>> {
+        let (temporary, _source, file) = held_file(b"before").await?;
+        let path = temporary.path().join("source/file");
+        // A second opener with write access breaks a handle oplock even if
+        // it never changes the file. The held read must reopen at the same
+        // version instead of reporting a change that did not occur.
+        drop(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)?,
+        );
+        assert_eq!(
+            file.read_range(0, 6, &CancellationToken::new())?.value,
+            Bytes::from_static(b"before")
+        );
         Ok(())
     }
 

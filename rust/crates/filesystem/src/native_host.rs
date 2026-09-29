@@ -3305,6 +3305,15 @@ impl YieldingFile {
         }
     }
 
+    /// Whether an oplock break closed the held handle.
+    pub(crate) fn was_yielded(&self) -> bool {
+        self.held
+            .file
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none()
+    }
+
     /// Runs `operation` on the handle unless it gave way.
     pub fn with<T>(&self, operation: impl FnOnce(&File) -> io::Result<T>) -> io::Result<T> {
         let file = self
