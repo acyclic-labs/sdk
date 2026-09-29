@@ -145,6 +145,7 @@ jobs:
     if: needs.plan.outputs.matrix != '[]'
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
@@ -181,16 +182,16 @@ jobs:
   windows:
     name: windows
     if: github.event_name == 'pull_request'
-    runs-on: blacksmith-16vcpu-windows-2025
+    runs-on: blacksmith-4vcpu-windows-2025
     permissions:
       contents: read
       actions: read
     env:
-      CARGO_BUILD_JOBS: 16
-      CMAKE_BUILD_PARALLEL_LEVEL: 16
-      MAKEFLAGS: -j16
-      RAYON_NUM_THREADS: 16
-      RUST_TEST_THREADS: 16
+      CARGO_BUILD_JOBS: 4
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+      MAKEFLAGS: -j4
+      RAYON_NUM_THREADS: 4
+      RUST_TEST_THREADS: 4
       SCCACHE_CACHE_SIZE: 3G
     timeout-minutes: 25
     steps:

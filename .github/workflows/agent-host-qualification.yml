@@ -28,12 +28,13 @@ jobs:
   qualify:
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         platform:
           - name: linux-fuse
             runner: blacksmith-4vcpu-ubuntu-2404
           - name: macos-nfs
-            runner: blacksmith-12vcpu-macos-15
+            runner: blacksmith-4vcpu-macos-15
           - name: windows-projfs
             runner: blacksmith-4vcpu-windows-2025
     name: ${{ matrix.platform.name }}
