@@ -44,6 +44,7 @@ impl MemoryStream {
 fn encode(state: &State) -> Vec<u8> {
     let mut out = Vec::new();
     put_u64(&mut out, state.decision);
+    put_u64(&mut out, state.last_committed_at_micros);
     out.extend_from_slice(state.hierarchy_version.as_bytes());
     // Each node after every node it reaches, so decoding links backwards.
     let mut indices = HashMap::new();
@@ -81,6 +82,7 @@ fn encode(state: &State) -> Vec<u8> {
                 for record in records.iter() {
                     put_u64(&mut out, record.sequence);
                     out.extend_from_slice(record.commit_id.as_bytes());
+                    put_u64(&mut out, record.committed_at_micros);
                     put_bytes(&mut out, &record.value);
                 }
             }
@@ -131,6 +133,7 @@ fn encode(state: &State) -> Vec<u8> {
 fn decode(encoded: &[u8]) -> Option<State> {
     let mut input = Input(encoded);
     let decision = input.u64()?;
+    let last_committed_at_micros = input.u64()?;
     let hierarchy_version = CommitId::from_bytes(input.array()?);
     let nodes = decode_nodes(&mut input)?;
     let (paths, path_bytes) = decode_paths(&mut input, &nodes)?;
@@ -138,6 +141,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
     state.paths = paths;
     state.path_bytes = path_bytes;
     state.decision = decision;
+    state.last_committed_at_micros = last_committed_at_micros;
     state.hierarchy_version = hierarchy_version;
     decode_retained(&mut input, &mut state)?;
     if !input.0.is_empty() {
@@ -170,6 +174,7 @@ fn decode_nodes(input: &mut Input<'_>) -> Option<Vec<Arc<History>>> {
                     records.push(Record {
                         sequence: input.u64()?,
                         commit_id: CommitId::from_bytes(input.array()?),
+                        committed_at_micros: input.u64()?,
                         value: Bytes::copy_from_slice(input.bytes()?),
                     });
                 }
@@ -299,5 +304,74 @@ impl<'a> Input<'a> {
     fn path(&mut self) -> Option<StreamPath> {
         let bytes = self.bytes()?;
         StreamPath::new(std::str::from_utf8(bytes).ok()?).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AppendRequest, MemoryLimits, ReadRequest, StreamProvider, UnixMillisClock};
+    use futures::StreamExt as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[derive(Default)]
+    struct TestClock(AtomicU64);
+
+    impl UnixMillisClock for TestClock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
+        let clock = Arc::new(TestClock::default());
+        clock.0.store(100, Ordering::SeqCst);
+        let stream = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
+        let path = StreamPath::new("snapshot/timed")?;
+        stream
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![Bytes::from_static(b"one")],
+                if_tail: None,
+                idempotency_key: None,
+            })
+            .await?;
+        let timed = stream.encode_state().await;
+        clock.0.store(90, Ordering::SeqCst);
+        let restored = MemoryStream::new_with_clock(MemoryLimits::default(), clock);
+        restored.install_state(&timed).await?;
+        let timed_record = restored
+            .read(ReadRequest {
+                path: path.clone(),
+                from: 0,
+                limit: 1,
+            })
+            .await?
+            .next()
+            .await
+            .ok_or(StreamError::InvalidArgument)??;
+        assert_eq!(timed_record.committed_at_micros, 100_000);
+        let path = StreamPath::new("snapshot/after-rollback")?;
+        restored
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![Bytes::from_static(b"two")],
+                if_tail: None,
+                idempotency_key: None,
+            })
+            .await?;
+        let next = restored
+            .read(ReadRequest {
+                path,
+                from: 0,
+                limit: 1,
+            })
+            .await?
+            .next()
+            .await
+            .ok_or(StreamError::InvalidArgument)??;
+        assert_eq!(next.committed_at_micros, 100_000);
+        Ok(())
     }
 }

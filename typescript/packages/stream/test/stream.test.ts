@@ -258,7 +258,7 @@ describe("website Stream contract", () => {
     for await (const record of experiment.follow({ from: observed, signal: controller.signal })) {
       followed.push(record); controller.abort();
     }
-    expect(followed).toEqual([{ sequence: 1n, value: { type: "strategy.changed" }, commitId: expect.any(Uint8Array) }]);
+    expect(followed).toEqual([{ sequence: 1n, value: { type: "strategy.changed" }, commitId: expect.any(Uint8Array), committedAtMicros: expect.any(BigInt) }]);
   });
 
   test("keeps the complete committed prefix readable after later appends and a fork", async () => {
@@ -792,13 +792,14 @@ describe("website Stream contract", () => {
     await ensureStreamWasm();
     const maximum = 0xffff_ffff_ffff_ffffn;
     const record = decodeHttpResponse("read", JSON.stringify([{
-      sequence: maximum.toString(), value: "AQI=", commitId: encodedCommitId,
+      sequence: maximum.toString(), value: "AQI=", commitId: encodedCommitId, committedAtMicros: maximum.toString(),
     }, {
-      sequence: (maximum - 1n).toString(), value: "", commitId: encodedCommitId,
-    }])) as { readonly sequence: bigint; readonly value: Uint8Array; readonly commitId: Uint8Array }[];
+      sequence: (maximum - 1n).toString(), value: "", commitId: encodedCommitId, committedAtMicros: "1000",
+    }])) as { readonly sequence: bigint; readonly value: Uint8Array; readonly commitId: Uint8Array; readonly committedAtMicros: bigint }[];
     expect(record[0]?.sequence).toBe(maximum);
     expect(record[0]?.value).toEqual(new Uint8Array([1, 2]));
     expect(record[0]?.commitId).toEqual(new Uint8Array(32).fill(7));
+    expect(record[0]?.committedAtMicros).toBe(maximum);
     expect(record[1]?.value).toEqual(new Uint8Array());
 
     const token = decodeHttpResponse("tokens/create", JSON.stringify({ token: "secret", expiresAt: "2030-01-02T03:04:05.000Z" })) as { readonly token: string; readonly expiresAt: Date };

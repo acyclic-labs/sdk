@@ -187,6 +187,8 @@ pub struct Record {
     pub value: Bytes,
     /// Envelope that introduced the record.
     pub commit_id: CommitId,
+    /// Stable replicated commit time in Unix microseconds.
+    pub committed_at_micros: u64,
 }
 
 /// Successful contiguous append.

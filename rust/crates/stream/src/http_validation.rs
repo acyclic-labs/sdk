@@ -110,7 +110,9 @@ fn validate_record(value: &Value) -> Result {
     let item = object(value)?;
     u64_string(field(item, "sequence")?)?;
     bytes(field(item, "value")?)?;
-    id(field(item, "commitId")?)
+    id(field(item, "commitId")?)?;
+    u64_string(field(item, "committedAtMicros")?)?;
+    Ok(())
 }
 
 fn validate_children_page(value: &Value) -> Result {
@@ -349,9 +351,13 @@ mod tests {
     #[test]
     fn hosted_http_validation_accepts_empty_record_values() -> serde_json::Result<()> {
         let commit_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-        let response = format!(r#"[{{"sequence":"0","value":"","commitId":"{commit_id}"}}]"#);
+        let response = format!(
+            r#"[{{"sequence":"0","value":"","commitId":"{commit_id}","committedAtMicros":"1000"}}]"#
+        );
 
         assert!(super::validate("read", &json_fixture(&response)?).is_ok());
+        let missing_time = format!(r#"[{{"sequence":"0","value":"","commitId":"{commit_id}"}}]"#);
+        assert!(super::validate("read", &json_fixture(&missing_time)?).is_err());
         Ok(())
     }
 

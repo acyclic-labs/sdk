@@ -27,18 +27,16 @@ use crate::{
     UnixMillisClock,
 };
 
-const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V3\0";
-const LEGACY_HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V2\0";
+const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V4\0";
 /// The magic, the limits, then the journal's epoch.
 const HEADER_BYTES: usize = HEADER_MAGIC.len() + LIMITS_BYTES + 8;
 const LIMITS_BYTES: usize = 8 * 8;
-const SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAP-V03\0";
-const LEGACY_SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAPSHOT\0";
+const SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAP-V04\0";
 /// The magic, the limits, the epoch of the journal that follows, and the
 /// store time; the state and a checksum follow.
 const SNAPSHOT_HEADER_BYTES: usize = SNAPSHOT_MAGIC.len() + LIMITS_BYTES + 8 + 8;
-/// A frame's store time, before its command.
-const FRAME_TIME_BYTES: usize = 8;
+/// A frame's retention time and sampled Unix commit time, before its command.
+const FRAME_TIME_BYTES: usize = 16;
 const LOCK_FILE: &str = "stream.lock";
 const JOURNAL_FILE: &str = "stream.journal";
 const SNAPSHOT_FILE: &str = "stream.snapshot";
@@ -142,9 +140,6 @@ pub enum LocalStreamError {
     /// Stored bytes or configuration do not match the canonical local format.
     #[error("local Stream journal is corrupt or incompatible")]
     Corrupt,
-    /// An earlier local format cannot provide the current full-history guarantee.
-    #[error("local Stream V2 store is unsupported; create a new local root")]
-    UnsupportedFormat,
     /// Configured bounds are zero or cannot represent the canonical format.
     #[error("local Stream limits are invalid")]
     InvalidLimits,
@@ -175,6 +170,7 @@ pub struct LocalStream {
 struct LocalInner {
     provider: MemoryStream,
     clock: Arc<StoreClock>,
+    commit_clock: Arc<PinnedCommitClock>,
     journal: OwnedJournal,
     visibility: RwLock<()>,
     changed: watch::Sender<u64>,
@@ -276,12 +272,41 @@ impl UnixMillisClock for StoreClock {
     }
 }
 
+/// Records the wall-clock sample in a frame and supplies that same sample on replay.
+struct PinnedCommitClock {
+    source: Arc<dyn UnixMillisClock>,
+    pinned: Mutex<Option<u64>>,
+}
+
+impl PinnedCommitClock {
+    fn pin(&self, at: u64) {
+        *self.pinned.lock().unwrap_or_else(PoisonError::into_inner) = Some(at);
+    }
+
+    fn unpin(&self) {
+        *self.pinned.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+}
+
+impl UnixMillisClock for PinnedCommitClock {
+    fn now_unix_millis(&self) -> u64 {
+        self.pinned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or_else(|| self.source.now_unix_millis())
+    }
+}
+
 /// What recovery hands the state machine, in order.
 enum Recovered {
     /// The snapshot's state, first.
     State { encoded: Vec<u8>, store_time: u64 },
     /// Each command in the journal after it.
-    Command { store_time: u64, command: Command },
+    Command {
+        store_time: u64,
+        committed_at_millis: u64,
+        command: Command,
+    },
 }
 
 impl LocalStream {
@@ -357,8 +382,16 @@ impl LocalStream {
             }
         }
         let store_clock = Arc::new(StoreClock::default());
-        let provider =
-            MemoryStream::new_with_clocks(limits.memory, clock, Arc::clone(&store_clock) as _);
+        let commit_clock = Arc::new(PinnedCommitClock {
+            source: Arc::clone(&clock),
+            pinned: Mutex::new(None),
+        });
+        let provider = MemoryStream::new_with_commit_clock(
+            limits.memory,
+            clock,
+            Arc::clone(&store_clock) as _,
+            Arc::clone(&commit_clock) as _,
+        );
         let mut replay_error = None;
         while let Some(recovered) = receiver.recv().await {
             if replay_error.is_some() {
@@ -377,9 +410,11 @@ impl LocalStream {
                 }
                 Recovered::Command {
                     store_time,
+                    committed_at_millis,
                     command,
                 } => {
                     store_clock.pin(store_time);
+                    commit_clock.pin(committed_at_millis);
                     replay(&provider, command)
                         .await
                         .map_err(LocalStreamError::Replay)
@@ -394,11 +429,13 @@ impl LocalStream {
             return Err(error);
         }
         store_clock.start();
+        commit_clock.unpin();
         let (changed, _) = watch::channel(0_u64);
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
                 clock: store_clock,
+                commit_clock,
                 journal: OwnedJournal {
                     journal: Arc::new(Mutex::new(journal)),
                     _ownership_anchor: ownership_anchor,
@@ -422,10 +459,14 @@ impl LocalStream {
     /// until the mutation ends.
     fn prepare(&self, command: &Command) -> Result<PreparedFrame, StreamError> {
         let at = self.inner.clock.live();
-        let frame = PreparedFrame::encode(command, at).map_err(|error| match error {
-            LocalStreamError::InvalidLimits => StreamError::Capacity,
-            _ => StreamError::Unavailable,
-        })?;
+        let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
+        let frame =
+            PreparedFrame::encode(command, at, committed_at_millis).map_err(
+                |error| match error {
+                    LocalStreamError::InvalidLimits => StreamError::Capacity,
+                    _ => StreamError::Unavailable,
+                },
+            )?;
         self.inner
             .journal
             .journal
@@ -437,6 +478,7 @@ impl LocalStream {
                 _ => StreamError::Unavailable,
             })?;
         self.inner.clock.pin(at);
+        self.inner.commit_clock.pin(committed_at_millis);
         Ok(frame)
     }
 
@@ -530,6 +572,7 @@ impl LocalStream {
             stream.check_available()?;
             let result = mutation(stream.clone()).await;
             stream.inner.clock.unpin();
+            stream.inner.commit_clock.unpin();
             result
         }))
         .await
@@ -739,7 +782,11 @@ struct PreparedFrame {
 }
 
 impl PreparedFrame {
-    fn encode(command: &Command, store_time: u64) -> Result<Self, LocalStreamError> {
+    fn encode(
+        command: &Command,
+        store_time: u64,
+        committed_at_millis: u64,
+    ) -> Result<Self, LocalStreamError> {
         let journal = journal_command(command);
         if journal.encoded_len() > MAX_COMMAND_BYTES {
             return Err(LocalStreamError::InvalidLimits);
@@ -756,6 +803,7 @@ impl PreparedFrame {
         let mut encoded = Vec::with_capacity(capacity);
         encoded.extend_from_slice(&length);
         encoded.extend_from_slice(&store_time.to_le_bytes());
+        encoded.extend_from_slice(&committed_at_millis.to_le_bytes());
         journal
             .encode(&mut encoded)
             .map_err(|_| LocalStreamError::InvalidLimits)?;
@@ -821,9 +869,6 @@ impl Journal {
                 .file
                 .read_exact(&mut header)
                 .map_err(|_| LocalStreamError::Corrupt)?;
-            if header.starts_with(LEGACY_HEADER_MAGIC) {
-                return Err(LocalStreamError::UnsupportedFormat);
-            }
             Some(decode_header(&header, limits))
         };
         match found {
@@ -882,7 +927,10 @@ impl Journal {
             // may be a committed command: fail closed.
             let (store_time, command) = frame
                 .command
-                .split_first_chunk::<FRAME_TIME_BYTES>()
+                .split_first_chunk::<8>()
+                .ok_or(LocalStreamError::Corrupt)?;
+            let (committed_at_millis, command) = command
+                .split_first_chunk::<8>()
                 .ok_or(LocalStreamError::Corrupt)?;
             let command = decode_command(command).map_err(|_| LocalStreamError::Corrupt)?;
             operations = operations.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
@@ -892,6 +940,7 @@ impl Journal {
             recovered
                 .blocking_send(Recovered::Command {
                     store_time: u64::from_le_bytes(*store_time),
+                    committed_at_millis: u64::from_le_bytes(*committed_at_millis),
                     command,
                 })
                 .map_err(|_| LocalStreamError::Executor)?;
@@ -1186,9 +1235,6 @@ fn read_snapshot(
         .ok_or(LocalStreamError::Corrupt)?;
     if snapshot_checksum(body) != *checksum {
         return Err(LocalStreamError::Corrupt);
-    }
-    if body.starts_with(LEGACY_SNAPSHOT_MAGIC) {
-        return Err(LocalStreamError::UnsupportedFormat);
     }
     let rest = body
         .strip_prefix(SNAPSHOT_MAGIC)
@@ -1554,6 +1600,63 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn journal_replay_preserves_monotonic_commit_times()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let clock = Arc::new(TestClock::default());
+        let path = StreamPath::new("accounting/local")?;
+        let provider = LocalStream::open_with_clock(
+            directory.path(),
+            LocalStreamLimits::default(),
+            clock.clone(),
+        )
+        .await?;
+        for (time, body) in [(100, b"first".as_slice()), (90, b"rollback")] {
+            clock.0.store(time, Ordering::SeqCst);
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![Bytes::copy_from_slice(body)],
+                    if_tail: None,
+                    idempotency_key: None,
+                })
+                .await?;
+        }
+        drop(provider);
+        clock.0.store(80, Ordering::SeqCst);
+        let reopened =
+            LocalStream::open_with_clock(directory.path(), LocalStreamLimits::default(), clock)
+                .await?;
+        reopened
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![Bytes::from_static(b"after-restart")],
+                if_tail: None,
+                idempotency_key: None,
+            })
+            .await?;
+        let records = reopened
+            .read(ReadRequest {
+                path,
+                from: 0,
+                limit: 3,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.committed_at_micros)
+                .collect::<Vec<_>>(),
+            vec![100_000, 100_000, 100_000]
+        );
+        Ok(())
+    }
+
     #[cfg(not(target_vendor = "apple"))]
     #[tokio::test]
     async fn barrier_policy_rejects_targets_without_exact_barrier_semantics()
@@ -1782,6 +1885,7 @@ mod tests {
                 idempotency_key: None,
             }),
             0,
+            0,
         )?;
         let valid = PreparedFrame::encode(
             &Command::Append(AppendRequest {
@@ -1790,6 +1894,7 @@ mod tests {
                 if_tail: Some(0),
                 idempotency_key: None,
             }),
+            0,
             0,
         )?;
         let journal_path = directory.path().join("stream.journal");
@@ -2059,52 +2164,6 @@ mod tests {
             std::fs::metadata(&journal)?.len(),
             u64::try_from(HEADER_BYTES)?
         );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_v2_journal_is_rejected_without_rewriting_it()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let limits = LocalStreamLimits::default();
-        let mut legacy = encode_header(limits, 0)?;
-        legacy
-            .get_mut(..HEADER_MAGIC.len())
-            .ok_or("journal header is too short")?
-            .copy_from_slice(LEGACY_HEADER_MAGIC);
-        let journal = directory.path().join(JOURNAL_FILE);
-        std::fs::write(&journal, &legacy)?;
-
-        assert!(matches!(
-            LocalStream::open(directory.path(), limits).await,
-            Err(LocalStreamError::UnsupportedFormat)
-        ));
-        assert_eq!(std::fs::read(journal)?, legacy);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_v2_snapshot_is_rejected_without_rewriting_it()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let limits = LocalStreamLimits::default();
-        let mut legacy = encode_snapshot(limits, 0, 0, &[])?;
-        legacy
-            .get_mut(..SNAPSHOT_MAGIC.len())
-            .ok_or("snapshot header is too short")?
-            .copy_from_slice(LEGACY_SNAPSHOT_MAGIC);
-        let (body, checksum) = legacy
-            .split_last_chunk_mut::<FRAME_CHECKSUM_BYTES>()
-            .ok_or("snapshot checksum is missing")?;
-        *checksum = snapshot_checksum(body);
-        let snapshot = directory.path().join(SNAPSHOT_FILE);
-        std::fs::write(&snapshot, &legacy)?;
-
-        assert!(matches!(
-            LocalStream::open(directory.path(), limits).await,
-            Err(LocalStreamError::UnsupportedFormat)
-        ));
-        assert_eq!(std::fs::read(snapshot)?, legacy);
         Ok(())
     }
 

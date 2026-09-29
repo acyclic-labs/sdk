@@ -74,6 +74,7 @@ mod browser {
             sequence: value.sequence,
             value: value.value,
             commit_id: bytes(value.commit_id),
+            committed_at_micros: value.committed_at_micros,
         }
     }
     fn envelope(value: CommittedEnvelope) -> wire::CommittedEnvelope {

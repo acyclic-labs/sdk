@@ -30,6 +30,11 @@ export declare type Record = Message<"acyclic.stream.v2.Record"> & {
    * @generated from field: bytes commit_id = 3;
    */
   commitId: Uint8Array;
+
+  /**
+   * @generated from field: uint64 committed_at_micros = 4;
+   */
+  committedAtMicros: bigint;
 };
 
 /**
