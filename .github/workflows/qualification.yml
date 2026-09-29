@@ -145,7 +145,7 @@ jobs:
     if: needs.plan.outputs.matrix != '[]'
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
