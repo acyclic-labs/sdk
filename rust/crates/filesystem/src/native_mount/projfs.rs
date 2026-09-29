@@ -662,6 +662,9 @@ struct Projection<'a> {
     source: &'a dyn MountFilesystem,
     context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
     root: &'a std::path::Path,
+    /// Host edits not yet captured: a file holding one is the user's until
+    /// the source has it.
+    captures: &'a Mutex<PostOperationFailures>,
 }
 
 /// The projection this provider writes, and the worker that keeps it
@@ -1043,26 +1046,18 @@ impl Placeholders {
     /// Deletes what was written beneath `directory` that `ProjFS` still
     /// holds untouched, and each directory left empty; forgets all of it.
     fn remove_tree(&self, projection: Projection<'_>, directory: &MountPath) {
-        let (mut removed, owned) = {
+        let mut removed = {
             let mut state = lock_recover(&self.state);
-            let owned = state
-                .written
-                .iter()
-                .chain(&state.pending)
-                .filter(|(path, _)| projfs_path_suffix(path, directory).is_some())
-                .filter_map(|(path, written)| written.owned.map(|owned| (path.clone(), owned)))
-                .collect::<HashMap<_, _>>();
             let beneath = state
                 .directories
                 .keys()
                 .filter(|path| projfs_path_suffix(path, directory).is_some())
                 .cloned()
                 .collect::<Vec<_>>();
-            let removed = beneath
+            beneath
                 .into_iter()
                 .filter_map(|path| state.directories.remove(&path).map(|entry| (path, entry)))
-                .collect::<Vec<_>>();
-            (removed, owned)
+                .collect::<Vec<_>>()
         };
         // Deepest first, so each directory holds nothing written by the time
         // it is removed.
@@ -1072,8 +1067,19 @@ impl Placeholders {
             for (name, is_directory) in materialized.names {
                 if !is_directory {
                     let child = path.child(name);
-                    let owned = owned.get(&child).copied();
-                    if release(projection, &child, owned) == Ok(Release::Busy) {
+                    // What is held there now, a conversion included.
+                    let (owned, released) = self.paths.with(&child, || {
+                        let owned = {
+                            let state = lock_recover(&self.state);
+                            state
+                                .written
+                                .get(&child)
+                                .or_else(|| state.pending.get(&child))
+                                .and_then(|written| written.owned)
+                        };
+                        (owned, release(projection, &child, owned))
+                    });
+                    if released == Ok(Release::Busy) {
                         // Held open: tried again as pending.
                         held = true;
                         let mut state = lock_recover(&self.state);
@@ -1312,6 +1318,7 @@ impl Placeholders {
         source: Arc<dyn MountFilesystem>,
         context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
         root: PathBuf,
+        captures: Arc<Mutex<PostOperationFailures>>,
     ) -> Result<(), NativeMountError> {
         let placeholders = Arc::clone(self);
         let observed = Arc::clone(&source);
@@ -1324,6 +1331,7 @@ impl Placeholders {
                     source: source.as_ref(),
                     context: context.0,
                     root: &root,
+                    captures: &captures,
                 });
             })
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
@@ -1722,6 +1730,11 @@ fn release_file(
     path: &MountPath,
     state: HostWindowsMetadata,
 ) -> Result<Release, String> {
+    // Its metadata cannot prove its content unchanged; an edit the source
+    // has not captured yet can. Once captured, the source holds it.
+    if has_pending_capture(projection.captures, path) {
+        return Ok(Release::Busy);
+    }
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
     match delete_file_while(&projection.root.join(&host), state) {
         Ok(true) => {}
@@ -2379,6 +2392,7 @@ impl ProjFsSession {
                         source: runtime.source.as_ref(),
                         context,
                         root: &runtime.root,
+                        captures: &runtime.post_operation_failure,
                     },
                     MountPath::root(),
                 )
@@ -2577,8 +2591,12 @@ impl Runtime {
         &self,
         context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
     ) -> Result<(), NativeMountError> {
-        self.placeholders
-            .attach(Arc::clone(&self.source), context, self.root.clone())
+        self.placeholders.attach(
+            Arc::clone(&self.source),
+            context,
+            self.root.clone(),
+            Arc::clone(&self.post_operation_failure),
+        )
     }
 
     /// Stops the worker; nothing is kept current from here on.
