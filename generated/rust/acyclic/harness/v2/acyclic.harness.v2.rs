@@ -300,6 +300,8 @@ pub struct SchedulerEventEnvelope {
     pub canonical_event_json: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "6")]
     pub event_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, optional, tag = "7")]
+    pub committed_at_ms: ::core::option::Option<u64>,
 }
 /// Canonical ref-only conversation values. File bodies are never protocol events.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

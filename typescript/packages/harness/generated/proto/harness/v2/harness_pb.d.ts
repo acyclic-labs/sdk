@@ -810,6 +810,11 @@ export declare type SchedulerEventEnvelope = Message<"acyclic.harness.v2.Schedul
    * @generated from field: bytes event_digest = 6;
    */
   eventDigest: Uint8Array;
+
+  /**
+   * @generated from field: optional uint64 committed_at_ms = 7;
+   */
+  committedAtMs?: bigint | undefined;
 };
 
 /**

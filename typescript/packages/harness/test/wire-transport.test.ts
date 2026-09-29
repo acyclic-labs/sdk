@@ -37,7 +37,7 @@ const negotiation = create(HandshakeRequestSchema, {
   protocol: {
     version: "2",
     // blake3(FILE_DESCRIPTOR_SET) for the checked-in v2 protobuf contract.
-    descriptorDigest: "4fb49936d761bd2d02aabc668176abb34dd07006a239b1f8abf5f27eff8664b5",
+    descriptorDigest: "8efc8c682b2ba1025b1221dd203685bdf999d04e87568fad3acdf0e428bd84cf",
   },
   required: { capabilities: [] },
 });
