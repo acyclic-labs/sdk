@@ -2479,6 +2479,7 @@ impl StagedWindowsFile {
 
     /// As [`Self::publish`], naming the file in `directory`, on the same
     /// volume, instead of beside the staged name.
+    #[cfg(feature = "native-mount")]
     pub(crate) fn publish_in(&self, directory: &Dir, name: &OsStr) -> io::Result<()> {
         self.link(directory, name, false)
     }
@@ -2487,6 +2488,7 @@ impl StagedWindowsFile {
     /// the file there now, in one step no reader observes between: the
     /// replaced file goes with POSIX semantics, also while a handle to it
     /// stays open.
+    #[cfg(feature = "native-mount")]
     pub(crate) fn publish_over_in(&self, directory: &Dir, name: &OsStr) -> io::Result<()> {
         self.link(directory, name, true)
     }
