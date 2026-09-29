@@ -166,7 +166,7 @@ pub enum DemandError {
 impl From<std::io::Error> for DemandError {
     fn from(error: std::io::Error) -> Self {
         // A file that gave way to a rename or delete changed under the read.
-        #[cfg(windows)]
+        #[cfg(all(windows, feature = "native-watch"))]
         if error
             .get_ref()
             .is_some_and(|inner| inner.is::<crate::native_host::Yielded>())
