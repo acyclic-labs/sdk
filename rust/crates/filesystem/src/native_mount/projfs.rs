@@ -668,6 +668,9 @@ struct Projection<'a> {
     /// Host edits not yet captured: a file holding one is the user's until
     /// the source has it.
     captures: &'a Mutex<PostOperationFailures>,
+    /// Whether the mount is still starting, which nothing can read yet: a
+    /// file is written at its name directly, with no staged name first.
+    starting: bool,
 }
 
 /// The projection this provider writes, and the worker that keeps it
@@ -1300,6 +1303,7 @@ impl Placeholders {
                     context: context.0,
                     root: &root,
                     captures: &captures,
+                    starting: false,
                 });
             })
             .map_err(|error| NativeMountError::Driver(error.to_string()))?;
@@ -1858,10 +1862,6 @@ fn write_ordinary(
     entry: &ProjectedEntry,
     replacing: Option<HostWindowsMetadata>,
 ) -> Result<Placed, String> {
-    use windows::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
-    };
-
     let failed = |error: std::io::Error| format!("writing {path:?}: {error}");
     let (Some(parent), Some(name)) = (host.parent(), host.file_name()) else {
         return Err(format!("{path:?} names no file"));
@@ -1887,6 +1887,9 @@ fn write_ordinary(
         }
         Err(error) => return Err(failed(error)),
     };
+    if projection.starting && replacing.is_none() {
+        return write_directly(projection, path, &target, entry);
+    }
     // Staged beside the projection, so no listing of it shows a staged name.
     let staged = crate::native_host::StagedWindowsFile::create(staging_directory(projection.root)?)
         .map_err(failed)?;
@@ -1894,26 +1897,7 @@ fn write_ordinary(
     if !write_listed_content(projection, path, entry, &mut file)? {
         return Ok(Placed::Retry);
     }
-    let attributes = entry.info.FileAttributes
-        & !(FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0
-            | FILE_ATTRIBUTE_RECALL_ON_OPEN.0
-            | FILE_ATTRIBUTE_REPARSE_POINT.0);
-    // A time left zero is not set: the moment of writing stays.
-    basic_information(
-        &file,
-        Some(&FILE_BASIC_INFO {
-            CreationTime: entry.info.CreationTime,
-            LastAccessTime: entry.info.LastAccessTime,
-            LastWriteTime: entry.info.LastWriteTime,
-            ChangeTime: entry.info.ChangeTime,
-            FileAttributes: if attributes == 0 {
-                FILE_ATTRIBUTE_NORMAL.0
-            } else {
-                attributes
-            },
-        }),
-    )
-    .map_err(failed)?;
+    basic_information(&file, Some(&ordinary_basic_information(entry))).map_err(failed)?;
     let published = match replacing {
         None => staged.publish_in(&directory, name),
         Some(state) => {
@@ -1944,6 +1928,75 @@ fn write_ordinary(
         Err(error) if error.raw_os_error() == Some(SHARING_VIOLATION) => Ok(Placed::Retry),
         Err(error) => Err(failed(error)),
     }
+}
+
+/// The times and attributes `entry` names, for its ordinary file. A time
+/// left zero is not set: the moment of writing stays.
+fn ordinary_basic_information(
+    entry: &ProjectedEntry,
+) -> windows::Win32::Storage::FileSystem::FILE_BASIC_INFO {
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
+    };
+
+    let attributes = entry.info.FileAttributes
+        & !(FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0
+            | FILE_ATTRIBUTE_RECALL_ON_OPEN.0
+            | FILE_ATTRIBUTE_REPARSE_POINT.0);
+    FILE_BASIC_INFO {
+        CreationTime: entry.info.CreationTime,
+        LastAccessTime: entry.info.LastAccessTime,
+        LastWriteTime: entry.info.LastWriteTime,
+        ChangeTime: entry.info.ChangeTime,
+        FileAttributes: if attributes == 0 {
+            FILE_ATTRIBUTE_NORMAL.0
+        } else {
+            attributes
+        },
+    }
+}
+
+/// Writes `entry` at `target` directly, while the mount is starting.
+fn write_directly(
+    projection: Projection<'_>,
+    path: &MountPath,
+    target: &std::path::Path,
+    entry: &ProjectedEntry,
+) -> Result<Placed, String> {
+    let failed = |error: std::io::Error| format!("writing {path:?}: {error}");
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(target)
+    {
+        Ok(file) => file,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists
+                    | std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(Placed::Nothing);
+        }
+        Err(error) => return Err(failed(error)),
+    };
+    let written = write_listed_content(projection, path, entry, &mut file).and_then(|complete| {
+        if !complete {
+            return Ok(Placed::Retry);
+        }
+        basic_information(&file, Some(&ordinary_basic_information(entry)))
+            .and_then(|_| handle_state(&file))
+            .map(|state| Placed::Owned(Owned::File(state)))
+            .map_err(failed)
+    });
+    if !matches!(written, Ok(Placed::Owned(_))) {
+        drop(file);
+        let _ = std::fs::remove_file(target);
+    }
+    written
 }
 
 /// The directory beside the projection at `root` where its files are
@@ -2487,6 +2540,7 @@ impl ProjFsSession {
                         context,
                         root: &runtime.root,
                         captures: &runtime.post_operation_failure,
+                        starting: true,
                     },
                     MountPath::root(),
                 )
