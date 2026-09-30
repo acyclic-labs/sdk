@@ -11,6 +11,7 @@ pub mod conformance;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 pub mod http_response;
+pub mod persistence;
 pub mod preparation;
 pub mod request;
 // The WASM adapter consumes this module on browser builds; native builds keep
