@@ -1,10 +1,47 @@
 # SDK contract goal evidence
 
 Status: active; final follow-up local qualification passes for the 0.2.0 candidate.
-PR 223 is unmerged; its previous required CI failed on fork-test time budgets.
-Qualified follow-up push, green required CI and an approving code-owner review remain.
+PR 223 is unmerged; the b9 head required aggregate failed on elapsed job limits.
+The qualification correction passes locally; green required CI and review remain.
 
 ## Final Objects v2 retirement and 0.2.0 qualification (2026-09-30)
+
+### Qualification orchestration correction
+
+Pushed head `b9e0de5563932f5e78bb14af87fdbb336d10a68b` completed Agent Host run
+36769763247 successfully on all three platforms. SDK run 36769763250 is terminal:
+gate, web, macOS, policy and both musl lanes passed; Linux, ARM64 Linux and Windows
+reached aggregate elapsed job limits, so required SDK Qualification failed.
+No run was cancelled or restarted by this chat. Linux's archived Harness test
+passed the unchanged 1024-fork case in about 190 seconds before its later duplicate
+execution hit the lane cutoff. Windows passed the complete workspace runtime and
+documentation checks before a subsequent feature build reached its cutoff.
+
+The exact Linux `--features filesystem` recursive integration case passes locally
+in 190.48 seconds with Rust 1.98.1 (`sdk-map-linux-narrow-fork-1.98.log`). The
+correction removes the 20/25-minute aggregate qualification job overrides while
+retaining operation bounds, resource controls and cancellation handling. The
+normalizer records actual integration target names and their digest. Conformance
+verifies the full 1024-fork pass from the exact archived crate's test transcript,
+bound to archive hashes, and runs the 32-sibling scenario under the smaller feature
+configuration. Durable local reopen still executes separately. Depth, assertions,
+schema digests, dependency versions and the four-family client implementations
+are unchanged.
+
+An isolated candidate passed `scripts/check-harness-package.sh`, including the
+extracted crate's full all-feature suite and the unchanged recursive integration
+(165.55 seconds). `scripts/run-harness-conformance.mjs` then passed all 25 cases.
+Six evidence tests pass; a real runner invocation with an altered provider digest
+fails before Rust execution. Pinned actionlint 1.7.7, shell syntax and workflow
+runner validation pass. Logs and artifacts are under the existing D: evidence
+directory with `sdk-ci-candidate-*` names. The normalized provider digest is
+`6d5e31e34bca1393a30e259ec73d8a4dea35c30464870dcd174091b27fddb858`.
+The first candidate package attempt stopped on missing built workspace declarations;
+after supplying the already qualified dependency outputs, the fresh attempt passed.
+
+Main remains an ancestor of the PR branch. All existing review threads were
+resolved at b9; a code-owner review remains required. Auto-merge was disabled after
+the cancelled required check. No merge, live acceptance or publication is claimed.
 
 ### Follow-up fork performance and source-derived matrix qualification
 
