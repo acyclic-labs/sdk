@@ -2,6 +2,34 @@
 
 Status: active; local transport work is incomplete and PR 223 is unmerged.
 
+## Inference idle KV contract slice (2026-09-30)
+
+Inference owner confirmed the human's renewal choice: change timeout from prior
+verified actual Run use, without advancing last-use or resetting the window.
+Before first use, initial verified KV pin time supplies a distinct baseline.
+The additive v1 schema has `IdleKvPolicy`, `IdleKvRetention`, mutually exclusive
+legacy/idle Retain and Renew fields, `WarmView.idle_kv`, and discovered
+`ModelCapability.idle_kv_profiles`. Existing message tags and opaque Context,
+WarmContext and Run identities remain. No capacity/throughput/latency guarantee.
+Only verified actual Run reuse of the pinned revision/descendant prefix advances
+last-use; fork/edit/admission/inspect/recovery do not. Expired/released pins cannot
+resurrect through renewal/replay. Service lifecycle enforcement is still a Cloud
+dependency; SDK validation does not establish actual reuse or deployment.
+
+Local evidence: Rust host/contract 13 tests; reflection 4 tests; TypeScript 17
+tests and type checks; Node canonical WASM validation; strict native Clippy;
+Buf lint; Inference package dry pack all passed. Tests cover exclusive policies,
+checked deadlines/overflow, paired actual-use timestamp/Run ID, source policy
+binding, stable caller retry identity, handle recovery, HTTP auth/encoding and
+renewal baseline. HTTP fixture acceptance is local, not Cloud acceptance.
+Inference descriptor SHA-256:
+`0b0806c6876fd028c9cd588d0f7c6b7557643adda193b1f095c9ce710aec16ee`.
+
+The broad `bun run check:generated` failed at filesystem N-API declaration
+generation with Windows `EBUSY` reconciliation metadata; its earlier generated
+bindings check passed. This full gate remains open and must be resolved locally.
+Inference-specific generated checks are tracked separately for this slice.
+
 ## Superseding Objects direction
 
 On 2026-09-30 the human user instructed the Integrator chat to change the SDK

@@ -443,6 +443,7 @@ pub struct Context {
 pub struct Retention {
     latency_profile: [u8; 32],
     expires_at_ms: u64,
+    idle_kv: Option<([u8; 32], u64)>,
 }
 
 impl Retention {
@@ -452,6 +453,17 @@ impl Retention {
         Self {
             latency_profile,
             expires_at_ms,
+            idle_kv: None,
+        }
+    }
+
+    /// Paid KV pin with a positive idle timeout; no capacity or latency guarantee.
+    #[must_use]
+    pub const fn idle_kv(profile: [u8; 32], idle_timeout_ms: u64) -> Self {
+        Self {
+            latency_profile: [0; 32],
+            expires_at_ms: 0,
+            idle_kv: Some((profile, idle_timeout_ms)),
         }
     }
 }
@@ -572,8 +584,18 @@ impl Context {
             request: wire::RetainWarmRequest {
                 identity: Some(self.client.identity()),
                 context: self.revision.to_vec(),
-                latency_profile: policy.latency_profile.to_vec(),
+                latency_profile: if policy.idle_kv.is_some() {
+                    Vec::new()
+                } else {
+                    policy.latency_profile.to_vec()
+                },
                 expires_at_ms: policy.expires_at_ms,
+                idle_kv: policy
+                    .idle_kv
+                    .map(|(profile, idle_timeout_ms)| wire::IdleKvPolicy {
+                        profile: profile.to_vec(),
+                        idle_timeout_ms,
+                    }),
             },
         }
     }
@@ -613,10 +635,8 @@ impl RetainWarm {
     pub async fn send(&self) -> Result<WarmContext, Error> {
         bounded(&self.request)?;
         let expected_context = fixed::<32>(&self.request.context)?;
-        fixed::<32>(&self.request.latency_profile)?;
-        if self.request.expires_at_ms == 0 {
-            return Err(Error::Invalid("warm expiry is zero"));
-        }
+        contract::validate_retain_request(&self.request)
+            .map_err(|error| Error::Invalid(error.message()))?;
         let view = self
             .client
             .warm()
@@ -624,6 +644,11 @@ impl RetainWarm {
             .await?
             .into_inner();
         validate_warm_view(&view, Some(expected_context), None)?;
+        if let Some(policy) = &self.request.idle_kv
+            && view.idle_kv.as_ref().and_then(|idle| idle.policy.as_ref()) != Some(policy)
+        {
+            return Err(Error::Invalid("idle retention policy differs"));
+        }
         Ok(WarmContext {
             client: self.client.clone(),
             commitment: fixed(&view.commitment)?,
@@ -674,6 +699,22 @@ impl WarmContext {
                 identity: Some(self.client.identity()),
                 commitment: self.commitment.to_vec(),
                 expires_at_ms,
+                idle_timeout_ms: None,
+            },
+        }
+    }
+
+    /// Change idle timeout from the last verified use (initial pin before first use).
+    /// Does not advance last-use time or resurrect an expired/released commitment.
+    #[must_use]
+    pub fn renew_idle(&self, idle_timeout_ms: u64) -> RenewWarm {
+        RenewWarm {
+            client: self.client.clone(),
+            request: wire::RenewWarmRequest {
+                identity: Some(self.client.identity()),
+                commitment: self.commitment.to_vec(),
+                expires_at_ms: 0,
+                idle_timeout_ms: Some(idle_timeout_ms),
             },
         }
     }
@@ -699,6 +740,12 @@ pub struct RenewWarm {
 }
 
 impl RenewWarm {
+    /// Identity allocated before effects; reuse this builder to reconcile retries.
+    #[must_use]
+    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
+        self.request.identity.as_ref()
+    }
+
     /// Extend and reconcile this exact commitment.
     ///
     /// # Errors
@@ -706,9 +753,8 @@ impl RenewWarm {
     pub async fn send(&self) -> Result<wire::WarmView, Error> {
         bounded(&self.request)?;
         let commitment = fixed::<32>(&self.request.commitment)?;
-        if self.request.expires_at_ms == 0 {
-            return Err(Error::Invalid("warm expiry is zero"));
-        }
+        contract::validate_renew_request(&self.request)
+            .map_err(|error| Error::Invalid(error.message()))?;
         let view = self
             .client
             .warm()
@@ -716,6 +762,16 @@ impl RenewWarm {
             .await?
             .into_inner();
         validate_warm_view(&view, None, Some(commitment))?;
+        if let Some(timeout) = self.request.idle_timeout_ms
+            && view
+                .idle_kv
+                .as_ref()
+                .and_then(|idle| idle.policy.as_ref())
+                .map(|policy| policy.idle_timeout_ms)
+                != Some(timeout)
+        {
+            return Err(Error::Invalid("idle renewal timeout differs"));
+        }
         Ok(view)
     }
 }
@@ -1140,6 +1196,8 @@ mod tests {
                 "ModelCapability",
                 "RetentionProfile",
                 "RetainWarmRequest",
+                "IdleKvPolicy",
+                "IdleKvRetention",
                 "InspectWarmRequest",
                 "RenewWarmRequest",
                 "ReleaseWarmRequest",
@@ -1272,6 +1330,7 @@ mod tests {
             evidence_digest: vec![5; 32],
             admission_receipt_id: vec![6; 32],
             sequence: 1,
+            idle_kv: None,
         };
         validate_warm_view(&valid, Some([2; 32]), Some([1; 32]))?;
         assert!(authorization("").is_err());

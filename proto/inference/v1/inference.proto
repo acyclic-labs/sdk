@@ -29,6 +29,8 @@ message ModelCapability {
     (acyclic.validation.v1.nonempty_max_item_bytes) = 64
   ];
   repeated RetentionProfile retention_profiles = 6 [(acyclic.validation.v1.max_items) = 64];
+  // Paid KV pin policies; duration bounds apply to idle_timeout_ms.
+  repeated RetentionProfile idle_kv_profiles = 7 [(acyclic.validation.v1.max_items) = 64];
 }
 
 message RetentionProfile {
@@ -71,8 +73,30 @@ service WarmContextsService {
 message RetainWarmRequest {
   RequestIdentity identity = 1 [(acyclic.validation.v1.required_message) = true];
   bytes context = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
-  bytes latency_profile = 3 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
-  uint64 expires_at_ms = 4 [(acyclic.validation.v1.positive_uint64) = true];
+  // Legacy absolute-expiry policy. Mutually exclusive with idle_kv.
+  bytes latency_profile = 3;
+  uint64 expires_at_ms = 4;
+  IdleKvPolicy idle_kv = 5;
+}
+
+// Paid retention of verified KV, without capacity, throughput or latency guarantees.
+// Only verified actual Run reuse of the pinned revision or descendant prefix
+// advances last-use. Fork, edit, admission, inspect and recovery do not move the
+// pin or reset its idle window. Retried identities return committed receipts.
+message IdleKvPolicy {
+  bytes profile = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  uint64 idle_timeout_ms = 2 [(acyclic.validation.v1.positive_uint64) = true];
+}
+
+message IdleKvRetention {
+  IdleKvPolicy policy = 1 [(acyclic.validation.v1.required_message) = true];
+  // Trusted service Unix milliseconds after verified initial KV pin.
+  uint64 retained_at_ms = 2 [(acyclic.validation.v1.positive_uint64) = true];
+  // Absent until verified actual reuse; never inferred from admission.
+  optional uint64 last_used_at_ms = 3 [(acyclic.validation.v1.positive_uint64) = true];
+  // The authoritative Run that verified actual reuse of this pinned revision
+  // or its descendant prefix, in the same authenticated owner scope.
+  optional bytes last_run_id = 4 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
 }
 
 message InspectWarmRequest {
@@ -82,7 +106,11 @@ message InspectWarmRequest {
 message RenewWarmRequest {
   RequestIdentity identity = 1 [(acyclic.validation.v1.required_message) = true];
   bytes commitment = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
-  uint64 expires_at_ms = 3 [(acyclic.validation.v1.positive_uint64) = true];
+  uint64 expires_at_ms = 3;
+  // Changes timeout from last actual use, or retained_at_ms before first use.
+  // Does not reset the idle window. Expired/released pins require a new Retain
+  // identity; renew/replay cannot resurrect them. Inspect reports current state.
+  optional uint64 idle_timeout_ms = 4 [(acyclic.validation.v1.positive_uint64) = true];
 }
 
 message ReleaseWarmRequest {
@@ -102,12 +130,15 @@ message WarmView {
   bytes commitment = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
   bytes context = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
   bytes model_profile = 3 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
-  bytes latency_profile = 4 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  bytes latency_profile = 4;
   uint64 expires_at_ms = 5 [(acyclic.validation.v1.positive_uint64) = true];
   WarmState state = 6 [(acyclic.validation.v1.known_nonzero_enum) = true];
   bytes evidence_digest = 7 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
   bytes admission_receipt_id = 8 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
   uint64 sequence = 9 [(acyclic.validation.v1.positive_uint64) = true];
+  // Present only for idle KV pins; latency_profile is then empty. expires_at_ms
+  // equals checked (last_used_at_ms or retained_at_ms) + idle_timeout_ms.
+  IdleKvRetention idle_kv = 10;
 }
 
 // Recoverable logical generation. Distribution, placement, migration, cache,

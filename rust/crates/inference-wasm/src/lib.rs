@@ -57,7 +57,7 @@ pub fn validate_customer_wire(
     related: &[u8],
 ) -> Result<(), JsValue> {
     acyclic_inference::validate_customer_wire(kind, message, expected, related)
-        .map_err(|error| JsValue::from_str(error))
+        .map_err(JsValue::from_str)
 }
 
 /// Decide from a validated Run view whether watching at this cursor is already complete.

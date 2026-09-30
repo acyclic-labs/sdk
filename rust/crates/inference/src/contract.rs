@@ -511,6 +511,53 @@ pub(crate) fn validate_context_view(
     )
 }
 
+fn validate_idle_policy(policy: &wire::IdleKvPolicy) -> Result<(), Error> {
+    fixed::<32>(&policy.profile)?;
+    if policy.idle_timeout_ms == 0 {
+        return Err(Error::Invalid("idle timeout is zero"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_retain_request(request: &wire::RetainWarmRequest) -> Result<(), Error> {
+    validate_identity(request.identity.as_ref())?;
+    fixed::<32>(&request.context)?;
+    if let Some(policy) = &request.idle_kv {
+        if !request.latency_profile.is_empty() || request.expires_at_ms != 0 {
+            return Err(Error::Invalid(
+                "warm retention policies are mutually exclusive",
+            ));
+        }
+        validate_idle_policy(policy)
+    } else {
+        fixed::<32>(&request.latency_profile)?;
+        if request.expires_at_ms == 0 {
+            return Err(Error::Invalid("warm expiry is zero"));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_renew_request(request: &wire::RenewWarmRequest) -> Result<(), Error> {
+    validate_identity(request.identity.as_ref())?;
+    fixed::<32>(&request.commitment)?;
+    if let Some(timeout) = request.idle_timeout_ms {
+        if timeout == 0 || request.expires_at_ms != 0 {
+            return Err(Error::Invalid("invalid or mixed idle renewal policy"));
+        }
+    } else if request.expires_at_ms == 0 {
+        return Err(Error::Invalid("warm expiry is zero"));
+    }
+    Ok(())
+}
+
+fn validate_identity(identity: Option<&wire::RequestIdentity>) -> Result<(), Error> {
+    let identity = identity.ok_or(Error::Invalid("request identity is absent"))?;
+    fixed::<16>(&identity.client_instance)?;
+    fixed::<16>(&identity.request_id)?;
+    Ok(())
+}
+
 pub(crate) fn validate_warm_view(
     view: &wire::WarmView,
     expected_context: Option<[u8; 32]>,
@@ -519,7 +566,32 @@ pub(crate) fn validate_warm_view(
     let commitment = fixed::<32>(&view.commitment)?;
     let context = fixed::<32>(&view.context)?;
     fixed::<32>(&view.model_profile)?;
-    fixed::<32>(&view.latency_profile)?;
+    if let Some(idle) = &view.idle_kv {
+        let policy = idle
+            .policy
+            .as_ref()
+            .ok_or(Error::Invalid("idle policy is absent"))?;
+        validate_idle_policy(policy)?;
+        if !view.latency_profile.is_empty()
+            || idle.retained_at_ms == 0
+            || idle.last_used_at_ms.is_some() != idle.last_run_id.is_some()
+            || idle
+                .last_used_at_ms
+                .is_some_and(|time| time < idle.retained_at_ms)
+            || idle
+                .last_used_at_ms
+                .unwrap_or(idle.retained_at_ms)
+                .checked_add(policy.idle_timeout_ms)
+                != Some(view.expires_at_ms)
+        {
+            return Err(Error::Invalid("idle retention evidence differs"));
+        }
+        if let Some(run) = &idle.last_run_id {
+            fixed::<16>(run)?;
+        }
+    } else {
+        fixed::<32>(&view.latency_profile)?;
+    }
     fixed::<32>(&view.evidence_digest)?;
     fixed::<32>(&view.admission_receipt_id)?;
     let state = wire::WarmState::try_from(view.state).unwrap_or(wire::WarmState::Unspecified);
@@ -590,6 +662,33 @@ fn validate_customer_wire_inner(
         };
     }
     match kind {
+        "retain_warm_request" => validate_retain_request(&decode!(wire::RetainWarmRequest)),
+        "renew_warm_request" => validate_renew_request(&decode!(wire::RenewWarmRequest)),
+        "idle_warm_context" | "idle_warm_commitment" => {
+            let view = decode!(wire::WarmView);
+            let policy = view
+                .idle_kv
+                .as_ref()
+                .and_then(|idle| idle.policy.as_ref())
+                .ok_or(Error::Invalid("idle retention response is absent"))?;
+            if kind == "idle_warm_context" {
+                let request = wire::RetainWarmRequest::decode(related)
+                    .map_err(|_| Error::Invalid("malformed retention request"))?;
+                validate_retain_request(&request)?;
+                if request.idle_kv.as_ref() != Some(policy) {
+                    return Err(Error::Invalid("idle retention policy differs"));
+                }
+                validate_warm_view(&view, Some(fixed::<32>(expected)?), None)
+            } else {
+                let request = wire::RenewWarmRequest::decode(related)
+                    .map_err(|_| Error::Invalid("malformed renewal request"))?;
+                validate_renew_request(&request)?;
+                if request.idle_timeout_ms != Some(policy.idle_timeout_ms) {
+                    return Err(Error::Invalid("idle renewal timeout differs"));
+                }
+                validate_warm_view(&view, None, Some(fixed::<32>(expected)?))
+            }
+        }
         "mutation_receipt" => validate_receipt(&decode!(wire::MutationReceipt)),
         "context_view" => {
             validate_context_view(&decode!(wire::ContextView), fixed::<32>(expected)?)
@@ -647,6 +746,146 @@ pub fn validate_customer_wire(
 mod tests {
     use super::*;
     use prost::Message;
+
+    fn idle_view() -> wire::WarmView {
+        wire::WarmView {
+            commitment: vec![1; 32],
+            context: vec![2; 32],
+            model_profile: vec![3; 32],
+            expires_at_ms: 110,
+            state: wire::WarmState::Active.into(),
+            evidence_digest: vec![4; 32],
+            admission_receipt_id: vec![5; 32],
+            sequence: 1,
+            idle_kv: Some(wire::IdleKvRetention {
+                policy: Some(wire::IdleKvPolicy {
+                    profile: vec![6; 32],
+                    idle_timeout_ms: 10,
+                }),
+                retained_at_ms: 100,
+                last_used_at_ms: None,
+                last_run_id: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn idle_evidence_distinguishes_initial_pin_from_verified_run_use() -> Result<(), &'static str> {
+        let mut view = idle_view();
+        assert!(validate_warm_view(&view, Some([2; 32]), Some([1; 32])).is_ok());
+        let idle = view.idle_kv.as_mut().ok_or("fixture field absent")?;
+        idle.last_used_at_ms = Some(105);
+        assert!(validate_warm_view(&view, None, None).is_err());
+        view.idle_kv
+            .as_mut()
+            .ok_or("fixture field absent")?
+            .last_run_id = Some(vec![7; 16]);
+        view.expires_at_ms = 115;
+        assert!(validate_warm_view(&view, None, None).is_ok());
+        view.idle_kv
+            .as_mut()
+            .ok_or("fixture field absent")?
+            .last_used_at_ms = Some(99);
+        view.expires_at_ms = 109;
+        assert!(validate_warm_view(&view, None, None).is_err());
+        view.idle_kv
+            .as_mut()
+            .ok_or("fixture field absent")?
+            .last_used_at_ms = Some(u64::MAX);
+        view.expires_at_ms = 9;
+        assert!(validate_warm_view(&view, None, None).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn idle_admission_and_renewal_bind_exact_policy_without_resetting_baseline()
+    -> Result<(), &'static str> {
+        let mut view = idle_view();
+        let request = wire::RetainWarmRequest {
+            identity: Some(wire::RequestIdentity {
+                client_instance: vec![1; 16],
+                request_id: vec![2; 16],
+            }),
+            context: vec![2; 32],
+            idle_kv: view
+                .idle_kv
+                .as_ref()
+                .ok_or("fixture field absent")?
+                .policy
+                .clone(),
+            ..Default::default()
+        };
+        assert!(
+            validate_customer_wire(
+                "idle_warm_context",
+                &view.encode_to_vec(),
+                &[2; 32],
+                &request.encode_to_vec()
+            )
+            .is_ok()
+        );
+        view.idle_kv
+            .as_mut()
+            .ok_or("fixture field absent")?
+            .policy
+            .as_mut()
+            .ok_or("fixture field absent")?
+            .profile = vec![8; 32];
+        assert!(
+            validate_customer_wire(
+                "idle_warm_context",
+                &view.encode_to_vec(),
+                &[2; 32],
+                &request.encode_to_vec()
+            )
+            .is_err()
+        );
+        let renewal = wire::RenewWarmRequest {
+            identity: request.identity.clone(),
+            commitment: vec![1; 32],
+            idle_timeout_ms: Some(20),
+            ..Default::default()
+        };
+        view.idle_kv
+            .as_mut()
+            .ok_or("fixture field absent")?
+            .policy
+            .as_mut()
+            .ok_or("fixture field absent")?
+            .idle_timeout_ms = 20;
+        view.expires_at_ms = 120;
+        assert!(
+            validate_customer_wire(
+                "idle_warm_commitment",
+                &view.encode_to_vec(),
+                &[1; 32],
+                &renewal.encode_to_vec()
+            )
+            .is_ok()
+        );
+        view.expires_at_ms = 130;
+        assert!(
+            validate_customer_wire(
+                "idle_warm_commitment",
+                &view.encode_to_vec(),
+                &[1; 32],
+                &renewal.encode_to_vec()
+            )
+            .is_err()
+        );
+        let mixed = wire::RetainWarmRequest {
+            latency_profile: vec![9; 32],
+            ..request
+        };
+        assert!(validate_retain_request(&mixed).is_err());
+        let mixed = wire::RenewWarmRequest {
+            expires_at_ms: 120,
+            ..renewal
+        };
+        assert!(validate_renew_request(&mixed).is_err());
+        Ok(())
+    }
 
     #[test]
     fn generated_run_is_bound_to_the_requested_context() {

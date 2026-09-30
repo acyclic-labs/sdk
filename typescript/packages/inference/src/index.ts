@@ -158,8 +158,9 @@ export class InferenceClient {
     return receipt;
   }
   async retainWarm(request: RetainWarmRequest): Promise<WarmView> {
+    if (request.idleKv !== undefined) await validateContract("retain_warm_request", RetainWarmRequestSchema, request);
     const view = await this.transport.retainWarm(request);
-    await validateContract("warm_context", WarmViewSchema, view, request.context);
+    await validateContract(request.idleKv === undefined ? "warm_context" : "idle_warm_context", WarmViewSchema, view, request.context, toBinary(RetainWarmRequestSchema, request));
     return view;
   }
   async inspectWarm(commitment: Uint8Array): Promise<WarmView> {
@@ -170,8 +171,9 @@ export class InferenceClient {
   }
   async renewWarm(request: RenewWarmRequest): Promise<WarmView> {
     requireFixed(request.commitment, INFERENCE_FIXED_WIDTHS.renewWarmCommitment, "warm commitment");
+    if (request.idleTimeoutMs !== undefined) await validateContract("renew_warm_request", RenewWarmRequestSchema, request);
     const view = await this.transport.renewWarm(request);
-    await validateContract("warm_commitment", WarmViewSchema, view, request.commitment);
+    await validateContract(request.idleTimeoutMs === undefined ? "warm_commitment" : "idle_warm_commitment", WarmViewSchema, view, request.commitment, toBinary(RenewWarmRequestSchema, request));
     return view;
   }
   async releaseWarm(request: ReleaseWarmRequest): Promise<WarmView> {
@@ -322,13 +324,15 @@ export class HttpInferenceTransport implements InferenceTransport {
   mutateContext(request: MutateContextRequest): Promise<MutationReceipt> {
     return this.#unary(routeFor(ContextsService.method.mutate), request);
   }
-  retainWarm(request: RetainWarmRequest): Promise<WarmView> {
+  async retainWarm(request: RetainWarmRequest): Promise<WarmView> {
+    await validateContract("retain_warm_request", RetainWarmRequestSchema, request);
     return this.#unary(routeFor(WarmContextsService.method.retain), request);
   }
   inspectWarm(request: InspectWarmRequest): Promise<WarmView> {
     return this.#unary(routeFor(WarmContextsService.method.inspect), request);
   }
-  renewWarm(request: RenewWarmRequest): Promise<WarmView> {
+  async renewWarm(request: RenewWarmRequest): Promise<WarmView> {
+    await validateContract("renew_warm_request", RenewWarmRequestSchema, request);
     return this.#unary(routeFor(WarmContextsService.method.renew), request);
   }
   releaseWarm(request: ReleaseWarmRequest): Promise<WarmView> {

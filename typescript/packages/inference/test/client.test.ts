@@ -434,9 +434,9 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
   await transport.createContext(create(CreateContextRequestSchema));
   await transport.inspectContext(create(InspectContextRequestSchema));
   await transport.mutateContext(create(MutateContextRequestSchema));
-  await transport.retainWarm(create(RetainWarmRequestSchema));
+  await transport.retainWarm(create(RetainWarmRequestSchema, { identity: { clientInstance: new Uint8Array(16).fill(1), requestId: new Uint8Array(16).fill(2) }, context: revision(1), latencyProfile: revision(2), expiresAtMs: 10n }));
   await transport.inspectWarm(create(InspectWarmRequestSchema));
-  await transport.renewWarm(create(RenewWarmRequestSchema));
+  await transport.renewWarm(create(RenewWarmRequestSchema, { identity: { clientInstance: new Uint8Array(16).fill(1), requestId: new Uint8Array(16).fill(2) }, commitment: revision(1), expiresAtMs: 20n }));
   await transport.releaseWarm(create(ReleaseWarmRequestSchema));
   await transport.generateRun(create(GenerateRunRequestSchema));
   await transport.inspectRun(create(InspectRunRequestSchema));

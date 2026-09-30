@@ -262,6 +262,19 @@ pub fn schema_error(message_name: &str, bytes: &[u8]) -> Option<String> {
         return Some(format!("{message_name} protobuf is invalid"));
     };
     validate_message(&message, message.descriptor().name())
+        .or_else(|| retention_error(message_name, &message.encode_to_vec()))
+}
+
+fn retention_error(name: &str, bytes: &[u8]) -> Option<String> {
+    let kind = match name {
+        "inference.customer.v1.RetainWarmRequest" => "retain_warm_request",
+        "inference.customer.v1.RenewWarmRequest" => "renew_warm_request",
+        "inference.customer.v1.WarmView" => "warm_view",
+        _ => return None,
+    };
+    acyclic_inference::validate_customer_wire(kind, bytes, &[], &[])
+        .err()
+        .map(str::to_owned)
 }
 
 fn property(value: &JsValue, name: &str) -> JsValue {
@@ -429,7 +442,13 @@ pub fn runtime_shape_error(message_name: &str, value: JsValue) -> Option<String>
     let Some(descriptor) = pool.get_message_by_name(message_name) else {
         return Some(format!("{message_name} is not a known protobuf message"));
     };
-    validate_runtime_message(&descriptor, &value, descriptor.name())
+    if let Some(error) = validate_runtime_message(&descriptor, &value, descriptor.name()) {
+        return Some(error);
+    }
+    match runtime_message(&descriptor, &value, descriptor.name()) {
+        Ok(message) => retention_error(message_name, &message.encode_to_vec()),
+        Err(error) => Some(error),
+    }
 }
 
 fn bigint_text(value: &JsValue) -> Option<String> {
@@ -580,6 +599,9 @@ pub fn runtime_encode(message_name: &str, value: &JsValue) -> Result<Uint8Array,
     }
     let message = runtime_message(&descriptor, value, descriptor.name())
         .map_err(|error| JsValue::from_str(&error))?;
+    if let Some(error) = retention_error(message_name, &message.encode_to_vec()) {
+        return Err(JsValue::from_str(&error));
+    }
     Ok(Uint8Array::from(message.encode_to_vec().as_slice()))
 }
 

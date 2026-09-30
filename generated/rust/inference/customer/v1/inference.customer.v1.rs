@@ -22,6 +22,9 @@ pub struct ModelCapability {
     pub features: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(message, repeated, tag = "6")]
     pub retention_profiles: ::prost::alloc::vec::Vec<RetentionProfile>,
+    /// Paid KV pin policies; duration bounds apply to idle_timeout_ms.
+    #[prost(message, repeated, tag = "7")]
+    pub idle_kv_profiles: ::prost::alloc::vec::Vec<RetentionProfile>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RetentionProfile {
@@ -38,10 +41,39 @@ pub struct RetainWarmRequest {
     pub identity: ::core::option::Option<RequestIdentity>,
     #[prost(bytes = "vec", tag = "2")]
     pub context: ::prost::alloc::vec::Vec<u8>,
+    /// Legacy absolute-expiry policy. Mutually exclusive with idle_kv.
     #[prost(bytes = "vec", tag = "3")]
     pub latency_profile: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "4")]
     pub expires_at_ms: u64,
+    #[prost(message, optional, tag = "5")]
+    pub idle_kv: ::core::option::Option<IdleKvPolicy>,
+}
+/// Paid retention of verified KV, without capacity, throughput or latency guarantees.
+/// Only verified actual Run reuse of the pinned revision or descendant prefix
+/// advances last-use. Fork, edit, admission, inspect and recovery do not move the
+/// pin or reset its idle window. Retried identities return committed receipts.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct IdleKvPolicy {
+    #[prost(bytes = "vec", tag = "1")]
+    pub profile: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub idle_timeout_ms: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct IdleKvRetention {
+    #[prost(message, optional, tag = "1")]
+    pub policy: ::core::option::Option<IdleKvPolicy>,
+    /// Trusted service Unix milliseconds after verified initial KV pin.
+    #[prost(uint64, tag = "2")]
+    pub retained_at_ms: u64,
+    /// Absent until verified actual reuse; never inferred from admission.
+    #[prost(uint64, optional, tag = "3")]
+    pub last_used_at_ms: ::core::option::Option<u64>,
+    /// The authoritative Run that verified actual reuse of this pinned revision
+    /// or its descendant prefix, in the same authenticated owner scope.
+    #[prost(bytes = "vec", optional, tag = "4")]
+    pub last_run_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct InspectWarmRequest {
@@ -56,6 +88,11 @@ pub struct RenewWarmRequest {
     pub commitment: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "3")]
     pub expires_at_ms: u64,
+    /// Changes timeout from last actual use, or retained_at_ms before first use.
+    /// Does not reset the idle window. Expired/released pins require a new Retain
+    /// identity; renew/replay cannot resurrect them. Inspect reports current state.
+    #[prost(uint64, optional, tag = "4")]
+    pub idle_timeout_ms: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ReleaseWarmRequest {
@@ -84,6 +121,10 @@ pub struct WarmView {
     pub admission_receipt_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint64, tag = "9")]
     pub sequence: u64,
+    /// Present only for idle KV pins; latency_profile is then empty. expires_at_ms
+    /// equals checked (last_used_at_ms or retained_at_ms) + idle_timeout_ms.
+    #[prost(message, optional, tag = "10")]
+    pub idle_kv: ::core::option::Option<IdleKvRetention>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EvaluationArtifact {

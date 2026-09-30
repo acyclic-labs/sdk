@@ -24,6 +24,8 @@ export const INFERENCE_FIXED_WIDTH_METADATA = Object.freeze([
   Object.freeze({"message":"inference.customer.v1.GenerateRunRequest","field":"context","width":32}),
   Object.freeze({"message":"inference.customer.v1.GenerationProvenance","field":"run_id","width":16}),
   Object.freeze({"message":"inference.customer.v1.GenerationProvenance","field":"terminal_receipt_digest","width":32}),
+  Object.freeze({"message":"inference.customer.v1.IdleKvPolicy","field":"profile","width":32}),
+  Object.freeze({"message":"inference.customer.v1.IdleKvRetention","field":"last_run_id","width":16}),
   Object.freeze({"message":"inference.customer.v1.InspectContextRequest","field":"revision","width":32}),
   Object.freeze({"message":"inference.customer.v1.InspectEvaluationRequest","field":"evaluation_id","width":16}),
   Object.freeze({"message":"inference.customer.v1.InspectRunRequest","field":"run_id","width":16}),
@@ -38,7 +40,6 @@ export const INFERENCE_FIXED_WIDTH_METADATA = Object.freeze([
   Object.freeze({"message":"inference.customer.v1.RequestIdentity","field":"client_instance","width":16}),
   Object.freeze({"message":"inference.customer.v1.RequestIdentity","field":"request_id","width":16}),
   Object.freeze({"message":"inference.customer.v1.RetainWarmRequest","field":"context","width":32}),
-  Object.freeze({"message":"inference.customer.v1.RetainWarmRequest","field":"latency_profile","width":32}),
   Object.freeze({"message":"inference.customer.v1.RetentionProfile","field":"profile","width":32}),
   Object.freeze({"message":"inference.customer.v1.RunInputProvenance","field":"run_id","width":16}),
   Object.freeze({"message":"inference.customer.v1.RunInputProvenance","field":"source","width":32}),
@@ -53,7 +54,6 @@ export const INFERENCE_FIXED_WIDTH_METADATA = Object.freeze([
   Object.freeze({"message":"inference.customer.v1.WarmView","field":"commitment","width":32}),
   Object.freeze({"message":"inference.customer.v1.WarmView","field":"context","width":32}),
   Object.freeze({"message":"inference.customer.v1.WarmView","field":"evidence_digest","width":32}),
-  Object.freeze({"message":"inference.customer.v1.WarmView","field":"latency_profile","width":32}),
   Object.freeze({"message":"inference.customer.v1.WarmView","field":"model_profile","width":32}),
   Object.freeze({"message":"inference.customer.v1.WatchRunRequest","field":"run_id","width":16})
 ]);
