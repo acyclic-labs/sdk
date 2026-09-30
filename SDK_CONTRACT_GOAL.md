@@ -2,6 +2,55 @@
 
 Status: active; local transport work is incomplete and PR 223 is unmerged.
 
+## Logical Objects v2 durable journal foundation (2026-09-30)
+
+Added native `v2::local::LocalObjects`, implementing all 13 logical operations
+and the existing native batch interface. It uses the canonical v2 state machine,
+private Protobuf state deltas, checksummed bounded records and the existing
+authenticated immutable segment format. Bodies remain external; multipart
+completion keeps ordered immutable leaves. Exact retry receipts, current keys,
+staged parts and cursor authentication entropy survive reopen. Native workers
+retain root ownership and the optional composition ownership anchor.
+
+Incomplete final records are repaired to the last authenticated boundary;
+complete corruption fails recovery without truncation. An uncertain append
+poisons every later read/mutation, including exact retries later in the same
+batch. Recovery either discards the incomplete mutation or recovers the complete
+uncertain outcome and its exact receipt. Opening an existing v1 root rejects it
+without overwriting its journal. This does not migrate existing filesystem roots.
+
+Local qualification passed:
+
+- `cargo test -p acyclic-objects -p acyclic-conformance --all-features --locked
+  --target x86_64-pc-windows-msvc`: 85 Objects and 24 Conformance unit tests,
+  integration/binary and documentation checks; existing local latency test ignored.
+- Strict all-feature/all-target Objects and Conformance Clippy with warnings denied.
+- Complete `bun run check:generated`, metadata and RPC matrix checks.
+- Recovery tests cover partial prefix/payload writes, complete uncertain writes,
+  fail-closed batch retries, checksum corruption, multipart staging/completion
+  across multiple reopens, cross-part ranges and logical quota rollback.
+
+Logs: `D:/codex-sdk-162e-qualification-20260930/sdk-v2-journal-*.log`.
+The initial test compile failures and function-length lint failure were corrected
+locally before these final passes. Metadata requires Bun; the mistaken Node
+invocation was replaced with the successful Bun invocation. All builds and
+temporary outputs use D:. The frozen `managed-agents/` tree has no diff.
+
+Descriptors remain unchanged: Objects v1 SHA256
+`4701187ac8ca87325d42aee0f99c7826ebb63ec2be0ae98c4768006d4ff31a51`,
+Objects v2 SHA256
+`21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b`.
+
+This foundation still needs compaction/reclamation, small-body durability and
+batch efficiency before native filesystem migration. Journal capacity rejection
+after segment publication can leave private orphan segments; no public mutation
+or receipt is acknowledged. Root native v1 retirement remains pending for all
+17 legacy RPCs. Required remote Linux/Windows failures and the breaking package
+version transition remain unresolved. No PR merge, publication, current-source
+whole-filesystem runtime pass or live acceptance is claimed. Net received current
+SDK API/source handoff for its separately owned public HTTPS qualification;
+actual endpoints, authorization and readiness remain Cloud dependencies.
+
 ## Inference idle KV contract slice (2026-09-30)
 
 Inference owner confirmed the human's renewal choice: change timeout from prior

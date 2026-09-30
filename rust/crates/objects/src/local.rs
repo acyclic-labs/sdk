@@ -2291,7 +2291,7 @@ fn read_exact_or_torn(reader: &mut impl Read, bytes: &mut [u8]) -> std::io::Resu
 }
 
 #[allow(clippy::too_many_lines)]
-fn persist_segment(
+pub(crate) fn persist_segment(
     root: &Path,
     bodies: &[([u8; 32], bytes::Bytes)],
     durability: LocalDurability,
@@ -2447,7 +2447,7 @@ type ValidatedSegmentRecords = BTreeMap<(u64, [u8; 32]), u64>;
 ///
 /// Journal-resident bodies were authenticated when replay decoded or an append wrote them.
 /// A live reclaimed body means compaction dropped bytes that were still reachable.
-fn validate_referenced_segments(
+pub(crate) fn validate_referenced_segments(
     root: &Path,
     bodies: &BTreeSet<LocalBodyReference>,
     maximum_object_bytes: u64,

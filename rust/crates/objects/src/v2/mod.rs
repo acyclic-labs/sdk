@@ -7,6 +7,8 @@ pub mod conformance;
 pub mod http;
 #[cfg(feature = "json")]
 pub mod json;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub mod local;
 mod memory;
 pub mod request;
 pub mod response;

@@ -15,8 +15,8 @@ before publication.
 
 Objects v2 addresses the current object through a bucket name and object key.
 It has no public object versions, snapshots, or forks. The transport-independent
-`v2::ObjectsProvider` interface is implemented by the gRPC, HTTP and deterministic
-memory providers. Reads and listings may lag mutations; single-object publication
+`v2::ObjectsProvider` interface is implemented by the gRPC, HTTP, deterministic
+memory and native local providers. Reads and listings may lag mutations; single-object publication
 and its conditions are atomic.
 
 ```sh
@@ -51,13 +51,29 @@ parts never publishes an object. The canonical v2 schema is
 operations against a disposable, immediately visible test fixture. Local tests
 do not establish live service acceptance.
 
+## Native v2 durability foundation
+
+Enable `local` for `v2::local::LocalObjects`. Its private checksummed journal
+records logical state changes and exact retry receipts; immutable segments hold
+current bodies and staged multipart parts. Reopen validates live physical bodies,
+repairs only an incomplete final record, and preserves current keys and retry
+outcomes. An uncertain append makes subsequent reads and mutations unavailable
+until the owner closes and reopens the store. A v1 store is rejected without
+conversion or overwrite.
+
+This source implementation does not yet compact its journal or reclaim obsolete
+segments. It persists small bodies as segments and scans current state when
+constructing deltas. Native filesystem migration requires compaction, safe
+reclamation, batch efficiency and the existing small-body durability behavior.
+The filesystem still uses the legacy durable provider.
+
 ## Remaining native v1 migration
 
 The root `wire`, descriptor, provider types, standalone v1 conformance module and
 optional `local` provider still support remaining native durable consumers.
 Their migration is pending; the idiomatic v1 gRPC wrappers have been removed.
 The v1 descriptors and schemas remain intact for published compatibility
-history. Enable `local` only for that existing durable provider. The v2 memory
+history. The root `LocalObjects` still selects that existing provider. The v2 memory
 provider is for deterministic local tests and does not provide persistence.
 
 The local provider commits bodies up to 64 KiB inside the journal record itself, so one append and one flush make a small object durable; larger bodies are published as immutable segments first. Once inline bytes outweigh the rest of the journal, and on every garbage collection, the provider compacts the journal: live inline bodies move into segments and the rest are dropped.

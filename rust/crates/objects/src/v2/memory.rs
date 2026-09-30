@@ -12,6 +12,8 @@ use wire::ErrorCode::{
     AlreadyExists, IdempotencyMismatch, InvalidArgument, NotFound, NotModified, PreconditionFailed,
     QuotaExceeded, Unavailable,
 };
+#[cfg(feature = "local")]
+pub(super) mod persistence;
 
 /// Allocation and cardinality limits for the in-process reference provider.
 #[derive(Clone, Copy, Debug)]
@@ -36,6 +38,8 @@ pub struct MemoryObjects {
     state: Arc<Mutex<State>>,
     options: MemoryOptions,
     token_key: Arc<Mutex<Option<[u8; 32]>>>,
+    #[cfg(feature = "local")]
+    journal: Option<Arc<persistence::Journal>>,
 }
 #[derive(Clone, Default)]
 struct State {
@@ -65,9 +69,19 @@ struct Upload {
 struct Receipt {
     digest: [u8; 32],
     response: Vec<u8>,
+    #[cfg(feature = "local")]
+    kind: u32,
 }
 
 impl MemoryObjects {
+    fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, State>, Error> {
+        let state = self.state.lock().map_err(|_| Error::from(Unavailable))?;
+        #[cfg(feature = "local")]
+        if let Some(journal) = &self.journal {
+            journal.check()?;
+        }
+        Ok(state)
+    }
     /// Creates the infrastructure-free SDK composition with an existing `default` bucket.
     ///
     /// The bootstrap bucket has an epoch creation time. Cursor authentication entropy is
@@ -97,6 +111,8 @@ impl MemoryObjects {
                     ..MemoryOptions::default()
                 },
                 token_key: Arc::new(Mutex::new(None)),
+                #[cfg(feature = "local")]
+                journal: None,
             },
             bucket,
         )
@@ -142,6 +158,8 @@ impl MemoryObjects {
             state: Arc::default(),
             options,
             token_key: Arc::new(Mutex::new(Some(token_key))),
+            #[cfg(feature = "local")]
+            journal: None,
         })
     }
 
@@ -154,7 +172,7 @@ impl MemoryObjects {
         action: impl FnOnce(&mut State) -> Result<R, Error>,
     ) -> Result<R, Error> {
         request::identity(identity)?;
-        let mut guard = self.state.lock().map_err(|_| Error::from(Unavailable))?;
+        let mut guard = self.lock_state()?;
         self.mutate_locked(&mut guard, digest, identity, action)
     }
 
@@ -165,6 +183,10 @@ impl MemoryObjects {
         identity: &Option<wire::MutationIdentity>,
         action: impl FnOnce(&mut State) -> Result<R, Error>,
     ) -> Result<R, Error> {
+        #[cfg(feature = "local")]
+        if let Some(journal) = &self.journal {
+            journal.check()?;
+        }
         request::identity(identity)?;
         if let Some(identity) = identity
             && let Some(receipt) = guard.receipts.get(&identity.idempotency_key)
@@ -182,6 +204,8 @@ impl MemoryObjects {
                 Receipt {
                     digest,
                     response: response.encode_to_vec(),
+                    #[cfg(feature = "local")]
+                    kind: persistence::response_kind::<R>()?,
                 },
             );
         }
@@ -213,6 +237,10 @@ impl MemoryObjects {
             .ok_or(Error::from(QuotaExceeded))?;
         if count > self.options.maximum_entries || bytes > self.options.maximum_bytes {
             return Err(QuotaExceeded.into());
+        }
+        #[cfg(feature = "local")]
+        if let Some(journal) = &self.journal {
+            journal.commit(guard, &mut next)?;
         }
         *guard = next;
         Ok(response)
@@ -476,7 +504,7 @@ impl NativeBatchObjects for MemoryObjects {
         if requests.is_empty() {
             return Vec::new();
         }
-        let Ok(mut state) = self.state.lock() else {
+        let Ok(mut state) = self.lock_state() else {
             return vec![Err(Unavailable.into()); requests.len()];
         };
         requests
@@ -493,7 +521,7 @@ impl NativeBatchObjects for MemoryObjects {
             return Vec::new();
         }
         let selected = {
-            let Ok(state) = self.state.lock() else {
+            let Ok(state) = self.lock_state() else {
                 return vec![Err(Unavailable.into()); requests.len()];
             };
             requests
@@ -543,9 +571,7 @@ impl ObjectsProvider for MemoryObjects {
     async fn head_bucket(&self, query: wire::HeadBucketRequest) -> Result<wire::Bucket, Error> {
         let name = request::bucket(&query.bucket)?;
         Ok(self
-            .state
-            .lock()
-            .map_err(|_| Error::from(Unavailable))?
+            .lock_state()?
             .buckets
             .get(name)
             .ok_or(Error::from(NotFound))?
@@ -580,7 +606,7 @@ impl ObjectsProvider for MemoryObjects {
         query: wire::PutObjectHeader,
         body: Bytes,
     ) -> Result<wire::ObjectInfo, Error> {
-        let mut state = self.state.lock().map_err(|_| Error::from(Unavailable))?;
+        let mut state = self.lock_state()?;
         self.put_locked(&mut state, &query, body)
     }
     async fn get(
@@ -589,7 +615,7 @@ impl ObjectsProvider for MemoryObjects {
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
         let selected = {
-            let state = self.state.lock().map_err(|_| Error::from(Unavailable))?;
+            let state = self.lock_state()?;
             get_locked(&state, &query, maximum_bytes)?
         };
         selected.read().await
@@ -601,7 +627,7 @@ impl ObjectsProvider for MemoryObjects {
         request::validate_binary("objects/head", &query.encode_to_vec(), 0)?;
         let name = request::bucket(&query.bucket)?;
         request::key(&query.object_key)?;
-        let state = self.state.lock().map_err(|_| Error::from(Unavailable))?;
+        let state = self.lock_state()?;
         let value = state
             .buckets
             .get(name)
@@ -642,7 +668,7 @@ impl ObjectsProvider for MemoryObjects {
             return Err(InvalidArgument.into());
         }
         let cursor = self.decode_cursor(&query)?;
-        let state = self.state.lock().map_err(|_| Error::from(Unavailable))?;
+        let state = self.lock_state()?;
         let bucket = state.buckets.get(name).ok_or(Error::from(NotFound))?;
         let mut listing = BTreeMap::new();
         for (key, value) in bucket.objects.range(query.prefix.clone()..) {
@@ -764,7 +790,7 @@ impl ObjectsProvider for MemoryObjects {
         if query.after_part_number > 10_000 {
             return Err(InvalidArgument.into());
         }
-        let state = self.state.lock().map_err(|_| Error::from(Unavailable))?;
+        let state = self.lock_state()?;
         let value = upload(&state, name, &query.object_key, &query.upload_id)?;
         let mut parts = value
             .parts
