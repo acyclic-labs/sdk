@@ -19,9 +19,9 @@ mod snapshot;
 use crate::{
     AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenPage,
     ChildrenPageRequest, ChildrenRequest, CommitCondition, CommitConflict, CommitId,
-    CommitMutation, CommitOutcome, CommitRequest, CommittedAppend, CommittedEnvelope,
-    CommittedFork, CommittedMutation, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, IdempotencyOutcome, MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES,
+    CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope, CommittedFork,
+    CommittedMutation, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
+    IdempotencyOutcome, MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES,
     MIN_IDEMPOTENCY_RETENTION_SECS, ReadRequest, Record, RecordStream, StreamBounds, StreamError,
     StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
@@ -201,7 +201,7 @@ impl MemoryStream {
             .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
         let mutations = apply_coordinated(
             &mut state,
-            request.mutations,
+            &request.mutations,
             &before,
             commit_id,
             committed_at_micros,
@@ -358,7 +358,14 @@ impl StreamProvider for MemoryStream {
         let committed_at_micros = state
             .last_committed_at_micros
             .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
-        let records = build_records(actual_tail, request.records, commit_id, committed_at_micros)?;
+        let fact = crate::preparation::append_fact(
+            request.path.clone(),
+            actual_tail,
+            request.records,
+            commit_id,
+            committed_at_micros,
+        )?;
+        let records = &fact.records;
         ensure_path(&mut state, &request.path, commit_id);
         let resulting_tail = {
             let stream = state
@@ -369,9 +376,7 @@ impl StreamProvider for MemoryStream {
                 parent: stream.history.clone(),
                 records: Arc::from(records.clone()),
             }));
-            stream.tail = records
-                .last()
-                .map_or(actual_tail, |record| record.sequence + 1);
+            stream.tail = fact.tail;
             stream.changed.send_replace(stream.tail);
             stream.tail
         };
@@ -388,13 +393,7 @@ impl StreamProvider for MemoryStream {
         };
         let envelope = CommittedEnvelope {
             commit_id,
-            mutations: vec![CommittedMutation::Append(CommittedAppend {
-                path: request.path,
-                start: receipt.start,
-                end: receipt.end,
-                tail: receipt.tail,
-                records,
-            })],
+            mutations: vec![CommittedMutation::Append(fact)],
         };
         let result = AppendOutcome::Committed(receipt);
         state.last_committed_at_micros = committed_at_micros;
@@ -420,17 +419,18 @@ impl StreamProvider for MemoryStream {
             return Ok(result);
         }
         admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
-        if state.paths.contains_key(&request.destination) {
-            return Err(StreamError::AlreadyExists);
-        }
+        let forked_at = crate::preparation::fork_cut(
+            &request,
+            state.paths.get(&request.source).map(|stream| stream.tail),
+            state
+                .paths
+                .get(&request.destination)
+                .map(|stream| stream.tail),
+        )?;
         let source = state
             .paths
             .get(&request.source)
             .ok_or(StreamError::NotFound)?;
-        let forked_at = request.at_tail.unwrap_or(source.tail);
-        if forked_at > source.tail {
-            return Err(StreamError::PrefixNotRetained);
-        }
         let source_history = source.history.clone();
         reserve_paths(&state, &request.destination, self.limits)?;
         reserve_commit(&state, self.limits)?;
@@ -784,29 +784,6 @@ fn ensure_path(state: &mut State, path: &StreamPath, commit_id: CommitId) {
         );
         state.hierarchy_version = commit_id;
     }
-}
-
-fn build_records(
-    start: u64,
-    bodies: Vec<Bytes>,
-    commit_id: CommitId,
-    committed_at_micros: u64,
-) -> Result<Vec<Record>, StreamError> {
-    bodies
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| {
-            let sequence = start
-                .checked_add(u64::try_from(index).map_err(|_| StreamError::LimitExceeded)?)
-                .ok_or(StreamError::LimitExceeded)?;
-            Ok(Record {
-                sequence,
-                value,
-                commit_id,
-                committed_at_micros,
-            })
-        })
-        .collect()
 }
 
 struct HistoryWindow {
@@ -1356,50 +1333,15 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
 }
 
 fn validate_commit_authority(state: &State, request: &CommitRequest) -> Result<(), StreamError> {
-    for mutation in &request.mutations {
-        match mutation {
-            CommitMutation::Append { .. } => {}
-            CommitMutation::Fork {
-                source, at_tail, ..
-            } => {
-                let Some(source_state) = state.paths.get(source) else {
-                    return Err(StreamError::NotFound);
-                };
-                if *at_tail > source_state.tail {
-                    return Err(StreamError::PrefixNotRetained);
-                }
-            }
-        }
-    }
-    Ok(())
+    crate::preparation::authority(request, |path| {
+        state.paths.get(path).map(|stream| stream.tail)
+    })
 }
 
 fn commit_conflicts(state: &State, conditions: &[CommitCondition]) -> Vec<CommitConflict> {
-    conditions
-        .iter()
-        .filter_map(|condition| match condition {
-            CommitCondition::Tail { path, expected } => match state.paths.get(path) {
-                Some(stream) if stream.tail == *expected => None,
-                Some(stream) => Some(CommitConflict::Tail {
-                    path: path.clone(),
-                    expected: *expected,
-                    actual: Some(stream.tail),
-                }),
-                None => Some(CommitConflict::Tail {
-                    path: path.clone(),
-                    expected: *expected,
-                    actual: None,
-                }),
-            },
-            CommitCondition::Absent { path } => {
-                if state.paths.contains_key(path) {
-                    Some(CommitConflict::Exists { path: path.clone() })
-                } else {
-                    None
-                }
-            }
-        })
-        .collect()
+    crate::preparation::conditions(conditions, |path| {
+        state.paths.get(path).map(|stream| stream.tail)
+    })
 }
 
 fn reserve_coordinated(
@@ -1443,61 +1385,52 @@ fn reserve_coordinated(
 
 fn apply_coordinated(
     state: &mut State,
-    mutations: Vec<CommitMutation>,
+    mutations: &[CommitMutation],
     before: &BTreeMap<StreamPath, (Option<Arc<History>>, u64)>,
     commit_id: CommitId,
     committed_at_micros: u64,
 ) -> Result<Vec<CommittedMutation>, StreamError> {
-    let mut committed = Vec::with_capacity(mutations.len());
-    for mutation in mutations {
+    let committed = crate::preparation::mutations(
+        mutations,
+        |path| state.paths.get(path).map(|stream| stream.tail),
+        commit_id,
+        committed_at_micros,
+    )?;
+    for mutation in &committed {
         match mutation {
-            CommitMutation::Append { path, records } => {
-                let start = state.paths.get(&path).map_or(0, |stream| stream.tail);
-                let records = build_records(start, records, commit_id, committed_at_micros)?;
-                ensure_path(state, &path, commit_id);
-                let resulting_tail = {
-                    let stream = state.paths.get_mut(&path).ok_or(StreamError::Unavailable)?;
+            CommittedMutation::Append(append) => {
+                let records = &append.records;
+                ensure_path(state, &append.path, commit_id);
+                {
+                    let stream = state
+                        .paths
+                        .get_mut(&append.path)
+                        .ok_or(StreamError::Unavailable)?;
                     stream.history = Some(Arc::new(History::Batch {
                         parent: stream.history.clone(),
                         records: Arc::from(records.clone()),
                     }));
-                    stream.tail = records.last().map_or(start, |record| record.sequence + 1);
+                    stream.tail = append.tail;
                     stream.changed.send_replace(stream.tail);
-                    stream.tail
-                };
+                }
                 state.record_count += records.len();
                 state.payload_bytes += records
                     .iter()
                     .map(|record| record.value.len())
                     .sum::<usize>();
-                committed.push(CommittedMutation::Append(CommittedAppend {
-                    path,
-                    start,
-                    end: resulting_tail,
-                    tail: resulting_tail,
-                    records,
-                }));
             }
-            CommitMutation::Fork {
-                source,
-                destination,
-                at_tail,
-                records,
-            } => {
-                let (history, source_tail) = before.get(&source).ok_or(StreamError::NotFound)?;
-                if at_tail > *source_tail {
-                    return Err(StreamError::InvalidArgument);
-                }
-                let records = build_records(at_tail, records, commit_id, committed_at_micros)?;
-                ensure_path(state, &destination, commit_id);
-                let tail = {
+            CommittedMutation::Fork(fork) => {
+                let (history, _) = before.get(&fork.source).ok_or(StreamError::NotFound)?;
+                let records = &fork.records;
+                ensure_path(state, &fork.destination, commit_id);
+                {
                     let stream = state
                         .paths
-                        .get_mut(&destination)
+                        .get_mut(&fork.destination)
                         .ok_or(StreamError::Unavailable)?;
                     let prefix = Arc::new(History::Prefix {
                         source: history.clone(),
-                        tail: at_tail,
+                        tail: fork.forked_at,
                     });
                     stream.history = Some(if records.is_empty() {
                         prefix
@@ -1507,22 +1440,14 @@ fn apply_coordinated(
                             records: Arc::from(records.clone()),
                         })
                     });
-                    stream.tail = records.last().map_or(at_tail, |record| record.sequence + 1);
+                    stream.tail = fork.tail;
                     stream.changed.send_replace(stream.tail);
-                    stream.tail
-                };
+                }
                 state.record_count += records.len();
                 state.payload_bytes += records
                     .iter()
                     .map(|record| record.value.len())
                     .sum::<usize>();
-                committed.push(CommittedMutation::Fork(CommittedFork {
-                    source,
-                    destination,
-                    forked_at: at_tail,
-                    tail,
-                    records,
-                }));
             }
         }
     }
