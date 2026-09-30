@@ -157,5 +157,186 @@ retention change has been made pending service-contract agreement.
 Generated bindings/digests check and installed TypeScript tarball smoke passed.
 A new review finding about TS Commit fork-cut errors was fixed: gRPC now uses
 the existing memory/HTTP invalid_argument mapping, with Node/Bun regression checks.
-Branch protection also requires one approving review; all code findings are fixed
-but this approval and required qualification still govern merge.
+Branch protection also requires one approving review. The human has authorized
+an admin merge override for that approval policy after coherent changes are
+verified. Required qualification and the consolidated SDK finish line still
+govern merge.
+
+## Objects v2 consumer migration draft — 2026-09-30
+
+The human's revised Objects direction supersedes the original v1 compatibility
+assumption for this family: logical S3-style bucket/key operations, eventual
+GET/HEAD/LIST, atomic replacement and IfAbsent/IfMatch, automatic reclamation,
+and no public versions, history, snapshots or forks. The replacement wire package
+is acyclic.objects.v2; published v1 field numbers are not reinterpreted. Active
+v1 paths are temporarily present while FS/Harness/WASM consumers are rewritten.
+They must be removed before the consolidated PR is considered complete. The
+breaking package transition must be documented before release; Git preserves
+the historical published contract, rather than an active legacy service.
+
+The local draft implements all 13 v2 operations in bounded MemoryObjects and
+GrpcObjects. TLS fixture coverage exercises every RPC, multi-frame PUT/GET/part
+uploads, private CA trust, bearer authentication, typed conditional failures,
+bounded reads, malformed successful responses and terminal stream errors.
+Additional tests cover competing conditional replacements, retry replay without
+resurrection, quota rollback, range selection, live listing cursor behavior,
+query binding, multipart failure preserving staged parts, ordered receipts,
+and incremental body hashing independent of frame boundaries/retry keys.
+
+The Objects Cloud owner approved the SDK-owned HTTP binding: POST routes under
+/v2/objects, descriptor-based Protobuf JSON unary messages, bounded header-first
+NDJSON upload/download frames. The exact inventory and status/error/framing
+rules are in docs/objects-v2-http.md and v2::HTTP_ROUTES. GetObjectResponse has a
+terminal ErrorDetail frame for semantic failure after HTTP headers start. This
+binding and S3 use the same authority; native ETags are opaque, not checksums.
+
+Provider-facing v2::request exposes all mutation validation/digest helpers,
+including incremental PUT/part hashing and ordered multipart selection. The
+memory provider uses these same helpers. Descriptor JSON codec tests preserve
+uint64 above 2^53 and binary bytes exactly and reject unknown/trailing JSON.
+
+Local checks for the draft: 14 focused v2 tests pass through the native HTTP and
+TLS gRPC fixtures. The complete Objects suite passes 83 tests plus one doctest
+(one local latency benchmark ignored). Strict Objects Clippy passes for all
+targets/all features and no default features; the Objects WASM bridge passes
+strict wasm32 Clippy. Formatting and diff checks pass.
+Earlier draft descriptor SHA256 (superseded by the completion-frame change below):
+`eebe96b8b1df909e9f047f6a0fdcf3d80ba682dec1710e0b81a74638dc3dda4b`.
+Consumer migration, active v1 removal, package transition and final matrix/
+compatibility qualification remain pending; none is marked complete by these
+draft checks. Cloud's durable bucket registry, metadata/time, listing index,
+multipart sessions, public replay receipts and multi-block manifests are exact
+service dependencies reported by its owner; local fixtures are not live acceptance.
+
+FS retirement audit: distributed.rs StreamAuthorityStore::retire_authority
+appends a stable retirement marker on its separate Stream path and preserves the
+authority's committed records. Workspace access/claim release and underlying
+permanent Stream history remain separate; content reclamation follows the
+human's pending explicit workspace-delete decision.
+
+### Linux installed-package qualification correction
+
+Run 36653616935 at 68c5d503 passed Windows, web, all alternate Linux targets,
+macOS, policy and all host qualification tests. The SDK Linux lane failed at
+the installed TypeScript consumer: its old hard-coded overrides omitted Actors
+and Workers and attempted to fetch those unpublished packages from npm (404).
+The required aggregate therefore failed. This is separate from the earlier
+FUSE cache-test failure, which passed on this run.
+
+Reproduced the missing-override consumer locally with packed packages: Bun
+failed with those exact two npm 404s. The corrected shell-script consumer uses
+the release inventory and each package's own version to override every local
+archive, an isolated install cache, and both Bun/Node export checks. Executed
+the script's actual embedded generator and smoke source: installation, both
+runtimes and bash syntax pass. The complete source-clean packaging shell gate
+was not rerun against this dirty Objects migration draft.
+
+Signed correction c4a220ad9fc515acf93c4a30bd69b25c92424241 was pushed to PR223.
+Objects v2 remains a local migration draft and is not included in that commit.
+
+### Objects v2 TypeScript/WASM transport evidence
+
+The local migration draft now contains MemoryObjectsV2, HttpObjectsV2 and
+GrpcObjectsV2, plus complete generated Node/Bun gRPC clients. Public request and
+response fields come from generated Protobuf types. Rust WASM performs binary
+request validation, response metadata/listing/range validation, and descriptor
+JSON encoding/decoding. HTTP route message types come from Rust HTTP_ROUTES.
+Memory capacity rejects values outside wasm32 allocation bounds before the ABI
+can wrap them. Buffered reads require an explicit decoded allocation bound.
+
+The shared 13-operation lifecycle passes in both Node and Bun through HTTP and
+TLS gRPC, backed by the Rust WASM reference provider. It includes 135k uploads
+and downloads split into 64KiB frames, arbitrary HTTP response chunk boundaries,
+conditional replacement races, mutation replay without resurrection, multipart
+creation/upload/list/complete/abort, suffix ranges, canonical errors and bearer
+authentication. Four Node/Bun tests also exercise malformed metadata/ranges,
+truncated/unterminated/duplicate frames, wrong media types, terminal semantic
+errors, request preflight and wire/allocation limits.
+
+Local TLS qualification reproduced Bun Windows prematurely closing a large
+compressed GET. Disabling optional response compression passes that same test
+in Node and Bun. The gRPC clients own a closable HTTP/2 session and a 30s default
+request timeout. Buffered GET discards an allocation-rejected response while
+draining within its wire bound, preserving subsequent calls; hard wire overflow
+cancels the request. Public streamed uploads and browser runtime qualification
+still need completion beyond these buffered lifecycle checks.
+
+Commands: node scripts/build-objects-wasm.mjs; bun x tsc -b
+typescript/packages/objects; node --test
+typescript/packages/objects/test/v2-conformance.mjs; bun test
+./typescript/packages/objects/test/v2-conformance.mjs; node
+typescript/packages/objects/test/v2-grpc-conformance.mjs; cargo test -p
+acyclic-objects --all-features; cargo clippy -p acyclic-objects --all-targets
+--all-features -- -D warnings; cargo clippy -p acyclic-objects-wasm --target
+wasm32-unknown-unknown --all-targets -- -D warnings.
+
+The new source clients are not final package exports while the active v1
+consumers are being migrated. Browser runtime qualification, package exports,
+breaking version transition and the final RPC matrix remain required. Local
+fixtures do not prove Cloud deployment acceptance or package publication.
+
+### Objects v2 streamed download and cancellation qualification
+
+Native GrpcObjects and HttpObjects now expose get_stream returning a validated
+metadata header and bounded decoded Bytes chunks. Buffered provider GET collects
+that same stream. The native fixtures verify three chunks for a 135000-byte
+representation, successful reads after dropping a partially consumed stream,
+decoded allocation rejection, exact EOF length and terminal semantic errors.
+All 14 focused v2 tests and strict native all-feature Clippy pass after this change.
+
+The TypeScript TLS fixture now also rejects an over-wire-bound download, then
+uses another client successfully, in Node and Bun. Investigation found Connect's
+response iterator intentionally omits return(), so early loop exit could leave
+its 30s deadline timer alive. GrpcObjectsV2 now supplies a per-call AbortController
+and observes the cancelled iterator to release that timer. Hard wire overflow
+cancels this request rather than other calls sharing the connection. The complete
+Node/Bun fixture, including this rejection, finishes in approximately two seconds.
+Server write-ECANCELED diagnostics during this negative case are expected evidence
+of cancellation, not a swallowed client error.
+
+### Objects v2 streamed upload completion qualification
+
+Native GrpcObjects and HttpObjects now expose put_stream and upload_part_stream.
+They split caller chunks into bounded 64KiB frames, propagate source failures,
+and cancel the request when its future is dropped. Buffered uploads use these
+same paths. The native cancellation fixture reproduced partial publication when
+gRPC cancellation arrived as clean request EOF. The unmerged v2 schema now
+requires a final complete=true frame (oneof field 3), followed by EOF, for both
+PUT and upload-part. Missing/false/duplicate completion or a subsequent body
+frame must not publish. The public request::UploadFraming helper enforces this
+discipline after a validated header. Cloud accepted this native gateway gate;
+its public gateway remains unimplemented. S3 body completion is separate.
+
+The updated descriptor SHA-256 is
+f5a0791f472ec500f3aa8a0a22f10b84426062ee0697b0fbed9457815c51894d.
+All 84 Objects tests and one doctest pass. Strict Clippy passes with all features
+and targets, native HTTP alone, and wasm32 JSON alone. Node and Bun pass the four
+v2 WASM/HTTP tests and the TLS gRPC 13-operation fixture after regeneration.
+Generated bindings and descriptor rebuilds are in sync; git diff --check passes.
+Native fixtures cover failed source publication, failed replacement preserving
+the old object, pending-source cancellation, retry after failure, empty chunks,
+large chunk reframing, and failed part replacement preserving its prior receipt.
+Explicit framing tests reject missing/false/duplicate completion and later bodies.
+
+This remains an uncommitted local migration draft. Public package exports,
+consumer migration, browser runtime qualification and Cloud acceptance remain
+pending.
+
+### Stream provider preparation helpers
+
+The public preparation module now provides append, fork and coordinated commit
+outcome/envelope preparation from pre-commit existence/tails and accepted commit
+ID/time. Coordinated observations explicitly distinguish missing input from an
+absent stream, normalize canonical participant ordering, return exact conflicts,
+check fork source authority, and preserve source pre-commit cuts when the same
+commit appends to that source. The memory provider shares conditions, fork cuts,
+authority and record/envelope construction with these helpers. It prepares every
+coordinated record before applying any mutation. Exclusive-tail overflow fails
+before publication. Retry lookup, durable admission, capacity, authorization and
+atomic publication remain provider responsibilities.
+
+All 61 Stream tests pass (one optional scaling benchmark ignored); strict
+all-feature/all-target Clippy and wasm32 WASM Clippy pass. Tests compare standalone
+append/fork and multi-path preparation envelopes with the reference provider and
+cover missing observations, exact conflicts and unrepresentable exclusive tails.
+This does not resolve the pending durable retry lifetime/routing decision.
