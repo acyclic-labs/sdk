@@ -465,9 +465,25 @@ enum RunTerminal {
 }
 
 message LogicalUsage {
+  // Prompt tokens newly computed at this Run's first verified execution.
+  // Frozen with effective_context_reads as a partition of the exact rendered
+  // prompt-token total, bound by native tokenizer/render/model/runtime/KV proof.
+  // Recovery, retry and replay never reclassify or add to this input partition.
   uint64 new_prefill = 1;
+  // Uniquely committed native output-token records, counted once. Decoded UTF-8
+  // bytes or re-tokenization cannot establish this count. A non-output EOS
+  // sentinel is excluded; persisted special/stop output records require explicit
+  // meter-revision semantics. Failed/discarded pre-checkpoint device work has no
+  // agreed eligibility rule here and must not be inferred as zero eligible work.
   uint64 generated_output = 2;
+  // Prompt tokens actually served from verified KV reuse in the same frozen
+  // first-execution partition. Together with new_prefill this equals the exact
+  // rendered prompt-token total; repeated admission/watch adds no new units.
   uint64 effective_context_reads = 3;
+  // Logical Context retention measure. Logical custody identity,
+  // interval events, pending-intent eligibility and dedup scope remain unagreed.
+  // Neither device/cache allocations nor Objects physical storage establish
+  // this measure; absent lifecycle evidence must not imply zero eligible work.
   uint64 retained_byte_millis = 4;
 }
 
@@ -475,6 +491,8 @@ message UsageReceipt {
   bytes receipt_id = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
   bytes model_profile = 2 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
   bytes meter_revision = 3 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
+  // Immutable final totals for this receipt, never an incremental charge delta.
+  // Meter semantics are independent of pricing or charging authorization.
   LogicalUsage usage = 4 [(acyclic.validation.v1.required_message) = true];
   bytes rate_card_revision = 5 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
@@ -500,6 +518,8 @@ message RunEvent {
   oneof event {
     option (acyclic.validation.v1.required_oneof) = true;
     bytes output = 2;
+    // Authoritative cumulative snapshot for this Run. Recovered/replayed watch
+    // events are snapshots of the same units, never incremental charge deltas.
     LogicalUsage usage = 3;
     RunTerminal terminal = 4 [(acyclic.validation.v1.known_nonzero_enum) = true];
     RunProgress progress = 5;

@@ -508,12 +508,28 @@ pub struct WatchRunRequest {
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogicalUsage {
+    /// Prompt tokens newly computed at this Run's first verified execution.
+    /// Frozen with effective_context_reads as a partition of the exact rendered
+    /// prompt-token total, bound by native tokenizer/render/model/runtime/KV proof.
+    /// Recovery, retry and replay never reclassify or add to this input partition.
     #[prost(uint64, tag = "1")]
     pub new_prefill: u64,
+    /// Uniquely committed native output-token records, counted once. Decoded UTF-8
+    /// bytes or re-tokenization cannot establish this count. A non-output EOS
+    /// sentinel is excluded; persisted special/stop output records require explicit
+    /// meter-revision semantics. Failed/discarded pre-checkpoint device work has no
+    /// agreed eligibility rule here and must not be inferred as zero eligible work.
     #[prost(uint64, tag = "2")]
     pub generated_output: u64,
+    /// Prompt tokens actually served from verified KV reuse in the same frozen
+    /// first-execution partition. Together with new_prefill this equals the exact
+    /// rendered prompt-token total; repeated admission/watch adds no new units.
     #[prost(uint64, tag = "3")]
     pub effective_context_reads: u64,
+    /// Logical Context retention measure. Logical custody identity,
+    /// interval events, pending-intent eligibility and dedup scope remain unagreed.
+    /// Neither device/cache allocations nor Objects physical storage establish
+    /// this measure; absent lifecycle evidence must not imply zero eligible work.
     #[prost(uint64, tag = "4")]
     pub retained_byte_millis: u64,
 }
@@ -525,6 +541,8 @@ pub struct UsageReceipt {
     pub model_profile: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
     pub meter_revision: ::prost::alloc::vec::Vec<u8>,
+    /// Immutable final totals for this receipt, never an incremental charge delta.
+    /// Meter semantics are independent of pricing or charging authorization.
     #[prost(message, optional, tag = "4")]
     pub usage: ::core::option::Option<LogicalUsage>,
     #[prost(bytes = "vec", tag = "5")]
@@ -569,6 +587,8 @@ pub mod run_event {
     pub enum Event {
         #[prost(bytes, tag = "2")]
         Output(::prost::alloc::vec::Vec<u8>),
+        /// Authoritative cumulative snapshot for this Run. Recovered/replayed watch
+        /// events are snapshots of the same units, never incremental charge deltas.
         #[prost(message, tag = "3")]
         Usage(super::LogicalUsage),
         #[prost(enumeration = "super::RunTerminal", tag = "4")]

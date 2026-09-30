@@ -49,8 +49,8 @@
     },
     "inference": {
       "version": "0.1.5",
-      "schemaDigest": "sha256:446d5a8f283dec797c97e6b5a9616e785df8cde388a288ae87c8d4007f9eaa2d",
-      "descriptorDigest": "sha256:0b0806c6876fd028c9cd588d0f7c6b7557643adda193b1f095c9ce710aec16ee",
+      "schemaDigest": "sha256:cba2f8caede087bb696dec024e559df6355e817e9b9a6e4933c7140b19e96841",
+      "descriptorDigest": "sha256:21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15",
       "conformanceDigest": "sha256:9eb850dd6cbd5fa53745a00fe19800fc3a2773ed4fa5f70c5d7be84a33b9948c"
     }
   }

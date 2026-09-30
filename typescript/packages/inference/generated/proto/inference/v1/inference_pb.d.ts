@@ -1409,21 +1409,41 @@ export declare const WatchRunRequestSchema: GenMessage<WatchRunRequest>;
  */
 export declare type LogicalUsage = Message<"inference.customer.v1.LogicalUsage"> & {
   /**
+   * Prompt tokens newly computed at this Run's first verified execution.
+   * Frozen with effective_context_reads as a partition of the exact rendered
+   * prompt-token total, bound by native tokenizer/render/model/runtime/KV proof.
+   * Recovery, retry and replay never reclassify or add to this input partition.
+   *
    * @generated from field: uint64 new_prefill = 1;
    */
   newPrefill: bigint;
 
   /**
+   * Uniquely committed native output-token records, counted once. Decoded UTF-8
+   * bytes or re-tokenization cannot establish this count. A non-output EOS
+   * sentinel is excluded; persisted special/stop output records require explicit
+   * meter-revision semantics. Failed/discarded pre-checkpoint device work has no
+   * agreed eligibility rule here and must not be inferred as zero eligible work.
+   *
    * @generated from field: uint64 generated_output = 2;
    */
   generatedOutput: bigint;
 
   /**
+   * Prompt tokens actually served from verified KV reuse in the same frozen
+   * first-execution partition. Together with new_prefill this equals the exact
+   * rendered prompt-token total; repeated admission/watch adds no new units.
+   *
    * @generated from field: uint64 effective_context_reads = 3;
    */
   effectiveContextReads: bigint;
 
   /**
+   * Logical Context retention measure. Logical custody identity,
+   * interval events, pending-intent eligibility and dedup scope remain unagreed.
+   * Neither device/cache allocations nor Objects physical storage establish
+   * this measure; absent lifecycle evidence must not imply zero eligible work.
+   *
    * @generated from field: uint64 retained_byte_millis = 4;
    */
   retainedByteMillis: bigint;
@@ -1455,6 +1475,9 @@ export declare type UsageReceipt = Message<"inference.customer.v1.UsageReceipt">
   meterRevision: Uint8Array;
 
   /**
+   * Immutable final totals for this receipt, never an incremental charge delta.
+   * Meter semantics are independent of pricing or charging authorization.
+   *
    * @generated from field: inference.customer.v1.LogicalUsage usage = 4;
    */
   usage?: LogicalUsage | undefined;
@@ -1563,6 +1586,9 @@ export declare type RunEvent = Message<"inference.customer.v1.RunEvent"> & {
     case: "output";
   } | {
     /**
+     * Authoritative cumulative snapshot for this Run. Recovered/replayed watch
+     * events are snapshots of the same units, never incremental charge deltas.
+     *
      * @generated from field: inference.customer.v1.LogicalUsage usage = 3;
      */
     value: LogicalUsage;

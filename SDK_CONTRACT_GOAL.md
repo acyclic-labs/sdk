@@ -735,3 +735,48 @@ After the fix, full workspace/all-feature Linux native mount qualification passe
 all 25 live tests, including the reported cache test; that exact test also passes
 20 consecutive additional runs. Strict Linux all-feature/all-target Clippy for
 acyclic-fs passes. No test assertion, feature gate or required CI gate is weakened.
+
+### Agreed Inference usage counter semantics
+
+Inference and Billing explicitly agree: RunEvent usage is an authoritative
+cumulative snapshot for the same Run, never a charge delta; UsageReceipt usage
+contains immutable final totals. The first verified prompt partition is frozen
+and bound by exact native tokenizer/render/model/runtime and actual KV reuse
+proof: new_prefill plus effective_context_reads equals that rendered prompt-token
+total, with no reclassification/additional units from recovery, retry or replay.
+generated_output counts unique committed native output-token records, excluding
+Qwen's non-output EOS. UTF-8 bytes/re-tokenization cannot establish token count;
+future persisted special/stop records require explicit meter revision semantics.
+
+These definitions now live in canonical Protobuf comments and generated Rust/TS
+declarations. Failed/discarded pre-checkpoint work and logical retained-byte
+custody remain explicitly unresolved, not inferred as zero eligible work. Data
+authenticates retained logical plaintext bytes/claim receipts; Inference must
+define Context identity, interval events, pending-intent eligibility and logical
+dedup ownership. No pricing or charging adoption.
+
+Generation and the complete generated check pass; the Inference package's WASM
+build, declarations/type checks and all 18 client tests pass. Comparing old/new
+FileDescriptorSet after removing sourceCodeInfo proves wire identity unchanged:
+semantic SHA256 bf3989f99e4e36b0388e4d004adf50bee30f92657e05fcce2d34dfe75feef5e4.
+The raw descriptor/source digests change for comments; raw Inference descriptor
+is 21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15.
+
+PR223 d95bd0a23fae8cabf7dbf1206e79ef5531cf95ea subsequently passed the reported
+live cache test, but Linux job 109840831285/run36701171439 failed
+`two_sequential_unix_mounts_in_one_process_both_stay_independently_writable`
+with Driver("Software caused connection abort (os error 103)"): 24/25 live mount
+tests passed. The separate linux-fuse host gate passed. The exact sequential
+lifecycle test passes 100 local repeats; this failure is not reproduced or fixed.
+The existing fuser stop path combines detach and background join errors, so the
+observed message alone does not prove a successful detach or justify suppressing
+driver failure. No new shutdown exception, CI retry or gate bypass is made.
+
+Inference confirms terminal Run-only input custody is excluded from customer
+Context logical retention. Physical input/output Context edges remain until
+recovery-safe release is proven: current terminal observation requires model,
+runtime and verified prompt-token evidence; historical successful result exposes
+full output Context items. A metadata-only terminal recovery rule is a native
+authority dependency. No Run release/archive/expiry duration is in the current
+SDK contract. Human logical dedup scope remains pending; retained_byte_millis
+remains unadopted without a complete lifecycle.
