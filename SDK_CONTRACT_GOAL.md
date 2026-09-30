@@ -824,6 +824,48 @@ All other required leaf jobs passed, but aggregate SDK Qualification failed.
 No assertion, required gate or driver error is suppressed. The PR is unmerged;
 local qualification does not establish live acceptance or package publication.
 
+### Executable canonical Objects v2 provider conformance
+
+The cross-family `objects()` entry point and memory consumer now run
+`acyclic_objects::v2::conformance::verify`. The reusable walkthrough exercises
+all 13 operations through memory, native TLS gRPC and native HTTP, including
+current-key replacement, exact old retry recovery without restoring old bytes,
+request rebinding, stale delete conditions, selected reads and allocation bounds,
+query-bound ordered pagination, delimiter grouping, multipart completion/retry
+and abort, and deletion without exposing retained history. It returns the exact
+failed invariant separately from typed provider errors. Its deterministic
+fixture assumption is explicit: these tests do not establish production eventual
+consistency. The canonical exported inventory now describes v2; published v1
+inventory and digests are retained separately. The local-runner durable case is
+explicitly still legacy, not acceptance of v2. The Objects benchmark uses current
+keys and bounded pagination; version-listing and snapshot modes are retired.
+
+Current-source local tests pass all 87 Objects tests and 24 Conformance tests;
+strict all-feature/all-target Clippy for both crates passes. The benchmark
+`cargo run -p acyclic-conformance --all-features --locked --target
+x86_64-pc-windows-msvc --bin bench-objects -- 2000 100` verifies all 2000 keys and
+exact metadata: one unoptimized sample reports 458.9357 ms publication,
+1.4523 ms first page and 25.8109 ms remaining traversal. This is a checked
+measurement, not a performance acceptance threshold. Inventory SHA256 is
+c5b54fd1254c19c966ab3765962ca9e633a786abf91cf6af2cca5bb0183e5fb6.
+Objects v1 descriptor remains
+4701187ac8ca87325d42aee0f99c7826ebb63ec2be0ae98c4768006d4ff31a51;
+Objects v2 descriptor remains
+21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b.
+
+The previous full Windows workspace process is terminal. Runtime tests pass,
+including the 1024-fork Harness fixture (2214.01 seconds), but documentation
+compilation fails with E0463, unable to find acyclic_fs. Dependencies and source
+changed during that run; the documentation result needs an isolated rebuild
+before claiming a full workspace pass. The complete generated check reaches
+native N-API declarations but fails with OS error 112 (disk full), both under
+the original build profile and without debug/incremental output. Automatic
+approval review blocks cache removal. A fresh qualification cache and temporary
+directory on D: are now in use for the next generated check. No complete
+generated/workspace pass is claimed for this unit yet. Rust root/durable v1
+migration, package version transition and the existing required CI failures
+remain outstanding; the PR is unmerged and these local commits are unpublished.
+
 ### Canonical TypeScript Objects exports and WASM retire v1
 
 The Objects package root now exports the logical v2 provider; `./proto`,

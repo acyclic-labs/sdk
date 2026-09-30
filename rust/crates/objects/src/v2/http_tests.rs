@@ -301,6 +301,7 @@ async fn http_exercises_every_rpc_streaming_authentication_bounds_and_semantic_e
             .map(|error| error.code),
         Some(wire::ErrorCode::AccessDenied)
     );
+    super::conformance::verify(&client, "conformance-http").await?;
     super::tests::exercise_provider(&client).await?;
     super::tests::exercise_uploads(
         &client,

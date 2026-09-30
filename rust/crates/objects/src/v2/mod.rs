@@ -2,6 +2,7 @@
 //!
 //! Reads and listings may lag mutations. Single-object publication and its conditions are
 //! atomic. Service-owned retained bytes are a private service contract, not public history.
+pub mod conformance;
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
 #[cfg(feature = "json")]

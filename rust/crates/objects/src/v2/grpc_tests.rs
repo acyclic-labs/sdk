@@ -295,6 +295,7 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
             .map(|error| error.code),
         Some(wire::ErrorCode::AccessDenied)
     );
+    super::conformance::verify(&client, "conformance-grpc").await?;
     super::tests::exercise_provider(&client).await?;
     super::tests::exercise_uploads(
         &client,

@@ -87,7 +87,11 @@ async fn qualify_objects_local(root: PathBuf) -> Result<(), String> {
     let provider = LocalObjects::open(root, LocalObjectsLimits::default())
         .await
         .map_err(|error| error.to_string())?;
-    acyclic_conformance::objects(&provider).await
+    // The durable provider remains a legacy migration dependency; do not label
+    // this v1 journal qualification as acceptance of the logical v2 contract.
+    acyclic_objects::conformance::verify(&provider, "conformance")
+        .await
+        .map_err(|error| error.to_string())
 }
 
 async fn qualify_filesystem_local(root: PathBuf) -> Result<(), String> {

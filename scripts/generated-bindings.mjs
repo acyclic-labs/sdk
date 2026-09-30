@@ -94,6 +94,8 @@ export const packagedSourceCopies = [
   ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
   ["conformance/vectors/stream.json", "rust/crates/conformance/vectors/stream.json"],
   ["conformance/vectors/objects.json", "rust/crates/conformance/vectors/objects.json"],
+  ["conformance/vectors/objects-v2.json", "rust/crates/objects/conformance/objects-v2.json"],
+  ["conformance/vectors/objects-v2.json", "rust/crates/conformance/vectors/objects-v2.json"],
   ["conformance/vectors/machines.json", "rust/crates/conformance/vectors/machines.json"],
   [compatibilityArtifacts.filesystem.conformanceDigest, "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
 ];
