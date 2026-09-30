@@ -123,6 +123,7 @@
         "@acyclic-labs/workers": "0.1.5",
       },
       "devDependencies": {
+        "@bufbuild/protobuf": "2.15.0",
         "typescript": "7.0.2",
       },
     },

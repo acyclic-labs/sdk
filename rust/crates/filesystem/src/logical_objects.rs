@@ -534,3 +534,159 @@ fn success<T>(value: T, work: WorkCounters, budget: WorkBudget) -> ObjectResult<
     admit(work, budget)?;
     Ok(ObjectReceipt { value, work })
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::storage::ObjectKind;
+    #[tokio::test]
+    async fn provider_object_batch_reads_once_and_preserves_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (provider, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
+        let store = LogicalObjectStore::new(Arc::new(provider), bucket);
+        let first_bytes = Bytes::from_static(b"first");
+        let second_bytes = Bytes::from_static(b"second");
+        let first = ObjectId {
+            kind: ObjectKind::BlobChunk,
+            digest: object_digest(ObjectKind::BlobChunk, &first_bytes),
+        };
+        let second = ObjectId {
+            kind: ObjectKind::BlobChunk,
+            digest: object_digest(ObjectKind::BlobChunk, &second_bytes),
+        };
+        let cancellation = CancellationToken::new();
+        store
+            .put(
+                first,
+                first_bytes.clone(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        store
+            .put(
+                second,
+                second_bytes.clone(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        let receipt = store
+            .read_many(
+                &[
+                    ObjectReadRequest {
+                        object_id: second,
+                        maximum_bytes: 6,
+                    },
+                    ObjectReadRequest {
+                        object_id: first,
+                        maximum_bytes: 5,
+                    },
+                ],
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        assert_eq!(
+            receipt.value.first().map(|value| &value.bytes),
+            Some(&second_bytes)
+        );
+        assert_eq!(
+            receipt.value.get(1).map(|value| &value.bytes),
+            Some(&first_bytes)
+        );
+        assert_eq!(receipt.work.backend_read_operations, 1);
+        assert_eq!(receipt.work.object_probes, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provider_object_batch_counts_one_backend_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (provider, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
+        let store = LogicalObjectStore::new(Arc::new(provider), bucket);
+        let first_bytes = Bytes::from_static(b"first");
+        let second_bytes = Bytes::from_static(b"second");
+        let writes = [
+            ObjectWrite {
+                object_id: ObjectId {
+                    kind: ObjectKind::BlobChunk,
+                    digest: object_digest(ObjectKind::BlobChunk, &first_bytes),
+                },
+                bytes: first_bytes,
+            },
+            ObjectWrite {
+                object_id: ObjectId {
+                    kind: ObjectKind::BlobChunk,
+                    digest: object_digest(ObjectKind::BlobChunk, &second_bytes),
+                },
+                bytes: second_bytes,
+            },
+        ];
+        let receipt = store
+            .put_many(&writes, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?;
+        assert_eq!(receipt.work.backend_write_operations, 1);
+        assert_eq!(receipt.work.object_bytes_written, 11);
+        Ok(())
+    }
+
+    #[test]
+    fn provider_put_batch_interns_identical_object_requests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bucket = wire::BucketRef {
+            name: "bucket".to_owned(),
+        };
+        let bytes = Bytes::from_static(b"shared");
+        let object_id = ObjectId {
+            kind: ObjectKind::BlobChunk,
+            digest: object_digest(ObjectKind::BlobChunk, &bytes),
+        };
+        let writes = [
+            ObjectWrite {
+                object_id,
+                bytes: bytes.clone(),
+            },
+            ObjectWrite { object_id, bytes },
+        ];
+        let (requests, unique_writes, work) = prepare_provider_put_batch(
+            &bucket,
+            &writes,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )?;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(unique_writes, [0]);
+        assert_eq!(work.object_bytes_written, 12);
+        assert_eq!(work.bytes_hashed, 12);
+        Ok(())
+    }
+
+    #[test]
+    fn provider_put_batch_rejects_unadmitted_request_allocation() {
+        let bucket = wire::BucketRef {
+            name: "bucket".to_owned(),
+        };
+        let bytes = Bytes::from_static(b"body");
+        let writes = [ObjectWrite {
+            object_id: ObjectId {
+                kind: ObjectKind::BlobChunk,
+                digest: object_digest(ObjectKind::BlobChunk, &bytes),
+            },
+            bytes,
+        }];
+        let mut budget = WorkBudget::UNBOUNDED;
+        budget.allocation_operations = 0;
+        let failure =
+            prepare_provider_put_batch(&bucket, &writes, budget, &CancellationToken::new())
+                .err()
+                .unwrap_or_else(|| {
+                    OperationFailure::before_work(ObjectStoreError::Rejected(
+                        "unadmitted allocation unexpectedly succeeded".to_owned(),
+                    ))
+                });
+        assert!(matches!(failure.error, ObjectStoreError::Work(_)));
+        assert_eq!(*failure.work, WorkCounters::default());
+    }
+}

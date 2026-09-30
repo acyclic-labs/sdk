@@ -67,19 +67,20 @@ checkpoints. Current objects, staged parts, exact receipts and pagination
 authentication survive checkpoint replacement. Interrupted replacement recovers
 the old or new complete journal; uncertain replacement requires reopen.
 
-This source implementation persists small bodies as segments and scans current
-state when constructing deltas. Native filesystem migration still requires batch
-efficiency, the existing small-body durability behavior and an explicit old-root
-transition. The filesystem still uses the legacy durable provider.
+The v2 provider inlines bodies up to 64 KiB in authenticated journal records,
+groups native writes, and scans current state when constructing deltas. Native
+filesystem roots now compose this provider through the logical v2 adapter.
+Existing v1 roots fail closed; no old-data upgrade path is provided.
 
 ## Remaining native v1 migration
 
 The root `wire`, descriptor, provider types, standalone v1 conformance module and
-optional `local` provider still support remaining native durable consumers.
-Their migration is pending; the idiomatic v1 gRPC wrappers have been removed.
+optional `local` provider remain active pending retirement and extraction of
+shared physical storage helpers. The filesystem uses v2; the idiomatic v1 gRPC
+wrappers have been removed.
 The v1 descriptors and schemas remain intact for published compatibility
-history. The root `LocalObjects` still selects that existing provider. The v2 memory
-provider is for deterministic local tests and does not provide persistence.
+history. The root `LocalObjects` still selects that existing provider; filesystem
+composition explicitly selects `v2::local::LocalObjects` for persistence.
 
 The local provider commits bodies up to 64 KiB inside the journal record itself, so one append and one flush make a small object durable; larger bodies are published as immutable segments first. Once inline bytes outweigh the rest of the journal, and on every garbage collection, the provider compacts the journal: live inline bodies move into segments and the rest are dropped.
 

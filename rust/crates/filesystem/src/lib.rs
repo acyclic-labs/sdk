@@ -167,7 +167,7 @@ pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 #[cfg(feature = "distributed")]
-pub use distributed::{ProviderObjectStore, StreamAuthorityStore};
+pub use distributed::StreamAuthorityStore;
 #[cfg(feature = "distributed")]
 pub use distributed_fs::DistributedFs;
 pub use facade::{

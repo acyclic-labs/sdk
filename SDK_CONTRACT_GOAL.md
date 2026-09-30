@@ -2,6 +2,44 @@
 
 Status: active; local transport work is incomplete and PR 223 is unmerged.
 
+## Native filesystem v2 composition and umbrella consumer (2026-09-30)
+
+Native filesystem roots now open `v2::local::LocalObjects` through
+`LogicalObjectStore`, preserving the root ownership anchor, staging, cache,
+configured object limit and Stream authority/history semantics. Collection lists
+current logical keys and deletes with the listed ETag as an IfMatch condition;
+cache invalidation also runs after an uncertain deletion. Physical collection
+remains private. Existing v1 roots fail closed; no old-data upgrade path exists.
+Removed the legacy `ProviderObjectStore` and its public export. Its batch order,
+work accounting, deduplication and allocation-admission tests now exercise v2.
+Distributed workspace history/fork/lease tests also use v2.
+
+Local Windows qualification passed with D: target/tmp, one build job and four
+test threads: `cargo test -p acyclic-fs --all-features --locked --target
+x86_64-pc-windows-msvc` (1120 unit tests, 30 integration tests, documentation
+checks; 36 existing unit ignores and one existing integration performance
+ignore), and strict all-feature/all-target Clippy. No test was suppressed.
+Complete `bun run check:generated`, SDK TypeScript build, metadata and RPC matrix
+checks passed; inventory remains 38 target operations and 17 pending v1 removals.
+Logs: `D:/codex-sdk-162e-qualification-20260930/sdk-fs-v2-*.log`.
+
+PR head `648dcde7beae3b671eb33ddfd3242cfe820866ff` required Linux job
+`109950787062` in run `36733931673` failed in the umbrella consumer test at the
+retired `Objects.memory()` API. Reproduced that exact failure locally before
+changing the test to canonical generated v2 messages and `MemoryObjectsV2`.
+Added the exact existing Protobuf version as an explicit test dependency.
+The focused consumer now passes (10 assertions), and the full Bun package test
+command passes 382 tests across 39 files (2008 assertions). Logs:
+`sdk-public-consumer-{before,after}.log`, `sdk-typescript-package-tests.log` and
+`sdk-required-linux-648dcde-api.log` beside the filesystem logs. This establishes
+a local fix for that failure, not remote green checks or a merge. Previous native
+Linux/Windows qualification failures remain without a claimed root-cause fix.
+
+Active native v1 source/helper retirement, the breaking package transition and
+final required repository/package qualification remain. Descriptors are unchanged.
+The frozen managed-agents tree has no diff. No package publication or live Cloud
+acceptance is claimed.
+
 ## Canonical Stream retained-fact persistence codec (2026-09-30)
 
 Source commit `7e4db40da0db6def965658ea0cc9c511d6e55003` exposes

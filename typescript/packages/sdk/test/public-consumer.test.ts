@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { harness as harnessApi, objects as objectsApi, stream as streamApi } from "@acyclic-labs/sdk";
 import { openMemoryFs } from "@acyclic-labs/fs/memory";
+import { create } from "@bufbuild/protobuf";
 
 test("one consumer can use the public stream, objects, filesystem, and WASM APIs", async () => {
   const stream = streamApi.StreamClient.memory().json("runs/one", value => {
@@ -13,18 +14,24 @@ test("one consumer can use the public stream, objects, filesystem, and WASM APIs
   for await (const record of stream.read({ from: 0n, limit: 4 })) records.push(record.value);
   expect(records).toEqual([{ kind: "started" }]);
 
-  const objects = objectsApi.Objects.memory();
-  const bucket = await objects.createBucket("consumer");
-  const documentCodec = objectsApi.jsonCodec(value => {
-    if (value === null || typeof value !== "object" || !("ok" in value) || typeof value.ok !== "boolean") {
-      throw new TypeError("expected a result document");
-    }
-    return { ok: value.ok };
-  });
-  await bucket.put("result.json", { ok: true }, documentCodec);
-  expect((await bucket.get("result.json", documentCodec)).value.ok).toBe(true);
-  expect((await bucket.listPage()).entries.map(entry => entry.objectKey)).toEqual(["result.json"]);
-  expect((await bucket.put("bytes", Uint8Array.of(1, 2), objectsApi.bytesCodec)).size).toBe(2n);
+  const objects = await objectsApi.MemoryObjectsV2.create();
+  const bucket = create(objectsApi.BucketRefSchema, { name: "consumer" });
+  expect((await objects.createBucket(create(objectsApi.CreateBucketRequestSchema, {
+    name: bucket.name,
+  }))).bucket?.name).toBe(bucket.name);
+  const document = new TextEncoder().encode(JSON.stringify({ ok: true }));
+  await objects.put(create(objectsApi.PutObjectHeaderSchema, {
+    bucket, objectKey: "result.json", metadata: { contentType: "application/json" },
+  }), document);
+  const read = await objects.get(create(objectsApi.GetObjectRequestSchema, {
+    bucket, objectKey: "result.json",
+  }), BigInt(document.byteLength));
+  expect(JSON.parse(new TextDecoder().decode(read.body))).toEqual({ ok: true });
+  expect((await objects.list(create(objectsApi.ListObjectsRequestSchema, { bucket })))
+    .entries.map(entry => entry.objectKey)).toEqual(["result.json"]);
+  expect((await objects.put(create(objectsApi.PutObjectHeaderSchema, {
+    bucket, objectKey: "bytes",
+  }), Uint8Array.of(1, 2))).size).toBe(2n);
 
   const fs = await openMemoryFs();
   try {
