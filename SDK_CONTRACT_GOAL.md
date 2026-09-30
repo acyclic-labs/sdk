@@ -19,6 +19,18 @@ segments, then replaces the journal with the existing durable checkpoint.
 Mutation admission triggers this maintenance when inline bytes dominate the
 journal, including after reopen. Empty batches do no maintenance or I/O.
 
+Follow-up source review restored the legacy provider's 8-MiB minimum before
+automatic compaction, so a small write does not trigger a full checkpoint on
+the next mutation. Automatic compaction rechecks the predicate under exclusive
+admission and relocates/checkpoints without scanning for garbage; explicit
+collection remains responsible for reclamation. The threshold test now verifies
+that a small write does not trigger maintenance and that cumulative inline bytes
+trigger it after reopen. This follow-up requires its own final qualification.
+The follow-up passed the same 97 Objects/24 Conformance tests, integration/docs
+and strict all-feature/all-target lint gate; logs are
+`sdk-v2-maintenance-tests.log` and `sdk-v2-maintenance-clippy.log` beside the
+preceding evidence. Generated verification is included in the next source unit.
+
 Final local qualification passed: 97 Objects and 24 Conformance unit tests,
 integration/binary/documentation checks, strict all-feature/all-target Clippy,
 complete generated verification, metadata and RPC matrix checks. New tests cover

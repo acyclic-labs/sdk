@@ -176,12 +176,19 @@ async fn dominant_inline_bytes_trigger_owned_maintenance_after_reopen()
     let body = Bytes::from(vec![42; 1024]);
     let first = provider.put(put("first"), body.clone()).await?;
     assert!(segments(root.path())?.is_empty());
+    assert!(!provider.core.local_maintenance_due()?);
+    let filler = Bytes::from(vec![43; 64 * 1024]);
+    for _ in 0..128 {
+        let mut request = put("filler");
+        request.mutation = None;
+        provider.put(request, filler.clone()).await?;
+    }
     assert!(provider.core.local_maintenance_due()?);
     drop(provider);
     let provider = create(root.path()).await?;
     assert!(provider.core.local_maintenance_due()?);
     provider.put(put("second"), body.clone()).await?;
-    assert_eq!(segments(root.path())?.len(), 1);
+    assert_eq!(segments(root.path())?.len(), 2);
     let before = segments(root.path())?;
     assert!(provider.put_batch(Vec::new()).await.is_empty());
     assert!(provider.get_batch(Vec::new()).await.is_empty());

@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAGIC: &[u8] = b"ACYCLIC-OBJECTS-V2-LOCAL\0\x01";
 const RECORD_LIMIT: usize = 2 * 1024 * 1024;
+const MINIMUM_MAINTENANCE_INLINE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Failure to open or recover logical Objects storage.
 #[derive(Debug, thiserror::Error)]
@@ -191,8 +192,23 @@ impl MemoryObjects {
     pub(in crate::v2) fn local_maintenance_due(&self) -> Result<bool, Error> {
         let _state = self.lock_state()?;
         let journal = self.journal.as_ref().ok_or(Error::from(Unavailable))?;
-        let tail = journal.tail.lock().map_err(|_| Error::from(Unavailable))?;
-        Ok(tail.inline_bytes > tail.bytes.saturating_sub(tail.inline_bytes))
+        journal.maintenance_due()
+    }
+    pub(in crate::v2) fn compact_local_if_due(&self) -> Result<(), LocalOpenError> {
+        let mut state = self.lock_state().map_err(|_| LocalOpenError::Unavailable)?;
+        let journal = self.journal.as_ref().ok_or(LocalOpenError::Unavailable)?;
+        // Another admitted maintainer may already have compacted this journal.
+        if !journal
+            .maintenance_due()
+            .map_err(|_| LocalOpenError::Unavailable)?
+        {
+            return Ok(());
+        }
+        let mut next = state.clone();
+        journal.materialize_inline(&mut next)?;
+        journal.compact(&next)?;
+        *state = next;
+        Ok(())
     }
     pub(in crate::v2) fn collect_local_garbage(
         &self,
@@ -444,6 +460,11 @@ fn repair_tail(
 }
 
 impl Journal {
+    fn maintenance_due(&self) -> Result<bool, Error> {
+        let tail = self.tail.lock().map_err(|_| Error::from(Unavailable))?;
+        Ok(tail.inline_bytes >= MINIMUM_MAINTENANCE_INLINE_BYTES
+            && tail.inline_bytes >= tail.bytes.saturating_sub(tail.inline_bytes))
+    }
     pub(super) fn validate_bodies(&self, state: &State) -> Result<(), Error> {
         let bodies = state
             .buckets

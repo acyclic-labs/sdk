@@ -57,9 +57,15 @@ impl LocalObjects {
         action: impl FnOnce(&MemoryObjects) -> Result<T, Error> + Send + 'static,
     ) -> Result<T, Error> {
         if self.core.local_maintenance_due()? {
-            self.collect_garbage(u64::MAX)
-                .await
-                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
+            let lease = self.body_io.clone().write_owned().await;
+            let core = self.core.clone();
+            acyclic_native_runtime::run_blocking_io(move || {
+                let _lease = lease;
+                core.compact_local_if_due()
+            })
+            .await
+            .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
+            .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
         }
         let core = self.core.clone();
         let lease = self.body_io.clone().read_owned().await;
