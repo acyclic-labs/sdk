@@ -24,7 +24,10 @@ async function dispatch(route, input) {
     case "read": { const records = []; for await (const record of provider.read(input.path, { from: input.from, limit: input.limit })) records.push(record); return records; }
     case "children": { const children = []; for await (const child of provider.children(input.parent, input.limit)) children.push(child); return children; }
     case "children/page": return provider.childrenPage(input);
-    case "commit": return provider.commit(input.request, input.options);
+    case "commit": {
+      const result = await provider.commit(input.request, input.options);
+      return result.ok ? { ...result, envelope: await provider.readCommit(result.commitId) } : result;
+    }
     case "commits/read": return provider.readCommit(input.commitId);
     case "idempotency/inspect": return (await provider.inspectIdempotency(input.idempotencyKey)) ?? null;
     default: throw new Error(`unknown route ${route}`);
@@ -33,7 +36,8 @@ async function dispatch(route, input) {
 const replacer = (_name, value) => typeof value === "bigint" ? value.toString() : value instanceof Uint8Array ? Buffer.from(value).toString("base64") : value;
 const server = createServer(async (request, response) => {
   response.setHeader("content-type", "application/json");
-  if (request.headers.authorization !== "Bearer conformance") { response.writeHead(403); response.end('{"code":"access_denied"}'); return; }
+  const commitOnly = request.headers.authorization === "Bearer commit-only";
+  if (request.headers.authorization !== "Bearer conformance" && !(commitOnly && request.url === "/v1/stream/commit")) { response.writeHead(403); response.end('{"code":"access_denied"}'); return; }
   try {
     let text = "";
     for await (const chunk of request) text += chunk;

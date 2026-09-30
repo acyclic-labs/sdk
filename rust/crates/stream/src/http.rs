@@ -135,6 +135,11 @@ impl HttpStream {
         let from = request.from;
         let limit = request.limit;
         let path = request.path.clone();
+        // Streams never shrink. Establish cursor validity before the read,
+        // so an append after an empty response cannot reclassify that cursor.
+        if check_empty && from > self.tail(path).await? {
+            return Err(StreamError::OutOfRange);
+        }
         let response = self
             .request(
                 "read",
@@ -157,15 +162,22 @@ impl HttpStream {
             }
             next = next.checked_add(1).ok_or(StreamError::Unavailable)?;
         }
-        if check_empty && records.is_empty() && from > self.tail(path).await? {
-            return Err(StreamError::OutOfRange);
-        }
         Ok(records)
     }
     async fn commit_response(&self, value: &Value) -> Result<CommitOutcome, StreamError> {
         if value["ok"] == true {
             let id = parse_id(field(value, "commitId")?)?;
-            let envelope = self.read_commit(id).await?;
+            let envelope = if let Some(envelope) = value.get("envelope") {
+                let envelope = parse_envelope(envelope)?;
+                if envelope.commit_id != id {
+                    return Err(StreamError::Unavailable);
+                }
+                envelope
+            } else {
+                // Published compact-only HTTP servers need commit-read access.
+                // Canonical servers include the admitted envelope atomically.
+                self.read_commit(id).await?
+            };
             let tails = value["tails"].as_object().ok_or(StreamError::Unavailable)?;
             let forks = value["forks"].as_array().ok_or(StreamError::Unavailable)?;
             let mut actual_tails = std::collections::BTreeMap::new();

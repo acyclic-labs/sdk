@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Check monotonic tail before direct HTTP reads so concurrent appends cannot hide invalid empty-read cursors. Share native and WASM HTTP response projection, including atomic Commit envelopes.
 - Bind the default browser fetch receiver and qualify HTTPS, follow and multi-path Commit in real Chrome.
 - Project an absent retry observation as `undefined` consistently in memory and HTTP.
 

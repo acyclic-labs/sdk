@@ -22,6 +22,15 @@ const RETAINS_REPLAY: u8 = 1;
 const RETAINS_COMMIT: u8 = 2;
 
 impl MemoryStream {
+    #[cfg(test)]
+    pub(crate) async fn encode_legacy_deadline_fixture(&self, until: u64) -> Vec<u8> {
+        let mut state = self.state.write().await;
+        for retained in &mut state.retained {
+            retained.until = until;
+        }
+        encode(&state)
+    }
+
     /// Encodes the whole state.
     pub(crate) async fn encode_state(&self) -> Vec<u8> {
         let state = self.state.read().await;

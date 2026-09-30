@@ -21,7 +21,9 @@ message PublishVersionRequest {
   bytes expected_sha256 = 2;
   string idempotency_key = 3;
 }
-message PublishVersionResponse { CodeVersion version = 1; }
+message PublishVersionResponse {
+  CodeVersion version = 1;
+}
 
 message SelectDeploymentRequest {
   string alias = 1;
@@ -31,7 +33,9 @@ message SelectDeploymentRequest {
   optional uint64 expected_revision = 3;
   string idempotency_key = 4;
 }
-message SelectDeploymentResponse { Deployment deployment = 1; }
+message SelectDeploymentResponse {
+  Deployment deployment = 1;
+}
 
 // Logical S3 object selected and privately retained at durable job acceptance.
 // Retries read the same retained bytes even if this public key is replaced.
@@ -78,7 +82,9 @@ message SubmitJobRequest {
   RetryPolicy retry = 4;
   string idempotency_key = 5;
 }
-message SubmitJobResponse { JobObservation job = 1; }
+message SubmitJobResponse {
+  JobObservation job = 1;
+}
 
 enum JobState {
   JOB_STATE_UNSPECIFIED = 0;
@@ -97,13 +103,19 @@ message JobObservation {
   string failure_code = 6;
   bool cancellation_requested = 7;
 }
-message InspectJobRequest { string job_id = 1; }
-message InspectJobResponse { JobObservation job = 1; }
+message InspectJobRequest {
+  string job_id = 1;
+}
+message InspectJobResponse {
+  JobObservation job = 1;
+}
 message CancelJobRequest {
   string job_id = 1;
   string idempotency_key = 2;
 }
-message CancelJobResponse { JobObservation job = 1; }
+message CancelJobResponse {
+  JobObservation job = 1;
+}
 
 message Header {
   string name = 1;

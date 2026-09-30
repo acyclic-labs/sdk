@@ -66,7 +66,9 @@ message CreateActorRequest {
   repeated SubscriptionSpec subscriptions = 5;
   string idempotency_key = 6;
 }
-message CreateActorResponse { ActorObservation actor = 1; }
+message CreateActorResponse {
+  ActorObservation actor = 1;
+}
 // Full configuration replacement with CAS. The new code's checkpoint schema
 // must be compatible or explicitly migrated before activation; failure keeps
 // the previous version active. Paused subscriptions stay paused until resumed.
@@ -78,33 +80,47 @@ message UpdateActorRequest {
   uint64 expected_configuration_revision = 5;
   string idempotency_key = 6;
 }
-message UpdateActorResponse { ActorObservation actor = 1; }
-message InspectActorRequest { string actor_id = 1; }
-message InspectActorResponse { ActorObservation actor = 1; }
+message UpdateActorResponse {
+  ActorObservation actor = 1;
+}
+message InspectActorRequest {
+  string actor_id = 1;
+}
+message InspectActorResponse {
+  ActorObservation actor = 1;
+}
 message AddSubscriptionRequest {
   string actor_id = 1;
   SubscriptionSpec subscription = 2;
   string idempotency_key = 3;
 }
-message AddSubscriptionResponse { ActorObservation actor = 1; }
+message AddSubscriptionResponse {
+  ActorObservation actor = 1;
+}
 message RemoveSubscriptionRequest {
   string actor_id = 1;
   string subscription_id = 2;
   string idempotency_key = 3;
 }
-message RemoveSubscriptionResponse { ActorObservation actor = 1; }
+message RemoveSubscriptionResponse {
+  ActorObservation actor = 1;
+}
 // Resumption may replay a previously delivered record and duplicate external effects.
 message ResumeSubscriptionRequest {
   string actor_id = 1;
   string subscription_id = 2;
   string idempotency_key = 3;
 }
-message ResumeSubscriptionResponse { ActorObservation actor = 1; }
+message ResumeSubscriptionResponse {
+  ActorObservation actor = 1;
+}
 message CheckpointActorRequest {
   string actor_id = 1;
   string idempotency_key = 2;
 }
-message CheckpointActorResponse { ActorObservation actor = 1; }
+message CheckpointActorResponse {
+  ActorObservation actor = 1;
+}
 message Header {
   string name = 1;
   string value = 2;

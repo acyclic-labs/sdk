@@ -93,6 +93,39 @@ impl Default for MemoryStream {
 }
 
 impl MemoryStream {
+    #[cfg(feature = "local")]
+    pub(crate) async fn recovery_limits(
+        &mut self,
+        live: MemoryLimits,
+        maximum_commands: usize,
+    ) -> Result<(), StreamError> {
+        let state = self.state.read().await;
+        // Old journals could admit new outcomes after timed eviction. Recovery
+        // retains every surviving snapshot outcome plus at most one outcome and
+        // envelope per bounded journal command. Live admission keeps its limits.
+        self.limits = MemoryLimits {
+            commits: state
+                .commits
+                .len()
+                .checked_add(maximum_commands)
+                .ok_or(StreamError::Capacity)?
+                .max(live.commits),
+            idempotency_results: state
+                .replays
+                .len()
+                .checked_add(maximum_commands)
+                .ok_or(StreamError::Capacity)?
+                .max(live.idempotency_results),
+            ..live
+        };
+        Ok(())
+    }
+
+    #[cfg(feature = "local")]
+    pub(crate) fn finish_recovery(&mut self, live: MemoryLimits) {
+        self.limits = live;
+    }
+
     /// Constructs one bounded independent provider.
     #[must_use]
     pub fn new(limits: MemoryLimits) -> Self {

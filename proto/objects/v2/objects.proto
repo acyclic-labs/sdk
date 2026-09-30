@@ -7,7 +7,9 @@ import "google/protobuf/timestamp.proto";
 option go_package = "github.com/acyclic-labs/sdk/go/gen/objects/v2;objectsv2";
 
 // Tenant-scoped logical bucket name. Placement and storage identities are private.
-message BucketRef { string name = 1; }
+message BucketRef {
+  string name = 1;
+}
 message Bucket {
   BucketRef bucket = 1;
   google.protobuf.Timestamp created_at = 2;
@@ -29,7 +31,9 @@ message Preconditions {
     string if_match = 2;
   }
 }
-message MutationIdentity { string idempotency_key = 1; }
+message MutationIdentity {
+  string idempotency_key = 1;
+}
 enum ObjectsLimit {
   OBJECTS_LIMIT_UNSPECIFIED = 0;
   OBJECTS_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES = 256;
@@ -46,10 +50,20 @@ message ObjectInfo {
   ObjectMetadata metadata = 3;
   google.protobuf.Timestamp last_modified = 4;
 }
-message CreateBucketRequest { string name = 1; MutationIdentity mutation = 2; }
-message HeadBucketRequest { BucketRef bucket = 1; }
-message DeleteBucketRequest { BucketRef bucket = 1; MutationIdentity mutation = 2; }
-message DeleteBucketResponse { bool existed = 1; }
+message CreateBucketRequest {
+  string name = 1;
+  MutationIdentity mutation = 2;
+}
+message HeadBucketRequest {
+  BucketRef bucket = 1;
+}
+message DeleteBucketRequest {
+  BucketRef bucket = 1;
+  MutationIdentity mutation = 2;
+}
+message DeleteBucketResponse {
+  bool existed = 1;
+}
 service BucketsService {
   rpc CreateBucket(CreateBucketRequest) returns (Bucket);
   rpc HeadBucket(HeadBucketRequest) returns (Bucket);
@@ -66,11 +80,21 @@ message PutObjectHeader {
 // Header first, bounded body frames, then complete=true and EOF. Missing completion
 // never publishes bytes, even if transport cancellation appears as a clean EOF.
 message PutObjectRequest {
-  oneof frame { PutObjectHeader header = 1; bytes body = 2; bool complete = 3; }
+  oneof frame {
+    PutObjectHeader header = 1;
+    bytes body = 2;
+    bool complete = 3;
+  }
 }
-message InclusiveRange { uint64 start = 1; optional uint64 end = 2; }
+message InclusiveRange {
+  uint64 start = 1;
+  optional uint64 end = 2;
+}
 message ByteRange {
-  oneof selection { InclusiveRange bytes = 1; uint64 suffix_length = 2; }
+  oneof selection {
+    InclusiveRange bytes = 1;
+    uint64 suffix_length = 2;
+  }
 }
 message GetObjectRequest {
   BucketRef bucket = 1;
@@ -79,12 +103,23 @@ message GetObjectRequest {
   string if_match = 4;
   string if_none_match = 5;
 }
-message ContentRange { uint64 start = 1; uint64 end = 2; uint64 total = 3; }
-message GetObjectHeader { ObjectInfo object = 1; ContentRange content_range = 2; }
+message ContentRange {
+  uint64 start = 1;
+  uint64 end = 2;
+  uint64 total = 3;
+}
+message GetObjectHeader {
+  ObjectInfo object = 1;
+  ContentRange content_range = 2;
+}
 // Exactly one metadata header first. The body belongs to that complete representation.
 // A terminal semantic error can follow the header when an HTTP stream is already open.
 message GetObjectResponse {
-  oneof frame { GetObjectHeader header = 1; bytes body = 2; ErrorDetail error = 3; }
+  oneof frame {
+    GetObjectHeader header = 1;
+    bytes body = 2;
+    ErrorDetail error = 3;
+  }
 }
 message HeadObjectRequest {
   BucketRef bucket = 1;
@@ -92,14 +127,18 @@ message HeadObjectRequest {
   string if_match = 3;
   string if_none_match = 4;
 }
-message HeadObjectResponse { ObjectInfo object = 1; }
+message HeadObjectResponse {
+  ObjectInfo object = 1;
+}
 message DeleteObjectRequest {
   BucketRef bucket = 1;
   string object_key = 2;
   Preconditions preconditions = 3;
   MutationIdentity mutation = 4;
 }
-message DeleteObjectResponse { bool existed = 1; }
+message DeleteObjectResponse {
+  bool existed = 1;
+}
 // Lexicographic S3 ListObjectsV2 traversal of an eventual listing, never a captured view.
 // Concurrent insertions before the cursor can be missed. Tokens are opaque and query-bound.
 message ListObjectsRequest {
@@ -109,7 +148,10 @@ message ListObjectsRequest {
   uint32 page_size = 4;
   string continuation_token = 5;
 }
-message ListEntry { string object_key = 1; ObjectInfo object = 2; }
+message ListEntry {
+  string object_key = 1;
+  ObjectInfo object = 2;
+}
 message ListObjectsResponse {
   repeated ListEntry entries = 1;
   repeated string common_prefixes = 2;
@@ -130,7 +172,9 @@ message CreateMultipartRequest {
   ObjectMetadata metadata = 3;
   MutationIdentity mutation = 4;
 }
-message MultipartUpload { string upload_id = 1; }
+message MultipartUpload {
+  string upload_id = 1;
+}
 message UploadPartHeader {
   BucketRef bucket = 1;
   string object_key = 2;
@@ -140,9 +184,17 @@ message UploadPartHeader {
 }
 message UploadPartRequest {
   // Same header/body/complete=true/EOF discipline as PutObjectRequest.
-  oneof frame { UploadPartHeader header = 1; bytes body = 2; bool complete = 3; }
+  oneof frame {
+    UploadPartHeader header = 1;
+    bytes body = 2;
+    bool complete = 3;
+  }
 }
-message UploadedPart { uint32 part_number = 1; string etag = 2; uint64 size = 3; }
+message UploadedPart {
+  uint32 part_number = 1;
+  string etag = 2;
+  uint64 size = 3;
+}
 message ListPartsRequest {
   BucketRef bucket = 1;
   string object_key = 2;
@@ -171,7 +223,9 @@ message AbortMultipartRequest {
   string upload_id = 3;
   MutationIdentity mutation = 4;
 }
-message AbortMultipartResponse { bool existed = 1; }
+message AbortMultipartResponse {
+  bool existed = 1;
+}
 service MultipartService {
   rpc CreateMultipart(CreateMultipartRequest) returns (MultipartUpload);
   rpc UploadPart(stream UploadPartRequest) returns (UploadedPart);
@@ -194,4 +248,7 @@ enum ErrorCode {
   ERROR_CODE_NOT_MODIFIED = 11;
 }
 // Customer diagnostic identity; operator topology stays in protected evidence.
-message ErrorDetail { ErrorCode code = 1; string request_id = 2; }
+message ErrorDetail {
+  ErrorCode code = 1;
+  string request_id = 2;
+}

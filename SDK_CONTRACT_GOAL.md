@@ -584,3 +584,45 @@ that Cloud mounts canonical tonic services but lacks the canonical SDK JSON
 routes/watch NDJSON. A descriptor-backed bounded native protobuf-JSON route
 codec in acyclic-inference is an SDK dependency; Cloud will dispatch its decoded
 messages into the same service handlers. No HTTP deployment acceptance is claimed.
+
+### Stream review fixes and durable recovery
+
+Both Rust and TypeScript HTTP reads validate the monotonic tail before reading,
+preventing append-after-empty-response cursor reclassification. Successful HTTP
+Commit responses now carry the admitted immutable envelope alongside existing
+compact fields; Rust uses it without a follow-up read. Local native HTTP tests
+prove commit-only authorization succeeds and replays while commits/read is denied.
+Published compact-only servers retain their documented read-access requirement.
+Data confirms its canonical service will emit full outcomes without that legacy
+server path and validate read cursors in a coherent authority view.
+
+`http_response::encode` exposes the same Rust response projection to native
+service consumers and WASM, without requiring transport features. Core-only
+external tests cover atomic envelope, exact uint64 timestamps, output bounds,
+malformed nested IDs and absent observations. Protobuf descriptors are unchanged.
+
+A legacy snapshot at receipt/envelope capacity followed by an intact post-expiry
+journal command reproduces Capacity under ordinary old recovery admission.
+Recovery now allows a finite inventory of surviving snapshot outcomes plus bounded
+journal commands, then restores live limits. The regression preserves both
+outcomes/history, refuses fresh admission at capacity, and reopens after snapshot
+compaction. No receipt eviction, public deletion or history removal is added.
+
+All 64 Stream Rust unit tests and two external tests pass (one optional scaling
+benchmark ignored); strict native all-target and WASM Clippy pass. All 45 Stream
+TypeScript tests pass, and the full contract runner and Chrome qualification pass.
+Remaining canonical Objects/FS migration, repository/package qualification,
+merge/publication and coordinated service dependencies keep the Goal active.
+
+The next Linux failure was reproduced with `bun x buf format -d --exit-code`:
+Actors, Workers and Objects v2 had single-line messages outside canonical Buf
+format. Formatting, binding regeneration, metadata and full generated checks
+pass locally. Comparing FileDescriptorSet after dropping sourceCodeInfo proves
+all three wire descriptors unchanged; raw source-location digests changed.
+Actors descriptor is 70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c;
+Workers is 851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8;
+Objects v2 is 21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b.
+Installed tarball smoke passes for all ten workspace packages (nine release
+packages and one workspace-only package), with Bun/Node imports and strict
+declarations. A Buf git-ref comparison could not clone the local partial Git
+object store; direct canonical descriptor comparison provides semantic evidence.
