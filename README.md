@@ -46,13 +46,15 @@ until their family version is published and tagged.
   follow, and atomic optimistic commits. The memory and local providers execute
   the same semantic state machine; the local feature adds only bounded durable
   publication and recovery.
-- An Objects v1 Rust gRPC client plus bounded memory and durable-local providers
-  with permanent versions, BLAKE3 validators, delete markers, conditions, exact
-  idempotency, stable listing views, multipart publication, and whole-bucket
-  snapshots/forks. Local bodies use authenticated digest-sharded chunks;
-  range reads touch only intersecting chunks and shared bodies are never copied.
+- An Objects v2 logical current-key contract with Rust and TypeScript gRPC/HTTP
+  clients, conditions, exact retry receipts, bounded listing and multipart
+  publication. Native memory and durable-local providers share one state machine;
+  local recovery authenticates inline small bodies and immutable larger bodies,
+  with grouped native batches and private compaction. Existing durable Filesystem
+  roots still use the legacy Objects provider pending their migration.
 - Candidate Actors v1 and Workers v1 public contracts with Rust validation,
-  generated TypeScript message types, and authenticated HTTP clients. Their
+  generated TypeScript message types, and authenticated Rust and Node/Bun
+  TypeScript gRPC and HTTP clients. Their
   Cloud service routes require separate qualification before hosted use.
 - An Inference v1 Rust client with immutable item-addressed Context revisions,
   independent forks, exact edit/compact/transfer, recoverable Runs, inclusive

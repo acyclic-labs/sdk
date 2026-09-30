@@ -22,14 +22,12 @@ async fn collection_retains_replacement_and_original_retry_receipt_across_reopen
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let provider = seeded(root.path()).await?;
-    let original = provider
-        .put(put("value"), Bytes::from_static(b"before"))
-        .await?;
+    let before_body = Bytes::from(vec![b'b'; 65_537]);
+    let after_body = Bytes::from(vec![b'a'; 65_537]);
+    let original = provider.put(put("value"), before_body.clone()).await?;
     let mut replacement = put("value");
     replacement.mutation = identity("replacement");
-    provider
-        .put(replacement, Bytes::from_static(b"after"))
-        .await?;
+    provider.put(replacement, after_body.clone()).await?;
     let before = segments(root.path())?;
     assert_eq!(before.len(), 2);
     assert!(matches!(
@@ -47,16 +45,8 @@ async fn collection_retains_replacement_and_original_retry_receipt_across_reopen
     assert_eq!(segments(root.path())?.len(), 1);
     drop(provider);
     let provider = create(root.path()).await?;
-    assert_eq!(
-        provider
-            .put(put("value"), Bytes::from_static(b"before"))
-            .await?,
-        original
-    );
-    assert_eq!(
-        provider.get(get("value"), 5).await?.body,
-        Bytes::from_static(b"after")
-    );
+    assert_eq!(provider.put(put("value"), before_body).await?, original);
+    assert_eq!(provider.get(get("value"), 65_537).await?.body, after_body);
     Ok(())
 }
 
@@ -128,13 +118,13 @@ async fn corrupt_retained_body_stops_collection_before_any_deletion()
     let root = tempfile::tempdir()?;
     let provider = seeded(root.path()).await?;
     provider
-        .put(put("value"), Bytes::from_static(b"before"))
+        .put(put("value"), Bytes::from(vec![b'b'; 65_537]))
         .await?;
     let old = segments(root.path())?;
     let mut replacement = put("value");
     replacement.mutation = identity("replacement");
     provider
-        .put(replacement, Bytes::from_static(b"after"))
+        .put(replacement, Bytes::from(vec![b'a'; 65_537]))
         .await?;
     let all = segments(root.path())?;
     let live = all.difference(&old).next().ok_or("missing live segment")?;
@@ -155,7 +145,7 @@ async fn collection_waits_for_an_admitted_physical_read_lease()
     let root = tempfile::tempdir()?;
     let provider = seeded(root.path()).await?;
     provider
-        .put(put("deleted"), Bytes::from_static(b"retained for reader"))
+        .put(put("deleted"), Bytes::from(vec![b'a'; 65_537]))
         .await?;
     let lease = provider.body_io.clone().read_owned().await;
     provider
@@ -175,5 +165,31 @@ async fn collection_waits_for_an_admitted_physical_read_lease()
     assert_eq!(segments(root.path())?.len(), 1);
     drop(lease);
     assert_eq!(task.await??.segments_removed, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn dominant_inline_bytes_trigger_owned_maintenance_after_reopen()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let provider = seeded(root.path()).await?;
+    let body = Bytes::from(vec![42; 1024]);
+    let first = provider.put(put("first"), body.clone()).await?;
+    assert!(segments(root.path())?.is_empty());
+    assert!(provider.core.local_maintenance_due()?);
+    drop(provider);
+    let provider = create(root.path()).await?;
+    assert!(provider.core.local_maintenance_due()?);
+    provider.put(put("second"), body.clone()).await?;
+    assert_eq!(segments(root.path())?.len(), 1);
+    let before = segments(root.path())?;
+    assert!(provider.put_batch(Vec::new()).await.is_empty());
+    assert!(provider.get_batch(Vec::new()).await.is_empty());
+    assert_eq!(segments(root.path())?, before);
+    assert_eq!(provider.put(put("first"), body.clone()).await?, first);
+    drop(provider);
+    let provider = create(root.path()).await?;
+    assert_eq!(provider.get(get("first"), 1024).await?.body, body);
+    assert_eq!(provider.get(get("second"), 1024).await?.body, body);
     Ok(())
 }

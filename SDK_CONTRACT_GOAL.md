@@ -2,6 +2,40 @@
 
 Status: active; local transport work is incomplete and PR 223 is unmerged.
 
+## Private v2 inline durability and grouped batches (2026-09-30)
+
+Bodies up to 64 KiB now live inside the authenticated private journal frame;
+larger bodies retain the existing immutable segment format. Replay binds each
+inline reference to authenticated bytes and checks complete payload coverage.
+Incomplete final frames recover the previous state; complete corrupt frames
+fail closed. Existing segment-only v2 records remain readable. Public schemas
+and descriptor digests are unchanged.
+
+Native put batches stage the canonical logical operations in order and publish
+up to eight successful writes per durable append. Validation and quota failures
+remain per item; uncertain durability poisons later admissions until reopen.
+Collection first authenticates and relocates live inline bodies into immutable
+segments, then replaces the journal with the existing durable checkpoint.
+Mutation admission triggers this maintenance when inline bytes dominate the
+journal, including after reopen. Empty batches do no maintenance or I/O.
+
+Final local qualification passed: 97 Objects and 24 Conformance unit tests,
+integration/binary/documentation checks, strict all-feature/all-target Clippy,
+complete generated verification, metadata and RPC matrix checks. New tests cover
+the zero/64-KiB placement boundaries, every incomplete inline frame cut, an
+authenticated checksum with invalid body binding, grouped batches and independent
+failures, overwritten exact retry receipts, and automatic maintenance after
+reopen. The segment-reclamation fixtures use bodies above the inline threshold.
+No tests were suppressed; the existing optional local latency test stays ignored.
+
+Commands use the same D: target/tmp and Windows target as the preceding unit;
+logs are `D:/codex-sdk-162e-qualification-20260930/sdk-v2-inline-*.log`.
+The RPC matrix still reports 38 target and 17 pending legacy RPCs. The frozen
+`managed-agents/` tree has no diff. State cloning/scanning and inline relocation
+have no new throughput guarantee. Native filesystem root migration, active v1
+retirement, the breaking package version transition and required CI failure
+diagnosis remain. PR 223 is unmerged; live acceptance and publication are unproven.
+
 ## Private v2 collection and journal checkpoints (2026-09-30)
 
 Native v2 now owns a shared physical-I/O lease across all reads, native batches

@@ -63,6 +63,8 @@ struct Delta {
     parts: Vec<PartChange>,
     #[prost(message, repeated, tag = "7")]
     receipts: Vec<ReceiptChange>,
+    #[prost(bytes = "vec", tag = "8")]
+    inline_data: Vec<u8>,
 }
 #[derive(Clone, PartialEq, prost::Message)]
 struct BucketChange {
@@ -127,12 +129,15 @@ struct BodyRecord {
     length: u64,
     #[prost(fixed64, tag = "4")]
     offset: u64,
+    #[prost(bool, tag = "5")]
+    journal: bool,
 }
 
 struct Tail {
     file: File,
     bytes: u64,
     operations: u64,
+    inline_bytes: u64,
 }
 pub(super) struct Journal {
     root: PathBuf,
@@ -151,6 +156,7 @@ pub(super) struct Journal {
 }
 
 mod checkpoint;
+mod inline;
 
 #[cfg(test)]
 mod tests;
@@ -182,19 +188,27 @@ fn corrupt<T>(_: T) -> LocalOpenError {
 }
 
 impl MemoryObjects {
+    pub(in crate::v2) fn local_maintenance_due(&self) -> Result<bool, Error> {
+        let _state = self.lock_state()?;
+        let journal = self.journal.as_ref().ok_or(Error::from(Unavailable))?;
+        let tail = journal.tail.lock().map_err(|_| Error::from(Unavailable))?;
+        Ok(tail.inline_bytes > tail.bytes.saturating_sub(tail.inline_bytes))
+    }
     pub(in crate::v2) fn collect_local_garbage(
         &self,
         maximum_candidates: u64,
     ) -> Result<crate::LocalObjectsGarbageCollection, LocalOpenError> {
-        let state = self.lock_state().map_err(|_| LocalOpenError::Unavailable)?;
+        let mut state = self.lock_state().map_err(|_| LocalOpenError::Unavailable)?;
         let journal = self.journal.as_ref().ok_or(LocalOpenError::Unavailable)?;
+        let mut next = state.clone();
+        journal.materialize_inline(&mut next)?;
         let mut references = BTreeSet::new();
-        for bucket in state.buckets.values() {
+        for bucket in next.buckets.values() {
             for object in bucket.objects.values() {
                 object.body.local_references(&mut references);
             }
         }
-        for upload in state.uploads.values() {
+        for upload in next.uploads.values() {
             for (_, body) in upload.parts.values() {
                 body.local_references(&mut references);
             }
@@ -213,7 +227,8 @@ impl MemoryObjects {
             crate::LocalObjectsError::AlreadyOwned => LocalOpenError::AlreadyOwned,
             crate::LocalObjectsError::Unavailable => LocalOpenError::Unavailable,
         })?;
-        report.journal_bytes_reclaimed = journal.compact(&state)?;
+        report.journal_bytes_reclaimed = journal.compact(&next)?;
+        *state = next;
         Ok(report)
     }
 }
@@ -256,7 +271,7 @@ pub(crate) fn open(
         .write(true)
         .open(root.join("mutations.log"))?;
     let header = load_header(&mut file, &root, limits)?;
-    let (state, operations) = replay(&mut file, &root, options, limits)?;
+    let (state, operations, inline_bytes) = replay(&mut file, &root, options, limits)?;
     let bytes = file.stream_position()?;
     let mut references = BTreeSet::new();
     for bucket in state.buckets.values() {
@@ -276,6 +291,7 @@ pub(crate) fn open(
         state: Arc::new(Mutex::new(state)),
         options,
         token_key: Arc::new(Mutex::new(Some(key))),
+        defer_local: false,
         journal: Some(Arc::new(Journal {
             root,
             limits,
@@ -284,6 +300,7 @@ pub(crate) fn open(
                 file,
                 bytes,
                 operations,
+                inline_bytes,
             }),
             poisoned: AtomicBool::new(false),
             _owner: owner,
@@ -359,9 +376,11 @@ fn replay(
     root: &Path,
     options: MemoryOptions,
     limits: LocalObjectsLimits,
-) -> Result<(State, u64), LocalOpenError> {
+) -> Result<(State, u64, u64), LocalOpenError> {
     let mut state = State::default();
     let mut operations = 0;
+    let mut inline_bytes = 0;
+    let mut inline_bodies = BTreeMap::new();
     let end = file.metadata()?.len();
     if end > limits.maximum_journal_bytes {
         return Err(LocalOpenError::Corrupt);
@@ -369,11 +388,12 @@ fn replay(
     loop {
         let start = file.stream_position()?;
         if start == end {
-            return Ok((state, operations));
+            return Ok((state, operations, inline_bytes));
         }
         let mut prefix = [0; 36];
         if let Err(error) = file.read_exact(&mut prefix) {
-            return repair_tail(file, start, error, limits).map(|()| (state, operations));
+            return repair_tail(file, start, error, limits)
+                .map(|()| (state, operations, inline_bytes));
         }
         let size = u32::from_le_bytes(
             prefix
@@ -387,7 +407,8 @@ fn replay(
         }
         let mut encoded = vec![0; size];
         if let Err(error) = file.read_exact(&mut encoded) {
-            return repair_tail(file, start, error, limits).map(|()| (state, operations));
+            return repair_tail(file, start, error, limits)
+                .map(|()| (state, operations, inline_bytes));
         }
         if blake3::hash(&encoded).as_bytes().as_slice()
             != prefix.get(4..).ok_or(LocalOpenError::Corrupt)?
@@ -401,6 +422,8 @@ fn replay(
         {
             return Err(LocalOpenError::Corrupt);
         }
+        inline::authenticate(&delta, start, &encoded, &mut inline_bodies)?;
+        inline_bytes = inline_bytes.saturating_add(delta.inline_data.len() as u64);
         apply(&mut state, delta, root, options, limits)?;
         operations += 1;
     }
@@ -421,6 +444,27 @@ fn repair_tail(
 }
 
 impl Journal {
+    pub(super) fn validate_bodies(&self, state: &State) -> Result<(), Error> {
+        let bodies = state
+            .buckets
+            .values()
+            .flat_map(|bucket| bucket.objects.values())
+            .map(|object| &object.body)
+            .chain(
+                state
+                    .uploads
+                    .values()
+                    .flat_map(|upload| upload.parts.values())
+                    .map(|(_, body)| body),
+            );
+        if bodies
+            .into_iter()
+            .any(|body| body.len() as u64 > self.limits.maximum_object_bytes)
+        {
+            return Err(QuotaExceeded.into());
+        }
+        Ok(())
+    }
     pub(super) fn check(&self) -> Result<(), Error> {
         if self.poisoned.load(Ordering::Acquire) {
             Err(Unavailable.into())
@@ -434,20 +478,24 @@ impl Journal {
         if tail.operations >= self.limits.maximum_journal_operations {
             return Err(QuotaExceeded.into());
         }
+        let mut inline_data = Vec::new();
         for bucket in next.buckets.values_mut() {
             for object in bucket.objects.values_mut() {
                 if object.body.len() as u64 > self.limits.maximum_object_bytes {
                     return Err(QuotaExceeded.into());
                 }
-                object.body = self.external(&object.body)?;
+                object.body = self.prepare_inline(&object.body, &mut inline_data)?;
             }
         }
         for upload in next.uploads.values_mut() {
             for (_, body) in upload.parts.values_mut() {
-                *body = self.external(body)?;
+                *body = self.prepare_inline(body, &mut inline_data)?;
             }
         }
-        let record = difference(before, next, tail.operations + 1)?.encode_to_vec();
+        let mut delta = difference(before, next, tail.operations + 1)?;
+        delta.inline_data = inline_data;
+        inline::place(&mut delta, next, tail.bytes)?;
+        let record = delta.encode_to_vec();
         let end = tail
             .bytes
             .checked_add(36 + record.len() as u64)
@@ -469,6 +517,9 @@ impl Journal {
         }
         tail.bytes = end;
         tail.operations += 1;
+        tail.inline_bytes = tail
+            .inline_bytes
+            .saturating_add(delta.inline_data.len() as u64);
         Ok(())
     }
     fn external(&self, body: &StoredBody) -> Result<StoredBody, Error> {
@@ -545,6 +596,22 @@ fn bodies(body: &StoredBody) -> Result<Vec<BodyRecord>, Error> {
                     digest: digest.to_vec(),
                     length: *length as u64,
                     offset: *offset,
+                    journal: false,
+                });
+                Ok(())
+            }
+            StoredBody::Local {
+                digest,
+                length,
+                location: LocalBodyLocation::Journal { offset },
+                ..
+            } => {
+                out.push(BodyRecord {
+                    segment: Vec::new(),
+                    digest: digest.to_vec(),
+                    length: *length as u64,
+                    offset: *offset,
+                    journal: true,
                 });
                 Ok(())
             }
@@ -678,16 +745,24 @@ fn restore_body(
     for value in records {
         let count = usize::try_from(value.length).map_err(corrupt)?;
         length = length.checked_add(count).ok_or(LocalOpenError::Corrupt)?;
-        if value.offset < 68 {
+        if value.offset < 68
+            || value.journal && (count > inline::LIMIT || !value.segment.is_empty())
+        {
             return Err(LocalOpenError::Corrupt);
         }
         leaves.push(StoredBody::Local {
             root: Arc::new(root.to_path_buf()),
             digest: value.digest.as_slice().try_into().map_err(corrupt)?,
             length: count,
-            location: LocalBodyLocation::Segment {
-                id: value.segment.as_slice().try_into().map_err(corrupt)?,
-                offset: value.offset,
+            location: if value.journal {
+                LocalBodyLocation::Journal {
+                    offset: value.offset,
+                }
+            } else {
+                LocalBodyLocation::Segment {
+                    id: value.segment.as_slice().try_into().map_err(corrupt)?,
+                    offset: value.offset,
+                }
             },
         });
     }

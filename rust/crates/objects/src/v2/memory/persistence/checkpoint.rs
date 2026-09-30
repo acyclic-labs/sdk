@@ -56,6 +56,7 @@ impl Journal {
         self.checkpoint_fault(4)?;
         tail.bytes = output.bytes;
         tail.operations = output.operations;
+        tail.inline_bytes = 0;
         Ok(reclaimed)
     }
 

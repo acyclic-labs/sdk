@@ -5,7 +5,7 @@ fn bucket() -> Option<wire::BucketRef> {
         name: "recovery".into(),
     })
 }
-fn put(key: &str) -> wire::PutObjectHeader {
+pub(super) fn put(key: &str) -> wire::PutObjectHeader {
     wire::PutObjectHeader {
         bucket: bucket(),
         object_key: key.into(),
@@ -15,17 +15,17 @@ fn put(key: &str) -> wire::PutObjectHeader {
         ..Default::default()
     }
 }
-fn get(key: &str) -> wire::GetObjectRequest {
+pub(super) fn get(key: &str) -> wire::GetObjectRequest {
     wire::GetObjectRequest {
         bucket: bucket(),
         object_key: key.into(),
         ..Default::default()
     }
 }
-fn reopen(root: &Path) -> Result<MemoryObjects, LocalOpenError> {
+pub(super) fn reopen(root: &Path) -> Result<MemoryObjects, LocalOpenError> {
     open(root.to_path_buf(), LocalObjectsLimits::default(), None)
 }
-async fn seeded(root: &Path) -> Result<MemoryObjects, Box<dyn std::error::Error>> {
+pub(super) async fn seeded(root: &Path) -> Result<MemoryObjects, Box<dyn std::error::Error>> {
     let core = reopen(root)?;
     core.create_bucket(wire::CreateBucketRequest {
         name: "recovery".into(),

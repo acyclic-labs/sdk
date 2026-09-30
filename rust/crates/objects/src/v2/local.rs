@@ -56,6 +56,11 @@ impl LocalObjects {
         &self,
         action: impl FnOnce(&MemoryObjects) -> Result<T, Error> + Send + 'static,
     ) -> Result<T, Error> {
+        if self.core.local_maintenance_due()? {
+            self.collect_garbage(u64::MAX)
+                .await
+                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
+        }
         let core = self.core.clone();
         let lease = self.body_io.clone().read_owned().await;
         acyclic_native_runtime::run_blocking_io(move || {
@@ -189,6 +194,9 @@ impl NativeBatchObjects for LocalObjects {
         requests: Vec<(wire::PutObjectHeader, Bytes)>,
     ) -> Vec<Result<wire::ObjectInfo, Error>> {
         let count = requests.len();
+        if count == 0 {
+            return Vec::new();
+        }
         self.mutate(move |core| Ok(block_on(core.put_batch(requests))))
             .await
             .unwrap_or_else(|error| vec![Err(error); count])
@@ -198,6 +206,9 @@ impl NativeBatchObjects for LocalObjects {
         requests: Vec<(wire::GetObjectRequest, u64)>,
     ) -> Vec<Result<Object, Error>> {
         let count = requests.len();
+        if count == 0 {
+            return Vec::new();
+        }
         let core = self.core.clone();
         let body_io = self.body_io.clone();
         tokio::spawn(async move {

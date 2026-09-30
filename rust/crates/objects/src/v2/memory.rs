@@ -40,6 +40,8 @@ pub struct MemoryObjects {
     token_key: Arc<Mutex<Option<[u8; 32]>>>,
     #[cfg(feature = "local")]
     journal: Option<Arc<persistence::Journal>>,
+    #[cfg(feature = "local")]
+    defer_local: bool,
 }
 #[derive(Clone, Default)]
 struct State {
@@ -113,6 +115,8 @@ impl MemoryObjects {
                 token_key: Arc::new(Mutex::new(None)),
                 #[cfg(feature = "local")]
                 journal: None,
+                #[cfg(feature = "local")]
+                defer_local: false,
             },
             bucket,
         )
@@ -160,6 +164,8 @@ impl MemoryObjects {
             token_key: Arc::new(Mutex::new(Some(token_key))),
             #[cfg(feature = "local")]
             journal: None,
+            #[cfg(feature = "local")]
+            defer_local: false,
         })
     }
 
@@ -240,10 +246,55 @@ impl MemoryObjects {
         }
         #[cfg(feature = "local")]
         if let Some(journal) = &self.journal {
-            journal.commit(guard, &mut next)?;
+            if self.defer_local {
+                journal.validate_bodies(&next)?;
+            } else {
+                journal.commit(guard, &mut next)?;
+            }
         }
         *guard = next;
         Ok(response)
+    }
+
+    #[cfg(feature = "local")]
+    fn put_durable_batch_locked(
+        &self,
+        state: &mut State,
+        requests: Vec<(wire::PutObjectHeader, Bytes)>,
+    ) -> Vec<Result<wire::ObjectInfo, Error>> {
+        let mut staged = self.clone();
+        staged.defer_local = true;
+        let mut input = requests.into_iter().peekable();
+        let mut results = Vec::with_capacity(input.len());
+        while input.peek().is_some() {
+            // Eight maximal inline bodies and their bounded canonical metadata
+            // fit one private record; larger bodies use segment references.
+            let mut next = state.clone();
+            let batch = input
+                .by_ref()
+                .take(8)
+                .map(|(query, body)| staged.put_locked(&mut next, &query, body))
+                .collect::<Vec<_>>();
+            if next.sequence == state.sequence {
+                results.extend(batch);
+                continue;
+            }
+            let committed = self
+                .journal
+                .as_ref()
+                .ok_or(Error::from(Unavailable))
+                .and_then(|journal| journal.commit(state, &mut next));
+            match committed {
+                Ok(()) => {
+                    *state = next;
+                    results.extend(batch);
+                }
+                Err(error) => {
+                    results.extend(batch.into_iter().map(|result| result.and(Err(error))));
+                }
+            }
+        }
+        results
     }
 
     fn put_locked(
@@ -507,6 +558,10 @@ impl NativeBatchObjects for MemoryObjects {
         let Ok(mut state) = self.lock_state() else {
             return vec![Err(Unavailable.into()); requests.len()];
         };
+        #[cfg(feature = "local")]
+        if self.journal.is_some() {
+            return self.put_durable_batch_locked(&mut state, requests);
+        }
         requests
             .into_iter()
             .map(|(query, body)| self.put_locked(&mut state, &query, body))

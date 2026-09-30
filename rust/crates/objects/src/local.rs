@@ -2972,7 +2972,7 @@ pub(crate) fn hash_body_at(
 
 /// Reads one whole journal-resident body and proves it matches its digest. Inline bodies are
 /// small, so every read of one, ranged or not, is authenticated.
-fn read_journal_body(
+pub(crate) fn read_journal_body(
     journal: &File,
     offset: u64,
     expected_digest: &[u8; 32],
