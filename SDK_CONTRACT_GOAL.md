@@ -669,3 +669,50 @@ mount group also passed all 25 tests. The CI failure is not reproduced or fixed
 by these results. Full workspace all-feature Linux qualification remains to be
 revalidated before updating or merging the PR. No managed-agents changes exist
 in the local diff or the PR diff against current main.
+
+### First Objects v2 filesystem consumer migration
+
+The WASM memory filesystem now composes the canonical v2 memory provider through
+`LogicalObjectStore`, retaining filesystem digest identity, immutable IfAbsent
+publication, configured object/memory bounds and the existing capacity error.
+Native batches use the explicit capability rather than remote endpoint loops.
+Collected bytes cannot be answered by a stale mutation receipt. Reads verify
+content; contains charges actual fetched/hashed bytes, and batch read budgets
+admit known work before calling the provider. The adapter owns no durable state.
+
+All three external filesystem v2 tests pass, covering ordered/deduplicated
+batches, backend accounting, pre-admission bounds/cancellation, substituted
+content and republishing collected bytes. Commands: `cargo test -p acyclic-fs
+--locked --target x86_64-pc-windows-msvc --test logical_objects`, matching strict
+Clippy, and strict WASM Clippy for acyclic-fs-wasm. The FS package was rebuilt;
+Node and Bun memory composition, type checks and an isolated installed tarball
+consumer pass. Chrome browser-smoke now explicitly runs memory workspace
+composition, alongside IndexedDB/OPFS and the existing multi-window checks.
+The complete `bun run check:generated` check also passes after this rebuild.
+Native filesystem memory/simulation and the durable local Objects engine still
+use v1; SDK root/default clients also remain a migration dependency.
+
+Full local Linux workspace/all-feature native mount qualification passed all
+25 selected native mount tests using `cargo test --workspace --all-features
+--locked --lib --target x86_64-unknown-linux-gnu -- --ignored --test-threads=1
+native_mount::` in WSL Ubuntu with /dev/fuse. This does not explain or fix the
+required CI Linux failure. Windows/macOS and policy passed at PR head 260df90f;
+the aggregate SDK gate remains failed because of Linux.
+
+Inference owner commit 12b0a9417 consumes SDK 260df90f with host/http-codec and
+reports 17 local service tests (real Qwen/CUDA), strict Clippy and canonical HTTP
+routes/watch through the existing authority handlers. Evaluations remain
+explicitly unsupported. Owner commit c7c0f2e57 also proves the actual TypeScript
+InferenceClient/HttpInferenceTransport and shipped WASM validator against the
+local service, including same-Run watch disconnect/resume without cancellation.
+The fixture rewrites its HTTPS origin to loopback HTTP; public TLS and package
+distribution are not established. Local Inference artifact hashes are
+dist/index.js 73b73b2343e319fb6e37427e711d2e2145219ba05ed387f7be94df886897af16
+and WASM 5f89e8e4512b26db9f77a0384b3cddd713d8ccadf8411cb87d8b1b75bb1cfbb9;
+Inference source remains 260df90f (d78acc0 changes only Objects batching/evidence).
+Negative failed warm-admission/cancellation receipts remain an exact contract gap.
+
+Billing PR1323 merged c67f0a04528340228c263cad9872b0a8c56c73d5, reporting canonical
+decimal bounds, provenance and native signed fixture evidence. SDK logical meter
+units/pricing are still unagreed. No schema interpretation or physical cache-time
+meter is inferred. Data/integrator own the Streams-first native integration.

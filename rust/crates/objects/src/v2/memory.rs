@@ -67,6 +67,35 @@ struct Receipt {
 }
 
 impl MemoryObjects {
+    /// Synchronously admits one bucket for a native SDK composition.
+    ///
+    /// # Errors
+    /// Rejects invalid names, unavailable entropy/time or insufficient entry capacity.
+    pub fn with_bucket(
+        name: impl Into<String>,
+        options: MemoryOptions,
+    ) -> Result<(Self, wire::BucketRef), Error> {
+        let name = name.into();
+        request::bucket_name(&name)?;
+        let provider = Self::new(options)?;
+        let bucket = wire::BucketRef { name: name.clone() };
+        provider.mutate([0; 32], &None, |state| {
+            let info = wire::Bucket {
+                bucket: Some(bucket.clone()),
+                created_at: Some(timestamp()?),
+            };
+            state.buckets.insert(
+                name,
+                Bucket {
+                    info: info.clone(),
+                    objects: BTreeMap::new(),
+                },
+            );
+            Ok(info)
+        })?;
+        Ok((provider, bucket))
+    }
+
     /// Creates a provider with explicit limits and independently authenticated cursors.
     pub fn new(options: MemoryOptions) -> Result<Self, Error> {
         if options.maximum_entries == 0 {

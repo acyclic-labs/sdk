@@ -5,6 +5,8 @@ import {
   openBrowserFs,
   portableVolumeOptions,
 } from "../dist/browser.js";
+import { openMemoryFs } from "../dist/memory.js";
+import { exerciseWorkspace } from "./workspace-composition.mjs";
 
 const result = document.querySelector("#result");
 
@@ -13,6 +15,16 @@ function assert(condition, message) {
 }
 
 async function run() {
+  const memory = await openMemoryFs({
+    maximumObjectBytes: 1024 * 1024,
+    maximumMemoryBytes: 64 * 1024 * 1024,
+    objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
+  });
+  try {
+    await exerciseWorkspace(memory);
+  } finally {
+    memory.close();
+  }
   const suffix = `${Date.now()}-${crypto.randomUUID()}`;
   const source = await openBrowserFs({
     databaseName: `acyclic-fs-smoke-source-${suffix}`,
@@ -313,6 +325,7 @@ async function run() {
   result.dataset.status = "passed";
   result.textContent = JSON.stringify({
     status: "passed",
+    memoryWorkspace: "passed",
     sourceAuthority: reopened.capabilities.authority,
     sourceObjects: reopened.capabilities.immutableObjects,
     exportedObjects: manifest.objects.length,

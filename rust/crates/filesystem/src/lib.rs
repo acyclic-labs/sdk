@@ -76,6 +76,10 @@ pub mod demand;
 #[cfg(feature = "distributed")]
 pub mod distributed;
 #[cfg(feature = "distributed")]
+mod logical_objects;
+#[cfg(feature = "distributed")]
+pub use logical_objects::LogicalObjectStore;
+#[cfg(feature = "distributed")]
 mod distributed_fs;
 pub mod facade;
 pub mod foundation;
