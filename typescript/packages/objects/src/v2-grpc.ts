@@ -3,7 +3,13 @@ import { createClient, Code, ConnectError, type Interceptor } from "@connectrpc/
 import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
 import { BucketsService, ObjectsService, MultipartService } from "../generated/proto/objects/v2/objects_pb.js";
-import type { ObjectsGrpcOptions } from "./grpc.js";
+/** Node/Bun transport configuration for the logical Objects service. */
+export interface ObjectsV2GrpcOptions {
+  readonly endpoint: string;
+  readonly token: string;
+  readonly caCertificate?: string;
+  readonly maximumMessageBytes?: number;
+}
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
 import { validate_objects_v2_get_header, validate_objects_v2_request, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
@@ -18,7 +24,7 @@ function grpcError(error: unknown): ObjectsV2Error {
 }
 
 /** Complete Node/Bun clients, including client-streaming PUT/parts and server-streaming GET. */
-export function createObjectsV2GrpcClients(options: ObjectsGrpcOptions) {
+export function createObjectsV2GrpcClients(options: ObjectsV2GrpcOptions) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
   if (!options.token.trim() || new TextEncoder().encode(options.token).byteLength > 8192 || /[\r\n\0]/.test(options.token)) throw new TypeError("invalid bearer token");
@@ -39,7 +45,7 @@ export function createObjectsV2GrpcClients(options: ObjectsGrpcOptions) {
 /** Rust-validated provider with buffered operations and bounded streamed uploads. */
 export class GrpcObjectsV2 extends ObjectsV2Provider {
   private readonly clients: ReturnType<typeof createObjectsV2GrpcClients>;
-  constructor(options: ObjectsGrpcOptions, private readonly maximumResponseBytes = 64 * 1024 * 1024) {
+  constructor(options: ObjectsV2GrpcOptions, private readonly maximumResponseBytes = 64 * 1024 * 1024) {
     super();
     if (!Number.isSafeInteger(maximumResponseBytes) || maximumResponseBytes < 1) throw new RangeError("invalid response bound");
     this.clients = createObjectsV2GrpcClients(options);

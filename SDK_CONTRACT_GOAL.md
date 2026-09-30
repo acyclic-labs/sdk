@@ -484,3 +484,41 @@ Actor/Worker operations through gRPC and HTTP and full Stream HTTP conformance.
 Objects v2 HTTP lifecycle/framing/error/bounds tests pass in Node and Bun.
 This is local runtime evidence; browser execution, final package transition,
 consumer migration, repository qualification and merge remain required.
+
+### Harness logical Objects migration and reusable core metadata validators
+
+The TypeScript Harness content adapter now consumes Objects v2 generated requests
+and the public `./v2` package entry. `./v2/http` and `./v2/grpc` expose the existing
+transport implementations; the gRPC options no longer depend on v1 types. These
+are source subpaths in the unmerged branch, not a published package transition.
+Canonical root exports and filesystem consumers still require migration.
+
+A regression demonstrated that a fresh upload identity selecting already-present
+content could later select another path, because its failed IfAbsent PUT had no
+successful mutation receipt. Both Rust and TypeScript now publish and verify an
+immutable logical upload intent binding path, descriptor and display name before
+content publication. Each retry rereads the intent and selected content; neither
+a mutation receipt nor an upload intent establishes durable service retention.
+Write-only grants can stage, while public reads still require a read grant.
+
+Objects v2 `response` is available without grpc/json/http features and exposes
+typed timestamp, bucket, object-info, download-header, listing and multipart-page
+validators for durable service metadata. A core-only external test verifies this
+public API. Single PUT/part limits are not incorrectly applied to metadata for
+completed multipart objects; download selections still enforce caller bounds.
+The Objects v2 wire descriptor is unchanged:
+f5a0791f472ec500f3aa8a0a22f10b84426062ee0697b0fbed9457815c51894d.
+
+Local qualification: 84 all-feature Objects Rust tests, one external metadata test
+and one doctest pass (one optional latency receipt ignored); core-only external
+test and strict native all-target/WASM Clippy pass. Focused Rust Harness Objects
+tests and strict native Harness Clippy pass. TypeScript build and Harness type
+contracts pass; all 223 Harness tests pass with 1084 assertions. Node and Bun
+workspace package-entry smoke tests pass. Installed tarballs and deployed Cloud
+acceptance are not established by these checks.
+
+The integrator relayed the user's expanded goal scope: canonical Rust source on
+main, published distributions usable by exact Cloud pins, affected consumer local
+tests, and actual deployed service API conformance are required before completion.
+Service owners implement deployments; SDK owns canonical contracts and managed
+filesystem semantics. The goal remains active, including these coordinated gates.

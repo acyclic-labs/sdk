@@ -183,6 +183,78 @@ impl ObjectContentStore {
         Ok(read.body.to_vec())
     }
 
+    async fn pin_upload(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        descriptor: &FileDescriptor,
+        display_name: &str,
+    ) -> Result<()> {
+        let intent = crate::contract::canonical_json_digest(&(path, descriptor, display_name))?;
+        let operation = blake3::Hash::from_bytes(crate::contract::canonical_json_digest(&(
+            "harness-upload-intent-v1",
+            operation_id.to_string(),
+        ))?)
+        .to_hex();
+        let namespace = self.volume.storage_name()?;
+        let object_key = format!("{namespace}/.system/uploads/{operation}");
+        let content_type = "application/vnd.acyclic.harness.upload-intent-v1";
+        match self
+            .objects
+            .put(
+                wire::PutObjectHeader {
+                    bucket: Some(self.bucket.clone()),
+                    object_key: object_key.clone(),
+                    metadata: Some(wire::ObjectMetadata {
+                        content_type: content_type.into(),
+                        ..Default::default()
+                    }),
+                    preconditions: Some(wire::Preconditions {
+                        condition: Some(wire::preconditions::Condition::IfAbsent(true)),
+                    }),
+                    mutation: Some(wire::MutationIdentity {
+                        idempotency_key: format!(
+                            "harness-upload-intent:{namespace}:{operation_id}"
+                        ),
+                    }),
+                },
+                bytes::Bytes::copy_from_slice(&intent),
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(error) if error.code == wire::ErrorCode::PreconditionFailed => {}
+            Err(error) => return Err(storage(error)),
+        }
+        let pinned = self
+            .objects
+            .get(
+                wire::GetObjectRequest {
+                    bucket: Some(self.bucket.clone()),
+                    object_key,
+                    ..Default::default()
+                },
+                32,
+            )
+            .await
+            .map_err(storage)?;
+        if pinned.header.content_range.is_some()
+            || pinned.header.object.as_ref().is_none_or(|info| {
+                info.size != 32
+                    || info
+                        .metadata
+                        .as_ref()
+                        .is_none_or(|metadata| metadata.content_type != content_type)
+            })
+            || pinned.body.as_ref() != intent
+        {
+            return Err(Error::Conflict(
+                "upload identity belongs to different content".into(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn manifest(&self, file: &FileRef, count: u32) -> Result<Vec<Attachment>> {
         let bytes = self.read_exact(file).await?;
         decode_attachment_manifest(file, &bytes, count)
@@ -466,6 +538,8 @@ impl ContentPublisher for ObjectContentStore {
             )?;
             let content = content_identity(&descriptor, display_name)?;
             let key = self.key(path, &content)?;
+            self.pin_upload(operation_id, path, &descriptor, display_name)
+                .await?;
             let retry = format!(
                 "harness-upload:{}:{operation_id}",
                 self.volume.storage_name()?
@@ -661,6 +735,28 @@ mod tests {
             file
         );
         assert_eq!(owner_store.read(&file).await?.as_slice(), b"owner bytes");
+        let duplicate = owner_store
+            .stage(
+                OperationId::from_bytes([42; 16]),
+                "notes/one.txt",
+                b"owner bytes",
+                "text/plain",
+                "one.txt",
+            )
+            .await?;
+        assert_eq!(duplicate, file);
+        assert!(
+            owner_store
+                .stage(
+                    OperationId::from_bytes([42; 16]),
+                    "notes/other.txt",
+                    b"owner bytes",
+                    "text/plain",
+                    "one.txt",
+                )
+                .await
+                .is_err()
+        );
         let artifact = owner_store.artifact_ref(&file)?;
         owner_store.verify_artifact(&artifact).await?;
         let missing_version = ArtifactRef::new(

@@ -1,5 +1,17 @@
 # @acyclic-labs/objects
 
+## Unreleased logical v2 source
+
+The PR branch exposes `MemoryObjectsV2` and generated v2 schemas at
+`@acyclic-labs/objects/v2`, `HttpObjectsV2` at `./v2/http`, and
+`GrpcObjectsV2`/`createObjectsV2GrpcClients` at `./v2/grpc` for Node/Bun.
+These use logical bucket names and current object keys, eventual reads/listing,
+single-key conditions, ranges, multipart and opaque ETags. They have no public
+version history, snapshots or forks. The canonical root/proto/grpc transition
+and removal of legacy source remain pending; registry 0.1.5 is unchanged.
+
+## Existing release surface
+
 For Node/Bun gRPC, import `createObjectsGrpcClients` from
 `@acyclic-labs/objects/grpc` with `{ endpoint, token }`. The returned
 `buckets`, `objects`, `multipart`, and `snapshots` clients expose every

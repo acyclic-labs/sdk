@@ -1,5 +1,17 @@
 # acyclic-objects
 
+## Unreleased Objects v2 transition
+
+The unmerged source exposes logical bucket/key contracts under `acyclic_objects::v2`.
+Its generated types and `response` validators are available with
+`default-features = false`; services can validate persisted bucket metadata,
+object metadata and timestamps without enabling a transport or JSON reflection.
+The `grpc` and `http` features expose the corresponding v2 clients. The root
+surface described below still uses v1 until its remaining consumers migrate.
+These source APIs are not a published v2 release.
+
+## Existing root surface
+
 The versioned Objects contract, typed provider interface, and first-party gRPC, memory, and optional local providers. Object versions and whole-bucket snapshots are immutable identities; a bucket name is not a substitute for its `BucketRef`.
 
 ```sh

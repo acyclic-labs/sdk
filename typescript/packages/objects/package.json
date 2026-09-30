@@ -16,6 +16,18 @@
   },
   "type": "module",
   "exports": {
+    "./v2": {
+      "types": "./dist/v2.d.ts",
+      "default": "./dist/v2.js"
+    },
+    "./v2/http": {
+      "types": "./dist/v2-http.d.ts",
+      "default": "./dist/v2-http.js"
+    },
+    "./v2/grpc": {
+      "types": "./dist/v2-grpc.d.ts",
+      "default": "./dist/v2-grpc.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"

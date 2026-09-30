@@ -1,5 +1,9 @@
 # @acyclic-labs/objects changelog
 
+## Unreleased
+
+- Expose the unreleased logical v2 provider and HTTP/Node/Bun gRPC clients at `./v2`, `./v2/http` and `./v2/grpc` for migrating consumers. Canonical root export transition remains pending.
+
 ## 0.1.5 - 2026-09-25
 
 - Aligns object clients with the qualified SDK 0.1.5 release.

@@ -8,7 +8,6 @@ pub mod http;
 pub mod json;
 mod memory;
 pub mod request;
-#[cfg(any(feature = "grpc", feature = "json"))]
 pub mod response;
 #[cfg(any(feature = "grpc", all(feature = "http", not(target_arch = "wasm32"))))]
 mod upload;

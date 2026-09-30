@@ -1,4 +1,4 @@
-//! Shared response validation across logical Objects transports.
+//! Core response and persisted-metadata validation, independent of transport features.
 use super::{Error, request, wire};
 
 /// Validates a generated response against its original request, shared with WASM clients.
@@ -93,7 +93,8 @@ pub fn validate_get_header(query: &[u8], bytes: &[u8], maximum: u64) -> Result<u
 pub(crate) fn invalid() -> Error {
     wire::ErrorCode::Unavailable.into()
 }
-fn timestamp(value: &prost_types::Timestamp) -> Result<(), Error> {
+/// Validates the canonical protobuf timestamp range and nanosecond normalization.
+pub fn timestamp(value: &prost_types::Timestamp) -> Result<(), Error> {
     if !(-62_135_596_800..=253_402_300_799).contains(&value.seconds)
         || !(0..1_000_000_000).contains(&value.nanos)
     {
@@ -101,7 +102,8 @@ fn timestamp(value: &prost_types::Timestamp) -> Result<(), Error> {
     }
     Ok(())
 }
-pub(crate) fn object_info(value: &wire::ObjectInfo) -> Result<(), Error> {
+/// Validates current-object metadata, opaque `ETag` and timestamp.
+pub fn object_info(value: &wire::ObjectInfo) -> Result<(), Error> {
     let timestamp = value.last_modified.as_ref().ok_or_else(invalid)?;
     self::timestamp(timestamp)?;
     if value.etag.is_empty() || value.etag.len() > 8192 || value.etag.contains(['\r', '\n', '\0']) {
@@ -109,7 +111,8 @@ pub(crate) fn object_info(value: &wire::ObjectInfo) -> Result<(), Error> {
     }
     request::metadata(&value.metadata).map_err(|_| invalid())
 }
-pub(crate) fn get_header(
+/// Validates a complete or ranged download selection within its decoded allocation bound.
+pub fn get_header(
     header: &wire::GetObjectHeader,
     selected: &Option<wire::ByteRange>,
     maximum: u64,
@@ -126,14 +129,17 @@ pub(crate) fn get_header(
     }
     Ok(size)
 }
-pub(crate) fn bucket(value: &wire::Bucket, expected: &wire::BucketRef) -> Result<(), Error> {
+/// Validates persisted bucket metadata against its canonical logical identity.
+pub fn bucket(value: &wire::Bucket, expected: &wire::BucketRef) -> Result<(), Error> {
+    request::bucket_name(&expected.name).map_err(|_| invalid())?;
     if value.bucket.as_ref() != Some(expected) || value.created_at.is_none() {
         return Err(invalid());
     }
     timestamp(value.created_at.as_ref().ok_or_else(invalid)?)?;
     Ok(())
 }
-pub(crate) fn parts(
+/// Validates ordered bounded multipart results against the original page request.
+pub fn parts(
     query: &wire::ListPartsRequest,
     response: &wire::ListPartsResponse,
 ) -> Result<(), Error> {
@@ -160,7 +166,8 @@ pub(crate) fn parts(
     }
     Ok(())
 }
-pub(crate) fn listing(
+/// Validates an eventual listing's keys, prefixes, page bounds and continuation shape.
+pub fn listing(
     query: &wire::ListObjectsRequest,
     response: &wire::ListObjectsResponse,
 ) -> Result<(), Error> {
