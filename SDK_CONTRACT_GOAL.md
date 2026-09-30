@@ -30,6 +30,16 @@ generation with Windows `EBUSY` reconciliation metadata; its earlier generated
 bindings check passed. This full gate remains open and must be resolved locally.
 Inference-specific generated checks are tracked separately for this slice.
 
+Follow-up: reproduced the same filesystem reconciliation `EBUSY` by invoking
+NAPI-RS directly with Node. Updated `scripts/filesystem-napi-types.mjs` to build
+fresh Rust macro declarations and render them with NAPI-RS's public
+`generateTypeDef` API. The check compares the exact bytes to the committed file,
+rejects missing output, and does not publish unrelated native binaries/loaders.
+Fresh Windows declarations matched without changing the committed bindings.
+`CARGO_BUILD_TARGET=x86_64-pc-windows-msvc bun run check:generated` then passed
+the full local generated-file gate. Strict WASM Clippy also passed with default
+host features disabled. The prior full-gate failure is resolved locally.
+
 ## Superseding Objects direction
 
 On 2026-09-30 the human user instructed the Integrator chat to change the SDK
