@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{Error, NativeBatchObjects, Object, ObjectsProvider, request, wire};
+use crate::body::StoredBody;
 use bytes::Bytes;
 use prost::Message;
 use wire::ErrorCode::{
@@ -51,14 +52,14 @@ struct Bucket {
 #[derive(Clone)]
 struct Stored {
     info: wire::ObjectInfo,
-    body: Bytes,
+    body: StoredBody,
 }
 #[derive(Clone)]
 struct Upload {
     bucket: String,
     key: String,
     metadata: Option<wire::ObjectMetadata>,
-    parts: BTreeMap<u32, (wire::UploadedPart, Bytes)>,
+    parts: BTreeMap<u32, (wire::UploadedPart, StoredBody)>,
 }
 #[derive(Clone)]
 struct Receipt {
@@ -239,7 +240,7 @@ impl MemoryObjects {
                     &query.object_key,
                     query.metadata.clone(),
                     &query.preconditions,
-                    body,
+                    StoredBody::memory(body),
                 )
             },
         )
@@ -372,7 +373,7 @@ fn publish(
     key: &str,
     metadata: Option<wire::ObjectMetadata>,
     condition: &Option<wire::Preconditions>,
-    body: Bytes,
+    body: StoredBody,
 ) -> Result<wire::ObjectInfo, Error> {
     let current = state
         .buckets
@@ -410,11 +411,31 @@ fn upload<'a>(state: &'a State, bucket: &str, key: &str, id: &str) -> Result<&'a
     Ok(value)
 }
 
+struct ResolvedGet {
+    header: wire::GetObjectHeader,
+    body: StoredBody,
+    start: usize,
+    end: usize,
+}
+
+impl ResolvedGet {
+    async fn read(self) -> Result<Object, Error> {
+        Ok(Object {
+            header: self.header,
+            body: self
+                .body
+                .read_async(self.start, self.end)
+                .await
+                .map_err(|_| Error::from(Unavailable))?,
+        })
+    }
+}
+
 fn get_locked(
     state: &State,
     query: &wire::GetObjectRequest,
     maximum_bytes: u64,
-) -> Result<Object, Error> {
+) -> Result<ResolvedGet, Error> {
     request::validate_binary("objects/get", &query.encode_to_vec(), 0)?;
     let name = request::bucket(&query.bucket)?;
     request::key(&query.object_key)?;
@@ -435,12 +456,14 @@ fn get_locked(
     if (end - start) as u64 > maximum_bytes {
         return Err(QuotaExceeded.into());
     }
-    Ok(Object {
+    Ok(ResolvedGet {
         header: wire::GetObjectHeader {
             object: Some(value.info.clone()),
             content_range: range,
         },
-        body: value.body.slice(start..end),
+        body: value.body.clone(),
+        start,
+        end,
     })
 }
 
@@ -469,13 +492,23 @@ impl NativeBatchObjects for MemoryObjects {
         if requests.is_empty() {
             return Vec::new();
         }
-        let Ok(state) = self.state.lock() else {
-            return vec![Err(Unavailable.into()); requests.len()];
+        let selected = {
+            let Ok(state) = self.state.lock() else {
+                return vec![Err(Unavailable.into()); requests.len()];
+            };
+            requests
+                .into_iter()
+                .map(|(query, maximum)| get_locked(&state, &query, maximum))
+                .collect::<Vec<_>>()
         };
-        requests
-            .into_iter()
-            .map(|(query, maximum)| get_locked(&state, &query, maximum))
-            .collect()
+        let mut results = Vec::with_capacity(selected.len());
+        for value in selected {
+            results.push(match value {
+                Ok(value) => value.read().await,
+                Err(error) => Err(error),
+            });
+        }
+        results
     }
 }
 
@@ -555,8 +588,11 @@ impl ObjectsProvider for MemoryObjects {
         query: wire::GetObjectRequest,
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
-        let state = self.state.lock().map_err(|_| Error::from(Unavailable))?;
-        get_locked(&state, &query, maximum_bytes)
+        let selected = {
+            let state = self.state.lock().map_err(|_| Error::from(Unavailable))?;
+            get_locked(&state, &query, maximum_bytes)?
+        };
+        selected.read().await
     }
     async fn head(
         &self,
@@ -709,7 +745,10 @@ impl ObjectsProvider for MemoryObjects {
                     .get_mut(&query.upload_id)
                     .ok_or(Error::from(NotFound))?
                     .parts
-                    .insert(query.part_number, (receipt.clone(), body.clone()));
+                    .insert(
+                        query.part_number,
+                        (receipt.clone(), StoredBody::memory(body.clone())),
+                    );
                 Ok(receipt)
             },
         )
@@ -786,14 +825,15 @@ impl ObjectsProvider for MemoryObjects {
                     return Err(QuotaExceeded.into());
                 }
                 let metadata = value.metadata.clone();
-                let mut body = Vec::with_capacity(size);
+                let mut bodies = Vec::with_capacity(query.parts.len());
                 for selected in &query.parts {
-                    body.extend_from_slice(
-                        &value
+                    bodies.push(
+                        value
                             .parts
                             .get(&selected.part_number)
                             .ok_or(Error::from(PreconditionFailed))?
-                            .1,
+                            .1
+                            .clone(),
                     );
                 }
                 let info = publish(
@@ -802,7 +842,10 @@ impl ObjectsProvider for MemoryObjects {
                     &query.object_key,
                     metadata,
                     &query.preconditions,
-                    Bytes::from(body),
+                    StoredBody::Composite {
+                        parts: bodies.into(),
+                        length: size,
+                    },
                 )?;
                 state.uploads.remove(&query.upload_id);
                 Ok(info)

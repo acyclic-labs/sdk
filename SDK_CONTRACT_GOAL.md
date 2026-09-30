@@ -871,6 +871,40 @@ Rust root/durable v1
 migration, package version transition and the existing required CI failures
 remain outstanding; the PR is unmerged and these local commits are unpublished.
 
+### Shared private body storage for the v2 durable migration
+
+Moved immutable memory/composite/external body storage and physical relocation
+references out of the legacy provider into private `body.rs`. Existing durable
+recovery still uses the same journal/segment readers and canonical failure
+mapping. The v2 state machine now uses this shared representation: multipart
+completion retains ordered immutable parts instead of copying a concatenated
+resident body. Current-object metadata and exact retry receipts remain atomic.
+Single and batch reads select immutable bodies under one metadata admission,
+release the metadata lock, then read only the admitted range. Private invalid
+body ranges fail closed. No public wire schema, RPC, history or snapshot API was
+added; this is a foundation for durable v2, not a completed v2 local provider.
+
+The existing multipart rollback/retry regression now verifies a four-byte
+range crossing the 5 MiB part boundary and rejects a three-byte response budget.
+Current-source Objects/Conformance tests pass (76/24 unit tests plus integration,
+binary and documentation tests); that regression passes again after extraction
+of its range assertions into a helper to satisfy the existing function-length
+lint. Strict all-feature/all-target Clippy passes with warnings denied. The full
+Windows filesystem library suite passes: 1120 tests, 36 existing opt-in tests
+ignored, including both owned/shared crash-atomicity fixtures, recovery and
+collection. Complete generated verification, metadata and RPC matrix checks
+pass. The Objects WASM package is rebuilt from this source; Node and Bun each
+pass all five Objects v2 memory/HTTP conformance tests covering all 13 operations,
+authentication, frame/error validation, retry semantics and response bounds.
+Logs remain under `D:/codex-sdk-162e-qualification-20260930/sdk-shared-bodies-*`.
+
+The durable v2 journal/state transition engine, native batch persistence,
+cancellation/ownership behavior, replay/compaction and FS durable consumer
+migration remain required. All 17 native legacy RPCs remain pending removal;
+published descriptors are preserved. Required remote CI failures and package
+version transition remain outstanding; no PR merge, publication or live
+acceptance is claimed. The Goal remains active.
+
 ### Native Objects transports retire unused v1 wrappers
 
 Removed the idiomatic v1 Rust gRPC wrappers after auditing their references:

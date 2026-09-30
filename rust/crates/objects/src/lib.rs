@@ -1,7 +1,10 @@
 #![doc = include_str!("../README.md")]
 
+mod body;
 pub mod conformance;
 pub mod v2;
+#[cfg(feature = "local")]
+pub(crate) use body::{ExternalBody, LocalBodyLocation, LocalBodyReference, LocalBodyRelocations};
 
 /// Generated public gRPC schema and client/server bindings.
 #[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]

@@ -611,7 +611,7 @@ async fn multipart_failure_keeps_parts_and_completion_is_atomic_and_replayable()
         condition: Some(wire::preconditions::Condition::IfMatch(old.etag)),
     });
     let info = provider.complete_multipart(complete.clone()).await?;
-    assert_eq!(info.size, 5 * 1024 * 1024 + 3);
+    assert_completed_multipart_range(&provider, &info).await?;
     provider
         .delete(wire::DeleteObjectRequest {
             bucket: bucket(),
@@ -852,6 +852,33 @@ pub(super) async fn exercise_provider(
             })
             .await?
             .existed
+    );
+    Ok(())
+}
+
+async fn assert_completed_multipart_range(
+    provider: &impl ObjectsProvider,
+    info: &wire::ObjectInfo,
+) -> Result<(), Error> {
+    assert_eq!(info.size, 5 * 1024 * 1024 + 3);
+    let mut crossing = get("value");
+    crossing.range = Some(wire::ByteRange {
+        selection: Some(wire::byte_range::Selection::Bytes(wire::InclusiveRange {
+            start: 5 * 1024 * 1024 - 2,
+            end: Some(5 * 1024 * 1024 + 1),
+        })),
+    });
+    assert_eq!(
+        provider.get(crossing.clone(), 4).await?.body,
+        Bytes::from_static(b"aaen")
+    );
+    assert_eq!(
+        provider
+            .get(crossing, 3)
+            .await
+            .err()
+            .map(|error| error.code),
+        Some(wire::ErrorCode::QuotaExceeded)
     );
     Ok(())
 }
