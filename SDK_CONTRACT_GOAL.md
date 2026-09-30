@@ -645,3 +645,27 @@ serialization only: Cloud still owns authentication, semantic admission,
 caller-bound checks, stream lifecycle and actual canonical HTTP mounting.
 The Inference owner's negative warm-admission/cancellation receipt question and
 Billing logical usage units/provenance remain separate exact contract dependencies.
+
+### Objects v2 native batch migration prerequisite
+
+Objects v2 now has an explicit native composition capability, `NativeBatchObjects`,
+with no default endpoint loop and no added public RPC. The memory provider executes
+ordered put/get batches under one authority lock, using the same canonical request,
+response, precondition, quota and retry logic as individual operations. Failed
+items leave both publication and retry receipts unchanged; reads retain independent
+bounds and errors. This capability is needed before migrating the filesystem's
+batch accounting. The existing filesystem adapter and durable local Objects
+backend still use v1; this change does not establish their migration.
+
+All 85 native Objects unit tests pass, including complete v2 TLS gRPC and HTTP
+conformance. Strict native all-target and core WASM Clippy pass. The batch
+regression covers mixed ordered successes/failures, quota rollback, exact receipt
+replay, bounded reads and absent failed publications. No protobuf changes.
+
+PR223 head 260df90f failed Linux qualification job 109819924978 in the live FUSE
+cache test at fuse.rs:5416 (unexpected getattr after revalidation). Exact local
+live test passed once and 60 consecutive repeats; the default-feature native
+mount group also passed all 25 tests. The CI failure is not reproduced or fixed
+by these results. Full workspace all-feature Linux qualification remains to be
+revalidated before updating or merging the PR. No managed-agents changes exist
+in the local diff or the PR diff against current main.

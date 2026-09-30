@@ -54,6 +54,29 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
     ),
 ];
 pub use memory::{MemoryObjects, MemoryOptions};
+
+/// Native composition capability for filesystem storage over logical Objects.
+///
+/// This is not a public service RPC. Implementations must execute a batch under
+/// one native authority admission, with one result per input in order. There is
+/// deliberately no default loop over public `put`/`get` calls: filesystem work
+/// accounting must not mistake multiple remote operations for one native batch.
+#[async_trait::async_trait]
+#[doc(hidden)]
+pub trait NativeBatchObjects: ObjectsProvider {
+    /// Publishes ordered, individually atomic mutations in one native admission.
+    /// A failed item leaves its representation and retry receipt unchanged.
+    async fn put_batch(
+        &self,
+        requests: Vec<(wire::PutObjectHeader, bytes::Bytes)>,
+    ) -> Vec<Result<wire::ObjectInfo, Error>>;
+
+    /// Reads ordered, individually bounded selections under one native admission.
+    async fn get_batch(
+        &self,
+        requests: Vec<(wire::GetObjectRequest, u64)>,
+    ) -> Vec<Result<Object, Error>>;
+}
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(all(test, feature = "grpc"))]

@@ -1,4 +1,4 @@
-use super::{Error, MemoryObjects, MemoryOptions, ObjectsProvider, wire};
+use super::{Error, MemoryObjects, MemoryOptions, NativeBatchObjects, ObjectsProvider, wire};
 use bytes::Bytes;
 
 #[cfg(any(feature = "grpc", all(feature = "http", not(target_arch = "wasm32"))))]
@@ -261,6 +261,125 @@ async fn provider(options: MemoryOptions) -> Result<MemoryObjects, Error> {
         })
         .await?;
     Ok(provider)
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn native_batch_preserves_order_bounds_and_failed_item_rollback() -> Result<(), Error> {
+    let provider = provider(MemoryOptions {
+        maximum_bytes: 6,
+        maximum_entries: 20,
+    })
+    .await?;
+    let mut first = put("first");
+    first.mutation = identity("first-receipt");
+    let mut second = put("second");
+    second.mutation = identity("second-receipt");
+    let mut invalid = put("invalid");
+    invalid.object_key = "\0".into();
+    let results = provider
+        .put_batch(vec![
+            (first.clone(), Bytes::from_static(b"abc")),
+            (second.clone(), Bytes::from_static(b"1234")),
+            (invalid, Bytes::new()),
+            (put("third"), Bytes::from_static(b"xyz")),
+        ])
+        .await;
+    assert_eq!(results.len(), 4);
+    let original = results
+        .first()
+        .cloned()
+        .ok_or(Error::from(wire::ErrorCode::Unavailable))??;
+    assert_eq!(
+        results
+            .get(1)
+            .and_then(|value| value.as_ref().err())
+            .map(|error| error.code),
+        Some(wire::ErrorCode::QuotaExceeded)
+    );
+    assert_eq!(
+        results
+            .get(2)
+            .and_then(|value| value.as_ref().err())
+            .map(|error| error.code),
+        Some(wire::ErrorCode::InvalidArgument)
+    );
+    assert_eq!(
+        results
+            .get(3)
+            .and_then(|value| value.as_ref().ok())
+            .map(|info| info.size),
+        Some(3)
+    );
+    let reads = provider
+        .get_batch(vec![
+            (get("third"), 3),
+            (get("first"), 2),
+            (get("second"), 8),
+            (get("first"), 3),
+        ])
+        .await;
+    assert_eq!(reads.len(), 4);
+    assert_eq!(
+        reads
+            .first()
+            .and_then(|value| value.as_ref().ok())
+            .map(|object| object.body.as_ref()),
+        Some(b"xyz".as_slice())
+    );
+    assert_eq!(
+        reads
+            .get(1)
+            .and_then(|value| value.as_ref().err())
+            .map(|error| error.code),
+        Some(wire::ErrorCode::QuotaExceeded)
+    );
+    assert_eq!(
+        reads
+            .get(2)
+            .and_then(|value| value.as_ref().err())
+            .map(|error| error.code),
+        Some(wire::ErrorCode::NotFound)
+    );
+    assert_eq!(
+        reads
+            .get(3)
+            .and_then(|value| value.as_ref().ok())
+            .and_then(|object| object.header.object.as_ref()),
+        Some(&original)
+    );
+    // Earlier successful items keep exact receipts; the failed item created none.
+    let replay = provider
+        .put_batch(vec![(first, Bytes::from_static(b"abc"))])
+        .await;
+    assert_eq!(
+        replay.first().and_then(|value| value.as_ref().ok()),
+        Some(&original)
+    );
+    provider
+        .delete(wire::DeleteObjectRequest {
+            bucket: bucket(),
+            object_key: "third".into(),
+            ..Default::default()
+        })
+        .await?;
+    provider
+        .delete(wire::DeleteObjectRequest {
+            bucket: bucket(),
+            object_key: "first".into(),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(
+        provider
+            .put(second, Bytes::from_static(b"1234"))
+            .await?
+            .size,
+        4
+    );
+    assert!(provider.put_batch(Vec::new()).await.is_empty());
+    assert!(provider.get_batch(Vec::new()).await.is_empty());
+    Ok(())
 }
 
 #[tokio::test]
