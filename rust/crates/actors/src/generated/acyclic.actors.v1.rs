@@ -194,8 +194,15 @@ pub struct CheckpointActorResponse {
     #[prost(message, optional, tag = "1")]
     pub actor: ::core::option::Option<ActorObservation>,
 }
-/// Invocation is not an implicit Stream append or persistence guarantee.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Header {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub value: ::prost::alloc::string::String,
+}
+/// Invocation is not an implicit Stream append or persistence guarantee.
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct InvokeActorRequest {
     #[prost(string, tag = "1")]
     pub actor_id: ::prost::alloc::string::String,
@@ -205,13 +212,17 @@ pub struct InvokeActorRequest {
     pub url: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "4")]
     pub body: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "5")]
+    pub headers: ::prost::alloc::vec::Vec<Header>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct InvokeActorResponse {
     #[prost(uint32, tag = "1")]
     pub status: u32,
     #[prost(bytes = "vec", tag = "2")]
     pub body: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "3")]
+    pub headers: ::prost::alloc::vec::Vec<Header>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Error {
@@ -334,4 +345,5 @@ impl ErrorCode {
         }
     }
 }
+include!("acyclic.actors.v1.tonic.rs");
 // @@protoc_insertion_point(module)

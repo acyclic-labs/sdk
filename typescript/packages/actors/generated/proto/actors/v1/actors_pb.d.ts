@@ -2,7 +2,7 @@
 // @generated from file actors/v1/actors.proto (package acyclic.actors.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
@@ -549,6 +549,27 @@ export declare type CheckpointActorResponse = Message<"acyclic.actors.v1.Checkpo
 export declare const CheckpointActorResponseSchema: GenMessage<CheckpointActorResponse>;
 
 /**
+ * @generated from message acyclic.actors.v1.Header
+ */
+export declare type Header = Message<"acyclic.actors.v1.Header"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: string value = 2;
+   */
+  value: string;
+};
+
+/**
+ * Describes the message acyclic.actors.v1.Header.
+ * Use `create(HeaderSchema)` to create a new message.
+ */
+export declare const HeaderSchema: GenMessage<Header>;
+
+/**
  * Invocation is not an implicit Stream append or persistence guarantee.
  *
  * @generated from message acyclic.actors.v1.InvokeActorRequest
@@ -573,6 +594,11 @@ export declare type InvokeActorRequest = Message<"acyclic.actors.v1.InvokeActorR
    * @generated from field: bytes body = 4;
    */
   body: Uint8Array;
+
+  /**
+   * @generated from field: repeated acyclic.actors.v1.Header headers = 5;
+   */
+  headers: Header[];
 };
 
 /**
@@ -594,6 +620,11 @@ export declare type InvokeActorResponse = Message<"acyclic.actors.v1.InvokeActor
    * @generated from field: bytes body = 2;
    */
   body: Uint8Array;
+
+  /**
+   * @generated from field: repeated acyclic.actors.v1.Header headers = 3;
+   */
+  headers: Header[];
 };
 
 /**
@@ -742,3 +773,73 @@ export enum ErrorCode {
  * Describes the enum acyclic.actors.v1.ErrorCode.
  */
 export declare const ErrorCodeSchema: GenEnum<ErrorCode>;
+
+/**
+ * @generated from service acyclic.actors.v1.ActorsService
+ */
+export declare const ActorsService: GenService<{
+  /**
+   * @generated from rpc acyclic.actors.v1.ActorsService.CreateActor
+   */
+  createActor: {
+    methodKind: "unary";
+    input: typeof CreateActorRequestSchema;
+    output: typeof CreateActorResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.actors.v1.ActorsService.UpdateActor
+   */
+  updateActor: {
+    methodKind: "unary";
+    input: typeof UpdateActorRequestSchema;
+    output: typeof UpdateActorResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.actors.v1.ActorsService.InspectActor
+   */
+  inspectActor: {
+    methodKind: "unary";
+    input: typeof InspectActorRequestSchema;
+    output: typeof InspectActorResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.actors.v1.ActorsService.AddSubscription
+   */
+  addSubscription: {
+    methodKind: "unary";
+    input: typeof AddSubscriptionRequestSchema;
+    output: typeof AddSubscriptionResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.actors.v1.ActorsService.RemoveSubscription
+   */
+  removeSubscription: {
+    methodKind: "unary";
+    input: typeof RemoveSubscriptionRequestSchema;
+    output: typeof RemoveSubscriptionResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.actors.v1.ActorsService.ResumeSubscription
+   */
+  resumeSubscription: {
+    methodKind: "unary";
+    input: typeof ResumeSubscriptionRequestSchema;
+    output: typeof ResumeSubscriptionResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.actors.v1.ActorsService.CheckpointActor
+   */
+  checkpointActor: {
+    methodKind: "unary";
+    input: typeof CheckpointActorRequestSchema;
+    output: typeof CheckpointActorResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.actors.v1.ActorsService.InvokeActor
+   */
+  invokeActor: {
+    methodKind: "unary";
+    input: typeof InvokeActorRequestSchema;
+    output: typeof InvokeActorResponseSchema;
+  },
+}>;

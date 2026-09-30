@@ -2,7 +2,7 @@
 // @generated from file workers/v1/workers.proto (package acyclic.workers.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
@@ -118,6 +118,9 @@ export declare type SelectDeploymentRequest = Message<"acyclic.workers.v1.Select
   versionSha256: Uint8Array;
 
   /**
+   * Omitted means create only if absent. A present positive value selects only
+   * when it matches the current revision; every successful selection advances it.
+   *
    * @generated from field: optional uint64 expected_revision = 3;
    */
   expectedRevision?: bigint | undefined;
@@ -705,3 +708,65 @@ export enum ErrorCode {
  * Describes the enum acyclic.workers.v1.ErrorCode.
  */
 export declare const ErrorCodeSchema: GenEnum<ErrorCode>;
+
+/**
+ * @generated from service acyclic.workers.v1.WorkersService
+ */
+export declare const WorkersService: GenService<{
+  /**
+   * @generated from rpc acyclic.workers.v1.WorkersService.PublishVersion
+   */
+  publishVersion: {
+    methodKind: "unary";
+    input: typeof PublishVersionRequestSchema;
+    output: typeof PublishVersionResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.workers.v1.WorkersService.SelectDeployment
+   */
+  selectDeployment: {
+    methodKind: "unary";
+    input: typeof SelectDeploymentRequestSchema;
+    output: typeof SelectDeploymentResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.workers.v1.WorkersService.SubmitJob
+   */
+  submitJob: {
+    methodKind: "unary";
+    input: typeof SubmitJobRequestSchema;
+    output: typeof SubmitJobResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.workers.v1.WorkersService.InspectJob
+   */
+  inspectJob: {
+    methodKind: "unary";
+    input: typeof InspectJobRequestSchema;
+    output: typeof InspectJobResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.workers.v1.WorkersService.CancelJob
+   */
+  cancelJob: {
+    methodKind: "unary";
+    input: typeof CancelJobRequestSchema;
+    output: typeof CancelJobResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.workers.v1.WorkersService.InvokeVersion
+   */
+  invokeVersion: {
+    methodKind: "unary";
+    input: typeof InvokeVersionRequestSchema;
+    output: typeof InvokeResponseSchema;
+  },
+  /**
+   * @generated from rpc acyclic.workers.v1.WorkersService.InvokeDeployment
+   */
+  invokeDeployment: {
+    methodKind: "unary";
+    input: typeof InvokeDeploymentRequestSchema;
+    output: typeof InvokeResponseSchema;
+  },
+}>;

@@ -12,3 +12,9 @@ the previous version active, and paused subscriptions remain paused.
 The service owns execution, fencing, checkpoint storage, and hibernation. This
 crate validates customer-authored requests and packages the versioned wire
 descriptor used to generate TypeScript bindings.
+
+`grpc::connect(endpoint, token)` exposes every generated Actors service RPC.
+Use `grpc::connect_with_ca_certificate` for a caller-supplied private CA.
+`http::Client::new(endpoint, token, maximum_response_bytes)` exposes the same
+eight operations using canonical Protobuf JSON. Invocation carries request and
+response headers. HTTP mutations are not automatically retried.

@@ -105,16 +105,22 @@ message CheckpointActorRequest {
   string idempotency_key = 2;
 }
 message CheckpointActorResponse { ActorObservation actor = 1; }
+message Header {
+  string name = 1;
+  string value = 2;
+}
 // Invocation is not an implicit Stream append or persistence guarantee.
 message InvokeActorRequest {
   string actor_id = 1;
   string method = 2;
   string url = 3;
   bytes body = 4;
+  repeated Header headers = 5;
 }
 message InvokeActorResponse {
   uint32 status = 1;
   bytes body = 2;
+  repeated Header headers = 3;
 }
 enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;
@@ -132,4 +138,15 @@ enum ErrorCode {
 message Error {
   ErrorCode code = 1;
   string message = 2;
+}
+
+service ActorsService {
+  rpc CreateActor(CreateActorRequest) returns (CreateActorResponse);
+  rpc UpdateActor(UpdateActorRequest) returns (UpdateActorResponse);
+  rpc InspectActor(InspectActorRequest) returns (InspectActorResponse);
+  rpc AddSubscription(AddSubscriptionRequest) returns (AddSubscriptionResponse);
+  rpc RemoveSubscription(RemoveSubscriptionRequest) returns (RemoveSubscriptionResponse);
+  rpc ResumeSubscription(ResumeSubscriptionRequest) returns (ResumeSubscriptionResponse);
+  rpc CheckpointActor(CheckpointActorRequest) returns (CheckpointActorResponse);
+  rpc InvokeActor(InvokeActorRequest) returns (InvokeActorResponse);
 }

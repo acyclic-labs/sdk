@@ -13,3 +13,9 @@ paused until explicitly resumed after a compatible code update or migration.
 The Rust crate `acyclic-actors` and `proto/actors/v1/actors.proto` own the
 contract. Import generated request and response schemas from the package or
 `@acyclic-labs/actors/proto`; `HttpActorsClient` supplies the transport.
+
+For Node/Bun gRPC, import `createActorsGrpcClient` from
+`@acyclic-labs/actors/grpc` and provide `{ endpoint, token }`. Every generated
+RPC is exposed. Optional `caCertificate` adds a private PEM CA, and
+`maximumMessageBytes` bounds requests and responses. Browser applications use
+the HTTP client. Actor invocation includes request and response headers.

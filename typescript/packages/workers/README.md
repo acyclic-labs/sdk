@@ -16,3 +16,10 @@ idempotency.
 The Rust crate `acyclic-workers` and `proto/workers/v1/workers.proto` own the
 contract. Import generated request and response schemas from the package or
 `@acyclic-labs/workers/proto`; `HttpWorkersClient` supplies the transport.
+
+For Node/Bun gRPC, import `createWorkersGrpcClient` from
+`@acyclic-labs/workers/grpc` and provide `{ endpoint, token }`. Every generated
+RPC is exposed. Optional `caCertificate` adds a private PEM CA, and
+`maximumMessageBytes` bounds requests and responses. Browser applications use
+the HTTP client. Omit `expectedRevision` only to create an absent alias; replacing
+an existing selection requires its positive current revision.

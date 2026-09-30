@@ -1,5 +1,12 @@
 # @acyclic-labs/objects
 
+For Node/Bun gRPC, import `createObjectsGrpcClients` from
+`@acyclic-labs/objects/grpc` with `{ endpoint, token }`. The returned
+`buckets`, `objects`, `multipart`, and `snapshots` clients expose every
+canonical RPC, including client-streaming uploads and server-streaming downloads.
+Optional `caCertificate` adds a private PEM CA; `maximumMessageBytes` bounds
+each message. Browser applications use `HttpObjectsProvider`.
+
 Typed access to immutable object versions, buckets, snapshots, and multipart uploads. Use the in-memory provider for local tests or the HTTPS provider for a hosted Objects service.
 
 ```sh

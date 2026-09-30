@@ -2,6 +2,9 @@
 
 use sha2::{Digest, Sha256};
 
+pub mod grpc;
+pub mod http;
+
 /// Generated Workers v1 wire types. The documented schema is `proto/workers/v1/workers.proto`.
 pub mod wire {
     #![allow(missing_docs, reason = "generated from the public Workers schema")]
@@ -91,7 +94,10 @@ pub fn validate_publish(request: &wire::PublishVersionRequest) -> Result<(), Con
 
 /// Validates a compare-and-select deployment alias mutation.
 pub fn validate_select(request: &wire::SelectDeploymentRequest) -> Result<(), ContractError> {
-    if !name(&request.alias) || !digest(&request.version_sha256) || !name(&request.idempotency_key)
+    if !name(&request.alias)
+        || !digest(&request.version_sha256)
+        || !name(&request.idempotency_key)
+        || request.expected_revision == Some(0)
     {
         return Err(ContractError::InvalidArgument);
     }
@@ -152,6 +158,21 @@ pub fn validate_submit(request: &wire::SubmitJobRequest) -> Result<(), ContractE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alias_selection_requires_positive_revision_when_present() {
+        let mut request = wire::SelectDeploymentRequest {
+            alias: "current".into(),
+            version_sha256: vec![1; 32],
+            idempotency_key: "select-a".into(),
+            expected_revision: None,
+        };
+        assert_eq!(validate_select(&request), Ok(()));
+        request.expected_revision = Some(7);
+        assert_eq!(validate_select(&request), Ok(()));
+        request.expected_revision = Some(0);
+        assert_eq!(validate_select(&request), Err(ContractError::InvalidArgument));
+    }
 
     #[test]
     fn publication_is_bound_to_exact_bytes() {

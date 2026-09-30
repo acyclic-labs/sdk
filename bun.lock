@@ -20,8 +20,11 @@
       "version": "0.1.5",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
+        "@connectrpc/connect": "2.1.1",
+        "@connectrpc/connect-node": "2.1.1",
       },
       "devDependencies": {
+        "@types/node": "26.4.1",
         "typescript": "7.0.2",
       },
     },
@@ -86,6 +89,8 @@
       "version": "0.1.5",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
+        "@connectrpc/connect": "2.1.1",
+        "@connectrpc/connect-node": "2.1.1",
       },
       "devDependencies": {
         "@types/bun": "1.4.2",
@@ -126,6 +131,8 @@
       "version": "0.1.5",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
+        "@connectrpc/connect": "2.1.1",
+        "@connectrpc/connect-node": "2.1.1",
       },
       "devDependencies": {
         "@types/node": "26.4.1",
@@ -137,8 +144,11 @@
       "version": "0.1.5",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
+        "@connectrpc/connect": "2.1.1",
+        "@connectrpc/connect-node": "2.1.1",
       },
       "devDependencies": {
+        "@types/node": "26.4.1",
         "typescript": "7.0.2",
       },
     },
@@ -187,6 +197,8 @@
     "@bufbuild/protoplugin": ["@bufbuild/protoplugin@2.15.0", "", { "dependencies": { "@bufbuild/protobuf": "2.15.0", "@typescript/vfs": "^1.6.2", "typescript": "5.4.5" } }, "sha512-vZhRoqB/jTHATqItRvJQf1zbxdrGRRhiusGty4+lKcfEFODG0PMXky2Ezv4WHHS6oSxq+5qShITuE7K1/82SuQ=="],
 
     "@connectrpc/connect": ["@connectrpc/connect@2.1.1", "", { "peerDependencies": { "@bufbuild/protobuf": "^2.7.0" } }, "sha512-JzhkaTvM73m2K1URT6tv53k2RwngSmCXLZJgK580qNQOXRzZRR/BCMfZw3h+90JpnG6XksP5bYT+cz0rpUzUWQ=="],
+
+    "@connectrpc/connect-node": ["@connectrpc/connect-node@2.1.1", "", { "peerDependencies": { "@bufbuild/protobuf": "^2.7.0", "@connectrpc/connect": "2.1.1" } }, "sha512-s3TfsI1XF+n+1z6MBS9rTnFsxxR4Rw5wmdEnkQINli81ESGxcsfaEet8duzq8LVuuCupmhUsgpRo0Nv9pZkufg=="],
 
     "@connectrpc/connect-web": ["@connectrpc/connect-web@2.1.1", "", { "peerDependencies": { "@bufbuild/protobuf": "^2.7.0", "@connectrpc/connect": "2.1.1" } }, "sha512-J8317Q2MaFRCT1jzVR1o06bZhDIBmU0UAzWx6xOIXzOq8+k71/+k7MUF7AwcBUX+34WIvbm5syRgC5HXQA8fOg=="],
 

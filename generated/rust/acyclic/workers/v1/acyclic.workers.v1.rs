@@ -38,6 +38,8 @@ pub struct SelectDeploymentRequest {
     pub alias: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "2")]
     pub version_sha256: ::prost::alloc::vec::Vec<u8>,
+    /// Omitted means create only if absent. A present positive value selects only
+    /// when it matches the current revision; every successful selection advances it.
     #[prost(uint64, optional, tag = "3")]
     pub expected_revision: ::core::option::Option<u64>,
     #[prost(string, tag = "4")]
@@ -307,4 +309,5 @@ impl ErrorCode {
         }
     }
 }
+include!("acyclic.workers.v1.tonic.rs");
 // @@protoc_insertion_point(module)

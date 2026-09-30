@@ -14,6 +14,8 @@ plugins:
       - acyclic.objects.v1.MultipartService
       - acyclic.objects.v1.SnapshotsService
       - acyclic.machines.v1.MachinesService
+      - acyclic.actors.v1.ActorsService
+      - acyclic.workers.v1.WorkersService
   - local: [bun, x, protoc-gen-es]
     out: generated/typescript
     strategy: all

@@ -4,15 +4,44 @@
   "private": false,
   "license": "Apache-2.0",
   "description": "Generated Workers v1 contracts and authenticated HTTP client",
-  "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/workers" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git",
+    "directory": "typescript/packages/workers"
+  },
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./proto": { "types": "./generated/proto/workers/v1/workers_pb.d.ts", "default": "./generated/proto/workers/v1/workers_pb.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./proto": {
+      "types": "./generated/proto/workers/v1/workers_pb.d.ts",
+      "default": "./generated/proto/workers/v1/workers_pb.js"
+    },
+    "./grpc": {
+      "default": "./dist/grpc.js",
+      "types": "./dist/grpc.d.ts"
+    }
   },
   "types": "./dist/index.d.ts",
-  "files": ["dist", "generated/proto", "CHANGELOG.md"],
-  "scripts": { "build": "tsc -b", "test": "tsc -b --pretty false", "pack:dry": "bun pm pack --dry-run" },
-  "dependencies": { "@bufbuild/protobuf": "2.15.0" },
-  "devDependencies": { "typescript": "7.0.2" }
+  "files": [
+    "dist",
+    "generated/proto",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsc -b --pretty false",
+    "pack:dry": "bun pm pack --dry-run"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.15.0",
+    "@connectrpc/connect": "2.1.1",
+    "@connectrpc/connect-node": "2.1.1"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "@types/node": "26.4.1"
+  }
 }

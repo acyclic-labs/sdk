@@ -26,6 +26,8 @@ message PublishVersionResponse { CodeVersion version = 1; }
 message SelectDeploymentRequest {
   string alias = 1;
   bytes version_sha256 = 2;
+  // Omitted means create only if absent. A present positive value selects only
+  // when it matches the current revision; every successful selection advances it.
   optional uint64 expected_revision = 3;
   string idempotency_key = 4;
 }
@@ -136,4 +138,14 @@ enum ErrorCode {
 message Error {
   ErrorCode code = 1;
   string message = 2;
+}
+
+service WorkersService {
+  rpc PublishVersion(PublishVersionRequest) returns (PublishVersionResponse);
+  rpc SelectDeployment(SelectDeploymentRequest) returns (SelectDeploymentResponse);
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+  rpc InspectJob(InspectJobRequest) returns (InspectJobResponse);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+  rpc InvokeVersion(InvokeVersionRequest) returns (InvokeResponse);
+  rpc InvokeDeployment(InvokeDeploymentRequest) returns (InvokeResponse);
 }
