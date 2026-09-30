@@ -70,6 +70,11 @@ const streamVersion = compatibility.families.stream.version;
 const streamCrateVersion = compatibility.families.stream.crateVersion ?? streamVersion;
 const harnessPackage = await load("typescript/packages/harness/package.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
+for (const path of ["plugin/plugin.json", "plugin/.codex-plugin/plugin.json"]) {
+  if ((await load(path)).version !== sdkPackage.version) {
+    throw new Error(`host plugin manifest version mismatch: ${path}`);
+  }
+}
 for (const item of await load("release/npm-packages.json")) {
   const directory = item.source === "plugin"
     ? "plugin"

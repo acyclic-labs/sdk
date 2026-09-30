@@ -5,6 +5,25 @@ is unmerged; final-head required CI and an approving code-owner review remain.
 
 ## Final Objects v2 retirement and 0.2.0 qualification (2026-09-30)
 
+### Final-head host installation correction
+
+Qualified SDK source was pushed as
+`add796294368d8887f1eee545c4be4c65be3d043`. Final-head Agent Host run
+36755740061 failed on Linux job 110025395147 and macOS job 110025395094:
+Codex installed version 0.1.5 from the hidden plugin manifest while the native
+installer correctly required 0.2.0, then rolled the installation back.
+Both Claude scenarios passed. This was a missed candidate metadata update,
+not an attributed runner failure. Reproduced the exact Codex scenario locally
+with the pinned 0.155.1 host: it failed with the same install/version mismatch.
+Corrected `plugin/.codex-plugin/plugin.json` to 0.2.0 and added source metadata
+and packaged-asset version checks for both host manifests. The new metadata
+gate failed before the correction and passed afterward. The exact Codex scenario
+then passed in 19.51 s; pinned Claude 2.1.278 passed in 17.05 s. A fresh plugin
+package with the actual native binary passed its package validator. Logs use
+`sdk-final-host-*` and `sdk-final-claude-local-after.log` in the evidence directory.
+No CI run was cancelled or restarted; this follow-up remains queued for push
+until the running final-head SDK qualification reaches its terminal result.
+
 The Rust Objects root exports canonical v2. Removed the active v1 provider,
 engine, conformance implementation and packaged Rust bindings. Extracted the
 existing local limits, durability settings and private physical storage helpers.
