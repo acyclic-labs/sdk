@@ -366,7 +366,7 @@ mod tests {
     use super::*;
     use acyclic_machines::SimulatedMachines;
     use acyclic_objects::MemoryObjects;
-    use acyclic_objects::ReadTarget;
+    use acyclic_objects::v2::ObjectsProvider as _;
     use acyclic_stream::MemoryStream;
     use std::sync::Arc;
 
@@ -378,7 +378,8 @@ mod tests {
     #[tokio::test]
     async fn family_memory_providers_conform() -> Result<(), String> {
         let stream_provider = MemoryStream::default();
-        let (objects_provider, filesystem_bucket) = MemoryObjects::with_default_bucket();
+        let (objects_provider, filesystem_bucket) =
+            acyclic_objects::v2::MemoryObjects::with_default_bucket();
         let filesystem = acyclic_fs::Fs::from_memory_providers(
             Arc::new(stream_provider.clone()),
             Arc::new(objects_provider.clone()),
@@ -403,14 +404,12 @@ mod tests {
             return Err("filesystem did not publish through the profile's public Stream".into());
         }
         let filesystem_objects = objects_provider
-            .list(
-                ReadTarget::Bucket(filesystem_bucket),
-                "fs/v1/".to_owned(),
-                None,
-                true,
-                128,
-                None,
-            )
+            .list(acyclic_objects::v2::wire::ListObjectsRequest {
+                bucket: Some(filesystem_bucket),
+                prefix: "fs/v1/".to_owned(),
+                page_size: 128,
+                ..Default::default()
+            })
             .await
             .map_err(|error| error.to_string())?;
         if filesystem_objects.entries.is_empty() {
@@ -420,7 +419,8 @@ mod tests {
         }
 
         stream(&stream_provider).await?;
-        objects(&objects_provider).await?;
+        let (legacy_objects, _) = MemoryObjects::with_default_bucket();
+        objects(&legacy_objects).await?;
         machines(&SimulatedMachines::default()).await?;
         Ok(())
     }

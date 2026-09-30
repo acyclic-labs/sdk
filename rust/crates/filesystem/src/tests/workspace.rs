@@ -1995,7 +1995,7 @@ impl acyclic_stream::StreamProvider for CutStream {
 
 type CutFs = Fs<
     crate::distributed::StreamAuthorityStore<CutStream>,
-    crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+    crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
 >;
 
 /// The first record of one authority, if it has one.
@@ -2033,7 +2033,7 @@ async fn assert_fork_state_exact(
     stream: &Arc<acyclic_stream::MemoryStream>,
     source: &crate::Generation<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
     >,
     source_volume: crate::foundation::VolumeId,
     destination: WorkspaceId,
@@ -2094,10 +2094,10 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
         for fail_at in 1.. {
             let stream = Arc::new(acyclic_stream::MemoryStream::default());
             let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
-            let (objects, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+            let (objects, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
             let fs: CutFs = Fs::new(
                 crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
-                crate::distributed::ProviderObjectStore::new(Arc::new(objects), bucket),
+                crate::LogicalObjectStore::new(Arc::new(objects), bucket),
                 crate::EmbeddedCapabilities::MEMORY,
             );
             cutting.arm(fail_at, cut);
@@ -2150,15 +2150,15 @@ async fn assert_fork_lineage_exact(
     stream: &Arc<acyclic_stream::MemoryStream>,
     main: &crate::Workspace<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
     >,
     source: &crate::Generation<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
     >,
     fork: &crate::Workspace<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
     >,
     independent: bool,
 ) -> Result<(), Box<dyn Error>> {
@@ -2222,10 +2222,10 @@ async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn E
         for fail_at in 1.. {
             let stream = Arc::new(acyclic_stream::MemoryStream::default());
             let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
-            let (objects, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+            let (objects, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
             let fs: CutFs = Fs::new(
                 crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
-                crate::distributed::ProviderObjectStore::new(Arc::new(objects), bucket),
+                crate::LogicalObjectStore::new(Arc::new(objects), bucket),
                 crate::EmbeddedCapabilities::MEMORY,
             );
             let main = fs.create_workspace("repo").await?;

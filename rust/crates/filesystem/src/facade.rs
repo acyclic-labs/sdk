@@ -1030,8 +1030,7 @@ pub type MemoryAuthorityBackend =
 
 #[cfg(all(feature = "memory", feature = "distributed"))]
 /// Filesystem object adapter backed by the public in-memory Objects provider.
-pub type MemoryObjectBackend =
-    crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>;
+pub type MemoryObjectBackend = crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>;
 
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
 pub(crate) type MemoryCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
@@ -2123,7 +2122,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
 impl
     Fs<
         crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
     >
 {
     /// Creates the deterministic infrastructure-free composition from the exact public reference
@@ -2131,7 +2130,7 @@ impl
     #[must_use]
     pub fn memory() -> Self {
         let stream = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
-        let (objects, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+        let (objects, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
         Self::from_memory_providers(stream, std::sync::Arc::new(objects), bucket)
     }
 
@@ -2142,12 +2141,12 @@ impl
     #[must_use]
     pub fn from_memory_providers(
         stream: std::sync::Arc<acyclic_stream::MemoryStream>,
-        objects: std::sync::Arc<acyclic_objects::MemoryObjects>,
-        bucket: acyclic_objects::wire::BucketRef,
+        objects: std::sync::Arc<acyclic_objects::v2::MemoryObjects>,
+        bucket: acyclic_objects::v2::wire::BucketRef,
     ) -> Self {
         Self::new(
             crate::distributed::StreamAuthorityStore::new(stream),
-            crate::distributed::ProviderObjectStore::new(objects, bucket),
+            crate::LogicalObjectStore::new(objects, bucket),
             EmbeddedCapabilities::MEMORY,
         )
     }

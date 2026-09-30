@@ -34,7 +34,7 @@ impl Default for MemoryOptions {
 pub struct MemoryObjects {
     state: Arc<Mutex<State>>,
     options: MemoryOptions,
-    token_key: [u8; 32],
+    token_key: Arc<Mutex<Option<[u8; 32]>>>,
 }
 #[derive(Clone, Default)]
 struct State {
@@ -67,6 +67,40 @@ struct Receipt {
 }
 
 impl MemoryObjects {
+    /// Creates the infrastructure-free SDK composition with an existing `default` bucket.
+    ///
+    /// The bootstrap bucket has an epoch creation time. Cursor authentication entropy is
+    /// obtained on first pagination; failure returns `Unavailable`, never an unsigned token.
+    /// No cardinality limit is added to the composition's existing 64 MiB byte limit.
+    #[must_use]
+    pub fn with_default_bucket() -> (Self, wire::BucketRef) {
+        let bucket = wire::BucketRef {
+            name: "default".to_owned(),
+        };
+        let mut state = State::default();
+        state.buckets.insert(
+            bucket.name.clone(),
+            Bucket {
+                info: wire::Bucket {
+                    bucket: Some(bucket.clone()),
+                    created_at: Some(prost_types::Timestamp::default()),
+                },
+                objects: BTreeMap::new(),
+            },
+        );
+        (
+            Self {
+                state: Arc::new(Mutex::new(state)),
+                options: MemoryOptions {
+                    maximum_entries: usize::MAX,
+                    ..MemoryOptions::default()
+                },
+                token_key: Arc::new(Mutex::new(None)),
+            },
+            bucket,
+        )
+    }
+
     /// Synchronously admits one bucket for a native SDK composition.
     ///
     /// # Errors
@@ -106,7 +140,7 @@ impl MemoryObjects {
         Ok(Self {
             state: Arc::default(),
             options,
-            token_key,
+            token_key: Arc::new(Mutex::new(Some(token_key))),
         })
     }
 
@@ -211,16 +245,39 @@ impl MemoryObjects {
         )
     }
 
-    fn cursor(&self, query: &wire::ListObjectsRequest, key: &str) -> String {
+    fn cursor_key_with(
+        &self,
+        fill: impl FnOnce(&mut [u8; 32]) -> Result<(), Error>,
+    ) -> Result<[u8; 32], Error> {
+        let mut key = self
+            .token_key
+            .lock()
+            .map_err(|_| Error::from(Unavailable))?;
+        if let Some(key) = *key {
+            return Ok(key);
+        }
+        let mut candidate = [0; 32];
+        fill(&mut candidate)?;
+        *key = Some(candidate);
+        Ok(candidate)
+    }
+
+    fn cursor(&self, query: &wire::ListObjectsRequest, key: &str) -> Result<String, Error> {
         let payload = key.as_bytes();
-        let mut hash = blake3::Hasher::new_keyed(&self.token_key);
+        let token_key =
+            self.cursor_key_with(|key| getrandom::fill(key).map_err(|_| Error::from(Unavailable)))?;
+        let mut hash = blake3::Hasher::new_keyed(&token_key);
         let mut bound = query.clone();
         bound.continuation_token.clear();
         let encoded = bound.encode_to_vec();
         hash.update(&(encoded.len() as u64).to_le_bytes());
         hash.update(&encoded);
         hash.update(payload);
-        format!("{}.{}", hex::encode(payload), hash.finalize().to_hex())
+        Ok(format!(
+            "{}.{}",
+            hex::encode(payload),
+            hash.finalize().to_hex()
+        ))
     }
     fn decode_cursor(&self, query: &wire::ListObjectsRequest) -> Result<Option<String>, Error> {
         if query.continuation_token.is_empty() {
@@ -236,7 +293,7 @@ impl MemoryObjects {
         let key =
             String::from_utf8(hex::decode(payload).map_err(|_| Error::from(InvalidArgument))?)
                 .map_err(|_| Error::from(InvalidArgument))?;
-        if self.cursor(query, &key) != query.continuation_token {
+        if self.cursor(query, &key)? != query.continuation_token {
             return Err(InvalidArgument.into());
         }
         Ok(Some(key))
@@ -575,7 +632,9 @@ impl ObjectsProvider for MemoryObjects {
         let is_truncated = selected.next().is_some();
         let continuation_token = if is_truncated {
             page.last()
-                .map_or_else(String::new, |(key, _)| self.cursor(&query, key))
+                .map(|(key, _)| self.cursor(&query, key))
+                .transpose()?
+                .unwrap_or_default()
         } else {
             String::new()
         };
@@ -768,5 +827,79 @@ impl ObjectsProvider for MemoryObjects {
                 })
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod bootstrap_tests {
+    use super::*;
+
+    #[test]
+    fn cursor_entropy_failure_does_not_install_a_key_and_clones_share_initialization()
+    -> Result<(), Error> {
+        let (provider, _) = MemoryObjects::with_default_bucket();
+        let failed = provider.cursor_key_with(|key| {
+            key.fill(1);
+            Err(Unavailable.into())
+        });
+        assert_eq!(failed.map_err(|error| error.code), Err(Unavailable));
+        let clone = provider.clone();
+        let key = clone.cursor_key_with(|key| {
+            key.fill(2);
+            Ok(())
+        })?;
+        drop(clone);
+        assert_eq!(key, [2; 32]);
+        assert_eq!(provider.cursor_key_with(|_| Err(Unavailable.into()))?, key);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bootstrap_pagination_is_bound_to_provider_and_query() -> Result<(), Error> {
+        let (provider, bucket) = MemoryObjects::with_default_bucket();
+        for key in ["a", "b"] {
+            provider
+                .put(
+                    wire::PutObjectHeader {
+                        bucket: Some(bucket.clone()),
+                        object_key: key.to_owned(),
+                        ..Default::default()
+                    },
+                    Bytes::from_static(b"body"),
+                )
+                .await?;
+        }
+        let mut query = wire::ListObjectsRequest {
+            bucket: Some(bucket),
+            page_size: 1,
+            ..Default::default()
+        };
+        let first = provider.list(query.clone()).await?;
+        assert!(first.is_truncated);
+        assert_eq!(
+            first.entries.first().map(|entry| entry.object_key.as_str()),
+            Some("a")
+        );
+        query.continuation_token = first.continuation_token;
+        let second = provider.clone().list(query.clone()).await?;
+        assert_eq!(
+            second
+                .entries
+                .first()
+                .map(|entry| entry.object_key.as_str()),
+            Some("b")
+        );
+        assert!(!second.is_truncated);
+        let (other, _) = MemoryObjects::with_default_bucket();
+        assert_eq!(
+            other.list(query.clone()).await.map_err(|error| error.code),
+            Err(InvalidArgument)
+        );
+        query.prefix = "a".to_owned();
+        assert_eq!(
+            provider.list(query).await.map_err(|error| error.code),
+            Err(InvalidArgument)
+        );
+        Ok(())
     }
 }

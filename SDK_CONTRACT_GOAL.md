@@ -780,3 +780,46 @@ full output Context items. A metadata-only terminal recovery rule is a native
 authority dependency. No Run release/archive/expiry duration is in the current
 SDK contract. Human logical dedup scope remains pending; retained_byte_millis
 remains unadopted without a complete lifecycle.
+
+### Native filesystem memory and simulation composition use Objects v2
+
+`MemoryObjectBackend`, `Fs::memory`, `Fs::from_memory_providers`, and the
+simulation defaults now use `LogicalObjectStore<v2::MemoryObjects>`. The
+cross-family conformance fixture verifies actual v2 bucket contents after the
+filesystem publishes through the caller-owned Stream provider. Workspace fork
+fault-cut fixtures also use v2. Durable local storage and the legacy standalone
+Objects conformance suite still use v1; root/default SDK client migration and
+durable local engine migration remain required before removing active v1.
+
+The v2 bootstrap constructor keeps native memory/simulation construction
+infallible, preserving the existing 64 MiB aggregate byte limit without adding
+a cardinality limit. The initial bucket timestamp is epoch. Pagination obtains
+an independent secret lazily; entropy failure returns Unavailable and does not
+install partially filled key material. Clones share the initialized secret;
+different providers and changed queries reject the same continuation token.
+The existing general-purpose constructor remains fallible with eager entropy.
+
+Local qualification: `cargo test -p acyclic-objects --all-features --locked
+--target x86_64-pc-windows-msvc --lib v2` passes all 18 tests, including both
+transport suites and the new cursor regressions. `cargo test -p acyclic-fs
+--all-features --locked --target x86_64-pc-windows-msvc --lib` passes 1120 tests
+(36 host-specific ignored tests), including crash recovery and sparse checkout.
+The corresponding acyclic-conformance suite passes all 23 tests. Strict
+all-feature/all-target native Clippy for Objects, Filesystem and Conformance
+passes. FS package build, type checks and actual Node/Bun memory composition
+pass. Real Chrome browser-smoke passes memory workspace and IndexedDB/OPFS.
+Strict WASM Clippy for acyclic-fs-wasm and the complete `bun run
+check:generated` check also pass. All PR review threads remain resolved.
+Rebuilt FS WASM SHA256 is
+541e29b38f322e036038be31edd47cdffa1e8d1c86d47779c05bedac2e1e03d9.
+Objects v2 descriptor is unchanged:
+21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b.
+
+PR223 remote d95bd0a additionally failed Windows job 109840702461 in
+`explicit_materialization_and_capture_round_trip_sparse_checkout` with raw
+Os error 5 (Access is denied). That exact test passes 100 local repetitions
+and the complete pre-migration and migrated filesystem suites. The failure
+remains unreproduced and unfixed, alongside the Linux lifecycle failure above.
+All other required leaf jobs passed, but aggregate SDK Qualification failed.
+No assertion, required gate or driver error is suppressed. The PR is unmerged;
+local qualification does not establish live acceptance or package publication.
