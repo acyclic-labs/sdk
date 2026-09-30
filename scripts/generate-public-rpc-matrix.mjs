@@ -4,6 +4,7 @@ import { ActorsService } from "../typescript/packages/actors/generated/proto/act
 import { WorkersService } from "../typescript/packages/workers/generated/proto/workers/v1/workers_pb.js";
 import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v2/stream_pb.js";
 import { BucketsService, ObjectsService, MultipartService, SnapshotsService } from "../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js";
+import { BucketsService as BucketsV2, ObjectsService as ObjectsV2, MultipartService as MultipartV2 } from "../typescript/packages/objects/generated/proto/objects/v2/objects_pb.js";
 
 const objects = {
   CreateBucket: "buckets/create", HeadBucket: "buckets/head", DeleteBucket: "buckets/delete",
@@ -24,27 +25,49 @@ function routes(family) {
 }
 const actors = routes("actors");
 const workers = routes("workers");
-const services = [ActorsService, WorkersService, StreamService, BucketsService, ObjectsService, MultipartService, SnapshotsService];
+// Until consumer migration removes v1, every still-exposed RPC stays visible.
+// Implementation fields describe source presence, not package or live acceptance.
+const services = [ActorsService, WorkersService, StreamService, BucketsV2, ObjectsV2, MultipartV2, BucketsService, ObjectsService, MultipartService, SnapshotsService];
+const objectsPackage = JSON.parse(readFileSync(new URL("../typescript/packages/objects/package.json", import.meta.url), "utf8"));
+const objectsIndex = readFileSync(new URL("../typescript/packages/objects/src/index.ts", import.meta.url), "utf8");
+const v2Routes = readFileSync(new URL("../rust/crates/objects/src/v2/mod.rs", import.meta.url), "utf8");
 const rows = services.flatMap(service => service.methods.map(method => {
   const family = service.typeName.split(".")[1];
+  const version = service.typeName.split(".")[2];
+  const objectsV2 = family === "objects" && version === "v2";
+  const legacy = family === "objects" && version === "v1";
   const http = family === "actors" ? actors[method.localName] : family === "workers" ? workers[method.localName] : (family === "stream" ? stream : objects)[method.name];
   if (!http) throw new Error(`missing HTTP mapping for ${service.typeName}/${method.name}`);
+  if (objectsV2 && !v2Routes.includes(`"${http}"`)) throw new Error(`Objects v2 Rust route missing: ${http}`);
+  const typescriptPackage = family !== "objects" || (
+    objectsPackage.exports["./proto"]?.default?.includes(`/objects/${version}/`) &&
+    objectsPackage.exports["./grpc"]?.default === (objectsV2 ? "./dist/v2-grpc.js" : "./dist/grpc.js") &&
+    (!objectsV2 || ["v2", "v2-http"].every(module =>
+      new RegExp(`export\\s+\\*\\s+from\\s+["']\\./${module}\\.js["']`).test(objectsIndex)))
+  );
   return {
     rpc: `${service.typeName}/${method.name}`,
     kind: method.methodKind,
     request: method.input.typeName,
     response: method.output.typeName,
-    httpOperation: family === "objects" ? `v1/objects/${http}` : family === "stream" ? `v1/stream/${http}` : http,
+    contractStatus: legacy ? "pendingRemoval" : "target",
+    httpOperation: family === "objects" ? `${version}/objects/${http}` : family === "stream" ? `v1/stream/${http}` : http,
     rustGrpc: true,
-    rustHttp: family === "actors" || family === "workers" || family === "stream",
+    rustHttp: !legacy,
     typescriptGrpcNodeBun: true,
     typescriptHttp: true,
+    typescriptPackageExported: Boolean(typescriptPackage),
   };
 }));
 const output = JSON.stringify(rows, null, 2) + "\n";
 const path = new URL("../compatibility/public-rpc-matrix.json", import.meta.url);
-if (process.argv[2] === "check") {
+if (process.argv[2] === "check" || process.argv[2] === "complete") {
   if (readFileSync(path, "utf8") !== output) throw new Error("public RPC matrix is stale");
 } else if (process.argv[2] === "write") writeFileSync(path, output);
-else throw new Error("expected write or check");
-console.log(`Public RPC matrix: ${rows.length} canonical operations`);
+else throw new Error("expected write, check, or complete");
+if (process.argv[2] === "complete") {
+  const gaps = rows.filter(row => row.contractStatus !== "target" || !row.rustGrpc || !row.rustHttp || !row.typescriptGrpcNodeBun || !row.typescriptHttp || !row.typescriptPackageExported);
+  if (gaps.length) throw new Error(`public SDK surface incomplete:\n${gaps.map(row => `${row.rpc}: ${row.contractStatus === "pendingRemoval" ? "legacy source pending removal" : "target transport/package export missing"}`).join("\n")}`);
+}
+const target = rows.filter(row => row.contractStatus === "target").length;
+console.log(`Public RPC matrix: ${target} target operations, ${rows.length - target} pending removal (${rows.length} total)`);

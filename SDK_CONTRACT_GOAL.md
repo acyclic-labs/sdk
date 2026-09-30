@@ -22,8 +22,9 @@ and idempotent selection receipts rather than public Object history.
 
 Objects v1 shipped in `acyclic-v0.1.5`; the redesign needs an explicit breaking
 protocol/package transition and must not reuse removed field numbers/names.
-The current canonical definitions still describe the old Objects model and
-are not the intended final state.
+Objects v2 definitions and source clients are implemented. The compatibility
+manifest, package exports, and filesystem/local consumers still expose the old
+model and require the final breaking transition.
 
 The human also authorized coherent verified slices to land before waiting on
 dependencies. Merging the current Actor/Worker/Stream transport slice does not
@@ -32,9 +33,13 @@ complete the remaining SDK goal or establish live qualification.
 PR: https://github.com/acyclic-labs/sdk/pull/223
 
 Canonical RPC inventory: `compatibility/public-rpc-matrix.json`, generated from
-the seven service descriptors by `scripts/generate-public-rpc-matrix.mjs`.
-The inventory contains 42 RPCs. Boolean transport fields indicate implemented
-surfaces; they do not establish live service acceptance.
+the ten service descriptors by `scripts/generate-public-rpc-matrix.mjs`.
+The current inventory contains 38 target RPCs plus 17 Objects v1 RPCs pending
+removal, covering all 55 RPCs still present in source. Boolean transport fields
+indicate implemented source surfaces; `typescriptPackageExported` distinguishes
+package exposure. These fields do not establish browser or live acceptance.
+The optional `complete` mode fails on remaining legacy RPCs or missing target
+transport/package exposure; it is a surface check, not the goal completion audit.
 
 ## Local evidence on 2026-09-30
 
@@ -83,11 +88,16 @@ handoff, not goal completion. The final Objects consumer rewrite remains pending
 
 ## Remaining SDK work
 
-- Rust HTTP Objects provider that preserves the revised hosted
-  JSON envelopes and implement existing provider traits.
-- TypeScript gRPC adapter for the revised Objects provider interface.
-- Complete Rust Objects/Stream client-to-server transport coverage, including
-  streaming payloads and canonical error responses.
+- Complete filesystem/local storage and simulation consumers' Objects v2
+  migration, preserving filesystem content addressing, retention and measured
+  physical operation counts; then remove active v1 source/generated paths.
+- Finish the breaking Objects package exports, compatibility manifest, metadata
+  and installed consumer transition. The v2 source clients already implement
+  Rust gRPC/HTTP and TypeScript Node/Bun gRPC/HTTP, but root exports still use v1.
+- Qualify browser HTTP execution and complete the remaining canonical Inference
+  idle retention and Actor/Worker logical network policy contract changes.
+- Audit and fold unique filesystem-accounting/Stream-acknowledgement work from
+  the earlier open PRs before final qualification.
 - Full generated/compatibility/package/repository qualification, local Windows
   qualification, and fixes for any observed failures.
 - Both initial review threads are resolved. Update the existing PR after local
@@ -419,3 +429,20 @@ Stream WASM artifact was rebuilt; Node and Bun gRPC replay/follow/fork/multi-pat
 Commit/authentication/error/bounds conformance passes against that artifact.
 Cloud account-wide retry routing and durable admission remain service-owner work;
 these local provider results do not establish live service acceptance.
+
+### RPC matrix reconciled with the Objects v2 transition
+
+The generated inventory now includes every RPC still present: 38 target operations
+and 17 legacy Objects v1 operations awaiting removal. Objects v2 Rust HTTP source
+is represented, and all 13 v2 TypeScript operations correctly report missing
+canonical package exports. Matrix freshness passes. Its `complete` mode fails on
+those 30 rows as expected, making the current surface gaps reviewable without
+claiming final acceptance. Objects v2 descriptor SHA-256 remains
+f5a0791f472ec500f3aa8a0a22f10b84426062ee0697b0fbed9457815c51894d.
+
+The complete `bun run test:contracts` runner passes at this source: Node/Bun
+invoke all earlier 42 RPCs and all 13 Objects v2 RPCs; Rust invokes all 15
+Actor/Worker operations through gRPC and HTTP and full Stream HTTP conformance.
+Objects v2 HTTP lifecycle/framing/error/bounds tests pass in Node and Bun.
+This is local runtime evidence; browser execution, final package transition,
+consumer migration, repository qualification and merge remain required.

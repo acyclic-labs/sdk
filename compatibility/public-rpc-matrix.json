@@ -4,461 +4,714 @@
     "kind": "unary",
     "request": "acyclic.actors.v1.CreateActorRequest",
     "response": "acyclic.actors.v1.CreateActorResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/actors/create",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.actors.v1.ActorsService/UpdateActor",
     "kind": "unary",
     "request": "acyclic.actors.v1.UpdateActorRequest",
     "response": "acyclic.actors.v1.UpdateActorResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/actors/update",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.actors.v1.ActorsService/InspectActor",
     "kind": "unary",
     "request": "acyclic.actors.v1.InspectActorRequest",
     "response": "acyclic.actors.v1.InspectActorResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/actors/inspect",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.actors.v1.ActorsService/AddSubscription",
     "kind": "unary",
     "request": "acyclic.actors.v1.AddSubscriptionRequest",
     "response": "acyclic.actors.v1.AddSubscriptionResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/actors/subscriptions/add",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.actors.v1.ActorsService/RemoveSubscription",
     "kind": "unary",
     "request": "acyclic.actors.v1.RemoveSubscriptionRequest",
     "response": "acyclic.actors.v1.RemoveSubscriptionResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/actors/subscriptions/remove",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.actors.v1.ActorsService/ResumeSubscription",
     "kind": "unary",
     "request": "acyclic.actors.v1.ResumeSubscriptionRequest",
     "response": "acyclic.actors.v1.ResumeSubscriptionResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/actors/subscriptions/resume",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.actors.v1.ActorsService/CheckpointActor",
     "kind": "unary",
     "request": "acyclic.actors.v1.CheckpointActorRequest",
     "response": "acyclic.actors.v1.CheckpointActorResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/actors/checkpoint",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.actors.v1.ActorsService/InvokeActor",
     "kind": "unary",
     "request": "acyclic.actors.v1.InvokeActorRequest",
     "response": "acyclic.actors.v1.InvokeActorResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/actors/invoke",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.workers.v1.WorkersService/PublishVersion",
     "kind": "unary",
     "request": "acyclic.workers.v1.PublishVersionRequest",
     "response": "acyclic.workers.v1.PublishVersionResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/workers/versions/publish",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.workers.v1.WorkersService/SelectDeployment",
     "kind": "unary",
     "request": "acyclic.workers.v1.SelectDeploymentRequest",
     "response": "acyclic.workers.v1.SelectDeploymentResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/workers/deployments/select",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.workers.v1.WorkersService/SubmitJob",
     "kind": "unary",
     "request": "acyclic.workers.v1.SubmitJobRequest",
     "response": "acyclic.workers.v1.SubmitJobResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/workers/jobs/submit",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.workers.v1.WorkersService/InspectJob",
     "kind": "unary",
     "request": "acyclic.workers.v1.InspectJobRequest",
     "response": "acyclic.workers.v1.InspectJobResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/workers/jobs/inspect",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.workers.v1.WorkersService/CancelJob",
     "kind": "unary",
     "request": "acyclic.workers.v1.CancelJobRequest",
     "response": "acyclic.workers.v1.CancelJobResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/workers/jobs/cancel",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.workers.v1.WorkersService/InvokeVersion",
     "kind": "unary",
     "request": "acyclic.workers.v1.InvokeVersionRequest",
     "response": "acyclic.workers.v1.InvokeResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/workers/versions/{sha256hex}/invoke",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.workers.v1.WorkersService/InvokeDeployment",
     "kind": "unary",
     "request": "acyclic.workers.v1.InvokeDeploymentRequest",
     "response": "acyclic.workers.v1.InvokeResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/workers/deployments/{alias}/invoke",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.stream.v2.StreamService/InspectIdempotency",
     "kind": "unary",
     "request": "acyclic.stream.v2.InspectIdempotencyRequest",
     "response": "acyclic.stream.v2.InspectIdempotencyResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/stream/idempotency/inspect",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.stream.v2.StreamService/Append",
     "kind": "unary",
     "request": "acyclic.stream.v2.AppendRequest",
     "response": "acyclic.stream.v2.AppendResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/stream/append",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.stream.v2.StreamService/Tail",
     "kind": "unary",
     "request": "acyclic.stream.v2.TailRequest",
     "response": "acyclic.stream.v2.TailResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/stream/tail",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.stream.v2.StreamService/Fork",
     "kind": "unary",
     "request": "acyclic.stream.v2.ForkRequest",
     "response": "acyclic.stream.v2.ForkReceipt",
+    "contractStatus": "target",
     "httpOperation": "v1/stream/fork",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.stream.v2.StreamService/Read",
     "kind": "server_streaming",
     "request": "acyclic.stream.v2.ReadRequest",
     "response": "acyclic.stream.v2.ReadResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/stream/read",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.stream.v2.StreamService/Follow",
     "kind": "server_streaming",
     "request": "acyclic.stream.v2.FollowRequest",
     "response": "acyclic.stream.v2.ReadResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/stream/tail + read (polling)",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.stream.v2.StreamService/Children",
     "kind": "server_streaming",
     "request": "acyclic.stream.v2.ChildrenRequest",
     "response": "acyclic.stream.v2.ChildrenResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/stream/children",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.stream.v2.StreamService/ChildrenPage",
     "kind": "unary",
     "request": "acyclic.stream.v2.ChildrenPageRequest",
     "response": "acyclic.stream.v2.ChildrenPageResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/stream/children/page",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.stream.v2.StreamService/Commit",
     "kind": "unary",
     "request": "acyclic.stream.v2.CommitRequest",
     "response": "acyclic.stream.v2.CommitResponse",
+    "contractStatus": "target",
     "httpOperation": "v1/stream/commit",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.stream.v2.StreamService/ReadCommit",
     "kind": "unary",
     "request": "acyclic.stream.v2.ReadCommitRequest",
     "response": "acyclic.stream.v2.CommittedEnvelope",
+    "contractStatus": "target",
     "httpOperation": "v1/stream/commits/read",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "rpc": "acyclic.objects.v2.BucketsService/CreateBucket",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.CreateBucketRequest",
+    "response": "acyclic.objects.v2.Bucket",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/buckets/create",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.BucketsService/HeadBucket",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.HeadBucketRequest",
+    "response": "acyclic.objects.v2.Bucket",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/buckets/head",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.BucketsService/DeleteBucket",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.DeleteBucketRequest",
+    "response": "acyclic.objects.v2.DeleteBucketResponse",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/buckets/delete",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.ObjectsService/PutObject",
+    "kind": "client_streaming",
+    "request": "acyclic.objects.v2.PutObjectRequest",
+    "response": "acyclic.objects.v2.ObjectInfo",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/objects/put",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.ObjectsService/GetObject",
+    "kind": "server_streaming",
+    "request": "acyclic.objects.v2.GetObjectRequest",
+    "response": "acyclic.objects.v2.GetObjectResponse",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/objects/get",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.ObjectsService/HeadObject",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.HeadObjectRequest",
+    "response": "acyclic.objects.v2.HeadObjectResponse",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/objects/head",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.ObjectsService/DeleteObject",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.DeleteObjectRequest",
+    "response": "acyclic.objects.v2.DeleteObjectResponse",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/objects/delete",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.ObjectsService/ListObjects",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.ListObjectsRequest",
+    "response": "acyclic.objects.v2.ListObjectsResponse",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/objects/list",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.MultipartService/CreateMultipart",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.CreateMultipartRequest",
+    "response": "acyclic.objects.v2.MultipartUpload",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/multipart/create",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.MultipartService/UploadPart",
+    "kind": "client_streaming",
+    "request": "acyclic.objects.v2.UploadPartRequest",
+    "response": "acyclic.objects.v2.UploadedPart",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/multipart/upload-part",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.MultipartService/ListParts",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.ListPartsRequest",
+    "response": "acyclic.objects.v2.ListPartsResponse",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/multipart/list-parts",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.MultipartService/CompleteMultipart",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.CompleteMultipartRequest",
+    "response": "acyclic.objects.v2.ObjectInfo",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/multipart/complete",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "rpc": "acyclic.objects.v2.MultipartService/AbortMultipart",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.AbortMultipartRequest",
+    "response": "acyclic.objects.v2.AbortMultipartResponse",
+    "contractStatus": "target",
+    "httpOperation": "v2/objects/multipart/abort",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.BucketsService/CreateBucket",
     "kind": "unary",
     "request": "acyclic.objects.v1.CreateBucketRequest",
     "response": "acyclic.objects.v1.Bucket",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/buckets/create",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.BucketsService/HeadBucket",
     "kind": "unary",
     "request": "acyclic.objects.v1.HeadBucketRequest",
     "response": "acyclic.objects.v1.Bucket",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/buckets/head",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.BucketsService/DeleteBucket",
     "kind": "unary",
     "request": "acyclic.objects.v1.DeleteBucketRequest",
     "response": "acyclic.objects.v1.DeleteBucketResponse",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/buckets/delete",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.ObjectsService/PutObject",
     "kind": "client_streaming",
     "request": "acyclic.objects.v1.PutObjectRequest",
     "response": "acyclic.objects.v1.ObjectVersion",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/objects/put",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.ObjectsService/GetObject",
     "kind": "server_streaming",
     "request": "acyclic.objects.v1.GetObjectRequest",
     "response": "acyclic.objects.v1.GetObjectResponse",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/objects/get",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.ObjectsService/HeadObject",
     "kind": "unary",
     "request": "acyclic.objects.v1.HeadObjectRequest",
     "response": "acyclic.objects.v1.HeadObjectResponse",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/objects/head",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.ObjectsService/DeleteObject",
     "kind": "unary",
     "request": "acyclic.objects.v1.DeleteObjectRequest",
     "response": "acyclic.objects.v1.DeleteObjectResponse",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/objects/delete",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.ObjectsService/ListObjects",
     "kind": "unary",
     "request": "acyclic.objects.v1.ListObjectsRequest",
     "response": "acyclic.objects.v1.ListObjectsResponse",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/objects/list",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.MultipartService/CreateMultipart",
     "kind": "unary",
     "request": "acyclic.objects.v1.CreateMultipartRequest",
     "response": "acyclic.objects.v1.MultipartUpload",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/multipart/create",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.MultipartService/UploadPart",
     "kind": "client_streaming",
     "request": "acyclic.objects.v1.UploadPartRequest",
     "response": "acyclic.objects.v1.UploadedPart",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/multipart/upload-part",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.MultipartService/ListParts",
     "kind": "unary",
     "request": "acyclic.objects.v1.ListPartsRequest",
     "response": "acyclic.objects.v1.ListPartsResponse",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/multipart/list-parts",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.MultipartService/CompleteMultipart",
     "kind": "unary",
     "request": "acyclic.objects.v1.CompleteMultipartRequest",
     "response": "acyclic.objects.v1.ObjectVersion",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/multipart/complete",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.MultipartService/AbortMultipart",
     "kind": "unary",
     "request": "acyclic.objects.v1.AbortMultipartRequest",
     "response": "acyclic.objects.v1.AbortMultipartResponse",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/multipart/abort",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.SnapshotsService/CreateSnapshot",
     "kind": "unary",
     "request": "acyclic.objects.v1.CreateSnapshotRequest",
     "response": "acyclic.objects.v1.Snapshot",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/snapshots/create",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.SnapshotsService/DestroySnapshot",
     "kind": "unary",
     "request": "acyclic.objects.v1.DestroySnapshotRequest",
     "response": "acyclic.objects.v1.DestroySnapshotResponse",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/snapshots/destroy",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.SnapshotsService/ForkSnapshot",
     "kind": "unary",
     "request": "acyclic.objects.v1.ForkSnapshotRequest",
     "response": "acyclic.objects.v1.Bucket",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/snapshots/fork",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.SnapshotsService/ForkBucket",
     "kind": "unary",
     "request": "acyclic.objects.v1.ForkBucketRequest",
     "response": "acyclic.objects.v1.Bucket",
+    "contractStatus": "pendingRemoval",
     "httpOperation": "v1/objects/snapshots/fork",
     "rustGrpc": true,
     "rustHttp": false,
     "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
   }
 ]
