@@ -8,6 +8,8 @@ pub mod wire {
 }
 
 mod contract;
+#[cfg(feature = "http-codec")]
+pub mod http_codec;
 pub use contract::{
     MAXIMUM_EVALUATION_CANDIDATES, MAXIMUM_EVALUATION_CASES, MAXIMUM_EVALUATION_METRICS,
     MAXIMUM_EVALUATION_RESULTS, MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES, WatchRunState,

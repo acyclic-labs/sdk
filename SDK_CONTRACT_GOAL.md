@@ -626,3 +626,22 @@ Installed tarball smoke passes for all ten workspace packages (nine release
 packages and one workspace-only package), with Bun/Node imports and strict
 declarations. A Buf git-ref comparison could not clone the local partial Git
 object store; direct canonical descriptor comparison provides semantic evidence.
+
+### Native Inference HTTP codec handoff
+
+The optional `acyclic-inference/http-codec` feature now exposes descriptor-derived
+inventory for all 14 customer RPC routes, bounded protobuf JSON request decoding
+and bounded response/event encoding. It builds without `host` on native Windows
+and WASM. No service route table or wire shape is maintained in parallel. The
+codec rejects unknown request fields, trailing JSON, malformed wire messages and
+wire/JSON ceilings; uint64 decimal strings, base64 bytes and enum names round-trip.
+Output serialization uses a capped writer, including escaped-string expansion.
+Watch events remain individual JSON values for the service to frame as NDJSON.
+
+Qualification: all 14 native Inference unit tests and three external codec tests
+pass; core-only codec tests and strict native all-target/WASM Clippy pass. Existing
+protobuf descriptors and published package versions are unchanged. The codec is
+serialization only: Cloud still owns authentication, semantic admission,
+caller-bound checks, stream lifecycle and actual canonical HTTP mounting.
+The Inference owner's negative warm-admission/cancellation receipt question and
+Billing logical usage units/provenance remain separate exact contract dependencies.

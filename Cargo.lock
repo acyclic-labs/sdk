@@ -188,6 +188,7 @@ dependencies = [
  "prost-build",
  "prost-reflect",
  "prost-types",
+ "serde_json",
  "sha2 0.10.9",
  "thiserror",
  "tokio",
