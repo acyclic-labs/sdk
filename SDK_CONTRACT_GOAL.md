@@ -2,6 +2,33 @@
 
 Status: active; local transport work is incomplete and PR 223 is unmerged.
 
+## Superseding Objects direction
+
+On 2026-09-30 the human user instructed the Integrator chat to change the SDK
+Objects API for eventual consistency and horizontal scaling, removing public
+versions, forks, and operations that require cross-object coordination. That
+user message was inspected directly. This replaces the original Objects
+compatibility/capture requirement; other family requirements remain in force.
+The uncommitted versioned Objects HTTP draft was removed.
+
+Subsequent inspected human replies require S3 bucket/key addressing, eventual
+reads and lexicographic continuation listing, multipart, ranges, and opaque
+ETag single-key conditional writes. Public versions, bucket snapshots/forks,
+and captured listings are removed from the target. FS keeps its own semantics
+and stores content-addressed bytes; managed FS deployment belongs on Actors.
+Stream multi-path Commit remains, with bounded participants and source-shard
+fork placement by default. Durable inputs use private retained generations
+and idempotent selection receipts rather than public Object history.
+
+Objects v1 shipped in `acyclic-v0.1.5`; the redesign needs an explicit breaking
+protocol/package transition and must not reuse removed field numbers/names.
+The current canonical definitions still describe the old Objects model and
+are not the intended final state.
+
+The human also authorized coherent verified slices to land before waiting on
+dependencies. Merging the current Actor/Worker/Stream transport slice does not
+complete the remaining SDK goal or establish live qualification.
+
 PR: https://github.com/acyclic-labs/sdk/pull/223
 
 Canonical RPC inventory: `compatibility/public-rpc-matrix.json`, generated from
@@ -23,30 +50,60 @@ surfaces; they do not establish live service acceptance.
   alias creation versus positive-revision replacement validation.
 - `cargo clippy -p acyclic-actors -p acyclic-workers --all-targets --offline --
   -D warnings`: passed.
+- `cargo test --workspace --all-features --locked` passed locally on Windows,
+  including 1,119 filesystem unit tests and crash-atomicity cases. Native mount
+  tests marked ignored still require their explicit qualification lanes.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  passed; the finalized Workers change also passed its focused tests/Clippy.
 - Actor/Worker descriptors and generated bindings were regenerated; current
   digests are recorded in `compatibility/manifest.json`. Objects v1 and Stream
   v2 schema/descriptor digests remain unchanged.
 - `bun scripts/check-generated.mjs`, `bun scripts/check-metadata.mjs`,
   and `bunx buf lint`: passed.
+- Full `bun run test`: 404 package tests, 12 hosted filesystem tests, and the
+  transport runner passed. Installed tarball smoke passed all ten packages in
+  Node/Bun with strict declarations after isolating its Bun install cache.
+- `GrpcStreamProvider` implements the existing TypeScript provider interface
+  using Rust request validation and unary response projection. Its local TLS
+  server delegates actual operations to Rust MemoryStream through WASM.
+  Node/Bun checks cover replay, cancellable follow, forks, atomic multi-path
+  Commit, conflict without mutation, retry replay/rebinding, error mapping,
+  response cursor integrity, and configured message bounds.
+- Workers v1 now accepts logical bucket/key `ObjectRef` inputs, reserving the
+  removed version tag/name. `JobResult` returns bounded exact bytes instead of
+  an Object version pointer. The Cloud Integrator confirmed this shape before
+  first public merge. Native and Node/Bun tests exercise these fields through
+  both transports; private retention/durable acceptance remain Cloud work.
+
+## Pinned intermediate handoff
+
+Signed commit `87648c845b99a93a6a94ccc943b33fd1328708e5` was pushed to PR 223
+for the Integrator's Workers dependency. This commit is an intermediate contract
+handoff, not goal completion. The final Objects consumer rewrite remains pending.
 
 ## Remaining SDK work
 
 - Rust HTTP Objects and Streams providers that preserve the established hosted
   JSON envelopes and implement existing provider traits.
-- TypeScript gRPC adapters for existing Objects/Stream provider interfaces.
-- Stronger semantic fixtures for subscriptions/checkpoints, pinned versus alias
-  invocation, streaming payloads, and bounded gRPC/error responses.
+- TypeScript gRPC adapter for the revised Objects provider interface.
+- Complete Rust Objects/Stream client-to-server transport coverage, including
+  streaming payloads and canonical error responses.
 - Full generated/compatibility/package/repository qualification, local Windows
   qualification, and fixes for any observed failures.
-- Resolve both review threads after verifying the concrete Actor headers and
-  Worker alias CAS changes. Update the existing PR after local verification.
+- Both initial review threads are resolved. Update the existing PR after local
+  verification and merge the coherent slice once required checks pass.
 
 ## CI diagnosis and merge dependency
 
 Run 36631259983 failed in planning: sequential qualification-marker cache restores
 exhausted the plan job's ten-minute timeout. The Windows job failed while waiting
-for that plan; it never checked out or tested SDK code. Planning cache work needs
-a bounded fallback before the next qualification push.
+for that plan; it never checked out or tested SDK code. The next run's plan
+passed in 18 seconds, so no workflow change is justified by that timeout alone.
+
+Run 36649445498's Linux lane failed release archive validation: Actors and
+Workers changelog titles/version headings did not match the archive contract.
+The exact validator was run locally, metadata was fixed, and the validator is
+now included in installed tarball smoke for every published TypeScript package.
 
 The Integrator chat owns canonical Workers service/API integration and explicitly
 needs the Workers v1 descriptors/client exports to build and qualify both
@@ -58,7 +115,7 @@ Merge only after stable contract handoff and required checks pass.
 The Integrator owns Workers server integration. Data hosts own local bringup of
 Streams, Objects, Actors, and origins. SDK local fixtures do not establish staging
 or production acceptance. Cloud owners must implement the canonical server RPCs
-and HTTP envelopes, account authentication, admission, authority/attempt fencing,
+  and HTTP envelopes, account authentication, admission, authority/attempt fencing,
 and their service behavior. Stream v2 requires atomic multi-path Commit and
 indefinite retained history, with no public deletion, truncation, or rewind.
 

@@ -60,15 +60,23 @@ pub async fn connect_with_ca_certificate(
     token: &str,
     ca: Option<&[u8]>,
 ) -> Result<Client, ConnectError> {
-    if !endpoint.starts_with("https://") {
+    let valid_endpoint = reqwest::Url::parse(endpoint).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+    });
+    if !valid_endpoint {
         return Err(ConnectError::InsecureEndpoint);
     }
     if token.trim().is_empty() {
         return Err(ConnectError::InvalidCredential);
     }
-    let authorization = format!("Bearer {token}")
+    let mut authorization: MetadataValue<Ascii> = format!("Bearer {token}")
         .parse()
         .map_err(|_| ConnectError::InvalidCredential)?;
+    authorization.set_sensitive(true);
     let mut tls = ClientTlsConfig::new().with_webpki_roots();
     if let Some(ca) = ca {
         if ca.is_empty() || ca.len() > 64 * 1024 {
@@ -84,7 +92,9 @@ pub async fn connect_with_ca_certificate(
         wire::workers_service_client::WorkersServiceClient::with_interceptor(
             channel,
             BearerAuth(authorization),
-        ),
+        )
+        .max_decoding_message_size(16 * 1024 * 1024)
+        .max_encoding_message_size(16 * 1024 * 1024),
     )
 }
 

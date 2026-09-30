@@ -38,6 +38,22 @@ for await (const record of events.read({ from: 0n, limit: 100 })) {
 
 Calling `client.json(path)` gives a stream of `JsonValue`. Pass a parser when the stream has a narrower type; the parser validates each decoded record before it reaches the application.
 
+Node and Bun can use the same handles over native gRPC:
+
+```ts
+import { StreamClient } from "@acyclic-labs/stream";
+import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";
+
+const client = new StreamClient(new GrpcStreamProvider({ endpoint, token }));
+```
+
+The gRPC provider supports streaming reads and cancellable follow, forks,
+idempotency inspection, and atomic multi-path commits. Requests and unary
+responses use the same Rust validation and projection as the memory provider.
+Message sizes are bounded; an optional private CA certificate extends system
+trust. Token creation uses the HTTP provider because the Stream gRPC service
+does not publish a token RPC. Browsers use the HTTP provider.
+
 For a service, use `new StreamClient(new HttpStreamProvider({ endpoint, token }))` or `Stream.fromEnv()` with `ACYCLIC_STREAM_ENDPOINT` and `ACYCLIC_API_KEY`. Service endpoints must be HTTPS. Sequence numbers are `bigint`; persist the last consumed cursor and resume reads or `follow` from the appropriate position. Use `ifTail` for optimistic append concurrency and an idempotency key when retrying mutations.
 
 `MemoryStreamProvider` runs the Rust memory provider through package-local WebAssembly. It is deterministic and process-local; use a durable service for reads across restarts. See the [full quickstart](https://github.com/acyclic-labs/sdk/blob/main/typescript/packages/stream/examples/quickstart.ts), [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/stream/src), and [protocol](https://github.com/acyclic-labs/sdk/tree/main/rust/crates/stream/proto/stream).

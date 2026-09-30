@@ -13,6 +13,10 @@ context)` for durable jobs, or both. The package exports Rust-generated
 and input with a higher attempt number; external effects need application
 idempotency.
 
+Object inputs name an S3 bucket and key. The service privately retains the
+accepted bytes for retries. Job results contain exact bytes bounded by the
+accepted output budget (at most 1 MiB), without public Object version references.
+
 The Rust crate `acyclic-workers` and `proto/workers/v1/workers.proto` own the
 contract. Import generated request and response schemas from the package or
 `@acyclic-labs/workers/proto`; `HttpWorkersClient` supplies the transport.

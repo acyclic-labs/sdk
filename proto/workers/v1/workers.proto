@@ -33,16 +33,26 @@ message SelectDeploymentRequest {
 }
 message SelectDeploymentResponse { Deployment deployment = 1; }
 
-message ObjectVersionRef {
-  string bucket_id = 1;
-  string object_key = 2;
-  string version_id = 3;
+// Logical S3 object selected and privately retained at durable job acceptance.
+// Retries read the same retained bytes even if this public key is replaced.
+message ObjectRef {
+  string bucket = 1;
+  string key = 2;
+  reserved 3;
+  reserved "version_id";
 }
 message Payload {
   oneof source {
     bytes inline_bytes = 1;
-    ObjectVersionRef object_version = 2;
+    ObjectRef object = 2;
   }
+}
+// Exact accepted job output, bounded by JobLimits.output_bytes. Storage and
+// retention are service-owned; no replaceable public Object pointer is exposed.
+message JobResult {
+  bytes body = 1;
+  reserved 2;
+  reserved "object_version";
 }
 message JobLimits {
   uint64 timeout_millis = 1;
@@ -83,7 +93,7 @@ message JobObservation {
   JobState state = 2;
   bytes resolved_sha256 = 3;
   uint32 attempt = 4;
-  Payload result = 5;
+  JobResult result = 5;
   string failure_code = 6;
   bool cancellation_requested = 7;
 }

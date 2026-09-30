@@ -12,8 +12,8 @@
     "workers": {
       "version": "0.1.5",
       "crateVersion": "0.1.5",
-      "schemaDigest": "sha256:75ab3759c74b84edeee42377fe70e9f3855d94f396080fc527fd5e04134e8fc1",
-      "descriptorDigest": "sha256:a01498f22bd493d2f2d227fbcc8fe47c8f89ef10497a6b552a1c7b067378f28f"
+      "schemaDigest": "sha256:56656b075e3b439a107d956d04f06a71ed5e49943154fdd1051886cf2d94790f",
+      "descriptorDigest": "sha256:3e62c0a2c713a43b262e18354294bff5de8af902a352294aa8464386ba618b9e"
     },
     "harness": {
       "version": "0.1.5",

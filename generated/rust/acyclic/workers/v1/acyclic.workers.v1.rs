@@ -50,14 +50,14 @@ pub struct SelectDeploymentResponse {
     #[prost(message, optional, tag = "1")]
     pub deployment: ::core::option::Option<Deployment>,
 }
+/// Logical S3 object selected and privately retained at durable job acceptance.
+/// Retries read the same retained bytes even if this public key is replaced.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ObjectVersionRef {
+pub struct ObjectRef {
     #[prost(string, tag = "1")]
-    pub bucket_id: ::prost::alloc::string::String,
+    pub bucket: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
-    pub object_key: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
-    pub version_id: ::prost::alloc::string::String,
+    pub key: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Payload {
@@ -71,8 +71,15 @@ pub mod payload {
         #[prost(bytes, tag = "1")]
         InlineBytes(::prost::alloc::vec::Vec<u8>),
         #[prost(message, tag = "2")]
-        ObjectVersion(super::ObjectVersionRef),
+        Object(super::ObjectRef),
     }
+}
+/// Exact accepted job output, bounded by JobLimits.output_bytes. Storage and
+/// retention are service-owned; no replaceable public Object pointer is exposed.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct JobResult {
+    #[prost(bytes = "vec", tag = "1")]
+    pub body: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct JobLimits {
@@ -136,7 +143,7 @@ pub struct JobObservation {
     #[prost(uint32, tag = "4")]
     pub attempt: u32,
     #[prost(message, optional, tag = "5")]
-    pub result: ::core::option::Option<Payload>,
+    pub result: ::core::option::Option<JobResult>,
     #[prost(string, tag = "6")]
     pub failure_code: ::prost::alloc::string::String,
     #[prost(bool, tag = "7")]

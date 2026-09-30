@@ -1,5 +1,12 @@
 import { rootCertificates } from "node:tls";
-import { createClient, type Interceptor } from "@connectrpc/connect";
+import { createClient, ConnectError, Code, type Interceptor } from "@connectrpc/connect";
+import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import * as wire from "../generated/proto/stream/v2/stream_pb.js";
+import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
+import { validateAppend } from "./client.js";
+import { normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { StreamError, commitId } from "./types.js";
+import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v2/stream_pb.js";
 
@@ -23,4 +30,122 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
     return next(request);
   };
   return createClient(StreamService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
+}
+
+/** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */
+export class GrpcStreamProvider implements StreamProvider {
+  readonly #client: ReturnType<typeof createStreamGrpcClient>;
+  constructor(options: StreamGrpcOptions) { this.#client = createStreamGrpcClient(options); }
+
+  async #call<T>(operation: string, call: () => Promise<T>): Promise<T> {
+    try { return await call(); } catch (error) { throw providerError(error, operation); }
+  }
+  #project<T>(operation: string, bytes: Uint8Array): T {
+    try { return projectMemoryResponse(operation, bytes) as T; }
+    catch { throw new StreamError("invalid_response", `invalid ${operation} response`); }
+  }
+  async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
+    const request = fromBinary(wire.InspectIdempotencyRequestSchema, wireInspectIdempotencyRequest(key));
+    const response = await this.#call("inspect_idempotency", () => this.#client.inspectIdempotency(request));
+    if (response.observation !== undefined && !sameBytes(response.observation.idempotencyKey, key)) throw new StreamError("invalid_response", "idempotency response names another retry identity");
+    return this.#project("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response));
+  }
+  async tail(path: string): Promise<bigint> {
+    await validateWireRequest({ kind: "tail", path });
+    return (await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, wireRequest({ kind: "tail", path }))))).tail;
+  }
+  async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> {
+    const records = values.map(value => value.slice());
+    const authored = options === undefined ? undefined : structuredClone(options);
+    await validateAppend(path, records, authored);
+    const request = fromBinary(wire.AppendRequestSchema, wireAppendRequest(path, records, authored));
+    const response = await this.#call("append", () => this.#client.append(request));
+    return this.#project("append", toBinary(wire.AppendResponseSchema, response));
+  }
+  async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> {
+    const request = { kind: "fork" as const, source, destination, ...(options === undefined ? {} : { options: structuredClone(options) }) };
+    await validateWireRequest(request);
+    const response = await this.#call("fork", () => this.#client.fork(fromBinary(wire.ForkRequestSchema, wireRequest(request))));
+    return this.#project("fork", toBinary(wire.ForkReceiptSchema, response));
+  }
+  async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
+    const request = { kind: "read" as const, path, from: options.from, limit: options.limit };
+    await validateWireRequest(request);
+    let next = request.from;
+    let count = 0;
+    try {
+      for await (const response of this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)))) {
+        if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
+        const record = checkedRecord(response.record, next);
+        next = record.sequence + 1n;
+        yield record;
+      }
+    } catch (error) { throw providerError(error, "read"); }
+  }
+  async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
+    const request = { kind: "follow" as const, path, from: options.from };
+    await validateWireRequest(request);
+    if (options.signal?.aborted) return;
+    let next = request.from;
+    try {
+      for await (const response of this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), options.signal === undefined ? {} : { signal: options.signal })) {
+        if (options.signal?.aborted) return;
+        const record = checkedRecord(response.record, next);
+        next = record.sequence + 1n;
+        yield record;
+      }
+    } catch (error) {
+      if (options.signal?.aborted) return;
+      throw providerError(error, "follow");
+    }
+  }
+  async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
+    const authored = { kind: "children_page" as const, limit: request.limit,
+      ...(request.parent === undefined ? {} : { parent: request.parent }),
+      ...(request.after === undefined ? {} : { after: request.after }),
+      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion.slice() }),
+    };
+    await validateWireRequest(authored);
+    const response = await this.#call("children_page", () => this.#client.childrenPage(fromBinary(wire.ChildrenPageRequestSchema, wireRequest(authored))));
+    return this.#project("children_page", toBinary(wire.ChildrenPageResponseSchema, response));
+  }
+  async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
+    const input = await normalizeWireCommitBytes(structuredClone(request), structuredClone(options));
+    const response = await this.#call("commit", () => this.#client.commit(fromBinary(wire.CommitRequestSchema, input)));
+    return this.#project("commit", toBinary(wire.CommitResponseSchema, response));
+  }
+  async readCommit(id: CommitId): Promise<CommittedEnvelope> {
+    const request = fromBinary(wire.ReadCommitRequestSchema, wireReadCommitRequest(id));
+    const response = await this.#call("read_commit", () => this.#client.readCommit(request));
+    if (!sameBytes(response.commitId, id)) throw new StreamError("invalid_response", "commit response names another commit");
+    return this.#project("read_commit", toBinary(wire.CommittedEnvelopeSchema, response));
+  }
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+function checkedRecord(record: wire.Record | undefined, expected: bigint): EncodedRecord {
+  if (record === undefined || record.sequence !== expected || record.value.length > wire.StreamLimit.MAX_RECORD_BYTES) throw new StreamError("invalid_response", "stream response contains an invalid record cursor or body");
+  try { return { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros }; }
+  catch { throw new StreamError("invalid_response", "stream record omitted its canonical commit identity"); }
+}
+/** Matches the Rust gRPC status mapping; unknown peer statuses remain unavailable. */
+function providerError(error: unknown, operation: string): Error {
+  if (error instanceof StreamError) return error;
+  if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
+  let code = "unavailable";
+  switch (error.code) {
+    case Code.InvalidArgument: code = ["invalid_path", "limit_exceeded"].includes(error.rawMessage) ? error.rawMessage : "invalid_argument"; break;
+    case Code.NotFound: code = operation === "read_commit" ? "commit_not_found" : "stream_not_found"; break;
+    case Code.AlreadyExists: code = "destination_exists"; break;
+    case Code.OutOfRange: code = "out_of_range"; break;
+    case Code.PermissionDenied: case Code.Unauthenticated: code = "access_denied"; break;
+    case Code.ResourceExhausted: code = "capacity_exhausted"; break;
+    case Code.FailedPrecondition:
+      if (["hierarchy_changed", "idempotency_mismatch", "prefix_not_retained", "deadline_elapsed"].includes(error.rawMessage)) code = error.rawMessage;
+      break;
+    case Code.Unimplemented: if (error.rawMessage === "unsupported_capability") code = "unsupported"; break;
+  }
+  return new StreamError(code, error.rawMessage);
 }

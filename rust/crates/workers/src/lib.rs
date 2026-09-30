@@ -129,10 +129,11 @@ pub fn validate_submit(request: &wire::SubmitJobRequest) -> Result<(), ContractE
         wire::payload::Source::InlineBytes(bytes) if bytes.len() > MAX_INLINE_BYTES => {
             return Err(ContractError::LimitExceeded);
         }
-        wire::payload::Source::ObjectVersion(reference)
-            if reference.bucket_id.is_empty()
-                || reference.object_key.is_empty()
-                || reference.version_id.is_empty() =>
+        wire::payload::Source::Object(reference)
+            if reference.bucket.is_empty()
+                || reference.bucket.len() > 63
+                || reference.key.is_empty()
+                || reference.key.len() > 1024 =>
         {
             return Err(ContractError::InvalidArgument);
         }
@@ -155,6 +156,20 @@ pub fn validate_submit(request: &wire::SubmitJobRequest) -> Result<(), ContractE
     Ok(())
 }
 
+/// Validates exact job output against the accepted job's bounded output budget.
+pub fn validate_result(
+    result: &wire::JobResult,
+    limits: &wire::JobLimits,
+) -> Result<(), ContractError> {
+    if limits.output_bytes == 0 || limits.output_bytes > MAX_INLINE_BYTES as u64 {
+        return Err(ContractError::InvalidArgument);
+    }
+    if result.body.len() as u64 > limits.output_bytes {
+        return Err(ContractError::LimitExceeded);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,7 +186,10 @@ mod tests {
         request.expected_revision = Some(7);
         assert_eq!(validate_select(&request), Ok(()));
         request.expected_revision = Some(0);
-        assert_eq!(validate_select(&request), Err(ContractError::InvalidArgument));
+        assert_eq!(
+            validate_select(&request),
+            Err(ContractError::InvalidArgument)
+        );
     }
 
     #[test]
@@ -192,7 +210,7 @@ mod tests {
 
     #[test]
     fn job_is_pinned_or_resolved_at_acceptance() {
-        let request = wire::SubmitJobRequest {
+        let mut request = wire::SubmitJobRequest {
             target: Some(wire::JobTarget {
                 target: Some(wire::job_target::Target::DeploymentAlias("current".into())),
             }),
@@ -211,5 +229,44 @@ mod tests {
             idempotency_key: "job-a".into(),
         };
         assert_eq!(validate_submit(&request), Ok(()));
+        request.input = Some(wire::Payload {
+            source: Some(wire::payload::Source::Object(wire::ObjectRef {
+                bucket: "customer-input".into(),
+                key: "video/input.mp4".into(),
+            })),
+        });
+        assert_eq!(validate_submit(&request), Ok(()));
+        request.input = Some(wire::Payload {
+            source: Some(wire::payload::Source::Object(wire::ObjectRef {
+                bucket: "customer-input".into(),
+                key: String::new(),
+            })),
+        });
+        assert_eq!(
+            validate_submit(&request),
+            Err(ContractError::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn result_is_bounded_by_the_accepted_budget() {
+        let limits = wire::JobLimits {
+            timeout_millis: 1000,
+            memory_bytes: 1024,
+            output_bytes: 2,
+        };
+        assert_eq!(
+            validate_result(&wire::JobResult { body: vec![1, 2] }, &limits),
+            Ok(())
+        );
+        assert_eq!(
+            validate_result(
+                &wire::JobResult {
+                    body: vec![1, 2, 3]
+                },
+                &limits
+            ),
+            Err(ContractError::LimitExceeded)
+        );
     }
 }

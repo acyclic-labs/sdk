@@ -4,6 +4,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { validateArchive } from "./validate-npm-package.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packagesRoot = join(root, "typescript", "packages");
@@ -64,6 +65,7 @@ const run = (command, args, options = {}) => {
     encoding: "utf8",
     stdio: options.capture === false ? "inherit" : ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    env: options.env ?? process.env,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -129,6 +131,10 @@ for (const [name, check] of Object.entries(checks)) {
   if (!(await check(module))) throw new Error(name + " representative API check failed");
 }
 console.log(${JSON.stringify(runtime)} + " import and representative API checks passed for " + Object.keys(expected).length + " packages");
+for (const [name, exported] of Object.entries({ actors: "createActorsGrpcClient", workers: "createWorkersGrpcClient", objects: "createObjectsGrpcClients", stream: "GrpcStreamProvider" })) {
+  const module = await import("@acyclic-labs/" + name + "/grpc");
+  if (typeof module[exported] !== "function") throw new Error(name + " gRPC export is absent");
+}
 `;
 
 const main = async () => {
@@ -162,6 +168,9 @@ const main = async () => {
       }
       const packedPath = run("bun", ["pm", "pack", "--destination", packDirectory, "--ignore-scripts", "--quiet"], { cwd: packageDirectory }).trim();
       if (!packedPath) throw new Error(`${manifest.name} did not produce a tarball path`);
+      if (publishedPackageEntries.some(entry => entry.name === manifest.name)) {
+        validateArchive(resolve(packedPath), manifest.name, manifest.version, `typescript/packages/${packageDirectories[i]}`);
+      }
       tarballs.set(manifest.name, resolve(packedPath));
     }
     const tarballSpec = (file) => `file:./${relative(tempRoot, file).split(sep).join("/")}`;
@@ -175,13 +184,19 @@ const main = async () => {
       overrides: Object.fromEntries([...tarballs].map(([name, file]) => [name, tarballSpec(file)])),
     }, null, 2));
     await writeFile(join(tempRoot, "probe.mjs"), probeSource("Bun", expectedExports));
-    run("bun", ["install", "--no-progress"], { cwd: tempRoot });
+    // Tarball install keys collide in Bun's shared Windows cache across smoke
+    // runs. Keep the installed-package qualification isolated with its packs.
+    run("bun", ["install", "--no-progress"], {
+      cwd: tempRoot,
+      env: { ...process.env, BUN_INSTALL_CACHE_DIR: join(tempRoot, "install-cache") },
+    });
     run("bun", ["probe.mjs"], { cwd: tempRoot });
     await writeFile(join(tempRoot, "probe-node.mjs"), probeSource("Node", expectedExports));
     run("node", ["probe-node.mjs"], { cwd: tempRoot });
     const typeImports = Object.entries(expectedExports).map(([name, exportName], index) =>
       `import { ${exportName} as package${index} } from ${JSON.stringify(name)};`);
-    await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\n`);
+    const grpcTypeImports = ['import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";', 'import { createActorsGrpcClient } from "@acyclic-labs/actors/grpc";', 'import { createWorkersGrpcClient } from "@acyclic-labs/workers/grpc";', 'import { createObjectsGrpcClients } from "@acyclic-labs/objects/grpc";'];
+    await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\n${grpcTypeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\nvoid [GrpcStreamProvider, createActorsGrpcClient, createWorkersGrpcClient, createObjectsGrpcClients];\n`);
     await writeFile(join(tempRoot, "tsconfig.types.json"), JSON.stringify({
       compilerOptions: {
         target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext",

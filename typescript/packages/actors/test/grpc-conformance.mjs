@@ -24,6 +24,49 @@ const expected = services.reduce((count, service) => count + service.methods.len
 const file = fileURLToPath(import.meta.url);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 
+function responseInitializer(method) {
+  if (method.name === "InvokeActor") return { status: 201, headers: [{ name: "location", value: "/result" }] };
+  if (method.name === "CheckpointActor") return { actor: { actorId: "actor-a", checkpointEpoch: 9n } };
+  if (method.name === "InvokeVersion") return { resolvedSha256: new Uint8Array(32).fill(1) };
+  if (method.name === "InvokeDeployment") return { resolvedSha256: new Uint8Array(32).fill(2), resolvedRevision: 8n };
+  if (method.name === "SubmitJob") return { job: { jobId: "job-a", state: 1, resolvedSha256: new Uint8Array(32).fill(7) } };
+  if (method.name === "InspectJob") return { job: { jobId: "job-a", state: 3, resolvedSha256: new Uint8Array(32).fill(7), result: { body: new Uint8Array([3, 4]) } } };
+  return {};
+}
+
+function inspectActorRequest(method, request) {
+  if (method.name === "SubmitJob") {
+    assert.equal(request.input.source.case, "object");
+    assert.deepEqual([request.input.source.value.bucket, request.input.source.value.key], ["customer-input", "video/input.mp4"]);
+    assert.equal(request.limits.outputBytes, 1024n);
+  }
+  if (method.name === "InvokeActor") assert.equal(request.headers[0].value, "application/json");
+  if (method.name === "AddSubscription") {
+    assert.equal(request.actorId, "actor-a");
+    assert.equal(request.subscription.streamPath, "events/input");
+    assert.equal(request.subscription.start.start.value, 9007199254740993n);
+  }
+  if (method.name === "CheckpointActor") {
+    assert.equal(request.actorId, "actor-a");
+    assert.equal(request.idempotencyKey, "checkpoint-a");
+  }
+}
+
+function inspectResponse(method, response) {
+  if (method.name === "SubmitJob") assert.deepEqual(response.job.resolvedSha256, new Uint8Array(32).fill(7));
+  if (method.name === "InspectJob") assert.deepEqual(response.job.result.body, new Uint8Array([3, 4]));
+  if (method.name === "InvokeActor") assert.equal(response.headers[0].name, "location");
+  if (method.name === "CheckpointActor") assert.equal(response.actor.checkpointEpoch, 9n);
+  if (method.name === "InvokeVersion") {
+    assert.deepEqual(response.resolvedSha256, new Uint8Array(32).fill(1));
+    assert.equal(response.resolvedRevision, undefined);
+  }
+  if (method.name === "InvokeDeployment") {
+    assert.deepEqual(response.resolvedSha256, new Uint8Array(32).fill(2));
+    assert.equal(response.resolvedRevision, 8n);
+  }
+}
+
 if (process.argv.includes("--client")) {
   let configText = "";
   for await (const chunk of process.stdin) configText += chunk;
@@ -38,6 +81,18 @@ if (process.argv.includes("--client")) {
       if (method.name === "SelectDeployment") initializer.expectedRevision = 7n;
       if (method.name === "InvokeVersion") initializer.versionSha256 = new Uint8Array(32).fill(1);
       if (method.name === "InvokeDeployment") initializer.alias = "current";
+      if (method.name === "AddSubscription") Object.assign(initializer, {
+        actorId: "actor-a",
+        subscription: { subscriptionId: "input", streamPath: "events/input", start: { start: { case: "cursor", value: 9007199254740993n } } },
+        idempotencyKey: "subscribe-a",
+      });
+      if (method.name === "CheckpointActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "checkpoint-a" });
+      if (method.name === "SubmitJob") Object.assign(initializer, {
+        target: { target: { case: "deploymentAlias", value: "current" } },
+        input: { source: { case: "object", value: { bucket: "customer-input", key: "video/input.mp4" } } },
+        limits: { timeoutMillis: 1000n, memoryBytes: 1024n, outputBytes: 1024n },
+        retry: { maxAttempts: 2 }, idempotencyKey: "job-a",
+      });
       if (method.name === "Commit") initializer.mutations = [
         { mutation: { case: "append", value: { path: "a", records: [new Uint8Array([1])] } } },
         { mutation: { case: "append", value: { path: "b", records: [new Uint8Array([2])] } } },
@@ -54,12 +109,12 @@ if (process.argv.includes("--client")) {
         const input = method.methodKind === "client_streaming" ? (async function* () { yield request; yield request; })() : request;
         const response = await clients[index][method.localName](input);
         assert.equal(response.$typeName, method.output.typeName);
-        if (method.name === "InvokeActor") assert.equal(response.headers[0].name, "location");
+        inspectResponse(method, response);
       }
       count++;
       if (index < 2) {
         const http = index === 0 ? new HttpActorsClient({ ...options, endpoint: options.httpEndpoint }) : new HttpWorkersClient({ ...options, endpoint: options.httpEndpoint });
-        await http[method.localName](request);
+        inspectResponse(method, await http[method.localName](request));
       }
     }
   }
@@ -95,10 +150,10 @@ const httpServer = createServer(async (request, response) => {
           return;
         }
         httpSeen.set(method.name, (httpSeen.get(method.name) ?? 0) + 1);
-        if (method.name === "InvokeActor") assert.equal(input.headers[0].value, "application/json");
+        inspectActorRequest(method, input);
         if (method.name === "SelectDeployment") assert.equal(input.expectedRevision, 7n);
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(toJsonString(method.output, create(method.output)));
+        response.end(toJsonString(method.output, create(method.output, responseInitializer(method))));
         return;
       }
     }
@@ -113,7 +168,7 @@ const adapter = connectNodeAdapter({
         const inspect = (request, context) => {
           if (context.requestHeader.get("authorization") !== "Bearer conformance") throw new ConnectError("missing bearer", Code.Unauthenticated);
           seen.set(`${service.typeName}/${method.name}`, (seen.get(`${service.typeName}/${method.name}`) ?? 0) + 1);
-          if (method.name === "InvokeActor") assert.equal(request.headers[0].value, "application/json");
+          inspectActorRequest(method, request);
           if (method.name === "SelectDeployment") assert.equal(request.expectedRevision, 7n);
           if (method.name === "Commit") assert.deepEqual(request.mutations.map(item => item.mutation.value.path), ["a", "b"]);
         };
@@ -130,7 +185,7 @@ const adapter = connectNodeAdapter({
               for await (const frame of request) { if (frames === 0) inspect(frame, context); frames++; }
               assert.equal(frames, 2, `${method.name} request stream`);
             } else inspect(request, context);
-            const response = create(method.output, method.name === "InvokeActor" ? { headers: [{ name: "location", value: "/result" }] } : {});
+            const response = create(method.output, responseInitializer(method));
             return response;
           };
         }

@@ -13,6 +13,12 @@ A published ES module may export `default.fetch(Request)` for HTTP invocation,
 numbers start at one. Its byte result is published once under attempt fencing.
 Cancellation signals the handler but cannot undo external effects.
 
+Object inputs name an S3 bucket and key. Acceptance privately retains the
+selected immutable bytes so key replacement cannot change a retry's input.
+Job observations return an exact `JobResult` body bounded by the accepted output
+budget (at most 1 MiB); they expose no mutable object pointer or public Object
+version. The service owns durable acceptance, retention and attempt fencing.
+
 The service implementation and execution authority live outside this crate.
 This crate validates customer-authored requests and packages the versioned wire
 descriptor used to generate TypeScript bindings.

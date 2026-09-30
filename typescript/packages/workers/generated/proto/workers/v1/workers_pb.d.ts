@@ -154,30 +154,28 @@ export declare type SelectDeploymentResponse = Message<"acyclic.workers.v1.Selec
 export declare const SelectDeploymentResponseSchema: GenMessage<SelectDeploymentResponse>;
 
 /**
- * @generated from message acyclic.workers.v1.ObjectVersionRef
+ * Logical S3 object selected and privately retained at durable job acceptance.
+ * Retries read the same retained bytes even if this public key is replaced.
+ *
+ * @generated from message acyclic.workers.v1.ObjectRef
  */
-export declare type ObjectVersionRef = Message<"acyclic.workers.v1.ObjectVersionRef"> & {
+export declare type ObjectRef = Message<"acyclic.workers.v1.ObjectRef"> & {
   /**
-   * @generated from field: string bucket_id = 1;
+   * @generated from field: string bucket = 1;
    */
-  bucketId: string;
+  bucket: string;
 
   /**
-   * @generated from field: string object_key = 2;
+   * @generated from field: string key = 2;
    */
-  objectKey: string;
-
-  /**
-   * @generated from field: string version_id = 3;
-   */
-  versionId: string;
+  key: string;
 };
 
 /**
- * Describes the message acyclic.workers.v1.ObjectVersionRef.
- * Use `create(ObjectVersionRefSchema)` to create a new message.
+ * Describes the message acyclic.workers.v1.ObjectRef.
+ * Use `create(ObjectRefSchema)` to create a new message.
  */
-export declare const ObjectVersionRefSchema: GenMessage<ObjectVersionRef>;
+export declare const ObjectRefSchema: GenMessage<ObjectRef>;
 
 /**
  * @generated from message acyclic.workers.v1.Payload
@@ -194,10 +192,10 @@ export declare type Payload = Message<"acyclic.workers.v1.Payload"> & {
     case: "inlineBytes";
   } | {
     /**
-     * @generated from field: acyclic.workers.v1.ObjectVersionRef object_version = 2;
+     * @generated from field: acyclic.workers.v1.ObjectRef object = 2;
      */
-    value: ObjectVersionRef;
-    case: "objectVersion";
+    value: ObjectRef;
+    case: "object";
   } | { case: undefined; value?: undefined };
 };
 
@@ -206,6 +204,25 @@ export declare type Payload = Message<"acyclic.workers.v1.Payload"> & {
  * Use `create(PayloadSchema)` to create a new message.
  */
 export declare const PayloadSchema: GenMessage<Payload>;
+
+/**
+ * Exact accepted job output, bounded by JobLimits.output_bytes. Storage and
+ * retention are service-owned; no replaceable public Object pointer is exposed.
+ *
+ * @generated from message acyclic.workers.v1.JobResult
+ */
+export declare type JobResult = Message<"acyclic.workers.v1.JobResult"> & {
+  /**
+   * @generated from field: bytes body = 1;
+   */
+  body: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.workers.v1.JobResult.
+ * Use `create(JobResultSchema)` to create a new message.
+ */
+export declare const JobResultSchema: GenMessage<JobResult>;
 
 /**
  * @generated from message acyclic.workers.v1.JobLimits
@@ -362,9 +379,9 @@ export declare type JobObservation = Message<"acyclic.workers.v1.JobObservation"
   attempt: number;
 
   /**
-   * @generated from field: acyclic.workers.v1.Payload result = 5;
+   * @generated from field: acyclic.workers.v1.JobResult result = 5;
    */
-  result?: Payload | undefined;
+  result?: JobResult | undefined;
 
   /**
    * @generated from field: string failure_code = 6;
