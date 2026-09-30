@@ -2,6 +2,37 @@
 
 Status: active; local transport work is incomplete and PR 223 is unmerged.
 
+## Canonical Stream retained-fact persistence codec (2026-09-30)
+
+Source commit `7e4db40da0db6def965658ea0cc9c511d6e55003` exposes
+`acyclic_stream::persistence::{encode_observation, decode_observation,
+encode_envelope, decode_envelope}`. Each function takes an explicit positive
+byte bound. Existing generated Stream v2 messages and Rust conversions remain
+authoritative; no schema, descriptor or framing change. Decode rejects malformed
+and noncanonical encodings, including unknown or duplicate fields. Validation
+checks complete terminal outcomes/conflicts, canonical ordering, contiguous
+record counts/sequences, envelope identity and consistent accepted record times.
+
+The codec preserves original append/fork/atomic commit and conflict facts. It
+does not provide a storage container/checksum, account binding, request-digest
+verification or durable acceptance. Cloud retains accepted ID/time and owns
+atomic decision/publication, exact retry authority and indefinite retention.
+Data received the exact local source/API handoff; its existing generated server
+adapter requires `grpc`, while the codec requires no optional feature. The
+existing adapter/schema/build are unchanged from its previous SDK pins.
+
+Three focused codec tests pass; full Stream tests pass (67 unit tests, two
+integration tests, documentation checks; the existing optional scaling benchmark
+remains ignored). Strict all-feature/all-target Clippy and complete generated
+verification pass. The initial fixture lacked the required fork-destination
+absence condition; corrected locally before final passes. Lint failures were
+corrected without suppression. Logs:
+`D:/codex-sdk-162e-qualification-20260930/sdk-stream-persistence-*.log`.
+This generated pass also covers the preceding Objects maintenance follow-up.
+Stream descriptor SHA256 is unchanged:
+`f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e`.
+No live acceptance, package publication or PR merge is established.
+
 ## Private v2 inline durability and grouped batches (2026-09-30)
 
 Bodies up to 64 KiB now live inside the authenticated private journal frame;
