@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Public SDK browser HTTP conformance</title>
+<script type="importmap">
+{"imports":{
+  "@bufbuild/protobuf":"/deps/protobuf/dist/esm/index.js",
+  "@bufbuild/protobuf/codegenv2":"/deps/protobuf/dist/esm/codegenv2/index.js",
+  "@bufbuild/protobuf/wkt":"/deps/protobuf/dist/esm/wkt/index.js",
+  "@acyclic-labs/actors":"/typescript/packages/actors/dist/index.js",
+  "@acyclic-labs/workers":"/typescript/packages/workers/dist/index.js",
+  "@acyclic-labs/stream":"/typescript/packages/stream/dist/index.js",
+  "@acyclic-labs/objects/v2":"/typescript/packages/objects/dist/v2.js",
+  "@acyclic-labs/objects/v2/http":"/typescript/packages/objects/dist/v2-http.js",
+  "node:assert/strict":"./browser-assert.mjs"
+}}
+</script>
+<body>
+<script type="module" src="./browser-http-client.mjs"></script>
+</body>
+</html>

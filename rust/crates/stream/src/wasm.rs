@@ -1248,7 +1248,7 @@ mod http {
             Some("envelope") => envelope_js(value),
             Some("observation") => {
                 if value.is_null() {
-                    Ok(JsValue::NULL)
+                    Ok(JsValue::UNDEFINED)
                 } else {
                     idempotency_js(value)
                 }

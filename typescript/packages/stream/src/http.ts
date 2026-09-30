@@ -21,7 +21,7 @@ export class HttpStreamProvider implements StreamProvider {
     if (!options.token.trim()) throw new TypeError("token is required");
     this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
     this.#token = options.token;
-    this.#fetcher = options.fetcher ?? fetch;
+    this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
     if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }

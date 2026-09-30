@@ -8,6 +8,14 @@ import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TO
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
 const encodedCommitId = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
 
+test("absent retry observations project undefined through memory and HTTP", async () => {
+  await ensureStreamWasm();
+  expect(decodeHttpResponse("idempotency/inspect", "null")).toBeUndefined();
+  expect(await new MemoryStreamProvider().inspectIdempotency(key("missing-receipt"))).toBeUndefined();
+  const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response("null") });
+  expect(await provider.inspectIdempotency(key("missing-receipt"))).toBeUndefined();
+});
+
 type RunEvent =
   | { readonly type: "run.started" }
   | { readonly type: "run.continued" }

@@ -26,7 +26,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     for (const maximum of [this.maximumResponse, this.maximumRequest]) if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 0xffff_ffff) throw new RangeError("wire limit must be a positive uint32");
     endpoint.pathname = endpoint.pathname.replace(/\/$/, "") + "/v2/objects/";
     this.endpoint = endpoint;
-    this.fetcher = options.fetch ?? globalThis.fetch;
+    this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
   protected async invoke(route: string, bytes: Uint8Array, body: Uint8Array): Promise<readonly Uint8Array[]> {
     const types = [objects_v2_http_type(route, false), objects_v2_http_type(route, true)];

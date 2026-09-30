@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bind the default v2 browser fetch receiver and qualify the complete HTTP lifecycle in real Chrome.
+
 - Expose the unreleased logical v2 provider and HTTP/Node/Bun gRPC clients at `./v2`, `./v2/http` and `./v2/grpc` for migrating consumers. Canonical root export transition remains pending.
 
 ## 0.1.5 - 2026-09-25

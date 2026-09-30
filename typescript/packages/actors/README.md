@@ -19,3 +19,10 @@ For Node/Bun gRPC, import `createActorsGrpcClient` from
 RPC is exposed. Optional `caCertificate` adds a private PEM CA, and
 `maximumMessageBytes` bounds requests and responses. Browser applications use
 the HTTP client. Actor invocation includes request and response headers.
+
+From the SDK checkout, `bun run test:contracts:browser` runs all four public HTTP
+families in a private headless Chrome against a local HTTPS fixture. Set `CHROME`
+when the executable is outside the standard locations. The runner trusts only
+the fixture's ephemeral public key, exercises browser-native fetch and shared
+Rust/WASM validators, and closes the browser and temporary profile afterward.
+This is local transport qualification, not Cloud deployment acceptance.

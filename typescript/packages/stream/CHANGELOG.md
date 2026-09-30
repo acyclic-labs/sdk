@@ -1,5 +1,10 @@
 # @acyclic-labs/stream changelog
 
+## Unreleased
+
+- Bind the default browser fetch receiver and qualify HTTPS, follow and multi-path Commit in real Chrome.
+- Project an absent retry observation as `undefined` consistently in memory and HTTP.
+
 ## 0.1.5 - 2026-09-25
 
 - Aligns stream clients with the qualified SDK 0.1.5 release.

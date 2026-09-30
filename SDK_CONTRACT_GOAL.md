@@ -522,3 +522,29 @@ main, published distributions usable by exact Cloud pins, affected consumer loca
 tests, and actual deployed service API conformance are required before completion.
 Service owners implement deployments; SDK owns canonical contracts and managed
 filesystem semantics. The goal remains active, including these coordinated gates.
+
+### Real browser HTTP qualification
+
+`bun run test:contracts:browser` drives a private headless Chrome over local HTTPS
+with trust limited to the fixture's ephemeral SPKI. It exercises package browser
+entries using native fetch, generated messages and the shared Rust/WASM rules.
+All 13 Objects lifecycle operations, 15 Actor/Worker operations and 10 Stream
+HTTP routes are observed. Objects uploads/downloads cross 64 KiB frame boundaries;
+Actor subscription cursors/checkpoints, Worker pinned versus alias resolution,
+Stream cancellable follow, atomic multi-path Commit/replay/conflicts, per-family
+authentication and response bounds are covered. Token creation is a transport
+fixture response; it does not establish Cloud token issuance or grant enforcement.
+
+The first Chrome run reproduced Illegal invocation from all four HTTP clients'
+default fetch receiver. Default native fetch is now bound to the browser global;
+injected fetch callbacks remain supported. Browser qualification also reproduced
+an absent Stream retry observation projecting null despite the public undefined
+type. The Rust/WASM response projector now emits undefined consistently for memory
+and HTTP. The canonical WASM artifact was rebuilt and a focused regression added.
+
+Chrome qualification passes, all 45 Stream TypeScript tests pass (223 assertions),
+the full Node/Bun/Rust contract runner and full generated-file checks pass; strict Stream WASM Clippy passes
+with no default native transport features. These are local SDK transport results;
+canonical Objects root/export migration, filesystem durable provider migration,
+full repository/consumer qualification, merge/publication and deployed service
+acceptance remain required. The goal is active.
