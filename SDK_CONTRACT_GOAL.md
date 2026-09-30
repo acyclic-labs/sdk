@@ -399,3 +399,23 @@ source. The regression passes on Windows and WSL/Linux and confirms the second
 join returns Conflicted while preserving the first child's accepted content.
 All 93 Windows workspace/lazy-workspace tests pass. This fixes local durability;
 the managed-agents gate still needs qualification at the updated source pin.
+
+### Stream retry identities never expire into reexecution
+
+MemoryStream and LocalStream now keep complete retry outcomes and immutable
+envelopes indefinitely within the existing capacity bounds. Replay precedes
+capacity admission, while a fresh identity fails closed at capacity. The old
+24-hour minimum constant remains for source compatibility; time does not release
+an admitted identity. The existing local journal/snapshot format is unchanged,
+and earlier snapshot deadline metadata cannot trigger eviction. Outcomes already
+discarded by an older snapshot cannot be reconstructed by this change.
+
+All 63 Stream unit tests pass (one optional scaling benchmark ignored), including
+full gRPC conformance, retained replay after a year/u64 clock exhaustion,
+cross-path changed-digest rejection, local close/reopen, and restoration of a
+snapshot carrying an elapsed legacy receipt deadline. Strict native all-feature
+all-target Clippy, WASM Clippy and documentation checks pass. The canonical
+Stream WASM artifact was rebuilt; Node and Bun gRPC replay/follow/fork/multi-path
+Commit/authentication/error/bounds conformance passes against that artifact.
+Cloud account-wide retry routing and durable admission remain service-owner work;
+these local provider results do not establish live service acceptance.

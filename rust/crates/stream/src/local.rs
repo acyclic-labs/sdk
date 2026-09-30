@@ -160,8 +160,9 @@ pub enum LocalStreamError {
 /// frame fails closed. Once the journal is half full, the whole state is written as a new
 /// snapshot and the journal starts again, so it bounds only what happened since.
 ///
-/// Retention is measured on a store clock that runs only while the provider is open: a result
-/// kept for its retention period is still there after any downtime.
+/// Retry outcomes and immutable envelopes persist indefinitely within capacity
+/// limits, including through snapshots and downtime. Journal clock fields remain
+/// part of the existing disk encoding; they never authorize identity reuse.
 #[derive(Clone)]
 pub struct LocalStream {
     inner: Arc<LocalInner>,
@@ -1598,6 +1599,33 @@ mod tests {
         fn now_unix_millis(&self) -> u64 {
             self.0.load(Ordering::SeqCst)
         }
+    }
+
+    #[tokio::test]
+    async fn retry_outcomes_survive_clock_exhaustion_and_reopen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let request = AppendRequest {
+            path: StreamPath::new("retained/local")?,
+            records: vec![Bytes::from_static(b"once")],
+            if_tail: None,
+            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"local-once"))?),
+        };
+        let first = provider.append(request.clone()).await?;
+        provider.inner.clock.time().base = u64::MAX;
+        assert_eq!(provider.append(request.clone()).await?, first);
+        drop(provider);
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        assert_eq!(reopened.append(request.clone()).await?, first);
+        assert_eq!(reopened.tail(request.path.clone()).await?, 1);
+        let mut changed = request;
+        changed.path = StreamPath::new("retained/another")?;
+        assert_eq!(
+            reopened.append(changed).await,
+            Err(StreamError::IdempotencyMismatch)
+        );
+        Ok(())
     }
 
     #[tokio::test]

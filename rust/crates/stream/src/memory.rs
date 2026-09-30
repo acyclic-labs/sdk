@@ -21,9 +21,9 @@ use crate::{
     ChildrenPageRequest, ChildrenRequest, CommitCondition, CommitConflict, CommitId,
     CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope, CommittedFork,
     CommittedMutation, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    IdempotencyOutcome, MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES,
-    MIN_IDEMPOTENCY_RETENTION_SECS, ReadRequest, Record, RecordStream, StreamBounds, StreamError,
-    StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
+    IdempotencyOutcome, MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES, ReadRequest, Record,
+    RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock,
+    UnixMillisClock,
 };
 
 /// Explicit fail-closed process-memory ceilings.
@@ -39,8 +39,8 @@ pub struct MemoryLimits {
     pub payload_bytes: usize,
     /// Maximum immutable commit envelopes.
     pub commits: usize,
-    /// Maximum replay identities retained at once; each is kept for
-    /// [`MIN_IDEMPOTENCY_RETENTION_SECS`] of the provider's retention clock.
+    /// Maximum indefinitely retained replay identities. New identities fail
+    /// closed at capacity; an admitted identity is never forgotten or reused.
     pub idempotency_results: usize,
 }
 
@@ -68,13 +68,12 @@ impl UnixMillisClock for StoppedClock {
     }
 }
 
-/// How long, in retention-clock milliseconds, a result and its envelope are
-/// kept after they are made.
-const RETENTION_MILLIS: u64 = MIN_IDEMPOTENCY_RETENTION_SECS * 1000;
+#[cfg(test)]
+const RETENTION_MILLIS: u64 = crate::MIN_IDEMPOTENCY_RETENTION_SECS * 1000;
 
 /// Deterministic process-local provider. It retains each idempotency result and committed
-/// envelope for [`MIN_IDEMPOTENCY_RETENTION_SECS`], then forgets it; it deliberately claims no
-/// crash recovery.
+/// envelope indefinitely within explicit capacity limits. It deliberately claims
+/// no crash recovery; `LocalStream` supplies persistence when enabled.
 #[derive(Clone)]
 pub struct MemoryStream {
     state: Arc<RwLock<State>>,
@@ -83,7 +82,7 @@ pub struct MemoryStream {
     clock: Arc<dyn UnixMillisClock>,
     /// Clock whose sampled commit time is recorded in each new record.
     commit_clock: Arc<dyn UnixMillisClock>,
-    /// The clock retention is measured on; see [`MemoryStream::new_with_clocks`].
+    /// Legacy journal clock; retained outcomes no longer expire.
     retention: Arc<dyn UnixMillisClock>,
 }
 
@@ -112,10 +111,8 @@ impl MemoryStream {
         Self::new_with_clocks(limits, Arc::clone(&clock), clock)
     }
 
-    /// Constructs a provider whose retention is measured on `retention`
-    /// rather than on the deadline clock: a durable provider measures it on
-    /// a clock that stands still while the provider is closed, and pins it
-    /// while it replays, so replay forgets exactly what the original did.
+    /// Constructs a provider with the legacy journal clock kept separate from
+    /// the trusted deadline clock. Clock samples never evict retry outcomes.
     #[must_use]
     pub(crate) fn new_with_clocks(
         limits: MemoryLimits,
@@ -140,13 +137,11 @@ impl MemoryStream {
         }
     }
 
-    /// Takes the state for one mutation, first forgetting every result and
-    /// envelope whose retention ended; returns the state and the time the
-    /// mutation happens at.
+    /// Takes the state and samples the legacy journal clock. Time never frees
+    /// an admitted retry identity or its immutable envelope.
     async fn mutate(&self) -> (tokio::sync::RwLockWriteGuard<'_, State>, u64) {
-        let mut state = self.state.write().await;
+        let state = self.state.write().await;
         let now = self.retention.now_unix_millis();
-        expire(&mut state, now);
         (state, now)
     }
 
@@ -229,7 +224,7 @@ struct State {
     paths: BTreeMap<StreamPath, PathState>,
     commits: BTreeMap<CommitId, CommittedEnvelope>,
     replays: BTreeMap<Bytes, Replay>,
-    /// Every retained result and envelope, in the order its retention ends.
+    /// Snapshot receipt inventory, preserving the existing local disk format.
     retained: VecDeque<Retained>,
     path_bytes: usize,
     /// Records and payload bytes retained, each counted once however many
@@ -263,7 +258,8 @@ impl Drop for State {
     }
 }
 
-/// What one mutation retains until `until` on the retention clock.
+/// One snapshot entry. `until` is legacy disk metadata, never an eviction rule.
+#[cfg_attr(not(feature = "local"), allow(dead_code))]
 struct Retained {
     until: u64,
     replay: Option<Bytes>,
@@ -1019,25 +1015,6 @@ fn is_direct_child(parent: &StreamPath, candidate: &StreamPath) -> bool {
     candidate.parent().as_ref() == Some(parent)
 }
 
-/// Forgets every result and envelope whose retention ended by `now`.
-fn expire(state: &mut State, now: u64) {
-    while state
-        .retained
-        .front()
-        .is_some_and(|retained| retained.until <= now)
-    {
-        let Some(retained) = state.retained.pop_front() else {
-            break;
-        };
-        if let Some(key) = retained.replay {
-            state.replays.remove(&key);
-        }
-        if let Some(commit) = retained.commit {
-            state.commits.remove(&commit);
-        }
-    }
-}
-
 /// Counts exactly the records and payload bytes the live paths retain,
 /// each shared history once.
 fn recount(state: &mut State) {
@@ -1145,7 +1122,7 @@ fn admit_replay(
 /// committed, and its result, when it has an identity to replay under.
 fn retain(
     state: &mut State,
-    now: u64,
+    _now: u64,
     envelope: Option<CommittedEnvelope>,
     key: Option<crate::IdempotencyKey>,
     digest: [u8; 32],
@@ -1163,7 +1140,7 @@ fn retain(
     });
     if commit.is_some() || replay.is_some() {
         state.retained.push_back(Retained {
-            until: now.saturating_add(RETENTION_MILLIS),
+            until: u64::MAX,
             replay,
             commit,
         });
@@ -1988,10 +1965,9 @@ mod tests {
         assert!(StreamPath::new("runs/run_42/agents/researcher").is_ok());
     }
 
-    /// A result and its envelope are kept for the retention period of the
-    /// retention clock, then forgotten; the capacity they held is free again.
+    /// Time cannot free a retry identity for reuse, including at u64 exhaustion.
     #[tokio::test]
-    async fn results_and_envelopes_expire_after_their_retention() -> Result<(), StreamError> {
+    async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), StreamError> {
         let clock = Arc::new(TestClock::default());
         let limits = MemoryLimits {
             idempotency_results: 1,
@@ -2025,17 +2001,31 @@ mod tests {
         );
         assert!(provider.read_commit(first.commit_id).await.is_ok());
 
-        clock.0.store(RETENTION_MILLIS, Ordering::SeqCst);
-        assert!(matches!(
-            provider.append(append(b"second")).await?,
-            AppendOutcome::Committed(_)
-        ));
-        assert_eq!(provider.inspect_idempotency(key(b"first")?).await?, None);
-        assert_eq!(
-            provider.read_commit(first.commit_id).await,
-            Err(StreamError::NotFound)
-        );
-        assert_eq!(provider.tail(path("retained")?).await?, 2, "records stay");
+        for now in [RETENTION_MILLIS, RETENTION_MILLIS * 365, u64::MAX] {
+            clock.0.store(now, Ordering::SeqCst);
+            assert_eq!(
+                provider.append(append(b"second")).await,
+                Err(StreamError::Capacity)
+            );
+            assert_eq!(
+                provider.append(append(b"first")).await?,
+                AppendOutcome::Committed(first.clone())
+            );
+            assert!(
+                provider
+                    .inspect_idempotency(key(b"first")?)
+                    .await?
+                    .is_some()
+            );
+            assert!(provider.read_commit(first.commit_id).await.is_ok());
+            assert_eq!(provider.tail(path("retained")?).await?, 1);
+            let mut changed = append(b"first");
+            changed.path = path("another/path")?;
+            assert_eq!(
+                provider.append(changed).await,
+                Err(StreamError::IdempotencyMismatch)
+            );
+        }
         Ok(())
     }
 }

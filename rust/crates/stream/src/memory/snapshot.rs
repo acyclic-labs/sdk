@@ -324,6 +324,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_snapshot_expiry_metadata_cannot_release_a_retry_identity()
+    -> Result<(), StreamError> {
+        let clock = Arc::new(TestClock::default());
+        let stream = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
+        let request = AppendRequest {
+            path: StreamPath::new("snapshot/retained")?,
+            records: vec![Bytes::from_static(b"once")],
+            if_tail: None,
+            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"snapshot-once"))?),
+        };
+        let first = stream.append(request.clone()).await?;
+        // Model an older snapshot with an already elapsed receipt deadline,
+        // using the unchanged snapshot encoding rather than a migration reader.
+        for retained in &mut stream.state.write().await.retained {
+            retained.until = 0;
+        }
+        let snapshot = stream.encode_state().await;
+        clock.0.store(u64::MAX, Ordering::SeqCst);
+        let restored = MemoryStream::new_with_clock(MemoryLimits::default(), clock);
+        restored.install_state(&snapshot).await?;
+        assert_eq!(restored.append(request.clone()).await?, first);
+        assert_eq!(restored.tail(request.path.clone()).await?, 1);
+        let mut changed = request;
+        changed.records = vec![Bytes::from_static(b"different")];
+        assert_eq!(
+            restored.append(changed).await,
+            Err(StreamError::IdempotencyMismatch)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
         let clock = Arc::new(TestClock::default());
         clock.0.store(100, Ordering::SeqCst);
