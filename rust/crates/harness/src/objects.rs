@@ -16,7 +16,7 @@ use crate::{
     resources::{ArtifactRef, ProviderRef},
     runtime::ContentBindings,
 };
-use acyclic_objects::{GetRequest, HeadRequest, ObjectsProvider, PutRequest, ReadTarget, wire};
+use acyclic_objects::v2::{ObjectsProvider, wire};
 use futures::future::BoxFuture;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -54,16 +54,20 @@ impl ObjectContentStore {
         verifier.verify(&scope)?;
         ContentGrant::verify(&verifier, &owner_scope, &volume, VolumeOperation::Write)?;
         if maximum_bytes == 0
-            || maximum_bytes > acyclic_objects::limits::OBJECT_BYTES
+            || maximum_bytes > 5 * 1024 * 1024 * 1024
             || expected_provider.family() != "objects"
             || volume.provider() != &expected_provider
-            || volume.id() != bucket.bucket_id
-            || bucket.bucket_id.is_empty()
+            || volume.id() != bucket.name
             || bucket.name.is_empty()
         {
             return Err(Error::Invalid("Objects content binding is invalid".into()));
         }
-        let resolved = objects.head_bucket(&bucket).await.map_err(storage)?;
+        let resolved = objects
+            .head_bucket(wire::HeadBucketRequest {
+                bucket: Some(bucket.clone()),
+            })
+            .await
+            .map_err(storage)?;
         if resolved.bucket.as_ref() != Some(&bucket) {
             return Err(Error::Storage(
                 "Objects provider resolved another bucket".into(),
@@ -103,10 +107,22 @@ impl ObjectContentStore {
         }
     }
 
-    fn key(&self, path: &str) -> Result<String> {
+    fn key(&self, path: &str, content: &str) -> Result<String> {
         validate_content_path(path)?;
-        let key = format!("{}/{}", self.volume.storage_name()?, path);
-        if key.len() > acyclic_objects::limits::KEY_BYTES {
+        if content.len() != 64
+            || !content
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(Error::Invalid("Objects content identity is invalid".into()));
+        }
+        let key = format!(
+            "{}/{}/@content/{}",
+            self.volume.storage_name()?,
+            path,
+            content
+        );
+        if key.len() > 1024 {
             return Err(Error::Invalid(
                 "Objects content key exceeds provider limit".into(),
             ));
@@ -117,33 +133,41 @@ impl ObjectContentStore {
     async fn read_exact(&self, file: &FileRef) -> Result<Vec<u8>> {
         let grant = ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
         grant.require_file_read(file)?;
-        self.read_version(file).await
+        self.read_content(file).await
     }
 
-    async fn read_version(&self, file: &FileRef) -> Result<Vec<u8>> {
+    async fn read_content(&self, file: &FileRef) -> Result<Vec<u8>> {
         file.validate()?;
         if file.volume() != &self.volume || file.descriptor().byte_length() > self.maximum_bytes {
             return Err(Error::Unauthorized(
                 "file is outside this Objects binding".into(),
             ));
         }
+        if file.version() != content_identity(file.descriptor(), file.display_name())? {
+            return Err(Error::Invalid(
+                "Objects file content identity does not match its descriptor".into(),
+            ));
+        }
         let read = self
             .objects
-            .get(GetRequest {
-                target: ReadTarget::Bucket(self.bucket.clone()),
-                object_key: self.key(file.path())?,
-                version_id: Some(file.version().to_owned()),
-                range: None,
-                if_match: None,
-                if_none_match: None,
-                maximum_bytes: self.maximum_bytes,
-            })
+            .get(
+                wire::GetObjectRequest {
+                    bucket: Some(self.bucket.clone()),
+                    object_key: self.key(file.path(), file.version())?,
+                    range: None,
+                    if_match: String::new(),
+                    if_none_match: String::new(),
+                },
+                self.maximum_bytes,
+            )
             .await
             .map_err(storage)?;
-        if read.version.version_id != file.version()
-            || read.version.delete_marker
-            || read.version.size != file.descriptor().byte_length()
-            || read.version.metadata.as_ref().is_none_or(|metadata| {
+        let info = read
+            .header
+            .object
+            .ok_or_else(|| Error::Storage("Objects returned no content metadata".into()))?;
+        if info.size != file.descriptor().byte_length()
+            || info.metadata.as_ref().is_none_or(|metadata| {
                 metadata.content_type != file.descriptor().media_type()
                     || metadata
                         .user
@@ -152,7 +176,7 @@ impl ObjectContentStore {
             })
         {
             return Err(Error::Storage(
-                "Objects returned another file version or media type".into(),
+                "Objects returned another file length or metadata".into(),
             ));
         }
         file.descriptor().verify(&read.body)?;
@@ -164,7 +188,7 @@ impl ObjectContentStore {
         decode_attachment_manifest(file, &bytes, count)
     }
 
-    /// Converts a pinned file in this bucket into an immutable artifact
+    /// Converts content in this bucket into an immutable artifact key
     /// selection without copying its bytes or weakening the bucket boundary.
     pub fn artifact_ref(&self, file: &FileRef) -> Result<ArtifactRef> {
         file.validate()?;
@@ -175,8 +199,8 @@ impl ObjectContentStore {
         }
         ArtifactRef::new(
             self.volume.provider().clone(),
-            self.key(file.path())?.into_bytes(),
-            Some(file.version().to_owned()),
+            self.key(file.path(), file.version())?.into_bytes(),
+            None,
         )
     }
 
@@ -205,25 +229,42 @@ impl ObjectContentStore {
             .strip_prefix(&prefix)
             .filter(|relative| !relative.is_empty())
             .ok_or_else(|| Error::Unauthorized("artifact is outside this Objects volume".into()))?;
-        validate_content_path(relative_key)?;
-        let version = artifact
-            .as_resource()
-            .version()
-            .ok_or_else(|| Error::Invalid("Objects artifact has no immutable version".into()))?;
+        let (path, content) = relative_key
+            .rsplit_once("/@content/")
+            .ok_or_else(|| Error::Invalid("Objects artifact has no content identity".into()))?;
+        if artifact.as_resource().version().is_some() || self.key(path, content)? != key {
+            return Err(Error::Invalid(
+                "Objects artifact key is not canonical".into(),
+            ));
+        }
         let observed = self
             .objects
-            .head(HeadRequest {
-                target: ReadTarget::Bucket(self.bucket.clone()),
-                object_key: key.to_owned(),
-                version_id: Some(version.to_owned()),
-                if_match: None,
-                if_none_match: None,
-            })
+            .get(
+                wire::GetObjectRequest {
+                    bucket: Some(self.bucket.clone()),
+                    object_key: key.to_owned(),
+                    if_match: String::new(),
+                    if_none_match: String::new(),
+                    range: None,
+                },
+                self.maximum_bytes,
+            )
             .await
             .map_err(storage)?;
-        if observed.delete_marker || observed.version_id != version {
+        let metadata = observed
+            .header
+            .object
+            .as_ref()
+            .and_then(|object| object.metadata.as_ref())
+            .ok_or_else(|| Error::Storage("Objects artifact metadata is missing".into()))?;
+        let display_name = metadata
+            .user
+            .get("harness-display-name")
+            .ok_or_else(|| Error::Storage("Objects artifact display name is missing".into()))?;
+        let descriptor = FileDescriptor::from_bytes(&observed.body, &metadata.content_type)?;
+        if content_identity(&descriptor, display_name)? != content {
             return Err(Error::Conflict(
-                "Objects artifact version is not retained".into(),
+                "Objects artifact content identity does not match its bytes".into(),
             ));
         }
         Ok(())
@@ -307,7 +348,7 @@ impl crate::conversation::ContentMountResolver for ObjectContentMountResolver {
         Box::pin(async move {
             reference.validate()?;
             let store = self.store(reference.volume())?;
-            // Authenticate the current scope against this exact version before
+            // Authenticate the current scope against this exact content reference before
             // returning either the grant or the owner reader.  ObjectContentStore
             // repeats this check when bytes are read, closing the ref-as-grant gap
             // even if the returned reader is retained by a caller.
@@ -347,7 +388,7 @@ impl ForkCaptureProvider for ObjectContentStore {
         request: &'a ForkRequest,
         selection: &'a ForkSelection,
     ) -> BoxFuture<'a, Result<Option<Capture>>> {
-        // Metadata-only HEAD is read-only and safe to observe again.
+        // Content verification is read-only and safe to observe again.
         Box::pin(async move { self.capture(request, selection).await.map(Some) })
     }
 }
@@ -423,52 +464,58 @@ impl ContentPublisher for ObjectContentStore {
                 descriptor.clone(),
                 display_name,
             )?;
-            let key = self.key(path)?;
+            let content = content_identity(&descriptor, display_name)?;
+            let key = self.key(path, &content)?;
             let retry = format!(
                 "harness-upload:{}:{operation_id}",
                 self.volume.storage_name()?
             );
-            let version = self
+            let published = self
                 .objects
-                .put(PutRequest {
-                    bucket: self.bucket.clone(),
-                    object_key: key,
-                    body: bytes::Bytes::copy_from_slice(bytes),
-                    metadata: wire::ObjectMetadata {
-                        content_type: media_type.to_owned(),
-                        user: [("harness-display-name".to_owned(), display_name.to_owned())].into(),
-                        ..Default::default()
+                .put(
+                    wire::PutObjectHeader {
+                        bucket: Some(self.bucket.clone()),
+                        object_key: key,
+                        metadata: Some(wire::ObjectMetadata {
+                            content_type: media_type.to_owned(),
+                            user: [("harness-display-name".to_owned(), display_name.to_owned())]
+                                .into(),
+                            ..Default::default()
+                        }),
+                        preconditions: Some(wire::Preconditions {
+                            condition: Some(wire::preconditions::Condition::IfAbsent(true)),
+                        }),
+                        mutation: Some(wire::MutationIdentity {
+                            idempotency_key: retry,
+                        }),
                     },
-                    condition: None,
-                    idempotency_key: Some(retry),
-                })
-                .await
-                .map_err(storage)?;
-            if version.delete_marker
-                || version.size != bytes.len() as u64
-                || version.metadata.as_ref().is_none_or(|metadata| {
-                    metadata.content_type != media_type
-                        || metadata
-                            .user
-                            .get("harness-display-name")
-                            .is_none_or(|name| name != display_name)
-                })
-            {
+                    bytes::Bytes::copy_from_slice(bytes),
+                )
+                .await;
+            let info = match published {
+                Ok(info) => Some(info),
+                Err(error) if error.code == wire::ErrorCode::PreconditionFailed => None,
+                Err(error) => return Err(storage(error)),
+            };
+            if info.as_ref().is_some_and(|info| {
+                info.size != bytes.len() as u64
+                    || info.metadata.as_ref().is_none_or(|metadata| {
+                        metadata.content_type != media_type
+                            || metadata
+                                .user
+                                .get("harness-display-name")
+                                .is_none_or(|name| name != display_name)
+                    })
+            }) {
                 return Err(Error::Storage(
                     "Objects publication returned inconsistent metadata".into(),
                 ));
             }
-            let reference = FileRef::new(
-                self.volume.clone(),
-                path,
-                version.version_id,
-                descriptor,
-                display_name,
-            )?;
-            // A provider may return the retained result of an earlier request
-            // with this operation identity. Never publish a ref until the exact
-            // immutable version is proven to contain these bytes.
-            let committed = self.read_version(&reference).await?;
+            let reference =
+                FileRef::new(self.volume.clone(), path, content, descriptor, display_name)?;
+            // A retry receipt does not establish continued byte residency.
+            // Verify the exact immutable content key before returning the reference.
+            let committed = self.read_content(&reference).await?;
             if committed.as_slice() != bytes {
                 return Err(Error::Conflict(
                     "upload identity belongs to different content".into(),
@@ -517,8 +564,19 @@ impl ContentResidencyVerifier for ObjectContentStore {
     clippy::needless_pass_by_value,
     reason = "maps the owned provider error at async boundaries"
 )]
-fn storage(error: acyclic_objects::ObjectsError) -> Error {
+fn storage(error: acyclic_objects::v2::Error) -> Error {
     Error::Storage(error.to_string())
+}
+
+fn content_identity(descriptor: &FileDescriptor, display_name: &str) -> Result<String> {
+    Ok(
+        blake3::Hash::from_bytes(crate::contract::canonical_json_digest(&(
+            descriptor,
+            display_name,
+        ))?)
+        .to_hex()
+        .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -531,13 +589,16 @@ mod tests {
         fork::ForkPreparation,
         resources::{GenerationRef, ProviderRef, StreamRef},
     };
-    use acyclic_objects::MemoryObjects;
+    use acyclic_objects::v2::{MemoryObjects, MemoryOptions};
 
     #[tokio::test]
     async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Result<()> {
-        let objects = Arc::new(MemoryObjects::default());
+        let objects = Arc::new(MemoryObjects::new(MemoryOptions::default()).map_err(storage)?);
         let bucket = objects
-            .create_bucket("harness-content".into(), Some("objects-bucket".into()))
+            .create_bucket(wire::CreateBucketRequest {
+                name: "harness-content".into(),
+                mutation: None,
+            })
             .await
             .map_err(storage)?
             .bucket
@@ -546,7 +607,7 @@ mod tests {
         let reader = AgentId::from_bytes([8; 16]);
         let volume = VolumeRef::new(
             ProviderRef::new("local", "objects", "1")?,
-            bucket.bucket_id.clone(),
+            bucket.name.clone(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(owner),
         )?;
@@ -609,7 +670,7 @@ mod tests {
         )?;
         assert!(owner_store.verify_artifact(&missing_version).await.is_err());
         let unpinned = ArtifactRef::new(provider.clone(), artifact.as_resource().key(), None)?;
-        assert!(owner_store.verify_artifact(&unpinned).await.is_err());
+        owner_store.verify_artifact(&unpinned).await?;
         let traversal = ArtifactRef::new(
             provider.clone(),
             format!("{}/../outside", owner_store.volume.storage_name()?).into_bytes(),
@@ -873,20 +934,71 @@ mod tests {
             "one.txt",
         )?;
         assert!(owner_store.read(&wrong).await.is_err());
+        let replacement = owner_store
+            .stage(
+                OperationId::from_bytes([19; 16]),
+                "notes/one.txt",
+                b"replacement bytes",
+                "text/plain",
+                "one.txt",
+            )
+            .await?;
+        assert_ne!(replacement.version(), file.version());
+        assert_eq!(owner_store.read(&file).await?.as_slice(), b"owner bytes");
+        assert_eq!(
+            owner_store.read(&replacement).await?.as_slice(),
+            b"replacement bytes"
+        );
+        let replacement_artifact = owner_store.artifact_ref(&replacement)?;
+        assert!(replacement_artifact.as_resource().version().is_none());
+        owner_store.verify_artifact(&replacement_artifact).await?;
+        owner_store
+            .objects
+            .put(
+                wire::PutObjectHeader {
+                    bucket: Some(owner_store.bucket.clone()),
+                    object_key: String::from_utf8(
+                        replacement_artifact.as_resource().key().to_vec(),
+                    )
+                    .map_err(|_| Error::Invalid("invalid test key".into()))?,
+                    metadata: Some(wire::ObjectMetadata {
+                        content_type: "text/plain".into(),
+                        user: [("harness-display-name".into(), "one.txt".into())].into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                bytes::Bytes::from_static(b"corrupt replacement"),
+            )
+            .await
+            .map_err(storage)?;
+        assert!(
+            owner_store
+                .verify_artifact(&replacement_artifact)
+                .await
+                .is_err()
+        );
+        assert!(owner_store.read(&replacement).await.is_err());
         Ok(())
     }
 
     #[tokio::test]
     async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Result<()> {
-        let objects = Arc::new(MemoryObjects::default());
+        let objects = Arc::new(MemoryObjects::new(MemoryOptions::default()).map_err(storage)?);
         let bucket_a = objects
-            .create_bucket("harness-owner-a".into(), Some("objects-owner-a".into()))
+            .create_bucket(wire::CreateBucketRequest {
+                name: "harness-owner-a".into(),
+                mutation: None,
+            })
             .await
             .map_err(storage)?
             .bucket
             .ok_or_else(|| Error::Storage("bucket identity is missing".into()))?;
         let bucket_b = objects
-            .create_bucket("harness-owner-b".into(), Some("objects-owner-b".into()))
+            .create_bucket(wire::CreateBucketRequest {
+                name: "harness-owner-b".into(),
+                mutation: None,
+            })
             .await
             .map_err(storage)?
             .bucket
@@ -905,13 +1017,13 @@ mod tests {
         let provider = ProviderRef::new("local", "objects", "1")?;
         let volume_a = VolumeRef::new(
             provider.clone(),
-            bucket_a.bucket_id.clone(),
+            bucket_a.name.clone(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(owner_a),
         )?;
         let volume_b = VolumeRef::new(
             provider.clone(),
-            bucket_b.bucket_id.clone(),
+            bucket_b.name.clone(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(owner_b),
         )?;

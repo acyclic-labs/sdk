@@ -363,3 +363,21 @@ these files uncommitted describe their state at those checkpoints. This commit
 does not finish the migration: active v1 consumers and package exports remain,
 the compatibility manifest/matrix still require their final transition, and no
 released package version or Cloud deployment is established by this source pin.
+
+### Harness Objects consumer migration
+
+ObjectContentStore now consumes Objects v2 and logical bucket names. Harness file
+revisions carry a canonical descriptor/display-name digest, including SHA-256 and
+length, and resolve immutable content keys published with IfAbsent. Artifact refs
+have no Objects version field. Artifact capture checks bounded bytes and metadata
+against the content identity; it cannot accept a silently overwritten key. Owner
+scope, attached-reader grants, route isolation and manifest member checks remain.
+The adapter performs no public history/snapshot/version operation.
+
+All 196 Harness unit tests and 17 integration tests pass, including local reopen,
+recursive fork, residency, execution journal and workflow checks. Strict all-feature
+all-target Clippy passes. Migration tests verify old references survive new content
+at the same logical path and overwritten content fails file/artifact verification.
+Presence and hash verification do not establish service retention: Cloud must adopt
+private retain claims under durable acceptance intents before publishing accepted
+refs. Filesystem/local provider migration and final package transition remain.
