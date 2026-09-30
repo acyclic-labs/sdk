@@ -2,6 +2,21 @@
 
 Status: active; local transport work is incomplete and PR 223 is unmerged.
 
+## Native qualification consumer uses v2 (2026-09-30)
+
+The local qualification binary now opens canonical v2 durable Objects and runs
+the v2 conformance inventory. Its model still exercises exact put/delete retries,
+current-key pagination, inclusive range reads, missing-object errors and reopen;
+sparse collection and 48-MiB body startup scenarios use v2 too. No scenario was
+removed or suppressed. Strict all-feature/all-target Conformance Clippy passed.
+`cargo run -p acyclic-conformance --features local-runner --bin qualify --locked
+--target x86_64-pc-windows-msvc -- --max-seconds=300` passed all 12 cases,
+including filesystem model/demand and supported SQLite WAL native mount, in
+936 ms after build. Logs: `D:/codex-sdk-162e-qualification-20260930/
+sdk-v2-qualifier-{clippy,run}.log`. Native local configuration aliases and private
+physical helpers still require extraction before retiring the active v1 engine.
+This is local SDK evidence, not live Cloud acceptance or goal completion.
+
 ## Native filesystem v2 composition and umbrella consumer (2026-09-30)
 
 Native filesystem roots now open `v2::local::LocalObjects` through

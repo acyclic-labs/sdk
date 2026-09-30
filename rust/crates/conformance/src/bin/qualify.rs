@@ -22,9 +22,10 @@ use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::native_mount::{MountOptions, NativeMountKind, probe_native_mount};
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{CancellationToken, Fs, LocalOptions};
-use acyclic_objects::{
-    GetRequest, LocalObjects, LocalObjectsLimits, ObjectsError, ObjectsProvider, PutRequest,
-    ReadTarget, wire,
+use acyclic_objects::v2::{
+    ObjectsProvider,
+    local::{LocalObjects, LocalOptions as LocalObjectsLimits},
+    wire,
 };
 use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient};
 use bytes::Bytes;
@@ -87,9 +88,7 @@ async fn qualify_objects_local(root: PathBuf) -> Result<(), String> {
     let provider = LocalObjects::open(root, LocalObjectsLimits::default())
         .await
         .map_err(|error| error.to_string())?;
-    // The durable provider remains a legacy migration dependency; do not label
-    // this v1 journal qualification as acceptance of the logical v2 contract.
-    acyclic_objects::conformance::verify(&provider, "conformance")
+    acyclic_objects::v2::conformance::verify(&provider, "conformance")
         .await
         .map_err(|error| error.to_string())
 }
@@ -352,11 +351,14 @@ async fn stream_history(root: &Path, seed: u64) -> Result<(), String> {
 async fn objects_history(root: &Path, seed: u64) -> Result<(), String> {
     let provider = LocalObjects::open(root, LocalObjectsLimits::default())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     let bucket = provider
-        .create_bucket("consumer-history".into(), Some("create-history".into()))
+        .create_bucket(wire::CreateBucketRequest {
+            name: "consumer-history".into(),
+            mutation: None,
+        })
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|e| e.to_string())?
         .bucket
         .ok_or("bucket creation returned no identity")?;
     let mut expected = std::collections::BTreeMap::<String, Bytes>::new();
@@ -367,44 +369,42 @@ async fn objects_history(root: &Path, seed: u64) -> Result<(), String> {
         rng ^= rng << 17;
         let key = format!("entry-{:02}", rng % 8);
         if step % 5 == 2 {
-            let idempotency_key = Some(format!("delete-{step}"));
+            let request = wire::DeleteObjectRequest {
+                bucket: Some(bucket.clone()),
+                object_key: key.clone(),
+                mutation: Some(wire::MutationIdentity {
+                    idempotency_key: format!("delete-{step}"),
+                }),
+                ..Default::default()
+            };
             let result = provider
-                .delete(
-                    bucket.clone(),
-                    key.clone(),
-                    None,
-                    None,
-                    idempotency_key.clone(),
-                )
+                .delete(request.clone())
                 .await
-                .map_err(|error| error.to_string())?;
-            let replay = provider
-                .delete(bucket.clone(), key.clone(), None, None, idempotency_key)
-                .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|e| e.to_string())?;
+            let replay = provider.delete(request).await.map_err(|e| e.to_string())?;
             if result != replay {
                 return Err(format!("step {step}: delete retry changed its outcome"));
             }
             expected.remove(&key);
         } else {
             let body = Bytes::copy_from_slice(&rng.to_le_bytes());
-            let request = PutRequest {
-                bucket: bucket.clone(),
+            let request = wire::PutObjectHeader {
+                bucket: Some(bucket.clone()),
                 object_key: key.clone(),
-                body: body.clone(),
-                metadata: wire::ObjectMetadata::default(),
-                condition: None,
-                idempotency_key: Some(format!("put-{step}")),
+                mutation: Some(wire::MutationIdentity {
+                    idempotency_key: format!("put-{step}"),
+                }),
+                ..Default::default()
             };
-            let version = provider
-                .put(request.clone())
+            let object = provider
+                .put(request.clone(), body.clone())
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|e| e.to_string())?;
             let replay = provider
-                .put(request)
+                .put(request, body.clone())
                 .await
-                .map_err(|error| error.to_string())?;
-            if version != replay || version.size != body.len() as u64 {
+                .map_err(|e| e.to_string())?;
+            if object != replay || object.size != body.len() as u64 {
                 return Err(format!("step {step}: put retry or size differs"));
             }
             expected.insert(key.clone(), body);
@@ -414,24 +414,25 @@ async fn objects_history(root: &Path, seed: u64) -> Result<(), String> {
     drop(provider);
     let reopened = LocalObjects::open(root, LocalObjectsLimits::default())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     reopened
-        .head_bucket(&bucket)
+        .head_bucket(wire::HeadBucketRequest {
+            bucket: Some(bucket.clone()),
+        })
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     for (key, body) in expected {
         let observed = reopened
-            .get(GetRequest {
-                target: ReadTarget::Bucket(bucket.clone()),
-                object_key: key.clone(),
-                version_id: None,
-                range: None,
-                if_match: None,
-                if_none_match: None,
-                maximum_bytes: 8,
-            })
+            .get(
+                wire::GetObjectRequest {
+                    bucket: Some(bucket.clone()),
+                    object_key: key.clone(),
+                    ..Default::default()
+                },
+                8,
+            )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|e| e.to_string())?;
         if observed.body != body {
             return Err(format!("reopened object {key} differs from model"));
         }
@@ -444,11 +445,14 @@ async fn objects_many_chunks_setup(root: &Path) -> Result<(), String> {
     const CHUNKS: usize = 48;
     let provider = LocalObjects::open(root, LocalObjectsLimits::default())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     let bucket = provider
-        .create_bucket("many-chunks".into(), Some("create-many-chunks".into()))
+        .create_bucket(wire::CreateBucketRequest {
+            name: "many-chunks".into(),
+            mutation: None,
+        })
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|e| e.to_string())?
         .bucket
         .ok_or("bucket creation returned no identity")?;
     let mut body = vec![0_u8; CHUNK_BYTES * CHUNKS];
@@ -456,68 +460,77 @@ async fn objects_many_chunks_setup(root: &Path) -> Result<(), String> {
         chunk.fill(u8::try_from(index).map_err(|_| "chunk index exceeds byte range")?);
     }
     provider
-        .put(PutRequest {
-            bucket,
-            object_key: "many-chunks".into(),
-            body: Bytes::from(body),
-            metadata: wire::ObjectMetadata::default(),
-            condition: None,
-            idempotency_key: Some("put-many-chunks".into()),
-        })
+        .put(
+            wire::PutObjectHeader {
+                bucket: Some(bucket),
+                object_key: "many-chunks".into(),
+                mutation: Some(wire::MutationIdentity {
+                    idempotency_key: "put-many-chunks".into(),
+                }),
+                ..Default::default()
+            },
+            Bytes::from(body),
+        )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 async fn objects_sparse_first_put(root: &Path) -> Result<(), String> {
     let provider = LocalObjects::open(root, LocalObjectsLimits::default())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     let bucket = provider
-        .create_bucket("sparse".into(), None)
+        .create_bucket(wire::CreateBucketRequest {
+            name: "sparse".into(),
+            mutation: None,
+        })
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|e| e.to_string())?
         .bucket
         .ok_or("sparse bucket creation returned no identity")?;
     provider
-        .put(PutRequest {
-            bucket,
-            object_key: "only-object".into(),
-            body: Bytes::from_static(b"sparse body"),
-            metadata: wire::ObjectMetadata::default(),
-            condition: None,
-            idempotency_key: None,
-        })
+        .put(
+            wire::PutObjectHeader {
+                bucket: Some(bucket),
+                object_key: "only-object".into(),
+                ..Default::default()
+            },
+            Bytes::from_static(b"sparse body"),
+        )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 async fn objects_sparse_reopen_gc(root: &Path) -> Result<(), String> {
     let provider = LocalObjects::open(root, LocalObjectsLimits::default())
         .await
-        .map_err(|error| error.to_string())?;
-    let bucket = provider
-        .bucket_named("sparse")
+        .map_err(|e| e.to_string())?;
+    let bucket = wire::BucketRef {
+        name: "sparse".into(),
+    };
+    provider
+        .head_bucket(wire::HeadBucketRequest {
+            bucket: Some(bucket.clone()),
+        })
         .await
-        .map_err(|error| error.to_string())?
-        .ok_or("sparse bucket is missing after reopen")?;
+        .map_err(|e| e.to_string())?;
     provider
         .collect_garbage(100)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     let object = provider
-        .get(GetRequest {
-            target: ReadTarget::Bucket(bucket),
-            object_key: "only-object".into(),
-            version_id: None,
-            range: None,
-            if_match: None,
-            if_none_match: None,
-            maximum_bytes: 11,
-        })
+        .get(
+            wire::GetObjectRequest {
+                bucket: Some(bucket),
+                object_key: "only-object".into(),
+                ..Default::default()
+            },
+            11,
+        )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     if object.body != Bytes::from_static(b"sparse body") {
         return Err("sparse body changed after reopen and collection".into());
     }
@@ -527,16 +540,15 @@ async fn objects_sparse_reopen_gc(root: &Path) -> Result<(), String> {
 async fn objects_many_chunks_startup(root: &Path) -> Result<(), String> {
     let provider = LocalObjects::open(root, LocalObjectsLimits::default())
         .await
-        .map_err(|error| error.to_string())?;
-    let bucket = provider
-        .bucket_named("many-chunks")
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or("reopened bucket is missing")?;
+        .map_err(|e| e.to_string())?;
     provider
-        .head_bucket(&bucket)
+        .head_bucket(wire::HeadBucketRequest {
+            bucket: Some(wire::BucketRef {
+                name: "many-chunks".into(),
+            }),
+        })
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -548,33 +560,26 @@ async fn verify_objects_current(
     step: u64,
 ) -> Result<(), String> {
     let mut observed = std::collections::BTreeSet::new();
-    let mut continuation = None;
+    let mut continuation = String::new();
     for page_number in 0..4 {
         let page = provider
-            .list(
-                ReadTarget::Bucket(bucket.clone()),
-                String::new(),
-                None,
-                false,
-                3,
-                continuation,
-            )
+            .list(wire::ListObjectsRequest {
+                bucket: Some(bucket.clone()),
+                page_size: 3,
+                continuation_token: continuation,
+                ..Default::default()
+            })
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|e| e.to_string())?;
         for entry in page.entries {
-            if entry
-                .version
-                .as_ref()
-                .is_none_or(|version| version.delete_marker)
-                || !observed.insert(entry.object_key)
-            {
+            if entry.object.is_none() || !observed.insert(entry.object_key) {
                 return Err(format!(
-                    "step {step}: listing returned a duplicate or marker"
+                    "step {step}: listing returned a duplicate or missing object"
                 ));
             }
         }
-        continuation = page.continuation;
-        if continuation.is_none() {
+        continuation = page.continuation_token;
+        if continuation.is_empty() {
             break;
         }
         if page_number == 3 {
@@ -584,22 +589,23 @@ async fn verify_objects_current(
     if observed != expected.keys().cloned().collect() {
         return Err(format!("step {step}: listing differs from model"));
     }
-    let request = GetRequest {
-        target: ReadTarget::Bucket(bucket.clone()),
+    let request = wire::GetObjectRequest {
+        bucket: Some(bucket.clone()),
         object_key: selected_key.to_owned(),
-        version_id: None,
-        range: Some((1, Some(3))),
-        if_match: None,
-        if_none_match: None,
-        maximum_bytes: 3,
+        range: Some(wire::ByteRange {
+            selection: Some(wire::byte_range::Selection::Bytes(wire::InclusiveRange {
+                start: 1,
+                end: Some(3),
+            })),
+        }),
+        ..Default::default()
     };
-    match (expected.get(selected_key), provider.get(request).await) {
+    match (expected.get(selected_key), provider.get(request, 3).await) {
         (Some(body), Ok(result)) if body.get(1..4) == Some(result.body.as_ref()) => Ok(()),
-        (None, Err(ObjectsError::NotFound)) => Ok(()),
+        (None, Err(error)) if error.code == wire::ErrorCode::NotFound => Ok(()),
         _ => Err(format!("step {step}: range read differs from model")),
     }
 }
-
 async fn filesystem_history(root: std::path::PathBuf, seed: u64) -> Result<(), String> {
     let fs = Box::pin(Fs::local(LocalOptions::new(&root)))
         .await
