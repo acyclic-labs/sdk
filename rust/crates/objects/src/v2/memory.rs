@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::{Error, NativeBatchObjects, Object, ObjectsProvider, request, wire};
 use crate::body::StoredBody;
 use bytes::Bytes;
+use imbl::OrdMap;
 use prost::Message;
 use wire::ErrorCode::{
     AlreadyExists, IdempotencyMismatch, InvalidArgument, NotFound, NotModified, PreconditionFailed,
@@ -47,13 +48,13 @@ pub struct MemoryObjects {
 struct State {
     buckets: BTreeMap<String, Bucket>,
     uploads: BTreeMap<String, Upload>,
-    receipts: BTreeMap<String, Receipt>,
+    receipts: OrdMap<String, Receipt>,
     sequence: u64,
 }
 #[derive(Clone)]
 struct Bucket {
     info: wire::Bucket,
-    objects: BTreeMap<String, Stored>,
+    objects: OrdMap<String, Stored>,
 }
 #[derive(Clone)]
 struct Stored {
@@ -102,7 +103,7 @@ impl MemoryObjects {
                     bucket: Some(bucket.clone()),
                     created_at: Some(prost_types::Timestamp::default()),
                 },
-                objects: BTreeMap::new(),
+                objects: OrdMap::new(),
             },
         );
         (
@@ -143,7 +144,7 @@ impl MemoryObjects {
                 name,
                 Bucket {
                     info: info.clone(),
-                    objects: BTreeMap::new(),
+                    objects: OrdMap::new(),
                 },
             );
             Ok(info)
@@ -169,8 +170,9 @@ impl MemoryObjects {
         })
     }
 
-    // A failed mutation rolls back both publication and its receipt. Cloned byte buffers
-    // share immutable allocations; only the committed state owns current representations.
+    // A failed mutation rolls back both publication and its receipt. Persistent ordered
+    // maps share unchanged entries, so admission does not copy the entire object store
+    // and retained retry inventory. Only the committed state owns current representations.
     fn mutate<R: Message + Default>(
         &self,
         digest: [u8; 32],
@@ -616,7 +618,7 @@ impl ObjectsProvider for MemoryObjects {
                     query.name.clone(),
                     Bucket {
                         info: info.clone(),
-                        objects: BTreeMap::new(),
+                        objects: OrdMap::new(),
                     },
                 );
                 Ok(info)

@@ -1,11 +1,71 @@
 # SDK contract goal evidence
 
-Status: active; local SDK qualification passes for the 0.2.0 candidate. PR 223
-is unmerged; final-head required CI and an approving code-owner review remain.
+Status: active; final follow-up local qualification passes for the 0.2.0 candidate.
+PR 223 is unmerged; its previous required CI failed on fork-test time budgets.
+Qualified follow-up push, green required CI and an approving code-owner review remain.
 
 ## Final Objects v2 retirement and 0.2.0 qualification (2026-09-30)
 
-### Final-head host installation correction
+### Follow-up fork performance and source-derived matrix qualification
+
+Final-head SDK run 36755740067 is terminal: Windows reached its 25-minute
+budget, Linux/ARM64/macOS and gate reached their 20-minute budgets while the
+unchanged 1024-recursive-fork fixture was running. Required SDK Qualification
+failed; web, both musl lanes and policy passed. The ARM64 ownership regression
+passed before its later fork timeout. No run was cancelled or restarted by this
+chat. The original Linux fork baseline was preserved to completion: PASS in
+3760.28 seconds. The earlier full Windows baseline passed in 2253.44 seconds.
+
+A CPU profile of that exact Linux baseline identified whole-store BTreeMap
+cloning in rollback admission. Replaced only the Objects current-key and retry
+receipt maps with structural sharing using the existing pinned imbl dependency.
+Rollback publication, persistence, ordered listings and retained receipts stay
+covered by the existing suites. No wire schema, dependency version, test depth,
+ignore, timeout or public operation changed. An isolated candidate passed full
+Windows Objects/FS/Harness tests and strict all-feature/all-target Clippy. Its
+unchanged recursive-fork integration passed in 157.97 seconds on Windows and
+157.19 seconds on Linux; Linux Objects tests and strict Clippy also passed.
+Full workspace strict Clippy, all 24 reduced-feature combinations and complete
+generated-file checks passed on the combined candidate. On the updated checkout,
+`bun run check`, `bun run test:contracts`, all 382 Bun package tests (2008
+assertions), real Chrome 38-operation HTTP/WASM conformance and the 12-case
+native qualifier passed (2961 ms; supported SQLite WAL case passed). Fresh
+archives for all nine public packages passed validation; the fresh isolated
+consumer passed 10 assertions and all four gRPC imports in both Node and Bun.
+The complete Rust workspace all-feature tests, including documentation, and
+rebuilt-checkout generated checks also passed with terminal exit 0. The three
+changed Rust files exactly match the fully tested candidate (hashes recorded in
+sdk-map-source-equivalence.json). These edits are qualified for push. Logs use
+sdk-map-candidate-* and sdk-map-final-* in the evidence
+directory. The original checkout was unchanged until its baseline terminated.
+
+Review thread PRRT_kwDOUMoiI86npt4f correctly identified constant completeness
+flags. The inventory now derives each transport/package flag from client
+implementations, generated client methods, gRPC factories and package exports.
+Eight negative fixtures verify removed methods/transports/exports fail presence
+checks, including a server method remaining after its client is removed. All
+eight pass; the inventory remains 38 active and 17 retired operations. The
+contract-test command runs these tests and requires complete source exposure.
+Source presence is distinct from the existing runtime conformance evidence.
+
+Rebuilt Objects WASM SHA256:
+`a6e04e56d3793070e06c3bc88d81547b7e1f72473fe558a726a5b6449300653d`.
+Rebuilt filesystem WASM SHA256:
+`8f4cf4ff2da0dc58936b1ab280304fec9bd3c7b661f2de896fd03fc18c9273e3`.
+Active descriptor/schema/conformance digests listed below are unchanged. Fresh
+archives and consumer are in `packages-map-final` and `package-consumer-map-final`
+under the evidence directory; nothing was published.
+
+Billing asked whether native FS provides an immutable charging producer. The
+SDK exposes bounded-work counters and durable authority/retention records, but
+has no tested producer covering tenant authority/epoch, logical retained byte-time
+integral and watermark, exact public-delivery checkpoints, direct/composed owner
+attribution, native failure chargeability versus platform retry/repair costs,
+and the complete zero/retired operation inventory. Reported those exact missing
+fields to Billing; SDK diagnostics do not authorize charging. This Cloud producer
+dependency is separate from the four-family SDK qualification and live acceptance.
+
+### Host correction reproduction
 
 Qualified SDK source was pushed as
 `add796294368d8887f1eee545c4be4c65be3d043`. Final-head Agent Host run
@@ -22,7 +82,7 @@ then passed in 19.51 s; pinned Claude 2.1.278 passed in 17.05 s. A fresh plugin
 package with the actual native binary passed its package validator. Logs use
 `sdk-final-host-*` and `sdk-final-claude-local-after.log` in the evidence directory.
 No CI run was cancelled or restarted; this follow-up remains queued for push
-until the running final-head SDK qualification reaches its terminal result.
+until the combined local follow-up qualification completes.
 
 The Rust Objects root exports canonical v2. Removed the active v1 provider,
 engine, conformance implementation and packaged Rust bindings. Extracted the

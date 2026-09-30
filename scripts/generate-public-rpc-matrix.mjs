@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import { createSourceInspector } from "./public-rpc-source.mjs";
 import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
 import { WorkersService } from "../typescript/packages/workers/generated/proto/workers/v1/workers_pb.js";
 import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v2/stream_pb.js";
@@ -38,11 +39,10 @@ function routes(family) {
 }
 const actors = routes("actors");
 const workers = routes("workers");
+const inspectSource = createSourceInspector(new URL("..", import.meta.url));
 // Retired rows record published history; target rows describe current SDK exposure.
 // Implementation fields describe source presence, not package or live acceptance.
 const services = [ActorsService, WorkersService, StreamService, BucketsV2, ObjectsV2, MultipartV2, ...legacyServices];
-const objectsPackage = JSON.parse(readFileSync(new URL("../typescript/packages/objects/package.json", import.meta.url), "utf8"));
-const objectsIndex = readFileSync(new URL("../typescript/packages/objects/src/index.ts", import.meta.url), "utf8");
 const v2Routes = readFileSync(new URL("../rust/crates/objects/src/v2/mod.rs", import.meta.url), "utf8");
 const objectsRoot = readFileSync(new URL("../rust/crates/objects/src/lib.rs", import.meta.url), "utf8");
 if (!/pub use v2::\*/.test(objectsRoot) || /objects\.v1|mod provider|mod local;/.test(objectsRoot) ||
@@ -57,12 +57,6 @@ const rows = services.flatMap(service => service.methods.map(method => {
   const http = family === "actors" ? actors[method.localName] : family === "workers" ? workers[method.localName] : (family === "stream" ? stream : objects)[method.name];
   if (!http) throw new Error(`missing HTTP mapping for ${service.typeName}/${method.name}`);
   if (objectsV2 && !v2Routes.includes(`"${http}"`)) throw new Error(`Objects v2 Rust route missing: ${http}`);
-  const typescriptPackage = family !== "objects" || (
-    objectsPackage.exports["./proto"]?.default?.includes(`/objects/${version}/`) &&
-    objectsPackage.exports["./grpc"]?.default === (objectsV2 ? "./dist/v2-grpc.js" : "./dist/grpc.js") &&
-    (!objectsV2 || ["v2", "v2-http"].every(module =>
-      new RegExp(`export\\s+\\*\\s+from\\s+["']\\./${module}\\.js["']`).test(objectsIndex)))
-  );
   return {
     rpc: `${service.typeName}/${method.name}`,
     kind: method.methodKind,
@@ -70,11 +64,7 @@ const rows = services.flatMap(service => service.methods.map(method => {
     response: method.output.typeName,
     contractStatus: legacy ? "retired" : "target",
     httpOperation: family === "objects" ? `${version}/objects/${http}` : family === "stream" ? `v1/stream/${http}` : http,
-    rustGrpc: !legacy,
-    rustHttp: !legacy,
-    typescriptGrpcNodeBun: !legacy,
-    typescriptHttp: !legacy,
-    typescriptPackageExported: Boolean(typescriptPackage),
+    ...inspectSource(service, method),
   };
 }));
 const output = JSON.stringify(rows, null, 2) + "\n";

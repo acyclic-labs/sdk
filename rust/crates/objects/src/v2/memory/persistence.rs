@@ -508,7 +508,12 @@ impl Journal {
         }
         let mut inline_data = Vec::new();
         for bucket in next.buckets.values_mut() {
-            for object in bucket.objects.values_mut() {
+            let keys = bucket.objects.keys().cloned().collect::<Vec<_>>();
+            for key in keys {
+                let object = bucket
+                    .objects
+                    .get_mut(&key)
+                    .ok_or(Error::from(Unavailable))?;
                 if object.body.len() as u64 > self.limits.maximum_object_bytes {
                     return Err(QuotaExceeded.into());
                 }
@@ -835,7 +840,7 @@ fn apply(
                 value.name,
                 Bucket {
                     info,
-                    objects: BTreeMap::new(),
+                    objects: OrdMap::new(),
                 },
             );
         } else if next

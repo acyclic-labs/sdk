@@ -39,7 +39,12 @@ impl Journal {
     }
     pub(super) fn materialize_inline(&self, state: &mut State) -> Result<(), LocalOpenError> {
         for bucket in state.buckets.values_mut() {
-            for object in bucket.objects.values_mut() {
+            let keys = bucket.objects.keys().cloned().collect::<Vec<_>>();
+            for key in keys {
+                let object = bucket
+                    .objects
+                    .get_mut(&key)
+                    .ok_or(LocalOpenError::Corrupt)?;
                 object.body = self.materialized(&object.body)?;
             }
         }
@@ -120,10 +125,22 @@ pub(super) fn place(delta: &mut Delta, state: &mut State, frame: u64) -> Result<
         }
     }
     for bucket in state.buckets.values_mut() {
-        for object in bucket.objects.values_mut() {
-            if let Some(body) = object.body.relocated(&moves) {
-                object.body = body;
-            }
+        let relocated = bucket
+            .objects
+            .iter()
+            .filter_map(|(key, object)| {
+                object
+                    .body
+                    .relocated(&moves)
+                    .map(|body| (key.clone(), body))
+            })
+            .collect::<Vec<_>>();
+        for (key, body) in relocated {
+            bucket
+                .objects
+                .get_mut(&key)
+                .ok_or(Error::from(Unavailable))?
+                .body = body;
         }
     }
     for upload in state.uploads.values_mut() {
