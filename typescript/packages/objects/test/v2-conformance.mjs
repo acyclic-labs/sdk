@@ -83,6 +83,22 @@ test("Objects v2 rejects invalid requests before HTTP and bounds response alloca
   for (const endpoint of ["http://objects.example", "https://user@objects.example", "https://objects.example/?query=1", "https://objects.example/#fragment"]) assert.throws(() => new HttpObjectsV2({ endpoint, token: "fixture" }));
   await assert.rejects(MemoryObjectsV2.create(0x1_0000_0000n), fail(wire.ErrorCode.QUOTA_EXCEEDED));
 });
+test("Objects v2 HTTP cancels oversized downloads at the header before pulling the body", async () => {
+  await MemoryObjectsV2.create();
+  const frame = make("GetObjectResponse", { frame: { case: "header", value: { object: { etag: "opaque", size: 1000000n, lastModified: { seconds: 0n, nanos: 0 } } } } });
+  const header = Buffer.concat([Buffer.from(encode_objects_v2_json("GetObjectResponse", toBinary(wire.GetObjectResponseSchema, frame), 128 * 1024)), Buffer.from("\n")]);
+  let pulls = 0;
+  let cancelled = false;
+  const fetcher = async () => new Response(new ReadableStream({
+    pull(controller) { pulls++; if (pulls === 1) controller.enqueue(header); else throw new Error("body must not be pulled"); },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 }), { headers: { "content-type": "application/x-ndjson" } });
+  const client = new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture", fetch: fetcher });
+  await assert.rejects(client.get(make("GetObjectRequest", { bucket: { name: "customer.inputs" }, objectKey: "data" }), 1n), fail(wire.ErrorCode.QUOTA_EXCEEDED));
+  assert.equal(pulls, 1);
+  assert.equal(cancelled, true);
+});
+
 test("Objects v2 validates remote metadata, ranges, framing and terminal errors", async () => {
   await MemoryObjectsV2.create();
   const info = { etag: "opaque", size: 1n, lastModified: { seconds: 0n, nanos: 0 } };

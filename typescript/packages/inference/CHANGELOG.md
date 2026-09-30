@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject idle-KV responses to legacy retain/renew requests; recovered inspection remains compatible with either retention mode.
+
 - Add paid idle KV policy and verified-use evidence to the canonical v1 wire
   contract, with Rust and TypeScript retention and renewal helpers.
 - Renewal changes timeout from the prior verified-use/initial-pin baseline;

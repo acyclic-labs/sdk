@@ -548,3 +548,39 @@ with no default native transport features. These are local SDK transport results
 canonical Objects root/export migration, filesystem durable provider migration,
 full repository/consumer qualification, merge/publication and deployed service
 acceptance remain required. The goal is active.
+
+### Review qualification and response bounds
+
+The Linux qualification failure at 7196ce28 was reproduced locally by
+`bun scripts/check-metadata.mjs`: the package check required every descriptor
+version to occupy the single `./proto` export. Objects v2 now has an explicit
+`./v2/proto` export, and metadata validation checks each generated version's
+actual protobuf export. The local metadata check passes.
+
+Browser qualification now builds Objects and Stream WASM before compiling or
+launching Chrome. The command passes with all 38 fixture routes observed.
+N-API build metadata explicitly tracks the force-build environment value;
+two successive declaration checks pass with fresh Rust macro output.
+
+Objects v2 HTTP downloads decode bounded NDJSON frames incrementally, validate
+selection size at the header, and apply caller body limits before retaining
+frames. The parser uses a fixed 128 KiB line buffer. Node and Bun tests prove
+oversized headers cancel the stream without pulling the body; existing lifecycle,
+range, malformed framing and error tests pass. Chrome qualification also passes.
+
+Legacy Inference retain/renew responses must preserve legacy retention mode.
+Rust host checks and the shared Rust/WASM validator reject substituted idle-KV
+views, while recovered inspect remains mode-neutral. All 14 Rust tests, strict
+native Clippy, 18 TypeScript tests and type checks pass; WASM was rebuilt.
+
+Unresolved Stream HTTP response atomicity and legacy local receipt-capacity
+review findings still require investigation before merge. Billing meter units
+and native signed proof/custody semantics are an exact dependency being
+coordinated with Inference and Billing; uint64 counters alone do not establish
+pricing semantics or physical residency. The Goal remains active.
+
+The full generated-file check passes after these changes. Inference also reports
+that Cloud mounts canonical tonic services but lacks the canonical SDK JSON
+routes/watch NDJSON. A descriptor-backed bounded native protobuf-JSON route
+codec in acyclic-inference is an SDK dependency; Cloud will dispatch its decoded
+messages into the same service handlers. No HTTP deployment acceptance is claimed.

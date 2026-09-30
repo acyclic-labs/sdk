@@ -1,6 +1,6 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
-import { encode_objects_v2_json, decode_objects_v2_json, objects_v2_http_type } from "../generated/wasm/acyclic_objects_wasm.js";
+import { encode_objects_v2_json, decode_objects_v2_json, objects_v2_http_type, validate_objects_v2_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
 
 export interface ObjectsV2HttpOptions {
@@ -28,7 +28,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     this.endpoint = endpoint;
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
-  protected async invoke(route: string, bytes: Uint8Array, body: Uint8Array): Promise<readonly Uint8Array[]> {
+  protected async invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint): Promise<readonly Uint8Array[]> {
     const types = [objects_v2_http_type(route, false), objects_v2_http_type(route, true)];
     const decodeResponse = (data: Uint8Array, maximum: number) => {
       try { return decode_objects_v2_json(types[1], data, maximum); }
@@ -70,6 +70,50 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     try {
       const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${this.options.token}`, "content-type": streaming ? "application/x-ndjson" : "application/json" }, body: request });
       if (response.status === 304) throw new ObjectsV2Error(wire.ErrorCode.NOT_MODIFIED);
+      if (route === "objects/get" && response.status === 200) {
+        if (response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/x-ndjson") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+        reader = response.body?.getReader();
+        const frames: Uint8Array[] = [];
+        const line = new Uint8Array(128 * 1024);
+        let lineLength = 0;
+        let wireSize = 0;
+        let bodySize = 0n;
+        let expected: bigint | undefined;
+        while (reader !== undefined) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          wireSize += value.byteLength;
+          if (wireSize > this.maximumResponse) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
+          let start = 0;
+          for (let end = 0; end <= value.byteLength; end++) {
+            if (end < value.byteLength && value[end] !== 10) continue;
+            const fragment = value.subarray(start, end);
+            if (lineLength + fragment.byteLength > line.byteLength) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
+            line.set(fragment, lineLength);
+            lineLength += fragment.byteLength;
+            if (end === value.byteLength) break;
+            start = end + 1;
+            const stop = lineLength > 0 && line[lineLength - 1] === 13 ? lineLength - 1 : lineLength;
+            if (stop === 0) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+            const decoded = decodeResponse(line.subarray(0, stop), 128 * 1024);
+            lineLength = 0;
+            const { frame } = fromBinary(wire.GetObjectResponseSchema, decoded);
+            if (frame.case === "error") throw objectsV2Error({ code: frame.value.code });
+            if (expected === undefined) {
+              if (frame.case !== "header") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+              expected = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, frame.value), maximum);
+            } else {
+              if (frame.case !== "body" || frame.value.byteLength > 65536) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+              bodySize += BigInt(frame.value.byteLength);
+              if (bodySize > maximum) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
+              if (bodySize > expected) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+            }
+            frames.push(decoded);
+          }
+        }
+        if (lineLength !== 0 || expected === undefined || bodySize !== expected) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+        return frames;
+      }
       const chunks: Uint8Array[] = [];
       let size = 0;
       reader = response.body?.getReader();
@@ -92,23 +136,8 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
         throw new ObjectsV2Error(code);
       }
       const media = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
-      if (route !== "objects/get") {
-        if (media !== "application/json") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-        return [decodeResponse(data, this.maximumResponse)];
-      }
-      if (media !== "application/x-ndjson") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-      const frames: Uint8Array[] = [];
-      let start = 0;
-      for (let end = 0; end < data.byteLength; end++) {
-        if (end - start > 128 * 1024) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
-        if (data[end] !== 10) continue;
-        const stop = end > start && data[end - 1] === 13 ? end - 1 : end;
-        if (stop === start) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-        frames.push(decodeResponse(data.subarray(start, stop), 128 * 1024));
-        start = end + 1;
-      }
-      if (start !== data.byteLength) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-      return frames;
+      if (media !== "application/json") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+      return [decodeResponse(data, this.maximumResponse)];
     } finally {
       clearTimeout(timeout);
       await reader?.cancel().catch(() => {});

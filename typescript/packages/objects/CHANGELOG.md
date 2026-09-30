@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Enforce caller download limits while framing HTTP responses and cancel oversized selections before reading their bodies. Export v2 protobuf bindings at `./v2/proto`.
+
 - Bind the default v2 browser fetch receiver and qualify the complete HTTP lifecycle in real Chrome.
 
 - Expose the unreleased logical v2 provider and HTTP/Node/Bun gRPC clients at `./v2`, `./v2/http` and `./v2/grpc` for migrating consumers. Canonical root export transition remains pending.

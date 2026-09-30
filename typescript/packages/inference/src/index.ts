@@ -160,7 +160,7 @@ export class InferenceClient {
   async retainWarm(request: RetainWarmRequest): Promise<WarmView> {
     if (request.idleKv !== undefined) await validateContract("retain_warm_request", RetainWarmRequestSchema, request);
     const view = await this.transport.retainWarm(request);
-    await validateContract(request.idleKv === undefined ? "warm_context" : "idle_warm_context", WarmViewSchema, view, request.context, toBinary(RetainWarmRequestSchema, request));
+    await validateContract(request.idleKv === undefined ? "legacy_warm_context" : "idle_warm_context", WarmViewSchema, view, request.context, toBinary(RetainWarmRequestSchema, request));
     return view;
   }
   async inspectWarm(commitment: Uint8Array): Promise<WarmView> {
@@ -173,7 +173,7 @@ export class InferenceClient {
     requireFixed(request.commitment, INFERENCE_FIXED_WIDTHS.renewWarmCommitment, "warm commitment");
     if (request.idleTimeoutMs !== undefined) await validateContract("renew_warm_request", RenewWarmRequestSchema, request);
     const view = await this.transport.renewWarm(request);
-    await validateContract(request.idleTimeoutMs === undefined ? "warm_commitment" : "idle_warm_commitment", WarmViewSchema, view, request.commitment, toBinary(RenewWarmRequestSchema, request));
+    await validateContract(request.idleTimeoutMs === undefined ? "legacy_warm_commitment" : "idle_warm_commitment", WarmViewSchema, view, request.commitment, toBinary(RenewWarmRequestSchema, request));
     return view;
   }
   async releaseWarm(request: ReleaseWarmRequest): Promise<WarmView> {

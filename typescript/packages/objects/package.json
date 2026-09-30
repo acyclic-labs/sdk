@@ -20,6 +20,10 @@
       "types": "./dist/v2.d.ts",
       "default": "./dist/v2.js"
     },
+    "./v2/proto": {
+      "types": "./generated/proto/objects/v2/objects_pb.d.ts",
+      "default": "./generated/proto/objects/v2/objects_pb.js"
+    },
     "./v2/http": {
       "types": "./dist/v2-http.d.ts",
       "default": "./dist/v2-http.js"

@@ -66,6 +66,13 @@ test("Rust validation rejects mixed policies, invented actual-use evidence and o
   await expect(validateRuntimeShape(WarmViewSchema, actualUse)).rejects.toThrow("evidence differs");
 });
 
+test("legacy retain and renew reject idle responses while recovered inspect accepts them", async () => {
+  const client = new InferenceClient({ retainWarm: async () => view(), renewWarm: async () => view(), inspectWarm: async () => view() } as never);
+  await expect(client.retainWarm(create(RetainWarmRequestSchema, { identity, context: bytes(4), latencyProfile: bytes(6), expiresAtMs: 120n }))).rejects.toThrow("retention mode differs");
+  await expect(client.renewWarm(create(RenewWarmRequestSchema, { identity, commitment: bytes(3), expiresAtMs: 120n }))).rejects.toThrow("retention mode differs");
+  expect((await client.inspectWarm(bytes(3))).idleKv?.policy?.idleTimeoutMs).toBe(20n);
+});
+
 test("client rejects a service substituting a legacy or different idle policy", async () => {
   let substitute = view();
   const client = new InferenceClient({ retainWarm: async () => substitute } as never);

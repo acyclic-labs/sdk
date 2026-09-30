@@ -644,6 +644,9 @@ impl RetainWarm {
             .await?
             .into_inner();
         validate_warm_view(&view, Some(expected_context), None)?;
+        if self.request.idle_kv.is_some() != view.idle_kv.is_some() {
+            return Err(Error::Invalid("retention mode differs"));
+        }
         if let Some(policy) = &self.request.idle_kv
             && view.idle_kv.as_ref().and_then(|idle| idle.policy.as_ref()) != Some(policy)
         {
@@ -762,6 +765,9 @@ impl RenewWarm {
             .await?
             .into_inner();
         validate_warm_view(&view, None, Some(commitment))?;
+        if self.request.idle_timeout_ms.is_some() != view.idle_kv.is_some() {
+            return Err(Error::Invalid("renewal retention mode differs"));
+        }
         if let Some(timeout) = self.request.idle_timeout_ms
             && view
                 .idle_kv

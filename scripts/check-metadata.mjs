@@ -238,8 +238,10 @@ for (const [stem, packages] of packagedTypeScriptBindings) {
   if (!packages.includes(family)) continue;
   const manifest = await load(`typescript/packages/${family}/package.json`);
   const prefix = `./generated/proto/${stem}`;
-  if (manifest.exports?.["./proto"]?.types !== `${prefix}.d.ts`
-    || manifest.exports["./proto"].default !== `${prefix}.js`
+  const exported = Object.entries(manifest.exports ?? {}).some(([subpath, entry]) =>
+    (subpath === "./proto" || /^\.\/v[0-9]+\/proto$/.test(subpath))
+    && entry.types === `${prefix}.d.ts` && entry.default === `${prefix}.js`);
+  if (!exported
     || !manifest.files?.some(path => path === "generated" || path === "generated/proto")
     || manifest.dependencies?.["@bufbuild/protobuf"] !== protobufRuntime) {
     throw new Error(`${family} generated protobuf package export mismatch`);

@@ -664,6 +664,17 @@ fn validate_customer_wire_inner(
     match kind {
         "retain_warm_request" => validate_retain_request(&decode!(wire::RetainWarmRequest)),
         "renew_warm_request" => validate_renew_request(&decode!(wire::RenewWarmRequest)),
+        "legacy_warm_context" | "legacy_warm_commitment" => {
+            let view = decode!(wire::WarmView);
+            if view.idle_kv.is_some() {
+                return Err(Error::Invalid("retention mode differs"));
+            }
+            if kind == "legacy_warm_context" {
+                validate_warm_view(&view, Some(fixed::<32>(expected)?), None)
+            } else {
+                validate_warm_view(&view, None, Some(fixed::<32>(expected)?))
+            }
+        }
         "idle_warm_context" | "idle_warm_commitment" => {
             let view = decode!(wire::WarmView);
             let policy = view
@@ -768,6 +779,28 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn legacy_admission_and_renewal_reject_idle_responses() {
+        let view = idle_view();
+        assert!(
+            validate_customer_wire("legacy_warm_context", &view.encode_to_vec(), &[2; 32], &[])
+                .is_err()
+        );
+        assert!(
+            validate_customer_wire(
+                "legacy_warm_commitment",
+                &view.encode_to_vec(),
+                &[1; 32],
+                &[]
+            )
+            .is_err()
+        );
+        // Inspect remains mode-neutral for recovered handles.
+        assert!(
+            validate_customer_wire("warm_commitment", &view.encode_to_vec(), &[1; 32], &[]).is_ok()
+        );
     }
 
     #[test]
