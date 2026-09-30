@@ -5,9 +5,9 @@ import { fileURLToPath } from "node:url";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
-import * as wire from "../generated/proto/objects/v2/objects_pb.js";
-import { GrpcObjectsV2 } from "../dist/v2-grpc.js";
-import { MemoryObjectsV2, ObjectsV2Error } from "../dist/v2.js";
+import * as wire from "@acyclic-labs/objects/proto";
+import { GrpcObjectsV2 } from "@acyclic-labs/objects/grpc";
+import { MemoryObjectsV2, ObjectsV2Error } from "@acyclic-labs/objects";
 import { ObjectsV2Memory } from "../generated/wasm/acyclic_objects_wasm.js";
 import { lifecycle } from "./v2-lifecycle.mjs";
 

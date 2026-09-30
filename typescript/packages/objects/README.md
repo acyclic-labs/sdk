@@ -1,50 +1,48 @@
 # @acyclic-labs/objects
 
-## Unreleased logical v2 source
+## Canonical logical Objects v2
 
-The PR branch exposes `MemoryObjectsV2` and generated v2 schemas at
-`@acyclic-labs/objects/v2`, `HttpObjectsV2` at `./v2/http`, and
-`GrpcObjectsV2`/`createObjectsV2GrpcClients` at `./v2/grpc` for Node/Bun.
-These use logical bucket names and current object keys, eventual reads/listing,
-single-key conditions, ranges, multipart and opaque ETags. They have no public
-version history, snapshots or forks. The canonical root/proto/grpc transition
-and removal of legacy source remain pending; registry 0.1.5 is unchanged.
+The unmerged source branch exposes `MemoryObjectsV2`, `HttpObjectsV2` and generated
+request/response types at the default package export. `./proto` contains v2
+Protobuf messages, `./http` the browser HTTP client, and `./grpc` the complete
+Node/Bun gRPC client. Existing `./v2` subpaths resolve to the same contract.
 
-## Existing release surface
-
-For Node/Bun gRPC, import `createObjectsGrpcClients` from
-`@acyclic-labs/objects/grpc` with `{ endpoint, token }`. The returned
-`buckets`, `objects`, `multipart`, and `snapshots` clients expose every
-canonical RPC, including client-streaming uploads and server-streaming downloads.
-Optional `caCertificate` adds a private PEM CA; `maximumMessageBytes` bounds
-each message. Browser applications use `HttpObjectsProvider`.
-
-Typed access to immutable object versions, buckets, snapshots, and multipart uploads. Use the in-memory provider for local tests or the HTTPS provider for a hosted Objects service.
-
-```sh
-npm install @acyclic-labs/objects
-```
+Objects use logical bucket names and current keys, eventual reads/listing,
+single-key conditions, bounded ranges, multipart uploads and opaque ETags.
+Public versions, history, snapshots and forks are retired.
 
 ```ts
-import { MemoryObjectsProvider, Objects, jsonCodec } from "@acyclic-labs/objects";
+import { create } from "@bufbuild/protobuf";
+import {
+  MemoryObjectsV2, CreateBucketRequestSchema, PutObjectHeaderSchema,
+  GetObjectRequestSchema,
+} from "@acyclic-labs/objects";
 
-const objects = new Objects(new MemoryObjectsProvider());
-const bucket = await objects.createBucket("documents");
-const json = jsonCodec((value: unknown): { readonly title: string } => {
-  if (typeof value !== "object" || value === null || Array.isArray(value) || !("title" in value) || typeof value.title !== "string") {
-    throw new TypeError("expected a document with a string title");
-  }
-  return { title: value.title };
-});
-const version = await bucket.put("welcome.json", { title: "Hello" }, json);
-const { value } = await bucket.get("welcome.json", json, { versionId: version.versionId });
-console.log(value.title);
+const objects = await MemoryObjectsV2.create();
+const bucket = await objects.createBucket(create(CreateBucketRequestSchema, {
+  name: "documents",
+}));
+await objects.put(create(PutObjectHeaderSchema, {
+  bucket: bucket.bucket, objectKey: "welcome.txt",
+  preconditions: { condition: { case: "ifAbsent", value: true } },
+}), new TextEncoder().encode("Hello"));
+const value = await objects.get(create(GetObjectRequestSchema, {
+  bucket: bucket.bucket, objectKey: "welcome.txt",
+}), 1024n);
+console.log(new TextDecoder().decode(value.body));
 ```
 
-`jsonCodec()` without arguments returns a codec for `JsonValue`. To get a more specific value type, pass a parser that validates the decoded JSON and returns that type. The parser runs for every decode, so malformed stored data is rejected instead of being treated as the requested TypeScript type.
+Construct `HttpObjectsV2` with `{ endpoint, token }` for HTTPS services. Node/Bun
+use `GrpcObjectsV2` or `createObjectsV2GrpcClients` from `./grpc`. The latter
+exposes every canonical RPC, including streamed PUT/part uploads and GET, and
+owns a session that callers close. Optional `caCertificate` adds a private PEM
+CA; request/download/message bounds are explicit. Browsers use HTTP.
 
-For a service, construct `new Objects(new HttpObjectsProvider({ endpoint, token }))` or use `Objects.fromEnv()` with `ACYCLIC_OBJECTS_ENDPOINT` and `ACYCLIC_OBJECTS_TOKEN`. The endpoint must be HTTPS. `BucketRef`, `SnapshotRef`, and version IDs are identities, not names; retain them for subsequent calls.
+## Breaking transition and published history
 
-`put` accepts `condition` (`ifAbsent`, `ifMatch`, or `ifVersion`) and an idempotency key. `bucket.snapshot()` freezes a whole-bucket read view; `bucket.createMultipart()` handles larger bodies. Listings are paginated; use `bucket.pages()` when delimiter prefixes matter. `MemoryObjectsProvider` is process-local and not durable.
-
-[API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/objects/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/objects)
+The v1 TypeScript implementation and its WASM projection are removed from this
+source branch. Published 0.1.5 packages and their tagged Git history are unchanged.
+The default export transition requires a new breaking package version before
+publication; the branch's coordinated version update remains pending. The source
+candidate must not replace a published 0.1.5 distribution. Local client tests do
+not establish Cloud acceptance or package publication.

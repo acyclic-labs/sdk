@@ -3,11 +3,11 @@
   "version": "0.1.5",
   "private": false,
   "license": "Apache-2.0",
-  "description": "Immutable object versions, buckets, snapshots, and typed provider adapters",
+  "description": "Logical Objects v2 with memory, HTTP, and Node/Bun gRPC providers",
   "keywords": [
     "objects",
     "storage",
-    "versioning"
+    "buckets"
   ],
   "repository": {
     "type": "git",
@@ -37,12 +37,13 @@
       "default": "./dist/index.js"
     },
     "./proto": {
-      "types": "./generated/proto/objects/v1/objects_pb.d.ts",
-      "default": "./generated/proto/objects/v1/objects_pb.js"
+      "types": "./generated/proto/objects/v2/objects_pb.d.ts",
+      "default": "./generated/proto/objects/v2/objects_pb.js"
     },
+    "./http": { "types": "./dist/v2-http.d.ts", "default": "./dist/v2-http.js" },
     "./grpc": {
-      "default": "./dist/grpc.js",
-      "types": "./dist/grpc.d.ts"
+      "default": "./dist/v2-grpc.js",
+      "types": "./dist/v2-grpc.d.ts"
     }
   },
   "types": "./dist/index.d.ts",

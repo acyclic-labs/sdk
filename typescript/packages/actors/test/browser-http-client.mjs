@@ -1,8 +1,8 @@
 import assert from "./browser-assert.mjs";
 import { create } from "@bufbuild/protobuf";
 import { lifecycle } from "../../objects/test/v2-lifecycle.mjs";
-import { HttpObjectsV2 } from "@acyclic-labs/objects/v2/http";
-import * as objectsWire from "@acyclic-labs/objects/v2";
+import { HttpObjectsV2 } from "@acyclic-labs/objects/http";
+import * as objectsWire from "@acyclic-labs/objects";
 import { ActorsService, ActorsTransportError, HttpActorsClient } from "@acyclic-labs/actors";
 import { WorkersService, WorkersTransportError, HttpWorkersClient } from "@acyclic-labs/workers";
 import { HttpStreamProvider, idempotencyKey } from "@acyclic-labs/stream";

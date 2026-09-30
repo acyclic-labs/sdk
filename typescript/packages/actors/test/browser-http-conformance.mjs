@@ -175,6 +175,17 @@ try {
   assert.equal(result.status, "passed", result.detail);
   assert.equal(seen.size, 38, `expected 13 Objects, 15 Actor/Worker and 10 Stream HTTP routes: ${[...seen]}`);
   console.log(`Chrome HTTPS: ${result.detail}; ${seen.size} fixture routes observed`);
+  await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/objects/test/browser-wasm.html` }, sessionId);
+  const memory = await until("browser Objects v2 memory", async () => {
+    if (errors.length) throw new Error(errors.join("\n"));
+    const value = await send("Runtime.evaluate", {
+      expression: "({ status: document.body?.dataset.result, detail: document.body?.textContent })", returnByValue: true,
+    }, sessionId);
+    const result = value.result.value;
+    return result?.status === "passed" || result?.status === "failed" ? result : undefined;
+  });
+  assert.equal(memory.status, "passed", memory.detail);
+  console.log("Chrome Objects v2 default export: memory PUT, range GET and current-key replacement passed");
   await send("Browser.close"); await exit;
 } finally {
   socket?.close();

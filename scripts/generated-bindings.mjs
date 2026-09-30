@@ -8,7 +8,6 @@ export const packagedTypeScriptBindings = [
   ["validation/v1/options_pb", ["inference"]],
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
-  ["objects/v1/objects_pb", ["objects"]],
   ["objects/v2/objects_pb", ["objects"]],
   ["stream/v2/stream_pb", ["stream"]],
   ["actors/v1/actors_pb", ["actors"]],

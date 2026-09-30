@@ -4,9 +4,9 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import * as wire from "../generated/proto/objects/v2/objects_pb.js";
-import { MemoryObjectsV2 } from "../dist/v2.js";
-import { HttpObjectsV2 } from "../dist/v2-http.js";
+import * as wire from "@acyclic-labs/objects/proto";
+import { MemoryObjectsV2 } from "@acyclic-labs/objects";
+import { HttpObjectsV2 } from "@acyclic-labs/objects/http";
 import { ObjectsV2Memory, objects_v2_http_type, decode_objects_v2_json, encode_objects_v2_json } from "../generated/wasm/acyclic_objects_wasm.js";
 
 const expectedRoutes = ["buckets/create", "buckets/head", "buckets/delete", "objects/put", "objects/get", "objects/head", "objects/delete", "objects/list", "multipart/create", "multipart/upload-part", "multipart/list-parts", "multipart/complete", "multipart/abort"];

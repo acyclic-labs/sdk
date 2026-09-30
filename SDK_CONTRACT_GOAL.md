@@ -823,3 +823,43 @@ remains unreproduced and unfixed, alongside the Linux lifecycle failure above.
 All other required leaf jobs passed, but aggregate SDK Qualification failed.
 No assertion, required gate or driver error is suppressed. The PR is unmerged;
 local qualification does not establish live acceptance or package publication.
+
+### Canonical TypeScript Objects exports and WASM retire v1
+
+The Objects package root now exports the logical v2 provider; `./proto`,
+`./http` and Node/Bun `./grpc` select v2. The earlier explicit v2 aliases remain.
+Removed v1 TypeScript clients, package protobuf copies, version/snapshot tests,
+WASM projections and the obsolete HTTP response-contract generator. Canonical
+v1 descriptors remain for published compatibility history and remaining native
+consumers. The RPC matrix reads that canonical Rust descriptor directly: 38
+target operations have every transport/package flag set; 17 native v1 operations
+remain `pendingRemoval`, with retired TypeScript transports correctly false.
+The matrix `check` passes; `complete` deliberately fails on those 17 operations.
+Rust root clients, durable local storage and standalone v1 conformance still
+require migration. This is a breaking source transition: released 0.1.5 is
+unchanged and a new breaking package version remains required before publication.
+
+Local qualification: complete `bun run test:contracts` passes, including actual
+Node/Bun calls to all 38 gRPC methods; Rust Actors/Workers 15-operation gRPC/HTTP
+checks; Stream provider follow/replay/cancellation and atomic multi-path Commit;
+Rust Stream HTTP conformance; all 13 Objects v2 operations over memory, HTTP and
+Node/Bun TLS gRPC, including streaming, authentication, errors and bounds.
+Real Chrome passes all 38 HTTP operations and Objects WASM memory byte-range and
+current-key replacement checks. Objects, SDK and Harness builds pass; Harness
+Objects consumer coverage passes. Isolated installed tarballs for ten workspace
+packages (nine publishable) pass Node/Bun representative APIs and strict types,
+including canonical Objects exports and absence of the old snapshot/version API.
+Strict Objects WASM Clippy, metadata and complete generated-file checks pass.
+Objects WASM SHA256 is
+2971336ed2a80858066b5f06d3c4162bea36340befbd1320b3e3ae5f3f62831d.
+Objects v2 descriptor SHA256 remains
+21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b.
+
+The full Windows workspace qualification initially exhausted compiler memory
+before testing. Its replacement uses one compiler worker, debug information
+disabled and four test threads, matching the CI test profile. That same running
+process has passed filesystem and conformance suites and is still executing the
+1024-fork Harness integration test; no full-workspace pass is claimed yet.
+The remote Linux lifecycle and Windows sparse-checkout failures remain unfixed.
+PR223 is unmerged; no CI retry, required-gate bypass, live acceptance or package
+publication is claimed.

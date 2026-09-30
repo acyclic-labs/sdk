@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { create } from "@bufbuild/protobuf";
-import * as wire from "../generated/proto/objects/v2/objects_pb.js";
+import * as wire from "@acyclic-labs/objects/proto";
 const make = (name, value) => create(wire[`${name}Schema`], value);
 const fail = (code) => error => error.code === code;
 const bytes = new Uint8Array(135000).map((_, index) => index % 251);

@@ -335,7 +335,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.BucketsService/HeadBucket",
@@ -348,7 +348,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.BucketsService/DeleteBucket",
@@ -361,7 +361,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.ObjectsService/PutObject",
@@ -374,7 +374,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.ObjectsService/GetObject",
@@ -387,7 +387,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.ObjectsService/HeadObject",
@@ -400,7 +400,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.ObjectsService/DeleteObject",
@@ -413,7 +413,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.ObjectsService/ListObjects",
@@ -426,7 +426,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.MultipartService/CreateMultipart",
@@ -439,7 +439,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.MultipartService/UploadPart",
@@ -452,7 +452,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.MultipartService/ListParts",
@@ -465,7 +465,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.MultipartService/CompleteMultipart",
@@ -478,7 +478,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v2.MultipartService/AbortMultipart",
@@ -491,7 +491,7 @@
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true,
-    "typescriptPackageExported": false
+    "typescriptPackageExported": true
   },
   {
     "rpc": "acyclic.objects.v1.BucketsService/CreateBucket",
@@ -502,9 +502,9 @@
     "httpOperation": "v1/objects/buckets/create",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.BucketsService/HeadBucket",
@@ -515,9 +515,9 @@
     "httpOperation": "v1/objects/buckets/head",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.BucketsService/DeleteBucket",
@@ -528,9 +528,9 @@
     "httpOperation": "v1/objects/buckets/delete",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.ObjectsService/PutObject",
@@ -541,9 +541,9 @@
     "httpOperation": "v1/objects/objects/put",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.ObjectsService/GetObject",
@@ -554,9 +554,9 @@
     "httpOperation": "v1/objects/objects/get",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.ObjectsService/HeadObject",
@@ -567,9 +567,9 @@
     "httpOperation": "v1/objects/objects/head",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.ObjectsService/DeleteObject",
@@ -580,9 +580,9 @@
     "httpOperation": "v1/objects/objects/delete",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.ObjectsService/ListObjects",
@@ -593,9 +593,9 @@
     "httpOperation": "v1/objects/objects/list",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.MultipartService/CreateMultipart",
@@ -606,9 +606,9 @@
     "httpOperation": "v1/objects/multipart/create",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.MultipartService/UploadPart",
@@ -619,9 +619,9 @@
     "httpOperation": "v1/objects/multipart/upload-part",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.MultipartService/ListParts",
@@ -632,9 +632,9 @@
     "httpOperation": "v1/objects/multipart/list-parts",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.MultipartService/CompleteMultipart",
@@ -645,9 +645,9 @@
     "httpOperation": "v1/objects/multipart/complete",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.MultipartService/AbortMultipart",
@@ -658,9 +658,9 @@
     "httpOperation": "v1/objects/multipart/abort",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.SnapshotsService/CreateSnapshot",
@@ -671,9 +671,9 @@
     "httpOperation": "v1/objects/snapshots/create",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.SnapshotsService/DestroySnapshot",
@@ -684,9 +684,9 @@
     "httpOperation": "v1/objects/snapshots/destroy",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.SnapshotsService/ForkSnapshot",
@@ -697,9 +697,9 @@
     "httpOperation": "v1/objects/snapshots/fork",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   },
   {
     "rpc": "acyclic.objects.v1.SnapshotsService/ForkBucket",
@@ -710,8 +710,8 @@
     "httpOperation": "v1/objects/snapshots/fork",
     "rustGrpc": true,
     "rustHttp": false,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "typescriptGrpcNodeBun": false,
+    "typescriptHttp": false,
+    "typescriptPackageExported": false
   }
 ]

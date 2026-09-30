@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
-import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -29,47 +28,3 @@ run(wasmBindgen, [
   "--out-dir", outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages/objects/generated/wasm"),
   "--out-name", "acyclic_objects_wasm",
 ]);
-
-// wasm-bindgen cannot express the relationship between the route argument and the
-// projected response because the Rust ABI quite correctly exposes JsValue.  Keep the
-// public declaration route-aware by attaching the generated Rust route contract to the
-// binding declaration.  The contract itself is generated from Rust by
-// generate-objects-http-contract.mjs, so adding or changing a route changes this type
-// at the same time as the hosted validator.
-const output = outputArgument
-  ? resolve(outputArgument)
-  : resolve(root, "typescript/packages/objects/generated/wasm");
-const declarationPath = resolve(output, "acyclic_objects_wasm.d.ts");
-const declaration = readFileSync(declarationPath, "utf8");
-const decoder = "export function decode_http_response(route: string, response_json: string): any;";
-const errorDecoder = "export function decodeHttpError(route: string, response_json: string): ObjectsHttpError | undefined;";
-const memoryProjector = "export function projectMemoryResponse(operation: string, input: Uint8Array): unknown;";
-if (!declaration.includes(decoder)) {
-  throw new Error("objects WASM declaration no longer contains the expected HTTP decoder signature");
-}
-if (!declaration.includes(errorDecoder)) {
-  throw new Error("objects WASM declaration no longer contains the expected HTTP error decoder signature");
-}
-if (!declaration.includes(memoryProjector)) {
-  throw new Error("objects WASM declaration no longer contains the expected memory projector signature");
-}
-writeFileSync(
-  declarationPath,
-  declaration
-    .replace(
-      "/* tslint:disable */\n/* eslint-disable */\n",
-      "/* tslint:disable */\n/* eslint-disable */\n\nimport type { HttpResponseFor, HttpRoute } from \"@acyclic-labs/objects\";\n\nexport interface ObjectsHttpError { readonly code: ObjectsErrorCode; readonly message?: string; }\n",
-    )
-    .replace(
-      decoder,
-      "export function decode_http_response<Route extends HttpRoute>(route: Route, response_json: string): HttpResponseFor<Route>;",
-    )
-    .replace(
-      errorDecoder,
-      "export function decodeHttpError(route: HttpRoute, response_json: string): ObjectsHttpError | undefined;",
-    )
-    .replace(
-      memoryProjector,
-      "export function projectMemoryResponse<Operation extends MemoryResponseOperation>(operation: Operation, input: Uint8Array): MemoryResponseFor<Operation>;",
-    )
-);

@@ -5,29 +5,32 @@
 <script type="importmap">
 {
   "imports": {
-    "@bufbuild/protobuf": "/node_modules/@bufbuild/protobuf/dist/esm/index.js",
-    "@bufbuild/protobuf/codegenv2": "/node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js",
-    "@bufbuild/protobuf/wkt": "/node_modules/@bufbuild/protobuf/dist/esm/wkt/index.js"
+    "@bufbuild/protobuf": "/deps/protobuf/dist/esm/index.js",
+    "@bufbuild/protobuf/codegenv2": "/deps/protobuf/dist/esm/codegenv2/index.js",
+    "@bufbuild/protobuf/wkt": "/deps/protobuf/dist/esm/wkt/index.js"
   }
 }
 </script>
 <body data-result="pending">
 <script type="module">
-  import { Objects, bytesCodec } from "../dist/index.js";
+  import { create } from "@bufbuild/protobuf";
+  import { MemoryObjectsV2, CreateBucketRequestSchema, PutObjectHeaderSchema, GetObjectRequestSchema } from "../dist/index.js";
 
   try {
-    const objects = Objects.memory();
-    const bucket = await objects.createBucket("browser-objects");
+    const objects = await MemoryObjectsV2.create();
+    const bucket = await objects.createBucket(create(CreateBucketRequestSchema, { name: "browser-objects" }));
     const body = new Uint8Array([1, 2, 3]);
-    const version = await bucket.put("artifact", body, bytesCodec);
-    const fetched = await bucket.get("artifact", bytesCodec, { range: { start: 1, endExclusive: 3 } });
-    if (version.size !== 3n || fetched.value.join(",") !== "2,3" || fetched.contentRange?.total !== 3) {
+    const header = create(PutObjectHeaderSchema, { bucket: bucket.bucket, objectKey: "artifact" });
+    const published = await objects.put(header, body);
+    const fetched = await objects.get(create(GetObjectRequestSchema, {
+      bucket: bucket.bucket, objectKey: "artifact", range: { selection: { case: "bytes", value: { start: 1n, end: 2n } } },
+    }), 2n);
+    if (published.size !== 3n || fetched.body.join(",") !== "2,3" || fetched.header.contentRange?.total !== 3n) {
       throw new Error("Rust-backed browser object read differs from its write");
     }
-    const snapshot = await bucket.snapshot();
-    await bucket.put("artifact", new Uint8Array([4]), bytesCodec);
-    const captured = await snapshot.get("artifact", bytesCodec);
-    if (captured.value.join(",") !== "1,2,3") throw new Error("snapshot changed after bucket mutation");
+    await objects.put(header, new Uint8Array([4]));
+    const replaced = await objects.get(create(GetObjectRequestSchema, { bucket: bucket.bucket, objectKey: "artifact" }), 1n);
+    if (replaced.body.join(",") !== "4") throw new Error("current key did not reflect replacement");
     document.body.dataset.result = "passed";
   } catch (error) {
     document.body.dataset.result = "failed";

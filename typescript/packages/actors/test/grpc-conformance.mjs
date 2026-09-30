@@ -9,17 +9,17 @@ import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { WorkersService } from "../../workers/generated/proto/workers/v1/workers_pb.js";
 import { StreamService } from "../../stream/generated/proto/stream/v2/stream_pb.js";
-import { BucketsService, ObjectsService, MultipartService, SnapshotsService } from "../../objects/generated/proto/objects/v1/objects_pb.js";
+import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v2/objects_pb.js";
 import { createActorsGrpcClient } from "../dist/grpc.js";
 import { createWorkersGrpcClient } from "../../workers/dist/grpc.js";
 import { createStreamGrpcClient } from "../../stream/dist/grpc.js";
-import { createObjectsGrpcClients } from "../../objects/dist/grpc.js";
+import { createObjectsV2GrpcClients } from "../../objects/dist/v2-grpc.js";
 import { HttpActorsClient } from "../dist/http.js";
 import { HttpWorkersClient } from "../../workers/dist/http.js";
 import { HTTP_ROUTES as actorRoutes } from "../dist/routes.js";
 import { HTTP_ROUTES as workerRoutes } from "../../workers/dist/routes.js";
 
-const services = [ActorsService, WorkersService, StreamService, BucketsService, ObjectsService, MultipartService, SnapshotsService];
+const services = [ActorsService, WorkersService, StreamService, BucketsService, ObjectsService, MultipartService];
 const expected = services.reduce((count, service) => count + service.methods.length, 0);
 const file = fileURLToPath(import.meta.url);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -71,8 +71,8 @@ if (process.argv.includes("--client")) {
   let configText = "";
   for await (const chunk of process.stdin) configText += chunk;
   const options = JSON.parse(configText);
-  const objects = createObjectsGrpcClients(options);
-  const clients = [createActorsGrpcClient(options), createWorkersGrpcClient(options), createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart, objects.snapshots];
+  const objects = createObjectsV2GrpcClients(options);
+  const clients = [createActorsGrpcClient(options), createWorkersGrpcClient(options), createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
   let count = 0;
   for (const [index, service] of services.entries()) {
     for (const method of service.methods) {

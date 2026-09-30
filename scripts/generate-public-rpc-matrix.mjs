@@ -1,10 +1,24 @@
 // Enumerate canonical services; HTTP mappings describe existing provider operations.
 import { readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
 import { WorkersService } from "../typescript/packages/workers/generated/proto/workers/v1/workers_pb.js";
 import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v2/stream_pb.js";
-import { BucketsService, ObjectsService, MultipartService, SnapshotsService } from "../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js";
 import { BucketsService as BucketsV2, ObjectsService as ObjectsV2, MultipartService as MultipartV2 } from "../typescript/packages/objects/generated/proto/objects/v2/objects_pb.js";
+
+// The retired TS package no longer ships v1. Inventory remaining Rust exposure
+// directly from its canonical descriptor, using the Objects package runtime.
+const requireObjects = createRequire(new URL("../typescript/packages/objects/package.json", import.meta.url));
+const { fromBinary, createFileRegistry } = await import(pathToFileURL(requireObjects.resolve("@bufbuild/protobuf")));
+const { FileDescriptorSetSchema } = await import(pathToFileURL(requireObjects.resolve("@bufbuild/protobuf/wkt")));
+const legacyRegistry = createFileRegistry(fromBinary(FileDescriptorSetSchema,
+  readFileSync(new URL("../rust/crates/objects/src/generated/acyclic-objects-v1.bin", import.meta.url))));
+const legacyServices = ["BucketsService", "ObjectsService", "MultipartService", "SnapshotsService"].map(name => {
+  const service = legacyRegistry.getService(`acyclic.objects.v1.${name}`);
+  if (!service) throw new Error(`missing canonical legacy Objects service: ${name}`);
+  return service;
+});
 
 const objects = {
   CreateBucket: "buckets/create", HeadBucket: "buckets/head", DeleteBucket: "buckets/delete",
@@ -27,7 +41,7 @@ const actors = routes("actors");
 const workers = routes("workers");
 // Until consumer migration removes v1, every still-exposed RPC stays visible.
 // Implementation fields describe source presence, not package or live acceptance.
-const services = [ActorsService, WorkersService, StreamService, BucketsV2, ObjectsV2, MultipartV2, BucketsService, ObjectsService, MultipartService, SnapshotsService];
+const services = [ActorsService, WorkersService, StreamService, BucketsV2, ObjectsV2, MultipartV2, ...legacyServices];
 const objectsPackage = JSON.parse(readFileSync(new URL("../typescript/packages/objects/package.json", import.meta.url), "utf8"));
 const objectsIndex = readFileSync(new URL("../typescript/packages/objects/src/index.ts", import.meta.url), "utf8");
 const v2Routes = readFileSync(new URL("../rust/crates/objects/src/v2/mod.rs", import.meta.url), "utf8");
@@ -54,8 +68,8 @@ const rows = services.flatMap(service => service.methods.map(method => {
     httpOperation: family === "objects" ? `${version}/objects/${http}` : family === "stream" ? `v1/stream/${http}` : http,
     rustGrpc: true,
     rustHttp: !legacy,
-    typescriptGrpcNodeBun: true,
-    typescriptHttp: true,
+    typescriptGrpcNodeBun: !legacy,
+    typescriptHttp: !legacy,
     typescriptPackageExported: Boolean(typescriptPackage),
   };
 }));
