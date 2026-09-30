@@ -10,8 +10,13 @@ use thiserror::Error;
 pub mod conformance;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+pub mod request;
 // The WASM adapter consumes this module on browser builds; native builds keep
 // it available for contract tests without pulling in JS bindings.
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub mod http;
+#[allow(dead_code)]
+mod http_codec;
 #[allow(dead_code)]
 mod http_validation;
 #[cfg(feature = "local")]

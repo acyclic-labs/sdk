@@ -377,6 +377,7 @@ dependencies = [
  "prost",
  "protoc-bin-vendored",
  "rcgen",
+ "reqwest",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",

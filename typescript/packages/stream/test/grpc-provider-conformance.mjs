@@ -51,6 +51,7 @@ if (process.argv.includes("--client")) {
   const conflict = await provider.commit({ conditions: [{ path, ifTail: 0n }], mutations: [{ append: { path, values: [body("rejected")] } }] }, { idempotencyKey: key(`${prefix}-conflict`) });
   assert.equal(conflict.ok, false);
   assert.equal(await provider.tail(path), 3n);
+  await assert.rejects(provider.commit({ conditions: [{ path: `${prefix}/invalid-cut`, ifAbsent: true }], mutations: [{ fork: { source: path, destination: `${prefix}/invalid-cut`, atTail: 4n, values: [] } }] }, { idempotencyKey: key(`${prefix}-invalid-cut`) }), error => error instanceof StreamError && error.code === "invalid_argument");
   const denied = new GrpcStreamProvider({ ...options, token: "wrong" });
   await assert.rejects(denied.tail(path), error => error instanceof StreamError && error.code === "access_denied");
   await assert.rejects(provider.tail("invalid//path"), error => error instanceof StreamError && error.code === "invalid_path");
@@ -71,7 +72,7 @@ const operation = name => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCas
 function authenticate(context) { if (context.requestHeader.get("authorization") !== "Bearer conformance") throw new ConnectError("missing bearer", Code.Unauthenticated); }
 function canonicalError(error) {
   if (error instanceof ConnectError) return error;
-  const codes = { not_found: Code.NotFound, invalid_path: Code.InvalidArgument, invalid_argument: Code.InvalidArgument, out_of_range: Code.OutOfRange, already_exists: Code.AlreadyExists, limit_exceeded: Code.InvalidArgument, idempotency_mismatch: Code.FailedPrecondition };
+  const codes = { not_found: Code.NotFound, invalid_path: Code.InvalidArgument, invalid_argument: Code.InvalidArgument, out_of_range: Code.OutOfRange, already_exists: Code.AlreadyExists, limit_exceeded: Code.InvalidArgument, idempotency_mismatch: Code.FailedPrecondition, prefix_not_retained: Code.FailedPrecondition };
   return new ConnectError(error.code ?? String(error), codes[error.code] ?? Code.Unavailable);
 }
 const adapter = connectNodeAdapter({ routes(router) {

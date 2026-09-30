@@ -36,7 +36,7 @@ const rows = services.flatMap(service => service.methods.map(method => {
     response: method.output.typeName,
     httpOperation: family === "objects" ? `v1/objects/${http}` : family === "stream" ? `v1/stream/${http}` : http,
     rustGrpc: true,
-    rustHttp: family === "actors" || family === "workers",
+    rustHttp: family === "actors" || family === "workers" || family === "stream",
     typescriptGrpcNodeBun: true,
     typescriptHttp: true,
   };

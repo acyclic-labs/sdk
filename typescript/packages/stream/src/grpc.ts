@@ -147,5 +147,6 @@ function providerError(error: unknown, operation: string): Error {
       break;
     case Code.Unimplemented: if (error.rawMessage === "unsupported_capability") code = "unsupported"; break;
   }
+  if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
   return new StreamError(code, error.rawMessage);
 }

@@ -83,7 +83,7 @@ handoff, not goal completion. The final Objects consumer rewrite remains pending
 
 ## Remaining SDK work
 
-- Rust HTTP Objects and Streams providers that preserve the established hosted
+- Rust HTTP Objects provider that preserves the revised hosted
   JSON envelopes and implement existing provider traits.
 - TypeScript gRPC adapter for the revised Objects provider interface.
 - Complete Rust Objects/Stream client-to-server transport coverage, including
@@ -122,3 +122,40 @@ indefinite retained history, with no public deletion, truncation, or rewind.
 Infisical retrieval and IAM mapping remain with Foundations. SDK clients consume
 caller-supplied endpoint/token/CA and do not own secret references. Package
 publication and live acceptance are separate goals.
+
+## Native Stream HTTP checkpoint (2026-09-30)
+
+`acyclic_stream::http::HttpStream` now implements every Stream provider operation
+with the existing hosted JSON projection, sensitive bearer headers, bounded
+responses, caller CA trust, and cancellable polling follow. Its request encoder
+is shared with WASM and preserves Commit deadlineUnixMillis as a decimal string.
+Successful Commit and committed inspection additionally fetch `commits/read`
+to construct the complete Rust envelope; Cloud credentials must permit that
+route. This is a service capability dependency, not live acceptance evidence.
+
+Local checks: Rust Stream all-feature tests (58 passed, one scaling benchmark
+ignored), strict Stream Clippy, HTTP-only feature compilation, all four-family
+contract fixtures, and full native HTTP public conformance passed. HTTP checks
+also cover two-path atomic append Commit/replay/inspection, caller deadline
+rejection without mutation, authentication and bounded response rejection.
+
+The provider-facing `request` module exposes the existing canonical validation,
+commit normalization and digest implementation for replicated Cloud providers.
+It does not implement replication or replace their atomic authority.
+
+Qualification run 36651776885 Linux failed the live FUSE cache test at fuse.rs:5416
+(one unexpected getattr). Local WSL with /dev/fuse passed that exact test 30
+consecutive times and passed all 25 ignored native-mount tests together. The CI
+failure has not been reproduced, and no filesystem implementation was changed.
+
+Retention audit: memory/local currently forget retry identities and envelopes
+at 24 hours of their retention clocks while preserving records. An old identity
+can execute again. Integrator received the exact behavior and a proposal for
+permanent compact identity/digest/terminal receipts with admission before
+capacity; result compaction and caller deadlines are separate. No guessed
+retention change has been made pending service-contract agreement.
+Generated bindings/digests check and installed TypeScript tarball smoke passed.
+A new review finding about TS Commit fork-cut errors was fixed: gRPC now uses
+the existing memory/HTTP invalid_argument mapping, with Node/Bun regression checks.
+Branch protection also requires one approving review; all code findings are fixed
+but this approval and required qualification still govern merge.

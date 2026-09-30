@@ -1193,7 +1193,7 @@ fn retain(
     }
 }
 
-fn append_digest(request: &AppendRequest) -> [u8; 32] {
+pub(crate) fn append_digest(request: &AppendRequest) -> [u8; 32] {
     let mut hash = request_hasher(b"append");
     hash_path(&mut hash, &request.path);
     hash.update(request.if_tail.unwrap_or(u64::MAX).to_le_bytes());
@@ -1201,7 +1201,7 @@ fn append_digest(request: &AppendRequest) -> [u8; 32] {
     hash.finalize().into()
 }
 
-fn fork_digest(request: &ForkRequest) -> [u8; 32] {
+pub(crate) fn fork_digest(request: &ForkRequest) -> [u8; 32] {
     let mut hash = request_hasher(b"fork");
     hash_path(&mut hash, &request.source);
     hash_path(&mut hash, &request.destination);
@@ -1209,7 +1209,7 @@ fn fork_digest(request: &ForkRequest) -> [u8; 32] {
     hash.finalize().into()
 }
 
-fn commit_digest(request: &CommitRequest) -> [u8; 32] {
+pub(crate) fn commit_digest(request: &CommitRequest) -> [u8; 32] {
     let mut hash = request_hasher(b"commit");
     for condition in &request.conditions {
         match condition {

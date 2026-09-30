@@ -171,7 +171,7 @@
     "response": "acyclic.stream.v2.InspectIdempotencyResponse",
     "httpOperation": "v1/stream/idempotency/inspect",
     "rustGrpc": true,
-    "rustHttp": false,
+    "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true
   },
@@ -182,7 +182,7 @@
     "response": "acyclic.stream.v2.AppendResponse",
     "httpOperation": "v1/stream/append",
     "rustGrpc": true,
-    "rustHttp": false,
+    "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true
   },
@@ -193,7 +193,7 @@
     "response": "acyclic.stream.v2.TailResponse",
     "httpOperation": "v1/stream/tail",
     "rustGrpc": true,
-    "rustHttp": false,
+    "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true
   },
@@ -204,7 +204,7 @@
     "response": "acyclic.stream.v2.ForkReceipt",
     "httpOperation": "v1/stream/fork",
     "rustGrpc": true,
-    "rustHttp": false,
+    "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true
   },
@@ -215,7 +215,7 @@
     "response": "acyclic.stream.v2.ReadResponse",
     "httpOperation": "v1/stream/read",
     "rustGrpc": true,
-    "rustHttp": false,
+    "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true
   },
@@ -226,7 +226,7 @@
     "response": "acyclic.stream.v2.ReadResponse",
     "httpOperation": "v1/stream/tail + read (polling)",
     "rustGrpc": true,
-    "rustHttp": false,
+    "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true
   },
@@ -237,7 +237,7 @@
     "response": "acyclic.stream.v2.ChildrenResponse",
     "httpOperation": "v1/stream/children",
     "rustGrpc": true,
-    "rustHttp": false,
+    "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true
   },
@@ -248,7 +248,7 @@
     "response": "acyclic.stream.v2.ChildrenPageResponse",
     "httpOperation": "v1/stream/children/page",
     "rustGrpc": true,
-    "rustHttp": false,
+    "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true
   },
@@ -259,7 +259,7 @@
     "response": "acyclic.stream.v2.CommitResponse",
     "httpOperation": "v1/stream/commit",
     "rustGrpc": true,
-    "rustHttp": false,
+    "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true
   },
@@ -270,7 +270,7 @@
     "response": "acyclic.stream.v2.CommittedEnvelope",
     "httpOperation": "v1/stream/commits/read",
     "rustGrpc": true,
-    "rustHttp": false,
+    "rustHttp": true,
     "typescriptGrpcNodeBun": true,
     "typescriptHttp": true
   },
