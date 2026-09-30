@@ -9,6 +9,7 @@ export const packagedTypeScriptBindings = [
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
   ["objects/v1/objects_pb", ["objects"]],
+  ["objects/v2/objects_pb", ["objects"]],
   ["stream/v2/stream_pb", ["stream"]],
   ["actors/v1/actors_pb", ["actors"]],
   ["workers/v1/workers_pb", ["workers"]],
@@ -56,7 +57,8 @@ export const compatibilityArtifacts = {
 
 export const generatedDescriptors = [
   ["proto/filesystem", compatibilityArtifacts.filesystem.descriptorDigest],
-  ["proto/objects", compatibilityArtifacts.objects.descriptorDigest],
+  ["proto/objects/v1", compatibilityArtifacts.objects.descriptorDigest],
+  ["proto/objects/v2", "rust/crates/objects/src/generated/acyclic-objects-v2.bin"],
   ["proto/machines", compatibilityArtifacts.machines.descriptorDigest],
   ["proto/inference", compatibilityArtifacts.inference.descriptorDigest],
   ["proto/inference", "rust/crates/inference-contract/inference_descriptor.bin"],
@@ -69,6 +71,8 @@ export const generatedDescriptors = [
 export const packagedRustBindings = [
   ["acyclic/objects/v1/acyclic.objects.v1.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.rs"],
   ["acyclic/objects/v1/acyclic.objects.v1.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.tonic.rs"],
+  ["acyclic/objects/v2/acyclic.objects.v2.rs", "rust/crates/objects/src/generated/acyclic.objects.v2.rs"],
+  ["acyclic/objects/v2/acyclic.objects.v2.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v2.tonic.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.tonic.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.tonic.rs"],
   ["acyclic/actors/v1/acyclic.actors.v1.rs", "rust/crates/actors/src/generated/acyclic.actors.v1.rs"],
@@ -98,8 +102,9 @@ export const packagedSourceCopies = [
 export const normalizeGeneratedRust = (relative, source) => {
   let normalized = `${source.trimEnd()}\n`;
   if (relative === "acyclic/objects/v1/acyclic.objects.v1.rs" ||
+      relative === "acyclic/objects/v2/acyclic.objects.v2.rs" ||
       relative === "acyclic/machines/v1/acyclic.machines.v1.rs") {
-    const service = relative.includes("objects") ? "acyclic.objects.v1" : "acyclic.machines.v1";
+    const service = relative.includes("objects/v2") ? "acyclic.objects.v2" : relative.includes("objects") ? "acyclic.objects.v1" : "acyclic.machines.v1";
     normalized = normalized.replace(
       new RegExp(`(?:#\\[cfg\\(feature = "grpc"\\)\\]\\r?\\n)?include!\\("${service.replaceAll(".", "\\.")}\\.tonic\\.rs"\\);`),
       `#[cfg(feature = "grpc")]\ninclude!("${service}.tonic.rs");`,

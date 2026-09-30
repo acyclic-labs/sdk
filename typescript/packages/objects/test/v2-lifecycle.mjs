@@ -1,0 +1,47 @@
+import assert from "node:assert/strict";
+import { create } from "@bufbuild/protobuf";
+import * as wire from "../generated/proto/objects/v2/objects_pb.js";
+const make = (name, value) => create(wire[`${name}Schema`], value);
+const fail = (code) => error => error.code === code;
+const bytes = new Uint8Array(135000).map((_, index) => index % 251);
+export async function lifecycle(provider) {
+  const bucket = make("BucketRef", { name: "customer.inputs" });
+  assert.equal((await provider.createBucket(make("CreateBucketRequest", { name: bucket.name }))).bucket.name, bucket.name);
+  assert.equal((await provider.headBucket(make("HeadBucketRequest", { bucket }))).bucket.name, bucket.name);
+  const query = make("GetObjectRequest", { bucket, objectKey: "data" });
+  const put = make("PutObjectHeader", { bucket, objectKey: "data", mutation: { idempotencyKey: "publication" } });
+  const original = await provider.put(put, bytes);
+  assert.equal(original.size, BigInt(bytes.length));
+  assert.deepEqual((await provider.get(query, BigInt(bytes.length))).body, bytes);
+  await assert.rejects(provider.get(query, 16n), fail(wire.ErrorCode.QUOTA_EXCEEDED));
+  await assert.rejects(provider.get(make("GetObjectRequest", { bucket, objectKey: "data", ifNoneMatch: original.etag }), 200000n), fail(wire.ErrorCode.NOT_MODIFIED));
+  const tail = await provider.get(make("GetObjectRequest", { bucket, objectKey: "data", range: { selection: { case: "suffixLength", value: 3n } } }), 3n);
+  assert.deepEqual(tail.body, bytes.slice(-3));
+  assert.equal((await provider.head(make("HeadObjectRequest", { bucket, objectKey: "data" }))).object.etag, original.etag);
+  const conditional = make("PutObjectHeader", { bucket, objectKey: "data", preconditions: { condition: { case: "ifMatch", value: original.etag } } });
+  const outcomes = await Promise.allSettled([provider.put(conditional, new Uint8Array([1])), provider.put(conditional, new Uint8Array([2]))]);
+  assert.equal(outcomes.filter(result => result.status === "fulfilled").length, 1);
+  assert.equal(outcomes.find(result => result.status === "rejected").reason.code, wire.ErrorCode.PRECONDITION_FAILED);
+  const current = await provider.get(query, 1n);
+  assert.equal((await provider.put(put, bytes)).etag, original.etag);
+  assert.deepEqual((await provider.get(query, 1n)).body, current.body);
+  await assert.rejects(provider.put(put, new Uint8Array([3])), fail(wire.ErrorCode.IDEMPOTENCY_MISMATCH));
+  assert.deepEqual((await provider.list(make("ListObjectsRequest", { bucket }))).entries.map(entry => entry.objectKey), ["data"]);
+  const start = make("CreateMultipartRequest", { bucket, objectKey: "multipart" });
+  const upload = await provider.createMultipart(start);
+  const part = await provider.uploadPart(make("UploadPartHeader", { bucket, objectKey: "multipart", uploadId: upload.uploadId, partNumber: 1 }), bytes);
+  const parts = await provider.listParts(make("ListPartsRequest", { bucket, objectKey: "multipart", uploadId: upload.uploadId }));
+  assert.deepEqual(parts.parts, [part]);
+  const complete = make("CompleteMultipartRequest", { bucket, objectKey: "multipart", uploadId: upload.uploadId, parts: [part], mutation: { idempotencyKey: "complete" } });
+  const published = await provider.completeMultipart(complete);
+  assert.deepEqual((await provider.get(make("GetObjectRequest", { bucket, objectKey: "multipart" }), 200000n)).body, bytes);
+  await provider.delete(make("DeleteObjectRequest", { bucket, objectKey: "multipart" }));
+  assert.equal((await provider.completeMultipart(complete)).etag, published.etag);
+  await assert.rejects(provider.head(make("HeadObjectRequest", { bucket, objectKey: "multipart" })), fail(wire.ErrorCode.NOT_FOUND));
+  const abandoned = await provider.createMultipart(start);
+  assert.equal((await provider.abortMultipart(make("AbortMultipartRequest", { bucket, objectKey: "multipart", uploadId: abandoned.uploadId }))).existed, true);
+  await assert.rejects(provider.deleteBucket(make("DeleteBucketRequest", { bucket })), fail(wire.ErrorCode.PRECONDITION_FAILED));
+  assert.equal((await provider.delete(make("DeleteObjectRequest", { bucket, objectKey: "data" }))).existed, true);
+  assert.equal((await provider.deleteBucket(make("DeleteBucketRequest", { bucket }))).existed, true);
+}
+

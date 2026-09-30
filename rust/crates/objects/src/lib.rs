@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod conformance;
+pub mod v2;
 
 /// Generated public gRPC schema and client/server bindings.
 #[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]

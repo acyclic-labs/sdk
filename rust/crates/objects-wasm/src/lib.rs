@@ -14,6 +14,7 @@ use wasm_bindgen::prelude::*;
 
 mod http;
 mod memory_projection;
+mod v2;
 
 // Keep the memory response relationship in Rust beside the projector. The WASM declaration
 // receives this section from wasm-bindgen, while the build script only specializes the exported

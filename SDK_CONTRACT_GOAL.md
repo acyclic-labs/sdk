@@ -340,3 +340,26 @@ all-feature/all-target Clippy and wasm32 WASM Clippy pass. Tests compare standal
 append/fork and multi-path preparation envelopes with the reference provider and
 cover missing observations, exact conflicts and unrepresentable exclusive tails.
 This does not resolve the pending durable retry lifetime/routing decision.
+
+### Objects v2 TypeScript streamed uploads
+
+GrpcObjectsV2 now exposes putStream and uploadPartStream with AsyncIterable byte
+sources and optional AbortSignal cancellation. Buffered uploads use those paths.
+The client validates the snapshotted header and accumulated source length through
+Rust WASM, splits chunks into 64KiB frames with backpressure, emits completion only
+after successful source EOF, preserves canonical source errors, and validates the
+receipt against the decoded byte count. A pending caller iterator cannot delay RPC
+cancellation; iterator cleanup is requested without waiting for caller-owned work.
+The Node/Bun TLS fixture passes large/empty chunks, exact round-trip bytes, failed
+replacement preserving the old object, pending-source cancellation leaving no
+object, and failed part replacement preserving the old receipt. TypeScript build
+and git diff --check pass. This does not qualify browser execution or finish the
+v1 filesystem/Harness/local-storage consumer migration.
+
+The qualified Objects v2 schema, generated bindings, reference provider, Rust
+gRPC/HTTP clients, WASM validator/codec and TypeScript source clients are now being
+recorded as one reviewable intermediate commit in PR223. Earlier notes calling
+these files uncommitted describe their state at those checkpoints. This commit
+does not finish the migration: active v1 consumers and package exports remain,
+the compatibility manifest/matrix still require their final transition, and no
+released package version or Cloud deployment is established by this source pin.
