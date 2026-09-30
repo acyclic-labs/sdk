@@ -4,6 +4,11 @@ All notable changes to Acyclic are recorded here. Every Rust crate, npm package,
 and coding-agent integration in this repository shares one version and one
 release commit.
 
+## 0.2.0 - Unreleased
+
+- Move the public Objects SDK and native Filesystem composition to canonical v2, retiring active v1 clients and engine. Keep published v1 wire history immutable. Existing v1 local roots fail closed without upgrade or overwrite.
+- Complete the public Actors v1, Workers v1 and Stream v2 transport surfaces under the unified breaking candidate version. Publication and live Cloud acceptance require separate qualification.
+
 ## 0.1.1 - 2026-09-24
 
 ### Added

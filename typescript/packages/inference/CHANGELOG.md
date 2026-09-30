@@ -1,5 +1,9 @@
 # @acyclic-labs/inference changelog
 
+## 0.2.0 - Unreleased
+
+- Align the unified SDK candidate with the breaking Objects v2 public package transition.
+
 ## Unreleased
 
 - Reject idle-KV responses to legacy retain/renew requests; recovered inspection remains compatible with either retention mode.

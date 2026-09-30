@@ -1,5 +1,9 @@
 # @acyclic-labs/stream changelog
 
+## 0.2.0 - Unreleased
+
+- Align the unified SDK candidate with the breaking Objects v2 public package transition.
+
 ## Unreleased
 
 - Check monotonic tail before direct HTTP reads so concurrent appends cannot hide invalid empty-read cursors. Share native and WASM HTTP response projection, including atomic Commit envelopes.

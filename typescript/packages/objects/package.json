@@ -1,6 +1,6 @@
 {
   "name": "@acyclic-labs/objects",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "private": false,
   "license": "Apache-2.0",
   "description": "Logical Objects v2 with memory, HTTP, and Node/Bun gRPC providers",

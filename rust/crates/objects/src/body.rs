@@ -1,4 +1,4 @@
-//! Private immutable body storage shared by logical and legacy recovery engines.
+//! Private immutable body storage for the logical Objects recovery engine.
 use futures::future::BoxFuture;
 use std::sync::Arc;
 #[cfg(feature = "local")]
@@ -29,16 +29,6 @@ pub(crate) enum StoredBody {
     },
 }
 
-#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum BodyIdentity {
-    Memory {
-        address: usize,
-        length: usize,
-    },
-    #[cfg(feature = "local")]
-    Local([u8; 32]),
-}
-
 impl StoredBody {
     pub(crate) fn memory(body: bytes::Bytes) -> Self {
         Self::Memory(body)
@@ -50,50 +40,6 @@ impl StoredBody {
             Self::Composite { length, .. } => *length,
             #[cfg(feature = "local")]
             Self::Local { length, .. } => *length,
-        }
-    }
-
-    pub(crate) fn update_hash(&self, hasher: &mut blake3::Hasher) -> Result<(), BodyError> {
-        match self {
-            Self::Memory(body) => {
-                hasher.update(body);
-                Ok(())
-            }
-            Self::Composite { parts, .. } => {
-                for part in parts.iter() {
-                    part.update_hash(hasher)?;
-                }
-                Ok(())
-            }
-            #[cfg(feature = "local")]
-            Self::Local {
-                root,
-                digest,
-                length,
-                location,
-            } => crate::local::hash_body_at(root, digest, *length, location, hasher)
-                .map_err(|_| BodyError::Unavailable),
-        }
-    }
-
-    pub(crate) fn leaves(&self, output: &mut Vec<(BodyIdentity, usize)>) {
-        match self {
-            Self::Memory(body) => output.push((
-                BodyIdentity::Memory {
-                    address: body.as_ptr() as usize,
-                    length: body.len(),
-                },
-                body.len(),
-            )),
-            Self::Composite { parts, .. } => {
-                for part in parts.iter() {
-                    part.leaves(output);
-                }
-            }
-            #[cfg(feature = "local")]
-            Self::Local { digest, length, .. } => {
-                output.push((BodyIdentity::Local(*digest), *length));
-            }
         }
     }
 
@@ -194,20 +140,14 @@ impl StoredBody {
                     digest,
                     length,
                     location,
-                } => crate::local::read_body_at_async(root, digest, *length, location, start, end)
-                    .await
-                    .map_err(|_| BodyError::Unavailable),
+                } => {
+                    crate::physical::read_body_at_async(root, digest, *length, location, start, end)
+                        .await
+                        .map_err(|_| BodyError::Unavailable)
+                }
             }
         })
     }
-}
-
-#[cfg(feature = "local")]
-pub(crate) struct ExternalBody {
-    pub(crate) root: PathBuf,
-    pub(crate) digest: [u8; 32],
-    pub(crate) length: usize,
-    pub(crate) location: LocalBodyLocation,
 }
 
 #[cfg(feature = "local")]
@@ -217,8 +157,6 @@ pub(crate) enum LocalBodyLocation {
     Segment { id: [u8; 32], offset: u64 },
     /// Bytes carried by the journal frame that committed the body.
     Journal { offset: u64 },
-    /// Unreachable when journal compaction dropped its bytes; never readable.
-    Reclaimed,
 }
 
 /// Physical moves of local bodies, keyed by current location and digest: an empty body

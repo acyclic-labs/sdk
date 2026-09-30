@@ -156,6 +156,15 @@ pub(super) struct Journal {
     fault_checkpoint: std::sync::atomic::AtomicU64,
 }
 
+impl Drop for Journal {
+    fn drop(&mut self) {
+        // A child between fork and exec may still hold this open file
+        // description. Release ownership when our last journal user finishes,
+        // rather than waiting for every inherited descriptor to close.
+        let _ = FileExt::unlock(&self._owner);
+    }
+}
+
 mod checkpoint;
 mod inline;
 
@@ -229,7 +238,7 @@ impl MemoryObjects {
                 body.local_references(&mut references);
             }
         }
-        let mut report = crate::local::collect_physical_garbage(
+        let mut report = crate::physical::collect_physical_garbage(
             &journal.root,
             &references,
             maximum_candidates,
@@ -237,11 +246,9 @@ impl MemoryObjects {
             journal.limits.durability,
         )
         .map_err(|error| match error {
-            crate::LocalObjectsError::Invalid(_) => LocalOpenError::Invalid,
-            crate::LocalObjectsError::Io(error) => LocalOpenError::Io(error),
-            crate::LocalObjectsError::Corrupt => LocalOpenError::Corrupt,
-            crate::LocalObjectsError::AlreadyOwned => LocalOpenError::AlreadyOwned,
-            crate::LocalObjectsError::Unavailable => LocalOpenError::Unavailable,
+            crate::physical::PhysicalError::Invalid(_) => LocalOpenError::Invalid,
+            crate::physical::PhysicalError::Io(error) => LocalOpenError::Io(error),
+            crate::physical::PhysicalError::Corrupt => LocalOpenError::Corrupt,
         })?;
         report.journal_bytes_reclaimed = journal.compact(&next)?;
         *state = next;
@@ -300,7 +307,7 @@ pub(crate) fn open(
             body.local_references(&mut references);
         }
     }
-    crate::local::validate_referenced_segments(&root, &references, limits.maximum_object_bytes)
+    crate::physical::validate_referenced_segments(&root, &references, limits.maximum_object_bytes)
         .map_err(corrupt)?;
     let key = header.cursor_key.as_slice().try_into().map_err(corrupt)?;
     Ok(MemoryObjects {
@@ -550,7 +557,7 @@ impl Journal {
                     return Err(QuotaExceeded.into());
                 }
                 let digest = *blake3::hash(bytes).as_bytes();
-                let (id, offsets) = crate::local::persist_segment(
+                let (id, offsets) = crate::physical::persist_segment(
                     &self.root,
                     &[(digest, bytes.clone())],
                     self.limits.durability,

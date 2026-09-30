@@ -50,8 +50,9 @@ until their family version is published and tagged.
   clients, conditions, exact retry receipts, bounded listing and multipart
   publication. Native memory and durable-local providers share one state machine;
   local recovery authenticates inline small bodies and immutable larger bodies,
-  with grouped native batches and private compaction. Existing durable Filesystem
-  roots still use the legacy Objects provider pending their migration.
+  with grouped native batches and private compaction. Native Filesystem
+  compositions use v2. Existing v1 roots are rejected without conversion or
+  overwrite; the published v1 wire history remains archived.
 - Candidate Actors v1 and Workers v1 public contracts with Rust validation,
   generated TypeScript message types, and authenticated Rust and Node/Bun
   TypeScript gRPC and HTTP clients. Their

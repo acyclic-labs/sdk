@@ -59,7 +59,7 @@ impl Journal {
                 ..
             } => {
                 let journal = File::open(self.root.join("mutations.log"))?;
-                let bytes = crate::local::read_journal_body(&journal, *offset, digest, *length)
+                let bytes = crate::physical::read_journal_body(&journal, *offset, digest, *length)
                     .map_err(corrupt)?;
                 self.external(&StoredBody::Memory(bytes))
                     .map_err(|_| LocalOpenError::Unavailable)

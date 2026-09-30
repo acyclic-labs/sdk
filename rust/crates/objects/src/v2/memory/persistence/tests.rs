@@ -1,5 +1,39 @@
 use super::*;
 
+// A Unix child can inherit the same open file description during process
+// creation, even when close-on-exec is set. Closing only the parent's descriptor
+// must not keep a completed provider's ownership lock alive in that child.
+#[cfg(unix)]
+#[test]
+fn dropping_the_last_owner_unlocks_an_inherited_file_description()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let core = reopen(root.path())?;
+    let inherited = core
+        .journal
+        .as_ref()
+        .ok_or("missing journal")?
+        ._owner
+        .try_clone()?;
+    let live = core.clone();
+    drop(core);
+    assert!(matches!(
+        reopen(root.path()),
+        Err(LocalOpenError::AlreadyOwned)
+    ));
+    drop(live);
+    let next = reopen(root.path())?;
+    // Closing the old duplicate cannot release the new owner's lock.
+    drop(inherited);
+    assert!(matches!(
+        reopen(root.path()),
+        Err(LocalOpenError::AlreadyOwned)
+    ));
+    drop(next);
+    drop(reopen(root.path())?);
+    Ok(())
+}
+
 fn bucket() -> Option<wire::BucketRef> {
     Some(wire::BucketRef {
         name: "recovery".into(),

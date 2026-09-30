@@ -1,5 +1,9 @@
 # @acyclic-labs/plugin changelog
 
+## 0.2.0 - Unreleased
+
+- Align the unified SDK candidate with the breaking Objects v2 public package transition.
+
 ## Unreleased
 
 - On Linux, a file opened for reading keeps working after another handle

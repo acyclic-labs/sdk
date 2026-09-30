@@ -1,6 +1,76 @@
 # SDK contract goal evidence
 
-Status: active; local transport work is incomplete and PR 223 is unmerged.
+Status: active; local SDK qualification passes for the 0.2.0 candidate. PR 223
+is unmerged; final-head required CI and an approving code-owner review remain.
+
+## Final Objects v2 retirement and 0.2.0 qualification (2026-09-30)
+
+The Rust Objects root exports canonical v2. Removed the active v1 provider,
+engine, conformance implementation and packaged Rust bindings. Extracted the
+existing local limits, durability settings and private physical storage helpers.
+Historical v1 schema, vectors and descriptor remain archived; no legacy-root
+upgrade is provided. The legacy-root test verifies rejection preserves its bytes.
+All coordinated SDK package and crate versions, internal dependency edges,
+lockfiles and candidate compatibility metadata now use 0.2.0. Published 0.1.5
+history remains intact. The matrix accounts for 38 active and 17 retired RPCs.
+
+Reproduced the ownership failure mechanism behind required ARM64 job
+109972099914: an inherited duplicate of the lock file retained Unix ownership
+after the last provider was dropped. The new deterministic regression failed
+before the fix and passes after explicitly unlocking on the final journal drop.
+It also verifies that dropping an old duplicate cannot unlock a subsequent
+owner. Full Linux Objects and filesystem library tests passed (filesystem:
+1109 passed, 25 existing ignores). This reproduces the lock mechanism, not a
+claim that the original complete ARM64 suite was run locally. Required policy
+job 109972100115 failed on the unused legacy Condition::wire method; retirement
+removes it, and the exact default-feature strict lint passes on Linux.
+
+Final Windows qualification used an isolated D: target/temp, one build job,
+four test threads, no incremental compilation and the MSVC target. The following
+commands ran sequentially and all passed (process exit 0):
+
+- `cargo clippy --workspace --all-features --all-targets --locked -- -D warnings`
+- `node scripts/clippy-feature-sets.mjs` (all 24 reduced-feature combinations)
+- `cargo test --workspace --all-features --locked` (including documentation,
+  filesystem 1120 unit/30 integration tests and the 1024 recursive-fork test;
+  existing ignored tests remain unchanged)
+- `cargo run -p acyclic-conformance --features local-runner --bin qualify --locked -- --max-seconds=300`
+  (all 12 cases; 871 ms after build; SQLite WAL mount supported and passed)
+- `bun run check:generated`
+- `bun run test:contracts` (Node/Bun authenticated gRPC, Rust gRPC/HTTP,
+  Stream follow/atomic multi-path Commit, Objects v2 framing/streaming,
+  canonical errors, denied authentication and bounded responses)
+
+Additional passing checks: frozen Bun install, metadata, complete RPC matrix,
+SDK TypeScript build, and 382 Bun package tests (39 files, 2008 assertions).
+Packed and validated all nine public 0.2.0 npm archives, installed them into an
+isolated consumer outside the workspace, and passed its public consumer test
+(10 assertions). All four public gRPC package entry points import in Node and
+Bun. Archives are local candidates; no package has been published.
+
+Evidence logs and archives are in
+`D:/codex-sdk-162e-qualification-20260930/`: final sequential logs use
+`sdk-breaking-final-*`; Unix regression and suite logs use `sdk-ownership-*`;
+the exact policy reproduction uses `sdk-policy-objects-default-after.log`.
+The earlier concurrent-target doctest artifact collision is superseded by this
+successful sequential complete run. Download cancellation tests can log server
+ECANCELED while correctly passing the asserted client cancellation behavior.
+
+Objects v2 active digests (SHA-256):
+
+- schema: `79c07290100c4ab775526f951be27eb6e067d31a02424010ea68d75c46f80f35`
+- descriptor: `21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b`
+- conformance: `c5b54fd1254c19c966ab3765962ca9e633a786abf91cf6af2cca5bb0183e5fb6`
+- archived Objects v1 descriptor: `4701187ac8ca87325d42aee0f99c7826ebb63ec2be0ae98c4768006d4ff31a51`
+- unchanged Stream v2 descriptor: `f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e`
+
+The managed-agents tree has no diff. Cloud Data still owns the Stream server
+adapter/coordinator and durable history acceptance. Objects live acceptance
+requires the Cloud endpoint, bearer, bucket and CA from Data/Ops and the Net
+harness integration. Local checks do not establish staging/production acceptance.
+PR: https://github.com/acyclic-labs/sdk/pull/223. Merged commit: pending.
+The repository requires an approving code-owner review after the final push;
+no bypass is authorized. Historical evidence below records earlier milestones.
 
 ## Native qualification consumer uses v2 (2026-09-30)
 

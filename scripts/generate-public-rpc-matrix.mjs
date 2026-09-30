@@ -1,5 +1,5 @@
 // Enumerate canonical services; HTTP mappings describe existing provider operations.
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
@@ -7,13 +7,12 @@ import { WorkersService } from "../typescript/packages/workers/generated/proto/w
 import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v2/stream_pb.js";
 import { BucketsService as BucketsV2, ObjectsService as ObjectsV2, MultipartService as MultipartV2 } from "../typescript/packages/objects/generated/proto/objects/v2/objects_pb.js";
 
-// The retired TS package no longer ships v1. Inventory remaining Rust exposure
-// directly from its canonical descriptor, using the Objects package runtime.
+// Retired v1 RPCs remain inventoried from the frozen published descriptor.
 const requireObjects = createRequire(new URL("../typescript/packages/objects/package.json", import.meta.url));
 const { fromBinary, createFileRegistry } = await import(pathToFileURL(requireObjects.resolve("@bufbuild/protobuf")));
 const { FileDescriptorSetSchema } = await import(pathToFileURL(requireObjects.resolve("@bufbuild/protobuf/wkt")));
 const legacyRegistry = createFileRegistry(fromBinary(FileDescriptorSetSchema,
-  readFileSync(new URL("../rust/crates/objects/src/generated/acyclic-objects-v1.bin", import.meta.url))));
+  readFileSync(new URL("../compatibility/objects/v1/objects_descriptor.bin", import.meta.url))));
 const legacyServices = ["BucketsService", "ObjectsService", "MultipartService", "SnapshotsService"].map(name => {
   const service = legacyRegistry.getService(`acyclic.objects.v1.${name}`);
   if (!service) throw new Error(`missing canonical legacy Objects service: ${name}`);
@@ -39,12 +38,17 @@ function routes(family) {
 }
 const actors = routes("actors");
 const workers = routes("workers");
-// Until consumer migration removes v1, every still-exposed RPC stays visible.
+// Retired rows record published history; target rows describe current SDK exposure.
 // Implementation fields describe source presence, not package or live acceptance.
 const services = [ActorsService, WorkersService, StreamService, BucketsV2, ObjectsV2, MultipartV2, ...legacyServices];
 const objectsPackage = JSON.parse(readFileSync(new URL("../typescript/packages/objects/package.json", import.meta.url), "utf8"));
 const objectsIndex = readFileSync(new URL("../typescript/packages/objects/src/index.ts", import.meta.url), "utf8");
 const v2Routes = readFileSync(new URL("../rust/crates/objects/src/v2/mod.rs", import.meta.url), "utf8");
+const objectsRoot = readFileSync(new URL("../rust/crates/objects/src/lib.rs", import.meta.url), "utf8");
+if (!/pub use v2::\*/.test(objectsRoot) || /objects\.v1|mod provider|mod local;/.test(objectsRoot) ||
+    ["provider.rs", "local.rs", "conformance.rs", "generated/acyclic.objects.v1.rs", "generated/acyclic.objects.v1.tonic.rs"].some(path => existsSync(new URL(`../rust/crates/objects/src/${path}`, import.meta.url)))) {
+  throw new Error("active Objects v1 Rust exposure has not been retired");
+}
 const rows = services.flatMap(service => service.methods.map(method => {
   const family = service.typeName.split(".")[1];
   const version = service.typeName.split(".")[2];
@@ -64,9 +68,9 @@ const rows = services.flatMap(service => service.methods.map(method => {
     kind: method.methodKind,
     request: method.input.typeName,
     response: method.output.typeName,
-    contractStatus: legacy ? "pendingRemoval" : "target",
+    contractStatus: legacy ? "retired" : "target",
     httpOperation: family === "objects" ? `${version}/objects/${http}` : family === "stream" ? `v1/stream/${http}` : http,
-    rustGrpc: true,
+    rustGrpc: !legacy,
     rustHttp: !legacy,
     typescriptGrpcNodeBun: !legacy,
     typescriptHttp: !legacy,
@@ -80,8 +84,8 @@ if (process.argv[2] === "check" || process.argv[2] === "complete") {
 } else if (process.argv[2] === "write") writeFileSync(path, output);
 else throw new Error("expected write, check, or complete");
 if (process.argv[2] === "complete") {
-  const gaps = rows.filter(row => row.contractStatus !== "target" || !row.rustGrpc || !row.rustHttp || !row.typescriptGrpcNodeBun || !row.typescriptHttp || !row.typescriptPackageExported);
-  if (gaps.length) throw new Error(`public SDK surface incomplete:\n${gaps.map(row => `${row.rpc}: ${row.contractStatus === "pendingRemoval" ? "legacy source pending removal" : "target transport/package export missing"}`).join("\n")}`);
+  const gaps = rows.filter(row => row.contractStatus !== "retired" && (!row.rustGrpc || !row.rustHttp || !row.typescriptGrpcNodeBun || !row.typescriptHttp || !row.typescriptPackageExported));
+  if (gaps.length) throw new Error(`public SDK surface incomplete:\n${gaps.map(row => `${row.rpc}: ${row.contractStatus === "retired" ? "legacy source retired" : "target transport/package export missing"}`).join("\n")}`);
 }
 const target = rows.filter(row => row.contractStatus === "target").length;
-console.log(`Public RPC matrix: ${target} target operations, ${rows.length - target} pending removal (${rows.length} total)`);
+console.log(`Public RPC matrix: ${target} target operations, ${rows.length - target} retired (${rows.length} total)`);

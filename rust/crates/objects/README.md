@@ -2,7 +2,8 @@
 
 ## Unreleased Objects v2 transition
 
-The unmerged source exposes logical bucket/key contracts under `acyclic_objects::v2`.
+The unmerged source exposes logical bucket/key contracts at the crate root and
+under `acyclic_objects::v2`.
 Its generated types and `response` validators are available with
 `default-features = false`; services can validate persisted bucket metadata,
 object metadata and timestamps without enabling a transport or JSON reflection.
@@ -72,16 +73,15 @@ groups native writes, and scans current state when constructing deltas. Native
 filesystem roots now compose this provider through the logical v2 adapter.
 Existing v1 roots fail closed; no old-data upgrade path is provided.
 
-## Remaining native v1 migration
+## Published v1 history
 
-The root `wire`, descriptor, provider types, standalone v1 conformance module and
-optional `local` provider remain active pending retirement and extraction of
-shared physical storage helpers. The filesystem uses v2; the idiomatic v1 gRPC
-wrappers have been removed.
-The v1 descriptors and schemas remain intact for published compatibility
-history. The root `LocalObjects` still selects that existing provider; filesystem
-composition explicitly selects `v2::local::LocalObjects` for persistence.
+The active provider, conformance module and generated Rust bindings for v1 have
+been removed. Root `wire`, `FILE_DESCRIPTOR_SET`, provider types and `LocalObjects`
+select v2. Local capacity and synchronization options remain available; private
+segment storage is independent of the retired engine.
 
-The local provider commits bodies up to 64 KiB inside the journal record itself, so one append and one flush make a small object durable; larger bodies are published as immutable segments first. Once inline bytes outweigh the rest of the journal, and on every garbage collection, the provider compacts the journal: live inline bodies move into segments and the rest are dropped.
-
-The local provider fails closed after an uncertain journal write: reads, mutations, and garbage collection return unavailable until the owner closes and reopens the store. Reopen repairs only an incomplete final frame; corruption or a host read error fails recovery. Retrying a mutation after an unavailable result should use its original idempotency key because the last outcome may be uncertain.
+The published v1 schema and conformance vectors remain as history. Its unchanged
+descriptor is archived at `compatibility/objects/v1/objects_descriptor.bin`,
+outside the Objects crate. The RPC matrix records its 17 operations as retired
+and verifies that they have no active SDK exposure. This transition still needs
+a breaking package version and final required qualification before merge.

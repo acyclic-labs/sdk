@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compatibilityArtifacts, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, historicalCompatibilityArtifacts, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 
 const root = new URL("..", import.meta.url);
 const rootPath = resolve(fileURLToPath(root));
@@ -228,6 +228,14 @@ for (const [family, artifacts] of Object.entries(compatibilityArtifacts)) {
   for (const [field, path] of Object.entries(artifacts)) {
     if (compatibility.families[family][field] !== await digest(path)) {
       throw new Error(`${family} ${field} mismatch`);
+    }
+  }
+}
+for (const [manifestPath, artifacts] of Object.entries(historicalCompatibilityArtifacts)) {
+  const historical = await load(manifestPath);
+  for (const [field, path] of Object.entries(artifacts)) {
+    if (historical[field] !== await digest(path)) {
+      throw new Error(`historical compatibility drift: ${manifestPath} ${field}`);
     }
   }
 }

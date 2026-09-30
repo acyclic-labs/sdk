@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-- Move the default, protobuf, HTTP and Node/Bun gRPC exports to logical Objects v2. Retire the v1 TypeScript clients, WASM projections and version/snapshot surface. This breaking source transition requires a new breaking package version before publication; released 0.1.5 remains unchanged.
+## 0.2.0 - Unreleased
+
+- Breaking candidate: canonical Rust, protobuf, HTTP, Node/Bun gRPC and browser exports use Objects v2. Retire the v1 implementation; preserve published v1 contract digests. Existing v1 local roots are rejected without upgrade or overwrite.
+
+- Move the default, protobuf, HTTP and Node/Bun gRPC exports to logical Objects v2. Retire the v1 TypeScript clients, WASM projections and version/snapshot surface. The candidate version is 0.2.0; released 0.1.5 remains unchanged.
 
 - Enforce caller download limits while framing HTTP responses and cancel oversized selections before reading their bodies. Export v2 protobuf bindings at `./v2/proto`.
 

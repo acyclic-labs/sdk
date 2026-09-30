@@ -373,8 +373,20 @@ mod tests {
             Err(LocalOpenError::Invalid)
         ));
         let legacy = tempfile::tempdir()?;
-        let old = crate::LocalObjects::open(legacy.path(), LocalOptions::default()).await?;
-        drop(old);
+        // Exact empty v1 journal header, retained as a rejection fixture after
+        // retiring the v1 engine. No legacy provider is needed to create it.
+        let limits = LocalOptions::default();
+        let mut header = b"ACYCLIC-OBJECTS-LOCAL\0\x04".to_vec();
+        for limit in [
+            limits.maximum_object_bytes,
+            limits.maximum_bytes,
+            limits.maximum_journal_operations,
+            limits.maximum_journal_bytes,
+        ] {
+            header.extend_from_slice(&limit.to_le_bytes());
+        }
+        assert_eq!(header.len(), 55);
+        std::fs::write(legacy.path().join("mutations.log"), &header)?;
         let before = std::fs::read(legacy.path().join("mutations.log"))?;
         assert!(matches!(
             create(legacy.path()).await,

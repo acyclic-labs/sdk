@@ -30,9 +30,9 @@ export const compatibilityArtifacts = {
     conformanceDigest: "conformance/vectors/stream.json",
   },
   objects: {
-    schemaDigest: "proto/objects/v1/objects.proto",
-    descriptorDigest: "rust/crates/objects/src/generated/acyclic-objects-v1.bin",
-    conformanceDigest: "conformance/vectors/objects.json",
+    schemaDigest: "proto/objects/v2/objects.proto",
+    descriptorDigest: "rust/crates/objects/src/generated/acyclic-objects-v2.bin",
+    conformanceDigest: "conformance/vectors/objects-v2.json",
   },
   machines: {
     schemaDigest: "proto/machines/v1/machines.proto",
@@ -54,9 +54,19 @@ export const compatibilityArtifacts = {
   },
 };
 
+// Released contracts remain immutable historical evidence after their clients
+// retire. They are verified separately from the active family metadata.
+export const historicalCompatibilityArtifacts = {
+  "compatibility/objects/v1/manifest.json": {
+    schemaDigest: "proto/objects/v1/objects.proto",
+    descriptorDigest: "compatibility/objects/v1/objects_descriptor.bin",
+    conformanceDigest: "conformance/vectors/objects.json",
+  },
+};
+
 export const generatedDescriptors = [
   ["proto/filesystem", compatibilityArtifacts.filesystem.descriptorDigest],
-  ["proto/objects/v1", compatibilityArtifacts.objects.descriptorDigest],
+  ["proto/objects/v1", "compatibility/objects/v1/objects_descriptor.bin"],
   ["proto/objects/v2", "rust/crates/objects/src/generated/acyclic-objects-v2.bin"],
   ["proto/machines", compatibilityArtifacts.machines.descriptorDigest],
   ["proto/inference", compatibilityArtifacts.inference.descriptorDigest],
@@ -68,8 +78,6 @@ export const generatedDescriptors = [
 ];
 
 export const packagedRustBindings = [
-  ["acyclic/objects/v1/acyclic.objects.v1.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.rs"],
-  ["acyclic/objects/v1/acyclic.objects.v1.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.tonic.rs"],
   ["acyclic/objects/v2/acyclic.objects.v2.rs", "rust/crates/objects/src/generated/acyclic.objects.v2.rs"],
   ["acyclic/objects/v2/acyclic.objects.v2.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v2.tonic.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.rs"],
