@@ -381,3 +381,21 @@ at the same logical path and overwritten content fails file/artifact verificatio
 Presence and hash verification do not establish service retention: Cloud must adopt
 private retain claims under durable acceptance intents before publishing accepted
 refs. Filesystem/local provider migration and final package transition remain.
+
+### Local filesystem merge history publication
+
+The managed-agents Linux lifecycle gate reproduced the reported second-child
+promotion failure at SDK e6fcc9eabf911e431f4ff8680485e9b198c388c0: it returned
+Indeterminate with storage failure/object missing instead of the typed join
+conflict. A smaller SDK regression also failed on Windows after reopening local
+storage between each edit and promotion. The first merge created a normalized
+source generation root as a history parent, but its publication flushed only the
+candidate namespace closure. The new parent remained in private staging and was
+lost when the engine closed.
+
+Merge-history joins now flush that normalized parent before the authority
+publication. Its referenced namespace and ancestors come from the published
+source. The regression passes on Windows and WSL/Linux and confirms the second
+join returns Conflicted while preserving the first child's accepted content.
+All 93 Windows workspace/lazy-workspace tests pass. This fixes local durability;
+the managed-agents gate still needs qualification at the updated source pin.

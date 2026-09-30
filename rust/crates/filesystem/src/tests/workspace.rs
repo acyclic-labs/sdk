@@ -2590,6 +2590,94 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
     Ok(())
 }
 
+/// Reopening local storage between edits and promotions preserves the base
+/// objects needed to return a typed conflict for a second sibling.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    {
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        let main = fs.create_workspace("promote-main").await?;
+        main.write_text("/README.md", "base\n").await?;
+        let mut transaction = main.begin_transaction(IdempotencyKey::new()).await?;
+        transaction.create_dir_all("/src").await?;
+        transaction.commit().await?;
+        main.write_text("/src/main.rs", "fn main() {}\n").await?;
+        let base = main.head().await?;
+        main.fork(
+            "promote-first",
+            ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+        )
+        .await?;
+        main.fork(
+            "promote-second",
+            ForkOptions::from_generation(base, IdempotencyKey::new()),
+        )
+        .await?;
+    }
+    {
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        fs.open_workspace("promote-first")
+            .await?
+            .write_text("/README.md", "first\n")
+            .await?;
+    }
+    {
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        let main = fs.open_workspace("promote-main").await?;
+        let first = fs.open_workspace("promote-first").await?;
+        let plan = first
+            .join_into(&main)
+            .history(JoinHistory::Merge)
+            .plan()
+            .await?;
+        assert!(matches!(
+            plan.apply(ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new()
+            })
+            .await?,
+            JoinOutcome::Applied(_)
+        ));
+        assert_eq!(
+            main.read("/README.md", 64).await?,
+            Bytes::from_static(b"first\n")
+        );
+    }
+    {
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        fs.open_workspace("promote-second")
+            .await?
+            .write_text("/README.md", "second\n")
+            .await?;
+    }
+    {
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        let main = fs.open_workspace("promote-main").await?;
+        let second = fs.open_workspace("promote-second").await?;
+        let plan = second
+            .join_into(&main)
+            .history(JoinHistory::Merge)
+            .plan()
+            .await?;
+        assert!(matches!(
+            plan.apply(ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new()
+            })
+            .await?,
+            JoinOutcome::Conflicted { .. }
+        ));
+        assert_eq!(
+            main.read("/README.md", 64).await?,
+            Bytes::from_static(b"first\n")
+        );
+    }
+    Ok(())
+}
+
 /// Siblings forked from one head, each adding its own file, join back one
 /// after the other. The second join is a real three-way merge (its base is
 /// the pre-first-join head) and must apply: nothing in it conflicts.

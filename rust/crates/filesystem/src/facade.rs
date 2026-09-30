@@ -4424,6 +4424,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if merged_root.file_table == target_root.file_table {
             return Ok(WorkspaceJoinOutcome::NoChanges(current_target));
         }
+        if history == crate::workspace::JoinHistory::Merge {
+            // Normalization creates a new immutable history parent. Its file
+            // table and ancestors belong to the already published source, but
+            // this root itself may still be private local staging. The candidate
+            // closure proves its current namespace, not its historical parents;
+            // persist this new parent before publishing a reference to it.
+            self.inner
+                .objects
+                .flush_before_publish(
+                    crate::PublicationScope::Closure {
+                        objects: &[normalized_source_object],
+                        proven_at: self.inner.objects.collection_sweeps(),
+                    },
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(crate::workspace::WorkspaceError::engine)?;
+        }
         let publication = publish_generation_async_with_permit(
             &self.inner.objects,
             &self.inner.authority,
