@@ -337,6 +337,25 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
             ..Default::default()
         })
         .await?;
+    provider
+        .upload_part(
+            wire::UploadPartHeader {
+                bucket: Some(bucket.clone()),
+                object_key: "abandoned".into(),
+                upload_id: abandoned.upload_id.clone(),
+                part_number: 1,
+                mutation: identity(namespace, "abandoned-part"),
+            },
+            body.clone(),
+        )
+        .await?;
+    expected_error(
+        provider
+            .get(get(&bucket, "abandoned"), body.len() as u64)
+            .await,
+        wire::ErrorCode::NotFound,
+        "staged multipart bytes became a public object",
+    )?;
     ensure(
         provider
             .abort_multipart(wire::AbortMultipartRequest {
@@ -348,6 +367,13 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
             .await?
             .existed,
         "active upload was not aborted",
+    )?;
+    expected_error(
+        provider
+            .get(get(&bucket, "abandoned"), body.len() as u64)
+            .await,
+        wire::ErrorCode::NotFound,
+        "aborted multipart bytes became a public object",
     )?;
     expected_error(
         provider

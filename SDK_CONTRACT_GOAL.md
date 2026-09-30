@@ -861,10 +861,47 @@ before claiming a full workspace pass. The complete generated check reaches
 native N-API declarations but fails with OS error 112 (disk full), both under
 the original build profile and without debug/incremental output. Automatic
 approval review blocks cache removal. A fresh qualification cache and temporary
-directory on D: are now in use for the next generated check. No complete
-generated/workspace pass is claimed for this unit yet. Rust root/durable v1
+directory on D: are now in use for qualification. The same replacement process
+has now completed `bun run check:generated` with exit 0 at commit 1c0ab0df.
+An isolated `cargo test --workspace --all-features --locked --target
+x86_64-pc-windows-msvc --doc` in that cache also completes with exit 0. This
+resolves the documentation compilation failure on a fresh build; it does not
+turn the earlier mixed-source whole-workspace run into a current-source pass.
+Rust root/durable v1
 migration, package version transition and the existing required CI failures
 remain outstanding; the PR is unmerged and these local commits are unpublished.
+
+### Native Objects transports retire unused v1 wrappers
+
+Removed the idiomatic v1 Rust gRPC wrappers after auditing their references:
+repository consumers use the provider interfaces or v2 clients, and the only
+external wrapper reference was the crate README example. The root now exposes
+`GrpcObjects`, `ConnectError` and native `HttpObjects` from v2. The README example
+uses the authenticated v2 client with a caller-supplied private CA; it documents
+the remaining legacy durable/provider/wire surface and the required breaking
+package version. Root v1 generated wire clients still exist, so the matrix
+continues to record all 17 legacy RPCs as pending removal.
+
+The reusable v2 conformance check now stages a nonempty multipart part and
+requires `NotFound` for its public key both before and after abort. This runs
+against memory and the actual native gRPC/HTTP fixtures. Current-source local
+`cargo test -p acyclic-objects -p acyclic-conformance --all-features --locked
+--target x86_64-pc-windows-msvc` passes: 76 Objects unit tests, 24 Conformance
+unit tests, the integration/binary tests and the root v2 doctest; the existing
+opt-in local latency benchmark remains ignored. Whole-workspace all-feature,
+all-target compilation and strict all-feature/all-target Clippy for Objects and
+Conformance pass. Metadata and RPC matrix checks pass; descriptor digests remain
+unchanged. Current-source complete `bun run check:generated` finishes with exit 0
+in the same D: cache. Qualification logs are retained under
+`D:/codex-sdk-162e-qualification-20260930/sdk-root-transports-*.log`.
+
+Refreshed main is an ancestor of this branch (27 commits ahead, zero behind
+before this unit). Native durable migration still needs external body storage,
+checksummed replay and exact retry outcomes, compaction/reclamation, native batch
+admission and filesystem local recovery/collection compatibility. Root v1 types
+cannot be retired until those consumers migrate. Required remote Linux and
+Windows failures remain unfixed; PR223 is open and blocked. These source units
+are unpublished, and the Goal remains active.
 
 ### Canonical TypeScript Objects exports and WASM retire v1
 
@@ -899,9 +936,11 @@ Objects v2 descriptor SHA256 remains
 
 The full Windows workspace qualification initially exhausted compiler memory
 before testing. Its replacement uses one compiler worker, debug information
-disabled and four test threads, matching the CI test profile. That same running
-process has passed filesystem and conformance suites and is still executing the
-1024-fork Harness integration test; no full-workspace pass is claimed yet.
+disabled and four test threads, matching the CI test profile. That replacement
+process is now terminal: all runtime tests pass, including the 1024-fork Harness
+fixture, followed by the documentation dependency failure recorded above. The
+isolated fresh documentation run passes; no single current-source whole-workspace
+runtime-and-documentation pass is claimed yet.
 The remote Linux lifecycle and Windows sparse-checkout failures remain unfixed.
 PR223 is unmerged; no CI retry, required-gate bypass, live acceptance or package
 publication is claimed.

@@ -42,9 +42,9 @@ pub mod limits {
 }
 
 #[cfg(feature = "grpc")]
-mod grpc;
-#[cfg(feature = "grpc")]
-pub use grpc::*;
+pub use v2::grpc::{ConnectError, GrpcObjects};
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub use v2::http::HttpObjects;
 
 #[cfg(feature = "local")]
 mod local;
