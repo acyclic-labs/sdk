@@ -716,3 +716,22 @@ Billing PR1323 merged c67f0a04528340228c263cad9872b0a8c56c73d5, reporting canoni
 decimal bounds, provenance and native signed fixture evidence. SDK logical meter
 units/pricing are still unagreed. No schema interpretation or physical cache-time
 meter is inferred. Data/integrator own the Streams-first native integration.
+
+### FUSE deferred-invalidation barrier regression
+
+A deterministic regression reproduces a premature revalidation return: the
+processed stamp already covers the target, the invalidator has drained deferred
+items under the projection lock, but kernel notifications have not finished.
+The old pending predicate reports idle during this handoff. The regression
+fails locally with that predicate at "kernel notifications have not finished".
+
+The queue now tracks notification delivery in flight. The invalidator clears
+that state only after delivery and error recording under the lock; revalidation
+uses the same pending predicate. Later deferred work remains pending and delivery
+errors remain visible. All 19 non-ignored FUSE unit tests pass, including the new
+regression (nine live mount tests are separately selected). This establishes a
+real barrier fix, but does not prove that it caused the PR260 Linux failure.
+After the fix, full workspace/all-feature Linux native mount qualification passes
+all 25 live tests, including the reported cache test; that exact test also passes
+20 consecutive additional runs. Strict Linux all-feature/all-target Clippy for
+acyclic-fs passes. No test assertion, feature gate or required CI gate is weakened.
