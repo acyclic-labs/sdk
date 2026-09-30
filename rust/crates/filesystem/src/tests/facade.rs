@@ -9027,7 +9027,7 @@ async fn a_rejected_open_leaves_no_provider_opening_behind_it()
         );
         drop(fs);
         drop(
-            acyclic_objects::LocalObjects::open(
+            acyclic_objects::v2::local::LocalObjects::open(
                 directory.path().join("objects"),
                 acyclic_objects::LocalObjectsLimits::default(),
             )
@@ -9115,25 +9115,35 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &orphan_bytes),
     };
-    let objects = acyclic_objects::LocalObjects::open(
+    let objects = acyclic_objects::v2::local::LocalObjects::open(
         directory.path().join("objects"),
         acyclic_objects::LocalObjectsLimits::default(),
     )
     .await?;
-    let bucket = objects
-        .bucket_named("filesystem-objects")
-        .await?
-        .ok_or("filesystem Objects bucket missing")?;
-    acyclic_objects::ObjectsProvider::put(
+    let bucket = acyclic_objects::v2::wire::BucketRef {
+        name: "filesystem-objects".to_owned(),
+    };
+    acyclic_objects::v2::ObjectsProvider::head_bucket(
         &objects,
-        acyclic_objects::PutRequest {
-            bucket,
-            object_key: crate::distributed::object_key(orphan),
-            body: orphan_bytes,
-            metadata: acyclic_objects::wire::ObjectMetadata::default(),
-            condition: Some(acyclic_objects::Condition::IfAbsent),
-            idempotency_key: Some("orphan-object".to_owned()),
+        acyclic_objects::v2::wire::HeadBucketRequest {
+            bucket: Some(bucket.clone()),
         },
+    )
+    .await?;
+    acyclic_objects::v2::ObjectsProvider::put(
+        &objects,
+        acyclic_objects::v2::wire::PutObjectHeader {
+            bucket: Some(bucket),
+            object_key: crate::distributed::object_key(orphan),
+            metadata: Some(acyclic_objects::v2::wire::ObjectMetadata::default()),
+            preconditions: Some(acyclic_objects::v2::wire::Preconditions {
+                condition: Some(
+                    acyclic_objects::v2::wire::preconditions::Condition::IfAbsent(true),
+                ),
+            }),
+            mutation: None,
+        },
+        orphan_bytes,
     )
     .await?;
     drop(objects);

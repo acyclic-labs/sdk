@@ -158,7 +158,8 @@ jobs:
       # Windows restores the compiler cache at ~70 MB/s rather than from
       # co-located storage, so bound it near one run's working set.
       SCCACHE_CACHE_SIZE: ${{ contains(matrix.runner, 'windows') && '3G' || '8G' }}
-    timeout-minutes: 20
+    # Complete qualification is governed by bounded operations and resource
+    # limits, not a wall-clock cutoff across cold builds and package verification.
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -193,7 +194,7 @@ jobs:
       RAYON_NUM_THREADS: 4
       RUST_TEST_THREADS: 4
       SCCACHE_CACHE_SIZE: 3G
-    timeout-minutes: 25
+    # Preserve all checks when cold builds outlast an estimated lane duration.
     steps:
       - name: Await the qualification plan
         id: plan

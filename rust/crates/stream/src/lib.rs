@@ -10,8 +10,16 @@ use thiserror::Error;
 pub mod conformance;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+pub mod http_response;
+pub mod persistence;
+pub mod preparation;
+pub mod request;
 // The WASM adapter consumes this module on browser builds; native builds keep
 // it available for contract tests without pulling in JS bindings.
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub mod http;
+#[allow(dead_code)]
+mod http_codec;
 #[allow(dead_code)]
 mod http_validation;
 #[cfg(feature = "local")]
@@ -43,7 +51,9 @@ const REPLAY_PAGE: u32 = 1_024;
 const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
-/// Minimum durable replay window required from a provider.
+/// Historical minimum replay window, preserved for source compatibility.
+/// Expiry never authorizes re-executing an admitted identity. Memory and local
+/// providers retain full outcomes indefinitely within their capacity limits.
 pub const MIN_IDEMPOTENCY_RETENTION_SECS: u64 = 24 * 60 * 60;
 /// Maximum caller retry-identity width.
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = wire::StreamLimit::MaxIdempotencyKeyBytes as usize;

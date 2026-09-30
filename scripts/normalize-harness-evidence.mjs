@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { collectProviderTests } from "./harness-provider-evidence.mjs";
 
 if (process.argv.length < 6) {
   throw new Error(
@@ -9,6 +10,7 @@ if (process.argv.length < 6) {
 }
 const [rustPath, typescriptPath, outputPath, ...artifactPaths] = process.argv.slice(2).map(path => resolve(path));
 const rust = readFileSync(rustPath, "utf8");
+const provider = collectProviderTests(rust);
 const typescript = readFileSync(typescriptPath, "utf8");
 const collect = (source, pattern) => [...source.matchAll(pattern)].map(match => match[1]).sort();
 const rustTests = collect(rust, /^test (\S+) \.\.\. ok\r?$/gm);
@@ -33,7 +35,9 @@ writeFileSync(outputPath, `${JSON.stringify({
   test_transcript_sha256: {
     rust: sha256(normalizedTranscript(rustCases)),
     typescript: sha256(normalizedTranscript(typescriptCases)),
+    provider: provider.sha256,
   },
   rust_tests: rustCases,
+  rust_provider_tests: provider.tests,
   typescript_tests: typescriptCases,
 }, null, 2)}\n`);

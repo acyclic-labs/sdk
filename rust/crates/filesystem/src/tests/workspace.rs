@@ -1995,7 +1995,7 @@ impl acyclic_stream::StreamProvider for CutStream {
 
 type CutFs = Fs<
     crate::distributed::StreamAuthorityStore<CutStream>,
-    crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+    crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
 >;
 
 /// The first record of one authority, if it has one.
@@ -2033,7 +2033,7 @@ async fn assert_fork_state_exact(
     stream: &Arc<acyclic_stream::MemoryStream>,
     source: &crate::Generation<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
     >,
     source_volume: crate::foundation::VolumeId,
     destination: WorkspaceId,
@@ -2094,10 +2094,10 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
         for fail_at in 1.. {
             let stream = Arc::new(acyclic_stream::MemoryStream::default());
             let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
-            let (objects, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+            let (objects, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
             let fs: CutFs = Fs::new(
                 crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
-                crate::distributed::ProviderObjectStore::new(Arc::new(objects), bucket),
+                crate::LogicalObjectStore::new(Arc::new(objects), bucket),
                 crate::EmbeddedCapabilities::MEMORY,
             );
             cutting.arm(fail_at, cut);
@@ -2150,15 +2150,15 @@ async fn assert_fork_lineage_exact(
     stream: &Arc<acyclic_stream::MemoryStream>,
     main: &crate::Workspace<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
     >,
     source: &crate::Generation<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
     >,
     fork: &crate::Workspace<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::distributed::ProviderObjectStore<acyclic_objects::MemoryObjects>,
+        crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
     >,
     independent: bool,
 ) -> Result<(), Box<dyn Error>> {
@@ -2222,10 +2222,10 @@ async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn E
         for fail_at in 1.. {
             let stream = Arc::new(acyclic_stream::MemoryStream::default());
             let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
-            let (objects, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
+            let (objects, bucket) = acyclic_objects::v2::MemoryObjects::with_default_bucket();
             let fs: CutFs = Fs::new(
                 crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
-                crate::distributed::ProviderObjectStore::new(Arc::new(objects), bucket),
+                crate::LogicalObjectStore::new(Arc::new(objects), bucket),
                 crate::EmbeddedCapabilities::MEMORY,
             );
             let main = fs.create_workspace("repo").await?;
@@ -2587,6 +2587,94 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
         "a live child descends from it"
     );
     assert!(records.contains_key(&grandchild.id()));
+    Ok(())
+}
+
+/// Reopening local storage between edits and promotions preserves the base
+/// objects needed to return a typed conflict for a second sibling.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    {
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        let main = fs.create_workspace("promote-main").await?;
+        main.write_text("/README.md", "base\n").await?;
+        let mut transaction = main.begin_transaction(IdempotencyKey::new()).await?;
+        transaction.create_dir_all("/src").await?;
+        transaction.commit().await?;
+        main.write_text("/src/main.rs", "fn main() {}\n").await?;
+        let base = main.head().await?;
+        main.fork(
+            "promote-first",
+            ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+        )
+        .await?;
+        main.fork(
+            "promote-second",
+            ForkOptions::from_generation(base, IdempotencyKey::new()),
+        )
+        .await?;
+    }
+    {
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        fs.open_workspace("promote-first")
+            .await?
+            .write_text("/README.md", "first\n")
+            .await?;
+    }
+    {
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        let main = fs.open_workspace("promote-main").await?;
+        let first = fs.open_workspace("promote-first").await?;
+        let plan = first
+            .join_into(&main)
+            .history(JoinHistory::Merge)
+            .plan()
+            .await?;
+        assert!(matches!(
+            plan.apply(ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new()
+            })
+            .await?,
+            JoinOutcome::Applied(_)
+        ));
+        assert_eq!(
+            main.read("/README.md", 64).await?,
+            Bytes::from_static(b"first\n")
+        );
+    }
+    {
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        fs.open_workspace("promote-second")
+            .await?
+            .write_text("/README.md", "second\n")
+            .await?;
+    }
+    {
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        let main = fs.open_workspace("promote-main").await?;
+        let second = fs.open_workspace("promote-second").await?;
+        let plan = second
+            .join_into(&main)
+            .history(JoinHistory::Merge)
+            .plan()
+            .await?;
+        assert!(matches!(
+            plan.apply(ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new()
+            })
+            .await?,
+            JoinOutcome::Conflicted { .. }
+        ));
+        assert_eq!(
+            main.read("/README.md", 64).await?,
+            Bytes::from_static(b"first\n")
+        );
+    }
     Ok(())
 }
 

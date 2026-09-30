@@ -259,6 +259,7 @@ case "$lane" in
     bash scripts/test-ensure-rust-target.sh
     bash scripts/test-qualify-gate-rustup.sh
     node scripts/check-workflow-runners.mjs
+    node --test scripts/harness-provider-evidence.test.mjs
     actionlint_archive="$TOOLS_DIR/actionlint_1.7.7_linux_amd64.tar.gz"
     actionlint_checksum="023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
     if [[ ! -f "$actionlint_archive" ]] ||

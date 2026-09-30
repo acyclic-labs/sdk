@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use acyclic_objects::{LocalObjects, LocalObjectsLimits, ObjectsProvider, PutRequest, wire};
+use acyclic_objects::{LocalObjects, LocalObjectsLimits, ObjectsProvider, wire};
 
 const WARMUP_PUTS: usize = 20;
 
@@ -46,7 +46,10 @@ async fn local_put_latency_receipt() -> Result<(), Box<dyn std::error::Error>> {
         let limits = LocalObjectsLimits::default();
         let provider = LocalObjects::open(root.path(), limits).await?;
         let bucket = provider
-            .create_bucket("latency".into(), None)
+            .create_bucket(wire::CreateBucketRequest {
+                name: "latency".into(),
+                mutation: None,
+            })
             .await?
             .bucket
             .ok_or("bucket reference")?;
@@ -58,14 +61,14 @@ async fn local_put_latency_receipt() -> Result<(), Box<dyn std::error::Error>> {
             }
             let started = Instant::now();
             provider
-                .put(PutRequest {
-                    bucket: bucket.clone(),
-                    object_key: format!("object-{index}"),
-                    body: body.into(),
-                    metadata: wire::ObjectMetadata::default(),
-                    condition: None,
-                    idempotency_key: None,
-                })
+                .put(
+                    wire::PutObjectHeader {
+                        bucket: Some(bucket.clone()),
+                        object_key: format!("object-{index}"),
+                        ..Default::default()
+                    },
+                    body.into(),
+                )
                 .await?;
             if index >= WARMUP_PUTS {
                 samples.push(started.elapsed());

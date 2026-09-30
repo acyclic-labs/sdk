@@ -22,6 +22,15 @@ const RETAINS_REPLAY: u8 = 1;
 const RETAINS_COMMIT: u8 = 2;
 
 impl MemoryStream {
+    #[cfg(test)]
+    pub(crate) async fn encode_legacy_deadline_fixture(&self, until: u64) -> Vec<u8> {
+        let mut state = self.state.write().await;
+        for retained in &mut state.retained {
+            retained.until = until;
+        }
+        encode(&state)
+    }
+
     /// Encodes the whole state.
     pub(crate) async fn encode_state(&self) -> Vec<u8> {
         let state = self.state.read().await;
@@ -321,6 +330,38 @@ mod tests {
         fn now_unix_millis(&self) -> u64 {
             self.0.load(Ordering::SeqCst)
         }
+    }
+
+    #[tokio::test]
+    async fn legacy_snapshot_expiry_metadata_cannot_release_a_retry_identity()
+    -> Result<(), StreamError> {
+        let clock = Arc::new(TestClock::default());
+        let stream = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
+        let request = AppendRequest {
+            path: StreamPath::new("snapshot/retained")?,
+            records: vec![Bytes::from_static(b"once")],
+            if_tail: None,
+            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"snapshot-once"))?),
+        };
+        let first = stream.append(request.clone()).await?;
+        // Model an older snapshot with an already elapsed receipt deadline,
+        // using the unchanged snapshot encoding rather than a migration reader.
+        for retained in &mut stream.state.write().await.retained {
+            retained.until = 0;
+        }
+        let snapshot = stream.encode_state().await;
+        clock.0.store(u64::MAX, Ordering::SeqCst);
+        let restored = MemoryStream::new_with_clock(MemoryLimits::default(), clock);
+        restored.install_state(&snapshot).await?;
+        assert_eq!(restored.append(request.clone()).await?, first);
+        assert_eq!(restored.tail(request.path.clone()).await?, 1);
+        let mut changed = request;
+        changed.records = vec![Bytes::from_static(b"different")];
+        assert_eq!(
+            restored.append(changed).await,
+            Err(StreamError::IdempotencyMismatch)
+        );
+        Ok(())
     }
 
     #[tokio::test]

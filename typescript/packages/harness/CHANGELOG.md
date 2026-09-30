@@ -1,5 +1,14 @@
 # @acyclic-labs/harness changelog
 
+## 0.2.0 - Unreleased
+
+- Align the unified SDK candidate and Objects content adapter with the breaking Objects v2 public package transition.
+
+## Unreleased
+
+- Migrate the Objects content adapter to logical v2 bucket/key storage, canonical content identities and bounded byte verification.
+- Bind stable upload operations before content publication, including duplicate content, without relying on public Object versions.
+
 ## 0.1.5 - 2026-09-25
 
 - Aligns the client and transport adapters with the qualified SDK 0.1.5 release.

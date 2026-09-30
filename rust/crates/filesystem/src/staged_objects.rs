@@ -919,31 +919,37 @@ fn byte_length(bytes: &Bytes) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::distributed::ProviderObjectStore;
+    use crate::LogicalObjectStore;
     use crate::kernel::DecodeLimits;
     use crate::storage::{ObjectKind, object_digest};
-    use acyclic_objects::ObjectsProvider as _;
+    use acyclic_objects::v2::ObjectsProvider as _;
     use std::sync::Arc;
 
-    type LocalStaged = StagedObjects<ProviderObjectStore<acyclic_objects::LocalObjects>>;
+    type LocalStaged = StagedObjects<LogicalObjectStore<acyclic_objects::v2::local::LocalObjects>>;
 
     async fn open_staged(
         directory: &Path,
-    ) -> Result<(LocalStaged, Arc<acyclic_objects::LocalObjects>), Box<dyn std::error::Error>> {
+    ) -> Result<
+        (LocalStaged, Arc<acyclic_objects::v2::local::LocalObjects>),
+        Box<dyn std::error::Error>,
+    > {
         let provider = Arc::new(
-            acyclic_objects::LocalObjects::open(
+            acyclic_objects::v2::local::LocalObjects::open(
                 directory.join("objects"),
                 acyclic_objects::LocalObjectsLimits::default(),
             )
             .await?,
         );
         let bucket = provider
-            .create_bucket("staged-test".to_owned(), None)
+            .create_bucket(acyclic_objects::v2::wire::CreateBucketRequest {
+                name: "staged-test".to_owned(),
+                mutation: None,
+            })
             .await?
             .bucket
             .ok_or("bucket creation returned no bucket")?;
         let store = StagedObjects::open(
-            ProviderObjectStore::new(Arc::clone(&provider), bucket),
+            LogicalObjectStore::new(Arc::clone(&provider), bucket),
             directory.to_path_buf(),
         )
         .await?;
@@ -954,16 +960,20 @@ mod tests {
         directory: &Path,
         objects: &[ObjectId],
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let reopened = acyclic_objects::LocalObjects::open(
+        let reopened = acyclic_objects::v2::local::LocalObjects::open(
             directory.join("objects"),
             acyclic_objects::LocalObjectsLimits::default(),
         )
         .await?;
-        let bucket = reopened
-            .bucket_named("staged-test")
-            .await?
-            .ok_or("missing bucket")?;
-        let reopened = ProviderObjectStore::new(Arc::new(reopened), bucket);
+        let bucket = acyclic_objects::v2::wire::BucketRef {
+            name: "staged-test".to_owned(),
+        };
+        reopened
+            .head_bucket(acyclic_objects::v2::wire::HeadBucketRequest {
+                bucket: Some(bucket.clone()),
+            })
+            .await?;
+        let reopened = LogicalObjectStore::new(Arc::new(reopened), bucket);
         let token = CancellationToken::new();
         for &object_id in objects {
             if !reopened

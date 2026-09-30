@@ -1,4 +1,3 @@
-import { objects_list_page_entries, objects_multipart_parts } from "../generated/wasm/acyclic_objects_wasm.js";
 import initObjectsWasm from "../generated/wasm/acyclic_objects_wasm.js";
 
 let ready: Promise<void> | undefined;
@@ -18,9 +17,4 @@ export async function ensureObjectsWasm(): Promise<void> {
     void attempt.catch(() => { if (ready === attempt) ready = undefined; });
   }
   await ready;
-}
-
-export async function objectsLimits(): Promise<{ readonly listPageEntries: number; readonly multipartParts: number }> {
-  await ensureObjectsWasm();
-  return { listPageEntries: objects_list_page_entries(), multipartParts: objects_multipart_parts() };
 }

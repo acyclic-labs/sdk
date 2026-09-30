@@ -15,9 +15,22 @@
         "typescript": "7.0.2",
       },
     },
+    "typescript/packages/actors": {
+      "name": "@acyclic-labs/actors",
+      "version": "0.2.0",
+      "dependencies": {
+        "@bufbuild/protobuf": "2.15.0",
+        "@connectrpc/connect": "2.1.1",
+        "@connectrpc/connect-node": "2.1.1",
+      },
+      "devDependencies": {
+        "@types/node": "26.4.1",
+        "typescript": "7.0.2",
+      },
+    },
     "typescript/packages/filesystem": {
       "name": "@acyclic-labs/fs",
-      "version": "0.1.5",
+      "version": "0.2.0",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
         "@connectrpc/connect": "2.1.1",
@@ -30,7 +43,7 @@
     },
     "typescript/packages/harness": {
       "name": "@acyclic-labs/harness",
-      "version": "0.1.5",
+      "version": "0.2.0",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
       },
@@ -42,7 +55,7 @@
         "typescript": "7.0.2",
       },
       "peerDependencies": {
-        "@acyclic-labs/objects": "0.1.5",
+        "@acyclic-labs/objects": "0.2.0",
       },
       "optionalPeers": [
         "@acyclic-labs/objects",
@@ -50,7 +63,7 @@
     },
     "typescript/packages/inference": {
       "name": "@acyclic-labs/inference",
-      "version": "0.1.5",
+      "version": "0.2.0",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
       },
@@ -62,7 +75,7 @@
     },
     "typescript/packages/machines": {
       "name": "@acyclic-labs/machines",
-      "version": "0.1.5",
+      "version": "0.2.0",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
       },
@@ -73,9 +86,11 @@
     },
     "typescript/packages/objects": {
       "name": "@acyclic-labs/objects",
-      "version": "0.1.5",
+      "version": "0.2.0",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
+        "@connectrpc/connect": "2.1.1",
+        "@connectrpc/connect-node": "2.1.1",
       },
       "devDependencies": {
         "@types/bun": "1.4.2",
@@ -85,35 +100,53 @@
     },
     "typescript/packages/pi": {
       "name": "@acyclic-labs/pi",
-      "version": "0.1.5",
+      "version": "0.2.0",
       "devDependencies": {
         "@acyclic-labs/harness": "workspace:*",
         "typescript": "7.0.2",
       },
       "peerDependencies": {
-        "@acyclic-labs/harness": "0.1.5",
+        "@acyclic-labs/harness": "0.2.0",
       },
     },
     "typescript/packages/sdk": {
       "name": "@acyclic-labs/sdk",
-      "version": "0.1.5",
+      "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/fs": "0.1.5",
-        "@acyclic-labs/harness": "0.1.5",
-        "@acyclic-labs/inference": "0.1.5",
-        "@acyclic-labs/machines": "0.1.5",
-        "@acyclic-labs/objects": "0.1.5",
-        "@acyclic-labs/stream": "0.1.5",
+        "@acyclic-labs/actors": "0.2.0",
+        "@acyclic-labs/fs": "0.2.0",
+        "@acyclic-labs/harness": "0.2.0",
+        "@acyclic-labs/inference": "0.2.0",
+        "@acyclic-labs/machines": "0.2.0",
+        "@acyclic-labs/objects": "0.2.0",
+        "@acyclic-labs/stream": "0.2.0",
+        "@acyclic-labs/workers": "0.2.0",
       },
       "devDependencies": {
+        "@bufbuild/protobuf": "2.15.0",
         "typescript": "7.0.2",
       },
     },
     "typescript/packages/stream": {
       "name": "@acyclic-labs/stream",
-      "version": "0.1.5",
+      "version": "0.2.0",
       "dependencies": {
         "@bufbuild/protobuf": "2.15.0",
+        "@connectrpc/connect": "2.1.1",
+        "@connectrpc/connect-node": "2.1.1",
+      },
+      "devDependencies": {
+        "@types/node": "26.4.1",
+        "typescript": "7.0.2",
+      },
+    },
+    "typescript/packages/workers": {
+      "name": "@acyclic-labs/workers",
+      "version": "0.2.0",
+      "dependencies": {
+        "@bufbuild/protobuf": "2.15.0",
+        "@connectrpc/connect": "2.1.1",
+        "@connectrpc/connect-node": "2.1.1",
       },
       "devDependencies": {
         "@types/node": "26.4.1",
@@ -122,6 +155,8 @@
     },
   },
   "packages": {
+    "@acyclic-labs/actors": ["@acyclic-labs/actors@workspace:typescript/packages/actors"],
+
     "@acyclic-labs/fs": ["@acyclic-labs/fs@workspace:typescript/packages/filesystem"],
 
     "@acyclic-labs/harness": ["@acyclic-labs/harness@workspace:typescript/packages/harness"],
@@ -137,6 +172,8 @@
     "@acyclic-labs/sdk": ["@acyclic-labs/sdk@workspace:typescript/packages/sdk"],
 
     "@acyclic-labs/stream": ["@acyclic-labs/stream@workspace:typescript/packages/stream"],
+
+    "@acyclic-labs/workers": ["@acyclic-labs/workers@workspace:typescript/packages/workers"],
 
     "@bufbuild/buf": ["@bufbuild/buf@1.73.0", "", { "optionalDependencies": { "@bufbuild/buf-darwin-arm64": "1.73.0", "@bufbuild/buf-darwin-x64": "1.73.0", "@bufbuild/buf-linux-aarch64": "1.73.0", "@bufbuild/buf-linux-armv7": "1.73.0", "@bufbuild/buf-linux-x64": "1.73.0", "@bufbuild/buf-win32-arm64": "1.73.0", "@bufbuild/buf-win32-x64": "1.73.0" }, "bin": { "buf": "bin/buf", "protoc-gen-buf-lint": "bin/protoc-gen-buf-lint", "protoc-gen-buf-breaking": "bin/protoc-gen-buf-breaking" } }, "sha512-W3whb4P1y3Hs9bqwCu9++W1v1ofHZ3dBUCe6JSZq0Ff5OK5UKKZuMN4iunPbgdyXY4+4ujEYf2ESrN/6MbcFSQ=="],
 
@@ -161,6 +198,8 @@
     "@bufbuild/protoplugin": ["@bufbuild/protoplugin@2.15.0", "", { "dependencies": { "@bufbuild/protobuf": "2.15.0", "@typescript/vfs": "^1.6.2", "typescript": "5.4.5" } }, "sha512-vZhRoqB/jTHATqItRvJQf1zbxdrGRRhiusGty4+lKcfEFODG0PMXky2Ezv4WHHS6oSxq+5qShITuE7K1/82SuQ=="],
 
     "@connectrpc/connect": ["@connectrpc/connect@2.1.1", "", { "peerDependencies": { "@bufbuild/protobuf": "^2.7.0" } }, "sha512-JzhkaTvM73m2K1URT6tv53k2RwngSmCXLZJgK580qNQOXRzZRR/BCMfZw3h+90JpnG6XksP5bYT+cz0rpUzUWQ=="],
+
+    "@connectrpc/connect-node": ["@connectrpc/connect-node@2.1.1", "", { "peerDependencies": { "@bufbuild/protobuf": "^2.7.0", "@connectrpc/connect": "2.1.1" } }, "sha512-s3TfsI1XF+n+1z6MBS9rTnFsxxR4Rw5wmdEnkQINli81ESGxcsfaEet8duzq8LVuuCupmhUsgpRo0Nv9pZkufg=="],
 
     "@connectrpc/connect-web": ["@connectrpc/connect-web@2.1.1", "", { "peerDependencies": { "@bufbuild/protobuf": "^2.7.0", "@connectrpc/connect": "2.1.1" } }, "sha512-J8317Q2MaFRCT1jzVR1o06bZhDIBmU0UAzWx6xOIXzOq8+k71/+k7MUF7AwcBUX+34WIvbm5syRgC5HXQA8fOg=="],
 

@@ -73,30 +73,34 @@ done < <(node -e '
 (cd "$output" && sha256sum ./*.tgz > SHA256SUMS)
 node scripts/typescript-qualification.mjs create "$output" "$source_sha"
 
-file_url() {
-  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"
-  elif command -v wslpath >/dev/null 2>&1; then wslpath -m "$1"
-  else printf '%s\n' "$1"
-  fi
-}
-version=$(node -p "require('./typescript/packages/sdk/package.json').version")
-harness_url=$(file_url "$output/acyclic-labs-harness-${version}.tgz")
-objects_url=$(file_url "$output/acyclic-labs-objects-${version}.tgz")
-stream_url=$(file_url "$output/acyclic-labs-stream-${version}.tgz")
-inference_url=$(file_url "$output/acyclic-labs-inference-${version}.tgz")
-machines_url=$(file_url "$output/acyclic-labs-machines-${version}.tgz")
-filesystem_url=$(file_url "$output/acyclic-labs-fs-${version}.tgz")
-sdk_url=$(file_url "$output/acyclic-labs-sdk-${version}.tgz")
 mkdir "$work/consumer"
-cat >"$work/consumer/package.json" <<EOF
-{"private":true,"type":"module","dependencies":{"@acyclic-labs/sdk":"file:$sdk_url"},"overrides":{"@acyclic-labs/harness":"file:$harness_url","@acyclic-labs/objects":"file:$objects_url","@acyclic-labs/stream":"file:$stream_url","@acyclic-labs/inference":"file:$inference_url","@acyclic-labs/machines":"file:$machines_url","@acyclic-labs/fs":"file:$filesystem_url"}}
+node --input-type=module - "$output" "$work/consumer" <<'EOF'
+import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
+const [, , output, consumer] = process.argv;
+const inventory = JSON.parse(readFileSync("release/npm-packages.json", "utf8"))
+  .filter(item => item.source === "typescript");
+const overrides = {};
+for (const item of inventory) {
+  const manifest = JSON.parse(readFileSync(join("typescript/packages", item.directory, "package.json"), "utf8"));
+  if (manifest.name !== item.name) throw new Error(`release identity differs for ${item.directory}`);
+  const archive = resolve(output, `acyclic-labs-${item.slug}-${manifest.version}.tgz`);
+  if (!statSync(archive).isFile()) throw new Error(`qualified tarball is absent for ${item.name}`);
+  overrides[item.name] = `file:./${relative(resolve(consumer), archive).split(sep).join("/")}`;
+}
+if (!overrides["@acyclic-labs/sdk"]) throw new Error("SDK tarball is absent from the release inventory");
+writeFileSync(join(consumer, "package.json"), JSON.stringify({
+  private: true, type: "module", workspaces: [],
+  dependencies: { "@acyclic-labs/sdk": overrides["@acyclic-labs/sdk"] }, overrides,
+}, null, 2));
 EOF
 cat >"$work/consumer/smoke.mjs" <<'EOF'
-import { filesystem, harness, harnessObjects, inference, machines, objects, stream } from "@acyclic-labs/sdk";
+import { actors, filesystem, harness, harnessObjects, inference, machines, objects, stream, workers } from "@acyclic-labs/sdk";
 import { ObjectContentStore } from "@acyclic-labs/harness/objects";
 if (typeof filesystem.openBrowserFs !== "function" || typeof inference.InferenceClient !== "function" ||
     typeof harness.Harness !== "function" || typeof machines.SimulatedMachines !== "function" || typeof stream.StreamClient !== "function" ||
-    typeof objects !== "object" || typeof harnessObjects.ObjectContentStore !== "function" ||
+    typeof objects !== "object" || typeof actors.HttpActorsClient !== "function" ||
+    typeof workers.HttpWorkersClient !== "function" || typeof harnessObjects.ObjectContentStore !== "function" ||
     harnessObjects.ObjectContentStore !== ObjectContentStore) throw new Error("SDK exports are incomplete");
 EOF
-(cd "$work/consumer" && bun install --ignore-scripts && bun smoke.mjs)
+(cd "$work/consumer" && BUN_INSTALL_CACHE_DIR="$work/install-cache" bun install --ignore-scripts && bun smoke.mjs && node smoke.mjs)

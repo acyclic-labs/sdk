@@ -1,0 +1,23 @@
+{
+  "family": "objects",
+  "version": 2,
+  "fixture": "disposable provider with immediate mutation visibility",
+  "cases": [
+    "logical-bucket-create-head-delete",
+    "current-key-replacement",
+    "retry-receipts-survive-later-publication-without-restoring-old-bytes",
+    "retry-identities-reject-request-rebinding",
+    "conditions-are-atomic-and-side-effect-free",
+    "complete-object-metadata-and-bytes-agree",
+    "read-allocation-bounds",
+    "conditional-and-suffix-range-reads",
+    "live-listings-contain-current-keys-in-lexical-order",
+    "listing-pages-are-bounded-and-query-bound",
+    "delimiter-common-prefixes",
+    "multipart-part-retry-and-listing",
+    "multipart-completion-and-exact-retry-recovery",
+    "multipart-abort-does-not-publish",
+    "nonempty-bucket-deletion-is-rejected",
+    "deleted-keys-and-buckets-expose-no-history"
+  ]
+}

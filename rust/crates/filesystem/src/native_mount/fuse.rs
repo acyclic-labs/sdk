@@ -683,13 +683,33 @@ struct InvalidationQueue {
     processed: Option<ViewStamp>,
     /// Items to drop regardless of any change.
     deferred: Vec<KernelCacheItem>,
+    /// The invalidator removed items from the queue but has not finished
+    /// notifying the kernel. Processed stamps may already cover this pass.
+    in_flight: bool,
     /// First invalidation the kernel rejected since the last barrier.
     failure: Option<String>,
 }
 
 impl InvalidationQueue {
     fn is_idle(&self) -> bool {
-        self.processed >= self.notified && self.deferred.is_empty()
+        !self.is_pending(self.notified)
+    }
+
+    fn is_pending(&self, target: Option<ViewStamp>) -> bool {
+        self.processed < target || !self.deferred.is_empty() || self.in_flight
+    }
+
+    fn take_deferred(&mut self) -> Vec<KernelCacheItem> {
+        self.in_flight = true;
+        std::mem::take(&mut self.deferred)
+    }
+
+    fn finish(&mut self, through: Option<ViewStamp>, dropped: Result<(), String>) {
+        self.processed = self.processed.max(through);
+        self.in_flight = false;
+        if let Err(error) = dropped {
+            self.failure.get_or_insert(error);
+        }
     }
 }
 
@@ -2133,7 +2153,7 @@ fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
             continue;
         }
         let through = state.invalidation.notified;
-        let mut items = std::mem::take(&mut state.invalidation.deferred);
+        let mut items = state.invalidation.take_deferred();
         if let Some(through) = through
             && state.invalidation.scanned < Some(through)
         {
@@ -2149,10 +2169,7 @@ fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
         drop(state);
         let dropped = drop_kernel_caches(notifier, items);
         state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.invalidation.processed = state.invalidation.processed.max(through);
-        if let Err(error) = dropped {
-            state.invalidation.failure.get_or_insert(error);
-        }
+        state.invalidation.finish(through, dropped);
         core.invalidation.notify_all();
     }
 }
@@ -2330,9 +2347,7 @@ impl FuseSession {
             if self.core.stopping.load(Ordering::Acquire) {
                 return Err(stopped());
             }
-            state = if state.invalidation.processed < target
-                || !state.invalidation.deferred.is_empty()
-            {
+            state = if state.invalidation.is_pending(target) {
                 self.core.invalidation.wait(state).map_err(poisoned)?
             } else if target.is_some_and(|target| state.page_stores.precede(target)) {
                 self.core.page_stored.wait(state).map_err(poisoned)?
@@ -4959,6 +4974,41 @@ mod tests {
         assert!(streams.take(ROOT_INODE, 3).is_some());
         assert!(streams.take(ROOT_INODE, 1_000).is_some());
         assert!(streams.take(ROOT_INODE + 1, 1).is_none());
+    }
+
+    #[test]
+    fn revalidation_waits_for_deferred_notifications_in_flight() {
+        let target = Some(ViewStamp::ORIGIN);
+        let mut queue = super::InvalidationQueue {
+            notified: target,
+            scanned: target,
+            processed: target,
+            ..Default::default()
+        };
+        assert!(queue.is_idle());
+        queue.deferred.push(KernelCacheItem::Inode(ROOT_INODE));
+        assert!(queue.is_pending(target));
+        let items = queue.take_deferred();
+        assert_eq!(items.len(), 1);
+        assert!(queue.deferred.is_empty());
+        // This is the state visible to the barrier while the invalidator
+        // releases the state lock to call the kernel. The stamp alone cannot
+        // distinguish this deferred pass from the already completed scan.
+        assert!(
+            queue.is_pending(target),
+            "kernel notifications have not finished"
+        );
+        assert!(!queue.is_idle());
+        queue.deferred.push(KernelCacheItem::Inode(ROOT_INODE));
+        queue.finish(target, Ok(()));
+        assert!(
+            queue.is_pending(target),
+            "a later deferred item is still owed"
+        );
+        assert_eq!(queue.take_deferred().len(), 1);
+        queue.finish(target, Err("notification failed".to_owned()));
+        assert!(queue.is_idle());
+        assert_eq!(queue.failure.as_deref(), Some("notification failed"));
     }
 
     /// A name confirmed bound at a position (a listed page, read before its

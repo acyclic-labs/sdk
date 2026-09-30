@@ -10,13 +10,13 @@ use acyclic_machines::{
     Capability, CompatibilityPolicy, CreateMachine, IdempotencyKey, Image, MachineObservation,
     MachineState, MachinesProvider, MutationOutcome, OperationPhase, Performance, ProviderError,
 };
-use acyclic_objects::ObjectsProvider;
+use acyclic_objects::v2::ObjectsProvider;
 use acyclic_stream::StreamProvider;
 use futures::StreamExt;
 use std::num::NonZeroU32;
 
 /// Canonical language-neutral Objects conformance inventory.
-pub const OBJECTS_SUITE: &[u8] = include_bytes!("../vectors/objects.json");
+pub const OBJECTS_SUITE: &[u8] = acyclic_objects::v2::conformance::SUITE;
 
 /// Canonical language-neutral harness conformance inventory.
 pub const HARNESS_SUITE: &[u8] = include_bytes!("../vectors/harness.json");
@@ -57,7 +57,7 @@ pub async fn stream(provider: &dyn StreamProvider) -> Result<(), String> {
 ///
 /// The suite retains state and idempotency keys under the `conformance` namespace.
 pub async fn objects(provider: &dyn ObjectsProvider) -> Result<(), String> {
-    acyclic_objects::conformance::verify(provider, "conformance")
+    acyclic_objects::v2::conformance::verify(provider, "conformance")
         .await
         .map_err(|error| error.to_string())
 }
@@ -365,8 +365,6 @@ async fn live_fork(
 mod tests {
     use super::*;
     use acyclic_machines::SimulatedMachines;
-    use acyclic_objects::MemoryObjects;
-    use acyclic_objects::ReadTarget;
     use acyclic_stream::MemoryStream;
     use std::sync::Arc;
 
@@ -375,10 +373,16 @@ mod tests {
         assert_eq!(STREAM_SUITE, include_bytes!("../vectors/stream.json"));
     }
 
+    #[test]
+    fn exported_objects_inventory_matches_the_logical_suite() {
+        assert_eq!(OBJECTS_SUITE, include_bytes!("../vectors/objects-v2.json"));
+    }
+
     #[tokio::test]
     async fn family_memory_providers_conform() -> Result<(), String> {
         let stream_provider = MemoryStream::default();
-        let (objects_provider, filesystem_bucket) = MemoryObjects::with_default_bucket();
+        let (objects_provider, filesystem_bucket) =
+            acyclic_objects::v2::MemoryObjects::with_default_bucket();
         let filesystem = acyclic_fs::Fs::from_memory_providers(
             Arc::new(stream_provider.clone()),
             Arc::new(objects_provider.clone()),
@@ -403,14 +407,12 @@ mod tests {
             return Err("filesystem did not publish through the profile's public Stream".into());
         }
         let filesystem_objects = objects_provider
-            .list(
-                ReadTarget::Bucket(filesystem_bucket),
-                "fs/v1/".to_owned(),
-                None,
-                true,
-                128,
-                None,
-            )
+            .list(acyclic_objects::v2::wire::ListObjectsRequest {
+                bucket: Some(filesystem_bucket),
+                prefix: "fs/v1/".to_owned(),
+                page_size: 128,
+                ..Default::default()
+            })
             .await
             .map_err(|error| error.to_string())?;
         if filesystem_objects.entries.is_empty() {

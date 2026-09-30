@@ -48,7 +48,7 @@ fn path(value: &Value) -> Result {
         .map_err(|_| "invalid path")
 }
 
-fn decode_base64(value: &str) -> Option<Vec<u8>> {
+pub(crate) fn decode_base64(value: &str) -> Option<Vec<u8>> {
     if !value.len().is_multiple_of(4) {
         return None;
     }
@@ -61,7 +61,7 @@ fn decode_base64(value: &str) -> Option<Vec<u8>> {
         let c = if c_byte == b'=' { 0 } else { sextet(c_byte)? };
         let d = if d_byte == b'=' { 0 } else { sextet(d_byte)? };
         if c_byte == b'=' {
-            if d_byte != b'=' || b & 0x0f != 0 {
+            if d_byte != b'=' || b & 0x0f != 0 || index + 1 != bytes.len() / 4 {
                 return None;
             }
         } else if d_byte == b'=' && (c & 0x03 != 0 || index + 1 != bytes.len() / 4) {
@@ -191,6 +191,37 @@ fn validate_commit_result(value: &Value) -> Result {
     let item = object(value)?;
     if boolean(field(item, "ok")?)? {
         id(field(item, "commitId")?)?;
+        if let Some(envelope) = item.get("envelope") {
+            validate_envelope(envelope)?;
+            if envelope.get("commitId") != item.get("commitId") {
+                return Err("commit envelope identity differs");
+            }
+            let mut tails = Map::new();
+            let mut forks = Vec::new();
+            for mutation in array(field(object(envelope)?, "mutations")?)? {
+                let mutation = object(mutation)?;
+                match string(field(mutation, "type")?)? {
+                    "append" => {
+                        tails.insert(
+                            string(field(mutation, "path")?)?.to_owned(),
+                            field(mutation, "tail")?.clone(),
+                        );
+                    }
+                    "fork" => {
+                        let mut fork = Map::new();
+                        fork.insert("path".to_owned(), field(mutation, "destination")?.clone());
+                        fork.insert("tail".to_owned(), field(mutation, "tail")?.clone());
+                        forks.push(Value::Object(fork));
+                    }
+                    _ => return Err("invalid mutation type"),
+                }
+            }
+            if field(item, "tails")? != &Value::Object(tails)
+                || field(item, "forks")? != &Value::Array(forks)
+            {
+                return Err("commit envelope summary differs");
+            }
+        }
         for (path_name, tail) in object(field(item, "tails")?)? {
             crate::StreamPath::new(path_name).map_err(|_| "invalid path")?;
             u64_string(tail)?;
@@ -315,6 +346,13 @@ pub fn validate(route: &str, value: &Value) -> Result {
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
+
+    #[test]
+    fn base64_padding_only_terminates_the_last_quartet() {
+        assert!(super::decode_base64("AA==AAAA").is_none());
+        assert_eq!(super::decode_base64("AA=="), Some(vec![0]));
+        assert_eq!(super::decode_base64("AAAA"), Some(vec![0, 0, 0]));
+    }
 
     fn json_fixture(value: &str) -> serde_json::Result<Value> {
         serde_json::from_str(value)

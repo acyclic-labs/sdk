@@ -36,10 +36,10 @@ mod bindings {
         Checkout, CheckoutCommitOutcome, Digest, EmbeddedCapabilities, FileCloneRequest, FileId,
         ForkOptions, Fs, Generation, GenerationExportManifest, GitCommand, GitCompatRepository,
         IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan, LiveMutationOutcome,
-        MemoryGitCompatStore, MemoryWorkspaceContextStore, MergeConflict, MergePreparation,
-        NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectKind, ObjectReadRequest,
-        ObjectResidency, OperationId, PromotionAdmission, PromotionDestination, PromotionRejection,
-        PromotionSpeculatorOptions, ProviderObjectStore, ResidencyAdmission, ResidencyHint,
+        LogicalObjectStore, MemoryGitCompatStore, MemoryWorkspaceContextStore, MergeConflict,
+        MergePreparation, NamedAttributeWriteMode, ObjectCacheOptions, ObjectId, ObjectKind,
+        ObjectReadRequest, ObjectResidency, OperationId, PromotionAdmission, PromotionDestination,
+        PromotionRejection, PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint,
         ResidencyReason, ResidencyRejection, ResidencySpeculatorOptions, ResolvedFile,
         SpeculationController, SpeculationOptions, StorageLocationId, StorageTier,
         StreamAuthorityStore, Transaction, TransactionCommit, TransactionConflict,
@@ -60,7 +60,7 @@ mod bindings {
     type IndexedDbObjects = CachedObjectStore<IndexedDbObjectStore>;
     type OpfsObjects = CachedObjectStore<OpfsAcceleratedObjectStore>;
     type MemoryAuthority = StreamAuthorityStore<acyclic_stream::MemoryStream>;
-    type MemoryObjects = CachedObjectStore<ProviderObjectStore<acyclic_objects::MemoryObjects>>;
+    type MemoryObjects = CachedObjectStore<LogicalObjectStore<acyclic_objects::v2::MemoryObjects>>;
 
     fn wire_error(error: impl std::fmt::Display) -> JsValue {
         browser_error("AcyclicCompatibilityWireError", &error.to_string())
@@ -6655,15 +6655,32 @@ mod bindings {
         cache: ObjectCacheOptions,
     ) -> Result<Fs<MemoryAuthority, MemoryObjects>, JsValue> {
         let streams = Arc::new(acyclic_stream::MemoryStream::default());
-        let (objects, bucket) = acyclic_objects::MemoryObjects::with_bucket_limits(
+        if maximum_object_bytes == 0
+            || maximum_object_bytes > maximum_memory_bytes
+            || usize::try_from(maximum_object_bytes).is_err()
+        {
+            return Err(js_error("invalid memory object limit"));
+        }
+        let maximum_bytes = usize::try_from(maximum_memory_bytes).map_err(js_error)?;
+        if maximum_bytes == 0 {
+            return Err(js_error("invalid memory byte limit"));
+        }
+        let (objects, bucket) = acyclic_objects::v2::MemoryObjects::with_bucket(
             "acyclic-fs-wasm-memory",
-            maximum_object_bytes,
-            maximum_memory_bytes,
+            acyclic_objects::v2::MemoryOptions {
+                maximum_bytes,
+                maximum_entries: usize::MAX,
+            },
         )
         .map_err(js_error)?;
         Ok(Fs::new(
             StreamAuthorityStore::new(streams),
-            cached_objects(ProviderObjectStore::new(Arc::new(objects), bucket), cache)?,
+            cached_objects(
+                LogicalObjectStore::new(Arc::new(objects), bucket)
+                    .with_object_limit(maximum_object_bytes)
+                    .map_err(js_error)?,
+                cache,
+            )?,
             EmbeddedCapabilities::MEMORY,
         ))
     }

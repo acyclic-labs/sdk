@@ -1,54 +1,17 @@
 #![doc = include_str!("../README.md")]
-
-pub mod conformance;
-
-/// Generated public gRPC schema and client/server bindings.
-#[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
-pub mod wire {
-    include!("generated/acyclic.objects.v1.rs");
-}
-
-/// Canonical public descriptor set used by compatibility and conformance gates.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-objects-v1.bin");
-
-/// Fixed public compatibility limits.
-pub mod limits {
-    /// Maximum UTF-8 byte length of a caller idempotency key.
-    pub const MAX_IDEMPOTENCY_KEY_BYTES: usize =
-        super::wire::ObjectsLimit::MaxIdempotencyKeyBytes as usize;
-    /// Maximum UTF-8 object-key length.
-    pub const KEY_BYTES: usize = 1_024;
-    /// Maximum encoded user metadata per version.
-    pub const USER_METADATA_BYTES: usize = 2 * 1_024;
-    /// Maximum entries returned in one listing page.
-    pub const LIST_PAGE_ENTRIES: u32 = 1_000;
-    /// Maximum complete object size.
-    pub const OBJECT_BYTES: u64 = 5 * 1_024 * 1_024 * 1_024 * 1_024;
-    /// Maximum single-put size.
-    pub const SINGLE_PUT_BYTES: u64 = 5 * 1_024 * 1_024 * 1_024;
-    /// Maximum multipart part count.
-    pub const MULTIPART_PARTS: u32 = 10_000;
-    /// Minimum non-final multipart part size.
-    pub const MIN_MULTIPART_PART_BYTES: u64 = 5 * 1_024 * 1_024;
-    /// Maximum multipart part size.
-    pub const MAX_MULTIPART_PART_BYTES: u64 = 5 * 1_024 * 1_024 * 1_024;
-    /// Retention of exact idempotency outcomes.
-    pub const IDEMPOTENCY_RETENTION_SECONDS: u64 = 7 * 24 * 60 * 60;
-    /// Lifetime of an ordinary listing view.
-    pub const LISTING_VIEW_SECONDS: u64 = 24 * 60 * 60;
-    /// Minimum grace before unreachable bytes become reclaimable.
-    pub const RECLAMATION_GRACE_SECONDS: u64 = 7 * 24 * 60 * 60;
-}
-
+mod body;
+pub mod v2;
+/// Canonical logical Objects v2 public contracts and providers.
+pub use v2::*;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+mod local_options;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+mod physical;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use local_options::{LocalDurability, LocalObjectsGarbageCollection, LocalObjectsLimits};
 #[cfg(feature = "grpc")]
-mod grpc;
-#[cfg(feature = "grpc")]
-pub use grpc::*;
-
-#[cfg(feature = "local")]
-mod local;
-#[cfg(feature = "local")]
-pub use local::*;
-
-mod provider;
-pub use provider::*;
+pub use v2::grpc::{ConnectError, GrpcObjects};
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub use v2::http::HttpObjects;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub use v2::local::{LocalObjects, LocalOpenError};

@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-objects-wasm"
-version = "0.1.5"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acyclic-objects = { version = "=0.1.5", path = "../objects", default-features = false }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["json"] }
 bytes.workspace = true
 base64 = "0.22.1"
 prost.workspace = true

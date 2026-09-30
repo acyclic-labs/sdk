@@ -57,7 +57,7 @@ const wasmSmoke = {
   harness: module => module.decodeAggregateKind(1),
   inference: module => typeof module.validate_customer_wire === "function",
   machines: module => module.httpRoutes(),
-  objects: module => [module.objects_list_page_entries(), module.objects_multipart_parts()],
+  objects: module => module.objects_v2_http_type("objects/get", false),
   stream: module => {
     if (module.is_stream_error_code("retired")) {
       throw new Error("Stream WASM still accepts a retired-path error");

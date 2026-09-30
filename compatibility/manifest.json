@@ -1,44 +1,56 @@
 {
   "$schema": "schemas/compatibility.schema.json",
   "status": "candidate",
-  "umbrellaVersion": "0.1.5",
+  "umbrellaVersion": "0.2.0",
   "families": {
+    "actors": {
+      "version": "0.2.0",
+      "crateVersion": "0.2.0",
+      "schemaDigest": "sha256:06ceab3f17010830f61a8c0ed1d52d2b2ef7e7fa261807cf407e6615f7b17064",
+      "descriptorDigest": "sha256:70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c"
+    },
+    "workers": {
+      "version": "0.2.0",
+      "crateVersion": "0.2.0",
+      "schemaDigest": "sha256:8d3904f1645d795678b234e65165e36fec468d5bf563bada2f2e2bfdf4751b51",
+      "descriptorDigest": "sha256:851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8"
+    },
     "harness": {
-      "version": "0.1.5",
+      "version": "0.2.0",
       "schemaDigest": "sha256:392131d024fafd9e947343fee2fbbdaaef868afaf82ac8e42ecb180af741b1e5",
       "conformanceDigest": "sha256:d4b209f6e5eab57098f5186c548ba2d98e199dcb89f58f9759ef923e88d77f67"
     },
     "filesystem": {
-      "version": "0.1.5",
-      "crateVersion": "0.1.5",
+      "version": "0.2.0",
+      "crateVersion": "0.2.0",
       "schemaDigest": "sha256:55af9e1ecef11637555fcc12b983baa5f88368c78d34f8787afadba99a136b31",
       "descriptorDigest": "sha256:105e153060d229569836982527c91bd56a69891691007215fbc599115eca2093",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
-      "version": "0.1.5",
-      "crateVersion": "0.1.5",
+      "version": "0.2.0",
+      "crateVersion": "0.2.0",
       "schemaDigest": "sha256:b7463189ba964e193d5ebd517af7b609462f1bf84b6bad9dcae216389196d5b9",
       "descriptorDigest": "sha256:f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e",
       "conformanceDigest": "sha256:230c14bfd9afde7f9ab6e9f8b69769c8b2a06cc7dc3ec6a51dc8964321984d08"
     },
     "objects": {
-      "version": "0.1.5",
-      "crateVersion": "0.1.5",
-      "schemaDigest": "sha256:89f9ce2677e2d6d28c3b3db176cc74dec0efdedbe98e6c2c3aeab9230b863809",
-      "descriptorDigest": "sha256:4701187ac8ca87325d42aee0f99c7826ebb63ec2be0ae98c4768006d4ff31a51",
-      "conformanceDigest": "sha256:a473cb36590f3d05d7c749f2e35c13e9783c2cbc8ef0bb569b91b2e88dbaad7b"
+      "version": "0.2.0",
+      "crateVersion": "0.2.0",
+      "schemaDigest": "sha256:79c07290100c4ab775526f951be27eb6e067d31a02424010ea68d75c46f80f35",
+      "descriptorDigest": "sha256:21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b",
+      "conformanceDigest": "sha256:c5b54fd1254c19c966ab3765962ca9e633a786abf91cf6af2cca5bb0183e5fb6"
     },
     "machines": {
-      "version": "0.1.5",
+      "version": "0.2.0",
       "schemaDigest": "sha256:1620d70c638584b29e76bcdf7e50aa3585b456d2f31a9a38f58c0eea4e1ab287",
       "descriptorDigest": "sha256:59492735a5aaec6598c21fe91a0873772d7f3f1c36e9fedfb384d4d8abff154c",
       "conformanceDigest": "sha256:78ce0d6b9c5226aad67d96de4a4a4f9c9723a144ce58c5dcad63590b88d5d682"
     },
     "inference": {
-      "version": "0.1.5",
-      "schemaDigest": "sha256:06b8f34d971b4320faadf785e11ee4fc579c408b28137092c69f0807720993c6",
-      "descriptorDigest": "sha256:c5303d6b7002158c12a28257b4af1820bc105ec685a6c2bc57c53bc511fe8cfb",
+      "version": "0.2.0",
+      "schemaDigest": "sha256:cba2f8caede087bb696dec024e559df6355e817e9b9a6e4933c7140b19e96841",
+      "descriptorDigest": "sha256:21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15",
       "conformanceDigest": "sha256:9eb850dd6cbd5fa53745a00fe19800fc3a2773ed4fa5f70c5d7be84a33b9948c"
     }
   }

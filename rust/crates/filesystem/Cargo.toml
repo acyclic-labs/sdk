@@ -1,6 +1,6 @@
 [package]
 name = "acyclic-fs"
-version = "0.1.5"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -25,8 +25,8 @@ prost.workspace = true
 unicode-normalization.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-acyclic-objects = { version = "=0.1.5", path = "../objects", optional = true, default-features = false }
-acyclic-stream = { version = "=0.1.5", path = "../stream", optional = true, default-features = false }
+acyclic-objects = { version = "=0.2.0", path = "../objects", optional = true, default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", optional = true, default-features = false }
 base64 = { version = "0.22.1", optional = true }
 crc-fast = { version = "1.10.0", optional = true }
 
@@ -64,7 +64,7 @@ tsify-next = { version = "0.5.6", features = ["js"], optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-acyclic-native-runtime = { version = "=0.1.5", path = "../native-runtime" }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 cap-primitives = "4.0.3"
 cap-fs-ext = "4.0.2"
 cap-std = "4.0.3"

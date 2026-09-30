@@ -71,6 +71,13 @@ export declare type ModelCapability = Message<"inference.customer.v1.ModelCapabi
    * @generated from field: repeated inference.customer.v1.RetentionProfile retention_profiles = 6;
    */
   retentionProfiles: RetentionProfile[];
+
+  /**
+   * Paid KV pin policies; duration bounds apply to idle_timeout_ms.
+   *
+   * @generated from field: repeated inference.customer.v1.RetentionProfile idle_kv_profiles = 7;
+   */
+  idleKvProfiles: RetentionProfile[];
 };
 
 /**
@@ -120,6 +127,8 @@ export declare type RetainWarmRequest = Message<"inference.customer.v1.RetainWar
   context: Uint8Array;
 
   /**
+   * Legacy absolute-expiry policy. Mutually exclusive with idle_kv.
+   *
    * @generated from field: bytes latency_profile = 3;
    */
   latencyProfile: Uint8Array;
@@ -128,6 +137,11 @@ export declare type RetainWarmRequest = Message<"inference.customer.v1.RetainWar
    * @generated from field: uint64 expires_at_ms = 4;
    */
   expiresAtMs: bigint;
+
+  /**
+   * @generated from field: inference.customer.v1.IdleKvPolicy idle_kv = 5;
+   */
+  idleKv?: IdleKvPolicy | undefined;
 };
 
 /**
@@ -135,6 +149,70 @@ export declare type RetainWarmRequest = Message<"inference.customer.v1.RetainWar
  * Use `create(RetainWarmRequestSchema)` to create a new message.
  */
 export declare const RetainWarmRequestSchema: GenMessage<RetainWarmRequest>;
+
+/**
+ * Paid retention of verified KV, without capacity, throughput or latency guarantees.
+ * Only verified actual Run reuse of the pinned revision or descendant prefix
+ * advances last-use. Fork, edit, admission, inspect and recovery do not move the
+ * pin or reset its idle window. Retried identities return committed receipts.
+ *
+ * @generated from message inference.customer.v1.IdleKvPolicy
+ */
+export declare type IdleKvPolicy = Message<"inference.customer.v1.IdleKvPolicy"> & {
+  /**
+   * @generated from field: bytes profile = 1;
+   */
+  profile: Uint8Array;
+
+  /**
+   * @generated from field: uint64 idle_timeout_ms = 2;
+   */
+  idleTimeoutMs: bigint;
+};
+
+/**
+ * Describes the message inference.customer.v1.IdleKvPolicy.
+ * Use `create(IdleKvPolicySchema)` to create a new message.
+ */
+export declare const IdleKvPolicySchema: GenMessage<IdleKvPolicy>;
+
+/**
+ * @generated from message inference.customer.v1.IdleKvRetention
+ */
+export declare type IdleKvRetention = Message<"inference.customer.v1.IdleKvRetention"> & {
+  /**
+   * @generated from field: inference.customer.v1.IdleKvPolicy policy = 1;
+   */
+  policy?: IdleKvPolicy | undefined;
+
+  /**
+   * Trusted service Unix milliseconds after verified initial KV pin.
+   *
+   * @generated from field: uint64 retained_at_ms = 2;
+   */
+  retainedAtMs: bigint;
+
+  /**
+   * Absent until verified actual reuse; never inferred from admission.
+   *
+   * @generated from field: optional uint64 last_used_at_ms = 3;
+   */
+  lastUsedAtMs?: bigint | undefined;
+
+  /**
+   * The authoritative Run that verified actual reuse of this pinned revision
+   * or its descendant prefix, in the same authenticated owner scope.
+   *
+   * @generated from field: optional bytes last_run_id = 4;
+   */
+  lastRunId?: Uint8Array | undefined;
+};
+
+/**
+ * Describes the message inference.customer.v1.IdleKvRetention.
+ * Use `create(IdleKvRetentionSchema)` to create a new message.
+ */
+export declare const IdleKvRetentionSchema: GenMessage<IdleKvRetention>;
 
 /**
  * @generated from message inference.customer.v1.InspectWarmRequest
@@ -170,6 +248,15 @@ export declare type RenewWarmRequest = Message<"inference.customer.v1.RenewWarmR
    * @generated from field: uint64 expires_at_ms = 3;
    */
   expiresAtMs: bigint;
+
+  /**
+   * Changes timeout from last actual use, or retained_at_ms before first use.
+   * Does not reset the idle window. Expired/released pins require a new Retain
+   * identity; renew/replay cannot resurrect them. Inspect reports current state.
+   *
+   * @generated from field: optional uint64 idle_timeout_ms = 4;
+   */
+  idleTimeoutMs?: bigint | undefined;
 };
 
 /**
@@ -247,6 +334,14 @@ export declare type WarmView = Message<"inference.customer.v1.WarmView"> & {
    * @generated from field: uint64 sequence = 9;
    */
   sequence: bigint;
+
+  /**
+   * Present only for idle KV pins; latency_profile is then empty. expires_at_ms
+   * equals checked (last_used_at_ms or retained_at_ms) + idle_timeout_ms.
+   *
+   * @generated from field: inference.customer.v1.IdleKvRetention idle_kv = 10;
+   */
+  idleKv?: IdleKvRetention | undefined;
 };
 
 /**
@@ -1314,21 +1409,41 @@ export declare const WatchRunRequestSchema: GenMessage<WatchRunRequest>;
  */
 export declare type LogicalUsage = Message<"inference.customer.v1.LogicalUsage"> & {
   /**
+   * Prompt tokens newly computed at this Run's first verified execution.
+   * Frozen with effective_context_reads as a partition of the exact rendered
+   * prompt-token total, bound by native tokenizer/render/model/runtime/KV proof.
+   * Recovery, retry and replay never reclassify or add to this input partition.
+   *
    * @generated from field: uint64 new_prefill = 1;
    */
   newPrefill: bigint;
 
   /**
+   * Uniquely committed native output-token records, counted once. Decoded UTF-8
+   * bytes or re-tokenization cannot establish this count. A non-output EOS
+   * sentinel is excluded; persisted special/stop output records require explicit
+   * meter-revision semantics. Failed/discarded pre-checkpoint device work has no
+   * agreed eligibility rule here and must not be inferred as zero eligible work.
+   *
    * @generated from field: uint64 generated_output = 2;
    */
   generatedOutput: bigint;
 
   /**
+   * Prompt tokens actually served from verified KV reuse in the same frozen
+   * first-execution partition. Together with new_prefill this equals the exact
+   * rendered prompt-token total; repeated admission/watch adds no new units.
+   *
    * @generated from field: uint64 effective_context_reads = 3;
    */
   effectiveContextReads: bigint;
 
   /**
+   * Logical Context retention measure. Logical custody identity,
+   * interval events, pending-intent eligibility and dedup scope remain unagreed.
+   * Neither device/cache allocations nor Objects physical storage establish
+   * this measure; absent lifecycle evidence must not imply zero eligible work.
+   *
    * @generated from field: uint64 retained_byte_millis = 4;
    */
   retainedByteMillis: bigint;
@@ -1360,6 +1475,9 @@ export declare type UsageReceipt = Message<"inference.customer.v1.UsageReceipt">
   meterRevision: Uint8Array;
 
   /**
+   * Immutable final totals for this receipt, never an incremental charge delta.
+   * Meter semantics are independent of pricing or charging authorization.
+   *
    * @generated from field: inference.customer.v1.LogicalUsage usage = 4;
    */
   usage?: LogicalUsage | undefined;
@@ -1468,6 +1586,9 @@ export declare type RunEvent = Message<"inference.customer.v1.RunEvent"> & {
     case: "output";
   } | {
     /**
+     * Authoritative cumulative snapshot for this Run. Recovered/replayed watch
+     * events are snapshots of the same units, never incremental charge deltas.
+     *
      * @generated from field: inference.customer.v1.LogicalUsage usage = 3;
      */
     value: LogicalUsage;

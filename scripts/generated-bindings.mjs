@@ -8,8 +8,10 @@ export const packagedTypeScriptBindings = [
   ["validation/v1/options_pb", ["inference"]],
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
-  ["objects/v1/objects_pb", ["objects"]],
+  ["objects/v2/objects_pb", ["objects"]],
   ["stream/v2/stream_pb", ["stream"]],
+  ["actors/v1/actors_pb", ["actors"]],
+  ["workers/v1/workers_pb", ["workers"]],
 ];
 
 export const compatibilityArtifacts = {
@@ -28,9 +30,9 @@ export const compatibilityArtifacts = {
     conformanceDigest: "conformance/vectors/stream.json",
   },
   objects: {
-    schemaDigest: "proto/objects/v1/objects.proto",
-    descriptorDigest: "rust/crates/objects/src/generated/acyclic-objects-v1.bin",
-    conformanceDigest: "conformance/vectors/objects.json",
+    schemaDigest: "proto/objects/v2/objects.proto",
+    descriptorDigest: "rust/crates/objects/src/generated/acyclic-objects-v2.bin",
+    conformanceDigest: "conformance/vectors/objects-v2.json",
   },
   machines: {
     schemaDigest: "proto/machines/v1/machines.proto",
@@ -42,23 +44,48 @@ export const compatibilityArtifacts = {
     descriptorDigest: "rust/crates/inference/inference_descriptor.bin",
     conformanceDigest: "conformance/vectors/inference.json",
   },
+  actors: {
+    schemaDigest: "proto/actors/v1/actors.proto",
+    descriptorDigest: "rust/crates/actors/src/generated/acyclic-actors-v1.bin",
+  },
+  workers: {
+    schemaDigest: "proto/workers/v1/workers.proto",
+    descriptorDigest: "rust/crates/workers/src/generated/acyclic-workers-v1.bin",
+  },
+};
+
+// Released contracts remain immutable historical evidence after their clients
+// retire. They are verified separately from the active family metadata.
+export const historicalCompatibilityArtifacts = {
+  "compatibility/objects/v1/manifest.json": {
+    schemaDigest: "proto/objects/v1/objects.proto",
+    descriptorDigest: "compatibility/objects/v1/objects_descriptor.bin",
+    conformanceDigest: "conformance/vectors/objects.json",
+  },
 };
 
 export const generatedDescriptors = [
   ["proto/filesystem", compatibilityArtifacts.filesystem.descriptorDigest],
-  ["proto/objects", compatibilityArtifacts.objects.descriptorDigest],
+  ["proto/objects/v1", "compatibility/objects/v1/objects_descriptor.bin"],
+  ["proto/objects/v2", "rust/crates/objects/src/generated/acyclic-objects-v2.bin"],
   ["proto/machines", compatibilityArtifacts.machines.descriptorDigest],
   ["proto/inference", compatibilityArtifacts.inference.descriptorDigest],
   ["proto/inference", "rust/crates/inference-contract/inference_descriptor.bin"],
   ["proto/inference", "rust/crates/inference-wasm/inference_reflection_descriptor.bin"],
+  ["proto/actors", compatibilityArtifacts.actors.descriptorDigest],
+  ["proto/workers", compatibilityArtifacts.workers.descriptorDigest],
   ["rust/crates/stream/proto/stream", compatibilityArtifacts.stream.descriptorDigest],
 ];
 
 export const packagedRustBindings = [
-  ["acyclic/objects/v1/acyclic.objects.v1.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.rs"],
-  ["acyclic/objects/v1/acyclic.objects.v1.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.tonic.rs"],
+  ["acyclic/objects/v2/acyclic.objects.v2.rs", "rust/crates/objects/src/generated/acyclic.objects.v2.rs"],
+  ["acyclic/objects/v2/acyclic.objects.v2.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v2.tonic.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.rs"],
   ["acyclic/machines/v1/acyclic.machines.v1.tonic.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.tonic.rs"],
+  ["acyclic/actors/v1/acyclic.actors.v1.rs", "rust/crates/actors/src/generated/acyclic.actors.v1.rs"],
+  ["acyclic/actors/v1/acyclic.actors.v1.tonic.rs", "rust/crates/actors/src/generated/acyclic.actors.v1.tonic.rs"],
+  ["acyclic/workers/v1/acyclic.workers.v1.rs", "rust/crates/workers/src/generated/acyclic.workers.v1.rs"],
+  ["acyclic/workers/v1/acyclic.workers.v1.tonic.rs", "rust/crates/workers/src/generated/acyclic.workers.v1.tonic.rs"],
 ];
 
 export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";
@@ -75,6 +102,8 @@ export const packagedSourceCopies = [
   ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
   ["conformance/vectors/stream.json", "rust/crates/conformance/vectors/stream.json"],
   ["conformance/vectors/objects.json", "rust/crates/conformance/vectors/objects.json"],
+  ["conformance/vectors/objects-v2.json", "rust/crates/objects/conformance/objects-v2.json"],
+  ["conformance/vectors/objects-v2.json", "rust/crates/conformance/vectors/objects-v2.json"],
   ["conformance/vectors/machines.json", "rust/crates/conformance/vectors/machines.json"],
   [compatibilityArtifacts.filesystem.conformanceDigest, "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
 ];
@@ -82,8 +111,9 @@ export const packagedSourceCopies = [
 export const normalizeGeneratedRust = (relative, source) => {
   let normalized = `${source.trimEnd()}\n`;
   if (relative === "acyclic/objects/v1/acyclic.objects.v1.rs" ||
+      relative === "acyclic/objects/v2/acyclic.objects.v2.rs" ||
       relative === "acyclic/machines/v1/acyclic.machines.v1.rs") {
-    const service = relative.includes("objects") ? "acyclic.objects.v1" : "acyclic.machines.v1";
+    const service = relative.includes("objects/v2") ? "acyclic.objects.v2" : relative.includes("objects") ? "acyclic.objects.v1" : "acyclic.machines.v1";
     normalized = normalized.replace(
       new RegExp(`(?:#\\[cfg\\(feature = "grpc"\\)\\]\\r?\\n)?include!\\("${service.replaceAll(".", "\\.")}\\.tonic\\.rs"\\);`),
       `#[cfg(feature = "grpc")]\ninclude!("${service}.tonic.rs");`,

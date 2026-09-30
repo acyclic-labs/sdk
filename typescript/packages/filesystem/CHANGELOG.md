@@ -1,5 +1,9 @@
 # @acyclic-labs/fs changelog
 
+## 0.2.0 - Unreleased
+
+- Breaking candidate: memory and native compositions use canonical Objects v2. Existing v1 Objects roots are rejected without upgrade or overwrite; Stream history and atomic publication remain intact.
+
 ## 0.1.5 - 2026-09-25
 
 - Aligns the native and browser clients with the qualified SDK 0.1.5 release.

@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compatibilityArtifacts, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, historicalCompatibilityArtifacts, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 
 const root = new URL("..", import.meta.url);
 const rootPath = resolve(fileURLToPath(root));
@@ -70,6 +70,11 @@ const streamVersion = compatibility.families.stream.version;
 const streamCrateVersion = compatibility.families.stream.crateVersion ?? streamVersion;
 const harnessPackage = await load("typescript/packages/harness/package.json");
 const sdkPackage = await load("typescript/packages/sdk/package.json");
+for (const path of ["plugin/plugin.json", "plugin/.codex-plugin/plugin.json"]) {
+  if ((await load(path)).version !== sdkPackage.version) {
+    throw new Error(`host plugin manifest version mismatch: ${path}`);
+  }
+}
 for (const item of await load("release/npm-packages.json")) {
   const directory = item.source === "plugin"
     ? "plugin"
@@ -231,6 +236,14 @@ for (const [family, artifacts] of Object.entries(compatibilityArtifacts)) {
     }
   }
 }
+for (const [manifestPath, artifacts] of Object.entries(historicalCompatibilityArtifacts)) {
+  const historical = await load(manifestPath);
+  for (const [field, path] of Object.entries(artifacts)) {
+    if (historical[field] !== await digest(path)) {
+      throw new Error(`historical compatibility drift: ${manifestPath} ${field}`);
+    }
+  }
+}
 // Generated code runs only on the protobuf runtime of its generator's release.
 const protobufRuntime = (await load("package.json")).devDependencies?.["@bufbuild/protoc-gen-es"];
 for (const [stem, packages] of packagedTypeScriptBindings) {
@@ -238,8 +251,10 @@ for (const [stem, packages] of packagedTypeScriptBindings) {
   if (!packages.includes(family)) continue;
   const manifest = await load(`typescript/packages/${family}/package.json`);
   const prefix = `./generated/proto/${stem}`;
-  if (manifest.exports?.["./proto"]?.types !== `${prefix}.d.ts`
-    || manifest.exports["./proto"].default !== `${prefix}.js`
+  const exported = Object.entries(manifest.exports ?? {}).some(([subpath, entry]) =>
+    (subpath === "./proto" || /^\.\/v[0-9]+\/proto$/.test(subpath))
+    && entry.types === `${prefix}.d.ts` && entry.default === `${prefix}.js`);
+  if (!exported
     || !manifest.files?.some(path => path === "generated" || path === "generated/proto")
     || manifest.dependencies?.["@bufbuild/protobuf"] !== protobufRuntime) {
     throw new Error(`${family} generated protobuf package export mismatch`);

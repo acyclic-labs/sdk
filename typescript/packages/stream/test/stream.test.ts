@@ -8,6 +8,14 @@ import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TO
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
 const encodedCommitId = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
 
+test("absent retry observations project undefined through memory and HTTP", async () => {
+  await ensureStreamWasm();
+  expect(decodeHttpResponse("idempotency/inspect", "null")).toBeUndefined();
+  expect(await new MemoryStreamProvider().inspectIdempotency(key("missing-receipt"))).toBeUndefined();
+  const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response("null") });
+  expect(await provider.inspectIdempotency(key("missing-receipt"))).toBeUndefined();
+});
+
 type RunEvent =
   | { readonly type: "run.started" }
   | { readonly type: "run.continued" }
@@ -685,11 +693,14 @@ describe("website Stream contract", () => {
   });
 
   test("hosted reads reject an empty page beyond the canonical tail", async () => {
+    const routes: string[] = [];
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => {
       const route = new URL(String(input)).pathname.split("/").pop();
+      routes.push(route!);
       return route === "read" ? new Response("[]") : new Response('"1"');
     } });
     await expect(provider.read("events", { from: 2n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "out_of_range" });
+    expect(routes).toEqual(["tail"]);
   });
 
   test("HTTP provider rejects invalid paths and commit shapes before fetching", async () => {

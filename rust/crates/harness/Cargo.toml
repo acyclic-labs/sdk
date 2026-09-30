@@ -24,10 +24,10 @@ machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
-acyclic-fs = { version = "=0.1.5", path = "../filesystem", default-features = false, optional = true }
-acyclic-machines = { version = "=0.1.5", path = "../machines", optional = true }
-acyclic-objects = { version = "=0.1.5", path = "../objects", default-features = false, optional = true }
-acyclic-stream = { version = "=0.1.5", path = "../stream", default-features = false }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
+acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
@@ -49,7 +49,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [dev-dependencies]
-acyclic-stream = { version = "=0.1.5", path = "../stream" }
+acyclic-stream = { version = "=0.2.0", path = "../stream" }
 tempfile = "3.27.0"
 tokio.workspace = true
 

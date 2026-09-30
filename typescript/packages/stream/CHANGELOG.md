@@ -1,5 +1,15 @@
 # @acyclic-labs/stream changelog
 
+## 0.2.0 - Unreleased
+
+- Align the unified SDK candidate with the breaking Objects v2 public package transition.
+
+## Unreleased
+
+- Check monotonic tail before direct HTTP reads so concurrent appends cannot hide invalid empty-read cursors. Share native and WASM HTTP response projection, including atomic Commit envelopes.
+- Bind the default browser fetch receiver and qualify HTTPS, follow and multi-path Commit in real Chrome.
+- Project an absent retry observation as `undefined` consistently in memory and HTTP.
+
 ## 0.1.5 - 2026-09-25
 
 - Aligns stream clients with the qualified SDK 0.1.5 release.

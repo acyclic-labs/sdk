@@ -3,7 +3,7 @@ import {
   CompactSchema, CreateContextRequestSchema, EditSchema, EditsSchema, EmptySchema,
   GenerateRunRequestSchema, MutateContextRequestSchema, ReleaseWarmRequestSchema,
   RenewWarmRequestSchema, RequestIdentitySchema, RetainWarmRequestSchema, TransferSchema,
-  TruncateSchema,
+  TruncateSchema, IdleKvPolicySchema,
   type ContextProvenance, type ContextView, type Edit, type Item, type ModelCapability,
   type MutateContextRequest, type MutationReceipt, type RunEvent, type RunResult, type RunView, type WarmView,
 } from "../generated/proto/inference/v1/inference_pb.js";
@@ -29,7 +29,10 @@ export function executionProfile(value: Uint8Array): ExecutionProfile { return b
 export interface InferenceRequestIdentity { readonly clientInstance: Uint8Array; readonly requestId: Uint8Array }
 export interface MutationOptions { readonly identity?: InferenceRequestIdentity }
 export interface GenerateOptions extends MutationOptions { readonly maximumOutput: bigint; readonly seed?: bigint }
-export interface RetentionPolicy extends MutationOptions { readonly latencyProfile: Uint8Array; readonly expiresAtMs: bigint }
+export type RetentionPolicy = MutationOptions & (
+  | { readonly latencyProfile: Uint8Array; readonly expiresAtMs: bigint; readonly idleKv?: never }
+  | { readonly idleKv: { readonly profile: Uint8Array; readonly idleTimeoutMs: bigint }; readonly latencyProfile?: never; readonly expiresAtMs?: never }
+);
 
 export interface InferenceOperations {
   listModels(): Promise<{ readonly models: ModelCapability[] }>;
@@ -78,7 +81,8 @@ export class Context {
   async transfer(model: string, options: MutationOptions = {}): Promise<Context> { return this.#mutate({ case: "transfer", value: create(TransferSchema, { model }) }, options); }
   async delete(options: MutationOptions = {}): Promise<MutationReceipt> { return this.inference.client.mutateContext(create(MutateContextRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), source: this.revision, action: { case: "release", value: create(EmptySchema) } })); }
   async generate(input: Item, options: GenerateOptions): Promise<Run> { const response = await this.inference.client.generate(create(GenerateRunRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), context: this.revision, input, maximumOutput: options.maximumOutput, ...(options.seed === undefined ? {} : { seed: options.seed }) })); if (!response.run) throw new InferenceProtocolError("generate response omitted its run"); return new Run(this.inference, runId(response.run.runId)); }
-  async retain(policy: RetentionPolicy): Promise<Warm> { const view = await this.inference.client.retainWarm(create(RetainWarmRequestSchema, { identity: wireIdentity(policy.identity ?? this.inference.identity()), context: this.revision, latencyProfile: policy.latencyProfile, expiresAtMs: policy.expiresAtMs })); return new Warm(this.inference, warmCommitment(view.commitment)); }
+  /** Paid KV pin with idle expiry; does not promise capacity, throughput or latency. */
+  async retain(policy: RetentionPolicy): Promise<Warm> { const view = await this.inference.client.retainWarm(create(RetainWarmRequestSchema, { identity: wireIdentity(policy.identity ?? this.inference.identity()), context: this.revision, ...(policy.idleKv === undefined ? { latencyProfile: policy.latencyProfile, expiresAtMs: policy.expiresAtMs } : { idleKv: create(IdleKvPolicySchema, policy.idleKv) }) })); return new Warm(this.inference, warmCommitment(view.commitment)); }
   async #mutate(action: MutateContextRequest["action"], options: MutationOptions): Promise<Context> { const receipt = await this.inference.client.mutateContext(create(MutateContextRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), source: this.revision, action })); return new Context(this.inference, brandedBytes<ContextRevision>(receipt.revision, "context revision", INFERENCE_FIXED_WIDTHS.mutationRevision)); }
 }
 
@@ -106,6 +110,8 @@ export class Warm {
   id(): WarmCommitment { return this.commitment; }
   inspect(): Promise<WarmView> { return this.inference.client.inspectWarm(this.commitment); }
   async renew(expiresAtMs: bigint, options: MutationOptions = {}): Promise<WarmView> { return this.inference.client.renewWarm(create(RenewWarmRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), commitment: this.commitment, expiresAtMs })); }
+  /** Changes timeout from last verified Run reuse; does not reset the idle window. */
+  async renewIdle(idleTimeoutMs: bigint, options: MutationOptions = {}): Promise<WarmView> { return this.inference.client.renewWarm(create(RenewWarmRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), commitment: this.commitment, idleTimeoutMs })); }
   async release(options: MutationOptions = {}): Promise<WarmView> { return this.inference.client.releaseWarm(create(ReleaseWarmRequestSchema, { identity: wireIdentity(options.identity ?? this.inference.identity()), commitment: this.commitment })); }
 }
 

@@ -21,7 +21,7 @@ export class HttpStreamProvider implements StreamProvider {
     if (!options.token.trim()) throw new TypeError("token is required");
     this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
     this.#token = options.token;
-    this.#fetcher = options.fetcher ?? fetch;
+    this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
     if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
@@ -85,6 +85,9 @@ export class HttpStreamProvider implements StreamProvider {
   async #read(path: string, options: ReadOptions, signal?: AbortSignal, checkEmptyCursor = true): Promise<readonly EncodedRecord[]> {
     const { from, limit } = options;
     await validateWireRequest({ kind: "read", path, from, limit });
+    // Stream tails are monotonic. Validate before reading so a concurrent
+    // append cannot turn an invalid empty-read cursor into a valid one.
+    if (checkEmptyCursor && from > await this.#tail(path, signal)) throw new StreamError("out_of_range", "read cursor is beyond the stream tail");
     const input = wireRequest({ kind: "read", path, from, limit });
     const records = await this.#request("read", await encodeHttpRequest("read", input), signal);
     // A canonical read is a contiguous page beginning at the requested
@@ -97,16 +100,6 @@ export class HttpStreamProvider implements StreamProvider {
         throw new StreamError("invalid_response", "read response contains a non-contiguous cursor");
       }
       expected += 1n;
-    }
-    // The Rust provider distinguishes an empty page at the current tail from
-    // a cursor beyond the tail.  A hosted response with no records carries no
-    // tail, so ask the canonical tail route before accepting an empty page.
-    // This keeps direct reads and the polling follow adapter aligned with the
-    // in-memory provider even when a hosted implementation returns [] for
-    // both cases.
-    if (checkEmptyCursor && records.length === 0) {
-      const tail = await this.#tail(path, signal);
-      if (from > tail) throw new StreamError("out_of_range", "read cursor is beyond the stream tail");
     }
     return records;
   }

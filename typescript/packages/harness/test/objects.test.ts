@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Harness, NativeContracts, TaskDefinition, type AgentId } from "../src/index.js";
-import { MemoryObjectsProvider } from "@acyclic-labs/objects";
+import { create } from "@bufbuild/protobuf";
+import { MemoryObjectsV2, CreateBucketRequestSchema, DeleteObjectRequestSchema, GetObjectRequestSchema } from "@acyclic-labs/objects/v2";
 import { ObjectContentStore, type ObjectVolumeRef } from "../src/objects.js";
 
 const wasm = readFileSync(fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)));
@@ -10,12 +11,12 @@ const contracts = await NativeContracts.create();
 const owner = "10101010-1010-1010-1010-101010101010" as AgentId;
 const reader = "11111111-1111-1111-1111-111111111111" as AgentId;
 
-test("Objects content is exact-version, owner-written, and delegably read", async () => {
-  const objects = new MemoryObjectsProvider();
-  const bucket = await objects.createBucket("harness-objects-test");
+test("Objects content is content-addressed, owner-written, and delegably read", async () => {
+  const objects = await MemoryObjectsV2.create();
+  const bucket = await objects.createBucket(create(CreateBucketRequestSchema, { name: "harness-objects-test" }));
   const volume: ObjectVolumeRef = {
-    provider: { namespace: "local", family: "objects", version: "1" },
-    id: bucket.bucketId, class: "agent_private", owner: { kind: "agent", id: owner },
+    provider: { namespace: "local", family: "objects", version: "2" },
+    id: bucket.bucket!.name, class: "agent_private", owner: { kind: "agent", id: owner },
   };
   const authority = await Harness.create({
     authority: { kind: "conversation", id: crypto.randomUUID() },
@@ -32,6 +33,25 @@ test("Objects content is exact-version, owner-written, and delegably read", asyn
   const file = await store.stage("upload-1", "notes/one.txt", new TextEncoder().encode("owned"),
     "text/plain", "one.txt");
   expect(new TextDecoder().decode(await store.read(file))).toBe("owned");
+  const duplicate = await store.stage("upload-duplicate", "notes/one.txt", new TextEncoder().encode("owned"), "text/plain", "one.txt");
+  expect(duplicate).toEqual(file);
+  await expect(store.stage("upload-duplicate", "notes/other.txt", new TextEncoder().encode("owned"), "text/plain", "one.txt")).rejects.toThrow();
+  const replacement = await store.stage("upload-replacement", "notes/one.txt", new TextEncoder().encode("changed"), "text/plain", "one.txt");
+  expect(replacement.version).not.toBe(file.version);
+  expect(new TextDecoder().decode(await store.read(file))).toBe("owned");
+  expect(new TextDecoder().decode(await store.read(replacement))).toBe("changed");
+  await expect(store.read({ ...file, version: replacement.version })).rejects.toThrow("content identity");
+
+  const writeScope = authority.issueScopeForAgent(owner, "writer-only", [authority.volumeCapability(volume, "write")]);
+  const writeOnly = await ObjectContentStore.create({ objects, bucket, volume, expectedProvider: volume.provider, authority, ownerScope: writeScope, scope: writeScope, maximumBytes: 4_096 });
+  const writeFile = await writeOnly.stage("write-only", "notes/write.txt", new Uint8Array([1]), "text/plain", "write.txt");
+  await expect(writeOnly.read(writeFile)).rejects.toThrow();
+
+  const deleted = await store.stage("upload-collected", "notes/collected.txt", new Uint8Array([2]), "text/plain", "collected.txt");
+  const deletedKey = `${authority.volumeStorageName(volume)}/${deleted.path}/@content/${deleted.version}`;
+  await objects.delete(create(DeleteObjectRequestSchema, { bucket: bucket.bucket, objectKey: deletedKey, mutation: { idempotencyKey: "fixture-collect" } }));
+  await expect(store.stage("upload-collected", "notes/collected.txt", new Uint8Array([2]), "text/plain", "collected.txt")).rejects.toThrow();
+  await expect(objects.get(create(GetObjectRequestSchema, { bucket: bucket.bucket, objectKey: deletedKey }), 1n)).rejects.toThrow();
   const manifestBytes = new TextEncoder().encode(JSON.stringify([{ file, label: null }]));
   const manifest = await store.stage("manifest-1", "lists/one.json", manifestBytes,
     "application/vnd.acyclic.harness.attachments+json", "one.json");

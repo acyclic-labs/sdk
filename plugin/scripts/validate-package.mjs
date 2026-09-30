@@ -62,6 +62,12 @@ for (const path of [
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
   assets[path] = JSON.parse(readFileSync(path, "utf8"));
 }
+for (const path of [join(plugin, "plugin.json"), join(plugin, ".codex-plugin", "plugin.json")]) {
+  if (assets[path].version !== packageManifest.version) {
+    fail(`host plugin manifest version mismatch: ${path}`);
+  }
+}
+
 // Codex delivers hooks to the plugin's one MCP server, which exposes no tool
 // to the model; the shell-capable package exposes no other MCP server.
 const HOOK_SERVER = "acyclic-hooks";

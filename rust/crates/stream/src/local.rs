@@ -160,8 +160,9 @@ pub enum LocalStreamError {
 /// frame fails closed. Once the journal is half full, the whole state is written as a new
 /// snapshot and the journal starts again, so it bounds only what happened since.
 ///
-/// Retention is measured on a store clock that runs only while the provider is open: a result
-/// kept for its retention period is still there after any downtime.
+/// Retry outcomes and immutable envelopes persist indefinitely within capacity
+/// limits, including through snapshots and downtime. Journal clock fields remain
+/// part of the existing disk encoding; they never authorize identity reuse.
 #[derive(Clone)]
 pub struct LocalStream {
     inner: Arc<LocalInner>,
@@ -218,8 +219,7 @@ impl OwnedJournal {
 
 /// Time as the store experiences it: milliseconds the provider has been
 /// open, summed over every open. A mutation pins it for its whole run, and
-/// its frame records that time, so replay retains and forgets exactly what
-/// the mutation did.
+/// its frame records that time. Legacy samples never expire retry outcomes.
 #[derive(Default)]
 struct StoreClock(Mutex<StoreTime>);
 
@@ -386,12 +386,18 @@ impl LocalStream {
             source: Arc::clone(&clock),
             pinned: Mutex::new(None),
         });
-        let provider = MemoryStream::new_with_commit_clock(
+        let mut provider = MemoryStream::new_with_commit_clock(
             limits.memory,
             clock,
             Arc::clone(&store_clock) as _,
             Arc::clone(&commit_clock) as _,
         );
+        let maximum_commands = usize::try_from(limits.journal_operations)
+            .map_err(|_| LocalStreamError::InvalidLimits)?;
+        provider
+            .recovery_limits(limits.memory, maximum_commands)
+            .await
+            .map_err(LocalStreamError::Replay)?;
         let mut replay_error = None;
         while let Some(recovered) = receiver.recv().await {
             if replay_error.is_some() {
@@ -403,10 +409,13 @@ impl LocalStream {
                     store_time,
                 } => {
                     store_clock.pin(store_time);
-                    provider
-                        .install_state(&encoded)
-                        .await
-                        .map_err(|_| LocalStreamError::Corrupt)
+                    match provider.install_state(&encoded).await {
+                        Ok(()) => provider
+                            .recovery_limits(limits.memory, maximum_commands)
+                            .await
+                            .map_err(LocalStreamError::Replay),
+                        Err(_) => Err(LocalStreamError::Corrupt),
+                    }
                 }
                 Recovered::Command {
                     store_time,
@@ -428,6 +437,7 @@ impl LocalStream {
         if let Some(error) = replay_error {
             return Err(error);
         }
+        provider.finish_recovery(limits.memory);
         store_clock.start();
         commit_clock.unpin();
         let (changed, _) = watch::channel(0_u64);
@@ -1598,6 +1608,113 @@ mod tests {
         fn now_unix_millis(&self) -> u64 {
             self.0.load(Ordering::SeqCst)
         }
+    }
+
+    #[tokio::test]
+    async fn legacy_snapshot_and_post_expiry_journal_recover_above_live_receipt_limits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits {
+            memory: MemoryLimits {
+                commits: 1,
+                idempotency_results: 1,
+                ..MemoryLimits::default()
+            },
+            ..LocalStreamLimits::default()
+        };
+        let provider = LocalStream::open(directory.path(), limits).await?;
+        let first = AppendRequest {
+            path: StreamPath::new("legacy/capacity")?,
+            records: vec![Bytes::from_static(b"first")],
+            if_tail: Some(0),
+            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"legacy-first"))?),
+        };
+        let first_outcome = provider.append(first.clone()).await?;
+        let expiry = crate::MIN_IDEMPOTENCY_RETENTION_SECS * 1000;
+        let snapshot = provider
+            .inner
+            .provider
+            .encode_legacy_deadline_fixture(expiry)
+            .await;
+        let second = AppendRequest {
+            records: vec![Bytes::from_static(b"second")],
+            if_tail: Some(1),
+            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"legacy-second"))?),
+            ..first.clone()
+        };
+        let baseline = MemoryStream::new(limits.memory);
+        baseline.install_state(&snapshot).await?;
+        assert_eq!(
+            replay(&baseline, Command::Append(second.clone())).await,
+            Err(StreamError::Capacity)
+        );
+        // An old writer expired the snapshot receipt and admitted this intact
+        // journal command. Write exactly that old disk format, without running
+        // the new fail-closed live admission rule.
+        let frame = PreparedFrame::encode(&Command::Append(second.clone()), expiry + 1, 1)?;
+        {
+            let mut journal = provider
+                .inner
+                .journal
+                .journal
+                .lock()
+                .map_err(|_| "journal poisoned")?;
+            journal.compact(&snapshot, 0)?;
+            journal.append(&frame, true)?;
+        }
+        drop(provider);
+        let reopened = LocalStream::open(directory.path(), limits).await?;
+        assert_eq!(reopened.tail(first.path.clone()).await?, 2);
+        assert_eq!(reopened.append(first.clone()).await?, first_outcome);
+        let second_outcome = reopened.append(second.clone()).await?;
+        let mut fresh = second.clone();
+        fresh.idempotency_key = Some(IdempotencyKey::new(Bytes::from_static(b"fresh"))?);
+        fresh.if_tail = Some(2);
+        assert_eq!(reopened.append(fresh).await, Err(StreamError::Capacity));
+        let records = reopened
+            .read(ReadRequest {
+                path: first.path.clone(),
+                from: 0,
+                limit: 2,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(records.into_iter().collect::<Result<Vec<_>, _>>()?.len(), 2);
+        let snapshot = reopened.inner.provider.encode_state().await;
+        reopened.inner.journal.compact(&snapshot, expiry + 1)?;
+        drop(reopened);
+        let again = LocalStream::open(directory.path(), limits).await?;
+        assert_eq!(again.append(first).await?, first_outcome);
+        assert_eq!(again.append(second).await?, second_outcome);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retry_outcomes_survive_clock_exhaustion_and_reopen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let request = AppendRequest {
+            path: StreamPath::new("retained/local")?,
+            records: vec![Bytes::from_static(b"once")],
+            if_tail: None,
+            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"local-once"))?),
+        };
+        let first = provider.append(request.clone()).await?;
+        provider.inner.clock.time().base = u64::MAX;
+        assert_eq!(provider.append(request.clone()).await?, first);
+        drop(provider);
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        assert_eq!(reopened.append(request.clone()).await?, first);
+        assert_eq!(reopened.tail(request.path.clone()).await?, 1);
+        let mut changed = request;
+        changed.path = StreamPath::new("retained/another")?;
+        assert_eq!(
+            reopened.append(changed).await,
+            Err(StreamError::IdempotencyMismatch)
+        );
+        Ok(())
     }
 
     #[tokio::test]

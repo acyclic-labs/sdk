@@ -4,6 +4,7 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { compatibilityArtifacts } from "./generated-bindings.mjs";
 import { harnessPackageClosure } from "./harness-package-closure.mjs";
+import { verifyProviderTests, recursiveProviderTest } from "./harness-provider-evidence.mjs";
 
 if (process.argv.length !== 5) {
   throw new Error("usage: run-harness-conformance.mjs ARTIFACT_DIR REPORT.json RECEIPT.json");
@@ -104,16 +105,28 @@ const command = (executable, args, input) => {
   if (result.status !== 0) throw new Error(`${executable} failed: ${result.stderr || result.stdout}`);
   return result.stdout.trim();
 };
-// Execute each provider-backed scenario once; package-unit transcripts alone
-// cannot prove recursive stress or durable-local restart behavior.
+// The exact archived crate already ran the full provider-backed 1024-fork
+// integration target. Verify that target's transcript, not a matching unit name.
+// Exercise the smaller sibling scenario under the reduced feature set below.
 const e2e = [
-  ["recursive-fork-isolation-attachments-and-project-only-merge", "recursive_fork",
-    "thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_project", []],
   ["durable-local-conversation-fork-and-merge-reopens", "local_conversation_fork",
     "local_reopen_preserves_ref_only_history_fork_and_parent_merge", ["--features", "filesystem-local"]],
 ];
 const e2eTranscripts = new Map();
 executed.e2e = new Set();
+const providerDigest = verifyProviderTests(evidence);
+const recursiveName = recursiveProviderTest.slice(recursiveProviderTest.indexOf("::") + 2);
+executed.e2e.add(recursiveName);
+const narrowName = "thirty_two_sibling_forks_reject_stale_and_conflicting_merges";
+const narrowTranscript = command("cargo", [
+  "test", "--locked", "-p", "acyclic-harness", "--features", "filesystem",
+  "--test", "recursive_fork", "--", "--exact", narrowName,
+]);
+if (!narrowTranscript.split(/\r?\n/).includes(`test ${narrowName} ... ok`)) {
+  throw new Error("reduced-feature sibling provider scenario was not executed");
+}
+e2eTranscripts.set("recursive-fork-isolation-attachments-and-project-only-merge",
+  createHash("sha256").update(`${providerDigest}\n${narrowTranscript}`).digest("hex"));
 for (const [marker, target, name, features] of e2e) {
   const transcript = command("cargo", [
     "test", "--locked", "-p", "acyclic-harness", "--features", "filesystem", ...features,
