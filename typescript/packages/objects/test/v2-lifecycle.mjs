@@ -44,4 +44,3 @@ export async function lifecycle(provider) {
   assert.equal((await provider.delete(make("DeleteObjectRequest", { bucket, objectKey: "data" }))).existed, true);
   assert.equal((await provider.deleteBucket(make("DeleteBucketRequest", { bucket }))).existed, true);
 }
-
