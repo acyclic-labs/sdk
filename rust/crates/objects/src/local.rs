@@ -2582,7 +2582,7 @@ fn validate_segment_records(
     Ok(records)
 }
 
-fn collect_physical_garbage(
+pub(crate) fn collect_physical_garbage(
     root: &Path,
     live_bodies: &BTreeSet<LocalBodyReference>,
     maximum_candidates: u64,

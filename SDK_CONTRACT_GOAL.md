@@ -2,6 +2,52 @@
 
 Status: active; local transport work is incomplete and PR 223 is unmerged.
 
+## Private v2 collection and journal checkpoints (2026-09-30)
+
+Native v2 now owns a shared physical-I/O lease across all reads, native batches
+and mutating workers. Collection takes the exclusive lease; a cancelled observer
+does not cancel admitted native work or release its captured lease/root. Metadata
+admission remains separate from physical read completion. Collection authenticates
+all current-object and staged-part references before deleting obsolete segments,
+using the existing physical format and bounded scanner.
+
+Collection then writes bounded private checkpoint frames containing only live
+logical state and exact receipts. Buckets/current keys precede uploads/parts and
+receipts, so every replayed intermediate state respects live capacity. Cursor
+authentication and sequence allocation remain stable. The replacement is fully
+synchronized before the old Windows journal handle closes and the atomic durable
+rename occurs. Uncertain replacement poisons the provider until reopen. Recovery
+uses the old or new complete journal; it never depends on a partial checkpoint.
+
+Local qualification passed: 91 Objects and 24 Conformance unit tests, their
+integration/binary/documentation checks, strict all-feature/all-target Clippy,
+complete generated verification, metadata and RPC matrix checks. Reclamation
+tests cover candidate bounds without deletion, original retries after replacement
+and collection/reopen, retained private multipart parts then abort/reclamation,
+corrupt live bytes preventing deletion, and collection waiting on a physical-read
+lease. Checkpoint tests cover interruption after write, synchronization, old-handle
+closure and rename; reopen retains exact retry/current data and permits subsequent
+mutations. A multi-frame checkpoint retains query-bound pagination after reopen.
+The initial checkpoint test accidentally rebound a retry identity with different
+metadata; its valid `IdempotencyMismatch` was fixed in the test before final passes.
+
+Commands use the same D: target/tmp and Windows target as the preceding unit;
+logs are `D:/codex-sdk-162e-qualification-20260930/sdk-v2-collection-*.log`.
+No generated wire changes or frozen `managed-agents/` edits. Small-body inline
+durability, batch efficiency, automatic maintenance and the existing filesystem
+root transition remain before native v1 retirement. Whole current-source FS
+runtime acceptance, package publication and live service acceptance are unproven.
+
+Fresh PR read remains OPEN/BLOCKED at remote
+`d95bd0a23fae8cabf7dbf1206e79ef5531cf95ea`. Original required-job logs were
+downloaded via REST into `sdk-required-windows-api.log` and
+`sdk-required-linux-api.log` beside these qualifications. Run 36701171439 Windows
+job 109840702461 reports the sparse capture fixture failing OS5 PermissionDenied
+(1119 passed, 1 failed, 36 ignored). Linux job 109840831285 reports the two-session
+fixture failing Driver/OS103 connection abort (24 passed, 1 failed). The source
+operation/root cause remains unidentified; earlier exact local repetitions passed.
+No CI retry, gate bypass, driver-error suppression or resolved-failure claim.
+
 ## Logical Objects v2 durable journal foundation (2026-09-30)
 
 Added native `v2::local::LocalObjects`, implementing all 13 logical operations

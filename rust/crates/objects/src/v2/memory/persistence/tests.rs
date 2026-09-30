@@ -324,3 +324,95 @@ async fn uncertain_batch_item_prevents_later_exact_retries_in_the_same_admission
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn checkpoint_interruption_recovers_old_or_new_state_without_losing_receipts()
+-> Result<(), Box<dyn std::error::Error>> {
+    for stage in 1..=4 {
+        let root = tempfile::tempdir()?;
+        let core = seeded(root.path()).await?;
+        let original = core
+            .put(put("retained"), Bytes::from_static(b"before"))
+            .await?;
+        let mut replacement = put("retained");
+        replacement.mutation = Some(wire::MutationIdentity {
+            idempotency_key: "replacement".into(),
+        });
+        core.put(replacement, Bytes::from_static(b"after")).await?;
+        core.journal
+            .as_ref()
+            .ok_or("missing journal")?
+            .fault_checkpoint
+            .store(stage, Ordering::Release);
+        assert!(matches!(
+            core.collect_local_garbage(10),
+            Err(LocalOpenError::Unavailable)
+        ));
+        assert_poisoned(&core).await;
+        drop(core);
+        let core = reopen(root.path())?;
+        assert_eq!(
+            core.get(get("retained"), 5).await?.body,
+            Bytes::from_static(b"after")
+        );
+        assert_eq!(
+            core.put(put("retained"), Bytes::from_static(b"before"))
+                .await?,
+            original
+        );
+        core.collect_local_garbage(10)?;
+        core.put(put("next"), Bytes::from_static(b"next")).await?;
+        drop(core);
+        assert_eq!(
+            reopen(root.path())?.get(get("next"), 4).await?.body,
+            Bytes::from_static(b"next")
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn checkpoint_packs_multiple_frames_and_preserves_live_pagination()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let core = seeded(root.path()).await?;
+    for number in 0..100 {
+        let mut query = put(&format!("key-{number:03}"));
+        query.metadata = Some(wire::ObjectMetadata {
+            content_type: "a".repeat(800),
+            ..Default::default()
+        });
+        core.put(query, Bytes::new()).await?;
+    }
+    let mut query = wire::ListObjectsRequest {
+        bucket: bucket(),
+        page_size: 1,
+        ..Default::default()
+    };
+    let page = core.list(query.clone()).await?;
+    query.continuation_token = page.continuation_token;
+    let expected = core.list(query.clone()).await?;
+    let before = core
+        .journal
+        .as_ref()
+        .ok_or("missing journal")?
+        .tail
+        .lock()
+        .map_err(|_| "tail poisoned")?
+        .operations;
+    core.collect_local_garbage(200)?;
+    let after = core
+        .journal
+        .as_ref()
+        .ok_or("missing journal")?
+        .tail
+        .lock()
+        .map_err(|_| "tail poisoned")?
+        .operations;
+    assert!(after > 1 && after < before);
+    drop(core);
+    let core = reopen(root.path())?;
+    assert_eq!(core.list(query).await?, expected);
+    core.put(put("after-checkpoint"), Bytes::new()).await?;
+    Ok(())
+}

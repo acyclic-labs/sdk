@@ -61,11 +61,16 @@ outcomes. An uncertain append makes subsequent reads and mutations unavailable
 until the owner closes and reopens the store. A v1 store is rejected without
 conversion or overwrite.
 
-This source implementation does not yet compact its journal or reclaim obsolete
-segments. It persists small bodies as segments and scans current state when
-constructing deltas. Native filesystem migration requires compaction, safe
-reclamation, batch efficiency and the existing small-body durability behavior.
-The filesystem still uses the legacy durable provider.
+`collect_garbage` fences physical readers and mutations, authenticates every
+retained segment before deletion, and compacts the journal into bounded private
+checkpoints. Current objects, staged parts, exact receipts and pagination
+authentication survive checkpoint replacement. Interrupted replacement recovers
+the old or new complete journal; uncertain replacement requires reopen.
+
+This source implementation persists small bodies as segments and scans current
+state when constructing deltas. Native filesystem migration still requires batch
+efficiency, the existing small-body durability behavior and an explicit old-root
+transition. The filesystem still uses the legacy durable provider.
 
 ## Remaining native v1 migration
 

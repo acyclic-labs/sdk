@@ -4,14 +4,19 @@ use super::{Error, MemoryObjects, NativeBatchObjects, Object, ObjectsProvider, w
 use bytes::Bytes;
 use futures::executor::block_on;
 use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Durable capacities and explicit host synchronization policy.
 pub type LocalOptions = crate::LocalObjectsLimits;
+/// Private physical storage reclamation counters; no public Objects history.
+pub type GarbageCollection = crate::LocalObjectsGarbageCollection;
 
 /// One owned logical store. Clones share admission, retry receipts and ownership.
 #[derive(Clone)]
 pub struct LocalObjects {
     core: MemoryObjects,
+    body_io: Arc<RwLock<()>>,
 }
 impl LocalObjects {
     /// Opens a v2 store and validates every replayed record and referenced segment.
@@ -39,7 +44,10 @@ impl LocalObjects {
     ) -> Result<Self, LocalOpenError> {
         let root = root.as_ref().to_path_buf();
         acyclic_native_runtime::run_blocking_io(move || {
-            super::memory::persistence::open(root, options, anchor).map(|core| Self { core })
+            super::memory::persistence::open(root, options, anchor).map(|core| Self {
+                core,
+                body_io: Arc::new(RwLock::new(())),
+            })
         })
         .await
         .map_err(|_| LocalOpenError::Unavailable)?
@@ -49,9 +57,34 @@ impl LocalObjects {
         action: impl FnOnce(&MemoryObjects) -> Result<T, Error> + Send + 'static,
     ) -> Result<T, Error> {
         let core = self.core.clone();
-        acyclic_native_runtime::run_blocking_io(move || action(&core))
-            .await
-            .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
+        let lease = self.body_io.clone().read_owned().await;
+        acyclic_native_runtime::run_blocking_io(move || {
+            let _lease = lease;
+            action(&core)
+        })
+        .await
+        .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
+    }
+
+    /// Authenticates retained bodies and reclaims unreachable private segments.
+    ///
+    /// Collection waits for admitted physical reads and mutations. Cancellation
+    /// detaches observation while the owned worker keeps the lease and root.
+    pub async fn collect_garbage(
+        &self,
+        maximum_candidates: u64,
+    ) -> Result<GarbageCollection, LocalOpenError> {
+        if maximum_candidates == 0 {
+            return Err(LocalOpenError::Invalid);
+        }
+        let lease = self.body_io.clone().write_owned().await;
+        let core = self.core.clone();
+        acyclic_native_runtime::run_blocking_io(move || {
+            let _lease = lease;
+            core.collect_local_garbage(maximum_candidates)
+        })
+        .await
+        .map_err(|_| LocalOpenError::Unavailable)?
     }
 }
 
@@ -87,9 +120,13 @@ impl ObjectsProvider for LocalObjects {
         // Caller cancellation detaches observation, not the already owned read.
         // Its core clone keeps the root/anchor alive until physical work ends.
         let core = self.core.clone();
-        tokio::spawn(async move { core.get(query, maximum_bytes).await })
-            .await
-            .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
+        let body_io = self.body_io.clone();
+        tokio::spawn(async move {
+            let _lease = body_io.read_owned().await;
+            core.get(query, maximum_bytes).await
+        })
+        .await
+        .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
     }
     async fn head(
         &self,
@@ -162,15 +199,20 @@ impl NativeBatchObjects for LocalObjects {
     ) -> Vec<Result<Object, Error>> {
         let count = requests.len();
         let core = self.core.clone();
-        tokio::spawn(async move { core.get_batch(requests).await })
-            .await
-            .unwrap_or_else(|_| vec![Err(wire::ErrorCode::Unavailable.into()); count])
+        let body_io = self.body_io.clone();
+        tokio::spawn(async move {
+            let _lease = body_io.read_owned().await;
+            core.get_batch(requests).await
+        })
+        .await
+        .unwrap_or_else(|_| vec![Err(wire::ErrorCode::Unavailable.into()); count])
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod collection;
     fn bucket() -> Option<wire::BucketRef> {
         Some(wire::BucketRef {
             name: "customer.inputs".into(),

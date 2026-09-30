@@ -138,6 +138,7 @@ pub(super) struct Journal {
     root: PathBuf,
     tail: Mutex<Tail>,
     limits: LocalObjectsLimits,
+    header: Header,
     poisoned: AtomicBool,
     _owner: File,
     _anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
@@ -145,7 +146,11 @@ pub(super) struct Journal {
     fault_bytes: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     fault_sync: AtomicBool,
+    #[cfg(test)]
+    fault_checkpoint: std::sync::atomic::AtomicU64,
 }
+
+mod checkpoint;
 
 #[cfg(test)]
 mod tests;
@@ -174,6 +179,43 @@ fn sync(file: &File, limits: LocalObjectsLimits) -> std::io::Result<()> {
 }
 fn corrupt<T>(_: T) -> LocalOpenError {
     LocalOpenError::Corrupt
+}
+
+impl MemoryObjects {
+    pub(in crate::v2) fn collect_local_garbage(
+        &self,
+        maximum_candidates: u64,
+    ) -> Result<crate::LocalObjectsGarbageCollection, LocalOpenError> {
+        let state = self.lock_state().map_err(|_| LocalOpenError::Unavailable)?;
+        let journal = self.journal.as_ref().ok_or(LocalOpenError::Unavailable)?;
+        let mut references = BTreeSet::new();
+        for bucket in state.buckets.values() {
+            for object in bucket.objects.values() {
+                object.body.local_references(&mut references);
+            }
+        }
+        for upload in state.uploads.values() {
+            for (_, body) in upload.parts.values() {
+                body.local_references(&mut references);
+            }
+        }
+        let mut report = crate::local::collect_physical_garbage(
+            &journal.root,
+            &references,
+            maximum_candidates,
+            journal.limits.maximum_object_bytes,
+            journal.limits.durability,
+        )
+        .map_err(|error| match error {
+            crate::LocalObjectsError::Invalid(_) => LocalOpenError::Invalid,
+            crate::LocalObjectsError::Io(error) => LocalOpenError::Io(error),
+            crate::LocalObjectsError::Corrupt => LocalOpenError::Corrupt,
+            crate::LocalObjectsError::AlreadyOwned => LocalOpenError::AlreadyOwned,
+            crate::LocalObjectsError::Unavailable => LocalOpenError::Unavailable,
+        })?;
+        report.journal_bytes_reclaimed = journal.compact(&state)?;
+        Ok(report)
+    }
 }
 
 pub(crate) fn open(
@@ -237,6 +279,7 @@ pub(crate) fn open(
         journal: Some(Arc::new(Journal {
             root,
             limits,
+            header,
             tail: Mutex::new(Tail {
                 file,
                 bytes,
@@ -249,6 +292,8 @@ pub(crate) fn open(
             fault_bytes: std::sync::atomic::AtomicU64::new(u64::MAX),
             #[cfg(test)]
             fault_sync: AtomicBool::new(false),
+            #[cfg(test)]
+            fault_checkpoint: std::sync::atomic::AtomicU64::new(0),
         })),
     })
 }
