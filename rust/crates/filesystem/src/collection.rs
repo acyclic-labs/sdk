@@ -91,8 +91,16 @@ pub struct PublicationHold {
 }
 
 impl PublicationHold {
-    /// A hold for a store that never collects.
-    pub(crate) const fn none() -> Self {
+    /// An empty local collection hold for an object provider that does not use
+    /// the SDK collection gate. The provider must complete its durability and
+    /// retention requirements before returning this from `flush_before_publish`.
+    ///
+    /// This value does not prove remote root custody, preserve historical
+    /// accounting evidence, or authorize collection or release. Remote claims
+    /// must remain owned by the provider's existing durable authority; dropping
+    /// this value must not release them.
+    #[must_use]
+    pub const fn none() -> Self {
         Self { _gate: None }
     }
 }
