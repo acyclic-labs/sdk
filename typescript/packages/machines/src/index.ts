@@ -6,7 +6,7 @@ import type {
   Capability as WireCapability,
   ExpirationKind as WireExpirationKind,
   MachineStatus as WireMachineStatus,
-  OperationStatus as WireOperationStatus, Performance as WirePerformance,
+  OperationStatus as WireOperationStatus,
   PressureKind as WirePressureKind,
 } from "../generated/proto/machines/v1/machines_pb.js";
 import type {
@@ -63,7 +63,6 @@ type PublicCompatibility<Value> = Value extends unknown
   ? { readonly [Key in keyof Value]: Key extends "capabilities" ? readonly Capability[] : Value[Key] }
   : never;
 export type CompatibilityPolicy = PublicCompatibility<ReadonlyGenerated<WireCompatibilityOut>>;
-export type Performance = PublicEnum<typeof WirePerformance>;
 type PublicTimed = ReadonlyGenerated<WireTimedOut>;
 export type SuspensionPolicy = Extract<PublicTimed, { readonly kind: "manual" | "after-idle" }>;
 type ExpirationKind = PublicEnum<typeof WireExpirationKind>;
@@ -72,22 +71,20 @@ export type ExpirationPolicy = Extract<PublicTimed, { readonly kind: Exclude<Exp
 export type Budgets = ReadonlyGenerated<WireBudgetsIn>;
 
 type PublicCreate = ReadonlyGenerated<WireCreateIn>;
-export type CreateMachine = Omit<PublicCreate, "idempotencyKey" | "image" | "compatibility" | "performance" | "suspension" | "expiration" | "budgets"> & {
+export type CreateMachine = Omit<PublicCreate, "idempotencyKey" | "image" | "compatibility" | "suspension" | "expiration" | "budgets"> & {
   readonly idempotencyKey: IdempotencyKey;
   readonly image: Image;
   readonly compatibility: CompatibilityPolicy;
-  readonly performance: Performance;
   readonly suspension: SuspensionPolicy;
   readonly expiration: ExpirationPolicy;
   readonly budgets: Budgets;
 };
 
 type PublicContract = ReadonlyGenerated<WireContractOut>;
-export type MachineContract = Omit<PublicContract, "image" | "capabilities" | "compatibility" | "performance" | "suspension" | "expiration" | "budgets"> & {
+export type MachineContract = Omit<PublicContract, "image" | "capabilities" | "compatibility" | "suspension" | "expiration" | "budgets"> & {
   readonly image: Image;
   readonly capabilities: readonly Capability[];
   readonly compatibility: CompatibilityPolicy;
-  readonly performance: Performance;
   readonly suspension: SuspensionPolicy;
   readonly expiration: ExpirationPolicy;
   readonly budgets: Budgets;
@@ -156,7 +153,7 @@ export interface MachinesProvider {
   listMachines(after: MachineId | null, limit: number): Promise<MachinePage>;
   checkpoint(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
   inspectCheckpoint(checkpointId: CheckpointId): Promise<CheckpointObservation>;
-  fork(checkpointId: CheckpointId, count: number, performance: Performance, key: IdempotencyKey): Promise<MutationOutcome>;
+  fork(checkpointId: CheckpointId, count: number, key: IdempotencyKey): Promise<MutationOutcome>;
   forkMachine(machineId: MachineId, count: number, key: IdempotencyKey): Promise<MutationOutcome>;
   suspend(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
   wake(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;

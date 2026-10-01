@@ -64,11 +64,6 @@ message ImageQualification {
   bytes compatibility_revision = 3;
 }
 
-enum Performance {
-  PERFORMANCE_UNSPECIFIED = 0;
-  PERFORMANCE_ELASTIC = 1;
-  PERFORMANCE_DEDICATED = 2;
-}
 message SuspensionPolicy {
   oneof policy {
     bool manual = 1;
@@ -96,7 +91,8 @@ message MachineContract {
   repeated Capability capabilities = 2;
   CompatibilityPolicy compatibility = 3;
   bytes compatibility_revision = 4;
-  Performance performance = 5;
+  reserved 5;
+  reserved "performance";
   SuspensionPolicy suspension = 6;
   ExpirationPolicy expiration = 7;
   bytes network_policy_digest = 8;
@@ -111,7 +107,8 @@ message CreateMachineRequest {
   IdempotencyKey idempotency_key = 2;
   Image image = 3;
   CompatibilityPolicy compatibility = 4;
-  Performance performance = 5;
+  reserved 5;
+  reserved "performance";
   SuspensionPolicy suspension = 6;
   ExpirationPolicy expiration = 7;
   bytes network_policy_digest = 8;
@@ -132,7 +129,8 @@ message ForkCheckpointRequest {
   IdempotencyKey idempotency_key = 2;
   CheckpointId checkpoint = 3;
   uint32 count = 4;
-  Performance performance = 5;
+  reserved 5;
+  reserved "performance";
 }
 // Forks a running machine, without an intermediate checkpoint, into `count` fresh
 // children. Admission requires CAPABILITY_LIVE_FORK or CAPABILITY_DISK_FORK in the source

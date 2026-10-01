@@ -13,8 +13,8 @@ use acyclic_machines::{
     Budgets, Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine,
     Endpoint, EventFact, EventPage, ExpirationPolicy, ForkFidelity, Image, ImageQualification,
     MachineContract, MachineEvent, MachineId, MachineObservation, MachinePage, MachineState,
-    MachinesProvider, MutationOutcome, OperationId, OperationObservation, OperationPhase,
-    Performance, Pressure, ProviderError, SuspensionPolicy, UsageReceipt,
+    MachinesProvider, MutationOutcome, OperationId, OperationObservation, OperationPhase, Pressure,
+    ProviderError, SuspensionPolicy, UsageReceipt,
 };
 use hex::{decode, encode};
 use serde::{
@@ -106,6 +106,15 @@ fn invalid(message: impl Into<String>) -> Result<JsValue, JsValue> {
 
 fn from_js<T: for<'de> Deserialize<'de>>(value: JsValue) -> Result<T, JsValue> {
     serde_wasm_bindgen::from_value(value).map_err(|e| err(e.to_string()))
+}
+
+fn reject_retired_mode(value: &JsValue) -> Result<(), JsValue> {
+    // serde-wasm-bindgen visits known struct fields only, even with
+    // deny_unknown_fields. Enforce the reserved field at the JS boundary.
+    if js_sys::Reflect::has(value, &JsValue::from_str("performance"))? {
+        return Err(err("unknown field performance"));
+    }
+    Ok(())
 }
 fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
     let serializer = serde_wasm_bindgen::Serializer::new()
@@ -424,25 +433,6 @@ fn expiration_out(value: &ExpirationPolicy) -> TimedOut {
         },
     }
 }
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Tsify)]
-#[serde(rename_all = "kebab-case")]
-pub enum PerformanceIn {
-    Elastic,
-    Dedicated,
-}
-fn performance_in(value: PerformanceIn) -> Performance {
-    match value {
-        PerformanceIn::Elastic => Performance::Elastic,
-        PerformanceIn::Dedicated => Performance::Dedicated,
-    }
-}
-fn performance_out(value: Performance) -> PerformanceIn {
-    match value {
-        Performance::Elastic => PerformanceIn::Elastic,
-        Performance::Dedicated => PerformanceIn::Dedicated,
-    }
-}
-
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
@@ -472,12 +462,11 @@ fn budgets_out(value: Budgets) -> BudgetsOut {
 }
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateIn {
     idempotency_key: String,
     image: ImageIn,
     compatibility: CompatibilityIn,
-    performance: PerformanceIn,
     suspension: SuspensionIn,
     expiration: ExpirationIn,
     network_policy_digest_hex: String,
@@ -488,7 +477,6 @@ fn create_in(value: CreateIn) -> Result<CreateMachine, JsValue> {
         idempotency_key: key(value.idempotency_key)?,
         image: image_in(value.image)?,
         compatibility: compatibility_in(value.compatibility)?,
-        performance: performance_in(value.performance),
         suspension: suspension_in(value.suspension)?,
         expiration: expiration_in(value.expiration)?,
         network_policy_digest: digest(&value.network_policy_digest_hex, "networkPolicyDigestHex")?,
@@ -504,7 +492,6 @@ pub struct ContractOut {
     capabilities: Vec<CapabilityIn>,
     compatibility: CompatibilityOut,
     compatibility_revision_hex: String,
-    performance: PerformanceIn,
     suspension: TimedOut,
     expiration: TimedOut,
     network_policy_digest_hex: String,
@@ -516,7 +503,6 @@ fn contract_out(value: &MachineContract) -> ContractOut {
         capabilities: value.capabilities.iter().map(capability_out).collect(),
         compatibility: compatibility_out(&value.compatibility),
         compatibility_revision_hex: digest_out(value.compatibility_revision),
-        performance: performance_out(value.performance),
         suspension: suspension_out(&value.suspension),
         expiration: expiration_out(&value.expiration),
         network_policy_digest_hex: digest_out(value.network_policy_digest),
@@ -855,11 +841,10 @@ pub struct CheckpointKey {
 }
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForkIn {
     checkpoint_id: String,
     count: u32,
-    performance: PerformanceIn,
     idempotency_key: String,
 }
 
@@ -928,6 +913,7 @@ pub async fn dispatch<P: MachinesProvider>(
             call!(provider.qualify_image(image_in(input)?), qualification_out)
         }
         "create" => {
+            reject_retired_mode(&payload)?;
             let input: CreateIn = from_js(payload)?;
             call!(provider.create(create_in(input)?), mutation_out)
         }
@@ -958,13 +944,13 @@ pub async fn dispatch<P: MachinesProvider>(
             )
         }
         "fork" => {
+            reject_retired_mode(&payload)?;
             let input: ForkIn = from_js(payload)?;
             let count = NonZeroU32::new(input.count).ok_or_else(|| err("count must be nonzero"))?;
             call!(
                 provider.fork(
                     checkpoint(input.checkpoint_id)?,
                     count,
-                    performance_in(input.performance),
                     key(input.idempotency_key)?
                 ),
                 mutation_out

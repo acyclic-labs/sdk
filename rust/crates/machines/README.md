@@ -1,5 +1,11 @@
 # acyclic-machines
 
+Machines protocol 1.1 is shape-free. Customers choose an immutable image and
+policies; the platform manages CPU, memory, and disk capacity. Create and
+checkpoint fork no longer accept an Elastic/Dedicated performance selection.
+The removed protobuf field numbers and names are reserved. Servers must reject
+the predecessor protocol revision rather than reinterpret its requests.
+
 Typed Machines contract for immutable image qualification, machine lifecycle, checkpoints, forks, operation recovery, events, and usage receipts.
 
 ```sh

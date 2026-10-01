@@ -1,13 +1,13 @@
 import type { DescEnum } from "@bufbuild/protobuf";
 import {
   CapabilitySchema, CompatibilityModeSchema, EventKindSchema, ExpirationKindSchema, ImageKindSchema,
-  MachineStatusSchema, OperationStatusSchema, PerformanceSchema, PressureKindSchema,
+  MachineStatusSchema, OperationStatusSchema, PressureKindSchema,
 } from "../generated/proto/machines/v1/machines_pb.js";
 import type {
   Capability as WireCapability, CompatibilityMode as WireCompatibilityMode,
   EventKind as WireEventKind, ExpirationKind as WireExpirationKind, ImageKind as WireImageKind,
   MachineStatus as WireMachineStatus, OperationStatus as WireOperationStatus,
-  Performance as WirePerformance, PressureKind as WirePressureKind,
+  PressureKind as WirePressureKind,
 } from "../generated/proto/machines/v1/machines_pb.js";
 
 type Kebab<Value extends string> = Value extends `${infer Head}_${infer Tail}`
@@ -43,7 +43,6 @@ function values<Wire extends object>(schema: DescEnum): readonly PublicEnum<Wire
 export const imageKinds = values<typeof WireImageKind>(ImageKindSchema);
 export const capabilities = values<typeof WireCapability>(CapabilitySchema);
 export const compatibilityModes = values<typeof WireCompatibilityMode>(CompatibilityModeSchema);
-export const performances = values<typeof WirePerformance>(PerformanceSchema);
 export const expirationKinds = values<typeof WireExpirationKind>(ExpirationKindSchema);
 export const operationPhases = values<typeof WireOperationStatus>(OperationStatusSchema);
 export const machineStates = values<typeof WireMachineStatus>(MachineStatusSchema);

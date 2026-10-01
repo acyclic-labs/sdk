@@ -7,7 +7,6 @@ const request = (idempotencyKey: string): CreateMachine => ({
   idempotencyKey,
   image: { kind: "custom", digestHex: "07".repeat(32) },
   compatibility: { kind: "best-effort" },
-  performance: "elastic",
   suspension: { kind: "after-idle", milliseconds: 15_000 },
   expiration: { kind: "never" },
   networkPolicyDigestHex: "08".repeat(32),
@@ -57,13 +56,14 @@ describe("Machines simulation", () => {
       idempotencyKey: "malformed-wasm",
       image: { kind: "custom", digestHex: "07".repeat(32) },
       compatibility: { kind: "best-effort" },
-      performance: "elastic",
       suspension: { kind: "manual" },
       expiration: { kind: "never" },
       networkPolicyDigestHex: "08".repeat(32),
       budgets: { spendMicros: 0n, concurrency: 0 },
     };
     try {
+      await reject(() => wasm.create({ ...base, performance: "dedicated" } as never), "unknown field");
+      await reject(() => wasm.fork({ checkpointId: "old-mode", count: 1, idempotencyKey: "old-mode", performance: "elastic" } as never), "unknown field");
       await reject(() => wasm.listMachines({ after: null, limit: 1.5 as never }));
       await reject(() => wasm.create({ ...base, budgets: { spendMicros: 1.5 as never, concurrency: 0 } }));
       await reject(() => wasm.create({ ...base, compatibility: { kind: "require", capabilities: ["elastic-cpu", "elastic-cpu"] } }), "duplicates");
@@ -109,9 +109,8 @@ describe("Machines simulation", () => {
     const captured = await provider.checkpoint(id, idempotencyKey("checkpoint-full"));
     if (captured.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
     expect(await provider.inspectCheckpoint(captured.checkpoint.id)).toEqual(captured.checkpoint);
-    const forked = await provider.fork(captured.checkpoint.id, 2, "dedicated", idempotencyKey("fork-full"));
+    const forked = await provider.fork(captured.checkpoint.id, 2, idempotencyKey("fork-full"));
     if (forked.kind !== "forked") throw new Error("wrong fork outcome");
-    expect(forked.machines.map(machine => machine.contract.performance)).toEqual(["dedicated", "dedicated"]);
     expect((await provider.listMachines(null, 256)).machines).toHaveLength(3);
     expect(await provider.recover(idempotencyKey("fork-full"))).toEqual(forked);
     const usage = await provider.usage(id, 1, 2);
@@ -119,7 +118,7 @@ describe("Machines simulation", () => {
     expect(usage.receipt).toBeInstanceOf(Uint8Array);
     expect(usage.lineageReceiptSha256).toBeInstanceOf(Uint8Array);
     expect(await provider.destroyCheckpoint(captured.checkpoint.id, idempotencyKey("destroy-checkpoint-full"))).toEqual({ kind: "checkpoint-destroyed", checkpointId: captured.checkpoint.id });
-    await expect(provider.fork(captured.checkpoint.id, 1, "elastic", idempotencyKey("fork-after-destroy"))).rejects.toThrow("fork");
+    await expect(provider.fork(captured.checkpoint.id, 1, idempotencyKey("fork-after-destroy"))).rejects.toThrow("fork");
     expect(await provider.destroyMachine(id, idempotencyKey("destroy-machine-full"))).toEqual({ kind: "machine-destroyed", machineId: id });
     expect((await provider.inspectMachine(id)).state).toBe("destroyed");
   });
@@ -181,7 +180,7 @@ describe("Machines simulation", () => {
     const provider = new SimulatedMachines();
     const first = await provider.create(request("create-1"));
     expect(await provider.create(request("create-1"))).toEqual(first);
-    await expect(provider.create({ ...request("create-1"), performance: "dedicated" })).rejects.toThrow("bound to another intent");
+    await expect(provider.create({ ...request("create-1"), networkPolicyDigestHex: "b".repeat(64) })).rejects.toThrow("bound to another intent");
   });
 
   test("copies caller-owned budgets into the retained machine contract", async () => {
@@ -239,7 +238,6 @@ describe("Machines simulation", () => {
       networkPolicyDigestHex: original.networkPolicyDigestHex,
       expiration: original.expiration,
       suspension: original.suspension,
-      performance: original.performance,
       compatibility: original.compatibility,
       image: original.image,
       idempotencyKey: original.idempotencyKey,
@@ -253,7 +251,7 @@ describe("Machines simulation", () => {
     if (created.kind !== "created") throw new Error("wrong create outcome");
     const captured = await provider.checkpoint(created.machine.id, "checkpoint-1");
     if (captured.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
-    const forked = await provider.fork(captured.checkpoint.id, 2, "elastic", "fork-1");
+    const forked = await provider.fork(captured.checkpoint.id, 2, idempotencyKey("fork-1"));
     if (forked.kind !== "forked") throw new Error("wrong fork outcome");
     expect(new Set(forked.machines.map((machine) => machine.id)).size).toBe(2);
     await provider.destroyCheckpoint(captured.checkpoint.id, "checkpoint-destroy-1");
@@ -357,9 +355,9 @@ describe("Machines simulation", () => {
     expect(await serve(checkpointed).checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"))).toEqual(checkpointed);
     await expect(serve({ ...checkpointed, checkpoint: { ...checkpointed.checkpoint, source: machineId("other-source") } }).checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"))).rejects.toThrow("substituted");
 
-    const checkpointForked = await simulated.fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"));
+    const checkpointForked = await simulated.fork(checkpointed.checkpoint.id, 1, idempotencyKey("hosted-mutation-checkpoint-fork"));
     if (checkpointForked.kind !== "forked") throw new Error("wrong checkpoint fork outcome");
-    expect(await serve(checkpointForked).fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"))).toEqual(checkpointForked);
+    expect(await serve(checkpointForked).fork(checkpointed.checkpoint.id, 1, idempotencyKey("hosted-mutation-checkpoint-fork"))).toEqual(checkpointForked);
     const substitutedCheckpoint = checkpointId("other-checkpoint");
     await expect(serve({
       ...checkpointForked,
@@ -368,14 +366,7 @@ describe("Machines simulation", () => {
         lastCheckpoint: substitutedCheckpoint,
         contract: { ...machine.contract, image: { kind: "checkpoint", checkpointId: substitutedCheckpoint } },
       })),
-    }).fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"))).rejects.toThrow("checkpoint");
-    await expect(serve({
-      ...checkpointForked,
-      machines: checkpointForked.machines.map(machine => ({
-        ...machine,
-        contract: { ...machine.contract, performance: "dedicated" as const },
-      })),
-    }).fork(checkpointed.checkpoint.id, 1, "elastic", idempotencyKey("hosted-mutation-checkpoint-fork"))).rejects.toThrow("performance");
+    }).fork(checkpointed.checkpoint.id, 1, idempotencyKey("hosted-mutation-checkpoint-fork"))).rejects.toThrow("checkpoint");
 
     const forked = await simulated.forkMachine(created.machine.id, 2, idempotencyKey("hosted-mutation-fork"));
     if (forked.kind !== "machine-forked") throw new Error("wrong machine fork outcome");

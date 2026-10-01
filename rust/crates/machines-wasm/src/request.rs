@@ -2,7 +2,7 @@
 
 use acyclic_machines::{
     self as domain, Budgets, Capability, CheckpointId, CompatibilityPolicy, CreateMachine,
-    ExpirationPolicy, IdempotencyKey, Image, Performance, ProviderError, SuspensionPolicy, wire,
+    ExpirationPolicy, IdempotencyKey, Image, ProviderError, SuspensionPolicy, wire,
 };
 use prost::Message as _;
 use std::{collections::BTreeSet, time::Duration};
@@ -66,15 +66,6 @@ fn compatibility(
             Ok(CompatibilityPolicy::Require(required))
         }
         _ => Err(invalid("compatibility policy is contradictory")),
-    }
-}
-
-pub fn performance(value: u32) -> Result<Performance, ProviderError> {
-    let value = i32::try_from(value).map_err(|_| invalid("performance enum is invalid"))?;
-    match wire::Performance::try_from(value).map_err(|_| invalid("performance enum is invalid"))? {
-        wire::Performance::Elastic => Ok(Performance::Elastic),
-        wire::Performance::Dedicated => Ok(Performance::Dedicated),
-        wire::Performance::Unspecified => Err(invalid("performance is unspecified")),
     }
 }
 
@@ -160,9 +151,6 @@ pub fn create(bytes: &[u8]) -> Result<CreateMachine, ProviderError> {
         idempotency_key,
         image: image(value.image.ok_or_else(|| invalid("image is missing"))?)?,
         compatibility: compatibility(value.compatibility)?,
-        performance: performance(
-            u32::try_from(value.performance).map_err(|_| invalid("performance is invalid"))?,
-        )?,
         suspension: suspension(
             value
                 .suspension
@@ -204,7 +192,6 @@ mod tests {
                 mode: wire::CompatibilityMode::BestEffort as i32,
                 required: Vec::new(),
             }),
-            performance: wire::Performance::Elastic as i32,
             suspension: Some(wire::SuspensionPolicy {
                 policy: Some(wire::suspension_policy::Policy::AfterIdleMs(15_000)),
             }),

@@ -110,7 +110,7 @@ const checks = {
     const created = await provider.create({
       idempotencyKey: m.idempotencyKey("tarball-smoke"),
       image: { kind: "custom", digestHex: "07".repeat(32) },
-      compatibility: { kind: "best-effort" }, performance: "elastic",
+      compatibility: { kind: "best-effort" },
       suspension: { kind: "manual" }, expiration: { kind: "never" },
       networkPolicyDigestHex: "08".repeat(32), budgets: { spendMicros: 0n, concurrency: 0 },
     });
