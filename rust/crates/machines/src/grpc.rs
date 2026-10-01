@@ -5,7 +5,8 @@ use tonic::transport::{
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
-const WATCH_TIMEOUT: Duration = Duration::from_secs(60);
+const WATCH_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
+const OBSERVATION_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Remote mutual-TLS identity. Key material is borrowed and never retained by the client.
@@ -617,27 +618,55 @@ impl GrpcProvider {
         Ok((operation, value))
     }
     async fn wait(&self, key: IdempotencyKey, operation: OperationId) -> Result<(), ProviderError> {
-        let mut stream = self
-            .client()
-            .watch_operation(operation_request(operation))
-            .await
-            .map_err(|error| watch_error(key, error))?
-            .into_inner();
         loop {
-            let next = tokio::time::timeout(WATCH_TIMEOUT, stream.message())
+            match self
+                .client()
+                .watch_operation(operation_request(operation))
                 .await
-                .map_err(|_| ProviderError::Indeterminate(key))?
-                .map_err(|_| ProviderError::Indeterminate(key))?;
-            let Some(value) = next else {
-                return Err(ProviderError::Indeterminate(key));
-            };
-            match decode_operation_observation(&value, operation)?.phase {
-                OperationPhase::Pending => {}
-                OperationPhase::Succeeded => return Ok(()),
-                OperationPhase::Cancelled => return Err(ProviderError::Cancelled),
-                OperationPhase::Failed => return Err(ProviderError::Failed),
-                OperationPhase::Indeterminate => return Err(ProviderError::Indeterminate(key)),
+            {
+                Ok(response) => {
+                    let mut stream = response.into_inner();
+                    loop {
+                        match tokio::time::timeout(WATCH_RECONCILE_INTERVAL, stream.message()).await
+                        {
+                            Ok(Ok(Some(value))) => {
+                                let phase = decode_operation_observation(&value, operation)?.phase;
+                                if let Some(outcome) = observed_outcome(key, phase) {
+                                    return outcome;
+                                }
+                            }
+                            Ok(Err(error)) if !retryable_observation_error(&error) => {
+                                return Err(watch_error(key, error));
+                            }
+                            // Silence, EOF and transient interruption trigger inspection of
+                            // the same admitted operation, never a replacement mutation.
+                            _ => break,
+                        }
+                    }
+                }
+                Err(error) if !retryable_observation_error(&error) => {
+                    return Err(watch_error(key, error));
+                }
+                Err(_) => {}
             }
+            match self
+                .client()
+                .inspect_operation(operation_request(operation))
+                .await
+            {
+                Ok(response) => {
+                    let phase =
+                        decode_operation_observation(&response.into_inner(), operation)?.phase;
+                    if let Some(outcome) = observed_outcome(key, phase) {
+                        return outcome;
+                    }
+                }
+                Err(error) if !retryable_observation_error(&error) => {
+                    return Err(watch_error(key, error));
+                }
+                Err(_) => {}
+            }
+            tokio::time::sleep(OBSERVATION_RETRY_DELAY).await;
         }
     }
     async fn machine_mutation(
@@ -1362,6 +1391,28 @@ fn mutation_error(key: IdempotencyKey, value: &tonic::Status) -> ProviderError {
 }
 fn watch_error(key: IdempotencyKey, _value: tonic::Status) -> ProviderError {
     ProviderError::Indeterminate(key)
+}
+fn retryable_observation_error(value: &tonic::Status) -> bool {
+    matches!(
+        value.code(),
+        tonic::Code::Unavailable
+            | tonic::Code::DeadlineExceeded
+            | tonic::Code::Cancelled
+            | tonic::Code::Unknown
+            | tonic::Code::Internal
+    )
+}
+fn observed_outcome(
+    key: IdempotencyKey,
+    phase: OperationPhase,
+) -> Option<Result<(), ProviderError>> {
+    match phase {
+        OperationPhase::Pending => None,
+        OperationPhase::Succeeded => Some(Ok(())),
+        OperationPhase::Cancelled => Some(Err(ProviderError::Cancelled)),
+        OperationPhase::Failed => Some(Err(ProviderError::Failed)),
+        OperationPhase::Indeterminate => Some(Err(ProviderError::Indeterminate(key))),
+    }
 }
 fn operation_watch_error(operation: OperationId) -> ProviderError {
     ProviderError::OperationIndeterminate(operation)
