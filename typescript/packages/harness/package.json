@@ -24,5 +24,5 @@
   "dependencies": { "@bufbuild/protobuf": "2.15.0" },
   "peerDependencies": { "@acyclic-labs/objects": "0.2.0" },
   "peerDependenciesMeta": { "@acyclic-labs/objects": { "optional": true } },
-  "devDependencies": { "@types/bun": "1.4.2", "@types/node": "26.4.1", "bun-types": "1.4.0", "fake-indexeddb": "6.2.4", "typescript": "7.0.2" }
+  "devDependencies": { "@types/bun": "1.4.2", "@types/node": "26.6.3", "bun-types": "1.4.0", "fake-indexeddb": "6.2.4", "typescript": "7.0.2" }
 }
