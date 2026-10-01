@@ -44,6 +44,14 @@ let client = GrpcObjects::connect(
 # }
 ```
 
+For endpoints requiring mutual TLS, use
+`GrpcObjects::connect_with_identity(endpoint, token, ca, certificate_pem, private_key_pem)`.
+The certificate argument is a PEM client chain; the key is its PEM private key.
+Both must be nonempty and at most 64 KiB. This preserves server verification,
+bearer authentication, message bounds and deadlines. The server still owns client
+identity authorization. Credentials are supplied in memory, with no SDK file or
+infrastructure lookup.
+
 Use conditional writes and idempotency keys for retryable mutations. Listings
 are bounded, query-bound pages over current keys rather than captured snapshots.
 Multipart uploads require an explicit completion manifest; staging and aborting

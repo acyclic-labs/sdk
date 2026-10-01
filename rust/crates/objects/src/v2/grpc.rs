@@ -9,7 +9,7 @@ use prost::Message;
 use tonic::{
     Request,
     metadata::{Ascii, MetadataValue},
-    transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
+    transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
 };
 
 const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -160,6 +160,45 @@ impl GrpcObjects {
         token: &str,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
+        Self::connect_tls(endpoint, token, ca, None).await
+    }
+    /// Connects with a caller-supplied PEM client certificate chain and private key.
+    ///
+    /// Server certificate verification, bearer authentication, message bounds, and
+    /// operation deadlines are the same as [`Self::connect`]. The server owns client
+    /// identity authorization; presenting a certificate does not grant access.
+    ///
+    /// # Errors
+    /// Rejects empty or oversized identity inputs, invalid configuration, malformed
+    /// or mismatched certificate/key material, or failed connections.
+    pub async fn connect_with_identity(
+        endpoint: &str,
+        token: &str,
+        ca: Option<&[u8]>,
+        certificate_pem: &[u8],
+        private_key_pem: &[u8],
+    ) -> Result<Self, ConnectError> {
+        if certificate_pem.is_empty()
+            || certificate_pem.len() > 64 * 1024
+            || private_key_pem.is_empty()
+            || private_key_pem.len() > 64 * 1024
+        {
+            return Err(ConnectError::InvalidConfiguration);
+        }
+        Self::connect_tls(
+            endpoint,
+            token,
+            ca,
+            Some(Identity::from_pem(certificate_pem, private_key_pem)),
+        )
+        .await
+    }
+    async fn connect_tls(
+        endpoint: &str,
+        token: &str,
+        ca: Option<&[u8]>,
+        identity: Option<Identity>,
+    ) -> Result<Self, ConnectError> {
         let endpoint = Endpoint::from_shared(endpoint.to_owned())?;
         if endpoint.uri().scheme_str() != Some("https")
             || endpoint
@@ -183,6 +222,9 @@ impl GrpcObjects {
                 return Err(ConnectError::InvalidConfiguration);
             }
             tls = tls.ca_certificate(Certificate::from_pem(ca));
+        }
+        if let Some(identity) = identity {
+            tls = tls.identity(identity);
         }
         let channel = endpoint
             .tls_config(tls)?
