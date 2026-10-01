@@ -7,6 +7,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const WATCH_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
 const OBSERVATION_RETRY_DELAY: Duration = Duration::from_secs(1);
+const MAX_CONSECUTIVE_UNKNOWN_OBSERVATIONS: u8 = 3;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Remote mutual-TLS identity. Key material is borrowed and never retained by the client.
@@ -618,6 +619,7 @@ impl GrpcProvider {
         Ok((operation, value))
     }
     async fn wait(&self, key: IdempotencyKey, operation: OperationId) -> Result<(), ProviderError> {
+        let mut unknown_observations = 0;
         loop {
             match self
                 .client()
@@ -631,11 +633,17 @@ impl GrpcProvider {
                         {
                             Ok(Ok(Some(value))) => {
                                 let phase = decode_operation_observation(&value, operation)?.phase;
+                                unknown_observations = 0;
                                 if let Some(outcome) = observed_outcome(key, phase) {
                                     return outcome;
                                 }
                             }
-                            Ok(Err(error)) if !retryable_observation_error(&error) => {
+                            Ok(Err(error))
+                                if !retryable_observation_error(
+                                    &error,
+                                    &mut unknown_observations,
+                                ) =>
+                            {
                                 return Err(watch_error(key, error));
                             }
                             // Silence, EOF and transient interruption trigger inspection of
@@ -644,7 +652,7 @@ impl GrpcProvider {
                         }
                     }
                 }
-                Err(error) if !retryable_observation_error(&error) => {
+                Err(error) if !retryable_observation_error(&error, &mut unknown_observations) => {
                     return Err(watch_error(key, error));
                 }
                 Err(_) => {}
@@ -657,11 +665,12 @@ impl GrpcProvider {
                 Ok(response) => {
                     let phase =
                         decode_operation_observation(&response.into_inner(), operation)?.phase;
+                    unknown_observations = 0;
                     if let Some(outcome) = observed_outcome(key, phase) {
                         return outcome;
                     }
                 }
-                Err(error) if !retryable_observation_error(&error) => {
+                Err(error) if !retryable_observation_error(&error, &mut unknown_observations) => {
                     return Err(watch_error(key, error));
                 }
                 Err(_) => {}
@@ -1392,11 +1401,19 @@ fn mutation_error(key: IdempotencyKey, value: &tonic::Status) -> ProviderError {
 fn watch_error(key: IdempotencyKey, _value: tonic::Status) -> ProviderError {
     ProviderError::Indeterminate(key)
 }
-fn retryable_observation_error(value: &tonic::Status) -> bool {
-    matches!(
-        value.code(),
-        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled
-    )
+fn retryable_observation_error(value: &tonic::Status, unknown_observations: &mut u8) -> bool {
+    match value.code() {
+        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled => true,
+        // Tonic maps local readiness failures to Unknown, as a server may also
+        // do for an unreadable journal. Reconcile a brief readiness failure,
+        // but return the retained key after repeated ambiguous errors without
+        // any validated native observation. No elapsed-time failure is inferred.
+        tonic::Code::Unknown => {
+            *unknown_observations = unknown_observations.saturating_add(1);
+            *unknown_observations < MAX_CONSECUTIVE_UNKNOWN_OBSERVATIONS
+        }
+        _ => false,
+    }
 }
 fn observed_outcome(
     key: IdempotencyKey,
