@@ -1,14 +1,255 @@
 use super::*;
+use crate::GuardedAppend;
 use crate::foundation::FileId;
 use crate::kernel::{
     DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot,
     MetadataField, TreePage, encode_file_metadata, encode_file_table_page, encode_generation_root,
     encode_tree_page,
 };
+use crate::kernel::{
+    PublicationEvidenceError, decode_generation_publication_evidence,
+    encode_generation_publication_evidence,
+};
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
+use crate::model::{Lifecycle, VolumeConfig};
 use crate::storage::{
     AuthorityStore, FenceOutcome, ObjectKind, ObjectStore, ObjectStoreError, object_digest,
 };
+use sha2::{Digest as _, Sha256};
+
+fn evidence_fixture() -> Result<
+    (
+        PublishGenerationRequest,
+        GenerationProof,
+        GuardedAppend,
+        VolumeConfig,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let objects = MemoryObjectStore::default();
+    let volume_id = VolumeId::from_bytes([2; 16]);
+    let authority_id = volume_authority_id(volume_id);
+    let request = PublishGenerationRequest {
+        authority_id,
+        volume_id,
+        epoch: Epoch::GENESIS,
+        expected: Head::genesis(Epoch::GENESIS),
+        operation_id: OperationId::from_bytes([4; 16]),
+        generation_root: fixture(&objects, volume_id)?,
+    };
+    let proof = prove_generation_closure(
+        &objects,
+        request.generation_root,
+        limits(),
+        WorkBudget::UNBOUNDED,
+    )?;
+    let prepared = prepare_publication(proof.clone(), request, None, WorkBudget::UNBOUNDED)?;
+    Ok((
+        request,
+        proof,
+        GuardedAppend {
+            authority_id,
+            epoch: request.epoch,
+            expected: request.expected,
+            commit: prepared.commit,
+            permit: PublicationPermit::Unrestricted,
+        },
+        VolumeConfig::portable(Lifecycle::Ephemeral),
+    ))
+}
+
+#[test]
+fn publication_evidence_round_trip_preserves_original_preparation_and_all_permits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (request, proof, mut append, config) = evidence_fixture()?;
+    for permit in [
+        PublicationPermit::Unrestricted,
+        PublicationPermit::Lease {
+            authority_id: [5; 16],
+            workspace_id: [6; 16],
+            lease_id: [7; 16],
+            expires_at_millis: 1234,
+        },
+        PublicationPermit::Reservation {
+            operation_id: request.operation_id.into_bytes(),
+            gate_tail: 42,
+            expected: request.expected,
+        },
+    ] {
+        append.permit = permit;
+        let encoded =
+            encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
+        assert_eq!(
+            encoded.sha256,
+            <[u8; 32]>::from(Sha256::digest(&encoded.bytes))
+        );
+        let decoded = decode_generation_publication_evidence(
+            &encoded.bytes,
+            &encoded.sha256,
+            encoded.bytes.len() as u64,
+            proof.object_count,
+        )?;
+        assert_eq!(decoded.request, request);
+        assert_eq!(decoded.append, append);
+        assert_eq!(decoded.root, proof.root);
+        assert_eq!(decoded.manifest.config, config);
+        assert_eq!(decoded.manifest.objects, proof.objects);
+        assert_eq!(decoded.manifest.file_count, proof.file_count);
+        assert_eq!(decoded.manifest.generation_id, proof.generation_id);
+        assert_eq!(decoded.logical_file_bytes, proof.logical_file_bytes);
+        assert_eq!(
+            encode_generation_publication_evidence(
+                &decoded.request,
+                &proof,
+                &decoded.append,
+                decoded.manifest.config,
+                64 * 1024,
+            )?,
+            encoded
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn publication_evidence_rejects_digest_changes_and_byte_and_object_bounds()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (request, proof, append, config) = evidence_fixture()?;
+    let encoded =
+        encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
+    let mut digest = encoded.sha256;
+    digest[0] ^= 1;
+    assert!(matches!(
+        decode_generation_publication_evidence(
+            &encoded.bytes,
+            &digest,
+            64 * 1024,
+            proof.object_count,
+        ),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    let mut altered = encoded.bytes.to_vec();
+    altered[0] ^= 1;
+    assert!(matches!(
+        decode_generation_publication_evidence(
+            &altered,
+            &encoded.sha256,
+            64 * 1024,
+            proof.object_count,
+        ),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    for bound in [0, encoded.bytes.len() as u64 - 1] {
+        assert!(matches!(
+            encode_generation_publication_evidence(&request, &proof, &append, config, bound,),
+            Err(PublicationEvidenceError::TooLarge)
+        ));
+        assert!(matches!(
+            decode_generation_publication_evidence(
+                &encoded.bytes,
+                &encoded.sha256,
+                bound,
+                proof.object_count,
+            ),
+            Err(PublicationEvidenceError::TooLarge)
+        ));
+    }
+    assert!(matches!(
+        decode_generation_publication_evidence(
+            &encoded.bytes,
+            &encoded.sha256,
+            64 * 1024,
+            proof.object_count - 1,
+        ),
+        Err(PublicationEvidenceError::Manifest(
+            crate::kernel::GenerationExportManifestError::TooManyObjects,
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
+fn publication_evidence_rejects_mismatched_request_proof_and_append()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (request, proof, append, config) = evidence_fixture()?;
+    for changed in [
+        PublishGenerationRequest {
+            volume_id: VolumeId::from_bytes([8; 16]),
+            ..request
+        },
+        PublishGenerationRequest {
+            operation_id: OperationId::from_bytes([8; 16]),
+            ..request
+        },
+        PublishGenerationRequest {
+            epoch: Epoch::new(2)?,
+            ..request
+        },
+        PublishGenerationRequest {
+            expected: Head::genesis(Epoch::new(2)?),
+            ..request
+        },
+    ] {
+        assert!(matches!(
+            encode_generation_publication_evidence(&changed, &proof, &append, config, 64 * 1024,),
+            Err(PublicationEvidenceError::Mismatch)
+        ));
+    }
+    let mut changed = proof.clone();
+    changed.object_count += 1;
+    assert!(matches!(
+        encode_generation_publication_evidence(&request, &changed, &append, config, 64 * 1024,),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    let mut changed = append.clone();
+    changed.commit.operation_id = OperationId::from_bytes([8; 16]);
+    assert!(matches!(
+        encode_generation_publication_evidence(&request, &proof, &changed, config, 64 * 1024,),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
+    Ok(())
+}
+
+#[test]
+fn publication_evidence_rejects_noncanonical_manifest_and_trailing_bytes_even_with_new_digest()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (request, proof, append, config) = evidence_fixture()?;
+    let encoded =
+        encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
+    let projection = decode_generation_publication_evidence(
+        &encoded.bytes,
+        &encoded.sha256,
+        64 * 1024,
+        proof.object_count,
+    )?;
+    let manifest = crate::kernel::encode_generation_export_manifest(&projection.manifest)?;
+    let offset = encoded
+        .bytes
+        .windows(manifest.len())
+        .position(|value| value == manifest)
+        .ok_or("missing embedded manifest")?;
+    let mut altered = encoded.bytes.to_vec();
+    let last_two_objects = offset + manifest.len() - 66;
+    // Swap two adjacent 33-byte object identities without changing field lengths.
+    altered[last_two_objects..last_two_objects + 66].rotate_left(33);
+    let digest = Sha256::digest(&altered).into();
+    assert!(matches!(
+        decode_generation_publication_evidence(&altered, &digest, 64 * 1024, proof.object_count,),
+        Err(PublicationEvidenceError::Manifest(
+            crate::kernel::GenerationExportManifestError::NonCanonicalObjectOrder,
+        ))
+    ));
+    let mut trailing = encoded.bytes.to_vec();
+    trailing.push(0);
+    let digest = Sha256::digest(&trailing).into();
+    assert!(matches!(
+        decode_generation_publication_evidence(&trailing, &digest, 64 * 1024, proof.object_count,),
+        Err(PublicationEvidenceError::Decode(
+            CanonicalDecodeError::TrailingBytes
+        ))
+    ));
+    Ok(())
+}
 
 fn metadata() -> FileMetadata {
     FileMetadata {
