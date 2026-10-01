@@ -1,7 +1,7 @@
 import type {
   CheckpointId, CheckpointObservation, CreateMachine, ForkFidelity, IdempotencyKey, MachineEvent, MachineId,
   MachineObservation, MachinesProvider, MutationOutcome, OperationId, OperationObservation,
-  Performance, SuspensionPolicy, UsageReceipt,
+  SuspensionPolicy, UsageReceipt,
 } from "./index.js";
 import { HttpMachinesProvider } from "./http.js";
 import { MANAGED_OCI_CONTRACT } from "./managed-oci-contract.js";
@@ -76,7 +76,7 @@ export interface MachineFork { readonly fidelity: ForkFidelity; readonly childre
 export class Checkpoint {
   constructor(readonly provider: MachinesProvider, readonly id: CheckpointId) {}
   inspect(): Promise<CheckpointObservation> { return this.provider.inspectCheckpoint(this.id); }
-  async fork(count: number, performance: Performance, key: IdempotencyKey): Promise<readonly Machine[]> { return expectOutcome(await this.provider.fork(this.id, count, performance, key), "forked").machines.map(value => new Machine(this.provider, value.id)); }
+  async fork(count: number, key: IdempotencyKey): Promise<readonly Machine[]> { return expectOutcome(await this.provider.fork(this.id, count, key), "forked").machines.map(value => new Machine(this.provider, value.id)); }
   destroy(key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "checkpoint-destroyed" }>> { return this.provider.destroyCheckpoint(this.id, key).then(value => expectOutcome(value, "checkpoint-destroyed")); }
 }
 

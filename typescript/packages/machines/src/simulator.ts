@@ -8,7 +8,7 @@ import { ensureMachinesWasm } from "./wasm-runtime.js";
 import type {
   CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, Image,
   ImageQualification, MachineId, MachineObservation, MachinesProvider,
-  MachineEventPage, MachinePage, MutationOutcome, OperationId, OperationObservation, Performance, SuspensionPolicy,
+  MachineEventPage, MachinePage, MutationOutcome, OperationId, OperationObservation, SuspensionPolicy,
   UsageReceipt,
 } from "./index.js";
 import { machineId, operationId } from "./index.js";
@@ -55,7 +55,7 @@ export class SimulatedMachines implements MachinesProvider {
   listMachines(after: MachineId | null, limit: number): Promise<MachinePage> { return this.#run({ after, limit }, (inner, authored) => inner.listMachines(authored)).then(asPublic<PageOut, MachinePage>); }
   checkpoint(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.checkpoint(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   inspectCheckpoint(checkpointId: CheckpointId): Promise<CheckpointObservation> { return this.#run(checkpointId, (inner, authored) => inner.inspectCheckpoint(authored)).then(asPublic<CheckpointOut, CheckpointObservation>); }
-  fork(checkpointId: CheckpointId, count: number, performance: Performance, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ checkpointId, count, performance, idempotencyKey }, (inner, authored) => inner.fork(authored)).then(asPublic<MutationOut, MutationOutcome>); }
+  fork(checkpointId: CheckpointId, count: number, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ checkpointId, count, idempotencyKey }, (inner, authored) => inner.fork(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   forkMachine(machineId: MachineId, count: number, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, count, idempotencyKey }, (inner, authored) => inner.forkMachine(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   suspend(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.suspend(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   wake(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.wake(authored)).then(asPublic<MutationOut, MutationOutcome>); }

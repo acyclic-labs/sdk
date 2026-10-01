@@ -182,7 +182,6 @@ impl MachinesProvider for GrpcProvider {
                 idempotency_key: Some(encode_key(key)),
                 image: Some(encode_image(&request.image)?),
                 compatibility: Some(encode_compatibility(&request.compatibility)?),
-                performance: encode_performance(request.performance),
                 suspension: Some(encode_suspension(request.suspension)?),
                 expiration: Some(encode_expiration(request.expiration)?),
                 network_policy_digest: request.network_policy_digest.to_vec(),
@@ -312,7 +311,6 @@ impl MachinesProvider for GrpcProvider {
         &self,
         checkpoint: CheckpointId,
         count: NonZeroU32,
-        performance: Performance,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         if count.get() > MAX_FORK_CHILDREN {
@@ -325,7 +323,6 @@ impl MachinesProvider for GrpcProvider {
                 idempotency_key: Some(encode_key(key)),
                 checkpoint: Some(encode_checkpoint(checkpoint)),
                 count: count.get(),
-                performance: encode_performance(performance),
             })
             .await
             .map_err(|error| mutation_error(key, &error))?
@@ -1044,23 +1041,6 @@ fn decode_compatibility(
         )),
     }
 }
-fn encode_performance(value: Performance) -> i32 {
-    (match value {
-        Performance::Elastic => wire::Performance::Elastic,
-        Performance::Dedicated => wire::Performance::Dedicated,
-    }) as i32
-}
-fn decode_performance(value: i32) -> Result<Performance, ProviderError> {
-    match wire::Performance::try_from(value)
-        .map_err(|_| ProviderError::Rejected("performance is invalid".into()))?
-    {
-        wire::Performance::Elastic => Ok(Performance::Elastic),
-        wire::Performance::Dedicated => Ok(Performance::Dedicated),
-        wire::Performance::Unspecified => {
-            Err(ProviderError::Rejected("performance is unspecified".into()))
-        }
-    }
-}
 fn millis(value: Duration) -> Result<u64, ProviderError> {
     u64::try_from(value.as_millis())
         .map_err(|_| ProviderError::Invalid("duration exceeds protocol range".into()))
@@ -1187,7 +1167,6 @@ fn decode_contract(
         compatibility: decode_compatibility(value.compatibility.as_ref(), &capabilities)?,
         capabilities,
         compatibility_revision: digest(&value.compatibility_revision, "compatibility revision")?,
-        performance: decode_performance(value.performance)?,
         suspension: decode_suspension(value.suspension.as_ref())?,
         expiration: decode_expiration(value.expiration.as_ref())?,
         network_policy_digest: digest(&value.network_policy_digest, "network policy")?,
@@ -2067,7 +2046,6 @@ mod tests {
                 required: Vec::new(),
             }),
             compatibility_revision: vec![1; 32],
-            performance: wire::Performance::Elastic as i32,
             suspension: Some(wire::SuspensionPolicy {
                 policy: Some(wire::suspension_policy::Policy::Manual(true)),
             }),

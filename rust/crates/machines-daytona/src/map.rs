@@ -414,6 +414,26 @@ pub fn contract_from_labels(labels: &BTreeMap<String, String>) -> Option<Machine
         .and_then(|encoded| serde_json::from_str(encoded).ok())
 }
 
+/// Retains the usage classification of predecessor contracts without exposing a
+/// performance selection in the current public contract. New contracts omit it.
+pub(crate) fn legacy_dedicated_cpu(
+    labels: &BTreeMap<String, String>,
+) -> Result<bool, ProviderError> {
+    let Some(encoded) = labels.get(LABEL_CONTRACT) else {
+        return Ok(false);
+    };
+    let contract: serde_json::Value = serde_json::from_str(encoded)
+        .map_err(|error| ProviderError::Rejected(format!("invalid stored contract: {error}")))?;
+    match contract.get("performance") {
+        None => Ok(false),
+        Some(serde_json::Value::String(value)) if value == "Elastic" => Ok(false),
+        Some(serde_json::Value::String(value)) if value == "Dedicated" => Ok(true),
+        Some(_) => Err(ProviderError::Rejected(
+            "invalid legacy CPU usage classification".into(),
+        )),
+    }
+}
+
 /// Label filter selecting every sandbox created or forked under `key` for `tenant`.
 ///
 /// Daytona cannot filter on a label's absence, so callers still check [`owned_by`].
@@ -663,7 +683,7 @@ pub fn snapshot_settled(state: Option<&str>) -> bool {
 mod tests {
     use std::collections::BTreeSet;
 
-    use acyclic_machines::{Budgets, Capability, CompatibilityPolicy, Image, Performance};
+    use acyclic_machines::{Budgets, Capability, CompatibilityPolicy, Image};
 
     use super::*;
 
@@ -689,7 +709,6 @@ mod tests {
             ]),
             compatibility: CompatibilityPolicy::BestEffort,
             compatibility_revision: [1; 32],
-            performance: Performance::Elastic,
             suspension: SuspensionPolicy::AfterIdle(Duration::from_secs(15)),
             expiration: ExpirationPolicy::Never,
             network_policy_digest: [8; 32],

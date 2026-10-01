@@ -38,7 +38,7 @@ pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-machine
 /// Current public protocol major.
 pub const PROTOCOL_MAJOR: u32 = 1;
 /// Current public protocol minor.
-pub const PROTOCOL_MINOR: u32 = 0;
+pub const PROTOCOL_MINOR: u32 = 1;
 /// Maximum machines returned in one page.
 pub const MAX_PAGE_SIZE: u32 = 256;
 /// Maximum children admitted by one fork request.
@@ -244,13 +244,6 @@ pub enum CompatibilityPolicy {
     Require(BTreeSet<Capability>),
 }
 
-/// CPU grant and billing behavior.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum Performance {
-    Elastic,
-    Dedicated,
-}
-
 /// Automatic suspension policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SuspensionPolicy {
@@ -278,6 +271,7 @@ pub struct Budgets {
 
 /// Shape-free create request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateMachine {
     /// Caller-retained mutation identity.
     pub idempotency_key: IdempotencyKey,
@@ -285,8 +279,6 @@ pub struct CreateMachine {
     pub image: Image,
     /// Capability policy.
     pub compatibility: CompatibilityPolicy,
-    /// CPU behavior.
-    pub performance: Performance,
     /// Suspension policy.
     pub suspension: SuspensionPolicy,
     /// Expiration policy.
@@ -298,7 +290,7 @@ pub struct CreateMachine {
 }
 
 impl CreateMachine {
-    /// Creates a best-effort Elastic request with 15-second idle suspension and no expiry.
+    /// Creates a best-effort request with 15-second idle suspension and no expiry.
     #[must_use]
     pub fn new(
         idempotency_key: IdempotencyKey,
@@ -309,7 +301,6 @@ impl CreateMachine {
             idempotency_key,
             image,
             compatibility: CompatibilityPolicy::BestEffort,
-            performance: Performance::Elastic,
             suspension: SuspensionPolicy::AfterIdle(DEFAULT_IDLE_SUSPEND),
             expiration: ExpirationPolicy::Never,
             network_policy_digest,
@@ -329,8 +320,6 @@ pub struct MachineContract {
     pub compatibility: CompatibilityPolicy,
     /// Opaque customer compatibility revision.
     pub compatibility_revision: [u8; 32],
-    /// CPU behavior.
-    pub performance: Performance,
     /// Suspension policy.
     pub suspension: SuspensionPolicy,
     /// Expiration policy.
@@ -567,7 +556,6 @@ pub trait MachinesProvider: Send + Sync {
         &self,
         checkpoint: CheckpointId,
         count: NonZeroU32,
-        performance: Performance,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError>;
     /// Forks a running machine into `count` fresh children without an intermediate
@@ -591,7 +579,7 @@ pub trait MachinesProvider: Send + Sync {
     ///   [`Capability::DiskFork`]); the child boots fresh and the caller
     ///   restarts its workload. The outcome reports which one ran; it always equals the
     ///   source contract's [`MachineContract::fork_fidelity`].
-    /// - The source's exact [`MachineContract`] (image, capabilities, performance, policies,
+    /// - The source's exact [`MachineContract`] (image, capabilities, policies,
     ///   budgets). `last_checkpoint` is `None`: no checkpoint was taken.
     /// - Anything in memory or on disk, including credentials and environment. A child that
     ///   needs its own identity must be re-provisioned after the fork.
@@ -933,15 +921,9 @@ impl Checkpoint {
     pub async fn fork(
         &self,
         count: NonZeroU32,
-        performance: Performance,
         key: IdempotencyKey,
     ) -> Result<Vec<Machine>, ProviderError> {
-        match self
-            .machines
-            .provider
-            .fork(self.id, count, performance, key)
-            .await?
-        {
+        match self.machines.provider.fork(self.id, count, key).await? {
             MutationOutcome::Forked(values) => Ok(values
                 .into_iter()
                 .map(|value| Machine::new(self.machines.clone(), value.id))
@@ -970,7 +952,7 @@ impl Checkpoint {
 enum MemoryIntent {
     Create(CreateMachine),
     Checkpoint(MachineId),
-    Fork(CheckpointId, u32, Performance),
+    Fork(CheckpointId, u32),
     ForkMachine(MachineId, u32),
     Suspend(MachineId),
     Wake(MachineId),
@@ -1065,7 +1047,6 @@ impl SimulatedMachines {
             capabilities,
             compatibility: request.compatibility.clone(),
             compatibility_revision: Self::revision(),
-            performance: request.performance,
             suspension: request.suspension,
             expiration: request.expiration,
             network_policy_digest: request.network_policy_digest,
@@ -1320,7 +1301,6 @@ impl MachinesProvider for SimulatedMachines {
         &self,
         checkpoint: CheckpointId,
         count: NonZeroU32,
-        performance: Performance,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         let count_value = count.get();
@@ -1329,7 +1309,7 @@ impl MachinesProvider for SimulatedMachines {
         }
         self.apply(
             key,
-            MemoryIntent::Fork(checkpoint, count_value, performance),
+            MemoryIntent::Fork(checkpoint, count_value),
             move |state| {
                 let source = state
                     .checkpoints
@@ -1353,7 +1333,6 @@ impl MachinesProvider for SimulatedMachines {
                     let id = Self::machine(key, index);
                     let now = tick(state)?;
                     let mut contract = source.contract.clone();
-                    contract.performance = performance;
                     contract.image = Image::Checkpoint(checkpoint);
                     let value = MachineObservation {
                         id,
@@ -1729,7 +1708,7 @@ mod tests {
         let second = provider.create(request(key)).await;
         assert_eq!(first, second);
         let mut changed = request(key);
-        changed.performance = Performance::Dedicated;
+        changed.network_policy_digest = [9; 32];
         assert!(matches!(
             provider.create(changed).await,
             Err(ProviderError::Conflict(_))
@@ -1790,11 +1769,7 @@ mod tests {
         let fork_key = IdempotencyKey::parse("00000000-0000-0000-0000-00000000000a")
             .unwrap_or_else(|_| unreachable!());
         let children = checkpoint
-            .fork(
-                NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
-                Performance::Elastic,
-                fork_key,
-            )
+            .fork(NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN), fork_key)
             .await
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(children.len(), 2);

@@ -2,6 +2,8 @@
 
 ## 0.2.0 - Unreleased
 
+- Restore the approved shape-free Machines protocol 1.1. Create and checkpoint fork no longer select Elastic/Dedicated performance; the retired wire fields remain reserved.
+
 - Align the unified SDK candidate with the breaking Objects v2 public package transition.
 
 ## 0.1.5 - 2026-09-25

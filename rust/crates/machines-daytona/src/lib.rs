@@ -25,8 +25,8 @@ use acyclic_machines::{
     ForkFidelity, IdempotencyKey, Image, ImageQualification, MAX_EVENT_PAGE_SIZE,
     MAX_FORK_CHILDREN, MAX_PAGE_SIZE, MachineContract, MachineId, MachineObservation, MachinePage,
     MachineState, MachinesProvider, MutationOutcome, OperationId, OperationObservation,
-    OperationPhase, OperationStream, Performance, ProviderAssurance, ProviderError,
-    SuspensionPolicy, UsageReceipt,
+    OperationPhase, OperationStream, ProviderAssurance, ProviderError, SuspensionPolicy,
+    UsageReceipt,
 };
 use async_trait::async_trait;
 use futures::StreamExt as _;
@@ -209,7 +209,7 @@ pub const CAPABILITIES: DaytonaCapabilities = DaytonaCapabilities {
 enum Intent {
     Create(CreateMachine),
     Checkpoint(MachineId),
-    Fork(CheckpointId, u32, Performance),
+    Fork(CheckpointId, u32),
     ForkMachine(MachineId, u32),
     Suspend(MachineId),
     Wake(MachineId),
@@ -417,7 +417,6 @@ impl DaytonaProvider {
             capabilities,
             compatibility: request.compatibility.clone(),
             compatibility_revision: Self::revision(),
-            performance: request.performance,
             suspension,
             expiration: request.expiration,
             network_policy_digest: request.network_policy_digest,
@@ -1232,42 +1231,36 @@ impl MachinesProvider for DaytonaProvider {
         &self,
         checkpoint: CheckpointId,
         count: NonZeroU32,
-        performance: Performance,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         let count = count.get();
         if count > MAX_FORK_CHILDREN {
             return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
         }
-        self.apply(
-            key,
-            &Intent::Fork(checkpoint, count, performance),
-            async |operation| {
-                let source = self.inspect_checkpoint(checkpoint).await?;
-                if !source.forkable {
-                    return Err(ProviderError::Conflict(
-                        "checkpoint no longer accepts forks".into(),
-                    ));
-                }
-                let mut contract = source.contract;
-                contract.performance = performance;
-                contract.image = Image::Checkpoint(checkpoint);
-                let snapshot = checkpoint.to_string();
-                let mut ids = Vec::with_capacity(count as usize);
-                for index in 0..count {
-                    let slot = map::ForkSlot { index, count };
-                    let body =
-                        map::create_request(&self.config, &snapshot, key, Some(slot), &contract)?;
-                    let (created, adopted) = self.create_or_adopt(&body).await?;
-                    self.claim(operation, &created.id, adopted).await?;
-                    ids.push(created.id);
-                }
-                let children = self
-                    .settle_children(ids, key, &contract, Some(checkpoint))
-                    .await?;
-                Ok(MutationOutcome::Forked(children))
-            },
-        )
+        self.apply(key, &Intent::Fork(checkpoint, count), async |operation| {
+            let source = self.inspect_checkpoint(checkpoint).await?;
+            if !source.forkable {
+                return Err(ProviderError::Conflict(
+                    "checkpoint no longer accepts forks".into(),
+                ));
+            }
+            let mut contract = source.contract;
+            contract.image = Image::Checkpoint(checkpoint);
+            let snapshot = checkpoint.to_string();
+            let mut ids = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                let slot = map::ForkSlot { index, count };
+                let body =
+                    map::create_request(&self.config, &snapshot, key, Some(slot), &contract)?;
+                let (created, adopted) = self.create_or_adopt(&body).await?;
+                self.claim(operation, &created.id, adopted).await?;
+                ids.push(created.id);
+            }
+            let children = self
+                .settle_children(ids, key, &contract, Some(checkpoint))
+                .await?;
+            Ok(MutationOutcome::Forked(children))
+        })
         .await
     }
 
@@ -1493,7 +1486,7 @@ impl MachinesProvider for DaytonaProvider {
             &id,
             (start_unix_ms, end_unix_ms),
             (observation.created_at_unix_ms, now_unix_ms()),
-            observation.contract.performance == Performance::Dedicated,
+            map::legacy_dedicated_cpu(&sandbox.labels)?,
             allocation,
         )
     }

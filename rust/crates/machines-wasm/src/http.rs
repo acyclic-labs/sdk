@@ -250,11 +250,6 @@ fn contract(value: &Value) -> Result<(), JsValue> {
     {
         return Err(error("compatibility policy is contradictory"));
     }
-    one_of(
-        field(value, "performance")?,
-        &["elastic", "dedicated"],
-        "performance",
-    )?;
     suspension(field(value, "suspension")?)?;
     let expiration = field(value, "expiration")?;
     let expiration_kind = one_of(
@@ -453,28 +448,12 @@ fn bind_created_machine(value: &Value, expected: &Value) -> Result<(), JsValue> 
     for (name, label) in [
         ("image", "image"),
         ("compatibility", "compatibility policy"),
-        ("performance", "performance policy"),
         ("suspension", "suspension policy"),
         ("expiration", "expiration policy"),
         ("networkPolicyDigestHex", "network policy"),
         ("budgets", "budgets"),
     ] {
         same_value(contract, name, expected, name, label)?;
-    }
-    Ok(())
-}
-
-fn same_performance(machine: &Value, expected: &Value, label: &str) -> Result<(), JsValue> {
-    if one_of(
-        field(field(machine, "contract")?, "performance")?,
-        &["elastic", "dedicated"],
-        "machine performance",
-    )? != one_of(
-        field(expected, "performance")?,
-        &["elastic", "dedicated"],
-        "performance",
-    )? {
-        return Err(error(format!("{label} performance was substituted")));
     }
     Ok(())
 }
@@ -500,7 +479,7 @@ fn bind_checkpoint_child(machine: &Value, expected: &Value) -> Result<(), JsValu
     if text(field(image, "checkpointId")?, "checkpointId")? != checkpoint_id {
         return Err(error("checkpoint child image was substituted"));
     }
-    same_performance(machine, expected, "checkpoint child")
+    Ok(())
 }
 
 fn bind_machine_fork_children(
@@ -964,13 +943,7 @@ fn encode_base64(value: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    fn machine(
-        id: &str,
-        image: &Value,
-        capabilities: &[&str],
-        performance: &str,
-        last_checkpoint: &Value,
-    ) -> Value {
+    fn machine(id: &str, image: &Value, capabilities: &[&str], last_checkpoint: &Value) -> Value {
         let digest = "a".repeat(64);
         serde_json::json!({
             "id": id,
@@ -979,7 +952,6 @@ mod tests {
                 "image": image,
                 "capabilities": capabilities,
                 "compatibility": {"kind": "best-effort"},
-                "performance": performance,
                 "suspension": {"kind": "manual"},
                 "expiration": {"kind": "never"},
                 "networkPolicyDigestHex": digest,
@@ -994,18 +966,16 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_fork_children_are_bound_to_checkpoint_and_performance() {
+    fn checkpoint_fork_children_are_bound_to_checkpoint() {
         let expected = serde_json::json!({
             "checkpointId": "checkpoint-1",
             "count": 1,
-            "performance": "elastic"
         });
         let response = |child| serde_json::json!({"kind": "forked", "machines": [child]});
         let valid = machine(
             "child",
             &serde_json::json!({"kind": "checkpoint", "checkpointId": "checkpoint-1"}),
             &["disk-fork"],
-            "elastic",
             &serde_json::json!("checkpoint-1"),
         );
         assert!(validate_values(http_route::CHECKPOINTS_FORK, &response(valid), &expected).is_ok());
@@ -1014,29 +984,12 @@ mod tests {
             "child",
             &serde_json::json!({"kind": "checkpoint", "checkpointId": "other"}),
             &["disk-fork"],
-            "elastic",
             &serde_json::json!("other"),
         );
         assert!(
             validate_values(
                 http_route::CHECKPOINTS_FORK,
                 &response(wrong_checkpoint),
-                &expected
-            )
-            .is_err()
-        );
-
-        let wrong_performance = machine(
-            "child",
-            &serde_json::json!({"kind": "checkpoint", "checkpointId": "checkpoint-1"}),
-            &["disk-fork"],
-            "dedicated",
-            &serde_json::json!("checkpoint-1"),
-        );
-        assert!(
-            validate_values(
-                http_route::CHECKPOINTS_FORK,
-                &response(wrong_performance),
                 &expected
             )
             .is_err()
@@ -1058,7 +1011,6 @@ mod tests {
             "child",
             &serde_json::json!({"kind": "managed-oci", "digestHex": "b".repeat(64)}),
             &["disk-fork"],
-            "elastic",
             &Value::Null,
         );
         assert!(
@@ -1074,7 +1026,6 @@ mod tests {
             "source",
             &serde_json::json!({"kind": "managed-oci", "digestHex": "b".repeat(64)}),
             &["disk-fork"],
-            "elastic",
             &Value::Null,
         );
         assert!(
@@ -1090,7 +1041,6 @@ mod tests {
             "child",
             &serde_json::json!({"kind": "managed-oci", "digestHex": "b".repeat(64)}),
             &["live-fork"],
-            "elastic",
             &Value::Null,
         );
         assert!(

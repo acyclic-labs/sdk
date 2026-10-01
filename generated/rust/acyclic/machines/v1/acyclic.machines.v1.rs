@@ -101,8 +101,6 @@ pub struct MachineContract {
     pub compatibility: ::core::option::Option<CompatibilityPolicy>,
     #[prost(bytes = "vec", tag = "4")]
     pub compatibility_revision: ::prost::alloc::vec::Vec<u8>,
-    #[prost(enumeration = "Performance", tag = "5")]
-    pub performance: i32,
     #[prost(message, optional, tag = "6")]
     pub suspension: ::core::option::Option<SuspensionPolicy>,
     #[prost(message, optional, tag = "7")]
@@ -129,8 +127,6 @@ pub struct CreateMachineRequest {
     pub image: ::core::option::Option<Image>,
     #[prost(message, optional, tag = "4")]
     pub compatibility: ::core::option::Option<CompatibilityPolicy>,
-    #[prost(enumeration = "Performance", tag = "5")]
-    pub performance: i32,
     #[prost(message, optional, tag = "6")]
     pub suspension: ::core::option::Option<SuspensionPolicy>,
     #[prost(message, optional, tag = "7")]
@@ -168,8 +164,6 @@ pub struct ForkCheckpointRequest {
     pub checkpoint: ::core::option::Option<CheckpointId>,
     #[prost(uint32, tag = "4")]
     pub count: u32,
-    #[prost(enumeration = "Performance", tag = "5")]
-    pub performance: i32,
 }
 /// Forks a running machine, without an intermediate checkpoint, into `count` fresh
 /// children. Admission requires CAPABILITY_LIVE_FORK or CAPABILITY_DISK_FORK in the source
@@ -619,35 +613,6 @@ impl CompatibilityMode {
             "COMPATIBILITY_MODE_UNSPECIFIED" => Some(Self::Unspecified),
             "COMPATIBILITY_MODE_BEST_EFFORT" => Some(Self::BestEffort),
             "COMPATIBILITY_MODE_REQUIRE" => Some(Self::Require),
-            _ => None,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum Performance {
-    Unspecified = 0,
-    Elastic = 1,
-    Dedicated = 2,
-}
-impl Performance {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "PERFORMANCE_UNSPECIFIED",
-            Self::Elastic => "PERFORMANCE_ELASTIC",
-            Self::Dedicated => "PERFORMANCE_DEDICATED",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "PERFORMANCE_UNSPECIFIED" => Some(Self::Unspecified),
-            "PERFORMANCE_ELASTIC" => Some(Self::Elastic),
-            "PERFORMANCE_DEDICATED" => Some(Self::Dedicated),
             _ => None,
         }
     }

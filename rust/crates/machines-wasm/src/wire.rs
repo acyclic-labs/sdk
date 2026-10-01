@@ -3,7 +3,7 @@
 use acyclic_machines::{
     self as domain, Budgets, Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy,
     EventFact, ExpirationPolicy, Image, ImageQualification, MachineContract, MachineId,
-    MachineObservation, MutationOutcome, OperationId, OperationObservation, Performance, Pressure,
+    MachineObservation, MutationOutcome, OperationId, OperationObservation, Pressure,
     ProviderError, SuspensionPolicy, UsageReceipt, wire,
 };
 use prost::Message as _;
@@ -78,13 +78,6 @@ fn compatibility(value: &CompatibilityPolicy) -> wire::CompatibilityPolicy {
     }
 }
 
-fn performance(value: Performance) -> i32 {
-    (match value {
-        Performance::Elastic => wire::Performance::Elastic,
-        Performance::Dedicated => wire::Performance::Dedicated,
-    }) as i32
-}
-
 fn suspension(value: SuspensionPolicy) -> Result<wire::SuspensionPolicy, ProviderError> {
     use wire::suspension_policy::Policy;
     Ok(wire::SuspensionPolicy {
@@ -118,7 +111,6 @@ fn contract(value: &MachineContract) -> Result<wire::MachineContract, ProviderEr
         capabilities: value.capabilities.iter().copied().map(capability).collect(),
         compatibility: Some(compatibility(&value.compatibility)),
         compatibility_revision: value.compatibility_revision.to_vec(),
-        performance: performance(value.performance),
         suspension: Some(suspension(value.suspension)?),
         expiration: Some(expiration(value.expiration)?),
         network_policy_digest: value.network_policy_digest.to_vec(),
