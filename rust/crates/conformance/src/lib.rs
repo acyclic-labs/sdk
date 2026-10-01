@@ -8,7 +8,7 @@ pub mod runner;
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
 use acyclic_machines::{
     Capability, CompatibilityPolicy, CreateMachine, IdempotencyKey, Image, MachineObservation,
-    MachineState, MachinesProvider, MutationOutcome, OperationPhase, Performance, ProviderError,
+    MachineState, MachinesProvider, MutationOutcome, OperationPhase, ProviderError,
 };
 use acyclic_objects::v2::ObjectsProvider;
 use acyclic_stream::StreamProvider;
@@ -186,7 +186,6 @@ pub async fn machines(provider: &dyn MachinesProvider) -> Result<(), String> {
         .fork(
             checkpoint.id,
             NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
-            Performance::Elastic,
             key(3)?,
         )
         .await

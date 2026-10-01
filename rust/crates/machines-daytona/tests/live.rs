@@ -10,8 +10,7 @@ use std::{
 
 use acyclic_machines::{
     Budgets, Capability, CompatibilityPolicy, ExpirationPolicy, ForkFidelity, IdempotencyKey,
-    Image, MachineContract, MachineId, MachinesProvider, MutationOutcome, Performance,
-    SuspensionPolicy,
+    Image, MachineContract, MachineId, MachinesProvider, MutationOutcome, SuspensionPolicy,
 };
 use acyclic_machines_daytona::{
     DaytonaConfig, DaytonaProvider,
@@ -173,7 +172,6 @@ async fn container_disk_fork_copies_the_workspace() {
         capabilities: [Capability::DiskFork].into(),
         compatibility: CompatibilityPolicy::BestEffort,
         compatibility_revision: DaytonaProvider::revision(),
-        performance: Performance::Elastic,
         suspension: SuspensionPolicy::Manual,
         expiration: ExpirationPolicy::MaxAge(Duration::from_secs(30 * 60)),
         network_policy_digest: [8; 32],

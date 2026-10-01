@@ -1,4 +1,4 @@
-import type { CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, Image, ImageQualification, MachineId, MachineObservation, MachinesProvider, MutationOutcome, OperationId, OperationObservation, Performance, SuspensionPolicy, UsageReceipt, MachinePage, MachineEventPage } from "./index.js";
+import type { CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, Image, ImageQualification, MachineId, MachineObservation, MachinesProvider, MutationOutcome, OperationId, OperationObservation, SuspensionPolicy, UsageReceipt, MachinePage, MachineEventPage } from "./index.js";
 import { httpRoutes, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
 import type {
   CheckpointOut, EventsOut, MachinesHttpRequest, MachinesHttpResponse, MachinesHttpRoute,
@@ -21,7 +21,7 @@ export class HttpMachinesProvider implements MachinesProvider {
   listMachines(after: MachineId | null, limit: number): Promise<MachinePage> { return this.#call("MACHINES_LIST", { after, limit }).then(asPublic<PageOut, MachinePage>); }
   checkpoint(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("MACHINES_CHECKPOINT", { machineId, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
   inspectCheckpoint(checkpointId: CheckpointId): Promise<CheckpointObservation> { return this.#call("CHECKPOINTS_INSPECT", { checkpointId }).then(asPublic<CheckpointOut, CheckpointObservation>); }
-  fork(checkpointId: CheckpointId, count: number, performance: Performance, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("CHECKPOINTS_FORK", { checkpointId, count, performance, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
+  fork(checkpointId: CheckpointId, count: number, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("CHECKPOINTS_FORK", { checkpointId, count, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
   forkMachine(machineId: MachineId, count: number, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("MACHINES_FORK", { machineId, count, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
   suspend(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("MACHINES_SUSPEND", { machineId, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
   wake(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("MACHINES_WAKE", { machineId, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }

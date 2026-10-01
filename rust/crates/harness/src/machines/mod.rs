@@ -132,14 +132,12 @@ impl MachinesHost {
         idempotency_key: &IdempotencyKey,
         checkpoint: &CheckpointRef,
         count: NonZeroU32,
-        performance: acyclic_machines::Performance,
     ) -> Result<Vec<SandboxRef>> {
         match self
             .provider
             .fork(
                 self.checkpoint_id(checkpoint)?,
                 count,
-                performance,
                 machines_key(idempotency_key)?,
             )
             .await

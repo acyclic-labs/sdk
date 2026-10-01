@@ -276,11 +276,6 @@ export declare type MachineContract = Message<"acyclic.machines.v1.MachineContra
   compatibilityRevision: Uint8Array;
 
   /**
-   * @generated from field: acyclic.machines.v1.Performance performance = 5;
-   */
-  performance: Performance;
-
-  /**
    * @generated from field: acyclic.machines.v1.SuspensionPolicy suspension = 6;
    */
   suspension?: SuspensionPolicy | undefined;
@@ -351,11 +346,6 @@ export declare type CreateMachineRequest = Message<"acyclic.machines.v1.CreateMa
    * @generated from field: acyclic.machines.v1.CompatibilityPolicy compatibility = 4;
    */
   compatibility?: CompatibilityPolicy | undefined;
-
-  /**
-   * @generated from field: acyclic.machines.v1.Performance performance = 5;
-   */
-  performance: Performance;
 
   /**
    * @generated from field: acyclic.machines.v1.SuspensionPolicy suspension = 6;
@@ -459,11 +449,6 @@ export declare type ForkCheckpointRequest = Message<"acyclic.machines.v1.ForkChe
    * @generated from field: uint32 count = 4;
    */
   count: number;
-
-  /**
-   * @generated from field: acyclic.machines.v1.Performance performance = 5;
-   */
-  performance: Performance;
 };
 
 /**
@@ -1520,31 +1505,6 @@ export enum CompatibilityMode {
  * Describes the enum acyclic.machines.v1.CompatibilityMode.
  */
 export declare const CompatibilityModeSchema: GenEnum<CompatibilityMode>;
-
-/**
- * @generated from enum acyclic.machines.v1.Performance
- */
-export enum Performance {
-  /**
-   * @generated from enum value: PERFORMANCE_UNSPECIFIED = 0;
-   */
-  UNSPECIFIED = 0,
-
-  /**
-   * @generated from enum value: PERFORMANCE_ELASTIC = 1;
-   */
-  ELASTIC = 1,
-
-  /**
-   * @generated from enum value: PERFORMANCE_DEDICATED = 2;
-   */
-  DEDICATED = 2,
-}
-
-/**
- * Describes the enum acyclic.machines.v1.Performance.
- */
-export declare const PerformanceSchema: GenEnum<Performance>;
 
 /**
  * @generated from enum acyclic.machines.v1.ExpirationKind

@@ -9,7 +9,7 @@
     "acyclic.key": "00000000-0000-0000-0000-000000000001",
     "acyclic.kind": "create",
     "acyclic.tenant": "org-demo",
-    "acyclic.contract": "{\"image\":{\"Custom\":[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7]},\"capabilities\":[\"LiveCheckpoint\",\"LiveFork\",\"SuspendResume\"],\"compatibility\":\"BestEffort\",\"compatibility_revision\":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],\"performance\":\"Elastic\",\"suspension\":{\"AfterIdle\":{\"secs\":15,\"nanos\":0}},\"expiration\":\"Never\",\"network_policy_digest\":[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],\"budgets\":{\"spend_micros\":0,\"concurrency\":0}}"
+    "acyclic.contract": "{\"image\":{\"Custom\":[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7]},\"capabilities\":[\"LiveCheckpoint\",\"LiveFork\",\"SuspendResume\"],\"compatibility\":\"BestEffort\",\"compatibility_revision\":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],\"suspension\":{\"AfterIdle\":{\"secs\":15,\"nanos\":0}},\"expiration\":\"Never\",\"network_policy_digest\":[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],\"budgets\":{\"spend_micros\":0,\"concurrency\":0}}"
   },
   "public": false,
   "target": "us",

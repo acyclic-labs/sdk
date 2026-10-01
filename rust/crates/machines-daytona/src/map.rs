@@ -663,7 +663,7 @@ pub fn snapshot_settled(state: Option<&str>) -> bool {
 mod tests {
     use std::collections::BTreeSet;
 
-    use acyclic_machines::{Budgets, Capability, CompatibilityPolicy, Image, Performance};
+    use acyclic_machines::{Budgets, Capability, CompatibilityPolicy, Image};
 
     use super::*;
 
@@ -689,7 +689,6 @@ mod tests {
             ]),
             compatibility: CompatibilityPolicy::BestEffort,
             compatibility_revision: [1; 32],
-            performance: Performance::Elastic,
             suspension: SuspensionPolicy::AfterIdle(Duration::from_secs(15)),
             expiration: ExpirationPolicy::Never,
             network_policy_digest: [8; 32],
