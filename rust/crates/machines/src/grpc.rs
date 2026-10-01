@@ -7,7 +7,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const WATCH_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
 const OBSERVATION_RETRY_DELAY: Duration = Duration::from_secs(1);
-const MAX_CONSECUTIVE_UNKNOWN_OBSERVATIONS: u8 = 3;
+const MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS: u8 = 3;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Remote mutual-TLS identity. Key material is borrowed and never retained by the client.
@@ -638,12 +638,7 @@ impl GrpcProvider {
                                     return outcome;
                                 }
                             }
-                            Ok(Err(error))
-                                if !retryable_observation_error(
-                                    &error,
-                                    &mut unknown_observations,
-                                ) =>
-                            {
+                            Ok(Err(error)) if !retryable_watch_error(&error) => {
                                 return Err(watch_error(key, error));
                             }
                             // Silence, EOF and transient interruption trigger inspection of
@@ -652,7 +647,7 @@ impl GrpcProvider {
                         }
                     }
                 }
-                Err(error) if !retryable_observation_error(&error, &mut unknown_observations) => {
+                Err(error) if !retryable_watch_error(&error) => {
                     return Err(watch_error(key, error));
                 }
                 Err(_) => {}
@@ -1410,10 +1405,19 @@ fn retryable_observation_error(value: &tonic::Status, unknown_observations: &mut
         // any validated native observation. No elapsed-time failure is inferred.
         tonic::Code::Unknown => {
             *unknown_observations = unknown_observations.saturating_add(1);
-            *unknown_observations < MAX_CONSECUTIVE_UNKNOWN_OBSERVATIONS
+            *unknown_observations < MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS
         }
         _ => false,
     }
+}
+fn retryable_watch_error(value: &tonic::Status) -> bool {
+    matches!(
+        value.code(),
+        tonic::Code::Unavailable
+            | tonic::Code::DeadlineExceeded
+            | tonic::Code::Cancelled
+            | tonic::Code::Unknown
+    )
 }
 fn observed_outcome(
     key: IdempotencyKey,
