@@ -1486,7 +1486,7 @@ impl MachinesProvider for DaytonaProvider {
             &id,
             (start_unix_ms, end_unix_ms),
             (observation.created_at_unix_ms, now_unix_ms()),
-            false,
+            map::legacy_dedicated_cpu(&sandbox.labels)?,
             allocation,
         )
     }
