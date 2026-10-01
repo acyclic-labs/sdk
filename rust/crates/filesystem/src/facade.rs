@@ -8427,10 +8427,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             failure.map_with_prior_work(*work, std::convert::identity)
                         })?;
                     *work = add(*work, metadata.work)?;
-                    operations.push(Mutation::SetMetadata {
-                        path,
-                        metadata: metadata.value,
-                    });
+                    if path.is_root() {
+                        // The root has a record but no namespace binding.
+                        operations.push(Mutation::File {
+                            file_id: self.root.root_file_id,
+                            mutation: FileMutation::SetMetadata {
+                                metadata: metadata.value,
+                            },
+                        });
+                    } else {
+                        operations.push(Mutation::SetMetadata {
+                            path,
+                            metadata: metadata.value,
+                        });
+                    }
                     Ok(None)
                 }
                 AuthoredMutation::Resize {
