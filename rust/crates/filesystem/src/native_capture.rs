@@ -4495,7 +4495,7 @@ fn add_work(
         .map_err(|error| OperationFailure::new(error.into(), left))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, unix, feature = "native-mount"))]
 mod root_capture_regression {
     use super::*;
 
