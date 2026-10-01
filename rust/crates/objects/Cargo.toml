@@ -56,3 +56,4 @@ rcgen = "0.14.10"
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "rt"] }
 tokio-stream.workspace = true
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring"] }
