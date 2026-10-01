@@ -99,7 +99,6 @@ impl PublicationHold {
     /// accounting evidence, or authorize collection or release. Remote claims
     /// must remain owned by the provider's existing durable authority; dropping
     /// this value must not release them.
-    #[must_use]
     pub const fn none() -> Self {
         Self { _gate: None }
     }

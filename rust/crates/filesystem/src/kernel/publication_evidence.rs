@@ -107,35 +107,7 @@ pub fn encode_generation_publication_evidence(
         file_count: proof.file_count,
     })?;
     let root = encode_generation_root(&proof.root)?;
-    let mut permit = Encoder::new(b"acyclic-fs-publication-permit-v1\0", 1);
-    match append.permit {
-        PublicationPermit::Unrestricted => permit.u8(0),
-        PublicationPermit::Lease {
-            authority_id,
-            workspace_id,
-            lease_id,
-            expires_at_millis,
-        } => {
-            permit.u8(1);
-            permit.fixed(&authority_id);
-            permit.fixed(&workspace_id);
-            permit.fixed(&lease_id);
-            permit.u64(expires_at_millis);
-        }
-        PublicationPermit::Reservation {
-            operation_id,
-            gate_tail,
-            expected,
-        } => {
-            permit.u8(2);
-            permit.fixed(&operation_id);
-            permit.u64(gate_tail);
-            permit.u64(expected.epoch.get());
-            permit.u64(expected.sequence.get());
-            permit.fixed(expected.digest.as_bytes());
-        }
-    }
-    let permit = permit.finish();
+    let permit = encode_publication_permit(append.permit);
     const DOMAIN: &[u8] = b"acyclic-fs-generation-publication-evidence-v1\0";
     let capacity = [
         DOMAIN.len(),
@@ -235,32 +207,7 @@ pub fn decode_generation_publication_evidence(
     let payload = Bytes::from(decoder.bounded_bytes(field_bound)?);
     let permit_bytes = decoder.bounded_bytes(field_bound)?;
     decoder.finish()?;
-    let mut permission = Decoder::new(
-        &permit_bytes,
-        b"acyclic-fs-publication-permit-v1\0",
-        1,
-        maximum_bytes,
-    )?;
-    let permit = match permission.u8()? {
-        0 => PublicationPermit::Unrestricted,
-        1 => PublicationPermit::Lease {
-            authority_id: permission.fixed()?,
-            workspace_id: permission.fixed()?,
-            lease_id: permission.fixed()?,
-            expires_at_millis: permission.u64()?,
-        },
-        2 => PublicationPermit::Reservation {
-            operation_id: permission.fixed()?,
-            gate_tail: permission.u64()?,
-            expected: Head {
-                epoch: epoch(permission.u64()?)?,
-                sequence: Sequence::new(permission.u64()?),
-                digest: Digest::from_bytes(permission.fixed()?),
-            },
-        },
-        _ => return Err(PublicationEvidenceError::Mismatch),
-    };
-    permission.finish()?;
+    let permit = decode_publication_permit(&permit_bytes, maximum_bytes)?;
     let request = PublishGenerationRequest {
         authority_id,
         volume_id,
@@ -306,4 +253,72 @@ pub fn decode_generation_publication_evidence(
         logical_file_bytes,
         append,
     })
+}
+
+fn encode_publication_permit(value: PublicationPermit) -> Vec<u8> {
+    let mut permit = Encoder::new(b"acyclic-fs-publication-permit-v1\0", 1);
+    match value {
+        PublicationPermit::Unrestricted => permit.u8(0),
+        PublicationPermit::Lease {
+            authority_id,
+            workspace_id,
+            lease_id,
+            expires_at_millis,
+        } => {
+            permit.u8(1);
+            permit.fixed(&authority_id);
+            permit.fixed(&workspace_id);
+            permit.fixed(&lease_id);
+            permit.u64(expires_at_millis);
+        }
+        PublicationPermit::Reservation {
+            operation_id,
+            gate_tail,
+            expected,
+        } => {
+            permit.u8(2);
+            permit.fixed(&operation_id);
+            permit.u64(gate_tail);
+            permit.u64(expected.epoch.get());
+            permit.u64(expected.sequence.get());
+            permit.fixed(expected.digest.as_bytes());
+        }
+    }
+    permit.finish()
+}
+
+fn decode_publication_permit(
+    permit_bytes: &[u8],
+    maximum_bytes: u64,
+) -> Result<PublicationPermit, PublicationEvidenceError> {
+    use super::codec::Decoder;
+    use crate::foundation::{Digest, Epoch, Head, Sequence};
+    let epoch = |value| Epoch::new(value).map_err(|_| PublicationEvidenceError::Mismatch);
+    let mut permission = Decoder::new(
+        permit_bytes,
+        b"acyclic-fs-publication-permit-v1\0",
+        1,
+        maximum_bytes,
+    )?;
+    let permit = match permission.u8()? {
+        0 => PublicationPermit::Unrestricted,
+        1 => PublicationPermit::Lease {
+            authority_id: permission.fixed()?,
+            workspace_id: permission.fixed()?,
+            lease_id: permission.fixed()?,
+            expires_at_millis: permission.u64()?,
+        },
+        2 => PublicationPermit::Reservation {
+            operation_id: permission.fixed()?,
+            gate_tail: permission.u64()?,
+            expected: Head {
+                epoch: epoch(permission.u64()?)?,
+                sequence: Sequence::new(permission.u64()?),
+                digest: Digest::from_bytes(permission.fixed()?),
+            },
+        },
+        _ => return Err(PublicationEvidenceError::Mismatch),
+    };
+    permission.finish()?;
+    Ok(permit)
 }
