@@ -1502,6 +1502,13 @@ mod tests {
     enum WatchReply {
         Reject(Code),
         Items(Vec<WatchItem>),
+        Script(std::sync::Arc<std::sync::Mutex<ObservationScript>>),
+    }
+
+    struct ObservationScript {
+        watches: std::collections::VecDeque<WatchReply>,
+        inspections: std::collections::VecDeque<Result<wire::OperationState, Code>>,
+        calls: Vec<&'static str>,
     }
 
     #[derive(Clone)]
@@ -1554,9 +1561,34 @@ mod tests {
         }
         async fn suspend(
             &self,
-            _request: Request<wire::MachineMutationRequest>,
+            request: Request<wire::MachineMutationRequest>,
         ) -> Result<Response<wire::MutationAdmission>, Status> {
-            Err(Status::unimplemented("suspend"))
+            let WatchReply::Script(script) = &self.watch else {
+                return Err(Status::unimplemented("suspend"));
+            };
+            let request = request.into_inner();
+            if request
+                .idempotency_key
+                .as_ref()
+                .map(|key| key.value.as_slice())
+                != Some(self.expected_key.as_bytes().as_slice())
+            {
+                return Err(Status::invalid_argument("idempotency key was substituted"));
+            }
+            let Some(wire::recovered_admission::Result::Suspend(admission)) =
+                &self.recovered.result
+            else {
+                return Err(Status::internal("missing suspend admission"));
+            };
+            if request.machine != admission.machine {
+                return Err(Status::invalid_argument("machine was substituted"));
+            }
+            script
+                .lock()
+                .expect("observation script")
+                .calls
+                .push("suspend");
+            Ok(Response::new(admission.clone()))
         }
         async fn wake(
             &self,
@@ -1635,6 +1667,13 @@ mod tests {
             request: Request<wire::OperationRequest>,
         ) -> Result<Response<wire::OperationState>, Status> {
             self.require_operation(&request.into_inner())?;
+            if let WatchReply::Script(script) = &self.watch {
+                script
+                    .lock()
+                    .expect("observation script")
+                    .calls
+                    .push("cancel");
+            }
             Ok(Response::new(self.cancelled.clone()))
         }
 
@@ -1643,6 +1682,16 @@ mod tests {
             request: Request<wire::OperationRequest>,
         ) -> Result<Response<wire::OperationState>, Status> {
             self.require_operation(&request.into_inner())?;
+            if let WatchReply::Script(script) = &self.watch {
+                let mut script = script.lock().expect("observation script");
+                script.calls.push("inspect");
+                return script
+                    .inspections
+                    .pop_front()
+                    .ok_or_else(|| Status::internal("unexpected inspection"))?
+                    .map(Response::new)
+                    .map_err(|code| Status::new(code, "inspection interrupted"));
+            }
             Ok(Response::new(self.inspected.clone()))
         }
 
@@ -1655,15 +1704,27 @@ mod tests {
             request: Request<wire::OperationRequest>,
         ) -> Result<Response<Self::WatchOperationStream>, Status> {
             self.require_operation(&request.into_inner())?;
-            match &self.watch {
-                WatchReply::Reject(code) => Err(Status::new(*code, "watch rejected")),
+            let reply = match &self.watch {
+                WatchReply::Script(script) => {
+                    let mut script = script.lock().expect("observation script");
+                    script.calls.push("watch");
+                    script
+                        .watches
+                        .pop_front()
+                        .ok_or_else(|| Status::internal("unexpected watch"))?
+                }
+                reply => reply.clone(),
+            };
+            match reply {
+                WatchReply::Reject(code) => Err(Status::new(code, "watch rejected")),
                 WatchReply::Items(items) => {
-                    let items = items.clone().into_iter().map(|item| match item {
+                    let items = items.into_iter().map(|item| match item {
                         WatchItem::State(value) => Ok(value),
                         WatchItem::Error(code) => Err(Status::new(code, "watch interrupted")),
                     });
                     Ok(Response::new(Box::pin(stream::iter(items))))
                 }
+                WatchReply::Script(_) => Err(Status::internal("nested observation script")),
             }
         }
     }
@@ -1740,6 +1801,117 @@ mod tests {
                 },
             )),
         }
+    }
+
+    fn scripted_operation_service(
+        watches: Vec<WatchReply>,
+        inspections: Vec<Result<wire::OperationState, Code>>,
+    ) -> (
+        OperationService,
+        std::sync::Arc<std::sync::Mutex<ObservationScript>>,
+        MachineId,
+    ) {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000041").expect("key");
+        let operation =
+            OperationId::parse("00000000-0000-0000-0000-000000000042").expect("operation");
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000043").expect("machine");
+        let script = std::sync::Arc::new(std::sync::Mutex::new(ObservationScript {
+            watches: watches.into(),
+            inspections: inspections.into(),
+            calls: Vec::new(),
+        }));
+        (
+            OperationService {
+                expected_key: key,
+                expected_operation: operation,
+                recovered: recovered_suspend(operation, operation, machine),
+                inspected: operation_state(operation, wire::OperationStatus::Pending),
+                cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+                watch: WatchReply::Script(script.clone()),
+            },
+            script,
+            machine,
+        )
+    }
+
+    #[tokio::test]
+    async fn accepted_mutation_resumes_after_eof_or_interruption_without_resubmission()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
+        for first_watch in [
+            WatchReply::Items(Vec::new()),
+            WatchReply::Items(vec![WatchItem::Error(Code::Unavailable)]),
+            WatchReply::Reject(Code::Unknown),
+        ] {
+            let (service, script, machine) = scripted_operation_service(
+                vec![
+                    first_watch,
+                    WatchReply::Items(vec![WatchItem::State(operation_state(
+                        operation,
+                        wire::OperationStatus::Succeeded,
+                    ))]),
+                ],
+                vec![Ok(operation_state(
+                    operation,
+                    wire::OperationStatus::Pending,
+                ))],
+            );
+            let key = service.expected_key;
+            let (machines, shutdown, server) = serve_operation_service(service).await?;
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(10),
+                Machine::new(machines, machine).suspend(key),
+            )
+            .await?;
+            let _ = shutdown.send(());
+            server.await??;
+            outcome?;
+            let script = script.lock().expect("observation script");
+            assert_eq!(script.calls, ["suspend", "watch", "inspect", "watch"]);
+            assert!(script.watches.is_empty());
+            assert!(script.inspections.is_empty());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ambiguous_watch_always_inspects_before_returning_original_recovery_key()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
+        for final_inspection in [
+            Ok(operation_state(operation, wire::OperationStatus::Succeeded)),
+            Err(Code::Unknown),
+        ] {
+            let expected_success = final_inspection.is_ok();
+            let (service, script, machine) = scripted_operation_service(
+                vec![WatchReply::Reject(Code::Unknown); 3],
+                vec![Err(Code::Unknown), Err(Code::Unknown), final_inspection],
+            );
+            let key = service.expected_key;
+            let (machines, shutdown, server) = serve_operation_service(service).await?;
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(10),
+                Machine::new(machines, machine).suspend(key),
+            )
+            .await?;
+            let _ = shutdown.send(());
+            server.await??;
+            if expected_success {
+                outcome?;
+            } else {
+                assert_eq!(outcome, Err(ProviderError::Indeterminate(key)));
+            }
+            let script = script.lock().expect("observation script");
+            assert_eq!(
+                script.calls,
+                [
+                    "suspend", "watch", "inspect", "watch", "inspect", "watch", "inspect"
+                ]
+            );
+            assert!(script.watches.is_empty());
+            assert!(script.inspections.is_empty());
+        }
+        Ok(())
     }
 
     #[tokio::test]
