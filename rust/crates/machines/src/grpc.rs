@@ -1395,11 +1395,7 @@ fn watch_error(key: IdempotencyKey, _value: tonic::Status) -> ProviderError {
 fn retryable_observation_error(value: &tonic::Status) -> bool {
     matches!(
         value.code(),
-        tonic::Code::Unavailable
-            | tonic::Code::DeadlineExceeded
-            | tonic::Code::Cancelled
-            | tonic::Code::Unknown
-            | tonic::Code::Internal
+        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled
     )
 }
 fn observed_outcome(
