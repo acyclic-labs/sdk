@@ -251,6 +251,7 @@ impl AuthorityStore for MemoryAuthorityStore {
             previous_digest: actual.digest,
             digest,
             payload: commit.payload,
+            settled_at_micros: None,
         };
         let index = state.commits.len();
         state.operations.insert(durable.operation_id, index);

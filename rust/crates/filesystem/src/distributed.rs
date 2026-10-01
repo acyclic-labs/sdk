@@ -122,6 +122,13 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         if self.is_retired(authority_id).await? {
             return Err(AuthorityStoreError::Retired);
         }
+        self.historical_snapshot(authority_id).await
+    }
+
+    async fn historical_snapshot(
+        &self,
+        authority_id: AuthorityId,
+    ) -> Result<AuthoritySnapshot, AuthorityStoreError> {
         let records = records_path(authority_id)?;
         let epochs = epochs_path(authority_id)?;
         let record_tail = self
@@ -147,7 +154,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             Head::genesis(epoch)
         } else {
             let record = read_one(self.provider.as_ref(), records, record_tail - 1).await?;
-            let durable = decode_durable(authority_id, &record.value)?;
+            let durable = decode_durable(authority_id, &record)?;
             if durable.sequence.get().saturating_add(1) != record_tail {
                 return Err(AuthorityStoreError::Corrupt(
                     "Stream sequence does not match filesystem authority sequence".to_owned(),
@@ -164,6 +171,37 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             record_tail,
             epoch_tail,
         })
+    }
+
+    /// Projects retained authority history, including retired workspaces.
+    /// The object store must still hold every required generation proof. This
+    /// read does not revive the authority or authorize writes or collection.
+    pub async fn accounting_page<O: crate::async_storage::AsyncObjectStore>(
+        &self,
+        objects: &O,
+        authority_id: AuthorityId,
+        cursor: crate::accounting::AccountingCursor,
+        maximum_records: u32,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::accounting::AccountingPage, crate::accounting::AccountingError> {
+        cancellation
+            .check()
+            .map_err(|error| crate::accounting::AccountingError::Authority(error.to_string()))?;
+        let head = self
+            .historical_snapshot(authority_id)
+            .await
+            .map_err(|error| crate::accounting::AccountingError::Authority(error.to_string()))?
+            .head;
+        crate::accounting::accounting_page_at_head(
+            self,
+            objects,
+            authority_id,
+            cursor,
+            maximum_records,
+            head,
+            cancellation,
+        )
+        .await
     }
 
     async fn is_retired(&self, authority_id: AuthorityId) -> Result<bool, AuthorityStoreError> {
@@ -466,6 +504,7 @@ fn first_record_commit(
             &commit.payload,
         ),
         payload: commit.payload.clone(),
+        settled_at_micros: None,
     };
     let encoded = StreamsDurableRecord::encode(&durable, STREAM_RECORD_LIMIT)
         .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
@@ -625,7 +664,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             Ok(tail) if tail >= 2 => Some(
                 read_one(self.provider.as_ref(), records, 1)
                     .await
-                    .and_then(|record| decode_durable(authority, &record.value))
+                    .and_then(|record| decode_durable(authority, &record))
                     .map_err(|error| OperationFailure::new(error, work))?,
             ),
             Ok(_) | Err(acyclic_stream::StreamError::NotFound) => None,
@@ -1079,12 +1118,15 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
                 &commit.payload,
             ),
             payload: commit.payload,
+            settled_at_micros: None,
         };
         let encoded =
             StreamsDurableRecord::encode(&durable, STREAM_RECORD_LIMIT).map_err(|error| {
                 OperationFailure::before_work(AuthorityStoreError::Rejected(error.to_string()))
             })?;
         let records = records_path(authority_id).map_err(OperationFailure::before_work)?;
+        let committed_path = records.clone();
+        let expected_record = encoded.clone();
         let epochs = epochs_path(authority_id).map_err(OperationFailure::before_work)?;
         let gate = publication_gate_path(authority_id).map_err(OperationFailure::before_work)?;
         let mut conditions = vec![
@@ -1223,7 +1265,33 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
             self.provider.commit(request).await
         };
         match commit_result {
-            Ok(acyclic_stream::CommitOutcome::Committed(_)) => {
+            Ok(acyclic_stream::CommitOutcome::Committed(envelope)) => {
+                let record = envelope
+                    .mutations
+                    .iter()
+                    .find_map(|mutation| match mutation {
+                        acyclic_stream::CommittedMutation::Append(append)
+                            if append.path == committed_path =>
+                        {
+                            append
+                                .records
+                                .iter()
+                                .find(|record| record.sequence == durable.sequence.get())
+                        }
+                        _ => None,
+                    })
+                    .filter(|record| record.value == expected_record)
+                    .ok_or_else(|| {
+                        OperationFailure::new(
+                            AuthorityStoreError::Corrupt(
+                                "Stream commit omitted the FS authority record".to_owned(),
+                            ),
+                            work,
+                        )
+                    })?;
+                let mut durable = durable;
+                durable.settled_at_micros =
+                    (record.committed_at_micros != 0).then_some(record.committed_at_micros);
                 authority_success(FsAppendOutcome::Committed(durable), work, budget)
             }
             Ok(acyclic_stream::CommitOutcome::Conflict(conflicts)) => {
@@ -1545,8 +1613,8 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         while let Some(record) = stream.next().await {
             let record =
                 record.map_err(|error| OperationFailure::before_work(map_stream_error(error)))?;
-            let durable = decode_durable(authority_id, &record.value)
-                .map_err(OperationFailure::before_work)?;
+            let durable =
+                decode_durable(authority_id, &record).map_err(OperationFailure::before_work)?;
             payload_bytes = payload_bytes
                 .checked_add(u64::try_from(durable.payload.len()).unwrap_or(u64::MAX))
                 .ok_or_else(|| {
@@ -1810,7 +1878,7 @@ fn durable_from_operation_envelope(
                 ));
             }
         };
-        let durable = decode_durable(authority_id, &record.value)?;
+        let durable = decode_durable(authority_id, &record)?;
         if durable.operation_id != operation_id || retained.replace(durable).is_some() {
             return Err(AuthorityStoreError::Corrupt(
                 "operation envelope does not bind its authority operation".to_owned(),
@@ -2083,9 +2151,9 @@ async fn read_one<P: acyclic_stream::StreamProvider>(
 
 fn decode_durable(
     authority_id: AuthorityId,
-    encoded: &[u8],
+    record: &acyclic_stream::Record,
 ) -> Result<DurableCommit, AuthorityStoreError> {
-    let durable = StreamsDurableRecord::decode(encoded, STREAM_RECORD_LIMIT)
+    let mut durable = StreamsDurableRecord::decode(&record.value, STREAM_RECORD_LIMIT)
         .map_err(|error| AuthorityStoreError::Corrupt(error.to_string()))?
         .0;
     let expected = authority_commit_digest(
@@ -2102,6 +2170,8 @@ fn decode_durable(
             "Stream authority record digest mismatch".to_owned(),
         ));
     }
+    durable.settled_at_micros =
+        (record.committed_at_micros != 0).then_some(record.committed_at_micros);
     Ok(durable)
 }
 

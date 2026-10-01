@@ -152,6 +152,7 @@ pub(crate) fn decode_commit(
         previous_digest,
         digest,
         payload,
+        settled_at_micros: None,
     })
 }
 
@@ -207,6 +208,7 @@ pub(crate) fn decode_commit_owned(
         previous_digest,
         digest,
         payload,
+        settled_at_micros: None,
     })
 }
 
@@ -397,6 +399,7 @@ mod tests {
             previous_digest,
             digest,
             payload,
+            settled_at_micros: None,
         };
         let encoded = encode_commit(&commit)?;
         assert_eq!(decode_commit(authority_id, &encoded, 1_024)?, commit);

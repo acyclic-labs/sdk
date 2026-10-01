@@ -10540,6 +10540,7 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
             config: config(),
             initial_generation_root: generation_root,
         })?),
+        settled_at_micros: None,
     };
     assert!(matches!(
         generation_from_record(&creation, expected_volume, WorkCounters::default()),
