@@ -1,4 +1,6 @@
 import { pathValue, validateAppend } from "./client.js";
+import { toBinary } from "@bufbuild/protobuf";
+import { AcknowledgeDeliveryRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
 import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
 import { publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
@@ -11,6 +13,11 @@ export interface HttpStreamProviderOptions { readonly endpoint: string; readonly
 
 /** Authenticated JSON transport. Mutation retries are deliberately the caller's decision. */
 export class HttpStreamProvider implements StreamProvider {
+  /** Hosted transport receipt only; it does not establish application consumption. */
+  async acknowledgeDelivery(deliveryToken: Uint8Array): Promise<void> {
+    const input = toBinary(AcknowledgeDeliveryRequestSchema, { $typeName: "acyclic.stream.v2.AcknowledgeDeliveryRequest", deliveryToken: deliveryToken.slice() });
+    await this.#request("delivery/acknowledge", await encodeHttpRequest("delivery/acknowledge", input));
+  }
   readonly #endpoint: string;
   readonly #token: string;
   readonly #fetcher: typeof fetch;

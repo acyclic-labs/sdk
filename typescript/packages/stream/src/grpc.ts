@@ -4,7 +4,7 @@ import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v2/stream_pb.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { encodeHttpRequest, normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, commitId } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
@@ -15,6 +15,8 @@ export interface StreamGrpcOptions {
   readonly token: string;
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
+  /** Translating servers must establish their own downstream delivery evidence. */
+  readonly acknowledgeDeliveries?: boolean;
 }
 
 /** Complete Stream v2 gRPC client, including streaming reads/follow and atomic Commit. */
@@ -35,7 +37,20 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
 /** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */
 export class GrpcStreamProvider implements StreamProvider {
   readonly #client: ReturnType<typeof createStreamGrpcClient>;
-  constructor(options: StreamGrpcOptions) { this.#client = createStreamGrpcClient(options); }
+  readonly #acknowledgeDeliveries: boolean;
+  constructor(options: StreamGrpcOptions) { this.#client = createStreamGrpcClient(options); this.#acknowledgeDeliveries = options.acknowledgeDeliveries !== false; }
+
+  /** Hosted transport receipt only; it does not establish application consumption. */
+  async acknowledgeDelivery(deliveryToken: Uint8Array): Promise<void> {
+    const request = { $typeName: "acyclic.stream.v2.AcknowledgeDeliveryRequest" as const, deliveryToken: deliveryToken.slice() };
+    // Rust owns the opaque token bound for both transports.
+    await encodeHttpRequest("delivery/acknowledge", toBinary(wire.AcknowledgeDeliveryRequestSchema, request));
+    await this.#call("acknowledge_delivery", () => this.#client.acknowledgeDelivery(request, { timeoutMs: 500 }));
+  }
+  async #acknowledgeReceived(deliveryToken: Uint8Array): Promise<void> {
+    if (!this.#acknowledgeDeliveries || deliveryToken.length === 0) return;
+    try { await this.acknowledgeDelivery(deliveryToken); } catch { /* A lost ACK never changes a received record. */ }
+  }
 
   async #call<T>(operation: string, call: () => Promise<T>): Promise<T> {
     try { return await call(); } catch (error) { throw providerError(error, operation); }
@@ -77,6 +92,7 @@ export class GrpcStreamProvider implements StreamProvider {
       for await (const response of this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)))) {
         if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
         const record = checkedRecord(response.record, next);
+        await this.#acknowledgeReceived(response.deliveryToken);
         next = record.sequence + 1n;
         yield record;
       }
@@ -91,6 +107,7 @@ export class GrpcStreamProvider implements StreamProvider {
       for await (const response of this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), options.signal === undefined ? {} : { signal: options.signal })) {
         if (options.signal?.aborted) return;
         const record = checkedRecord(response.record, next);
+        await this.#acknowledgeReceived(response.deliveryToken);
         next = record.sequence + 1n;
         yield record;
       }

@@ -7,6 +7,7 @@ import type {
 } from "./types.js";
 
 export const HTTP_RESPONSE_CONTRACT = Object.freeze({
+  "delivery/acknowledge": "empty",
   "idempotency/inspect": "observation",
   "tail": "sequence",
   "append": "append",
@@ -22,6 +23,7 @@ export const HTTP_RESPONSE_CONTRACT = Object.freeze({
 export type HttpRoute = keyof typeof HTTP_RESPONSE_CONTRACT;
 
 type HttpResponseByKind = {
+  empty: void;
   observation: IdempotencyObservation | undefined;
   sequence: Sequence;
   append: AppendResult;

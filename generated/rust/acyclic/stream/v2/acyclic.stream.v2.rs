@@ -107,6 +107,20 @@ pub struct FollowRequest {
 pub struct ReadResponse {
     #[prost(message, optional, tag = "1")]
     pub record: ::core::option::Option<Record>,
+    /// Opaque, one-use token issued by a hosted server for this delivered record.
+    /// Absent on local and older servers; its presence never changes read results.
+    #[prost(bytes = "vec", tag = "2")]
+    pub delivery_token: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AcknowledgeDeliveryRequest {
+    /// Exactly 32 opaque bytes from the issuing endpoint. This acknowledges
+    /// transport receipt, not application consumption or permission to bill.
+    #[prost(bytes = "vec", tag = "1")]
+    pub delivery_token: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AcknowledgeDeliveryResponse {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ChildrenRequest {

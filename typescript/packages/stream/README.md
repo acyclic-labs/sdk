@@ -1,5 +1,13 @@
 # @acyclic-labs/stream
 
+The Node/Bun gRPC provider best-effort acknowledges optional hosted delivery
+tokens after validating each received record. Translating servers set
+`acknowledgeDeliveries: false` and establish their own downstream evidence.
+Both gRPC and HTTP providers expose `acknowledgeDelivery` for opaque tokens from
+the issuing endpoint. ACKs establish transport receipt, not application
+consumption, Actor checkpoints or billable egress. Hosted issuance and retention
+remain service dependencies; local providers issue no tokens.
+
 For Node/Bun gRPC, import `createStreamGrpcClient` from
 `@acyclic-labs/stream/grpc` with `{ endpoint, token }`. It exposes every
 canonical Stream v2 RPC, including streaming reads/follow and atomic multi-path
