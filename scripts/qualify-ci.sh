@@ -246,6 +246,12 @@ case "$lane" in
     sudo apt-get update -qq
     sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y musl-tools
     rustup target add "$target"
+    # Run capture admission and publication in the shipped libc ABI. Path
+    # statx and held-descriptor fstat can expose different optional metadata.
+    CC_aarch64_unknown_linux_musl=musl-gcc \
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
+      cargo test -p acyclic-fs --features native-mount --locked \
+        --target "$target" --lib native_capture::
     CC_aarch64_unknown_linux_musl=musl-gcc \
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
       CARGO_BUILD_TARGET="$target" node scripts/build-product.mjs
