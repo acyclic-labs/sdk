@@ -75,55 +75,55 @@ jobs:
       # A marker records the run that qualified a lane's exact inputs.
       - name: Find gate marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/gate.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['gate'] }}
       - name: Find linux marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux'] }}
       - name: Find web marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/web.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['web'] }}
       - name: Find linux-arm64 marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-arm64.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-arm64'] }}
       - name: Find linux-musl marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-musl.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-musl'] }}
       - name: Find linux-arm64-musl marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-arm64-musl.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-arm64-musl'] }}
       - name: Find windows marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/windows.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['windows'] }}
       - name: Find macos marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/macos.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['macos'] }}
       - name: Find policy marker
         if: env.FORCE != 'true'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/policy.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['policy'] }}
