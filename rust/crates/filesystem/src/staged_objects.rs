@@ -825,6 +825,20 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         Some(&self.collection)
     }
 
+    async fn prepare_generation_publication(
+        &self,
+        request: &crate::kernel::PublishGenerationRequest,
+        proof: &crate::kernel::GenerationProof,
+        append: &crate::GuardedAppend,
+        scope: PublicationScope<'_>,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> ObjectResult<()> {
+        self.inner
+            .prepare_generation_publication(request, proof, append, scope, budget, cancellation)
+            .await
+    }
+
     async fn read(
         &self,
         object_id: ObjectId,

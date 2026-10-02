@@ -328,18 +328,37 @@ async fn publish_generation_async_inner<
     work = work
         .checked_add(drained.work)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
+    let append = crate::GuardedAppend {
+        authority_id: request.authority_id,
+        epoch: request.epoch,
+        expected: request.expected,
+        commit: prepared.commit,
+        permit: intent.permit,
+    };
+    let custody = objects
+        .prepare_generation_publication(
+            &request,
+            &prepared.proof,
+            &append,
+            crate::PublicationScope::Closure {
+                objects: &prepared.proof.objects,
+                proven_at,
+            },
+            work.remaining(budget)
+                .map_err(|error| OperationFailure::new(error.into(), work))?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
+    work = work
+        .checked_add(custody.work)
+        .map_err(|error| OperationFailure::new(error.into(), work))?;
     let remaining = work
         .remaining(budget)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
     let receipt = crate::AsyncAuthorityStore::compare_and_append_guarded(
         authority,
-        crate::GuardedAppend {
-            authority_id: request.authority_id,
-            epoch: request.epoch,
-            expected: request.expected,
-            commit: prepared.commit,
-            permit: intent.permit,
-        },
+        append,
         remaining,
         cancellation,
     )

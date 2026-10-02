@@ -670,6 +670,39 @@ pub trait AsyncObjectStore: StorageProvider {
         None
     }
 
+    /// Provider-owned preparation for the exact canonical generation append.
+    /// Called after the proven closure is flushed, while its publication hold
+    /// remains live, and before the authority compare-and-append.
+    ///
+    /// A hosted provider can retain the original proof and exact object-reference
+    /// mapping in its existing accepted-operation journal here. It must verify
+    /// current protected authority itself, preserve accepted retry identities,
+    /// and reconcile an ambiguous append before releasing any durable claim.
+    /// Neither these SDK values nor successful preparation grant permission,
+    /// prove final acceptance, or authorize historical-proof collection.
+    /// The default adds no custody for stores without a hosted journal.
+    fn prepare_generation_publication(
+        &self,
+        _request: &crate::kernel::PublishGenerationRequest,
+        _proof: &crate::kernel::GenerationProof,
+        _append: &GuardedAppend,
+        _scope: PublicationScope<'_>,
+        _budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> impl Future<Output = ObjectResult<()>> + StorageFuture {
+        async move {
+            cancellation.check().map_err(|_| {
+                crate::storage::ObjectFailure::before_work(
+                    crate::storage::ObjectStoreError::Cancelled,
+                )
+            })?;
+            Ok(crate::storage::ObjectReceipt {
+                value: (),
+                work: WorkCounters::default(),
+            })
+        }
+    }
+
     /// The count a proof records before it starts, for
     /// [`PublicationScope::Closure`].
     fn collection_sweeps(&self) -> u64 {
