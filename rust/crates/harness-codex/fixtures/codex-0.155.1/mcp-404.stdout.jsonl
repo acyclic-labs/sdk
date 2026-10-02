@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a0fdbe-dd71-7a72-bed5-b61f15c5207c"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hi from fake"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":0,"output_tokens":7,"reasoning_output_tokens":3}}

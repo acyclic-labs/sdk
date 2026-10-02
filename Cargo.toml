@@ -8,6 +8,7 @@ members = [
   "rust/crates/filesystem-napi",
   "rust/crates/filesystem-wasm",
   "rust/crates/harness",
+  "rust/crates/harness-codex",
   "rust/crates/inference",
   "rust/crates/inference-contract",
   "rust/crates/inference-wasm",

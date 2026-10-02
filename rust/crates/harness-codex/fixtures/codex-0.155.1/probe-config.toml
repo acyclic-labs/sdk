@@ -1,0 +1,33 @@
+# Full probe config (validated with --strict-config against codex-cli 0.155.1)
+model = "gpt-5.5"
+model_provider = "fake"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+web_search = "disabled"
+check_for_update_on_startup = false
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[features]
+multi_agent = false   # alias: collab. Removes multi_agent_v1 namespace / tool_search
+goals = false
+plugins = false       # stops outbound github.com / api.github.com / chatgpt.com calls
+
+[model_providers.fake]
+name = "Fake Responses"
+base_url = "http://127.0.0.1:18765/v1"
+wire_api = "responses"
+env_key = "FAKE_PROVIDER_KEY"
+request_max_retries = 4
+stream_max_retries = 5
+
+[mcp_servers.probe]
+url = "http://127.0.0.1:18765/mcp"
+bearer_token_env_var = "FAKE_PROVIDER_KEY"
+startup_timeout_sec = 5
+tool_timeout_sec = 30
+required = false
