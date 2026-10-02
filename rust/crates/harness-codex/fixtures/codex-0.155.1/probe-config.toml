@@ -31,3 +31,4 @@ bearer_token_env_var = "FAKE_PROVIDER_KEY"
 startup_timeout_sec = 5
 tool_timeout_sec = 30
 required = false
+omit_tools_from = ["deferred", "code_mode"]  # added after the probe; accepted by --strict-config in tests/e2e.rs

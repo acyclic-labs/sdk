@@ -5,6 +5,7 @@
 //!   cargo test -p acyclic-harness-codex --test e2e -- --ignored`
 //! or `rust/crates/harness-codex/verify.sh e2e`, which resolves it for you.
 
+#![cfg(unix)]
 #![allow(
     clippy::expect_used,
     clippy::panic,
@@ -26,7 +27,10 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use support::{FakeUpstream, Journal, RecordingMeter, function_call_turn, message_turn, sse};
+use support::{
+    FakeUpstream, Journal, RecordingMeter, function_call_turn, message_turn, namespaced_call_turn,
+    sse,
+};
 
 fn codex() -> PathBuf {
     let path = std::env::var_os("ACYCLIC_CODEX_BIN")
@@ -39,12 +43,19 @@ fn codex() -> PathBuf {
 /// does not depend on how Codex namespaces MCP tools.
 async fn scripted() -> FakeUpstream {
     FakeUpstream::start(|n, request| {
-        let tools: Vec<String> = request.body["tools"]
+        // MCP tools arrive as {"type":"namespace","name":"mcp__acyclic","tools":[…]}.
+        let echo = request.body["tools"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
-            .collect();
+            .find_map(|tool| {
+                let namespace = tool["name"].as_str()?;
+                tool["tools"].as_array()?.iter().find_map(|inner| {
+                    let name = inner["name"].as_str()?;
+                    name.contains("acyclic_echo")
+                        .then(|| (namespace.to_owned(), name.to_owned()))
+                })
+            });
         let calls_so_far = request.body["input"].as_array().map_or(0, |input| {
             input
                 .iter()
@@ -53,11 +64,16 @@ async fn scripted() -> FakeUpstream {
         });
         match calls_so_far {
             0 => {
-                let echo = tools
-                    .iter()
-                    .find(|name| name.contains("acyclic_echo"))
-                    .expect("echo offered over MCP");
-                sse(function_call_turn(n, echo, &json!({"text": "from codex"})))
+                let Some((namespace, name)) = echo else {
+                    eprintln!("TOOLS: {}", request.body["tools"]);
+                    return sse(message_turn(n, "no echo offered"));
+                };
+                sse(namespaced_call_turn(
+                    n,
+                    &namespace,
+                    &name,
+                    &json!({"text": "from codex"}),
+                ))
             }
             1 => sse(function_call_turn(
                 n,

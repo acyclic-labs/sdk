@@ -186,14 +186,19 @@ version = "0.2.0"
 dependencies = [
  "acyclic-harness",
  "axum",
+ "blake3",
  "futures",
+ "jsonschema",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
  "toml",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

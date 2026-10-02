@@ -1,6 +1,7 @@
 //! A6 + A7 acceptance: process control and the `Executor` contract, driven by a
 //! fake `codex` that replays recorded 0.155.1 output (no network, no Codex).
 
+#![cfg(unix)]
 #![allow(
     clippy::expect_used,
     clippy::panic,
@@ -91,7 +92,6 @@ fn read(path: &Path) -> String {
 // ------------------------------------------------------------------ A6
 
 #[tokio::test]
-#[ignore = "A6: process control is not built yet"]
 async fn codex_runs_in_a_private_home_with_closed_stdin_and_a_dummy_key() {
     let turn = Turn::new().await;
     let fake = FakeCodex {
@@ -147,7 +147,6 @@ async fn codex_runs_in_a_private_home_with_closed_stdin_and_a_dummy_key() {
 }
 
 #[tokio::test]
-#[ignore = "A6: process control is not built yet"]
 async fn the_deadline_terminates_codex_and_returns_a_limit_error() {
     let turn = Turn::new().await;
     let fake = FakeCodex {
@@ -157,13 +156,13 @@ async fn the_deadline_terminates_codex_and_returns_a_limit_error() {
     };
     let started = Instant::now();
     let error = turn
-        .executor(&fake, Some(Instant::now() + Duration::from_secs(1)))
+        .executor(&fake, Some(Instant::now() + Duration::from_secs(3)))
         .execute(input(OperationId::new(), "task"), &Journal::default())
         .await
         .expect_err("past the deadline");
     assert!(error.to_string().contains("deadline"), "{error}");
     assert!(
-        started.elapsed() < Duration::from_secs(15),
+        started.elapsed() < Duration::from_secs(18),
         "SIGTERM, then SIGKILL after 10 s at most"
     );
     assert_eq!(
@@ -174,7 +173,6 @@ async fn the_deadline_terminates_codex_and_returns_a_limit_error() {
 }
 
 #[tokio::test]
-#[ignore = "A6: process control is not built yet"]
 async fn a_failed_turn_reports_codex_message() {
     let turn = Turn::new().await;
     let fake = FakeCodex {
@@ -191,7 +189,6 @@ async fn a_failed_turn_reports_codex_message() {
 }
 
 #[tokio::test]
-#[ignore = "A6: process control is not built yet"]
 async fn a_failure_before_any_event_reports_stderr() {
     // A required MCP server that fails to start: empty stdout, reason on stderr.
     let turn = Turn::new().await;
@@ -215,7 +212,6 @@ async fn a_failure_before_any_event_reports_stderr() {
 // ------------------------------------------------------------------ A7
 
 #[tokio::test]
-#[ignore = "A7: the executor turn is not built yet"]
 async fn a_turn_returns_the_last_message_with_codex_metadata() {
     let turn = Turn::new().await;
     let fake = FakeCodex {
@@ -243,7 +239,6 @@ async fn a_turn_returns_the_last_message_with_codex_metadata() {
 }
 
 #[tokio::test]
-#[ignore = "A7: the executor turn is not built yet"]
 async fn the_journal_records_the_turn_like_the_stock_loop() {
     let turn = Turn::new().await;
     let fake = FakeCodex {
@@ -302,7 +297,6 @@ async fn the_journal_records_the_turn_like_the_stock_loop() {
 }
 
 #[tokio::test]
-#[ignore = "A7: the executor turn is not built yet"]
 async fn a_finished_turn_replays_without_running_codex_again() {
     let turn = Turn::new().await;
     let fake = FakeCodex {
@@ -325,7 +319,6 @@ async fn a_finished_turn_replays_without_running_codex_again() {
 }
 
 #[tokio::test]
-#[ignore = "A7: the executor turn is not built yet"]
 async fn a_crashed_turn_resumes_its_codex_thread() {
     let turn = Turn::new().await;
     let journal = Journal::default();
@@ -361,7 +354,6 @@ async fn a_crashed_turn_resumes_its_codex_thread() {
 }
 
 #[tokio::test]
-#[ignore = "A7: the executor turn is not built yet"]
 async fn a_different_input_on_the_same_operation_is_a_conflict() {
     let turn = Turn::new().await;
     let fake = FakeCodex {

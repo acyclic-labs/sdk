@@ -11,7 +11,7 @@ Status, 2026-10-02:
 
 | Phase | State |
 | --- | --- |
-| A sdk | A1 scaffold, A4 config and A5 events are built and tested. A2, A3, A6, A7 and A8 have acceptance tests written and failing. |
+| A sdk | A1–A8 built. 39 tests pass, and the 3 e2e tests pass against the real Codex 0.155.1 locally; CI runs them on Linux and macOS. |
 | B cloud | B1 is done (`3d4ff424`, unrebased). B2–B7 have gates written. |
 | C eval-swarm | Gate written |
 | D website | Gate written |
@@ -54,6 +54,11 @@ pinned by a test.
 8. **A required MCP server that fails leaves stdout empty.** The reason is only on stderr, so the
    executor keeps a 64 KB stderr tail. Pinned by `fixtures::a_required_mcp_server_failure…` and
    `executor::a_failure_before_any_event_reports_stderr`.
+9. **MCP tools are hidden by default.** 0.155.1 puts every MCP tool behind its `tool_search` tool, so the
+   model never sees ours. `omit_tools_from = ["deferred", "code_mode"]` on our server lists them directly,
+   as a `{"type":"namespace","name":"mcp__acyclic","tools":[…]}` entry. The model calls them with
+   `function_call{namespace: "mcp__acyclic", name: "acyclic_echo"}`. Found by the e2e test; the config
+   snapshot pins it.
 
 ## Phase A: this crate
 
@@ -72,7 +77,7 @@ code, and no change to any other sdk crate.
 
 Unbuilt parts return `Error::Unsupported("… not built yet (Ax)")`, so a premature consumer fails loudly.
 
-### A2 Metered Responses proxy (`src/proxy.rs`)
+### A2 Metered Responses proxy (`src/proxy.rs`): done
 
 - **Server:** axum on `127.0.0.1:0`, serving `POST /v1/responses` only. Any other path gets 404
   `{"error":{"message":"… /v1/models …"}}` and one log line.
@@ -93,7 +98,7 @@ Unbuilt parts return `Error::Unsupported("… not built yet (Ax)")`, so a premat
 - **Gate:** `tests/proxy.rs`, 7 tests: real key, deep merge, frame pass-through under 350 ms, meter stop to 429
   with 1 upstream request, step cap, 404 path, error pass-through, failed SSE not metered.
 
-### A3 MCP endpoint (`src/mcp.rs`)
+### A3 MCP endpoint (`src/mcp.rs`): done
 
 - **Server:** hand-rolled JSON-RPC over axum at `/mcp`, protocol `2025-06-18`. It handles `initialize`,
   `notifications/initialized` (202), `tools/list` and `tools/call`, with JSON responses (the rmcp client accepts
@@ -121,7 +126,7 @@ Typed `CodexEvent` and `ItemKind`. Unknown types are kept as `Other`. `Transcrip
 that every recorded line maps to a typed event, and cover shell and patch items, cumulative usage, retries,
 duplicate keys and unknown types.
 
-### A6 Process control (`src/process.rs`)
+### A6 Process control (`src/process.rs`): done
 
 - **Command:** `<binary> exec --json --strict-config --skip-git-repo-check -m <model> -C <workspace>
   [resume <thread>] <prompt>`, run through `spawn_process_tree` with stdin set to null and stdout read line by
@@ -141,7 +146,7 @@ duplicate keys and unknown types.
   - no events at all: the error includes the stderr tail
 - **Gate:** `tests/executor.rs`, the 4 tests tagged A6, using the replaying fake `codex`.
 
-### A7 Executor and journal mapping (`src/executor.rs`)
+### A7 Executor and journal mapping (`src/executor.rs`): done
 
 - **`Started`:** digest of `EXECUTOR_ID`, `CODEX_VERSION`, model, input, `subagents`, `max_steps`, the
   instructions, the granted tool definitions, and the policy identity. Ports and tokens are excluded. An
@@ -167,15 +172,14 @@ duplicate keys and unknown types.
   `resume_thread` set in the config means a follow-up turn: `resume <thread>` with the input as prompt.
 - **Gate:** `tests/executor.rs`, the 5 tests tagged A7.
 
-### A8 End-to-end against real Codex
+### A8 End-to-end against real Codex: done
 
 - **Tests:** `tests/e2e.rs` has 3 tests. The real pinned binary talks to the scripted `FakeUpstream`
   (MCP echo, then `exec_command`, then answer). A spent budget ends the turn after 1 upstream request, and
   `max_steps = 1` ends it on the step cap. No OpenAI traffic.
-- **CI, once green locally:** in `.github/workflows/agent-host-qualification.yml`, add
-  `rust/crates/harness-codex/**` to the path filter. Add a linux step after "Resolve codex":
-  `ACYCLIC_CODEX_BIN=${{ steps.codex.outputs.binary }} cargo test -p acyclic-harness-codex --test e2e --
-  --ignored`.
+- **CI:** `.github/workflows/agent-host-qualification.yml` gains `rust/crates/harness{,-codex}/**` in its path
+  filter and a "Run codex executor scenario" step on the Linux and macOS lanes. The crate is
+  `#![cfg(unix)]`, so the Windows lane's `cargo test --workspace` still builds.
 
 ### A9 Docs and merge
 
@@ -254,9 +258,9 @@ check` and `check:cli-snippets`.
 
 | Gate | Command | Needs | State today |
 | --- | --- | --- | --- |
-| A unit | `rust/crates/harness-codex/verify.sh unit` | nothing | green: 16 tests |
-| A acceptance | `verify.sh status` | nothing | 21 pending (A2 ×7, A3 ×5, A6 ×4, A7 ×5) |
-| A e2e | `verify.sh e2e` | npm (resolves pinned codex); no API key | 3 failing (pending A7) |
+| A unit | `rust/crates/harness-codex/verify.sh unit` | nothing | green: 39 tests |
+| A acceptance | `verify.sh status` | nothing | 0 pending (every acceptance test has been un-ignored) |
+| A e2e | `verify.sh e2e` | npm (resolves pinned codex); no API key | green: 3 tests; also in `agent-host-qualification.yml` |
 | B | `codex-harness/verify-phase.sh B` | cloud worktree | red (B2 pin missing) |
 | B live | `verify-phase.sh B-probe [--daytona S]` | `OPENAI_API_KEY`; billable | not run |
 | No regression | `verify-phase.sh regress` | cloud worktree | run before every B merge |

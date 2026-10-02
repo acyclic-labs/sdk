@@ -8,6 +8,7 @@ release commit.
 
 - Move the public Objects SDK and native Filesystem composition to canonical v2, retiring active v1 clients and engine. Keep published v1 wire history immutable. Existing v1 local roots fail closed without upgrade or overwrite.
 - Complete the public Actors v1, Workers v1 and Stream v2 transport surfaces under the unified breaking candidate version. Publication and live Cloud acceptance require separate qualification.
+- Add `acyclic-harness-codex` (unpublished): an `Executor` that runs a turn as one pinned Codex CLI 0.155.1 process. Model calls go through a metered local Responses proxy, and the consumer's granted tools are served over MCP. It is qualified end to end against the real binary.
 
 ## 0.1.1 - 2026-09-24
 

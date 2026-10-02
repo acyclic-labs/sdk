@@ -1,6 +1,7 @@
 //! A2 acceptance: the metered Responses proxy. Remove each `#[ignore]` as the
 //! behaviour lands; `verify.sh status` lists what is still pending.
 
+#![cfg(unix)]
 #![allow(
     clippy::expect_used,
     clippy::panic,
@@ -54,7 +55,6 @@ async fn post(proxy: &ResponsesProxy, body: &Value) -> reqwest::Response {
 }
 
 #[tokio::test]
-#[ignore = "A2: the proxy is not built yet"]
 async fn forwards_with_the_real_key_and_merges_extra_body() {
     let fake = FakeUpstream::message("hello").await;
     let meter = Arc::new(RecordingMeter::default());
@@ -97,7 +97,6 @@ async fn forwards_with_the_real_key_and_merges_extra_body() {
 }
 
 #[tokio::test]
-#[ignore = "A2: the proxy is not built yet"]
 async fn sse_frames_are_passed_through_as_they_arrive() {
     let fake = FakeUpstream::start(|n, _| Reply::Sse {
         events: message_turn(n, "slow"),
@@ -122,7 +121,6 @@ async fn sse_frames_are_passed_through_as_they_arrive() {
 }
 
 #[tokio::test]
-#[ignore = "A2: the proxy is not built yet"]
 async fn a_stopping_meter_refuses_the_next_call_the_way_codex_stops_on() {
     let fake = FakeUpstream::message("hello").await;
     let proxy = ResponsesProxy::start(
@@ -151,7 +149,6 @@ async fn a_stopping_meter_refuses_the_next_call_the_way_codex_stops_on() {
 }
 
 #[tokio::test]
-#[ignore = "A2: the proxy is not built yet"]
 async fn the_step_cap_refuses_the_call_after_the_last_step() {
     let fake = FakeUpstream::message("hello").await;
     let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 2)
@@ -166,7 +163,6 @@ async fn the_step_cap_refuses_the_call_after_the_last_step() {
 }
 
 #[tokio::test]
-#[ignore = "A2: the proxy is not built yet"]
 async fn other_paths_are_a_visible_404() {
     let fake = FakeUpstream::message("hello").await;
     let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 8)
@@ -186,7 +182,6 @@ async fn other_paths_are_a_visible_404() {
 }
 
 #[tokio::test]
-#[ignore = "A2: the proxy is not built yet"]
 async fn upstream_errors_pass_through_unchanged() {
     for code in [400_u16, 401, 500] {
         let fake = FakeUpstream::start(move |_, _| {
@@ -209,7 +204,6 @@ async fn upstream_errors_pass_through_unchanged() {
 }
 
 #[tokio::test]
-#[ignore = "A2: the proxy is not built yet"]
 async fn a_failed_sse_response_is_not_metered_as_usage() {
     let fake = FakeUpstream::start(|n, _| {
         sse(vec![

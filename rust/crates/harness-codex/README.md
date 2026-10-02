@@ -15,4 +15,4 @@ An `acyclic_harness::executor::Executor` that runs a whole turn as one OpenAI Co
 The difference from `StockExecutor`: Codex owns context assembly and compaction, so `ContextPipeline` stages
 do not run.
 
-Status: under construction. See `DESIGN.md` for the plan and `verify.sh` for the gates.
+See `DESIGN.md` for the design and `verify.sh` for the gates (`verify.sh e2e` runs the real pinned Codex against a scripted upstream, with no API key).

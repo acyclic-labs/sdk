@@ -2,6 +2,7 @@
 //! recorded fixtures. These run now and on every fixture re-record: if a Codex
 //! upgrade changes one, the design note next to it needs revisiting.
 
+#![cfg(unix)]
 #![allow(
     clippy::expect_used,
     clippy::panic,

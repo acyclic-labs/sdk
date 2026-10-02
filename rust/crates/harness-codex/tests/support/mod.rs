@@ -214,6 +214,23 @@ pub fn function_call_turn(n: usize, name: &str, arguments: &Value) -> Vec<Value>
     )
 }
 
+/// A response whose only output is a call to a tool inside a namespace
+/// (how Codex 0.155.1 offers MCP tools: namespace `mcp__<server>`).
+pub fn namespaced_call_turn(
+    n: usize,
+    namespace: &str,
+    name: &str,
+    arguments: &Value,
+) -> Vec<Value> {
+    turn(
+        n,
+        &json!({
+            "type": "function_call", "id": format!("fc_{n}"), "call_id": format!("call_{n}"),
+            "namespace": namespace, "name": name, "arguments": arguments.to_string(), "status": "completed"
+        }),
+    )
+}
+
 /// Whether a request already carries a tool result (the model's next step).
 pub fn has_tool_output(request: &Recorded) -> bool {
     request.body["input"].as_array().is_some_and(|input| {

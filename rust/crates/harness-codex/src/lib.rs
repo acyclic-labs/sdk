@@ -10,6 +10,9 @@
 //! fixtures under `fixtures/codex-<version>` are the contract the parser is
 //! tested against. See `DESIGN.md` for the full plan and phase gates.
 
+// Codex runs inside Linux sandboxes; process control relies on unix process
+// groups, so the crate is empty elsewhere and the workspace still builds.
+#![cfg(unix)]
 #![cfg_attr(test, allow(clippy::panic, clippy::indexing_slicing))]
 
 pub mod config;
@@ -17,6 +20,7 @@ pub mod events;
 pub mod executor;
 pub mod mcp;
 pub mod meter;
+mod process;
 pub mod proxy;
 
 pub use config::HomeConfig;

@@ -93,6 +93,12 @@ impl HomeConfig {
                         // A required server that fails stops Codex before the turn,
                         // instead of running silently without our tools.
                         ("required", true.into()),
+                        // 0.155.1 hides MCP tools behind its tool_search tool by
+                        // default; ours must be in the model's tool list.
+                        (
+                            "omit_tools_from",
+                            Value::Array(vec!["deferred".into(), "code_mode".into()]),
+                        ),
                         ("startup_timeout_sec", 10.into()),
                         (
                             "tool_timeout_sec",
@@ -164,6 +170,7 @@ enabled = false
 
 [mcp_servers.acyclic]
 bearer_token_env_var = "ACYCLIC_CODEX_MCP_TOKEN"
+omit_tools_from = ["deferred", "code_mode"]
 required = true
 startup_timeout_sec = 10
 tool_timeout_sec = 300

@@ -1,5 +1,6 @@
 //! A3 acceptance: the MCP endpoint over the tool registry.
 
+#![cfg(unix)]
 #![allow(
     clippy::expect_used,
     clippy::panic,
@@ -61,7 +62,6 @@ async fn call(endpoint: &McpEndpoint, name: &str, arguments: Value) -> Value {
 }
 
 #[tokio::test]
-#[ignore = "A3: the MCP endpoint is not built yet"]
 async fn calls_without_the_turn_token_are_refused() {
     let endpoint = endpoint().await;
     assert!(endpoint.url().starts_with("http://127.0.0.1:") && endpoint.url().ends_with("/mcp"));
@@ -75,7 +75,6 @@ async fn calls_without_the_turn_token_are_refused() {
 }
 
 #[tokio::test]
-#[ignore = "A3: the MCP endpoint is not built yet"]
 async fn initialize_offers_tools_on_the_codex_protocol_version() {
     let endpoint = endpoint().await;
     let (status, reply) = rpc(
@@ -91,7 +90,6 @@ async fn initialize_offers_tools_on_the_codex_protocol_version() {
 }
 
 #[tokio::test]
-#[ignore = "A3: the MCP endpoint is not built yet"]
 async fn the_list_is_exactly_the_granted_tools() {
     let endpoint = endpoint().await;
     let (_, reply) = rpc(&endpoint, Some(endpoint.token()), "tools/list", json!({})).await;
@@ -115,7 +113,6 @@ async fn the_list_is_exactly_the_granted_tools() {
 }
 
 #[tokio::test]
-#[ignore = "A3: the MCP endpoint is not built yet"]
 async fn a_call_runs_the_registry_tool() {
     let endpoint = endpoint().await;
     let result = call(&endpoint, "acyclic_echo", json!({"text": "ping"})).await;
@@ -129,7 +126,6 @@ async fn a_call_runs_the_registry_tool() {
 }
 
 #[tokio::test]
-#[ignore = "A3: the MCP endpoint is not built yet"]
 async fn refusals_and_failures_are_error_results() {
     let endpoint = endpoint().await;
     for (name, arguments, why) in [
