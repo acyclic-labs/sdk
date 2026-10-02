@@ -2,6 +2,7 @@
 //!
 //! Contract, fixed by `tests/proxy.rs` and the 0.155.1 fixtures:
 //! - Serves `POST /v1/responses` on `127.0.0.1:0`; other paths get a 404 JSON error.
+//! - Only answers callers presenting the per-turn [`ResponsesProxy::client_key`].
 //! - Forwards with the real key (Codex only holds a dummy) and merges `extra_body`.
 //! - Streams SSE through frame by frame and meters `response.completed` usage.
 //! - Once the meter or the step cap says stop, answers `429` with
@@ -64,6 +65,9 @@ pub enum ProxyCall {
 
 struct Shared {
     upstream: Upstream,
+    /// The per-turn key Codex must present; anything else on the machine
+    /// could otherwise spend the real upstream key through this port.
+    client_key: String,
     meter: Arc<dyn UsageMeter>,
     max_steps: u32,
     client: reqwest::Client,
@@ -152,6 +156,7 @@ impl ResponsesProxy {
             .map_err(|error| Error::Unsupported(format!("codex proxy client: {error}")))?;
         let shared = Arc::new(Shared {
             upstream,
+            client_key: uuid::Uuid::new_v4().simple().to_string(),
             meter,
             max_steps,
             client,
@@ -183,6 +188,12 @@ impl ResponsesProxy {
     #[must_use]
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// The bearer key Codex must send (`env_key` in its provider config).
+    #[must_use]
+    pub fn client_key(&self) -> &str {
+        &self.shared.client_key
     }
 
     /// Model calls forwarded and answered so far: the turn's step count.
@@ -264,6 +275,17 @@ fn release(shared: &Shared) {
 }
 
 async fn responses(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes) -> Response {
+    let presented = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    if presented != Some(shared.client_key.as_str()) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"error": {"message": "missing or wrong proxy key", "type": "invalid_api_key"}})),
+        )
+            .into_response();
+    }
     let mut request: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(error) => {

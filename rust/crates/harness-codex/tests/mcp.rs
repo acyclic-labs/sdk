@@ -117,7 +117,10 @@ async fn a_call_runs_the_registry_tool() {
     let endpoint = endpoint().await;
     let result = call(&endpoint, "acyclic_echo", json!({"text": "ping"})).await;
     assert_ne!(result["isError"], true);
-    assert_eq!(result["structuredContent"], json!({"echo": "ping"}));
+    assert!(
+        result.get("structuredContent").is_none(),
+        "only the projection reaches codex, never the raw result"
+    );
     assert!(
         result["content"][0]["text"]
             .as_str()

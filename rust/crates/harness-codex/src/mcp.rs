@@ -10,7 +10,8 @@
 //! - `tools/call` applies the stock loop's checks in the same order (grant,
 //!   `authorize`, input schema, policy), then runs the registry's executor.
 //!   Every refusal or failure is an `isError` result the model can read, never
-//!   a transport failure.
+//!   a transport failure. A result is only ever the tool's projection, capped
+//!   at `render_bytes`; the raw result is never sent.
 
 use acyclic_harness::{
     Error, OperationId, Result,
@@ -309,14 +310,10 @@ async fn call(shared: &Shared, params: &Value) -> Value {
         text.truncate(cut);
         text.push_str("…[truncated]");
     }
-    let structured = if result.value.is_object() {
-        result.value
-    } else {
-        json!({"value": result.value})
-    };
+    // Only the projection: it is what the tool chose to show the model, and
+    // the raw result could carry fields the projection hides or exceed the cap.
     json!({
         "content": [{"type": "text", "text": text}],
-        "structuredContent": structured,
         "isError": false,
     })
 }

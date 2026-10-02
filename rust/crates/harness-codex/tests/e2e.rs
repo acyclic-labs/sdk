@@ -148,6 +148,15 @@ async fn real_codex_uses_our_tool_edits_the_workspace_and_is_metered() {
         "done"
     );
     assert_eq!(meter.recorded().len(), 3, "every model call metered");
+    let metered: u64 = meter
+        .recorded()
+        .iter()
+        .map(|usage| usage.output_tokens)
+        .sum();
+    assert_eq!(
+        output.metadata["usage"]["output_tokens"], metered,
+        "the turn reports what the proxy metered for it"
+    );
     assert!(
         upstream
             .requests()

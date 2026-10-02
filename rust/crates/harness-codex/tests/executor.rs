@@ -12,9 +12,12 @@
 mod support;
 
 use acyclic_harness::{
-    OperationId,
-    executor::{ExecutionEvent, Executor, TurnInput},
-    model::ModelContent,
+    Capabilities, OperationId,
+    conversation::ModelContextSelection,
+    executor::{ExecutionEvent, ExecutionJournal as _, Executor, TurnInput},
+    model::{ModelContent, ModelMessage, ModelRole},
+    projection::SelectedModelContext,
+    runtime::RuntimeScope,
 };
 use acyclic_harness_codex::{CodexConfig, CodexExecutor, Upstream};
 use serde_json::{Value, json};
@@ -44,6 +47,15 @@ impl Turn {
     }
 
     fn executor(&self, fake: &FakeCodex, deadline: Option<Instant>) -> CodexExecutor {
+        self.executor_with_scope(fake, deadline, support::scope())
+    }
+
+    fn executor_with_scope(
+        &self,
+        fake: &FakeCodex,
+        deadline: Option<Instant>,
+        scope: RuntimeScope,
+    ) -> CodexExecutor {
         let bin = self.dir.path().join("bin");
         std::fs::create_dir_all(&bin).expect("bin");
         let binary = fake.install(&bin);
@@ -66,7 +78,7 @@ impl Turn {
             },
             support::registry(),
         )
-        .with_tool_authority(support::scope(), None)
+        .with_tool_authority(scope, None)
         .expect("authority")
         .with_meter(Arc::new(RecordingMeter::default()))
     }
@@ -231,7 +243,10 @@ async fn a_turn_returns_the_last_message_with_codex_metadata() {
         output.metadata["thread_id"],
         "01a0fdbc-f228-7790-9949-e2c76a4e7fd1"
     );
-    assert_eq!(output.metadata["usage"]["output_tokens"], 7);
+    // The replayed run makes no proxied call, so nothing was metered; Codex's
+    // own (thread-cumulative) count is kept alongside for reference.
+    assert_eq!(output.metadata["usage"]["output_tokens"], 0);
+    assert_eq!(output.metadata["codex_thread_usage"]["output_tokens"], 7);
     assert!(
         turn.workspace.join("report.md").exists(),
         "Codex's edits stay in the workspace"
@@ -375,6 +390,104 @@ async fn a_different_input_on_the_same_operation_is_a_conflict() {
         matches!(error, acyclic_harness::Error::Conflict(_)),
         "{error:?}"
     );
+}
+
+#[tokio::test]
+async fn a_narrower_scope_on_the_same_operation_is_a_conflict() {
+    let turn = Turn::new().await;
+    let fake = FakeCodex {
+        fixture: "ok",
+        ..FakeCodex::default()
+    };
+    let journal = Journal::default();
+    let operation = OperationId::new();
+    turn.executor(&fake, None)
+        .execute(input(operation, "task"), &journal)
+        .await
+        .expect("first");
+    let narrower = RuntimeScope::new(
+        Capabilities::new(Vec::<String>::new()),
+        support::scope().limits(),
+    )
+    .expect("scope");
+    let error = turn
+        .executor_with_scope(&fake, None, narrower)
+        .execute(input(operation, "task"), &journal)
+        .await
+        .expect_err("a finished turn is not replayed under other authority");
+    assert!(
+        matches!(error, acyclic_harness::Error::Conflict(_)),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_resumed_turn_only_gets_the_steps_that_are_left() {
+    let turn = Turn::new().await;
+    let journal = Journal::default();
+    let operation = OperationId::new();
+    let crashed = FakeCodex {
+        fixture: "synthetic-crash",
+        exit: 137,
+        ..FakeCodex::default()
+    };
+    turn.executor(&crashed, None)
+        .execute(input(operation, "task"), &journal)
+        .await
+        .expect_err("killed mid-turn");
+    // The crashed run had already spent every step of the turn.
+    journal
+        .append(
+            operation,
+            "test:spent".into(),
+            ExecutionEvent::ModelStarted {
+                step: 8,
+                request_digest: [0; 32],
+            },
+        )
+        .await
+        .expect("append");
+    let error = turn
+        .executor(&crashed, None)
+        .execute(input(operation, "task"), &journal)
+        .await
+        .expect_err("no steps left");
+    assert!(error.to_string().contains("step limit"), "{error}");
+    assert_eq!(turn.invocations().len(), 1, "codex is not started again");
+}
+
+#[tokio::test]
+async fn selected_context_reaches_a_new_codex_thread() {
+    let turn = Turn::new().await;
+    let fake = FakeCodex {
+        fixture: "ok",
+        ..FakeCodex::default()
+    };
+    let message = |role, text: &str| ModelMessage {
+        role,
+        content: ModelContent::Text(text.into()),
+    };
+    let selected = SelectedModelContext {
+        selection: ModelContextSelection {
+            conversation_revision: 3,
+            message_ids: (0..3).map(|_| uuid::Uuid::new_v4()).collect(),
+        },
+        messages: vec![
+            message(ModelRole::User, "the payer is Aetna"),
+            message(ModelRole::Assistant, "noted: Aetna"),
+            message(ModelRole::User, "now compare fee schedules"),
+        ],
+    };
+    let turn_input =
+        TurnInput::from_selected_context(OperationId::new(), selected, 8).expect("input");
+    turn.executor(&fake, None)
+        .execute(turn_input, &Journal::default())
+        .await
+        .expect("turn succeeds");
+    let argv = read(&turn.invocations()[0].join("argv"));
+    assert!(argv.contains("the payer is Aetna"), "{argv}");
+    assert!(argv.contains("noted: Aetna"), "{argv}");
+    assert!(argv.contains("now compare fee schedules"), "{argv}");
 }
 
 // ------------------------------------------------------- the fake itself

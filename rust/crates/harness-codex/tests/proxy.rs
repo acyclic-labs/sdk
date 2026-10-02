@@ -47,11 +47,31 @@ fn codex_request() -> Value {
 async fn post(proxy: &ResponsesProxy, body: &Value) -> reqwest::Response {
     reqwest::Client::new()
         .post(format!("{}/responses", proxy.base_url()))
-        .bearer_auth("dummy-codex-key")
+        .bearer_auth(proxy.client_key())
         .json(body)
         .send()
         .await
         .expect("proxy reachable")
+}
+
+#[tokio::test]
+async fn only_the_turns_codex_can_spend_the_key() {
+    let fake = FakeUpstream::message("hello").await;
+    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 8)
+        .await
+        .expect("proxy starts");
+    for key in [None, Some("guessed")] {
+        let mut request = reqwest::Client::new()
+            .post(format!("{}/responses", proxy.base_url()))
+            .json(&codex_request());
+        if let Some(key) = key {
+            request = request.bearer_auth(key);
+        }
+        let response = request.send().await.expect("proxy reachable");
+        assert_eq!(response.status(), 401, "key {key:?}");
+    }
+    assert!(fake.requests().is_empty(), "nothing reached the upstream");
+    assert_eq!(proxy.steps(), 0);
 }
 
 #[tokio::test]

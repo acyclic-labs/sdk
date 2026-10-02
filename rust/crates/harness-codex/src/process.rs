@@ -9,6 +9,7 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 use tokio::{
@@ -20,6 +21,9 @@ use tokio::{
 
 /// How long Codex gets to exit after SIGTERM before SIGKILL.
 pub const GRACE: Duration = Duration::from_secs(10);
+
+/// How long to wait for stderr to close after Codex exits.
+const STDERR_GRACE: Duration = Duration::from_secs(2);
 
 /// How much of stderr is kept for error messages.
 const STDERR_TAIL: usize = 64 * 1024;
@@ -53,7 +57,8 @@ pub(crate) enum Next {
 pub(crate) struct CodexProcess {
     child: Child,
     lines: Lines<BufReader<ChildStdout>>,
-    stderr: JoinHandle<Vec<u8>>,
+    stderr: JoinHandle<()>,
+    stderr_tail: Arc<Mutex<Vec<u8>>>,
 }
 
 impl CodexProcess {
@@ -88,26 +93,28 @@ impl CodexProcess {
             .take()
             .ok_or_else(|| Error::Storage("codex stdout was not captured".into()))?;
         let stderr = child.stderr.take();
+        let stderr_tail = Arc::new(Mutex::new(Vec::new()));
+        let tail = stderr_tail.clone();
         let stderr = tokio::spawn(async move {
-            let mut tail = Vec::new();
-            if let Some(mut stderr) = stderr {
-                let mut chunk = [0_u8; 8192];
-                while let Ok(read) = stderr.read(&mut chunk).await {
-                    if read == 0 {
-                        break;
-                    }
-                    tail.extend_from_slice(chunk.get(..read).unwrap_or_default());
-                    if tail.len() > STDERR_TAIL {
-                        tail.drain(..tail.len() - STDERR_TAIL);
-                    }
+            let Some(mut stderr) = stderr else { return };
+            let mut chunk = [0_u8; 8192];
+            while let Ok(read) = stderr.read(&mut chunk).await {
+                if read == 0 {
+                    break;
+                }
+                let mut tail = tail.lock().unwrap_or_else(PoisonError::into_inner);
+                tail.extend_from_slice(chunk.get(..read).unwrap_or_default());
+                if tail.len() > STDERR_TAIL {
+                    let excess = tail.len() - STDERR_TAIL;
+                    tail.drain(..excess);
                 }
             }
-            tail
         });
         Ok(Self {
             child,
             lines: BufReader::new(stdout).lines(),
             stderr,
+            stderr_tail,
         })
     }
 
@@ -150,9 +157,21 @@ impl CodexProcess {
         }
     }
 
-    /// The last 64 KB of stderr, once the process is gone.
+    /// The last 64 KB of stderr, once the process is gone. A command Codex
+    /// left running in the background can hold the pipe open forever, so
+    /// this waits [`STDERR_GRACE`] at most and keeps what it has.
     pub(crate) async fn stderr_tail(&mut self) -> String {
-        let bytes = (&mut self.stderr).await.unwrap_or_default();
+        if tokio::time::timeout(STDERR_GRACE, &mut self.stderr)
+            .await
+            .is_err()
+        {
+            self.stderr.abort();
+        }
+        let bytes = self
+            .stderr_tail
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         String::from_utf8_lossy(&bytes).trim().to_owned()
     }
 }
