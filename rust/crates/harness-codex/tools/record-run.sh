@@ -14,8 +14,8 @@ echo "exit=$code elapsed=$((end-start))s" | tee fixtures/run-$name.exit.txt
 cp requests.log fixtures/run-$name.requests.jsonl
 cat fixtures/run-$name.stdout.jsonl
 echo "--- stderr"; cat fixtures/run-$name.stderr.txt | head -40
-echo "--- requests"; python3 -c "
-import json
-for l in open('requests.log'):
-    r=json.loads(l); b=r.get('body') or {}
-    print(r['n'], round(r['t']%1000,2), r['method'], r['path'], [i.get('type') for i in b.get('input',[])][-4:])"
+echo "--- requests"; node -e '
+for (const line of require("fs").readFileSync("requests.log", "utf8").split("\n").filter(Boolean)) {
+  const r = JSON.parse(line); const b = r.body ?? {};
+  console.log(r.n, (r.t % 1000).toFixed(2), r.method, r.path, (b.input ?? []).map(i => i.type).slice(-4));
+}'

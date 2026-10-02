@@ -273,7 +273,7 @@ CI guard them from that point on.
 ## Upgrading Codex
 
 1. Bump `plugin/tests/hosts/package.json` and the lock, then `CODEX_VERSION`.
-2. Re-record: run `tools/fake_responses_server.py` and `tools/record-run.sh <name> <mode>` for every run listed in
+2. Re-record: run `tools/fake-responses-server.mjs` and `tools/record-run.sh <name> <mode>` for every run listed in
    `fixtures/codex-0.155.1/README.md`, into a new `fixtures/codex-<ver>/`.
 3. Run `cargo test` (the fixture invariants), then `verify.sh e2e`. Every failure names the design assumption that
    moved.

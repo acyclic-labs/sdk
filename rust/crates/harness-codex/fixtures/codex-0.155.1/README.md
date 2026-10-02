@@ -1,6 +1,6 @@
 # Codex 0.155.1 fixtures
 
-These are recorded from the real `codex exec --json` (0.155.1) talking to `tools/fake_responses_server.py`.
+These are recorded from the real `codex exec --json` (0.155.1) talking to `tools/fake-responses-server.mjs`.
 No OpenAI API was used. `../../tools/record-run.sh` re-records them, and the steps are in `DESIGN.md` under "Upgrading Codex".
 
 | File | What it pins |
