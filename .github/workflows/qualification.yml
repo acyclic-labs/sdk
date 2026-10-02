@@ -317,55 +317,55 @@ jobs:
 
       - name: Record gate
         if: contains(fromJSON(steps.record.outputs.recorded), 'gate')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/gate.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['gate'] }}
       - name: Record linux
         if: contains(fromJSON(steps.record.outputs.recorded), 'linux')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['linux'] }}
       - name: Record web
         if: contains(fromJSON(steps.record.outputs.recorded), 'web')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/web.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['web'] }}
       - name: Record linux-arm64
         if: contains(fromJSON(steps.record.outputs.recorded), 'linux-arm64')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-arm64.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['linux-arm64'] }}
       - name: Record linux-musl
         if: contains(fromJSON(steps.record.outputs.recorded), 'linux-musl')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-musl.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['linux-musl'] }}
       - name: Record linux-arm64-musl
         if: contains(fromJSON(steps.record.outputs.recorded), 'linux-arm64-musl')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/linux-arm64-musl.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['linux-arm64-musl'] }}
       - name: Record windows
         if: contains(fromJSON(steps.record.outputs.recorded), 'windows')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/windows.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['windows'] }}
       - name: Record macos
         if: contains(fromJSON(steps.record.outputs.recorded), 'macos')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/macos.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['macos'] }}
       - name: Record policy
         if: contains(fromJSON(steps.record.outputs.recorded), 'policy')
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .qualification/policy.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['policy'] }}
