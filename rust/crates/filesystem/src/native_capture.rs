@@ -3650,12 +3650,28 @@ fn ensure_same_host_node(
     expected: &HostSnapshot,
     observed: &cap_std::fs::Metadata,
 ) -> Result<(), CaptureError> {
-    let observed_identity = NativeRootIdentity::from_metadata(observed)?;
+    ensure_same_host_snapshot(expected, &HostSnapshot::from_metadata(observed)?)
+}
+
+fn ensure_same_host_snapshot(
+    expected: &HostSnapshot,
+    observed: &HostSnapshot,
+) -> Result<(), CaptureError> {
     let mut expected_metadata = expected.metadata;
-    let mut observed_metadata = capture_metadata(observed);
+    let mut observed_metadata = observed.metadata;
     // Reading the file can legitimately update its access time.
     expected_metadata.accessed_ns = MetadataField::Unavailable;
     observed_metadata.accessed_ns = MetadataField::Unavailable;
+    // Linux statx can expose birth time through a path while fstat on a held
+    // descriptor (notably with musl) cannot. Compare it only when both queries
+    // can observe it; identity, length, mtime, ctime and other metadata still
+    // detect mutation, and the path is revalidated after reading.
+    if matches!(expected_metadata.created_ns, MetadataField::Unavailable)
+        || matches!(observed_metadata.created_ns, MetadataField::Unavailable)
+    {
+        expected_metadata.created_ns = MetadataField::Unavailable;
+        observed_metadata.created_ns = MetadataField::Unavailable;
+    }
     // Reading a projected placeholder hydrates it.
     #[cfg(windows)]
     if let (MetadataField::Value(before), MetadataField::Value(after)) = (
@@ -3665,8 +3681,8 @@ fn ensure_same_host_node(
     {
         observed_metadata.windows_attributes = expected_metadata.windows_attributes;
     }
-    if expected.identity != observed_identity
-        || expected.length != observed.len()
+    if expected.identity != observed.identity
+        || expected.length != observed.length
         || expected_metadata != observed_metadata
     {
         return Err(CaptureError::Io(std::io::Error::other(
@@ -3722,6 +3738,61 @@ mod host_file_race_tests {
         std::fs::write(&current, b"changed body")?;
         assert!(matches!(
             ensure_same_host_node(&expected, &opened.metadata()?),
+            Err(CaptureError::Io(_))
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_permission_change_after_open() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = tempfile::tempdir()?;
+        let current = temporary.path().join("current");
+        std::fs::write(&current, b"first")?;
+        std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o644))?;
+        let root = HostRoot::open(temporary.path())?;
+        let expected = HostSnapshot::from_metadata(&root.symlink_metadata(Path::new("current"))?)?;
+        let opened = root.open_file(Path::new("current"))?;
+        ensure_same_host_node(&expected, &opened.metadata()?)?;
+        std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o600))?;
+        assert!(matches!(
+            ensure_same_host_node(&expected, &opened.metadata()?),
+            Err(CaptureError::Io(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_an_unobservable_creation_time_in_either_direction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::write(temporary.path().join("current"), b"first")?;
+        let root = HostRoot::open(temporary.path())?;
+        let metadata = root.symlink_metadata(Path::new("current"))?;
+        let mut expected = HostSnapshot::from_metadata(&metadata)?;
+        expected.metadata.created_ns = MetadataField::Value(123);
+        let mut observed = expected;
+        observed.metadata.created_ns = MetadataField::Unavailable;
+        // The exact musl case: path statx sees birth time, held fstat cannot.
+        ensure_same_host_snapshot(&expected, &observed)?;
+        // Also allow the reverse observation order.
+        ensure_same_host_snapshot(&observed, &expected)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_an_observable_creation_time_change() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        std::fs::write(temporary.path().join("current"), b"first")?;
+        let root = HostRoot::open(temporary.path())?;
+        let metadata = root.symlink_metadata(Path::new("current"))?;
+        let mut expected = HostSnapshot::from_metadata(&metadata)?;
+        expected.metadata.created_ns = MetadataField::Value(123);
+        let mut observed = expected;
+        observed.metadata.created_ns = MetadataField::Value(124);
+        assert!(matches!(
+            ensure_same_host_snapshot(&expected, &observed),
             Err(CaptureError::Io(_))
         ));
         Ok(())
