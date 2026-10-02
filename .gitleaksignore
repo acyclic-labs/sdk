@@ -1,0 +1,2 @@
+# Codex thread id recorded as prompt_cache_key in a request fixture; not a credential.
+0ccf49413429758207954366d438f6103d0b8680:rust/crates/harness-codex/fixtures/codex-0.155.1/request-shell.json:generic-api-key:57

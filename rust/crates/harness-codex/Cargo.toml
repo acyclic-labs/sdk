@@ -1,0 +1,37 @@
+[package]
+name = "acyclic-harness-codex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Consumers pin the sdk by git rev; not released until the e2e qualification is in CI.
+publish = false
+description = "An acyclic-harness Executor that runs the OpenAI Codex CLI as the agent loop"
+readme = "README.md"
+keywords = ["agents", "codex", "harness"]
+categories = ["development-tools"]
+
+[dependencies]
+acyclic-harness = { version = "=0.2.0", path = "../harness" }
+axum.workspace = true
+blake3.workspace = true
+futures.workspace = true
+jsonschema.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["process"] }
+toml.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

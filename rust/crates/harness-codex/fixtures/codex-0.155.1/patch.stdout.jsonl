@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a0fdbe-9f3e-7b83-bf8c-84cf6f5c9c56"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"file_change","changes":[{"path":"/tmp/codex-probe/work/hello.txt","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"file_change","changes":[{"path":"/tmp/codex-probe/work/hello.txt","kind":"add"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"hi from fake"}}
+{"type":"turn.completed","usage":{"input_tokens":200,"cached_input_tokens":80,"cache_write_input_tokens":0,"output_tokens":14,"reasoning_output_tokens":6}}

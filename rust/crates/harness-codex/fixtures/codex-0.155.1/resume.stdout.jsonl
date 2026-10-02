@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a0fdbe-6e56-7882-92d4-ec545b379be5"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"This session was recorded with model `gpt-5.5` but is resuming with `fake-model`. Consider switching back to `gpt-5.5` as it may affect Codex performance."}}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"Model metadata for `fake-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"hi from fake"}}
+{"type":"turn.completed","usage":{"input_tokens":200,"cached_input_tokens":80,"cache_write_input_tokens":0,"output_tokens":14,"reasoning_output_tokens":6}}

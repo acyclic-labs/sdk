@@ -13,6 +13,8 @@ on:
       - "!plugin/**/CHANGELOG.md"
       - "!plugin/scripts/validate-package.mjs"
       - "rust/crates/filesystem/**"
+      - "rust/crates/harness/**"
+      - "rust/crates/harness-codex/**"
       - "rust/crates/native-runtime/**"
 
 permissions:
@@ -124,6 +126,16 @@ jobs:
         run: |
           cargo test -p acyclic-plugin --test e2e \
             actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture
+
+      # The Codex executor runs the same pinned binary against a scripted
+      # Responses upstream; no model provider is called. Unix only.
+      - name: Run codex executor scenario
+        if: (success() || failure()) && runner.os != 'Windows'
+        shell: bash
+        env:
+          ACYCLIC_CODEX_BIN: ${{ steps.codex.outputs.binary }}
+        run: |
+          cargo test -p acyclic-harness-codex --test e2e -- --ignored --nocapture
 
       - name: Run claude scenario
         if: success() || failure()

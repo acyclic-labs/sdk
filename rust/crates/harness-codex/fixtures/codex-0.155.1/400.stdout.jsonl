@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a0fdbe-3bb2-7ad3-bd44-4e60905c0ffd"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `fake-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"error","message":"{\"error\": {\"message\": \"fake 400\", \"type\": \"fake_error\", \"code\": \"fake_400\"}}"}
+{"type":"turn.failed","error":{"message":"{\"error\": {\"message\": \"fake 400\", \"type\": \"fake_error\", \"code\": \"fake_400\"}}"}}

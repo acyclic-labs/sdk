@@ -1,0 +1,11 @@
+{
+ "400": 1,
+ "402": 6,
+ "402-noretry": 1,
+ "429-sr0": 1,
+ "500": 30,
+ "ok": 1,
+ "quota429": 1,
+ "quotafailed": 1,
+ "response-failed": 6
+}
