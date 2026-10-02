@@ -169,6 +169,7 @@ impl CodexExecutor {
             "codex_version": CODEX_VERSION,
             "model": self.config.model,
             "input": to_json(&input.input)?,
+            "selected_context": to_json(&input.selected_context)?,
             "subagents": self.config.subagents,
             "max_steps": max_steps,
             "instructions": self.config.instructions,

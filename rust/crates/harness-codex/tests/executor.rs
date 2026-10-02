@@ -478,14 +478,32 @@ async fn selected_context_reaches_a_new_codex_thread() {
             message(ModelRole::User, "now compare fee schedules"),
         ],
     };
+    let operation = OperationId::new();
+    let journal = Journal::default();
     let turn_input =
-        TurnInput::from_selected_context(OperationId::new(), selected, 8).expect("input");
+        TurnInput::from_selected_context(operation, selected.clone(), 8).expect("input");
     turn.executor(&fake, None)
-        .execute(turn_input, &Journal::default())
+        .execute(turn_input, &journal)
         .await
         .expect("turn succeeds");
     let argv = read(&turn.invocations()[0].join("argv"));
     assert!(argv.contains("the payer is Aetna"), "{argv}");
+
+    // The same final message over a different conversation is another request.
+    let mut changed = selected;
+    changed.messages[1] = message(ModelRole::Assistant, "noted: Cigna");
+    let error = turn
+        .executor(&fake, None)
+        .execute(
+            TurnInput::from_selected_context(operation, changed, 8).expect("input"),
+            &journal,
+        )
+        .await
+        .expect_err("changed history is not replayed as the old turn");
+    assert!(
+        matches!(error, acyclic_harness::Error::Conflict(_)),
+        "{error:?}"
+    );
     assert!(argv.contains("noted: Aetna"), "{argv}");
     assert!(argv.contains("now compare fee schedules"), "{argv}");
 }
