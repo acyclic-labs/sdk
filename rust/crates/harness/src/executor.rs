@@ -544,10 +544,25 @@ impl StockExecutor {
                         "model observation is missing its admitted start".into(),
                     ));
                 }
+                ExecutionEvent::ToolAdmissionRejected { step, .. }
+                    if !started_steps.contains(step) =>
+                {
+                    return Err(Error::Storage(
+                        "tool rejection is missing its admitted model start".into(),
+                    ));
+                }
                 ExecutionEvent::ToolStarted { step, call_id, .. } => {
                     if !started_tools.insert((*step, call_id.clone())) {
                         return Err(Error::Storage("tool admission is duplicated".into()));
                     }
+                }
+                ExecutionEvent::ToolCompleted { step, call_id, .. }
+                | ExecutionEvent::ToolFailed { step, call_id, .. }
+                    if !started_tools.contains(&(*step, call_id.clone())) =>
+                {
+                    return Err(Error::Storage(
+                        "tool completion is missing its admitted start".into(),
+                    ));
                 }
                 _ => {}
             }
@@ -3897,6 +3912,180 @@ mod tests {
                 .count(),
             1
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn journal_ordering_rejects_unprepared_and_duplicate_model_starts() -> Result<()> {
+        let executor = StockExecutor::new(
+            Model::new("example", "ordering", "1", Value::Null)?,
+            Arc::new(ReplayModel {
+                calls: AtomicUsize::new(0),
+            }),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([14; 16]),
+            input: ModelContent::Text("ordering".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+
+        let unprepared = Journal::default();
+        unprepared
+            .append(
+                input.operation_id,
+                "execution:started".into(),
+                ExecutionEvent::Started {
+                    request_digest: executor.request_digest(&input)?,
+                },
+            )
+            .await?;
+        unprepared
+            .append(
+                input.operation_id,
+                "model:0:started".into(),
+                ExecutionEvent::ModelStarted {
+                    step: 0,
+                    request_digest: [1; 32],
+                },
+            )
+            .await?;
+        assert!(matches!(
+            executor.ensure_started(&unprepared, &input).await,
+            Err(Error::Storage(message)) if message.contains("missing preparation")
+        ));
+
+        let duplicate = Journal::default();
+        duplicate
+            .append(
+                input.operation_id,
+                "execution:started".into(),
+                ExecutionEvent::Started {
+                    request_digest: executor.request_digest(&input)?,
+                },
+            )
+            .await?;
+        let manifest = duplicate
+            .stage(
+                input.operation_id,
+                "model:0:manifest".into(),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await?;
+        let request = duplicate
+            .stage(
+                input.operation_id,
+                "model:0:request".into(),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await?;
+        let prepared = ExecutionEvent::ModelInputPrepared {
+            step: 0,
+            manifest,
+            request,
+        };
+        duplicate
+            .append(
+                input.operation_id,
+                "model:0:prepared".into(),
+                prepared.clone(),
+            )
+            .await?;
+        duplicate
+            .append(
+                input.operation_id,
+                "model:0:prepared-duplicate".into(),
+                prepared,
+            )
+            .await?;
+        assert!(matches!(
+            executor.ensure_started(&duplicate, &input).await,
+            Err(Error::Storage(message)) if message.contains("preparation is duplicated")
+        ));
+
+        let rejected = Journal::default();
+        rejected
+            .append(
+                input.operation_id,
+                "execution:started".into(),
+                ExecutionEvent::Started {
+                    request_digest: executor.request_digest(&input)?,
+                },
+            )
+            .await?;
+        let invocation = rejected
+            .stage(
+                input.operation_id,
+                "tool:invocation".into(),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await?;
+        rejected
+            .append(
+                input.operation_id,
+                "tool:rejected".into(),
+                ExecutionEvent::ToolAdmissionRejected {
+                    step: 0,
+                    invocation,
+                    reason: ToolRejectionKind::InvalidArguments,
+                    feedback: None,
+                },
+            )
+            .await?;
+        assert!(matches!(
+            executor.ensure_started(&rejected, &input).await,
+            Err(Error::Storage(message)) if message.contains("missing its admitted model start")
+        ));
+
+        let completed = Journal::default();
+        completed
+            .append(
+                input.operation_id,
+                "execution:started".into(),
+                ExecutionEvent::Started {
+                    request_digest: executor.request_digest(&input)?,
+                },
+            )
+            .await?;
+        let result = completed
+            .stage(
+                input.operation_id,
+                "tool:result".into(),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await?;
+        let projection = completed
+            .stage(
+                input.operation_id,
+                "tool:projection".into(),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await?;
+        completed
+            .append(
+                input.operation_id,
+                "tool:completed".into(),
+                ExecutionEvent::ToolCompleted {
+                    schema_version: TOOL_COMPLETED_EVENT_VERSION,
+                    step: 0,
+                    call_id: "unstarted-call".into(),
+                    invocation_digest: [2; 32],
+                    result,
+                    projection,
+                },
+            )
+            .await?;
+        assert!(matches!(
+            executor.ensure_started(&completed, &input).await,
+            Err(Error::Storage(message)) if message.contains("completion is missing its admitted start")
+        ));
         Ok(())
     }
 

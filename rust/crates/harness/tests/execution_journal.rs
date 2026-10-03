@@ -1074,6 +1074,17 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
+    // A ref can be resident in the same private volume and still belong to a
+    // different execution. Reusing it must fail before the event is appended.
+    let copied_from_operation = OperationId::from_bytes([11; 16]);
+    let copied_invocation = journal
+        .stage(
+            copied_from_operation,
+            "copied-invocation".into(),
+            b"{}".to_vec(),
+            "application/json",
+        )
+        .await?;
     let content = ModelContent::Parts(vec![
         ModelContentPart::Text {
             text: "describe".into(),
@@ -1083,6 +1094,21 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             policy: FileProjectionPolicy::Native,
         },
     ]);
+    let operation_id = OperationId::from_bytes([12; 16]);
+    assert!(matches!(
+        journal
+            .append(
+                operation_id,
+                "cross-operation-ref".into(),
+                ExecutionEvent::ToolStarted {
+                    step: 0,
+                    call_id: "copied-call".into(),
+                    invocation: copied_invocation,
+                },
+            )
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
     let invalid = FileRef::new(
         project,
         "images/chart.png",
@@ -1170,7 +1196,6 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
                     | ExecutionEvent::Model { .. }
             ))
     );
-    let operation_id = OperationId::from_bytes([12; 16]);
     assert!(
         executor
             .execute(
