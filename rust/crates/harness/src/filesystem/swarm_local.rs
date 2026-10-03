@@ -11,7 +11,7 @@ use super::{
     LocalHarnessTools, PersistentLocalHarness, workspace_ref,
 };
 use crate::{
-    AgentId, Capabilities, Error, OperationId, Result, TaskId,
+    AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
@@ -28,6 +28,11 @@ use crate::{
     resources::{GenerationRef, ProviderRef, StreamRef},
     runtime::TaskRunLimits,
     store::StreamAggregate,
+    swarm_budget::{
+        SwarmBudgetLimits, SwarmDispatchToken, SwarmOwnerFence, SwarmProviderMeter,
+        SwarmUsageSource,
+    },
+    swarm_budget_journal::SwarmBudgetJournal,
     tool::{
         ModelToolContext, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection,
         ToolRegistry, ToolResult,
@@ -128,6 +133,9 @@ pub struct LocalSwarmConfig {
     /// this field during swarm open, but a persisted session still pins the
     /// resulting identity before any model work starts.
     pub project: Option<VolumeRef>,
+    /// Optional durable session-wide swarm budget. When supplied, root and
+    /// child dispatches must use the authenticated provider boundary.
+    pub swarm_budget: Option<SwarmBudgetLimits>,
 }
 
 /// Owner authenticated services shared by every local session.
@@ -150,6 +158,10 @@ pub struct LocalSwarmBindings {
     /// Concrete local provider allocator. When supplied without an explicit
     /// plan index, the swarm builds one durable index around this resolver.
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
+    /// Authenticated owner fence for the durable swarm budget.
+    pub swarm_owner: Option<SwarmOwnerFence>,
+    /// Host measured usage source bound to each provider dispatch.
+    pub swarm_usage_source: Option<Arc<dyn SwarmUsageSource + Send + Sync>>,
 }
 
 impl LocalSwarmBindings {
@@ -167,6 +179,8 @@ impl LocalSwarmBindings {
             model_batch_publisher: None,
             model_fork_plans: None,
             filesystem_fork_resolver: None,
+            swarm_owner: None,
+            swarm_usage_source: None,
         }
     }
 
@@ -195,6 +209,19 @@ impl LocalSwarmBindings {
         resolver: Arc<LocalFilesystemForkResolver>,
     ) -> Self {
         self.filesystem_fork_resolver = Some(resolver);
+        self
+    }
+
+    /// Adds an authenticated durable budget and host measurement source.
+    #[must_use]
+    pub fn with_swarm_budget(
+        mut self,
+        owner: SwarmOwnerFence,
+        limits: SwarmBudgetLimits,
+        usage_source: Arc<dyn SwarmUsageSource + Send + Sync>,
+    ) -> Self {
+        self.swarm_owner = Some(owner);
+        self.swarm_usage_source = Some(usage_source);
         self
     }
 
@@ -1564,6 +1591,7 @@ impl LocalSwarmConfig {
             maximum_depth: 8,
             run_limits: TaskRunLimits::default(),
             project: None,
+            swarm_budget: None,
         };
         config.validate()?;
         Ok(config)
@@ -1598,6 +1626,9 @@ impl LocalSwarmConfig {
                     "local swarm source project must be a project volume".into(),
                 ));
             }
+        }
+        if let Some(budget) = self.swarm_budget {
+            budget.validate()?;
         }
         Ok(())
     }
@@ -1979,6 +2010,13 @@ pub struct PersistentLocalSwarm {
     outcomes: Mutex<BTreeMap<TaskId, TurnOutput>>,
     completion_refs: Mutex<BTreeMap<TaskId, StoredCompletionRef>>,
     sessions: Mutex<BTreeMap<TaskId, Arc<PersistentLocalHarness>>>,
+    /// Durable session budget shared by root and reopened descendants.
+    budget_journal: Option<Arc<Mutex<SwarmBudgetJournal<LocalStream>>>>,
+    /// Root provider meter retained until its receipt is durably reported.
+    root_budget_meter: Option<SwarmProviderMeter<Arc<dyn SwarmUsageSource + Send + Sync>>>,
+    budget_owner: Option<SwarmOwnerFence>,
+    budget_usage_source: Option<Arc<dyn SwarmUsageSource + Send + Sync>>,
+    budget_tokens: Mutex<BTreeMap<TaskId, SwarmDispatchToken>>,
     /// Per-task live terminal fences. The registry remains the cross-process
     /// authority; these narrow gates prevent duplicate retries without
     /// deadlocking a child turn that recursively activates a grandchild.
@@ -2099,11 +2137,45 @@ impl PersistentLocalSwarm {
             .map(|session| session.task)
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
         let root_session = open_session_path(&root, root_task);
+        let (provider_for_root, budget_journal, root_budget_meter, budget_owner) =
+            match (
+                config.swarm_budget,
+                bindings.swarm_owner.clone(),
+                bindings.swarm_usage_source.clone(),
+            ) {
+                (Some(limits), Some(owner), Some(source)) => {
+                    let session_id = OperationId::from_bytes(root_task.into_bytes());
+                    let dispatch_id = IdempotencyKey::new("local-root-dispatch")?;
+                    let journal = SwarmBudgetJournal::start_with_root_dispatch(
+                        &registry,
+                        session_id,
+                        owner.clone(),
+                        limits,
+                        dispatch_id,
+                    )
+                    .await?;
+                    let (provider, meter) = journal
+                        .metered_root_provider(provider.clone(), source)?;
+                    let provider: Arc<dyn ModelProvider> = provider;
+                    (
+                        provider,
+                        Some(Arc::new(Mutex::new(journal))),
+                        Some(meter),
+                        Some(owner),
+                    )
+                }
+                (None, None, None) => (provider.clone(), None, None, None),
+                _ => {
+                    return Err(Error::Invalid(
+                        "swarm budget requires limits, owner, and usage source".into(),
+                    ));
+                }
+            };
         let root_harness = Arc::new(
             PersistentLocalHarness::open_with_tools_and_project_on_providers(
                 root_session,
                 config.model.clone(),
-                provider.clone(),
+                provider_for_root,
                 config.limits,
                 bindings.tools_for(root_task)?,
                 config.project.clone(),
@@ -2115,6 +2187,7 @@ impl PersistentLocalSwarm {
         );
         let mut opened = BTreeMap::new();
         opened.insert(root_task, root_harness);
+        let budget_usage_source = bindings.swarm_usage_source.clone();
         Ok(Self {
             root,
             config,
@@ -2134,6 +2207,11 @@ impl PersistentLocalSwarm {
             outcomes: Mutex::new(outcomes),
             completion_refs: Mutex::new(completion_refs),
             sessions: Mutex::new(opened),
+            budget_journal,
+            root_budget_meter,
+            budget_owner,
+            budget_usage_source,
+            budget_tokens: Mutex::new(BTreeMap::new()),
             task_gates: Mutex::new(BTreeMap::new()),
         })
     }
@@ -2695,9 +2773,11 @@ impl PersistentLocalSwarm {
                 .unwrap_or(self.config.limits.model_steps),
         )
         .map_err(|_| Error::Invalid("task step limit exceeds u32".into()))?;
-        let output = harness
-            .run_with_max_steps(operation, prompt, max_steps)
-            .await?;
+        let result = harness.run_with_max_steps(operation, prompt, max_steps).await;
+        if parent.is_none() {
+            self.persist_root_budget_usage().await?;
+        }
+        let output = result?;
         // The per-task mutex only fences handles in this process.  A second
         // process can cancel the task while the model is running, so the
         // registry must be refreshed before the terminal Session event is
@@ -2705,6 +2785,119 @@ impl PersistentLocalSwarm {
         // idempotent while rejecting a different operation key.
         self.complete_session(task, operation).await?;
         Ok(output)
+    }
+
+    async fn persist_root_budget_usage(&self) -> Result<()> {
+        let (Some(journal), Some(meter), Some(owner)) = (
+            self.budget_journal.as_ref(),
+            self.root_budget_meter.as_ref(),
+            self.budget_owner.as_ref(),
+        ) else {
+            return Ok(());
+        };
+        let receipt = meter.issue_usage_receipt()?;
+        journal
+            .lock()
+            .await
+            .report_root_usage_with_receipt(owner, receipt)
+            .await?;
+        Ok(())
+    }
+
+    /// Wraps an activated child provider with its durable reservation and
+    /// resumes from the journal's last committed receipt cursor.
+    pub async fn metered_child_provider(
+        &self,
+        token: &SwarmDispatchToken,
+    ) -> Result<(
+        Arc<dyn ModelProvider>,
+        SwarmProviderMeter<Arc<dyn SwarmUsageSource + Send + Sync>>,
+    )> {
+        let (Some(journal), Some(source)) = (
+            self.budget_journal.as_ref(),
+            self.budget_usage_source.as_ref(),
+        ) else {
+            return Err(Error::Unauthorized(
+                "local swarm budget binding is not configured".into(),
+            ));
+        };
+        let journal = journal.lock().await;
+        let (provider, meter) = journal.metered_provider(
+            token,
+            self.provider.clone(),
+            source.clone(),
+        )?;
+        let provider: Arc<dyn ModelProvider> = provider;
+        Ok((provider, meter))
+    }
+
+    /// Binds an authenticated activation token before a child harness is
+    /// opened. The token is retained across lazy reopen and supplies the
+    /// durable receipt cursor to the provider wrapper.
+    pub async fn bind_child_budget_token(
+        &self,
+        task: TaskId,
+        token: SwarmDispatchToken,
+    ) -> Result<()> {
+        if self.budget_journal.is_none() {
+            return Err(Error::Unauthorized(
+                "local swarm budget binding is not configured".into(),
+            ));
+        }
+        let operation = self.session(task).await?.operation.ok_or_else(|| {
+            Error::Conflict("child budget token is not bound to the session operation".into())
+        })?;
+        if token.operation_id() != operation {
+            return Err(Error::Conflict(
+                "child budget token operation differs from local session".into(),
+            ));
+        }
+        self.budget_tokens.lock().await.insert(task, token);
+        Ok(())
+    }
+
+    /// Reconstructs and binds an active child token from the durable journal.
+    /// This is the restart path when the authenticated activation token was
+    /// held only by the previous process.
+    pub async fn resume_child_budget_token(&self, task: TaskId) -> Result<()> {
+        let (Some(journal), Some(owner)) =
+            (self.budget_journal.as_ref(), self.budget_owner.as_ref())
+        else {
+            return Err(Error::Unauthorized(
+                "local swarm budget binding is not configured".into(),
+            ));
+        };
+        let operation = self.session(task).await?.operation.ok_or_else(|| {
+            Error::Conflict("child budget token is not bound to the session operation".into())
+        })?;
+        let token = journal
+            .lock()
+            .await
+            .resume_dispatch_token(operation, owner.clone())?;
+        self.bind_child_budget_token(task, token).await
+    }
+
+    /// Durably publishes child provider usage before the child terminal
+    /// outcome is recorded. The meter must be retained for the full dispatch.
+    pub async fn persist_child_budget_usage(
+        &self,
+        token: &SwarmDispatchToken,
+        meter: &SwarmProviderMeter<Arc<dyn SwarmUsageSource + Send + Sync>>,
+    ) -> Result<()> {
+        let (Some(journal), Some(owner)) =
+            (self.budget_journal.as_ref(), self.budget_owner.as_ref())
+        else {
+            return Err(Error::Unauthorized(
+                "local swarm budget binding is not configured".into(),
+            ));
+        };
+        let receipt = meter.issue_usage_receipt()?;
+        journal
+            .lock()
+            .await
+            .report_usage_with_receipt(token.operation_id(), owner, receipt)
+            .await?;
+        Ok(())
     }
 
     /// Rejects the legacy boundary-only fork entry point.
@@ -3361,9 +3554,30 @@ impl PersistentLocalSwarm {
                 )),
             }]
         });
+        let child_budget = if self.budget_journal.is_some() {
+            let token = self
+                .budget_tokens
+                .lock()
+                .await
+                .get(&child)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::Unauthorized(
+                        "authenticated child budget token required before provider dispatch"
+                            .into(),
+                    )
+                })?;
+            let (provider, meter) = self.metered_child_provider(&token).await?;
+            Some((token, provider, meter))
+        } else {
+            None
+        };
+        let child_provider = child_budget
+            .as_ref()
+            .map_or_else(|| self.provider.clone(), |(_, provider, _)| provider.clone());
         let bundle = match harness
             .storage()
-            .inherited_builder(boundary, suffix, self.provider.clone(), self.config.limits)
+            .inherited_builder(boundary, suffix, child_provider, self.config.limits)
             .and_then(|builder| {
                 let builder = builder
                     .tools(harness.storage().default_tools(self.config.limits)?)
@@ -3382,7 +3596,11 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
-        let output = match self.run_child_turn(&harness, &bundle, &request).await {
+        let result = self.run_child_turn(&harness, &bundle, &request).await;
+        if let Some((token, _, meter)) = child_budget.as_ref() {
+            self.persist_child_budget_usage(token, meter).await?;
+        }
+        let output = match result {
             Ok(output) => output,
             Err(error) => {
                 self.mark_failed(child, error.to_string()).await?;
