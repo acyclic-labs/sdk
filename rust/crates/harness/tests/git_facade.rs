@@ -390,6 +390,7 @@ async fn model_facing_git_tool_routes_through_pinned_facade_and_provenance() -> 
     let context = ModelToolContext {
         parent_operation,
         step: 0,
+        task_id: None,
     };
     let invocation = ToolInvocation::for_model_call(
         parent_operation,
