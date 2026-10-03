@@ -3087,9 +3087,13 @@ fn rustdoc_signature_text(
         .and_then(|object| object.get("generics"))
         .map(rustdoc_generics_text)
         .unwrap_or_default();
+    let where_clause = object
+        .and_then(|object| object.get("generics"))
+        .map(rustdoc_where_clause_text)
+        .unwrap_or_default();
     let text = match kind {
         "type_alias" => format!(
-            "pub type {name}{generics} = {}",
+            "pub type {name}{generics}{where_clause} = {}",
             object
                 .and_then(|object| object.get("type"))
                 .map(rustdoc_type_text)
@@ -3143,36 +3147,58 @@ fn rustdoc_signature_text(
                 .filter(|output| !output.is_null())
                 .map(|output| format!(" -> {}", rustdoc_type_text(output)))
                 .unwrap_or_default();
-            format!("{prefix}fn {name}{generics}({inputs}){output}")
+            format!("{prefix}fn {name}{generics}({inputs}){output}{where_clause}")
         }
         "struct" => format!(
-            "pub struct {name}{generics}{}",
+            "pub struct {name}{generics}{where_clause}{}",
             object
                 .and_then(|object| object.get("kind"))
                 .map(|kind| rustdoc_struct_fields_text(kind, index))
                 .unwrap_or_default()
         ),
         "enum" => format!(
-            "pub enum {name}{generics}{}",
+            "pub enum {name}{generics}{where_clause}{}",
             object
                 .and_then(|object| object.get("variants"))
                 .map(|variants| rustdoc_variants_text(variants, index))
                 .unwrap_or_default()
         ),
         "union" => format!(
-            "pub union {name}{generics}{}",
+            "pub union {name}{generics}{where_clause}{}",
             object
                 .and_then(|object| object.get("fields"))
                 .map(|fields| rustdoc_fields_text(fields, index))
                 .unwrap_or_default()
         ),
-        "trait" => format!("pub trait {name}{generics}"),
+        "trait" => format!(
+            "pub trait {name}{generics}{}{where_clause}",
+            object
+                .and_then(|object| object.get("bounds"))
+                .map(rustdoc_bounds_text)
+                .filter(|bounds| !bounds.is_empty())
+                .map(|bounds| format!(": {bounds}"))
+                .unwrap_or_default()
+        ),
         "constant" | "assoc_const" => format!(
-            "pub const {name}: {}",
+            "pub const {name}: {}{where_clause}",
             object
                 .and_then(|object| object.get("type"))
                 .map(rustdoc_type_text)
                 .unwrap_or_else(|| "_".to_owned())
+        ),
+        "assoc_type" => format!(
+            "type {name}{}{}{}",
+            object
+                .and_then(|object| object.get("bounds"))
+                .map(rustdoc_bounds_text)
+                .filter(|bounds| !bounds.is_empty())
+                .map(|bounds| format!(": {bounds}"))
+                .unwrap_or_default(),
+            object
+                .and_then(|object| object.get("type"))
+                .map(|value| format!(" = {}", rustdoc_type_text(value)))
+                .unwrap_or_default(),
+            where_clause
         ),
         "static" => format!(
             "pub static {name}: {}",
@@ -3302,13 +3328,82 @@ fn rustdoc_generics_text(value: &serde_json::Value) -> String {
             if kind.contains_key("lifetime") || name.starts_with('\'') {
                 return Some(name.to_owned());
             }
-            Some(name.to_owned())
+            let bounds = kind
+                .get("type")
+                .and_then(|kind| kind.get("bounds"))
+                .map(rustdoc_bounds_text)
+                .filter(|bounds| !bounds.is_empty())
+                .map(|bounds| format!(": {bounds}"))
+                .unwrap_or_default();
+            let default = kind
+                .get("type")
+                .and_then(|kind| kind.get("default"))
+                .map(rustdoc_type_text)
+                .filter(|default| default != "_")
+                .map(|default| format!(" = {default}"))
+                .unwrap_or_default();
+            Some(format!("{name}{bounds}{default}"))
         })
         .collect::<Vec<_>>();
     if values.is_empty() {
         String::new()
     } else {
         format!("<{}>", values.join(", "))
+    }
+}
+
+fn rustdoc_bounds_text(value: &serde_json::Value) -> String {
+    let Some(bounds) = value.as_array() else {
+        return String::new();
+    };
+    bounds
+        .iter()
+        .filter_map(|bound| {
+            let object = bound.as_object()?;
+            if let Some(trait_bound) = object.get("trait_bound") {
+                let trait_bound = trait_bound.as_object()?;
+                let mut text = trait_bound
+                    .get("trait")
+                    .map(rustdoc_trait_text)
+                    .unwrap_or_else(|| "Trait".to_owned());
+                if trait_bound
+                    .get("modifier")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("maybe")
+                {
+                    text = format!("?{text}");
+                }
+                return Some(text);
+            }
+            object
+                .get("outlives")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+fn rustdoc_where_clause_text(value: &serde_json::Value) -> String {
+    let Some(predicates) = value
+        .get("where_predicates")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return String::new();
+    };
+    let values = predicates
+        .iter()
+        .filter_map(|predicate| {
+            let bound = predicate.get("bound_predicate")?.as_object()?;
+            let subject = bound.get("type").map(rustdoc_type_text)?;
+            let bounds = bound.get("bounds").map(rustdoc_bounds_text)?;
+            (!bounds.is_empty()).then(|| format!("{subject}: {bounds}"))
+        })
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        String::new()
+    } else {
+        format!(" where {}", values.join(", "))
     }
 }
 
@@ -3401,15 +3496,59 @@ fn rustdoc_type_text(value: &serde_json::Value) -> String {
             .unwrap_or_else(|| "()".to_owned()),
         "function_pointer" => "fn(...)".to_owned(),
         "impl_trait" => "impl Trait".to_owned(),
-        "dyn_trait" => "dyn Trait".to_owned(),
         "infer" => "_".to_owned(),
-        "qualified_path" => inner
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("_")
-            .to_owned(),
+        "qualified_path" => {
+            let name = inner
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("_");
+            let self_type = inner
+                .get("self_type")
+                .map(rustdoc_type_text)
+                .unwrap_or_else(|| "Self".to_owned());
+            let trait_name = inner
+                .get("trait")
+                .map(rustdoc_trait_text)
+                .unwrap_or_else(|| "Trait".to_owned());
+            format!("<{self_type} as {trait_name}>::{name}")
+        }
+        "dyn_trait" => {
+            let traits = inner
+                .get("traits")
+                .and_then(serde_json::Value::as_array)
+                .map(|traits| {
+                    traits
+                        .iter()
+                        .filter_map(|bound| bound.get("trait").map(rustdoc_trait_text))
+                        .collect::<Vec<_>>()
+                        .join(" + ")
+                })
+                .filter(|traits| !traits.is_empty())
+                .unwrap_or_else(|| "Trait".to_owned());
+            let lifetime = inner
+                .get("lifetime")
+                .and_then(serde_json::Value::as_str)
+                .map(|lifetime| format!(" + {lifetime}"))
+                .unwrap_or_default();
+            format!("dyn {traits}{lifetime}")
+        }
         _ => serde_json::to_string(value).unwrap_or_else(|_| "_".to_owned()),
     }
+}
+
+fn rustdoc_trait_text(value: &serde_json::Value) -> String {
+    let Some(object) = value.as_object() else {
+        return "Trait".to_owned();
+    };
+    let path = object
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Trait");
+    let args = object
+        .get("args")
+        .map(rustdoc_generic_args_text)
+        .unwrap_or_default();
+    format!("{path}{args}")
 }
 
 fn rustdoc_generic_args_text(value: &serde_json::Value) -> String {
@@ -3419,7 +3558,7 @@ fn rustdoc_generic_args_text(value: &serde_json::Value) -> String {
     let Some(args) = angle.get("args").and_then(serde_json::Value::as_array) else {
         return String::new();
     };
-    let values = args
+    let mut values = args
         .iter()
         .filter_map(|arg| {
             let object = arg.as_object()?;
@@ -3432,6 +3571,21 @@ fn rustdoc_generic_args_text(value: &serde_json::Value) -> String {
                 .map(str::to_owned)
         })
         .collect::<Vec<_>>();
+    if let Some(constraints) = angle
+        .get("constraints")
+        .and_then(serde_json::Value::as_array)
+    {
+        values.extend(constraints.iter().filter_map(|constraint| {
+            let object = constraint.as_object()?;
+            let name = object.get("name")?.as_str()?;
+            let equality = object
+                .get("binding")?
+                .get("equality")?
+                .get("type")
+                .map(rustdoc_type_text)?;
+            Some(format!("{name} = {equality}"))
+        }));
+    }
     if values.is_empty() {
         String::new()
     } else {
@@ -4377,6 +4531,45 @@ mod tests {
                 .find(|item| item.name == "request_id")
                 .and_then(|item| item.module_path.as_deref()),
             Some("demo::Request::request_id")
+        );
+    }
+
+    #[test]
+    fn rustdoc_signature_text_keeps_bounds_where_clauses_and_associated_types() {
+        let function = serde_json::json!({
+            "sig": {
+                "inputs": [["value", {"borrowed_ref": {"lifetime": "'a", "is_mutable": false, "type": {"generic": "T"}}}]],
+                "output": {"generic": "T"}
+            },
+            "generics": {
+                "params": [{"name": "'a", "kind": {"lifetime": {}}}, {"name": "T", "kind": {"type": {"bounds": [{"trait_bound": {"trait": {"path": "Send", "args": null}, "modifier": "none"}}]}}}],
+                "where_predicates": [{"bound_predicate": {"type": {"generic": "T"}, "bounds": [{"trait_bound": {"trait": {"path": "Sync", "args": null}, "modifier": "none"}}]}}]
+            },
+            "header": {"is_const": false, "is_unsafe": false, "is_async": true}
+        });
+        let mut inner = serde_json::Map::new();
+        inner.insert("function".to_owned(), function);
+        assert_eq!(
+            rustdoc_signature_text("fetch", "function", &inner, &serde_json::Map::new()).as_deref(),
+            Some("pub async fn fetch<'a, T: Send>(value: &'a T) -> T where T: Sync")
+        );
+
+        let associated = serde_json::json!({
+            "generics": {"params": [], "where_predicates": []},
+            "bounds": [{"trait_bound": {"trait": {"path": "Future", "args": null}, "modifier": "none"}}],
+            "type": {"generic": "Output"}
+        });
+        let mut associated_inner = serde_json::Map::new();
+        associated_inner.insert("assoc_type".to_owned(), associated);
+        assert_eq!(
+            rustdoc_signature_text(
+                "Item",
+                "assoc_type",
+                &associated_inner,
+                &serde_json::Map::new()
+            )
+            .as_deref(),
+            Some("type Item: Future = Output")
         );
     }
 
