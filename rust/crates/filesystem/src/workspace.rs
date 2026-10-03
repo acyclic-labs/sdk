@@ -3660,6 +3660,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
             .await
     }
 
+    /// Reopens a persisted plan with its original authority head. The target
+    /// may have advanced since provider publication; this only reconstructs
+    /// immutable proof inputs and never publishes.
+    pub async fn plan_recovery_with_head(
+        self,
+        source_head: Generation<A, O>,
+        target_head: Generation<A, O>,
+        target_authority_head: crate::Head,
+    ) -> Result<JoinPlan<A, O>, WorkspaceError> {
+        self.validate_bounds()?;
+        if source_head.workspace.id != self.source.id || target_head.workspace.id != self.target.id
+        {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        self.plan_generations(source_head, target_head, target_authority_head)
+            .await
+    }
+
     pub(crate) async fn plan_generations(
         self,
         source_head: Generation<A, O>,
@@ -3719,6 +3737,13 @@ impl<A, O> JoinPlan<A, O> {
         self.target_head.id
     }
 
+    /// Authority head observed while the plan was inspected. Recovery uses
+    /// this immutable value to rebuild the original publication fingerprint.
+    #[must_use]
+    pub const fn target_authority_head(&self) -> crate::Head {
+        self.target_authority_head
+    }
+
     /// Exact discovered common ancestor.
     #[must_use]
     pub const fn common_ancestor(&self) -> GenerationId {
@@ -3736,6 +3761,12 @@ impl<A, O> JoinPlan<A, O> {
     #[must_use]
     pub const fn source(&self) -> &Workspace<A, O> {
         &self.source
+    }
+
+    /// Target workspace retained by the plan.
+    #[must_use]
+    pub const fn target(&self) -> &Workspace<A, O> {
+        &self.target
     }
 
     /// Captures exact provider-owned inputs for later verification of this
@@ -3766,6 +3797,55 @@ impl<A, O> JoinPlan<A, O> {
             operation_id: idempotency_key.operation_id(),
             result_generation: application.generation.id,
         })
+    }
+
+    /// Returns the exact resolution digest used by `apply_sides` for this
+    /// immutable plan. Adapters persist this digest before dispatch so a
+    /// provider result can be reconstructed if the process fails after the
+    /// workspace publication and before its receipt is recorded.
+    #[must_use]
+    pub fn resolution_digest_for_sides(
+        &self,
+        selections: &BTreeMap<MergeConflict, ConflictSide>,
+    ) -> crate::Digest {
+        let resolutions = selections
+            .iter()
+            .map(|(conflict, side)| {
+                let side = match side {
+                    ConflictSide::Base => crate::kernel::MergeConflictSide::Base,
+                    ConflictSide::Ours => crate::kernel::MergeConflictSide::Ours,
+                    ConflictSide::Theirs => crate::kernel::MergeConflictSide::Theirs,
+                };
+                (
+                    conflict.clone(),
+                    crate::kernel::MergeConflictResolution::Select(side),
+                )
+            })
+            .collect();
+        crate::facade::hash_join_resolutions(&resolutions)
+    }
+
+    /// Reconstructs a committed join witness after a restart. The operation
+    /// identity is resolved by Filesystem's durable operation record; no
+    /// mutable workspace head or newly generated plan is trusted for the
+    /// resulting generation.
+    pub async fn recover_commit_witness(
+        &self,
+        idempotency_key: IdempotencyKey,
+        resolutions_digest: crate::Digest,
+    ) -> Result<Option<crate::JoinCommitWitness>, WorkspaceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let Some(generation) = self.target.operation_generation(idempotency_key).await? else {
+            return Ok(None);
+        };
+        let application = JoinApplication {
+            generation,
+            resolutions_digest,
+        };
+        self.commit_witness(&application, idempotency_key).map(Some)
     }
 }
 

@@ -60,6 +60,7 @@ mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
 mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
+mod project_merge_recovery;
 pub use project_merge_recovery::{
     ProjectMergeIntent, ProjectMergeRecovery, ProjectMergeRecoveryEntry,
 };
@@ -1070,6 +1071,12 @@ impl<A, O> ParentMergePlan<A, O> {
         self.plan.target_head()
     }
 
+    /// Exact provider authority head captured while inspecting this plan.
+    #[must_use]
+    pub const fn target_authority_head(&self) -> acyclic_fs::Head {
+        self.plan.target_authority_head()
+    }
+
     /// Exact child generation whose changes were inspected.
     #[must_use]
     pub const fn source_head(&self) -> GenerationId {
@@ -1086,6 +1093,14 @@ impl<A, O> ParentMergePlan<A, O> {
     #[must_use]
     pub const fn child_project(&self) -> &VolumeRef {
         &self.child_project
+    }
+
+    /// Exact provider digest for the conflict-side selections that will be
+    /// supplied to this immutable plan. Persist this before publication when
+    /// a caller needs restart reconstruction of the provider witness.
+    #[must_use]
+    pub fn resolution_digest(&self, selections: &BTreeMap<MergeConflict, ConflictSide>) -> Digest {
+        self.plan.resolution_digest_for_sides(selections)
     }
 }
 
@@ -1394,6 +1409,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         })
     }
 
+    /// Reopens an inspected merge from its persisted immutable endpoints.
+    /// Mutable workspace heads are not used to rewrite the persisted
+    /// publication fingerprint; the supplied authority head is retained for
+    /// witness verification after the provider has advanced.
+    pub async fn prepare_project_merge_at(
+        &self,
+        child: &VolumeRef,
+        source_generation: &GenerationRef,
+        target_generation: &GenerationRef,
+        target_authority_head: acyclic_fs::Head,
+    ) -> Result<ParentMergePlan<A, O>> {
+        self.require("project:merge", VolumeOperation::Write)?;
+        Ok(ParentMergePlan {
+            plan: self
+                .host
+                .prepare_project_merge_at(
+                    child,
+                    &self.project,
+                    source_generation,
+                    target_generation,
+                    target_authority_head,
+                )
+                .await?,
+            child_project: child.clone(),
+            parent_project: self.project.clone(),
+            parent_scope: self.scope.clone(),
+        })
+    }
+
     /// Publishes only a plan prepared under this same authenticated parent scope.
     /// The exact inspected target generation is always the Filesystem CAS precondition.
     pub async fn apply_project_merge(
@@ -1404,6 +1448,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         self.require_merge_plan(plan)?;
         plan.plan
             .apply(Self::merge_options(plan, project_join_key(operation_id)?))
+            .await
+            .map_err(map_error)
+    }
+
+    /// Resolves a provider join witness retained under the plan's exact
+    /// operation identity after a restart.
+    pub async fn recover_project_merge_witness(
+        &self,
+        plan: &ParentMergePlan<A, O>,
+        operation_id: crate::OperationId,
+        resolutions_digest: Digest,
+    ) -> Result<Option<JoinCommitWitness>> {
+        self.require_merge_plan(plan)?;
+        plan.plan
+            .recover_commit_witness(project_join_key(operation_id)?, resolutions_digest)
             .await
             .map_err(map_error)
     }
@@ -1458,6 +1517,71 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             },
             notice,
         };
+        Ok(receipt)
+    }
+
+    /// Rebuilds a receipt from the provider's durable join witness after a
+    /// crash between provider publication and receipt persistence.
+    pub async fn merge_receipt_from_witness(
+        &self,
+        plan: &ParentMergePlan<A, O>,
+        witness: &JoinCommitWitness,
+        child: Authority,
+        operation_id: crate::OperationId,
+        notice: crate::conversation::ConversationMessage,
+    ) -> Result<ProjectMergeReceipt> {
+        self.require_merge_plan(plan)?;
+        if child.kind != crate::core::AggregateKind::Conversation {
+            return Err(Error::Invalid(
+                "project join child is not a conversation".into(),
+            ));
+        }
+        child.stream_path()?;
+        notice.validate()?;
+        if notice.kind != crate::conversation::MessageKind::Merge {
+            return Err(Error::Invalid("project join notice is not a merge".into()));
+        }
+        let filesystem_key = project_join_key(operation_id)?;
+        if witness.operation_id().into_bytes() != filesystem_key.into_bytes()
+            || witness.source_generation() != plan.source_head()
+            || witness.expected_target() != plan.target_head()
+            || witness.history() != JoinHistory::Merge
+            || witness.source_workspace() != plan.plan.source().id().volume_id()
+            || witness.target_workspace() != plan.plan.target().id().volume_id()
+        {
+            return Err(Error::Conflict(
+                "provider witness does not match the retained merge plan".into(),
+            ));
+        }
+        if !plan
+            .plan
+            .target()
+            .verify_join_commit(witness)
+            .await
+            .map_err(map_error)?
+        {
+            return Err(Error::Conflict(
+                "provider witness is not a durable join for the retained plan".into(),
+            ));
+        }
+        let receipt = ProjectMergeReceipt {
+            operation_id,
+            child,
+            source_project: plan.child_project.clone(),
+            source_generation: self.host.generation_ref_id(plan.source_head())?,
+            target_project: self.project.clone(),
+            expected_target_generation: self.host.generation_ref_id(plan.target_head())?,
+            result_generation: self.host.generation_ref_id(witness.result_generation())?,
+            provider_operation_id: filesystem_key.into_bytes().to_vec(),
+            provider_proof: ProviderJoinProof {
+                provider: self.host.provider.clone(),
+                format: FILESYSTEM_JOIN_PROOF_FORMAT.into(),
+                statement: serde_json::to_value(witness)
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            },
+            notice,
+        };
+        receipt.validate_shape()?;
         Ok(receipt)
     }
 
@@ -1623,6 +1747,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         child_workspace
             .join_into(&parent_workspace)
             .plan()
+            .await
+            .map_err(map_error)
+    }
+
+    async fn prepare_project_merge_at(
+        &self,
+        child: &VolumeRef,
+        parent: &VolumeRef,
+        source_generation: &GenerationRef,
+        target_generation: &GenerationRef,
+        target_authority_head: acyclic_fs::Head,
+    ) -> Result<JoinPlan<A, O>> {
+        self.require_project_pair(child, parent)?;
+        let child_workspace = self
+            .open(&workspace_ref(
+                self.provider.clone(),
+                &child.storage_name()?,
+            )?)
+            .await?;
+        let parent_workspace = self
+            .open(&workspace_ref(
+                self.provider.clone(),
+                &parent.storage_name()?,
+            )?)
+            .await?;
+        let expected_child = parent_workspace
+            .fork_workspace_id(child_workspace.name().as_str())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        if child_workspace.id() != expected_child {
+            return Err(Error::Unauthorized(
+                "project merge target is not the child's direct parent".into(),
+            ));
+        }
+        let source = self.generation(&child_workspace, source_generation).await?;
+        let target = self
+            .generation(&parent_workspace, target_generation)
+            .await?;
+        child_workspace
+            .join_into(&parent_workspace)
+            .plan_recovery_with_head(source, target, target_authority_head)
             .await
             .map_err(map_error)
     }

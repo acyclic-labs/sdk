@@ -211,7 +211,9 @@ fn workspace_join_context(
     Digest::from_bytes(*hasher.finalize().as_bytes())
 }
 
-fn hash_join_resolutions(resolutions: &BTreeMap<MergeConflict, MergeConflictResolution>) -> Digest {
+pub(crate) fn hash_join_resolutions(
+    resolutions: &BTreeMap<MergeConflict, MergeConflictResolution>,
+) -> Digest {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-fs-workspace-join-resolutions-v1\0");
     for (conflict, resolution) in resolutions {

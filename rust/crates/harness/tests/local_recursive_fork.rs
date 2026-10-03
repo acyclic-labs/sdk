@@ -6,28 +6,112 @@ use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions, MemoryGitCompatStore, WorkspaceId,
 };
 use acyclic_harness::conversation::{
-    Attachment, ContentGrant, ConversationMessage, MessageKind, ReferencedAttachments, VolumeClass,
-    VolumeOperation, VolumeOwner, VolumeRef,
+    Attachment, ContentGrant, ConversationMessage, FileRef, MessageKind, ReferencedAttachments,
+    VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
 };
 use acyclic_harness::core::{
     Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry,
 };
+use acyclic_harness::executor::{ExecutionEvent, ExecutionJournal, ExecutionRecord};
 use acyclic_harness::filesystem::{
-    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemForkVerifier, FilesystemGitFacade,
-    FilesystemHost, FilesystemProjectMergeVerifier, WorkspaceMutation, workspace_ref,
+    FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemForkPreparer,
+    FilesystemForkVerifier, FilesystemGitFacade, FilesystemHost, FilesystemProjectMergeVerifier,
+    ProjectMergeRecovery, RootWritebackApproval, RootWritebackRequest, WorkspaceMutation,
+    workspace_ref,
 };
 use acyclic_harness::fork::{
     CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection, ResourceRevision,
     StreamHistoryForkVerifier,
 };
-use acyclic_harness::resources::{ProviderRef, StreamRef};
+use acyclic_harness::interaction::{Interaction, InteractionOutcome};
+use acyclic_harness::resources::{GenerationRef, ProviderRef, StreamRef};
 use acyclic_harness::store::StreamAggregate;
-use acyclic_harness::{AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result};
+use acyclic_harness::{
+    AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Result,
+};
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use futures::future::BoxFuture;
 use std::sync::Arc;
 use uuid::Uuid;
 
 const DEPTH: u8 = 3;
+
+/// Injects a provider-applied / receipt-recording crash at the durable
+/// journal boundary while delegating every other operation to the real local
+/// Stream-backed journal.
+struct FailAppliedJournal {
+    inner: Arc<dyn ExecutionJournal>,
+}
+
+impl ExecutionJournal for FailAppliedJournal {
+    fn replay<'a>(
+        &'a self,
+        operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
+        self.inner.replay(operation_id)
+    }
+
+    fn append<'a>(
+        &'a self,
+        operation_id: OperationId,
+        idempotency_key: String,
+        event: ExecutionEvent,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.inner.append(operation_id, idempotency_key, event)
+    }
+
+    fn append_if_tail<'a>(
+        &'a self,
+        operation_id: OperationId,
+        expected_tail: u64,
+        idempotency_key: String,
+        event: ExecutionEvent,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            if matches!(
+                &event,
+                ExecutionEvent::BatchPublicationStarted { step: 1, .. }
+            ) {
+                return Err(Error::Storage(
+                    "injected crash after provider publication".into(),
+                ));
+            }
+            self.inner
+                .append_if_tail(operation_id, expected_tail, idempotency_key, event)
+                .await
+        })
+    }
+
+    fn stage<'a>(
+        &'a self,
+        operation_id: OperationId,
+        idempotency_key: String,
+        bytes: Vec<u8>,
+        media_type: &'static str,
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        self.inner
+            .stage(operation_id, idempotency_key, bytes, media_type)
+    }
+
+    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+        self.inner.load(reference)
+    }
+
+    fn open_interaction<'a>(
+        &'a self,
+        id: InteractionId,
+        interaction: Interaction,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.inner.open_interaction(id, interaction)
+    }
+
+    fn interaction_outcome<'a>(
+        &'a self,
+        id: InteractionId,
+    ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
+        self.inner.interaction_outcome(id)
+    }
+}
 
 fn identity(value: u8) -> [u8; 16] {
     let mut bytes = [0xA5; 16];
@@ -547,18 +631,20 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             let operation_id = OperationId::from_bytes([91; 16]);
             let mut malformed_notice = merge_message.clone();
             malformed_notice.kind = MessageKind::User;
-            assert!(parent_facade
-                .apply_project_merge_for_child_with_notice(
-                    host.as_ref(),
-                    aggregate.reducer(),
-                    &child_authority,
-                    &child_project,
-                    &plan,
-                    operation_id,
-                    &malformed_notice,
-                )
-                .await
-                .is_err());
+            assert!(
+                parent_facade
+                    .apply_project_merge_for_child_with_notice(
+                        host.as_ref(),
+                        aggregate.reducer(),
+                        &child_authority,
+                        &child_project,
+                        &plan,
+                        operation_id,
+                        &malformed_notice,
+                    )
+                    .await
+                    .is_err()
+            );
             assert!(
                 host.read(
                     &project_head.workspace,
@@ -570,16 +656,143 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 .is_err(),
                 "invalid merge receipt intent must not publish a workspace change"
             );
-            let receipt = parent_facade
-                .apply_project_merge_for_child_with_receipt(
+            let journal = Arc::new(FilesystemExecutionJournal::new(
+                stream.clone(),
+                host.clone(),
+                private.clone(),
+                issuer.verifier(),
+                grant_scope.clone(),
+                64 * 1_024,
+            )?);
+            let invalid_approval = RootWritebackApproval::issue(
+                &issuer.verifier(),
+                &grant_scope,
+                project.clone(),
+                operation_id,
+                host.generation_ref_id(plan.source_head())?,
+                GenerationRef::new(provider.clone(), [92; 32], Some("stale-target".into()))?,
+            )?;
+            let invalid_recovery = ProjectMergeRecovery::new(journal.as_ref(), operation_id);
+            let invalid_error = parent_facade
+                .apply_root_writeback_plan_for_child_with_recovery(
+                    &RootWritebackRequest::new(invalid_approval, grant_scope.clone()),
                     host.as_ref(),
                     aggregate.reducer(),
-                    &child_authority,
+                    child_authority.clone(),
                     &child_project,
                     &plan,
-                    operation_id,
-                    merge_message,
+                    std::collections::BTreeMap::new(),
+                    merge_message.clone(),
+                    &invalid_recovery,
                 )
+                .await
+                .err()
+                .ok_or_else(|| Error::Invalid("stale writeback approval was accepted".into()))?;
+            assert!(matches!(invalid_error, Error::Conflict(_)));
+            assert!(invalid_recovery.reopen().await?.is_none());
+            drop(invalid_recovery);
+            let approval = RootWritebackApproval::issue(
+                &issuer.verifier(),
+                &grant_scope,
+                project.clone(),
+                operation_id,
+                host.generation_ref_id(plan.source_head())?,
+                host.generation_ref_id(plan.target_head())?,
+            )?;
+            let request = RootWritebackRequest::new(approval.clone(), grant_scope.clone());
+            let failing_journal: Arc<dyn ExecutionJournal> = Arc::new(FailAppliedJournal {
+                inner: journal.clone(),
+            });
+            let recovery = ProjectMergeRecovery::new(failing_journal.as_ref(), operation_id);
+            let error = parent_facade
+                .apply_root_writeback_plan_for_child_with_recovery(
+                    &request,
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    child_authority.clone(),
+                    &child_project,
+                    &plan,
+                    std::collections::BTreeMap::new(),
+                    merge_message.clone(),
+                    &recovery,
+                )
+                .await
+                .err()
+                .ok_or_else(|| Error::Invalid("injected publication crash was ignored".into()))?;
+            assert!(matches!(error, Error::Storage(_)));
+            assert_eq!(
+                host.read(
+                    &project_head.workspace,
+                    None,
+                    &format!("/level-{level}.txt"),
+                    1_024,
+                )
+                .await?
+                .as_ref(),
+                format!("project child {level}").as_bytes(),
+                "provider publication must be visible before receipt recovery"
+            );
+            drop(recovery);
+            drop(failing_journal);
+            drop(journal);
+            drop(plan);
+            drop(parent_facade);
+            drop(aggregate);
+            drop(stream);
+            drop(host);
+            host = Arc::new(FilesystemHost::new(
+                Fs::local(fs_options.clone())
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+                provider.clone(),
+            )?);
+            stream = StreamClient::new(Arc::new(
+                LocalStream::open(&stream_root, LocalStreamLimits::default())
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+            ));
+            aggregate = open_aggregate(
+                &stream,
+                authority.clone(),
+                &issuer,
+                host.clone(),
+                grant_scope.clone(),
+                stream_provider.clone(),
+            )
+            .await?;
+            let reopened_facade = FilesystemGitFacade::new(
+                WorkspaceId::from_bytes(identity(100 + level)),
+                MemoryGitCompatStore::new(),
+                project.clone(),
+                issuer.verifier(),
+                grant_scope.clone(),
+            )?;
+            let reopened_journal = FilesystemExecutionJournal::new(
+                stream.clone(),
+                host.clone(),
+                private.clone(),
+                issuer.verifier(),
+                grant_scope.clone(),
+                64 * 1_024,
+            )?;
+            let reopened_recovery = ProjectMergeRecovery::new(&reopened_journal, operation_id);
+            let entry = reopened_recovery
+                .reopen()
+                .await?
+                .ok_or_else(|| Error::Conflict("merge recovery entry was lost".into()))?;
+            assert!(entry.receipt.is_none());
+            let receipt = reopened_facade
+                .recover_root_writeback_receipt(host.as_ref(), aggregate.reducer(), &entry)
+                .await?;
+            let verifier = FilesystemProjectMergeVerifier::new(host.clone());
+            reopened_recovery
+                .record_applied(receipt.clone(), &verifier)
+                .await?;
+            reopened_recovery.complete().await?;
+            // A reply lost after publication is still idempotently
+            // recoverable from the completed durable entry.
+            reopened_recovery
+                .record_applied(receipt.clone(), &verifier)
                 .await?;
             aggregate
                 .execute(Command {

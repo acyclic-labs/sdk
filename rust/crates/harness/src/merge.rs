@@ -86,6 +86,11 @@ pub trait ProjectJoinPlan: Send + Sync {
     fn source_generation(&self) -> &GenerationRef;
     /// Returns the target generation required by the compare-and-swap join.
     fn expected_target_generation(&self) -> &GenerationRef;
+    /// Returns the parent project this provider plan can mutate. Generic
+    /// writeback refuses plans that do not expose this binding.
+    fn target_project(&self) -> Option<&VolumeRef> {
+        None
+    }
     /// Applies the inspected project-only join under the parent's authority.
     fn apply<'a>(
         &'a self,
