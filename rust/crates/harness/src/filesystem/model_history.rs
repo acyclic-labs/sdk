@@ -419,7 +419,7 @@ where
         value: &Value,
         records: &[ExecutionRecord],
     ) -> Result<(FileRef, FileRef)> {
-        if let Some((result, projection)) = records.iter().find_map(|record| match &record.event {
+        if let Some((_result, projection)) = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolCompleted {
                 step: candidate,
                 call_id: call,
@@ -434,7 +434,25 @@ where
                     "completed result changed its projection".into(),
                 ));
             }
-            return Ok((result.clone(), projection.clone()));
+            // The execution journal references are host-owned `.system` files.
+            // They are valid for authenticated journal replay, but must never
+            // be copied into model-visible conversation state: model readers
+            // intentionally reject that namespace. Re-materialize the exact
+            // validated projection through the ordinary content publisher so
+            // the conversation contains only a model-readable projection.
+            let model_result = self
+                .stage_history_json(
+                    operation,
+                    &format!("{path}.json"),
+                    &ToolResult {
+                        value: actual.clone(),
+                    },
+                )
+                .await?;
+            let model_projection = self
+                .stage_history_json(operation, &format!("{path}-projection.json"), &actual)
+                .await?;
+            return Ok((model_result, model_projection));
         }
         // Rejection/failure feedback is already part of the pinned complete exchange.
         // It is an observation, not a successful effect result.

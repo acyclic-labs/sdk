@@ -2577,8 +2577,10 @@ mod tests {
 mod local_provider_tests {
     use super::*;
     use crate::{
+        InteractionId,
         conversation::Limits,
         filesystem::PersistentLocalHarness,
+        interaction::{Interaction, InteractionResponse},
         model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
     };
     use futures::{future::BoxFuture, stream::BoxStream};
@@ -2835,6 +2837,215 @@ mod local_provider_tests {
         let unknown_replay = unknown_restarted.dispatch(unknown_dispatch).await?;
         assert_eq!(unknown_replay.status, EffectStatus::Indeterminate);
         assert_eq!(unknown_restarted_calls.load(Ordering::SeqCst), 0);
+        std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn authenticated_native_provider_reopens_and_replays_without_redispatch() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "harness-authenticated-native-{}",
+            OperationId::new()
+        ));
+        let marker = root.join("marker.txt");
+        let model = Model::new("mock", "execution-auth", "1", serde_json::Value::Null)?;
+        let operation = OperationId::from_bytes([91; 16]);
+        let interaction_id = InteractionId::new();
+        let mut request = local_spec();
+        request.working_directory = root.to_string_lossy().into_owned();
+        if cfg!(windows) {
+            request.arguments = vec!["/C".into(), "echo graphcoder-approved>>marker.txt".into()];
+        } else {
+            request.arguments = vec![
+                "-c".into(),
+                "printf graphcoder-approved >> marker.txt".into(),
+            ];
+        }
+        let request_digest = request.digest()?;
+        let interaction = Interaction::Approval {
+            prompt: "approve exact marker command".into(),
+            operation_id: operation,
+            action_digest: request_digest,
+        };
+        let request_file;
+        let dispatch;
+        {
+            let session = PersistentLocalHarness::open(
+                &root,
+                model.clone(),
+                Arc::new(NoopModel),
+                Limits::default(),
+            )
+            .await?;
+            session
+                .storage()
+                .open_interaction(interaction_id, interaction)
+                .await?;
+            let approval = ExecutionApproval::approve_for(
+                session.storage().session_id(),
+                interaction_id,
+                operation,
+                request.clone(),
+            )?;
+            session
+                .storage()
+                .resolve_interaction(
+                    interaction_id,
+                    InteractionResponse::Approval {
+                        approved: true,
+                        reason: None,
+                    },
+                )
+                .await?;
+            let bytes =
+                serde_json::to_vec(&approval).map_err(|error| Error::Invalid(error.to_string()))?;
+            request_file = session
+                .storage()
+                .stage(
+                    operation,
+                    "requests/authenticated.json",
+                    &bytes,
+                    "application/json",
+                    "authenticated.json",
+                )
+                .await?;
+            let provider = session.native_execution_provider()?;
+            let digest = crate::core::effect_request_digest(
+                provider.id(),
+                EffectGuarantee::AtMostOnce,
+                "host.process",
+                &request_file,
+            )?;
+            dispatch = EffectDispatch {
+                provider: provider.id().into(),
+                effect_id: EffectId::from_bytes(operation.into_bytes()),
+                attempt_id: EffectAttemptId::from_bytes([92; 16]),
+                effect_kind: "host.process".into(),
+                request: request_file.clone(),
+                guarantee: EffectGuarantee::AtMostOnce,
+                request_digest: digest,
+            };
+            let observation = provider.dispatch(dispatch.clone()).await?;
+            assert!(matches!(observation.status, EffectStatus::Succeeded { .. }));
+
+            let denied_operation = OperationId::from_bytes([96; 16]);
+            let denied_interaction = InteractionId::from_bytes([97; 16]);
+            session
+                .storage()
+                .open_interaction(
+                    denied_interaction,
+                    Interaction::Approval {
+                        prompt: "decline exact marker command".into(),
+                        operation_id: denied_operation,
+                        action_digest: request_digest,
+                    },
+                )
+                .await?;
+            session
+                .storage()
+                .resolve_interaction(
+                    denied_interaction,
+                    InteractionResponse::Approval {
+                        approved: false,
+                        reason: Some("owner declined".into()),
+                    },
+                )
+                .await?;
+            let denied = ExecutionApproval::deny_for(
+                session.storage().session_id(),
+                denied_interaction,
+                denied_operation,
+                request.clone(),
+                "owner declined",
+            )?;
+            let denied_bytes =
+                serde_json::to_vec(&denied).map_err(|error| Error::Invalid(error.to_string()))?;
+            let denied_file = session
+                .storage()
+                .stage(
+                    denied_operation,
+                    "requests/denied.json",
+                    &denied_bytes,
+                    "application/json",
+                    "denied.json",
+                )
+                .await?;
+            let denied_digest = crate::core::effect_request_digest(
+                provider.id(),
+                EffectGuarantee::AtMostOnce,
+                "host.process",
+                &denied_file,
+            )?;
+            let denied_observation = provider
+                .dispatch(EffectDispatch {
+                    provider: provider.id().into(),
+                    effect_id: EffectId::from_bytes(denied_operation.into_bytes()),
+                    attempt_id: EffectAttemptId::from_bytes([98; 16]),
+                    effect_kind: "host.process".into(),
+                    request: denied_file,
+                    guarantee: EffectGuarantee::AtMostOnce,
+                    request_digest: denied_digest,
+                })
+                .await?;
+            assert!(matches!(
+                denied_observation.status,
+                EffectStatus::FailedWithReceipt { ref message, .. }
+                    if message.contains("owner declined")
+            ));
+
+            let forged = ExecutionApproval::approve_for(
+                SessionId::new(),
+                interaction_id,
+                operation,
+                request.clone(),
+            )?;
+            let forged_bytes =
+                serde_json::to_vec(&forged).map_err(|error| Error::Invalid(error.to_string()))?;
+            let forged_file = session
+                .storage()
+                .stage(
+                    OperationId::from_bytes([93; 16]),
+                    "requests/forged-session.json",
+                    &forged_bytes,
+                    "application/json",
+                    "forged-session.json",
+                )
+                .await?;
+            let forged_digest = crate::core::effect_request_digest(
+                provider.id(),
+                EffectGuarantee::AtMostOnce,
+                "host.process",
+                &forged_file,
+            )?;
+            assert!(matches!(
+                provider
+                    .dispatch(EffectDispatch {
+                        provider: provider.id().into(),
+                        effect_id: EffectId::from_bytes([94; 16]),
+                        attempt_id: EffectAttemptId::from_bytes([95; 16]),
+                        effect_kind: "host.process".into(),
+                        request: forged_file,
+                        guarantee: EffectGuarantee::AtMostOnce,
+                        request_digest: forged_digest,
+                    })
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+        }
+        let first_marker =
+            std::fs::read(&marker).map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(!first_marker.is_empty());
+        {
+            let session =
+                PersistentLocalHarness::open(&root, model, Arc::new(NoopModel), Limits::default())
+                    .await?;
+            let provider = session.native_execution_provider()?;
+            let observation = provider.dispatch(dispatch).await?;
+            assert!(matches!(observation.status, EffectStatus::Succeeded { .. }));
+        }
+        let replayed_marker =
+            std::fs::read(&marker).map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(replayed_marker, first_marker);
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())
     }
