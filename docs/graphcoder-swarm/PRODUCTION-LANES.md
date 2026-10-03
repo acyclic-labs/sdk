@@ -37,6 +37,26 @@ The production bridge must replace this helper before native or PTY evidence
 can be bound to a receipt. Its runtime must exercise the durable local Harness
 and real filesystem effects through the typed host boundary.
 
+Every production entrypoint validates the installed package name/version,
+export-map targets, and `bin` targets before loading it. Set
+`GRAPHCODER_PACKAGE_ARTIFACT` to the exact archive used for installation and
+`GRAPHCODER_IDENTITY_PATH` to retain the observed package identity (including
+the package manifest and archive SHA-256 values). Set
+`GRAPHCODER_REQUIRE_PACKAGE_IDENTITY=1` so a lane fails when the identity
+record was not requested.
+
+The real bridge may write a JSON observation file at
+`GRAPHCODER_LAZY_OBSERVATION_PATH` after handling `list_sessions`:
+
+```json
+{"during_list_sessions":{"worker_starts":0,"workspace_reads":0,"model_dispatches":0}}
+```
+
+Set `GRAPHCODER_REQUIRE_LAZY_COUNTERS=1` to require this observation. The
+entrypoint rejects any nonzero counter, and the package consumer accepts the
+same file through `--lazy-observation`. The protocol fixture's request log is
+kept separate; it cannot substitute for these real-host counters.
+
 Build and install the GraphCoder package into a clean consumer directory, then
 set these values in the suite capture configuration:
 

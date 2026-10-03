@@ -12,7 +12,7 @@ reach into `dist` by path. Prepare a clean directory with the packed artifact
 and install it there, then run:
 
 ```text
-node scripts/fixtures/graphcoder-qualification/consumer.mjs --root <installed-consumer> --host scripts/fixtures/graphcoder-qualification/host.mjs --log <request-log>
+node scripts/fixtures/graphcoder-qualification/consumer.mjs --root <installed-consumer> --host scripts/fixtures/graphcoder-qualification/host.mjs --log <request-log> --artifact <graphcoder.tgz>
 node scripts/fixtures/graphcoder-qualification/negative-conformance.mjs --root <installed-consumer> --host scripts/fixtures/graphcoder-qualification/negative-host.mjs --epoch-host scripts/fixtures/graphcoder-qualification/epoch-host.mjs
 node scripts/fixtures/graphcoder-qualification/harness-model-consumer.mjs --root <installed-consumer-with-harness>
 ```
@@ -21,7 +21,7 @@ The fixture IDs are stable qualification references:
 
 | ID | Black-box coverage |
 | --- | --- |
-| `PKG-NATIVE-01` | Installed package exports; native snake_case wire fields; summary-only listing and bounded `limit`; lazy activity, messages, approvals, changes, diff, and file reads; approval and writeback receipt; cancel/resume; terminal adapter commands. |
+| `PKG-NATIVE-01` | Installed package name/version, export-map targets, bin targets, package artifact digest, bridge executable identity, native snake_case wire fields; summary-only listing and bounded `limit`; lazy activity, messages, approvals, changes, diff, and file reads; approval and writeback receipt; cancel/resume; terminal adapter commands. |
 | `NEG-CANCEL-01` | A hung history request must not prevent an explicit cancellation from reaching the transport. |
 | `NEG-EPOCH-01` | A canceled process request ID is quarantined so a delayed old reply cannot settle a later request with the same ID. |
 | `NEG-PATH-01` | Empty, traversal, absolute, separator, NUL, and 4097-byte paths are rejected before the bridge; a 4096-byte relative path is the accepted boundary case. |
@@ -41,7 +41,13 @@ line limit exercised by `NEG-BYTES-01` is the test's configured
 `maximumLineBytes: 256`, while the path boundary is 4096 ASCII bytes. These
 fixtures do not prove durable cancellation of a real worker, storage policy,
 model behavior, production swarm orchestration, N-API/Cargo bindings, or all
-possible native field combinations. `harness-model-consumer.mjs` uses a local
+possible native field combinations. The package consumer records the bridge
+executable and host-script identities and can consume a SHA-256 package archive
+with `--artifact`; it remains a protocol fixture until paired with a real
+local-runtime host. A real host can additionally write a lazy observation file
+with `during_list_sessions` counters (`worker_starts`, `workspace_reads`, and
+`model_dispatches`); pass it as `--lazy-observation` to require all three to be
+zero. `harness-model-consumer.mjs` uses a local
 assertion provider only to observe the installed Harness boundary; it does not
 qualify any production model provider. The installed Harness artifact must
 include the generated native `prepareModelRequest` export; a missing export is

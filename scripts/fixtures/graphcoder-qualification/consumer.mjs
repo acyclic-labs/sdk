@@ -1,7 +1,6 @@
-import { createRequire } from "node:module";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { assertLazyCounters, inspectInstalledPackage, loadInstalledExport } from "./package-contract.mjs";
 
 function option(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -12,22 +11,21 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function loadExport(consumerRoot, specifier) {
-  const require = createRequire(resolve(consumerRoot, "package.json"));
-  return import(pathToFileURL(require.resolve(specifier)).href);
-}
-
 const consumerRoot = option("--root");
 const hostPath = option("--host");
 const logPath = option("--log");
+const artifactPath = option("--artifact");
+const lazyObservationPath = option("--lazy-observation");
 if (consumerRoot === undefined || hostPath === undefined || logPath === undefined) {
-  throw new Error("usage: node consumer.mjs --root <installed-consumer> --host <host.mjs> --log <request-log>");
+  throw new Error("usage: node consumer.mjs --root <installed-consumer> --host <host.mjs> --log <request-log> [--artifact package.tgz] [--lazy-observation counters.json]");
 }
 
-const api = await loadExport(consumerRoot, "@acyclic-labs/graphcoder");
-const bridgeApi = await loadExport(consumerRoot, "@acyclic-labs/graphcoder/bridge");
-const nodeApi = await loadExport(consumerRoot, "@acyclic-labs/graphcoder/node");
-const terminalApi = await loadExport(consumerRoot, "@acyclic-labs/graphcoder/terminal");
+const packageRoot = resolve(consumerRoot, "node_modules/@acyclic-labs/graphcoder");
+const identity = inspectInstalledPackage(packageRoot, { artifactPath });
+const api = await loadInstalledExport(consumerRoot, "@acyclic-labs/graphcoder").module;
+const bridgeApi = await loadInstalledExport(consumerRoot, "@acyclic-labs/graphcoder/bridge").module;
+const nodeApi = await loadInstalledExport(consumerRoot, "@acyclic-labs/graphcoder/node").module;
+const terminalApi = await loadInstalledExport(consumerRoot, "@acyclic-labs/graphcoder/terminal").module;
 writeFileSync(logPath, "");
 
 const processBridge = new nodeApi.JsonLineGraphCoderBridge({
@@ -73,14 +71,20 @@ try {
   const terminalLines = output.filter(line => line.trim() !== "").map(line => JSON.parse(line));
   assert(terminalLines.length === 8 && terminalLines.every(line => line.ok === true), "installed terminal emitted an unsuccessful result");
 
-  const calls = readFileSync(logPath, "utf8").trim().split(/\r?\n/u).filter(Boolean).map(line => JSON.parse(line));
+  const records = readFileSync(logPath, "utf8").trim().split(/\r?\n/u).filter(Boolean).map(line => JSON.parse(line));
+  const startup = records.find(record => record.kind === "host_identity");
+  assert(startup?.executable === process.execPath, "bridge executable identity was not recorded by the installed host");
+  assert(startup?.argv?.[0] === resolve(hostPath), "bridge host script identity was not recorded by the installed host");
+  const calls = records.filter(record => typeof record.method === "string");
   assert(calls[0]?.method === "list_sessions", "session listing did not remain the first lazy operation");
   assert(calls[0]?.params?.query?.limit === 32, "page limit was not preserved on the wire");
+  assert(calls.slice(0, 2).map(call => call.method).join(",") === "list_sessions,open_session", "session listing performed hidden detail loads");
   const methods = new Set(calls.map(call => call.method));
   for (const method of ["list_sessions", "open_session", "read_activity", "read_messages", "list_approvals", "resolve_approval", "list_changes", "read_change", "read_file", "approve_writeback", "cancel_session", "resume_session"]) {
     assert(methods.has(method), `native fixture did not observe ${method}`);
   }
-  process.stdout.write(JSON.stringify({ ok: true, scenario: "PKG-NATIVE-01", calls: calls.length }) + "\n");
+  const lazyObservation = assertLazyCounters(lazyObservationPath, { require: lazyObservationPath !== undefined });
+  process.stdout.write(JSON.stringify({ ok: true, scenario: "PKG-NATIVE-01", calls: calls.length, package: identity, lazy_observation: lazyObservation ?? null }) + "\n");
 } finally {
   processBridge.close();
 }

@@ -7,7 +7,9 @@
 
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { assertLazyCounters, inspectInstalledPackage } from "./fixtures/graphcoder-qualification/package-contract.mjs";
 
 function fail(message) {
   throw new Error(`graphcoder-production-entrypoint: ${message}`);
@@ -39,10 +41,25 @@ function jsonArray(name, fallback = "[]") {
 }
 
 const packageRoot = resolve(requiredEnvironment("GRAPHCODER_PACKAGE_ROOT"));
+const packageIdentity = inspectInstalledPackage(packageRoot, {
+  artifactPath: process.env.GRAPHCODER_PACKAGE_ARTIFACT,
+});
+const identityPath = process.env.GRAPHCODER_IDENTITY_PATH;
+if (identityPath === undefined && process.env.GRAPHCODER_REQUIRE_PACKAGE_IDENTITY === "1") {
+  fail("GRAPHCODER_IDENTITY_PATH is required when package identity recording is enabled");
+}
+if (identityPath !== undefined && identityPath.trim() !== "") {
+  mkdirSync(dirname(resolve(identityPath)), { recursive: true });
+  writeFileSync(resolve(identityPath), `${JSON.stringify(packageIdentity, null, 2)}\n`, { flag: "wx" });
+}
 const bridgeExecutable = requiredEnvironment("GRAPHCODER_BRIDGE_EXECUTABLE");
 const bridgeArgs = jsonArray("GRAPHCODER_BRIDGE_ARGS_JSON");
 const bridgeEnvironment = jsonObject("GRAPHCODER_BRIDGE_ENV_JSON");
 const bridgeCwd = resolve(process.env.GRAPHCODER_BRIDGE_CWD ?? process.cwd());
+const lazyObservationPath = process.env.GRAPHCODER_LAZY_OBSERVATION_PATH;
+if (lazyObservationPath !== undefined && lazyObservationPath.trim() !== "") {
+  mkdirSync(dirname(resolve(lazyObservationPath)), { recursive: true });
+}
 const packageJsonPath = join(packageRoot, "package.json");
 let terminalPath;
 let bridgePath;
@@ -118,3 +135,6 @@ try {
 } finally {
   bridge.close("GraphCoder qualification entrypoint finished");
 }
+assertLazyCounters(lazyObservationPath, {
+  require: process.env.GRAPHCODER_REQUIRE_LAZY_COUNTERS === "1",
+});

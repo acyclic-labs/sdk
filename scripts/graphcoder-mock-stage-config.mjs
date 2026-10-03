@@ -74,10 +74,12 @@ export function makeMockStageConfig({
 
   const bridge = fileURLToPath(new URL("./graphcoder-mock-bridge.mjs", import.meta.url));
   const entrypoint = fileURLToPath(new URL("./graphcoder-production-entrypoint.mjs", import.meta.url));
+  const packageContract = fileURLToPath(new URL("./fixtures/graphcoder-qualification/package-contract.mjs", import.meta.url));
   const packageArtifact = describeArtifact({ path: archive, sourceCwd: source, buildId: `${id}-package`, builtAt, gitOps });
   const bridgeArtifact = describeArtifact({ path: bridge, sourceCwd: source, buildId: `${id}-bridge`, builtAt, gitOps });
   const entrypointArtifact = describeArtifact({ path: entrypoint, sourceCwd: source, buildId: `${id}-entrypoint`, builtAt, gitOps });
-  const artifacts = [packageArtifact, bridgeArtifact, entrypointArtifact];
+  const packageContractArtifact = describeArtifact({ path: packageContract, sourceCwd: source, buildId: `${id}-package-contract`, builtAt, gitOps });
+  const artifacts = [packageArtifact, bridgeArtifact, entrypointArtifact, packageContractArtifact];
   sharedProvenance(artifacts);
 
   return {
@@ -98,6 +100,9 @@ export function makeMockStageConfig({
           GRAPHCODER_MOCK_FIXTURE: fixture,
         }),
         GRAPHCODER_BRIDGE_CWD: source,
+        GRAPHCODER_PACKAGE_ARTIFACT: archive,
+        GRAPHCODER_IDENTITY_PATH: `${outputPath}.package-identity.json`,
+        GRAPHCODER_REQUIRE_PACKAGE_IDENTITY: "1",
       },
     },
     artifacts,

@@ -54,6 +54,25 @@ export function framedPromptCount(value) {
   return [...stripAnsi(value).matchAll(/(?:^|\r?\n)graphcoder>[ ]?/gu)].length;
 }
 
+/**
+ * ConPTY owns a real child process, so the driver must forward host signals
+ * and remove those listeners once the child has produced its close proof.
+ * The installed package keeps this lifecycle helper private; this driver
+ * cannot import private package files and therefore owns only its own runner.
+ */
+export function installChildSignalCleanup(child) {
+  const handlers = ["SIGINT", "SIGTERM"].map(signal => {
+    const handler = () => {
+      try { child.kill(signal); } catch { /* close/error observers retain the outcome */ }
+    };
+    process.once(signal, handler);
+    return [signal, handler];
+  });
+  return () => {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+  };
+}
+
 export function commandContext(transcript) {
   const context = {};
   for (const line of stripAnsi(transcript).split(/\r?\n/u)) {
@@ -175,6 +194,7 @@ export async function run(commands) {
     for (const listener of state.listeners) listener();
   });
   child.stderr.on("data", chunk => { state.output += `\n[stderr]\n${chunk}`; });
+  const uninstallSignalCleanup = installChildSignalCleanup(child);
   try {
     await waitForPrompt(state, 0, processClosed, processError);
     for (const rawCommand of commands) {
@@ -202,6 +222,8 @@ export async function run(commands) {
       // Preserve the command failure while still bounding process cleanup.
     }
     throw error;
+  } finally {
+    uninstallSignalCleanup();
   }
 }
 

@@ -11,6 +11,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { inspectInstalledPackage } from "./fixtures/graphcoder-qualification/package-contract.mjs";
 
 const RESPONSE_TIMEOUT_MS = 15_000;
 const CLOSE_TIMEOUT_MS = 5_000;
@@ -219,6 +220,9 @@ async function runReopen(runtime, root) {
 }
 
 async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId, generation }) {
+  const packageIdentity = inspectInstalledPackage(packageRoot, {
+    artifactPath: process.env.GRAPHCODER_PACKAGE_ARTIFACT,
+  });
   const packageJsonPath = join(packageRoot, "package.json");
   if (!existsSync(packageJsonPath)) fail(`installed GraphCoder package is missing package.json: ${packageJsonPath}`);
   let packageJson;
@@ -253,7 +257,7 @@ async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId,
     if (typeof file.generation !== "bigint" || file.generation !== snapshot.workspaceGeneration) fail(`installed consumer did not preserve BigInt file generation: ${String(file.generation)}`);
     if (file.mediaType !== "text/plain" || Buffer.from(file.bytes).toString("utf8") !== "fixture:stage") fail(`installed consumer decoded unexpected file body: ${JSON.stringify({ path: file.path, mediaType: file.mediaType, bytes: [...file.bytes] })}`);
     assertNoAttachments(file, "installed consumer file");
-    return { generation: file.generation.toString(), mediaType: file.mediaType, bytes: [...file.bytes] };
+    return { generation: file.generation.toString(), mediaType: file.mediaType, bytes: [...file.bytes], package: packageIdentity };
   } finally {
     connection.bridge.close("native stage qualification finished");
     let timer;

@@ -13,6 +13,14 @@ function log(request) {
   appendFileSync(logPath, `${JSON.stringify({ method: request.method, params: request.params })}\n`);
 }
 
+if (logPath !== undefined) {
+  appendFileSync(logPath, `${JSON.stringify({ kind: "host_identity", executable: process.execPath, argv: process.argv.slice(1) })}\n`);
+}
+
+if (logPath !== undefined) {
+  appendFileSync(logPath, `${JSON.stringify({ kind: "host_identity", executable: process.execPath, argv: process.argv.slice(1) })}\n`);
+}
+
 function respond(request, result) {
   process.stdout.write(`${JSON.stringify({ request_id: request.request_id, ok: true, result })}\n`);
 }

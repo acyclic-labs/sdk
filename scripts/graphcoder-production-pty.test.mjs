@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bridgeEnvironment, commandContext, framedPromptCount } from "./graphcoder-production-pty.mjs";
+import { bridgeEnvironment, commandContext, framedPromptCount, installChildSignalCleanup } from "./graphcoder-production-pty.mjs";
 
 test("PTY environment keeps only platform and explicit GraphCoder variables", () => {
   const filtered = bridgeEnvironment({
@@ -42,3 +42,16 @@ test("PTY command context recovers dynamic identities from terminal projections"
   });
 });
 
+test("PTY child signal listeners forward termination and are removed after close handling", () => {
+  const beforeInt = process.listenerCount("SIGINT");
+  const beforeTerm = process.listenerCount("SIGTERM");
+  const signals = [];
+  const cleanup = installChildSignalCleanup({ kill(signal) { signals.push(signal); return true; } });
+  assert.equal(process.listenerCount("SIGINT"), beforeInt + 1);
+  assert.equal(process.listenerCount("SIGTERM"), beforeTerm + 1);
+  process.rawListeners("SIGTERM").at(-1)?.();
+  assert.deepEqual(signals, ["SIGTERM"]);
+  cleanup();
+  assert.equal(process.listenerCount("SIGINT"), beforeInt);
+  assert.equal(process.listenerCount("SIGTERM"), beforeTerm);
+});

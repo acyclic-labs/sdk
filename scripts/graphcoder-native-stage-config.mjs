@@ -33,6 +33,9 @@ export function makeNativeStageConfig({ sourceCwd, packageArchive, runtime, pack
     fail("package and native artifacts do not share one source commit/tree");
   }
   const driver = fileURLToPath(new URL("./graphcoder-native-stage-e2e.mjs", import.meta.url));
+  const packageContract = fileURLToPath(new URL("./fixtures/graphcoder-qualification/package-contract.mjs", import.meta.url));
+  const driverArtifact = describeArtifact({ path: driver, sourceCwd: source, buildId: `${id}-driver`, builtAt, gitOps });
+  const packageContractArtifact = describeArtifact({ path: packageContract, sourceCwd: source, buildId: `${id}-package-contract`, builtAt, gitOps });
   return {
     id: `native-stage-${id}`,
     descriptor: "docs/graphcoder-swarm/graphcoder-native-scenarios.json",
@@ -42,9 +45,13 @@ export function makeNativeStageConfig({ sourceCwd, packageArchive, runtime, pack
       executable: process.execPath,
       args: [driver],
       cwd: source,
-      env: { GRAPHCODER_NATIVE_RUNTIME: executable, GRAPHCODER_PACKAGE_ROOT: installedPackage },
+      env: {
+        GRAPHCODER_NATIVE_RUNTIME: executable,
+        GRAPHCODER_PACKAGE_ROOT: installedPackage,
+        GRAPHCODER_PACKAGE_ARTIFACT: archive,
+      },
     },
-    artifacts: [nativeArtifact, packageArtifact],
+    artifacts: [nativeArtifact, packageArtifact, driverArtifact, packageContractArtifact],
     expected_exit_code: 0,
     output: outputPath,
   };

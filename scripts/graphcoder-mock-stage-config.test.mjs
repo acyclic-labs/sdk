@@ -21,12 +21,15 @@ test("installed mock stage binds package and driver source artifacts", () => {
       gitOps: { git: (_cwd, ...args) => args.at(-1) === "HEAD" ? "a".repeat(40) : "b".repeat(40) },
     });
     assert.equal(config.execution_kind, "package");
-    assert.equal(config.artifacts.length, 3);
-    assert.deepEqual(new Set(config.artifacts.map(item => item.build_id)), new Set(["build-1-package", "build-1-bridge", "build-1-entrypoint"]));
+    assert.equal(config.artifacts.length, 4);
+    assert.deepEqual(new Set(config.artifacts.map(item => item.build_id)), new Set(["build-1-package", "build-1-bridge", "build-1-entrypoint", "build-1-package-contract"]));
     assert.ok(config.artifacts.every(item => item.source_commit === "a".repeat(40) && item.source_tree === "b".repeat(40)));
     assert.equal(JSON.parse(config.command.env.GRAPHCODER_BRIDGE_ENV_JSON).GRAPHCODER_MOCK_FIXTURE, "deterministic");
     assert.equal(config.command.args.some(item => item.startsWith("--fixture=")), false);
     assert.equal(config.command.env.GRAPHCODER_PACKAGE_ROOT, directory);
+    assert.equal(config.command.env.GRAPHCODER_PACKAGE_ARTIFACT, packageArchive);
+    assert.equal(config.command.env.GRAPHCODER_REQUIRE_PACKAGE_IDENTITY, "1");
+    assert.match(config.command.env.GRAPHCODER_IDENTITY_PATH, /\.package-identity\.json$/u);
     assert.equal(config.command.args[0].endsWith("graphcoder-production-entrypoint.mjs"), true);
   } finally {
     rmSync(directory, { recursive: true, force: true });

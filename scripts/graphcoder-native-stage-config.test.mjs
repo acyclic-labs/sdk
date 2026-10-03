@@ -24,10 +24,11 @@ test("native stage config binds package and runtime to one source provenance", (
       gitOps,
     });
     assert.equal(config.execution_kind, "native");
-    assert.equal(config.artifacts.length, 2);
-    assert.equal(config.artifacts[0].source_commit, config.artifacts[1].source_commit);
-    assert.equal(config.artifacts[0].source_tree, config.artifacts[1].source_tree);
+    assert.equal(config.artifacts.length, 4);
+    assert.ok(config.artifacts.every(item => item.source_commit === config.artifacts[0].source_commit));
+    assert.ok(config.artifacts.every(item => item.source_tree === config.artifacts[0].source_tree));
     assert.equal(config.command.env.GRAPHCODER_PACKAGE_ROOT, directory);
+    assert.equal(config.command.env.GRAPHCODER_PACKAGE_ARTIFACT, packageArchive);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
