@@ -23,7 +23,7 @@ use crate::{
         ResourceRevision,
     },
     interaction::{InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
-    model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
+    model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRequest, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
     resources::{GenerationRef, ProviderRef, StreamRef},
@@ -3362,6 +3362,13 @@ impl PersistentLocalSwarm {
             ));
         }
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        // Validate every immutable execution binding before the registry can
+        // admit a child or the filesystem resolver can allocate its private
+        // workspace. Activation repeats this check immediately before model
+        // dispatch, but publication must not create effects for a stale owner
+        // admission or a provider policy that has drifted after restart.
+        self.verify_admitted_task(request.parent, parent.parent).await?;
+        self.verify_model_provider_binding()?;
         // Admission and completion share one per-child terminal fence.
         // Narrowing the lock to this child permits a model turn to select a
         // grandchild without recursively taking a global swarm lock.
@@ -3926,6 +3933,7 @@ impl PersistentLocalSwarm {
     /// dispatch. A reopened process must not run a task under a changed
     /// parent, numeric limit, or run budget binding.
     async fn verify_admitted_task(&self, task: TaskId, parent: Option<TaskId>) -> Result<()> {
+        self.verify_model_provider_binding()?;
         let Some(host) = &self.bindings.communication_host else {
             return Ok(());
         };
@@ -3939,6 +3947,18 @@ impl PersistentLocalSwarm {
             ));
         }
         Ok(())
+    }
+
+    /// Checks the provider-owned model option policy without touching durable
+    /// state. This is deliberately part of the publication barrier so an
+    /// invalid or drifted policy cannot be discovered after child allocation.
+    fn verify_model_provider_binding(&self) -> Result<()> {
+        self.provider.admit(&ModelRequest {
+            model: self.config.model.clone(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            max_output_tokens: None,
+        })
     }
 
     /// Replays the exact admitted request after a process interruption.
