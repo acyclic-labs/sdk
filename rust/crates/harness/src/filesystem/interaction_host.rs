@@ -366,7 +366,7 @@ where
             .host
             .read_internal_content(
                     &ticket.request,
-                    &self.volume,
+                    &self.private_volume,
                     &grant,
                     super::InternalContentClass::Interaction,
                     self.maximum_bytes,
@@ -393,7 +393,7 @@ where
             self.host
                 .read_internal_content(
                     &answer,
-                    &self.volume,
+                    &self.private_volume,
                     &grant,
                     super::InternalContentClass::Interaction,
                     self.maximum_bytes,
@@ -421,7 +421,7 @@ where
             self.host
                 .read_internal_content(
                     &detail,
-                    &self.volume,
+                    &self.private_volume,
                     &grant,
                     super::InternalContentClass::Interaction,
                     self.maximum_bytes,
