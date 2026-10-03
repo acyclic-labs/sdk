@@ -533,6 +533,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             attachment_manifests: captured.attachment_manifests,
             inherited_through_sequence: if level == 1 { 2 } else { 1 },
             boundary: None,
+            model_boundary: None,
         };
         seed.validate()?;
         if level == DEEP_RETRY {

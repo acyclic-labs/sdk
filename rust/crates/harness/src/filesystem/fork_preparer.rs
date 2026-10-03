@@ -6,7 +6,10 @@
 use super::{FilesystemHost, ParentProjectController, WorkspaceMutation, map_error, workspace_ref};
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
-    conversation::{ContentGrant, ContentResidencyVerifier, VolumeOperation, VolumeRef},
+    conversation::{
+        ContentGrant, ContentResidencyVerifier, VolumeClass, VolumeOperation, VolumeOwner,
+        VolumeRef,
+    },
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     fork::{
         Capture, CapturedResource, ForkCaptureProvider, ForkPreparer, ForkReport, ForkRequest,
@@ -458,6 +461,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         if let Some(report) = self.read_report(&journal, &request).await? {
             return Ok(report);
         }
+        if let Some(model_boundary) = &request.model_boundary {
+            for file in &model_boundary.files {
+                // Resolve before claiming or forking child workspaces. The
+                // parent exact scope is the admission authority for every
+                // model prefix/suffix ref.
+                self.resolver.read(file).await?;
+            }
+        }
         let source_generation = request
             .selections
             .iter()
@@ -502,54 +513,88 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                 &project_key,
             )
             .await?;
-        let (child_private_generation, inherited_context, reference_grants, attachment_manifests) =
-            if request.preparation.inherited_through_sequence == 0 {
-                let entries = self
-                    .host
-                    .list(
-                        &private_observation.workspace,
-                        Some(&private_observation.generation),
-                        "/",
-                        1,
-                    )
-                    .await?;
-                if !entries.entries.is_empty() {
-                    return Err(Error::Conflict("child private volume is not empty".into()));
+        let (
+            child_private_generation,
+            inherited_context,
+            mut reference_grants,
+            attachment_manifests,
+        ) = if request.preparation.inherited_through_sequence == 0 {
+            let entries = self
+                .host
+                .list(
+                    &private_observation.workspace,
+                    Some(&private_observation.generation),
+                    "/",
+                    1,
+                )
+                .await?;
+            if !entries.entries.is_empty() {
+                return Err(Error::Conflict("child private volume is not empty".into()));
+            }
+            (
+                private_observation.generation,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        } else {
+            let context_key = IdempotencyKey::new(format!(
+                "fork:{}:{request_digest}:context",
+                request.operation_id
+            ))?;
+            let inherited = controller
+                .materialize_inherited_conversation(
+                    &self.parent,
+                    &private,
+                    request.child_agent,
+                    &request.attached_agents,
+                    request.preparation.inherited_through_sequence,
+                    usize::try_from(request.preparation.maximum_inherited_messages)
+                        .map_err(|_| Error::Invalid("fork message bound is too large".into()))?,
+                    request.preparation.maximum_inherited_bytes,
+                    request.preparation.maximum_inherited_references as usize,
+                    self.resolver.as_ref(),
+                    &context_key,
+                )
+                .await?;
+            (
+                inherited.generation,
+                vec![inherited.file],
+                inherited.reference_grants,
+                inherited.attachment_manifests,
+            )
+        };
+        if let Some(model_boundary) = &request.model_boundary {
+            let mut granted = reference_grants
+                .iter()
+                .map(|grant| (grant.reader, grant.file.read_capability()))
+                .collect::<Result<BTreeSet<_>>>()?;
+            let readers = std::iter::once(request.child_agent)
+                .chain(request.attached_agents.iter().copied())
+                .collect::<Vec<_>>();
+            for file in &model_boundary.files {
+                let capability = file.read_capability()?;
+                for reader in &readers {
+                    if file.volume().class() == VolumeClass::AgentPrivate
+                        && file.volume().owner() == &VolumeOwner::Agent(*reader)
+                    {
+                        continue;
+                    }
+                    if granted.insert((*reader, capability.clone())) {
+                        reference_grants.push(ReferenceGrant {
+                            file: file.clone(),
+                            reader: *reader,
+                            attachment_manifest: None,
+                        });
+                    }
                 }
-                (
-                    private_observation.generation,
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                )
-            } else {
-                let context_key = IdempotencyKey::new(format!(
-                    "fork:{}:{request_digest}:context",
-                    request.operation_id
-                ))?;
-                let inherited = controller
-                    .materialize_inherited_conversation(
-                        &self.parent,
-                        &private,
-                        request.child_agent,
-                        &request.attached_agents,
-                        request.preparation.inherited_through_sequence,
-                        usize::try_from(request.preparation.maximum_inherited_messages).map_err(
-                            |_| Error::Invalid("fork message bound is too large".into()),
-                        )?,
-                        request.preparation.maximum_inherited_bytes,
-                        request.preparation.maximum_inherited_references as usize,
-                        self.resolver.as_ref(),
-                        &context_key,
-                    )
-                    .await?;
-                (
-                    inherited.generation,
-                    vec![inherited.file],
-                    inherited.reference_grants,
-                    inherited.attachment_manifests,
-                )
-            };
+            }
+            if reference_grants.len() > request.preparation.maximum_inherited_references as usize {
+                return Err(Error::Invalid(
+                    "model boundary read grants exceed limit".into(),
+                ));
+            }
+        }
         let mut captures = Vec::with_capacity(request.selections.len());
         let mut shared_grants = Vec::new();
         for (index, selection) in request.selections.iter().enumerate() {

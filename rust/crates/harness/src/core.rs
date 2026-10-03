@@ -8,7 +8,7 @@ use crate::{
         ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
         is_internal_path,
     },
-    fork::{ForkSeed, InheritedConversationPrefix},
+    fork::{ForkSeed, InheritedConversationPrefix, ModelBoundaryReferences},
     interaction::{InteractionOutcome, InteractionResolution, InteractionTicket},
     merge::ProjectMergeReceipt,
     resolve_policy_layers,
@@ -315,6 +315,32 @@ impl AuthorityIssuer {
         }
     }
 
+    /// Attests a model-bound exact-ref manifest after the caller has verified
+    /// the durable publication and boundary bytes.
+    pub(crate) fn attest_model_boundary(
+        &self,
+        parent: &Authority,
+        child: &Authority,
+        child_agent: AgentId,
+        attached_agents: &[AgentId],
+        model_boundary: &ModelBoundaryReferences,
+    ) -> Result<[u8; 32]> {
+        if &self.audience != parent {
+            return Err(Error::Unauthorized(
+                "model boundary issuer belongs to another parent".into(),
+            ));
+        }
+        model_boundary.validate_envelope()?;
+        model_boundary_proof(
+            &self.key,
+            parent,
+            child,
+            child_agent,
+            attached_agents,
+            model_boundary,
+        )
+    }
+
     /// Attests a provider observation after the host validates it against its registry.
     pub(crate) fn attest_effect(
         &self,
@@ -425,6 +451,34 @@ impl AuthorityVerifier {
                 "authority verifier belongs to another aggregate".into(),
             ))
         }
+    }
+
+    /// Verifies the parent issuer's binding over a model publication's exact
+    /// file manifest before reducer ownership checks exempt those refs from
+    /// ordinary conversation-history publication requirements.
+    pub(crate) fn verify_model_boundary(
+        &self,
+        parent: &Authority,
+        child: &Authority,
+        child_agent: AgentId,
+        attached_agents: &[AgentId],
+        model_boundary: &ModelBoundaryReferences,
+    ) -> Result<()> {
+        self.verify_audience(parent)?;
+        let expected = model_boundary_proof(
+            &self.key,
+            parent,
+            child,
+            child_agent,
+            attached_agents,
+            model_boundary,
+        )?;
+        if model_boundary.attestation != expected {
+            return Err(Error::Unauthorized(
+                "model boundary attestation is invalid".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn verify_effect(&self, observation: &EffectAttestation) -> Result<()> {
@@ -2088,6 +2142,22 @@ impl Reducer {
             .iter()
             .map(|grant| Ok((grant.capability()?, grant.reader)))
             .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        let model_boundary_refs = if let Some(model_boundary) = &seed.model_boundary {
+            self.authority_verifier.verify_model_boundary(
+                &seed.parent,
+                &seed.child,
+                seed.child_agent,
+                &seed.attached_agents,
+                model_boundary,
+            )?;
+            model_boundary
+                .files
+                .iter()
+                .map(crate::conversation::FileRef::read_capability)
+                .collect::<Result<std::collections::BTreeSet<_>>>()?
+        } else {
+            std::collections::BTreeSet::new()
+        };
         for reader in std::iter::once(seed.child_agent).chain(seed.attached_agents.iter().copied())
         {
             for (capability, file) in &published_refs {
@@ -2105,6 +2175,12 @@ impl Reducer {
         }
         for grant in &seed.reference_grants {
             let file = &grant.file;
+            if model_boundary_refs.contains(&file.read_capability()?) {
+                // The parent issuer attestation binds refs that are present
+                // only in the verified model prefix/suffix, so they need not
+                // also occur in the parent's conversation transcript.
+                continue;
+            }
             if file.volume() == &seed.child_private_volume {
                 if grant.attachment_manifest.is_some() || !seed.inherited_context.contains(file) {
                     return Err(Error::Invalid(
@@ -3035,6 +3111,32 @@ fn scope_proof(
         }
     }
     *hasher.finalize().as_bytes()
+}
+
+fn model_boundary_proof(
+    key: &[u8; 32],
+    parent: &Authority,
+    child: &Authority,
+    child_agent: AgentId,
+    attached_agents: &[AgentId],
+    model_boundary: &ModelBoundaryReferences,
+) -> Result<[u8; 32]> {
+    let canonical = crate::contract::canonical_json_bytes(&(
+        "harness/v2/model-boundary",
+        parent,
+        child,
+        child_agent,
+        attached_agents,
+        model_boundary.publication,
+        model_boundary.publication_digest,
+        model_boundary.boundary_digest,
+        &model_boundary.files,
+    ))?;
+    let mut hasher = blake3::Hasher::new_keyed(key);
+    hasher.update(b"harness/v2/model-boundary-attestation\0");
+    hasher.update(&(canonical.len() as u64).to_le_bytes());
+    hasher.update(&canonical);
+    Ok(*hasher.finalize().as_bytes())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4426,6 +4528,7 @@ mod tests {
             attachment_manifests: Vec::new(),
             inherited_through_sequence: 0,
             boundary: None,
+            model_boundary: None,
         };
         let extension = ResourceRevision::Extension {
             name: "example.message".into(),

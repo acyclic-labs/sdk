@@ -228,6 +228,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 },
             ],
             boundary: None,
+            model_boundary: None,
         };
         let report = aggregate.prepare_fork(&preparer, request).await?;
         let inherited_file = report

@@ -838,6 +838,7 @@ mod tests {
                 },
             ],
             boundary: None,
+            model_boundary: None,
         };
         request.validate()?;
         let [history_selection, project_selection, artifact_selection] =
@@ -895,6 +896,7 @@ mod tests {
             reference_grants: Vec::new(),
             attachment_manifests: Vec::new(),
             boundary: None,
+            model_boundary: None,
         };
         ForkSeedVerifier::verify(owner_store.as_ref(), &seed).await?;
         assert!(owner_store.bindings().writer.is_some());
