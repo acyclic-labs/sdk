@@ -517,6 +517,16 @@ impl ContextPipeline {
 
     /// Runs every stage in declared order.
     pub async fn run(&self, input: &ContextInput) -> Result<Context> {
+        self.run_with_rejection_evidence(input, &[]).await
+    }
+
+    /// Runs every stage while carrying authenticated evidence from prior model steps.
+    /// Evidence stays transport metadata and is never rendered as a message.
+    pub async fn run_with_rejection_evidence(
+        &self,
+        input: &ContextInput,
+        rejection_evidence: &[crate::tool::ToolRejectionFeedback],
+    ) -> Result<Context> {
         input.input.validate_user_input()?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input)?;
@@ -536,7 +546,7 @@ impl ContextPipeline {
                 .chain(input.prior_messages.iter().cloned())
                 .collect(),
             metadata: BTreeMap::new(),
-            rejection_evidence: Vec::new(),
+            rejection_evidence: rejection_evidence.to_vec(),
         };
         for stage in &self.0 {
             context = stage.apply(input, context).await?;

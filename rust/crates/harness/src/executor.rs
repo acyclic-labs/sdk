@@ -525,7 +525,7 @@ impl StockExecutor {
                 ExecutionEvent::ModelInputPrepared { step, .. } => {
                     if !prepared_steps.insert(*step) {
                         return Err(Error::Storage(
-                            "duplicate prepared model input for executor step".into(),
+                            "model input preparation is duplicated (preparation duplicated)".into(),
                         ));
                     }
                     if started_steps.contains(step) {
@@ -535,9 +535,14 @@ impl StockExecutor {
                     }
                 }
                 ExecutionEvent::ModelStarted { step, .. } => {
-                    if !prepared_steps.contains(step) || !started_steps.insert(*step) {
+                    if !prepared_steps.contains(step) {
                         return Err(Error::Storage(
-                            "model start is missing preparation or is duplicated".into(),
+                            "model start is missing preparation".into(),
+                        ));
+                    }
+                    if !started_steps.insert(*step) {
+                        return Err(Error::Storage(
+                            "model start is duplicated (duplicate model start)".into(),
                         ));
                     }
                 }
@@ -554,6 +559,11 @@ impl StockExecutor {
                     ));
                 }
                 ExecutionEvent::ToolStarted { step, call_id, .. } => {
+                    if !started_steps.contains(step) {
+                        return Err(Error::Storage(
+                            "tool start is missing its admitted model start".into(),
+                        ));
+                    }
                     if !started_tools.insert((*step, call_id.clone())) {
                         return Err(Error::Storage("tool admission is duplicated".into()));
                     }
@@ -607,6 +617,7 @@ impl StockExecutor {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
+        rejection_evidence: &[crate::tool::ToolRejectionFeedback],
     ) -> Result<Vec<ModelEvent>> {
         let records = journal.replay(input.operation_id).await?;
         let mut persisted_prepared = None;
@@ -686,12 +697,15 @@ impl StockExecutor {
         } else {
             let context = self
                 .context
-                .run(&ContextInput {
-                    input: input.input.clone(),
-                    selected_context: input.selected_context.clone(),
-                    step,
-                    prior_messages: prior_messages.to_vec(),
-                })
+                .run_with_rejection_evidence(
+                    &ContextInput {
+                        input: input.input.clone(),
+                        selected_context: input.selected_context.clone(),
+                        step,
+                        prior_messages: prior_messages.to_vec(),
+                    },
+                    rejection_evidence,
+                )
                 .await?;
             if context.messages.len() > self.limits.context_messages {
                 return Err(Error::Invalid("model context exceeds message limit".into()));
@@ -955,10 +969,18 @@ impl StockExecutor {
             else {
                 continue;
             };
-            if *rejected_step > step {
+            if *rejected_step != step {
                 continue;
             }
-            rejections.push(load_json(journal, feedback).await?);
+            let feedback = load_json(journal, feedback).await?;
+            // A resumed child may carry the same authenticated envelope in
+            // both its inherited manifest and its local rejection journal.
+            // Preserve first-seen order while deduplicating by the complete
+            // typed envelope; blindly concatenating would fail the boundary
+            // cardinality check and make a valid recursive replay unusable.
+            if !rejections.contains(&feedback) {
+                rejections.push(feedback);
+            }
         }
         let boundary = crate::model_input::CompletedModelBoundary::capture_with_rejections(
             request,
@@ -1150,7 +1172,7 @@ impl StockExecutor {
         step: u32,
         invocation: ToolInvocation,
         prior_messages: &mut Vec<ModelMessage>,
-    ) -> Result<()> {
+    ) -> Result<Option<ToolRejectionFeedback>> {
         let records = journal.replay(operation_id).await?;
         invocation.validate()?;
         let mut started = None;
@@ -1282,7 +1304,7 @@ impl StockExecutor {
                     };
                     message.content.validate_limits(self.limits)?;
                     prior_messages.push(message);
-                    return Ok(());
+                    return Ok(Some(durable));
                 }
                 ToolRejectionKind::UnknownTool => {
                     return Err(Error::NotFound(format!("tool {}", invocation.name)));
@@ -1337,7 +1359,7 @@ impl StockExecutor {
             };
             message.content.validate_limits(self.limits)?;
             prior_messages.push(message);
-            return Ok(());
+            return Ok(None);
         }
         // Authorization precedes argument validation, and must stay that way. A validation error
         // describes the tool's pinned input schema, so answering one for a tool the caller was
@@ -1406,7 +1428,7 @@ impl StockExecutor {
             };
             message.content.validate_limits(self.limits)?;
             prior_messages.push(message);
-            return Ok(());
+            return Ok(Some(feedback));
         }
         let started = started.is_some();
         if let Some(reason) = failed_tool {
@@ -1723,7 +1745,7 @@ impl StockExecutor {
         };
         message.content.validate_limits(self.limits)?;
         prior_messages.push(message);
-        Ok(())
+        Ok(None)
     }
 
     async fn validate_turn_input(
@@ -1773,13 +1795,20 @@ impl Executor for StockExecutor {
             self.validate_turn_input(journal, &input).await?;
             self.ensure_started(journal, &input).await?;
             let mut prior_messages = Vec::new();
+            let mut rejection_evidence = Vec::new();
             let mut text = String::new();
             for step in 0..input.max_steps {
                 let step_text_start = text.len();
                 let mut calls = Vec::new();
                 let mut completed = None;
                 let model_events = self
-                    .run_model_step(journal, &input, step, &prior_messages)
+                    .run_model_step(
+                        journal,
+                        &input,
+                        step,
+                        &prior_messages,
+                        &rejection_evidence,
+                    )
                     .await?;
                 for event in model_events {
                     match event {
@@ -1847,14 +1876,19 @@ impl Executor for StockExecutor {
                     };
                     message.content.validate_limits(self.limits)?;
                     prior_messages.push(message);
-                    self.resolve_tool_call(
+                    if let Some(feedback) = self.resolve_tool_call(
                         journal,
                         input.operation_id,
                         step,
                         invocation,
                         &mut prior_messages,
                     )
-                    .await?;
+                    .await?
+                    {
+                        if !rejection_evidence.contains(&feedback) {
+                            rejection_evidence.push(feedback);
+                        }
+                    }
                 }
                 let completed = prior_messages
                     .get(batch_start..)

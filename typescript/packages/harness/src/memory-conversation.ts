@@ -5,10 +5,10 @@ import type {
   FileRef, Limits, ReferencedAttachments, VolumeRef,
 } from "./conversation.js";
 import { DEFAULT_LIMITS } from "./conversation.js";
-import { selectModelContext } from "./projection.js";
+import { selectModelContext, type SelectedModelContext } from "./projection.js";
 import { MemoryContentStore } from "./memory-content-store.js";
 import type { ResourceRef } from "./fork.js";
-import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type ContentBindings, type ContentReader, type PrivateDirectoryPage, type RunOutput } from "./runtime.js";
+import { asHarnessLimitError, HarnessLimitError, IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type ContentBindings, type ContentReader, type PrivateDirectoryPage, type RunOutput } from "./runtime.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 
 const encoder = new TextEncoder();
@@ -455,17 +455,23 @@ export class MemoryConversation {
       }
       const historical = { agent: state.agent, revision: selection.conversation_revision,
         messages: state.messages.slice(0, selectedLength) };
-      const selected = await selectModelContext(historical, {
-        conversationRevision: selection.conversation_revision, messageIds: selection.message_ids,
-      }, { resolveFile: file => this.read(file), maxMessages: limits.context_messages,
-        maxAttachments: limits.attachments, maxManifestBytes: limits.file_bytes,
-        maxRenderBytes: limits.render_bytes,
-        decodeManifest: (manifest, bytes, count) => this.#core.decodeAttachmentManifest(manifest, bytes, count),
-        validateMessage: message => this.#core.validateConversationMessage(message, limits) });
+      let selected: SelectedModelContext;
+      try {
+        selected = await selectModelContext(historical, {
+          conversationRevision: selection.conversation_revision, messageIds: selection.message_ids,
+        }, { resolveFile: file => this.read(file), maxMessages: limits.context_messages,
+          maxAttachments: limits.attachments, maxManifestBytes: limits.file_bytes,
+          maxRenderBytes: limits.render_bytes,
+          decodeManifest: (manifest, bytes, count) => this.#core.decodeAttachmentManifest(manifest, bytes, count),
+          validateMessage: message => this.#core.validateConversationMessage(message, limits) });
+      } catch (error) {
+        throw asHarnessLimitError(error) ?? error;
+      }
       if (newSelection) this.#apply(operationId, "context", { kind: "select_model_context", selection });
       let output: RunOutput;
       try { output = await runtime.runSelectedContext(selected, operationId); }
       catch (error) {
+        if (error instanceof HarnessLimitError) throw error;
         if (error instanceof TerminalModelTurnError) {
           await this.#recordTerminalTurn(operationId, userId, error.outcome, limits);
           throw error;

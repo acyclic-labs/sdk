@@ -49,6 +49,24 @@ export class IndeterminateModelTurnError extends Error {
     this.name = "IndeterminateModelTurnError";
   }
 }
+
+/** Deterministic local limit rejection; no model-effect reconciliation is needed. */
+export class HarnessLimitError extends TypeError {
+  constructor(message = "model output exceeds harness limits") {
+    super(message);
+    this.name = "HarnessLimitError";
+  }
+}
+
+/** Preserve deterministic local size failures across the async task boundary. */
+export function asHarnessLimitError(error: unknown): HarnessLimitError | undefined {
+  if (error instanceof HarnessLimitError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  if (/\b(limit|exceed|too many|too large|maximum|oversized)\b|no (?:history|attachments) were omitted/i.test(message)) {
+    return new HarnessLimitError(message);
+  }
+  return undefined;
+}
 /** Admission may have committed remotely; retry only by the same operation ID. */
 export class AdmissionUncertainError extends Error {
   constructor(readonly operationId: string, cause?: unknown) {
@@ -276,7 +294,11 @@ export type SelectedAgentInput =
 type RuntimeAgentInput = AgentInput<UserContentPart> & { readonly selectedContext?: SelectedModelContext };
 
 function validateSelectedContext(selected: SelectedModelContext, limits: Limits): void {
-  validateSelectedModelContextWasm(selected, limits);
+  try {
+    validateSelectedModelContextWasm(selected, limits);
+  } catch (error) {
+    throw asHarnessLimitError(error) ?? error;
+  }
 }
 
 /** Builds the one canonical model content value for a direct user turn. */
@@ -294,7 +316,11 @@ function snapshotDirectUserContent(input: AgentInput<UserContentPart>): ModelCon
 }
 
 function validateModelContent(content: ModelContent, limits: Limits): void {
-  validateModelContentWasm(content, limits);
+  try {
+    validateModelContentWasm(content, limits);
+  } catch (error) {
+    throw asHarnessLimitError(error) ?? error;
+  }
 }
 
 function deepFreeze<T>(value: T): T {
@@ -1820,7 +1846,7 @@ export class AgentHarness {
     }
     this.contracts.validateIdentity("task", output.taskId);
     if (new TextEncoder().encode(output.text).byteLength > this.limits.file_bytes) {
-      throw new TypeError("host assistant output exceeds file limit");
+      throw new HarnessLimitError("host assistant output exceeds file limit");
     }
     for (const key of ["content", "artifacts", "attachments"] as const) {
       const value = output[key];
@@ -2440,7 +2466,11 @@ export class AgentHarness {
       const selected = input.selectedContext;
       const base = selected?.messages ?? [first];
       const messages: ModelMessage[] = [...(await contextBuilder?.build(input, base) ?? base)];
-      validateModelMessagesWasm(messages, nativeLimits(this.limits));
+      try {
+        validateModelMessagesWasm(messages, nativeLimits(this.limits));
+      } catch (error) {
+        throw asHarnessLimitError(error) ?? error;
+      }
       const tools = this.#modelToolDefinitions();
       let text = "";
       let previousAdmission: ModelEventAdmissionState = { count: 0, calls: [], completed: false, text_bytes: 0 };
