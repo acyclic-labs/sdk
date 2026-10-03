@@ -2253,7 +2253,7 @@ impl PersistentLocalSwarm {
         let harness = self.open_session(task).await?;
         harness
             .storage()
-            .resolve_interaction(id, response, responder)
+            .resolve_interaction_with_scope(id, response, responder)
             .await
     }
 

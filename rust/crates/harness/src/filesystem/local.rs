@@ -1251,7 +1251,7 @@ impl PersistentLocalHarness {
         responder: &Scope,
     ) -> Result<crate::interaction::InteractionOutcome> {
         self.storage
-            .resolve_interaction(id, response, responder)
+            .resolve_interaction_with_scope(id, response, responder)
             .await
     }
     /// Runtime shared with other local host compositions.
