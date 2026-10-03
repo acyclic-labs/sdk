@@ -21,7 +21,8 @@ import type {
   UpdateActorRequest, UpdateActorResponse,
   ErrorCode,
 } from "../generated/proto/actors/v1/actors_pb.js";
-import { ACTORS_METHODS, interpolateRustOwnedPath, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { ACTORS_METHODS, interpolateRustOwnedPath, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { validateActorsContentLength, validateActorsCredential, validateActorsEndpoint, validateActorsInvoke, validateActorsResponseChunk, validateActorsResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpActorsOptions {
   readonly endpoint: string;
@@ -43,16 +44,13 @@ export class HttpActorsClient {
 
   constructor(options: HttpActorsOptions) {
     const endpoint = new URL(options.endpoint);
-    const localHttp = endpoint.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname);
-    if ((!localHttp && endpoint.protocol !== "https:") || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
-      throw new TypeError("endpoint must be HTTPS or loopback HTTP without credentials, query, or fragment");
-    }
-    validateRustOwnedCredential(ACTORS_METHODS.createActor, options.token);
+    validateActorsEndpoint(options.endpoint);
+    validateActorsCredential(options.token);
     this.#endpoint = endpoint;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
-    if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
+    validateActorsResponseLimit(this.#maximum);
   }
 
   async createActor(request: CreateActorRequest, signal?: AbortSignal): Promise<CreateActorResponse> {
@@ -78,6 +76,7 @@ export class HttpActorsClient {
   }
   /** Invocation is not a Stream append or a durable checkpoint. */
   async invokeActor(request: InvokeActorRequest, signal?: AbortSignal): Promise<InvokeActorResponse> {
+    validateActorsInvoke(request.actorId, request.method);
     return fromJsonString(InvokeActorResponseSchema, await this.#post(ACTORS_METHODS.invokeActor, request, toJsonString(InvokeActorRequestSchema, request), signal));
   }
 
@@ -106,6 +105,11 @@ export class HttpActorsClient {
 }
 
 async function boundedBytes(response: Response, maximum: number): Promise<Uint8Array> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null && /^\d+$/.test(contentLength)) {
+    try { validateActorsContentLength(contentLength, maximum); }
+    catch { throw new ActorsTransportError("response exceeds configured bound", response.status); }
+  }
   const reader = response.body?.getReader();
   if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
@@ -114,8 +118,8 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      size += value.byteLength;
-      if (size > maximum) {
+      try { size = validateActorsResponseChunk(size, value.byteLength, maximum); }
+      catch {
         await reader.cancel().catch(() => undefined);
         throw new ActorsTransportError("response exceeds configured bound", response.status);
       }

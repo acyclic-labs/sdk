@@ -14,7 +14,8 @@ import type {
   SelectDeploymentRequest, SelectDeploymentResponse, SubmitJobRequest, SubmitJobResponse,
   ErrorCode,
 } from "../generated/proto/workers/v1/workers_pb.js";
-import { WORKERS_METHODS, interpolateRustOwnedPath, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { WORKERS_METHODS, interpolateRustOwnedPath, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { validateWorkersContentLength, validateWorkersCredential, validateWorkersEndpoint, validateWorkersInvokeDeployment, validateWorkersInvokeVersion, validateWorkersResponseChunk, validateWorkersResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpWorkersOptions {
   readonly endpoint: string;
@@ -36,16 +37,13 @@ export class HttpWorkersClient {
 
   constructor(options: HttpWorkersOptions) {
     const endpoint = new URL(options.endpoint);
-    const localHttp = endpoint.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname);
-    if ((!localHttp && endpoint.protocol !== "https:") || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
-      throw new TypeError("endpoint must be HTTPS or loopback HTTP without credentials, query, or fragment");
-    }
-    validateRustOwnedCredential(WORKERS_METHODS.publishVersion, options.token);
+    validateWorkersEndpoint(options.endpoint);
+    validateWorkersCredential(options.token);
     this.#endpoint = endpoint;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
-    if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
+    validateWorkersResponseLimit(this.#maximum);
   }
 
   async publishVersion(request: PublishVersionRequest, signal?: AbortSignal): Promise<PublishVersionResponse> {
@@ -65,12 +63,12 @@ export class HttpWorkersClient {
   }
   /** Invokes exact immutable code bytes with ordinary HTTP request ambiguity. */
   async invokeVersion(request: InvokeVersionRequest, signal?: AbortSignal): Promise<InvokeResponse> {
-    if (request.versionSha256.byteLength !== 32) throw new RangeError("version digest must contain exactly 32 bytes");
+    validateWorkersInvokeVersion(request.versionSha256, request.method);
     return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeVersion, request, toJsonString(InvokeVersionRequestSchema, request), signal));
   }
   /** Resolves the alias once at ingress and reports the resolved digest/revision. */
   async invokeDeployment(request: InvokeDeploymentRequest, signal?: AbortSignal): Promise<InvokeResponse> {
-    if (!/^[A-Za-z0-9._-]{1,256}$/.test(request.alias) || request.alias === "." || request.alias === "..") throw new TypeError("invalid deployment alias");
+    validateWorkersInvokeDeployment(request.alias, request.method);
     return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeDeployment, request, toJsonString(InvokeDeploymentRequestSchema, request), signal));
   }
 
@@ -99,6 +97,11 @@ export class HttpWorkersClient {
 }
 
 async function boundedBytes(response: Response, maximum: number): Promise<Uint8Array> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null && /^\d+$/.test(contentLength)) {
+    try { validateWorkersContentLength(contentLength, maximum); }
+    catch { throw new WorkersTransportError("response exceeds configured bound", response.status); }
+  }
   const reader = response.body?.getReader();
   if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
@@ -107,8 +110,8 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      size += value.byteLength;
-      if (size > maximum) {
+      try { size = validateWorkersResponseChunk(size, value.byteLength, maximum); }
+      catch {
         await reader.cancel().catch(() => undefined);
         throw new WorkersTransportError("response exceeds configured bound", response.status);
       }
