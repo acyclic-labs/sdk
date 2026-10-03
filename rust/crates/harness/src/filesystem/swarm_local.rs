@@ -228,9 +228,6 @@ impl LocalSwarmBindings {
         })
     }
 
-    fn tools(&self) -> Result<LocalHarnessTools> {
-        self.tools_for(TaskId::from_bytes([0; 16]))
-    }
 }
 
 /// One owner-prepared fork request that a model may select by stable

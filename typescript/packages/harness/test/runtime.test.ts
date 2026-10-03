@@ -143,7 +143,7 @@ test("Rust and WASM validate the canonical v3 prerequisite admission fixture", a
     requirements: [],
     machine_digest: admission.machine.digest,
     parent: admission.parent,
-    dependencies: admission.dependencies,
+    ...(admission.dependencies === undefined ? {} : { dependencies: admission.dependencies }),
     grants: admission.grants,
     limits: {
       file_bytes: BigInt(admission.limits.file_bytes),

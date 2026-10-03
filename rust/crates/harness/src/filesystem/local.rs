@@ -810,15 +810,6 @@ struct SessionDescriptor {
 }
 
 impl SessionDescriptor {
-    fn fresh(model: Model, limits: Limits, project: Option<VolumeRef>) -> Result<Self> {
-        Self::fresh_with_provider(
-            model,
-            limits,
-            project,
-            ProviderRef::new("local", "filesystem", "2")?,
-        )
-    }
-
     fn fresh_with_provider(
         model: Model,
         limits: Limits,
